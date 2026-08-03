@@ -6,6 +6,7 @@ import { ensureContainerRuntime } from '#platform/container/runtime'
 import { ensureImage, pushImageShared, sharedImageStoreHostPath } from '#features/images'
 import {
   proxyClient,
+  resolveProxyImageTag,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
 } from '#features/sessions/egress/proxy-client'
@@ -37,21 +38,20 @@ import {
   type HostPathMount,
   type NestedContainersParams,
 } from '#platform/k8s/pod-spec'
-import { proxyServiceClusterIp, sshAgentHostDir } from '#features/cluster/proxy-apply'
-import { SSH_TUNNEL_SENTINEL, TUNNEL_INGRESS_PORT } from '#features/cluster/proxy-constants'
+import { SSH_TUNNEL_SENTINEL, TUNNEL_INGRESS_PORT } from '#platform/k8s/proxy-constants'
 import {
+  ensureActivator,
   ensureProjectRegistry,
-  projectRegistryConfDropIn,
-  projectRegistryHost,
-} from '#features/cluster/project-registry'
-import {
   ensureSessionVcluster,
   ensureVclusterImages,
+  projectRegistryConfDropIn,
+  projectRegistryHost,
+  proxyServiceClusterIp,
   sleepVcluster,
+  sshAgentHostDir,
   vclusterName,
   waitForVclusterKubeconfig,
-} from '#features/cluster/vcluster'
-import { ensureActivator } from '#features/cluster/activator'
+} from '#features/cluster'
 import { awaitDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import {
   repoDir,
@@ -691,7 +691,7 @@ export async function createSession(
       // the sleep step below. Runs the proxy image the ensureRunning()
       // above just built and pushed.
       emit('Ensuring vcluster activator...', options)
-      await ensureActivator()
+      await ensureActivator(await resolveProxyImageTag(testEnv.proxyImage))
 
       emit('Creating virtual cluster...', options)
       await ensureVclusterImages()

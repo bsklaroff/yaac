@@ -7,7 +7,7 @@ vi.mock('#platform/k8s/pods', () => ({
   listSessionJobs: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('#features/cluster/vcluster', () => ({
+vi.mock('#features/cluster', () => ({
   VCLUSTER_ORPHAN_GRACE_MS: 15 * 60 * 1000,
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
   removeSessionVcluster: vi.fn().mockResolvedValue(undefined),
@@ -16,9 +16,6 @@ vi.mock('#features/cluster/vcluster', () => ({
     'yaac.vcluster-session-id': sessionId,
   })),
   waitForVclusterKubeconfig: vi.fn().mockResolvedValue('kubeconfig-bytes\n'),
-}))
-
-vi.mock('#features/cluster/activator', () => ({
   getActivatorPodIp: vi.fn().mockResolvedValue('10.244.0.9'),
   vclusterSleepSliceName: vi.fn((name: string) => `yaac-sleep-${name}`),
   buildVclusterSleepEndpointSliceManifest: vi.fn(
@@ -42,11 +39,11 @@ import {
 } from '#features/sessions/reconcile/vcluster-reconcile'
 import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
 import {
+  getActivatorPodIp,
   listVclusterNamespaces,
   removeSessionVcluster,
   waitForVclusterKubeconfig,
-} from '#features/cluster/vcluster'
-import { getActivatorPodIp } from '#features/cluster/activator'
+} from '#features/cluster'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import { removeProjectRegistry } from '#features/cluster/project-registry'
+import { removeProjectRegistry } from '#features/cluster'
 import { projectDir } from '@yaac/shared/project-paths'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { deleteProjectSessions } from '#features/sessions/store'

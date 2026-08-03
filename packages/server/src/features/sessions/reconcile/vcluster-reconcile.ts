@@ -4,17 +4,15 @@ import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import {
+  buildVclusterSleepEndpointSliceManifest,
+  getActivatorPodIp,
   listVclusterNamespaces,
   removeSessionVcluster,
   VCLUSTER_ORPHAN_GRACE_MS,
   vclusterLabels,
-  waitForVclusterKubeconfig,
-} from '#features/cluster/vcluster'
-import {
-  buildVclusterSleepEndpointSliceManifest,
-  getActivatorPodIp,
   vclusterSleepSliceName,
-} from '#features/cluster/activator'
+  waitForVclusterKubeconfig,
+} from '#features/cluster'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 
 /**

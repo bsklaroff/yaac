@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import YAML from 'yaml'
 
@@ -9,12 +8,6 @@ interface K8sObj {
 const parseDocs = (s: string): K8sObj[] =>
   s.split(/^---$/m).map((d) => YAML.parse(d) as K8sObj)
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  resetClusterCidrCache: vi.fn(),
-}))
-
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -24,7 +17,7 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('#features/cluster/registry', () => ({
+vi.mock('#platform/container/registry', () => ({
   registryHost: vi.fn(() => 'localhost:5001'),
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
@@ -36,40 +29,35 @@ vi.mock('#platform/container/runtime', () => ({
 }))
 
 import {
+  buildVclusterCleanupShellCommand,
+  ensureSessionVcluster,
+  ensureVclusterImages,
+  getVclusterStatus,
+  listVclusterConfigMaps,
+  listVclusterNamespaces,
+  listVclusterPods,
+  listVclusterServices,
+  mapVclusterConfigMapObject,
+  mapVclusterNamespaceObject,
+  mapVclusterPodObject,
+  mapVclusterServiceObject,
+  removeSessionVcluster,
+  sleepVcluster,
+  vapAvailable,
+  vclusterLabels,
+  vclusterName,
+  vclusterNamespaceSelector,
+  waitForVclusterKubeconfig,
+} from '#features/cluster'
+// Setup values (label keys, the guard policy's name) and the cluster-CIDR
+// cache reset — not units under test.
+import {
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
   LABEL_VCLUSTER_SESSION_ID,
   VCLUSTER_POD_GUARD_POLICY,
-  addYaacLabels,
-  buildVclusterCleanupShellCommand,
-  buildVclusterNamespaceManifest,
-  buildVclusterPodGuardBindingManifest,
-  buildVclusterPodGuardPolicyManifest,
-  buildVclusterSessionNetworkPolicyManifest,
-  ensureHelm,
-  ensureSessionVcluster,
-  ensureVclusterImages,
-  getVclusterStatus,
-  listVclusterNamespaces,
-  listVclusterPods,
-  listVclusterServices,
-  sleepVcluster,
-  stripControlPlaneReplicas,
-  vclusterLabels,
-  vclusterPhase,
-  mapVclusterNamespaceObject,
-  mapVclusterPodObject,
-  mapVclusterServiceObject,
-  renderVclusterManifests,
-  vclusterCleanupKubectlArgs,
-  vclusterKubeconfigSecretName,
-  vclusterName,
-  vclusterNamespace,
-  vclusterNamespaceSelector,
-  waitForVclusterKubeconfig,
-  waitForVclusterNamespaceGone,
 } from '#features/cluster/vcluster'
-import { buildVclusterControlPlaneNpManifest } from '#features/cluster/policy-manifests'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
 import {
   execFileAsync,
@@ -77,7 +65,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
 import { imageExists } from '#platform/container/runtime'
 
 const mockApply = vi.mocked(kubectlApply)
@@ -87,6 +75,25 @@ const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockImageExists = vi.mocked(imageExists)
+
+const NODE_IP = '10.89.0.7'
+
+/**
+ * The node/apiserver reads cluster-cidrs resolves the policy ipBlocks from.
+ * Every `mockGetJson.mockImplementation` below defers to this first so the
+ * real probes answer rather than a stubbed sibling.
+ */
+function cidrRead(args: string[]): Promise<unknown> | null {
+  if (args[1] === 'nodes') {
+    return Promise.resolve({
+      items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }],
+    })
+  }
+  if (args[1] === 'endpoints') {
+    return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+  }
+  return null
+}
 
 const SID = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9'
 const VC = 'yvc-0a1b2c3d'
@@ -107,138 +114,61 @@ beforeEach(() => {
   mockPush.mockImplementation((tag: string) => Promise.resolve(`localhost:5001/${tag}`))
   mockImageExists.mockReset()
   mockImageExists.mockResolvedValue(false)
+  resetClusterCidrCache()
 })
 
-describe('names', () => {
+interface NetPol {
+  metadata: { name: string; namespace: string }
+  spec: {
+    podSelector: { matchLabels: Record<string, string> }
+    policyTypes: string[]
+    egress: Array<{
+      to: Array<{
+        namespaceSelector?: { matchLabels: Record<string, string> }
+        podSelector: { matchLabels: Record<string, string> }
+      }>
+      ports?: Array<{ protocol: string; port: number }>
+    }>
+  }
+}
+
+interface Applied {
+  kind: string
+  metadata: { name: string; namespace?: string; labels?: Record<string, string> }
+  spec?: Record<string, unknown>
+}
+const appliedAll = (kind: string): Applied[] =>
+  mockApply.mock.calls.map((c) => c[0] as Applied).filter((m) => m.kind === kind)
+const applied = (kind: string): Applied | undefined => appliedAll(kind)[0]
+
+describe('vclusterName', () => {
   it('derives yvc-<sid8> from the session UUID', () => {
     expect(vclusterName(SID)).toBe(VC)
     expect(vclusterName('ABC-DEF-123456789')).toBe('yvc-abcdef12')
   })
+})
 
-  it('names the syncer-written kubeconfig secret vc-<name>', () => {
-    expect(vclusterKubeconfigSecretName(VC)).toBe(`vc-${VC}`)
+describe('vclusterLabels', () => {
+  it('carries the ownership + install-scope labels', () => {
+    expect(vclusterLabels(VC, SID)).toEqual({
+      [LABEL_VCLUSTER]: VC,
+      [LABEL_VCLUSTER_SESSION_ID]: SID,
+      [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
+    })
   })
 })
 
-describe('addYaacLabels', () => {
-  const DOCS = [
-    'apiVersion: v1\nkind: Service\nmetadata:\n  name: yvc-x\n  labels:\n    app: vcluster\nspec:\n  type: ClusterIP\n',
-    'apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: vc-yvc-x\nrules: []\n',
-  ].join('---\n')
+describe('vapAvailable', () => {
+  it('is true when the API answers and false when it is absent', async () => {
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    await expect(vapAvailable()).resolves.toBe(true)
+    expect(mockRetry).toHaveBeenCalledWith(
+      ['get', 'validatingadmissionpolicies', '-o', 'name'],
+      expect.objectContaining({ maxAttempts: 1 }),
+    )
 
-  it('adds the yaac labels to every object, merging with existing labels', () => {
-    const out = addYaacLabels(DOCS, { [LABEL_VCLUSTER]: VC, [LABEL_VCLUSTER_SESSION_ID]: SID })
-    const objs = parseDocs(out)
-    expect(objs.map((o) => o.kind)).toEqual(['Service', 'ClusterRole'])
-    for (const o of objs) {
-      expect(o.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-      expect(o.metadata.labels[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
-    }
-    // Existing chart labels survive (the Service already had app: vcluster);
-    // an object with no labels block gets one created.
-    expect(objs[0].metadata.labels.app).toBe('vcluster')
-    expect(objs[1].metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-  })
-
-  it('skips empty docs and non-Kubernetes scalars', () => {
-    expect(addYaacLabels('', { x: 'y' })).toBe('')
-    expect(addYaacLabels('---\n# just a comment\n', { x: 'y' })).toBe('')
-  })
-
-  it('keeps a long base64 scalar on one line (lineWidth 0)', () => {
-    const blob = 'A'.repeat(400)
-    const doc = `apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\ndata:\n  config.yaml: ${blob}\n`
-    const out = addYaacLabels(doc, { [LABEL_VCLUSTER]: VC })
-    expect(out).toContain(blob) // unbroken — no folding mid-token
-  })
-})
-
-describe('renderVclusterManifests', () => {
-  beforeEach(() => {
-    // ensureHelm: helm on PATH; helm template: a tiny three-object stream
-    // (the StatefulSet standing in for the control-plane pod template).
-    mockExec.mockReset()
-    mockExec.mockImplementation(((file: string, args: string[]) => {
-      if (file === 'helm' && args[0] === 'version') {
-        return Promise.resolve({ stdout: 'v3.16.4', stderr: '' })
-      }
-      if (file === 'helm' && args[0] === 'template') {
-        return Promise.resolve({
-          stdout:
-            'apiVersion: v1\nkind: Service\nmetadata:\n  name: '
-            + `${VC}\n  namespace: test-ns\nspec: {}\n`
-            + '---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: '
-            + `${VC}\nspec:\n  replicas: 1\n`
-            + '---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: '
-            + `${VC}\nspec:\n  template:\n    spec:\n      containers: []\n`,
-          stderr: '',
-        })
-      }
-      return Promise.resolve({ stdout: '', stderr: '' })
-    }) as never)
-  })
-
-  it('shells out to helm template with the per-session --set overrides', async () => {
-    await renderVclusterManifests({ sessionId: SID })
-    const tmpl = mockExec.mock.calls.find((c) => c[0] === 'helm' && (c[1] as string[])[0] === 'template')
-    expect(tmpl).toBeDefined()
-    const args = (tmpl![1] as string[]).join(' ')
-    const apiHost = `${VC}.${vclusterNamespace(VC)}.svc.cluster.local`
-    expect(args).toContain(`template ${VC}`)
-    expect(args).toContain('vcluster-')
-    expect(args).toContain('--namespace test-ns')
-    expect(args).toContain('controlPlane.advanced.defaultImageRegistry=localhost:5001')
-    // No pinned clusterIP: the API is reached by service-DNS name (resolved
-    // via the proxy split-horizon DNS), so the SAN + server use that name.
-    expect(args).not.toContain('controlPlane.service.spec.clusterIP')
-    expect(args).toContain(`controlPlane.proxy.extraSANs[0]=${apiHost}`)
-    expect(args).toContain(`exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`)
-  })
-
-  it('stamps the yaac ownership labels (but never yaac.session-id) on the rendered objects', async () => {
-    const out = await renderVclusterManifests({ sessionId: SID })
-    const objs = parseDocs(out)
-    expect(objs.map((o) => o.kind)).toEqual(['Service', 'Deployment', 'StatefulSet'])
-    for (const o of objs) {
-      expect(o.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-      expect(o.metadata.labels[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
-      expect(o.metadata.labels[LABEL_VCLUSTER_DATA_DIR_HASH]).toBe('ddh16')
-    }
-    // The ownership labels carry the session id, but the synced-pod
-    // egress label (yaac.session-id) is never stamped here.
-    expect(out).not.toContain('yaac.session-id:')
-    // The control-plane replicas are stripped so yaac owns the count
-    // out-of-band (scale-to-zero survives re-applies).
-    const dep = parseDocs(out).find((o) => o.kind === 'Deployment') as unknown as {
-      spec?: { replicas?: number }
-    }
-    expect(dep.spec?.replicas).toBeUndefined()
-  })
-
-  it('renders with the vendored values file: synced pods on gvisor, control plane on runc', async () => {
-    await renderVclusterManifests({ sessionId: SID })
-    const tmpl = mockExec.mock.calls.find((c) => c[0] === 'helm' && (c[1] as string[])[0] === 'template')
-    const args = tmpl![1] as string[]
-    const valuesPath = args[args.indexOf('--values') + 1]
-    // Runtime tiers ride values.yaml, not a post-render stamp. Pin both
-    // knobs here so a values edit can't silently unsandbox synced tenant
-    // pods (they must stay gvisor — the VAP guard keys on it) or put the
-    // control plane back on the sentry (trusted infra runs on runc; an
-    // apiserver+datastore sentry starves the node — see gvisor.ts).
-    const values = YAML.parse(readFileSync(valuesPath, 'utf8')) as {
-      controlPlane?: { statefulSet?: { runtimeClassName?: string } }
-      sync?: { toHost?: { pods?: { runtimeClassName?: string } } }
-    }
-    expect(values.controlPlane?.statefulSet?.runtimeClassName).toBeUndefined()
-    expect(values.sync?.toHost?.pods?.runtimeClassName).toBe('gvisor')
-  })
-})
-
-describe('ensureHelm', () => {
-  it('uses helm from PATH when present', async () => {
-    mockExec.mockReset()
-    mockExec.mockResolvedValue({ stdout: 'v3.16.4', stderr: '' })
-    await expect(ensureHelm()).resolves.toBe('helm')
+    mockRetry.mockRejectedValue(new Error('the server doesn\'t have a resource type'))
+    await expect(vapAvailable()).resolves.toBe(false)
   })
 })
 
@@ -270,177 +200,12 @@ describe('ensureVclusterImages', () => {
   })
 })
 
-describe('pod guard (VAP)', () => {
-  it('builds a per-session Fail-closed policy with the hostPath prefix inlined', () => {
-    const m = buildVclusterPodGuardPolicyManifest(VC, SID, '/data/sessions/x/nested-yaac') as {
-      metadata: { name: string; labels: Record<string, string> }
-      spec: {
-        failurePolicy: string
-        paramKind?: unknown
-        matchConstraints: { resourceRules: Array<{ resources: string[]; operations: string[] }> }
-        validations: Array<{ expression: string; message: string }>
-      }
-    }
-    expect(m.metadata.name).toBe(`${VCLUSTER_POD_GUARD_POLICY}-${VC}`)
-    expect(m.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-    expect(m.spec.failurePolicy).toBe('Fail')
-    // Per-session policy with the prefix as a CEL literal — NO paramKind:
-    // VAP paramRef resolution is broken on current kind/k8s 1.36.
-    expect(m.spec.paramKind).toBeUndefined()
-    expect(m.spec.matchConstraints.resourceRules[0]).toMatchObject({
-      resources: ['pods'],
-      operations: ['CREATE', 'UPDATE'],
-    })
-    const exprs = m.spec.validations.map((v) => v.expression).join('\n')
-    expect(exprs).toContain("startsWith('/data/sessions/x/nested-yaac')")
-    expect(exprs).toContain('hostNetwork')
-    expect(exprs).toContain('hostPort')
-    expect(exprs).toContain('privileged')
-    // The caps rule admits a grant behind the gvisor sentry tier
-    // (variables.sandboxed), across containers + initContainers
-    // (variables.cs) so a cap grant can't ride in on an init container.
-    expect(exprs).toContain('variables.sandboxed ||')
-    expect(exprs).toContain('capabilities')
-    expect(exprs).toContain('allowPrivilegeEscalation')
-    expect(exprs).toContain("seccompProfile.type == 'Unconfined'")
-    // The sandboxed signal is the gvisor / gvisor-nested runtime tier.
-    const sandboxedVar = (m.spec as unknown as {
-      variables: Array<{ name: string; expression: string }>
-    }).variables.find((v) => v.name === 'sandboxed')
-    expect(sandboxedVar?.expression).toContain("runtimeClassName == 'gvisor'")
-    expect(sandboxedVar?.expression).toContain("runtimeClassName == 'gvisor-nested'")
-  })
-
-  it('escapes the prefix for the CEL string literal', () => {
-    const m = buildVclusterPodGuardPolicyManifest(VC, SID, "/we'ird/pa\\th") as {
-      spec: { validations: Array<{ expression: string }> }
-    }
-    expect(m.spec.validations[0].expression).toContain("startsWith('/we\\'ird/pa\\\\th')")
-  })
-
-  it('binds per session via the syncer managed-by label', () => {
-    const b = buildVclusterPodGuardBindingManifest(VC, SID) as {
-      metadata: { name: string; labels: Record<string, string> }
-      spec: {
-        policyName: string
-        validationActions: string[]
-        paramRef?: unknown
-        matchResources: {
-          namespaceSelector: { matchLabels: Record<string, string> }
-          objectSelector: { matchLabels: Record<string, string> }
-        }
-      }
-    }
-    expect(b.metadata.name).toBe(`${VCLUSTER_POD_GUARD_POLICY}-${VC}`)
-    expect(b.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-    expect(b.spec.policyName).toBe(`${VCLUSTER_POD_GUARD_POLICY}-${VC}`)
-    expect(b.spec.validationActions).toEqual(['Deny'])
-    expect(b.spec.paramRef).toBeUndefined()
-    // Scoped to the vcluster's own host namespace, not the install ns.
-    expect(b.spec.matchResources.namespaceSelector.matchLabels)
-      .toEqual({ 'kubernetes.io/metadata.name': VCNS })
-    expect(b.spec.matchResources.objectSelector.matchLabels)
-      .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
-  })
-})
-
-interface NetPol {
-  metadata: { name: string; namespace: string }
-  spec: {
-    podSelector: { matchLabels: Record<string, string> }
-    policyTypes: string[]
-    egress: Array<{
-      to: Array<{
-        namespaceSelector?: { matchLabels: Record<string, string> }
-        podSelector: { matchLabels: Record<string, string> }
-      }>
-      ports?: Array<{ protocol: string; port: number }>
-    }>
-  }
-}
-
-describe('namespace + confinement policies', () => {
-  it('builds the dedicated per-session vcluster namespace, labeled for GC', () => {
-    expect(vclusterNamespace(VC)).toBe(VCNS)
-    const m = buildVclusterNamespaceManifest(VC, SID) as unknown as {
-      kind: string
-      metadata: { name: string; labels: Record<string, string> }
-    }
-    expect(m.kind).toBe('Namespace')
-    expect(m.metadata.name).toBe(VCNS)
-    expect(m.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
-    expect(m.metadata.labels[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
-    expect(m.metadata.labels[LABEL_VCLUSTER_DATA_DIR_HASH]).toBe('ddh16')
-  })
-
-  it('session policy lives in the install ns and reaches the vcluster ns cross-namespace', () => {
-    const m = buildVclusterSessionNetworkPolicyManifest(VC, SID) as unknown as NetPol
-    expect(m.metadata.name).toBe('yaac-vc-0a1b2c3d')
-    expect(m.metadata.namespace).toBe('test-ns') // selects the session pod
-    expect(m.spec.podSelector.matchLabels).toEqual({ 'yaac.session-id': SID })
-    expect(m.spec.policyTypes).toEqual(['Egress'])
-    // The API/synced pods are in the vcluster namespace, so the peers are
-    // cross-namespace (namespaceSelector + podSelector).
-    expect(m.spec.egress[0].to[0].namespaceSelector?.matchLabels)
-      .toEqual({ 'kubernetes.io/metadata.name': VCNS })
-    expect(m.spec.egress[0].to[0].podSelector.matchLabels)
-      .toEqual({ app: 'vcluster', release: VC })
-    expect(m.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
-    expect(m.spec.egress[1].to[0].namespaceSelector?.matchLabels)
-      .toEqual({ 'kubernetes.io/metadata.name': VCNS })
-    expect(m.spec.egress[1].to[0].podSelector.matchLabels)
-      .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
-    // The activator hole: while asleep the API ClusterIP DNATs to the
-    // activator pod (same install namespace), and NetworkPolicy matches
-    // the post-DNAT destination — without this rule the wake-triggering
-    // first touch would be dropped.
-    expect(m.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
-    expect(m.spec.egress[2].to[0].podSelector.matchLabels)
-      .toEqual({ app: 'yaac-vc-activator' })
-    expect(m.spec.egress[2].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
-  })
-
-  it('locks the control plane to the apiserver/kube-dns/own pods, in the vcluster ns', () => {
-    const m = buildVclusterControlPlaneNpManifest(
-      VCNS, VC, { owner: 'x' }, ['10.89.0.7/32'],
-    ) as {
-      apiVersion: string
-      kind: string
-      metadata: { namespace: string; labels: Record<string, string> }
-      spec: {
-        podSelector: {
-          matchLabels: Record<string, string>
-          matchExpressions: Array<{ key: string; operator: string }>
-        }
-        policyTypes: string[]
-        egress: Array<Record<string, unknown>>
-      }
-    }
-    expect(m.apiVersion).toBe('networking.k8s.io/v1')
-    expect(m.kind).toBe('NetworkPolicy')
-    expect(m.metadata.namespace).toBe(VCNS)
-    expect(m.spec.podSelector.matchLabels).toEqual({ app: 'vcluster', release: VC })
-    expect(m.spec.policyTypes).toEqual(['Egress'])
-    // managed-by DoesNotExist excludes synced pods unforgeably: a tenant could
-    // forge `app=vcluster, release=<vc>` (those labels propagate to the host
-    // pod) and otherwise inherit this policy's apiserver egress.
-    expect(m.spec.podSelector.matchExpressions).toEqual([
-      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
-    ])
-    // The apiserver as an ipBlock: NetworkPolicy matches the post-DNAT
-    // destination, so naming the Service VIP would never match.
-    expect(m.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
-    expect(JSON.stringify(m.spec.egress)).toContain('kube-dns')
-    expect(JSON.stringify(m.spec.egress)).toContain(`"${LABEL_VCLUSTER_MANAGED_BY}":"${VC}"`)
-  })
-})
-
 describe('ensureSessionVcluster', () => {
   beforeEach(() => {
     // get service → absent; get deployments (cap check) → none.
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
-      return Promise.resolve(null)
+      return cidrRead(args)
+        ?? (args[1] === 'deployments' ? Promise.resolve({ items: [] }) : Promise.resolve(null))
     })
     // helm (ensureHelm version probe + template render) — a one-object
     // stream so renderVclusterManifests produces real apply input.
@@ -495,6 +260,8 @@ describe('ensureSessionVcluster', () => {
     // Applies seen at the moment of each namespace probe — must stay 0.
     const appliesAtProbe: number[] = []
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
       if (args[1] === 'namespace' && args[2] === VCNS) {
         appliesAtProbe.push(mockApply.mock.calls.length)
         return Promise.resolve(appliesAtProbe.length === 1
@@ -539,8 +306,8 @@ describe('ensureSessionVcluster', () => {
 
   it('never deletes the API Service (ClusterIP is allocator-assigned, no pin)', async () => {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
-      return Promise.resolve(null)
+      return cidrRead(args)
+        ?? (args[1] === 'deployments' ? Promise.resolve({ items: [] }) : Promise.resolve(null))
     })
     await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
     expect(mockRetry).not.toHaveBeenCalledWith(
@@ -555,6 +322,8 @@ describe('ensureSessionVcluster', () => {
     // A pre-existing Deployment means re-ensure over a live vcluster —
     // the caller must NOT re-sleep it (its state.db is real).
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
       if (args[1] === 'deployment' && args[2] === VC) {
         return Promise.resolve({ metadata: { name: VC } })
       }
@@ -564,28 +333,212 @@ describe('ensureSessionVcluster', () => {
     await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
       .resolves.toEqual({ freshlyCreated: false })
   })
-})
 
-describe('stripControlPlaneReplicas', () => {
-  it('removes spec.replicas from the control-plane Deployment only', () => {
-    const yaml = [
-      `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${VC}\nspec:\n  replicas: 1\n  selector: {}\n`,
-      'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: other\nspec:\n  replicas: 2\n',
-      `apiVersion: v1\nkind: Service\nmetadata:\n  name: ${VC}\nspec: {}\n`,
-    ].join('---\n')
-    const out = stripControlPlaneReplicas(yaml, VC)
-    const objs = out.split(/^---$/m).map((d) => YAML.parse(d) as {
+  it('guards synced pods with a Fail-closed per-session policy naming the hostPath prefix', async () => {
+    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: "/we'ird/pa\\th" })
+
+    const vap = applied('ValidatingAdmissionPolicy') as unknown as {
+      metadata: { name: string; labels: Record<string, string> }
+      spec: {
+        failurePolicy: string
+        paramKind?: unknown
+        matchConstraints: { resourceRules: Array<{ resources: string[]; operations: string[] }> }
+        validations: Array<{ expression: string }>
+        variables: Array<{ name: string; expression: string }>
+      }
+    }
+    expect(vap.metadata.name).toBe(`${VCLUSTER_POD_GUARD_POLICY}-${VC}`)
+    expect(vap.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
+    expect(vap.spec.failurePolicy).toBe('Fail')
+    // Per-session policy with the prefix as a CEL literal — NO paramKind:
+    // VAP paramRef resolution is broken on current kind/k8s 1.36.
+    expect(vap.spec.paramKind).toBeUndefined()
+    expect(vap.spec.matchConstraints.resourceRules[0]).toMatchObject({
+      resources: ['pods'], operations: ['CREATE', 'UPDATE'],
+    })
+    const exprs = vap.spec.validations.map((v) => v.expression).join('\n')
+    // The prefix is escaped for the CEL string literal.
+    expect(exprs).toContain("startsWith('/we\\'ird/pa\\\\th')")
+    expect(exprs).toContain('hostNetwork')
+    expect(exprs).toContain('hostPort')
+    expect(exprs).toContain('privileged')
+    // The caps rule admits a grant behind the gvisor sentry tier
+    // (variables.sandboxed), across containers + initContainers so a cap
+    // grant cannot ride in on an init container.
+    expect(exprs).toContain('variables.sandboxed ||')
+    expect(exprs).toContain('allowPrivilegeEscalation')
+    expect(exprs).toContain("seccompProfile.type == 'Unconfined'")
+    const sandboxed = vap.spec.variables.find((v) => v.name === 'sandboxed')
+    expect(sandboxed?.expression).toContain("runtimeClassName == 'gvisor'")
+    expect(sandboxed?.expression).toContain("runtimeClassName == 'gvisor-nested'")
+
+    const binding = applied('ValidatingAdmissionPolicyBinding') as unknown as {
+      metadata: { name: string }
+      spec: {
+        policyName: string
+        validationActions: string[]
+        paramRef?: unknown
+        matchResources: {
+          namespaceSelector: { matchLabels: Record<string, string> }
+          objectSelector: { matchLabels: Record<string, string> }
+        }
+      }
+    }
+    expect(binding.spec.policyName).toBe(`${VCLUSTER_POD_GUARD_POLICY}-${VC}`)
+    expect(binding.spec.validationActions).toEqual(['Deny'])
+    expect(binding.spec.paramRef).toBeUndefined()
+    // Scoped to the vcluster's own host namespace, not the install ns, and
+    // bound per session through the unforgeable syncer managed-by label.
+    expect(binding.spec.matchResources.namespaceSelector.matchLabels)
+      .toEqual({ 'kubernetes.io/metadata.name': VCNS })
+    expect(binding.spec.matchResources.objectSelector.matchLabels)
+      .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
+  })
+
+  it('confines it: labeled namespace, a session egress hole, and a control-plane lock', async () => {
+    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+
+    // The dedicated per-session namespace, labeled for GC and install scope.
+    const ns = applied('Namespace')!
+    expect(ns.metadata.name).toBe(VCNS)
+    expect(ns.metadata.labels?.[LABEL_VCLUSTER]).toBe(VC)
+    expect(ns.metadata.labels?.[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
+    expect(ns.metadata.labels?.[LABEL_VCLUSTER_DATA_DIR_HASH]).toBe('ddh16')
+
+    const nps = appliedAll('NetworkPolicy')
+    // The session policy lives in the INSTALL namespace (it selects the
+    // session pod) and reaches the vcluster namespace cross-namespace.
+    const sessionNp = nps.find((m) => m.metadata.namespace === 'test-ns')! as unknown as NetPol
+    expect(sessionNp.spec.podSelector.matchLabels).toEqual({ 'yaac.session-id': SID })
+    expect(sessionNp.spec.policyTypes).toEqual(['Egress'])
+    expect(sessionNp.spec.egress[0].to[0].namespaceSelector?.matchLabels)
+      .toEqual({ 'kubernetes.io/metadata.name': VCNS })
+    expect(sessionNp.spec.egress[0].to[0].podSelector.matchLabels)
+      .toEqual({ app: 'vcluster', release: VC })
+    expect(sessionNp.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
+    expect(sessionNp.spec.egress[1].to[0].podSelector.matchLabels)
+      .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
+    // The activator hole: while asleep the API ClusterIP DNATs to the
+    // activator pod (same install namespace), and NetworkPolicy matches the
+    // post-DNAT destination — without this rule the wake-triggering first
+    // touch would be dropped.
+    expect(sessionNp.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
+    expect(sessionNp.spec.egress[2].to[0].podSelector.matchLabels)
+      .toEqual({ app: 'yaac-vc-activator' })
+
+    // The control-plane lock, in the vcluster namespace.
+    // The control-plane lock is the one selecting the chart's own pods by
+    // release; the egress floor next to it selects on managed-by instead.
+    const cp = nps.find((m) => {
+      const sel = (m.spec as { podSelector?: { matchLabels?: Record<string, string> } }).podSelector
+      return m.metadata.namespace === VCNS && sel?.matchLabels?.release === VC
+    }) as unknown as {
+      spec: {
+        podSelector: {
+          matchLabels: Record<string, string>
+          matchExpressions: Array<{ key: string; operator: string }>
+        }
+        policyTypes: string[]
+        egress: Array<Record<string, unknown>>
+      }
+    }
+    expect(cp.spec.podSelector.matchLabels).toEqual({ app: 'vcluster', release: VC })
+    expect(cp.spec.policyTypes).toEqual(['Egress'])
+    // managed-by DoesNotExist excludes synced pods unforgeably: a tenant
+    // could forge `app=vcluster, release=<vc>` (those labels propagate to
+    // the host pod) and otherwise inherit this policy's apiserver egress.
+    expect(cp.spec.podSelector.matchExpressions).toEqual([
+      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
+    ])
+    // The apiserver as an ipBlock, resolved through the real cluster-cidrs
+    // probe: NetworkPolicy matches the post-DNAT destination, so naming the
+    // Service VIP would never match.
+    expect(cp.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: `${NODE_IP}/32` } }] })
+    expect(JSON.stringify(cp.spec.egress)).toContain('kube-dns')
+  })
+
+  it('applies the chart with yaac ownership labels and no control-plane replicas', async () => {
+    mockExec.mockImplementation(((file: string, args: string[]) => {
+      if (file === 'helm' && args[0] === 'template') {
+        return Promise.resolve({
+          stdout: [
+            `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${VC}\n  labels:\n    app: vcluster\nspec:\n  replicas: 1\n  selector: {}\n`,
+            'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: other\nspec:\n  replicas: 2\n',
+          ].join('---\n'),
+          stderr: '',
+        })
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as never)
+
+    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+
+    const applyCall = mockRetry.mock.calls.find((c) => c[0][0] === 'apply')!
+    const docs = parseDocs((applyCall[1] as { input: string }).input)
+    // Every rendered object carries the ownership labels, merged with the
+    // chart's own — that is what the cluster-scoped cleanup selects on.
+    for (const d of docs) {
+      expect(d.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
+      expect(d.metadata.labels[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
+    }
+    expect(docs[0].metadata.labels.app).toBe('vcluster')
+    // The control-plane Deployment's replicas are stripped so the chart
+    // never fights the sleep scale-down; other Deployments keep theirs.
+    const objs = docs as unknown as Array<{
       kind: string
       metadata: { name: string }
-      spec?: { replicas?: number }
-    })
-    const cp = objs.find((o) => o.kind === 'Deployment' && o.metadata.name === VC) as {
       spec?: { replicas?: number; selector?: unknown }
-    } | undefined
+    }>
+    const cp = objs.find((o) => o.kind === 'Deployment' && o.metadata.name === VC)
     expect(cp?.spec?.replicas).toBeUndefined()
     expect(cp?.spec?.selector).toBeDefined()
-    const other = objs.find((o) => o.metadata.name === 'other')
-    expect(other?.spec?.replicas).toBe(2)
+    expect(objs.find((o) => o.metadata.name === 'other')?.spec?.replicas).toBe(2)
+  })
+
+  it('proceeds on an absent namespace and on a live one, without re-polling', async () => {
+    const probes = (): number =>
+      mockGetJson.mock.calls.filter((c) => (c[0])[1] === 'namespace').length
+
+    // Absent: one probe, straight through.
+    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    expect(probes()).toBe(1)
+
+    // Present without a deletionTimestamp — the ensure-over-existing path;
+    // the applies must proceed against the live vcluster.
+    mockApply.mockClear()
+    mockGetJson.mockClear()
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
+      if (args[1] === 'namespace') return Promise.resolve({ metadata: {} })
+      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
+      return Promise.resolve(null)
+    })
+    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    expect(probes()).toBe(1)
+    expect(mockApply).toHaveBeenCalled()
+  })
+
+  it('gives up on a namespace stuck Terminating with an actionable error', async () => {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
+      if (args[1] === 'namespace') {
+        return Promise.resolve({ metadata: { deletionTimestamp: '2026-07-14T09:27:50Z' } })
+      }
+      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
+      return Promise.resolve(null)
+    })
+    vi.useFakeTimers()
+    try {
+      const settled = expect(
+        ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }),
+      ).rejects.toThrow(new RegExp(`still Terminating.*kubectl get namespace ${VCNS}`))
+      await vi.advanceTimersByTimeAsync(11 * 60 * 1000)
+      await settled
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -668,63 +621,50 @@ describe('sleepVcluster', () => {
   })
 })
 
-describe('vclusterPhase', () => {
-  it('maps replicas/readiness to asleep | waking | ready', () => {
-    expect(vclusterPhase({ replicas: 0 }, 0)).toBe('asleep')
-    expect(vclusterPhase({ replicas: 1 }, 0)).toBe('waking')
-    expect(vclusterPhase({ replicas: 1 }, 1)).toBe('ready')
+describe('removeSessionVcluster', () => {
+  it('deletes the namespace, the cluster-scoped leftovers, and the session policy', async () => {
+    await removeSessionVcluster(VC)
+
+    const argvs = mockRetry.mock.calls.map((c) => c[0])
+    expect(argvs).toHaveLength(3)
+    // 1: the whole vcluster namespace (sweeps control plane, synced pods,
+    // synced-pod/control-plane policies, RBAC, kubeconfig secret).
+    expect(argvs[0]).toEqual([
+      'delete', 'namespace', VCNS, '--ignore-not-found', '--wait=false',
+    ])
+    // 2: cluster-scoped objects by ownership label (no -n).
+    expect(argvs[1].join(' ')).toContain(`${LABEL_VCLUSTER}=${VC}`)
+    expect(argvs[1].join(' ')).toContain('validatingadmissionpolicybindings')
+    expect(argvs[1]).not.toContain('-n')
+    // 3: the session NetworkPolicy in the install namespace (it selects the
+    // session pod, which stays in the install ns).
+    expect(argvs[2]).toEqual([
+      'delete', 'networkpolicies', '-l', `${LABEL_VCLUSTER}=${VC}`,
+      '-n', 'test-ns', '--ignore-not-found', '--wait=false',
+    ])
+  })
+
+  it('logs and continues when one delete fails — teardown is best-effort', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockRetry.mockRejectedValueOnce(new Error('apiserver down'))
+    await expect(removeSessionVcluster(VC)).resolves.toBeUndefined()
+    // The remaining two still ran.
+    expect(mockRetry).toHaveBeenCalledTimes(3)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('apiserver down'))
+    warn.mockRestore()
   })
 })
 
-describe('vclusterLabels', () => {
-  it('carries the ownership + install-scope labels', () => {
-    expect(vclusterLabels(VC, SID)).toEqual({
-      [LABEL_VCLUSTER]: VC,
-      [LABEL_VCLUSTER_SESSION_ID]: SID,
-      [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
-    })
-  })
-})
-
-describe('waitForVclusterNamespaceGone', () => {
-  const TERMINATING = {
-    metadata: { deletionTimestamp: '2026-07-14T09:27:50Z' },
-  }
-
-  it('returns immediately when the namespace is absent', async () => {
-    mockGetJson.mockResolvedValue(null)
-    const onWaiting = vi.fn()
-    await waitForVclusterNamespaceGone(VC, { onWaiting })
-    expect(mockGetJson).toHaveBeenCalledTimes(1)
-    expect(mockGetJson).toHaveBeenCalledWith(['get', 'namespace', VCNS])
-    expect(onWaiting).not.toHaveBeenCalled()
-  })
-
-  it('returns immediately for a live (non-terminating) namespace', async () => {
-    // Present without a deletionTimestamp → the ensure-over-existing case;
-    // the caller's applies must proceed against the live vcluster.
-    mockGetJson.mockResolvedValue({ metadata: {} })
-    const onWaiting = vi.fn()
-    await waitForVclusterNamespaceGone(VC, { onWaiting })
-    expect(mockGetJson).toHaveBeenCalledTimes(1)
-    expect(onWaiting).not.toHaveBeenCalled()
-  })
-
-  it('polls a Terminating namespace until it is gone, signalling the wait once', async () => {
-    mockGetJson
-      .mockResolvedValueOnce(TERMINATING)
-      .mockResolvedValueOnce(TERMINATING)
-      .mockResolvedValueOnce(null)
-    const onWaiting = vi.fn()
-    await waitForVclusterNamespaceGone(VC, { pollMs: 1, onWaiting })
-    expect(mockGetJson).toHaveBeenCalledTimes(3)
-    expect(onWaiting).toHaveBeenCalledTimes(1)
-  })
-
-  it('times out with an actionable error when termination is stuck', async () => {
-    mockGetJson.mockResolvedValue(TERMINATING)
-    await expect(waitForVclusterNamespaceGone(VC, { timeoutMs: -1, pollMs: 1 }))
-      .rejects.toThrow(new RegExp(`still Terminating.*kubectl get namespace ${VCNS}`))
+describe('buildVclusterCleanupShellCommand', () => {
+  it('renders the detached-script form with per-line error tolerance', () => {
+    // Same three steps as removeSessionVcluster, as one shell string: the
+    // session pod's own teardown runs it detached, where a failed line must
+    // not abort the rest.
+    const cmd = buildVclusterCleanupShellCommand(VC)
+    expect(cmd.split('; ')).toHaveLength(3)
+    expect(cmd).toContain('2>/dev/null || true')
+    expect(cmd).toContain(`delete namespace ${VCNS}`)
+    expect(cmd).toContain(`${LABEL_VCLUSTER}=${VC}`)
   })
 })
 
@@ -742,32 +682,47 @@ describe('waitForVclusterKubeconfig', () => {
   })
 })
 
-describe('cleanup', () => {
-  it('deletes the vcluster namespace, the cluster-scoped leftovers, and the session NetworkPolicy', () => {
-    const args = vclusterCleanupKubectlArgs(VC)
-    expect(args).toHaveLength(3)
-    // 1: the whole vcluster namespace (sweeps control plane, synced pods,
-    // synced-pods/control-plane policies, RBAC, kubeconfig secret).
-    expect(args[0]).toEqual([
-      'delete', 'namespace', VCNS, '--ignore-not-found', '--wait=false',
-    ])
-    // 2: cluster-scoped objects by ownership label (no -n).
-    expect(args[1].join(' ')).toContain(`${LABEL_VCLUSTER}=${VC}`)
-    expect(args[1].join(' ')).toContain('validatingadmissionpolicybindings')
-    expect(args[1]).not.toContain('-n')
-    // 3: the session NetworkPolicy in the install namespace (it selects
-    // the session pod, which stays in the install ns).
-    expect(args[2]).toEqual([
-      'delete', 'networkpolicies', '-l', `${LABEL_VCLUSTER}=${VC}`,
-      '-n', 'test-ns', '--ignore-not-found', '--wait=false',
-    ])
+describe('getVclusterStatus', () => {
+  it('returns null when the session has no vcluster', async () => {
+    mockGetJson.mockResolvedValue(null)
+    await expect(getVclusterStatus(SID)).resolves.toBeNull()
   })
 
-  it('renders the detached-script form with per-line error tolerance', () => {
-    const cmd = buildVclusterCleanupShellCommand(VC)
-    expect(cmd.split('; ')).toHaveLength(3)
-    expect(cmd).toContain('2>/dev/null || true')
-    expect(cmd).toContain(`delete namespace ${VCNS}`)
+  it('reports readiness + phase from the deployment', async () => {
+    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: { readyReplicas: 1 } })
+    await expect(getVclusterStatus(SID)).resolves.toEqual({
+      name: VC,
+      ready: true,
+      phase: 'ready',
+    })
+    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: {} })
+    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'waking' })
+    // Scaled to zero → asleep (the activator wakes it on first touch).
+    mockGetJson.mockResolvedValue({ spec: { replicas: 0 }, status: {} })
+    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'asleep' })
+  })
+  it('maps replicas/readiness to asleep | waking | ready', async () => {
+    const stage = (replicas: number, ready: number): void => {
+      mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+        if (args[1] === 'deployment') {
+          return Promise.resolve({ spec: { replicas }, status: { readyReplicas: ready } })
+        }
+        return Promise.resolve(null)
+      })
+    }
+    stage(0, 0)
+    expect((await getVclusterStatus(VC))?.phase).toBe('asleep')
+    stage(1, 0)
+    expect((await getVclusterStatus(VC))?.phase).toBe('waking')
+    stage(1, 1)
+    expect((await getVclusterStatus(VC))?.phase).toBe('ready')
+  })
+})
+
+describe('vclusterNamespaceSelector', () => {
+  it('requires the vcluster label and scopes by data-dir-hash', () => {
+    expect(vclusterNamespaceSelector())
+      .toBe(`${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=ddh16`)
   })
 })
 
@@ -797,98 +752,6 @@ describe('listVclusterNamespaces', () => {
     // Scoped to this install via the label selector.
     const call = mockGetJson.mock.calls.find((c) => (c[0])[1] === 'namespaces')
     expect(call?.[0].join(' ')).toContain(`${LABEL_VCLUSTER_DATA_DIR_HASH}=ddh16`)
-  })
-})
-
-describe('mapVclusterNamespaceObject', () => {
-  const rawNs = (): { metadata: { name: string; creationTimestamp: string | Date; labels: Record<string, string> } } => ({
-    metadata: {
-      name: VCNS,
-      creationTimestamp: '2026-06-15T00:00:00Z',
-      labels: {
-        [LABEL_VCLUSTER]: VC,
-        [LABEL_VCLUSTER_SESSION_ID]: SID,
-        [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
-      },
-    },
-  })
-
-  it('maps a labeled vcluster namespace to VclusterNamespaceInfo', () => {
-    expect(mapVclusterNamespaceObject(rawNs())).toEqual({
-      name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z',
-    })
-  })
-
-  it('normalizes a Date creationTimestamp (informer list-call class objects) to ISO', () => {
-    const raw = rawNs()
-    raw.metadata.creationTimestamp = new Date('2026-06-15T00:00:00Z')
-    expect(mapVclusterNamespaceObject(raw)?.creationTimestamp).toBe('2026-06-15T00:00:00.000Z')
-  })
-
-  it('returns null for a namespace without the vcluster ownership labels', () => {
-    expect(mapVclusterNamespaceObject({
-      metadata: { name: 'something-else', creationTimestamp: '', labels: {} },
-    })).toBeNull()
-    // Both ownership labels are required.
-    const raw = rawNs()
-    delete raw.metadata.labels[LABEL_VCLUSTER_SESSION_ID]
-    expect(mapVclusterNamespaceObject(raw)).toBeNull()
-  })
-
-  it('returns null for malformed objects instead of throwing', () => {
-    expect(mapVclusterNamespaceObject({})).toBeNull()
-    expect(mapVclusterNamespaceObject(null)).toBeNull()
-    expect(mapVclusterNamespaceObject({ metadata: {} })).toBeNull()
-  })
-})
-
-describe('vclusterNamespaceSelector', () => {
-  it('requires the vcluster label and scopes by data-dir-hash', () => {
-    expect(vclusterNamespaceSelector())
-      .toBe(`${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=ddh16`)
-  })
-})
-
-describe('mapVclusterPodObject', () => {
-  it('maps the pod name, IP and labels', () => {
-    expect(mapVclusterPodObject({
-      metadata: { name: 'p1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' } },
-      status: { podIP: '10.0.0.1' },
-    })).toEqual({
-      name: 'p1', podIP: '10.0.0.1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' },
-    })
-  })
-
-  it('omits podIP when the pod has none yet, and defaults labels', () => {
-    // Claim validation reads the syncer's managed-by label off these, so a
-    // label-less pod must map to an empty record rather than be dropped.
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: {} }))
-      .toEqual({ name: 'p1', labels: {} })
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' } }))
-      .toEqual({ name: 'p1', labels: {} })
-  })
-
-  it('returns null for malformed objects', () => {
-    expect(mapVclusterPodObject({})).toBeNull()
-    expect(mapVclusterPodObject({ metadata: {} })).toBeNull()
-  })
-})
-
-describe('mapVclusterServiceObject', () => {
-  it('maps the service name and labels', () => {
-    expect(mapVclusterServiceObject({
-      metadata: { name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } },
-    })).toEqual({ name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } })
-  })
-
-  it('defaults missing labels to an empty record', () => {
-    expect(mapVclusterServiceObject({ metadata: { name: 'svc' } }))
-      .toEqual({ name: 'svc', labels: {} })
-  })
-
-  it('returns null for malformed objects', () => {
-    expect(mapVclusterServiceObject({})).toBeNull()
-    expect(mapVclusterServiceObject({ metadata: {} })).toBeNull()
   })
 })
 
@@ -936,23 +799,113 @@ describe('listVclusterServices', () => {
   })
 })
 
-describe('getVclusterStatus', () => {
-  it('returns null when the session has no vcluster', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await expect(getVclusterStatus(SID)).resolves.toBeNull()
+describe('listVclusterConfigMaps', () => {
+  it('lists the vcluster namespace ConfigMaps, dropping unmappable ones', async () => {
+    mockGetJson.mockResolvedValue({
+      items: [
+        { metadata: { name: 'kube-root-ca.crt', namespace: VCNS }, data: { 'ca.crt': 'PEM' } },
+        { metadata: {} },
+      ],
+    })
+    const cms = await listVclusterConfigMaps(VCNS)
+    expect(mockGetJson).toHaveBeenCalledWith(['get', 'configmaps', '-n', VCNS])
+    expect(cms).toHaveLength(1)
+    expect(cms[0].name).toBe('kube-root-ca.crt')
+  })
+})
+
+describe('mapVclusterNamespaceObject', () => {
+  const rawNs = (): { metadata: { name: string; creationTimestamp: string | Date; labels: Record<string, string> } } => ({
+    metadata: {
+      name: VCNS,
+      creationTimestamp: '2026-06-15T00:00:00Z',
+      labels: {
+        [LABEL_VCLUSTER]: VC,
+        [LABEL_VCLUSTER_SESSION_ID]: SID,
+        [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
+      },
+    },
   })
 
-  it('reports readiness + phase from the deployment', async () => {
-    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: { readyReplicas: 1 } })
-    await expect(getVclusterStatus(SID)).resolves.toEqual({
-      name: VC,
-      ready: true,
-      phase: 'ready',
+  it('maps a labeled vcluster namespace to VclusterNamespaceInfo', () => {
+    expect(mapVclusterNamespaceObject(rawNs())).toEqual({
+      name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z',
     })
-    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: {} })
-    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'waking' })
-    // Scaled to zero → asleep (the activator wakes it on first touch).
-    mockGetJson.mockResolvedValue({ spec: { replicas: 0 }, status: {} })
-    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'asleep' })
+  })
+
+  it('normalizes a Date creationTimestamp (informer list-call class objects) to ISO', () => {
+    const raw = rawNs()
+    raw.metadata.creationTimestamp = new Date('2026-06-15T00:00:00Z')
+    expect(mapVclusterNamespaceObject(raw)?.creationTimestamp).toBe('2026-06-15T00:00:00.000Z')
+  })
+
+  it('returns null for a namespace without the vcluster ownership labels', () => {
+    expect(mapVclusterNamespaceObject({
+      metadata: { name: 'something-else', creationTimestamp: '', labels: {} },
+    })).toBeNull()
+    // Both ownership labels are required.
+    const raw = rawNs()
+    delete raw.metadata.labels[LABEL_VCLUSTER_SESSION_ID]
+    expect(mapVclusterNamespaceObject(raw)).toBeNull()
+  })
+
+  it('returns null for malformed objects instead of throwing', () => {
+    expect(mapVclusterNamespaceObject({})).toBeNull()
+    expect(mapVclusterNamespaceObject(null)).toBeNull()
+    expect(mapVclusterNamespaceObject({ metadata: {} })).toBeNull()
+  })
+})
+
+describe('mapVclusterPodObject', () => {
+  it('maps the pod name, IP and labels', () => {
+    expect(mapVclusterPodObject({
+      metadata: { name: 'p1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' } },
+      status: { podIP: '10.0.0.1' },
+    })).toEqual({
+      name: 'p1', podIP: '10.0.0.1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' },
+    })
+  })
+
+  it('omits podIP when the pod has none yet, and defaults labels', () => {
+    // Claim validation reads the syncer's managed-by label off these, so a
+    // label-less pod must map to an empty record rather than be dropped.
+    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: {} }))
+      .toEqual({ name: 'p1', labels: {} })
+    expect(mapVclusterPodObject({ metadata: { name: 'p1' } }))
+      .toEqual({ name: 'p1', labels: {} })
+  })
+
+  it('returns null for malformed objects', () => {
+    expect(mapVclusterPodObject({})).toBeNull()
+    expect(mapVclusterPodObject({ metadata: {} })).toBeNull()
+  })
+})
+
+describe('mapVclusterServiceObject', () => {
+  it('maps the service name and labels', () => {
+    expect(mapVclusterServiceObject({
+      metadata: { name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } },
+    })).toEqual({ name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } })
+  })
+
+  it('defaults missing labels to an empty record', () => {
+    expect(mapVclusterServiceObject({ metadata: { name: 'svc' } }))
+      .toEqual({ name: 'svc', labels: {} })
+  })
+
+  it('returns null for malformed objects', () => {
+    expect(mapVclusterServiceObject({})).toBeNull()
+    expect(mapVclusterServiceObject({ metadata: {} })).toBeNull()
+  })
+})
+
+describe('mapVclusterConfigMapObject', () => {
+  it('maps a ConfigMap to its name and data, and rejects a shapeless object', () => {
+    expect(mapVclusterConfigMapObject({
+      metadata: { name: 'claims', namespace: VCNS },
+      data: { claims: 'a,b' },
+    })).toEqual({ name: 'claims', data: { claims: 'a,b' } })
+    expect(mapVclusterConfigMapObject({})).toBeNull()
+    expect(mapVclusterConfigMapObject(null)).toBeNull()
   })
 })

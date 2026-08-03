@@ -29,7 +29,7 @@
  */
 import { buildImage, type ImageLayer } from './image-builder'
 import { imageExists, removeImage } from '#platform/container/runtime'
-import { registryHasTag } from '#features/cluster/registry'
+import { registryHasTag } from '#platform/container/registry'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'

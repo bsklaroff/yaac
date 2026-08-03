@@ -8,7 +8,7 @@ import { ensureRegistryImage } from '@yaac/server/features/cluster/project-regis
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
 import { ensureSalvageWriterImage } from '@yaac/server/features/images/image-promoter'
 import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
-import { pushImageToRegistry, registryReachable } from '@yaac/server/features/cluster/registry'
+import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/container/registry'
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
 const execFileAsync = promisify(execFile)

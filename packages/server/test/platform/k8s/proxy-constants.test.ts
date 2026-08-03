@@ -6,7 +6,7 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 
 describe('constants', () => {
   it('expose the proxy app/secret names and in-cluster ports', () => {

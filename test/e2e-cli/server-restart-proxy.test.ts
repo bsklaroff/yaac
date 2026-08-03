@@ -9,7 +9,7 @@ import {
 import { readLock } from '@yaac/shared/lock'
 import { requirePodman, requireCluster, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
 import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '@yaac/server/features/cluster/proxy-constants'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '@yaac/server/platform/k8s/proxy-constants'
 import {
   k8sNamespace,
   kubectlGetJson,

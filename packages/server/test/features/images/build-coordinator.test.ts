@@ -83,7 +83,7 @@ vi.mock('#platform/container/runtime', () => ({
   removeImage: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#features/cluster/registry', () => ({
+vi.mock('#platform/container/registry', () => ({
   pushImageToRegistry: vi.fn(),
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
@@ -131,7 +131,7 @@ import { ensureImage, pushImageShared, rebuildProjectImage } from '#features/ima
 import { _clearBuildCoordinatorForTests } from '#features/images/build-coordinator'
 import { buildImage, resolveImageChain, type ImageLayer } from '#features/images/image-builder'
 import { imageExists, removeImage } from '#platform/container/runtime'
-import { pushImageToRegistry, registryHasTag } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
 import { clearAllImageBuildsForTests, listImageBuilds } from '#features/images/image-builds'
 // Bounds and layout constants: expected values, not units under test.
 import {

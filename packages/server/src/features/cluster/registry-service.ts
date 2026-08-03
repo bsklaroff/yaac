@@ -22,8 +22,8 @@ import {
   k8sNamespace,
   kubectlApply,
 } from '#platform/k8s/kubectl'
-import { REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
-import { ensureNamespace } from '#features/cluster/proxy-apply'
+import { REGISTRY_CONTAINER_NAME } from '#platform/container/registry'
+import { ensureNamespace } from './proxy-apply'
 
 /** Service (and EndpointSlice) name — matches the container name. */
 export const REGISTRY_SERVICE_NAME = 'yaac-registry'
@@ -44,41 +44,25 @@ export function registryClusterHost(): string {
   return `${REGISTRY_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:${REGISTRY_SERVICE_PORT}`
 }
 
-export interface RegistryServiceDeps {
-  /** podman runner; injectable for tests. */
-  run: (file: string, args: string[]) => Promise<{ stdout: string }>
-  /** Manifest apply; injectable for tests. */
-  apply: (manifest: object) => Promise<void>
-  /** Namespace ensure; injectable for tests. */
-  namespace: () => Promise<void>
-}
-
-const defaultDeps: RegistryServiceDeps = {
-  run: (file, args) => execFileAsync(file, args),
-  apply: kubectlApply,
-  namespace: ensureNamespace,
-}
-
 /**
  * The registry container's IP on the podman `kind` network (the network
  * `yaac cluster setup` connects it to). Throws with a repair pointer when
  * the container is missing or not on the network.
  */
-export async function discoverRegistryKindIp(
-  deps: RegistryServiceDeps = defaultDeps,
-): Promise<string> {
+export async function discoverRegistryKindIp(): Promise<string> {
   let raw: string
   try {
-    const { stdout } = await deps.run('podman', [
+    const { stdout } = await execFileAsync('podman', [
       'inspect', REGISTRY_CONTAINER_NAME,
       '--format', '{{json .NetworkSettings.Networks}}',
     ])
     raw = stdout.trim()
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
+    // execFileAsync is promisified execFile, which only ever rejects with an
+    // Error — no non-Error branch to guard.
     throw new Error(
       `cannot inspect the ${REGISTRY_CONTAINER_NAME} container — is the local `
-      + `registry running? Run \`yaac cluster check\`.\n${msg}`,
+      + `registry running? Run \`yaac cluster check\`.\n${(err as Error).message}`,
     )
   }
   const networks = JSON.parse(raw) as Record<string, { IPAddress?: string }>
@@ -139,12 +123,10 @@ export function buildRegistryEndpointSliceManifest(ip: string): Record<string, u
  * point at the registry's live kind-network IP. Idempotent; returns the
  * in-cluster registry host.
  */
-export async function ensureRegistryClusterService(
-  deps: RegistryServiceDeps = defaultDeps,
-): Promise<string> {
-  const ip = await discoverRegistryKindIp(deps)
-  await deps.namespace()
-  await deps.apply(buildRegistryServiceManifest())
-  await deps.apply(buildRegistryEndpointSliceManifest(ip))
+export async function ensureRegistryClusterService(): Promise<string> {
+  const ip = await discoverRegistryKindIp()
+  await ensureNamespace()
+  await kubectlApply(buildRegistryServiceManifest())
+  await kubectlApply(buildRegistryEndpointSliceManifest(ip))
   return registryClusterHost()
 }

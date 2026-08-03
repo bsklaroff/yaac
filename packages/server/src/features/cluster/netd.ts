@@ -4,15 +4,15 @@ import { promisify } from 'node:util'
 import { dataDirHash, k8sNamespace, kubectlApply, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#features/images'
 import { imageExists } from '#platform/container/runtime'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import { clusterPodCidrs } from '#features/cluster/cluster-cidrs'
+import { clusterPodCidrs } from './cluster-cidrs'
 import {
   INNER_CLAIM_CM_NAME,
   buildInnerClaimConfigMapManifest,
-} from '#features/cluster/redirect-claims'
+} from './redirect-claims'
 import {
   DNS_STUB_PORT,
   NETD_APP_NAME,
@@ -24,7 +24,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 
 const execFileAsync = promisify(execFile)
 

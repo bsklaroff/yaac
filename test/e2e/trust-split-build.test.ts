@@ -15,10 +15,10 @@ import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/bu
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
 import { ensureImage } from '@yaac/server/features/images/build-coordinator'
 import { ensureBuilderRoleGuard } from '@yaac/server/features/images/builder-pod'
-import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/features/cluster/proxy-constants'
+import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
 import { resolveImageChain } from '@yaac/server/features/images/image-builder'
 import { imageExists } from '@yaac/server/platform/container/runtime'
-import { registryHasTag, registryRef } from '@yaac/server/features/cluster/registry'
+import { registryHasTag, registryRef } from '@yaac/server/platform/container/registry'
 import {
   REGISTRY_SERVICE_NAME,
   discoverRegistryKindIp,

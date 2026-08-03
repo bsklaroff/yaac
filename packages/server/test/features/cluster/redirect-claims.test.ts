@@ -5,18 +5,19 @@ vi.mock('#platform/k8s/kubectl', () => ({
 }))
 
 import {
-  CLAIM_KEY,
-  INNER_CLAIM_CM_NAME,
-  MAX_CLAIMS_PER_NAMESPACE,
-  MAX_SOURCES_PER_CLAIM,
-  REDIRECT_CLAIMS_CM_NAME,
-  buildInnerClaimConfigMapManifest,
   buildRedirectClaimsConfigMapManifest,
   isClaimConfigMapName,
   renderNamespaceClaims,
   validateVclusterClaims,
+} from '#features/cluster'
+import type { VclusterPod } from '#features/cluster'
+// Bounds and object names the claim bridge enforces — setup values for the
+// assertions below, not units under test.
+import {
+  MAX_CLAIMS_PER_NAMESPACE,
+  MAX_SOURCES_PER_CLAIM,
+  REDIRECT_CLAIMS_CM_NAME,
 } from '#features/cluster/redirect-claims'
-import type { VclusterPod } from '#features/cluster/vcluster'
 
 const VC = 'yvc1'
 const PROXY_IP = '10.244.0.31'
@@ -165,21 +166,5 @@ describe('buildRedirectClaimsConfigMapManifest', () => {
 
   it('renders an empty document when nothing is claimed', () => {
     expect(buildRedirectClaimsConfigMapManifest({}).data).toEqual({})
-  })
-})
-
-describe('buildInnerClaimConfigMapManifest', () => {
-  it('carries no data, so re-applying never clobbers a published claim', () => {
-    const manifest = buildInnerClaimConfigMapManifest()
-    expect(manifest).toEqual({
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: {
-        name: INNER_CLAIM_CM_NAME,
-        namespace: 'test-ns',
-        labels: { app: 'yaac-netd' },
-      },
-    })
-    expect(CLAIM_KEY).toBe('claim')
   })
 })

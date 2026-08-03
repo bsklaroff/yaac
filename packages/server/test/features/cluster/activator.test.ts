@@ -1,11 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  resetClusterCidrCache: vi.fn(),
-}))
-
+// kubectl is the process boundary: every manifest the activator applies and
+// every list it reads goes through here. Nothing inside features/cluster is
+// mocked, so cluster-cidrs resolves the node/apiserver ipBlocks for real off
+// the `get nodes` / `get endpoints` responses staged below.
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -15,27 +13,13 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('#features/cluster/registry', () => ({
-  registryHost: vi.fn(() => 'localhost:5001'),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
-}))
-
-vi.mock('#features/sessions/egress/proxy-client', () => ({
-  resolveProxyImageTag: vi.fn().mockResolvedValue('yaac-proxy:abc123'),
-}))
-
 import {
-  ACTIVATOR_APP_NAME,
-  buildActivatorNetworkPolicyManifest,
-  buildActivatorDeploymentManifest,
-  buildActivatorServiceAccountManifest,
-  buildActivatorVclusterRoleBindingManifest,
-  buildActivatorVclusterRoleManifest,
   buildVclusterSleepEndpointSliceManifest,
   ensureActivator,
   getActivatorPodIp,
   vclusterSleepSliceName,
-} from '#features/cluster/activator'
+} from '#features/cluster'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 
@@ -43,148 +27,44 @@ const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
 
+const ACTIVATOR_APP_NAME = 'yaac-vc-activator'
 const VC = 'yvc-0a1b2c3d'
 const VCNS = 'test-ns-vc-0a1b2c3d'
 const LABELS = { 'yaac.vcluster': VC }
+const NODE_IP = '10.89.0.7'
+
+interface Manifest {
+  kind: string
+  metadata: { name: string; namespace: string; labels?: Record<string, string> }
+}
+
+/** Answer the two cluster-cidrs reads so the NetworkPolicy renders for real. */
+function stageCidrReads(): void {
+  mockGetJson.mockImplementation((args: string[]) => {
+    if (args[1] === 'nodes') {
+      return Promise.resolve({
+        items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }],
+      })
+    }
+    if (args[1] === 'endpoints') {
+      return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+    }
+    return Promise.resolve({ items: [] })
+  })
+}
+
+function applied(kind: string): Manifest | undefined {
+  return mockApply.mock.calls.map((c) => c[0] as Manifest).find((m) => m.kind === kind)
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
+  resetClusterCidrCache()
 })
 
 describe('vclusterSleepSliceName', () => {
   it('derives the per-vcluster interception slice name', () => {
     expect(vclusterSleepSliceName(VC)).toBe(`yaac-sleep-${VC}`)
-  })
-})
-
-describe('buildActivatorServiceAccountManifest', () => {
-  it('creates the SA in the install namespace', () => {
-    expect(buildActivatorServiceAccountManifest()).toMatchObject({
-      kind: 'ServiceAccount',
-      metadata: { name: ACTIVATOR_APP_NAME, namespace: 'test-ns' },
-    })
-  })
-})
-
-describe('buildActivatorDeploymentManifest', () => {
-  it('runs the proxy image with the activator entrypoint on runc', () => {
-    const m = buildActivatorDeploymentManifest('reg/yaac-proxy:abc') as {
-      metadata: { namespace: string }
-      spec: {
-        template: {
-          spec: {
-            serviceAccountName: string
-            runtimeClassName?: string
-            containers: Array<{
-              image: string
-              command: string[]
-              env: Array<{ name: string; value: string }>
-              readinessProbe: { tcpSocket: { port: number } }
-            }>
-          }
-        }
-      }
-    }
-    expect(m.metadata.namespace).toBe('test-ns')
-    const pod = m.spec.template.spec
-    expect(pod.serviceAccountName).toBe(ACTIVATOR_APP_NAME)
-    // Trusted yaac infra: no runtimeClassName → runc, like the proxy and
-    // the vcluster control plane.
-    expect(pod.runtimeClassName).toBeUndefined()
-    const c = pod.containers[0]
-    expect(c.image).toBe('reg/yaac-proxy:abc')
-    expect(c.command).toEqual(['./node_modules/.bin/tsx', 'activator-main.ts'])
-    expect(c.env).toContainEqual({ name: 'YAAC_INSTALL_NAMESPACE', value: 'test-ns' })
-    expect(c.env).toContainEqual({ name: 'ACTIVATOR_PORT', value: String(VCLUSTER_API_PORT) })
-    expect(c.readinessProbe.tcpSocket.port).toBe(VCLUSTER_API_PORT)
-  })
-})
-
-describe('buildActivatorNetworkPolicyManifest', () => {
-  const NODES = ['10.89.0.7/32']
-  const APISERVER = ['10.89.0.7/32']
-
-  it('locks ingress to session pods + the node (kubelet probe)', () => {
-    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
-      kind: string
-      spec: {
-        podSelector: { matchLabels: Record<string, string> }
-        ingress: Array<Record<string, unknown>>
-      }
-    }
-    expect(m.kind).toBe('NetworkPolicy')
-    expect(m.spec.podSelector.matchLabels).toEqual({ app: ACTIVATOR_APP_NAME })
-    // Plain NP has no selector for the host network namespace, so the
-    // node is named by address.
-    expect(m.spec.ingress[0]).toMatchObject({ from: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
-    expect(JSON.stringify(m.spec.ingress[1])).toContain('yaac.session-id')
-    expect(JSON.stringify(m.spec.ingress)).toContain(String(VCLUSTER_API_PORT))
-  })
-
-  it('allows egress only to the apiserver and unforgeable control-plane pods', () => {
-    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
-      spec: { egress: Array<Record<string, unknown>> }
-    }
-    expect(m.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
-    const cp = JSON.stringify(m.spec.egress[1])
-    expect(cp).toContain('vcluster')
-    // The unforgeable exclusion: a synced pod forging `app=vcluster` must
-    // not receive proxied wake traffic.
-    expect(cp).toContain('DoesNotExist')
-    expect(cp).toContain(LABEL_VCLUSTER_MANAGED_BY)
-  })
-
-  it('declares both policy types so egress is default-denied', () => {
-    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
-      spec: { policyTypes: string[] }
-    }
-    expect(m.spec.policyTypes).toEqual(['Ingress', 'Egress'])
-  })
-})
-
-describe('per-vcluster RBAC', () => {
-  it('grants only the wake-shaped verbs, resource-scoped where possible', () => {
-    const role = buildActivatorVclusterRoleManifest(VC, VCNS, LABELS) as {
-      metadata: { namespace: string; labels: Record<string, string> }
-      rules: Array<{ resources: string[]; verbs: string[]; resourceNames?: string[] }>
-    }
-    expect(role.metadata.namespace).toBe(VCNS)
-    expect(role.metadata.labels).toEqual(LABELS)
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['secrets'], verbs: ['get'], resourceNames: [`${VC}-certs`],
-    }))
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['deployments'], verbs: ['get'], resourceNames: [VC],
-    }))
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['deployments/scale'], resourceNames: [VC],
-    }))
-    // Slice writes are name-scoped to the interception slice; list (the
-    // wake's routing gate on the controller slice) cannot be.
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['endpointslices'], verbs: ['get', 'delete'],
-      resourceNames: [vclusterSleepSliceName(VC)],
-    }))
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['endpointslices'], verbs: ['list'],
-    }))
-    // Nothing beyond the wake surface: no secret list, no pod writes.
-    expect(role.rules).toContainEqual(expect.objectContaining({
-      resources: ['pods'], verbs: ['get', 'list'],
-    }))
-  })
-
-  it('binds the install-namespace SA into the vcluster namespace', () => {
-    const rb = buildActivatorVclusterRoleBindingManifest(VCNS, LABELS) as {
-      metadata: { namespace: string }
-      roleRef: { name: string }
-      subjects: Array<{ kind: string; name: string; namespace: string }>
-    }
-    expect(rb.metadata.namespace).toBe(VCNS)
-    expect(rb.roleRef.name).toBe(ACTIVATOR_APP_NAME)
-    expect(rb.subjects).toEqual([
-      { kind: 'ServiceAccount', name: ACTIVATOR_APP_NAME, namespace: 'test-ns' },
-    ])
   })
 })
 
@@ -241,17 +121,108 @@ describe('getActivatorPodIp', () => {
 })
 
 describe('ensureActivator', () => {
-  it('applies SA → Deployment → NetworkPolicy with the registry proxy image, then waits for rollout', async () => {
-    await ensureActivator()
-    const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+  it('applies SA → Deployment → NetworkPolicy, then waits for rollout', async () => {
+    stageCidrReads()
+    await ensureActivator('yaac-proxy:abc123')
+
+    const kinds = mockApply.mock.calls.map((c) => (c[0] as Manifest).kind)
     expect(kinds).toEqual(['ServiceAccount', 'Deployment', 'NetworkPolicy'])
-    const dep = mockApply.mock.calls
-      .map((c) => c[0] as { kind: string; spec?: { template: { spec: { containers: Array<{ image: string }> } } } })
-      .find((m) => m.kind === 'Deployment')
-    expect(dep?.spec?.template.spec.containers[0].image).toBe('localhost:5001/yaac-proxy:abc123')
     expect(mockRetry).toHaveBeenCalledWith(
       expect.arrayContaining(['rollout', 'status', `deployment/${ACTIVATOR_APP_NAME}`]),
       expect.anything(),
     )
+  })
+
+  it('runs the caller\'s proxy tag, registry-qualified, on runc under its own SA', async () => {
+    stageCidrReads()
+    await ensureActivator('yaac-proxy:abc123')
+
+    expect(applied('ServiceAccount')?.metadata).toMatchObject({
+      name: ACTIVATOR_APP_NAME, namespace: 'test-ns',
+    })
+    const dep = applied('Deployment') as unknown as {
+      metadata: { namespace: string }
+      spec: {
+        template: {
+          spec: {
+            serviceAccountName: string
+            runtimeClassName?: string
+            containers: Array<{
+              image: string
+              command: string[]
+              env: Array<{ name: string; value: string }>
+              readinessProbe: { tcpSocket: { port: number } }
+            }>
+          }
+        }
+      }
+    }
+    expect(dep.metadata.namespace).toBe('test-ns')
+    const pod = dep.spec.template.spec
+    expect(pod.serviceAccountName).toBe(ACTIVATOR_APP_NAME)
+    // Trusted yaac infra: no runtimeClassName → runc, like the proxy and
+    // the vcluster control plane.
+    expect(pod.runtimeClassName).toBeUndefined()
+    const c = pod.containers[0]
+    // The tag arrives from the session create flow; the activator only
+    // qualifies it with the local registry.
+    expect(c.image).toMatch(/\/yaac-proxy:abc123$/)
+    expect(c.command).toEqual(['./node_modules/.bin/tsx', 'activator-main.ts'])
+    expect(c.env).toContainEqual({ name: 'YAAC_INSTALL_NAMESPACE', value: 'test-ns' })
+    expect(c.env).toContainEqual({ name: 'ACTIVATOR_PORT', value: String(VCLUSTER_API_PORT) })
+    expect(c.readinessProbe.tcpSocket.port).toBe(VCLUSTER_API_PORT)
+  })
+
+  it('locks the policy to session pods and the node, egressing only to the apiserver', async () => {
+    stageCidrReads()
+    await ensureActivator('yaac-proxy:abc123')
+
+    const np = applied('NetworkPolicy') as unknown as {
+      spec: {
+        podSelector: { matchLabels: Record<string, string> }
+        ingress: Array<Record<string, unknown>>
+        egress: Array<Record<string, unknown>>
+        policyTypes: string[]
+      }
+    }
+    expect(np.spec.podSelector.matchLabels).toEqual({ app: ACTIVATOR_APP_NAME })
+    // Plain NP has no selector for the host network namespace, so the node
+    // is named by address — resolved here through the real cluster-cidrs
+    // read of `get nodes`.
+    expect(np.spec.ingress[0]).toMatchObject({ from: [{ ipBlock: { cidr: `${NODE_IP}/32` } }] })
+    expect(JSON.stringify(np.spec.ingress[1])).toContain('yaac.session-id')
+    expect(JSON.stringify(np.spec.ingress)).toContain(String(VCLUSTER_API_PORT))
+
+    expect(np.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: `${NODE_IP}/32` } }] })
+    const cp = JSON.stringify(np.spec.egress[1])
+    expect(cp).toContain('vcluster')
+    // The unforgeable exclusion: a synced pod forging `app=vcluster` must
+    // not receive proxied wake traffic.
+    expect(cp).toContain('DoesNotExist')
+    expect(cp).toContain(LABEL_VCLUSTER_MANAGED_BY)
+    // Both types declared, so egress is default-denied.
+    expect(np.spec.policyTypes).toEqual(['Ingress', 'Egress'])
+  })
+
+  it('falls back to the node set when the apiserver Endpoints object is empty', async () => {
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1] === 'nodes') {
+        return Promise.resolve({
+          items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }],
+        })
+      }
+      return Promise.resolve({ subsets: [] })
+    })
+    await ensureActivator('yaac-proxy:abc123')
+    const np = applied('NetworkPolicy') as unknown as {
+      spec: { egress: Array<{ to?: Array<{ ipBlock?: { cidr: string } }> }> }
+    }
+    expect(np.spec.egress[0].to?.[0].ipBlock?.cidr).toBe(`${NODE_IP}/32`)
+  })
+
+  it('refuses to render a policy when no node InternalIP resolves', async () => {
+    mockGetJson.mockResolvedValue({ items: [] })
+    await expect(ensureActivator('yaac-proxy:abc123'))
+      .rejects.toThrow(/could not resolve any node InternalIP/)
   })
 })

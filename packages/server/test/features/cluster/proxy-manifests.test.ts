@@ -1,239 +1,35 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 vi.mock('#platform/k8s/kubectl', () => ({
-  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
-  kubectlApply: vi.fn().mockResolvedValue(undefined),
-  kubectlGetJson: vi.fn(),
-  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
 }))
 
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
-  buildOuterProxyCaConfigMapManifest,
-  buildProxyDeploymentManifest,
-  buildProxyRoleBindingManifest,
-  buildProxyRoleManifest,
-  buildProxyServiceAccountManifest,
-  buildProxyServiceManifest,
-} from '#features/cluster/proxy-manifests'
-import {
-  BUILDER_ROLE_GUARD_NAME,
-  DNS_STUB_PORT,
-  LABEL_ROLE,
-  OUTER_CA_CONFIGMAP_NAME,
-  PROXY_APP_NAME,
-  PROXY_AUTH_SECRET_NAME,
-  PROXY_PORT,
-  PROXY_SA_NAME,
-  POD_STREAM_PORT,
-  RELAY_PORT,
-  ROLE_INNER_PROXY,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_TUNNEL_PORT,
-} from '#features/cluster/proxy-constants'
-import { proxyDataHostDir, sshAgentHostDir } from '#features/cluster/proxy-apply'
-import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
-import { credentialsDir } from '@yaac/shared/project-paths'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+} from '#features/cluster'
+import { BUILDER_ROLE_GUARD_NAME } from '#platform/k8s/proxy-constants'
 
-let tmpDir: string
+// The builder-role admission guard is the only pair of manifests outside the
+// folder needs — the image feature installs it around its runsc builder pods.
+// The proxy's own Deployment, Service, ServiceAccount, RBAC and outer-CA
+// ConfigMap are internal to the feature and asserted where they are applied,
+// through `ensureProxyResources`.
 
-beforeEach(async () => {
-  tmpDir = await createTempDataDir()
-  vi.stubEnv('YAAC_USE_TOR', '')
-})
-
-afterEach(async () => {
-  await cleanupTempDir(tmpDir)
-  vi.unstubAllEnvs()
-})
-
-interface DeploymentManifest {
+interface Vap {
+  apiVersion: string
   kind: string
-  metadata: { name: string; namespace: string; labels: Record<string, string> }
+  metadata: { name: string }
   spec: {
-    replicas: number
-    strategy: { type: string }
-    selector: { matchLabels: Record<string, string> }
-    template: {
-      metadata: { labels: Record<string, string> }
-      spec: {
-        serviceAccountName?: string
-        automountServiceAccountToken: boolean
-        enableServiceLinks: boolean
-        securityContext?: { runAsUser?: number; runAsGroup?: number; fsGroup?: number }
-        containers: Array<{
-          image: string
-          securityContext?: { capabilities?: { add?: string[] } }
-          ports: Array<{ containerPort: number; protocol?: string }>
-          env: Array<Record<string, unknown>>
-          readinessProbe: { httpGet: { path: string; port: number } }
-          volumeMounts: Array<{ name: string; mountPath: string }>
-        }>
-        volumes: Array<{ name: string; hostPath?: { path: string; type: string }; emptyDir?: object }>
-      }
-    }
+    failurePolicy: string
+    matchConstraints: { resourceRules: Array<Record<string, unknown>> }
+    matchConditions: Array<{ name: string; expression: string }>
+    validations: Array<{ expression: string; message: string }>
   }
 }
 
-describe('buildProxyDeploymentManifest', () => {
-  function build(): DeploymentManifest {
-    return buildProxyDeploymentManifest('localhost:5000/yaac-proxy:abc') as unknown as DeploymentManifest
-  }
-
-  it('runs one replica with the Recreate strategy (no socket-sharing overlap)', () => {
-    const m = build()
-    expect(m.kind).toBe('Deployment')
-    expect(m.metadata.name).toBe(PROXY_APP_NAME)
-    expect(m.metadata.namespace).toBe('test-ns')
-    expect(m.spec.replicas).toBe(1)
-    expect(m.spec.strategy).toEqual({ type: 'Recreate' })
-    expect(m.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
-  })
-
-  it('stamps the install identity on every proxy pod; nested adds yaac.role=inner-proxy (loop-free exclusion)', () => {
-    const plain = buildProxyDeploymentManifest('img') as unknown as {
-      spec: { template: { metadata: { labels: Record<string, string> } } }
-    }
-    expect(plain.spec.template.metadata.labels).toEqual({
-      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
-    })
-    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
-      spec: { template: { metadata: { labels: Record<string, string> } } }
-    }
-    expect(nested.spec.template.metadata.labels).toEqual({
-      app: PROXY_APP_NAME,
-      [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
-      [LABEL_ROLE]: ROLE_INNER_PROXY,
-    })
-  })
-
-  it('stamps no RuntimeClass — trusted infra runs on runc (host and inner alike)', () => {
-    const plain = build() as unknown as {
-      spec: { template: { spec: { runtimeClassName?: string } } }
-    }
-    expect(plain.spec.template.spec.runtimeClassName).toBeUndefined()
-    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
-      spec: { template: { spec: { runtimeClassName?: string } } }
-    }
-    expect(nested.spec.template.spec.runtimeClassName).toBeUndefined()
-  })
-
-  it('nested (inner) proxy: resolves DNS via its own loopback stub, not vcluster CoreDNS', () => {
-    const plain = build() as unknown as {
-      spec: { template: { spec: { dnsPolicy?: string; dnsConfig?: unknown } } }
-    }
-    expect(plain.spec.template.spec.dnsPolicy).toBeUndefined()
-    expect(plain.spec.template.spec.dnsConfig).toBeUndefined()
-    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
-      spec: { template: { spec: { dnsPolicy?: string; dnsConfig?: { nameservers: string[] } } } }
-    }
-    expect(nested.spec.template.spec.dnsPolicy).toBe('None')
-    expect(nested.spec.template.spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] })
-  })
-
-  it('nested (inner) proxy: trusts the outer CA via NODE_EXTRA_CA_CERTS + a projected ConfigMap mount', () => {
-    // Top-level proxy reaches the world directly — no outer CA, no mount.
-    const plain = build().spec.template.spec
-    expect(plain.containers[0].env)
-      .not.toContainEqual(expect.objectContaining({ name: 'NODE_EXTRA_CA_CERTS' }))
-    expect(plain.volumes).not.toContainEqual(expect.objectContaining({ name: 'outer-ca' }))
-    expect(plain.containers[0].volumeMounts)
-      .not.toContainEqual(expect.objectContaining({ name: 'outer-ca' }))
-
-    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as DeploymentManifest
-    const nspec = nested.spec.template.spec
-    expect(nspec.containers[0].env)
-      .toContainEqual({ name: 'NODE_EXTRA_CA_CERTS', value: '/etc/yaac/outer-ca/proxy-ca.pem' })
-    expect(nspec.volumes)
-      .toContainEqual({ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } })
-    expect(nspec.containers[0].volumeMounts)
-      .toContainEqual({ name: 'outer-ca', mountPath: '/etc/yaac/outer-ca', readOnly: true })
-  })
-
-  it('wires the image, ports, auth secret env, and readiness probe', () => {
-    const c = build().spec.template.spec.containers[0]
-    expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
-    expect(c.ports).toEqual([
-      { containerPort: PROXY_PORT },
-      { containerPort: TRANSPARENT_HTTPS_PORT },
-      { containerPort: TRANSPARENT_HTTP_PORT },
-      { containerPort: TRANSPARENT_TUNNEL_PORT },
-      { containerPort: RELAY_PORT },
-      { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
-    ])
-    // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
-    expect(c.securityContext?.capabilities?.add).toEqual(['NET_BIND_SERVICE'])
-    expect(c.env).toContainEqual({ name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) })
-    expect(c.env).toContainEqual({ name: 'API_PORT', value: String(PROXY_PORT) })
-    expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) })
-    expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) })
-    expect(c.env).toContainEqual({ name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) })
-    expect(c.env).toContainEqual({ name: 'RELAY_PORT', value: String(RELAY_PORT) })
-    expect(c.env).toContainEqual({ name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) })
-    expect(c.env).toContainEqual({
-      name: 'PROXY_AUTH_SECRET',
-      valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
-    })
-    // HOME points at the emptyDir mount so the proxy's known_hosts writer
-    // works when it runs as the server uid (not the image's node user);
-    // ssh-add itself gets the known_hosts path via -H, never from HOME.
-    expect(c.env).toContainEqual({ name: 'HOME', value: '/home/proxy' })
-    expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
-  })
-
-  it('mounts credentials, ssh-agent, and proxy-data hostPaths (DirectoryOrCreate)', () => {
-    const spec = build().spec.template.spec
-    // The proxy now mounts its SA token to watch pods (source-IP → session).
-    expect(spec.serviceAccountName).toBe(PROXY_SA_NAME)
-    expect(spec.automountServiceAccountToken).toBe(true)
-    expect(spec.enableServiceLinks).toBe(false)
-    expect(spec.volumes).toEqual([
-      { name: 'credentials', hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' } },
-      { name: 'ssh-agent', hostPath: { path: sshAgentHostDir(), type: 'DirectoryOrCreate' } },
-      { name: 'proxy-data', hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' } },
-      { name: 'home', emptyDir: {} },
-    ])
-    expect(spec.containers[0].volumeMounts).toEqual([
-      { name: 'credentials', mountPath: '/yaac-credentials' },
-      { name: 'ssh-agent', mountPath: '/ssh-agent' },
-      { name: 'proxy-data', mountPath: '/data' },
-      { name: 'home', mountPath: '/home/proxy' },
-    ])
-  })
-
-  it('runs as the server host uid with fsGroup for the emptyDir HOME', () => {
-    const sc = build().spec.template.spec.securityContext
-    expect(sc?.runAsUser).toBe(process.getuid?.())
-    expect(sc?.runAsGroup).toBe(process.getgid?.())
-    expect(sc?.fsGroup).toBe(process.getgid?.())
-  })
-
-  it('adds USE_TOR only when tor is enabled', () => {
-    expect(build().spec.template.spec.containers[0].env)
-      .not.toContainEqual({ name: 'USE_TOR', value: '1' })
-    vi.stubEnv('YAAC_USE_TOR', '1')
-    expect(build().spec.template.spec.containers[0].env)
-      .toContainEqual({ name: 'USE_TOR', value: '1' })
-  })
-})
-
-describe('builder role guard (ValidatingAdmissionPolicy)', () => {
-  interface Vap {
-    apiVersion: string
-    kind: string
-    metadata: { name: string }
-    spec: {
-      failurePolicy: string
-      matchConstraints: { resourceRules: Array<Record<string, unknown>> }
-      matchConditions: Array<{ name: string; expression: string }>
-      validations: Array<{ expression: string; message: string }>
-    }
-  }
-
+describe('buildBuilderRoleGuardPolicyManifest', () => {
   it('matches only pods carrying yaac.role=builder, on create AND update', () => {
     const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
     expect(m.kind).toBe('ValidatingAdmissionPolicy')
@@ -264,7 +60,9 @@ describe('builder role guard (ValidatingAdmissionPolicy)', () => {
       "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'",
     )
   })
+})
 
+describe('buildBuilderRoleGuardBindingManifest', () => {
   it('binds cluster-wide with Deny — the label is reserved in every namespace', () => {
     const m = buildBuilderRoleGuardBindingManifest() as unknown as {
       kind: string
@@ -276,73 +74,5 @@ describe('builder role guard (ValidatingAdmissionPolicy)', () => {
     expect(m.spec.validationActions).toEqual(['Deny'])
     // No matchResources: vcluster session namespaces are covered too.
     expect(m.spec.matchResources).toBeUndefined()
-  })
-})
-
-describe('buildProxyServiceManifest', () => {
-  it('exposes a ClusterIP service on the proxy + transparent ports (port == targetPort)', () => {
-    expect(buildProxyServiceManifest()).toEqual({
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: {
-        name: PROXY_APP_NAME,
-        namespace: 'test-ns',
-        // No install identity on the Service: the redirect is driven by
-        // validated claims naming POD IPs (features/cluster/redirect-claims.ts),
-        // so nothing reads a synced inner-proxy Service any more.
-        labels: { app: PROXY_APP_NAME },
-      },
-      spec: {
-        // No relay entry and no NodePort: the server's relay dials ride a
-        // kubectl port-forward to the pod port (nested: a pod-IP dial).
-        type: 'ClusterIP',
-        // No pinned clusterIP: allocator-assigned, read live at pod-create.
-        selector: { app: PROXY_APP_NAME },
-        ports: [
-          { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
-          { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
-          { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
-          { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-          { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
-        ],
-      },
-    })
-  })
-
-  it('never pins the ClusterIP (the allocator assigns it)', () => {
-    const m = buildProxyServiceManifest() as unknown as {
-      spec: { clusterIP?: string; type: string }
-    }
-    expect(m.spec.type).toBe('ClusterIP')
-    expect(m.spec.clusterIP).toBeUndefined()
-  })
-})
-
-describe('proxy ServiceAccount + RBAC', () => {
-  it('creates a SA and a read-only pods Role bound to it', () => {
-    expect(buildProxyServiceAccountManifest()).toEqual({
-      apiVersion: 'v1',
-      kind: 'ServiceAccount',
-      metadata: { name: PROXY_SA_NAME, namespace: 'test-ns', labels: { app: PROXY_APP_NAME } },
-    })
-    const role = buildProxyRoleManifest() as { rules: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }> }
-    expect(role.rules).toEqual([{ apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] }])
-    const rb = buildProxyRoleBindingManifest() as {
-      roleRef: { kind: string; name: string }
-      subjects: Array<{ kind: string; name: string; namespace: string }>
-    }
-    expect(rb.roleRef).toEqual({ apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: PROXY_SA_NAME })
-    expect(rb.subjects).toEqual([{ kind: 'ServiceAccount', name: PROXY_SA_NAME, namespace: 'test-ns' }])
-  })
-})
-
-describe('buildOuterProxyCaConfigMapManifest', () => {
-  it('wraps the outer CA PEM under proxy-ca.pem in the install namespace', () => {
-    expect(buildOuterProxyCaConfigMapManifest('OUTER-PEM')).toEqual({
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
-      data: { 'proxy-ca.pem': 'OUTER-PEM' },
-    })
   })
 })

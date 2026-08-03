@@ -21,7 +21,7 @@ import {
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
-} from '@yaac/server/features/cluster/proxy-constants'
+} from '@yaac/server/platform/k8s/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'

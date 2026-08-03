@@ -10,10 +10,10 @@ import {
   ensureProxyAuthSecret,
   ensureProxyResources,
   resetProxyClusterIpCache,
-} from '#features/cluster/proxy-apply'
-import { PROXY_APP_NAME, PROXY_PORT } from '#features/cluster/proxy-constants'
+} from '#features/cluster'
+import { PROXY_APP_NAME, PROXY_PORT } from '#platform/k8s/proxy-constants'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
 import { ExecTunnel } from '#platform/k8s/exec-tunnel'
 import { listSshEntries } from '#features/projects'
 import { serverLog } from '#log'

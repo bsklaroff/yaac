@@ -7,15 +7,15 @@ import { isDeferredClusterBootPending } from '#platform/k8s/deferred-boot'
 import {
   buildProxyIngressNpManifest,
   buildSessionEgressNpManifest,
-} from '#features/cluster/policy-manifests'
-import { nodeIpBlocks } from '#features/cluster/cluster-cidrs'
-import { NETD_APP_NAME } from '#features/cluster/proxy-constants'
-import { ensureNamespace } from '#features/cluster/proxy-apply'
+} from './policy-manifests'
+import { nodeIpBlocks } from './cluster-cidrs'
+import { NETD_APP_NAME } from '#platform/k8s/proxy-constants'
+import { ensureNamespace } from './proxy-apply'
 import {
   PROXY_APP_NAME,
   RELAY_PORT,
   TRANSPARENT_HTTPS_PORT,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -23,8 +23,8 @@ import {
 } from '#platform/k8s/gvisor'
 import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, runPodToCompletion } from '#platform/k8s/pods'
 import { NESTED_ENGINE_CAPS } from '#platform/k8s/pod-spec'
-import { vapAvailable } from '#features/cluster/vcluster'
-import { registryHost, registryReachable, pushImageToRegistry } from '#features/cluster/registry'
+import { vapAvailable } from './vcluster'
+import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container/registry'
 import { sessionUid } from '#features/images'
 import { getDataDir } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
@@ -78,23 +78,6 @@ export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '300s'
  *  persists across node restarts, unlike the sysctl fixups). */
 export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
 
-export interface ClusterCheckDeps {
-  /** execFile-style runner, injectable for tests. */
-  run: typeof execFileAsync
-  registryReachable: () => Promise<boolean>
-  pushImage: (localTag: string) => Promise<string>
-  ensureNamespace: () => Promise<void>
-  apply: (manifest: object) => Promise<void>
-}
-
-const defaultDeps: ClusterCheckDeps = {
-  run: execFileAsync,
-  registryReachable,
-  pushImage: pushImageToRegistry,
-  ensureNamespace,
-  apply: kubectlApply,
-}
-
 /**
  * Run the full preflight suite for the kubernetes backend. Returns every
  * result plus an overall ok flag (false when any hard check failed).
@@ -141,7 +124,6 @@ const defaultDeps: ClusterCheckDeps = {
  *      vcluster control planes) deliberately stamps none and runs on runc.
  */
 export async function runClusterCheck(
-  deps: ClusterCheckDeps = defaultDeps,
 ): Promise<{ ok: boolean; results: CheckResult[] }> {
   const results: CheckResult[] = []
   const add = (r: CheckResult): void => { results.push(r) }
@@ -169,7 +151,7 @@ export async function runClusterCheck(
 
   // 1. kubectl present
   try {
-    await deps.run('kubectl', ['version', '--client', '--output', 'json'])
+    await execFileAsync('kubectl', ['version', '--client', '--output', 'json'])
     add({ name: 'kubectl', status: 'pass', detail: 'installed' })
   } catch {
     add({
@@ -185,7 +167,7 @@ export async function runClusterCheck(
   // client-go's ~32s discovery timeout rides out — so give kubectl the
   // same headroom instead of killing it mid-wake at 10s.
   try {
-    await deps.run('kubectl', ['version', '--output', 'json'], {
+    await execFileAsync('kubectl', ['version', '--output', 'json'], {
       timeout: env.nested ? 60_000 : 10_000,
     })
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
@@ -200,7 +182,7 @@ export async function runClusterCheck(
 
   // 3. single-node
   try {
-    const { stdout } = await deps.run('kubectl', ['get', 'nodes', '-o', 'json'])
+    const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
     const nodes = (JSON.parse(stdout) as { items: unknown[] }).items
     if (nodes.length === 1) {
       add({ name: 'nodes', status: 'pass', detail: 'single-node cluster' })
@@ -217,7 +199,7 @@ export async function runClusterCheck(
 
   // 4. podman (build engine)
   try {
-    await deps.run('podman', ['--version'])
+    await execFileAsync('podman', ['--version'])
     add({ name: 'podman', status: 'pass', detail: 'installed (image build engine)' })
   } catch {
     add({
@@ -227,7 +209,7 @@ export async function runClusterCheck(
   }
 
   // 5. registry
-  if (await deps.registryReachable()) {
+  if (await registryReachable()) {
     add({ name: 'registry', status: 'pass', detail: `answering on ${registryHost()}` })
   } else {
     add({
@@ -241,7 +223,7 @@ export async function runClusterCheck(
 
   // 6. namespace
   try {
-    await deps.ensureNamespace()
+    await ensureNamespace()
     add({ name: 'namespace', status: 'pass', detail: `"${k8sNamespace()}" present` })
   } catch (err) {
     add({
@@ -266,8 +248,8 @@ export async function runClusterCheck(
     skipFrom('node-fixups', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  add(await runNodeFixupsCheck(deps))
-  add(await runGvisorRuntimeCheck(deps))
+  add(await runNodeFixupsCheck())
+  add(await runGvisorRuntimeCheck())
 
   // The e2e probe schedules a pod on the gvisor tier — with the
   // RuntimeClass missing it would sit Pending to its full timeout, so a
@@ -285,7 +267,7 @@ export async function runClusterCheck(
   // equivalent; vcluster-in-vcluster is refused. datapath is the exception —
   // this install owns half of it (its claim) and that half is checkable.
   if (env.nested) {
-    add(await runEndToEndProbe(deps))
+    add(await runEndToEndProbe())
     if (results.some((r) => r.status === 'fail')) {
       skipFrom('egress', 'skipped — fix the failures above first')
       return { ok: false, results }
@@ -294,14 +276,14 @@ export async function runClusterCheck(
     // datapath IS checkable nested, in the inner install's own terms: its
     // claim-mode netd must be publishing, or the host has nothing to program
     // and inner sessions fall back to the outer proxy's allowlist alone.
-    add(await runClaimDatapathCheck(deps))
+    add(await runClaimDatapathCheck())
     for (const name of ['nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     // The stream relay IS checkable nested: the inner proxy's pod IP must
     // be dialable on the relay port (requires the outer yaac to project
     // the inner ingress rules — an outdated host yaac breaks this).
-    add(await runNestedRelayCheck(deps))
+    add(await runNestedRelayCheck())
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
 
@@ -314,9 +296,9 @@ export async function runClusterCheck(
   // waiting for a RuntimeClass that will never appear — which is the one
   // ordering that was ever load-bearing.
   const [probeResult, egressResult, nestedMountResult] = await Promise.all([
-    runEndToEndProbe(deps),
-    runNetworkPolicyProbe(deps),
-    runNestedMountProbe(deps),
+    runEndToEndProbe(),
+    runNetworkPolicyProbe(),
+    runNestedMountProbe(),
   ])
   add(probeResult)
   add(egressResult)
@@ -325,7 +307,7 @@ export async function runClusterCheck(
   // the server reaches the relay through a kubectl port-forward, the same
   // apiserver access the checks above already prove — there is no
   // cluster-shape wiring to verify.)
-  add(await runDatapathCheck(deps))
+  add(await runDatapathCheck())
 
   // 10. nested userns-mount probe (warn-only: only nestedContainers
   // sessions need it — the tripwire for containerd versions where the
@@ -340,7 +322,7 @@ export async function runClusterCheck(
 
   // 11. runtime-stamp sweep (warn-only): every untrusted pod must carry a
   // gvisor-tier runtimeClassName.
-  add(await runRuntimeStampSweep(deps))
+  add(await runRuntimeStampSweep())
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
 }
@@ -357,7 +339,7 @@ const NODE_FIXUPS_FIX =
  * kind-specific (node name == podman container name): a node that is not a
  * podman container self-skips.
  */
-async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runNodeFixupsCheck(): Promise<CheckResult> {
   if (env.nested) {
     return {
       name: 'node-fixups', status: 'skip',
@@ -365,7 +347,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     }
   }
   try {
-    const { stdout } = await deps.run('kubectl', [
+    const { stdout } = await execFileAsync('kubectl', [
       'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
     ])
     const nodes = stdout.trim().split(/\s+/).filter(Boolean)
@@ -376,7 +358,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     for (const node of nodes) {
       let report: string
       try {
-        const res = await deps.run('podman', ['exec', node, 'sh', '-c',
+        const res = await execFileAsync('podman', ['exec', node, 'sh', '-c',
           `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
           + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
           + `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
@@ -397,7 +379,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
       if (report.includes('hk=missing')) {
         missing.add('kubelet housekeeping-interval (cAdvisor stats CPU)')
       }
-      const { stdout: pidsRaw } = await deps.run('podman', [
+      const { stdout: pidsRaw } = await execFileAsync('podman', [
         'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
       ])
       const pids = Number(pidsRaw.trim())
@@ -430,14 +412,14 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
  * the busybox source once) and return its in-cluster ref — shared by every
  * probe that schedules a pod.
  */
-async function ensureProbeImage(deps: ClusterCheckDeps): Promise<string> {
+async function ensureProbeImage(): Promise<string> {
   try {
-    await deps.run('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
+    await execFileAsync('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
   } catch {
-    await deps.run('podman', ['pull', PROBE_SOURCE_IMAGE], { timeout: 120_000 })
-    await deps.run('podman', ['tag', PROBE_SOURCE_IMAGE, PROBE_LOCAL_TAG])
+    await execFileAsync('podman', ['pull', PROBE_SOURCE_IMAGE], { timeout: 120_000 })
+    await execFileAsync('podman', ['tag', PROBE_SOURCE_IMAGE, PROBE_LOCAL_TAG])
   }
-  return deps.pushImage(PROBE_LOCAL_TAG)
+  return pushImageToRegistry(PROBE_LOCAL_TAG)
 }
 
 const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
@@ -457,7 +439,7 @@ const GVISOR_FIX =
  * gVisor's dmesg prints its own boot messages ("Starting gVisor..."), while a
  * runc pod sees the node kernel's ring buffer.
  */
-async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runGvisorRuntimeCheck(): Promise<CheckResult> {
   if (env.nested) {
     return {
       name: 'gvisor', status: 'skip',
@@ -465,7 +447,7 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
     }
   }
   try {
-    const { stdout } = await deps.run('kubectl', [
+    const { stdout } = await execFileAsync('kubectl', [
       'get', 'runtimeclass', '-o', 'jsonpath={.items[*].metadata.name}',
     ])
     const present = new Set(stdout.trim().split(/\s+/).filter(Boolean))
@@ -479,7 +461,7 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
       }
     }
 
-    const imageRef = await ensureProbeImage(deps)
+    const imageRef = await ensureProbeImage()
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
@@ -501,8 +483,8 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
       },
     }, {
       timeoutMs: 90_000,
-      kubectl: (args) => deps.run('kubectl', args),
-      apply: deps.apply,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
     })
     if (phase !== 'Succeeded') {
       return {
@@ -545,11 +527,11 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
  * namespace AND its per-vcluster child namespaces (`<ns>-vc-*`), where the
  * synced pods live.
  */
-async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runRuntimeStampSweep(): Promise<CheckResult> {
   const ns = k8sNamespace()
   const sandboxed = new Set<string>([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
   try {
-    const { stdout } = await deps.run('kubectl', ['get', 'pods', '-A', '-o', 'json'])
+    const { stdout } = await execFileAsync('kubectl', ['get', 'pods', '-A', '-o', 'json'])
     const items = (JSON.parse(stdout) as {
       items: Array<{
         metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }
@@ -594,7 +576,7 @@ async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult
  * two pieces of cluster setup yaac cannot do itself (containerd registry
  * config, node extraMounts).
  */
-async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runEndToEndProbe(): Promise<CheckResult> {
   const dataDir = getDataDir()
   const nonce = crypto.randomUUID()
   const nonceFile = path.join(dataDir, '.cluster-check-nonce')
@@ -608,7 +590,7 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
 
     // Make sure the probe image exists locally, then push it through the
     // same registry path session images take.
-    const imageRef = await ensureProbeImage(deps)
+    const imageRef = await ensureProbeImage()
 
     const manifest = {
       apiVersion: 'v1',
@@ -643,8 +625,8 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
     // both surface here.
     const { phase, logs } = await runPodToCompletion(manifest, {
       timeoutMs: 90_000,
-      kubectl: (args) => deps.run('kubectl', args),
-      apply: deps.apply,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
     })
     if (phase !== 'Succeeded') {
       return {
@@ -716,7 +698,7 @@ const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
  * ClusterIP — always present, always reachable in the absence of policy,
  * and addressed by IP so the verdict does not depend on DNS.
  */
-async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runNetworkPolicyProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
     // The cluster-level egress lockdown: the session NetworkPolicy admits
@@ -726,9 +708,9 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
     // only (netd's Envoy is the sole legitimate caller, and the sole
     // originator of PROXY-protocol preambles).
     const nodeCidrs = await nodeIpBlocks()
-    await deps.apply(buildSessionEgressNpManifest(nodeCidrs))
-    await deps.apply(buildProxyIngressNpManifest(nodeCidrs))
-    const { stdout: rawIp } = await deps.run('kubectl', [
+    await kubectlApply(buildSessionEgressNpManifest(nodeCidrs))
+    await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
+    const { stdout: rawIp } = await execFileAsync('kubectl', [
       'get', 'svc', 'kubernetes', '-n', 'default', '-o', 'jsonpath={.spec.clusterIP}',
     ])
     const apiserverIp = rawIp.trim()
@@ -748,7 +730,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
     // lazily on the first session create).
     let proxyIp: string | null = null
     try {
-      const { stdout } = await deps.run('kubectl', [
+      const { stdout } = await execFileAsync('kubectl', [
         'get', 'svc', PROXY_APP_NAME, '-n', ns, '-o', 'jsonpath={.spec.clusterIP}',
       ])
       proxyIp = stdout.trim() || null
@@ -760,7 +742,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
         + ' && echo NP_PROXY_OPEN || echo NP_PROXY_LOCKED'
       : ''
 
-    const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
+    const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
@@ -787,8 +769,8 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       },
     }, {
       timeoutMs: 60_000,
-      kubectl: (args) => deps.run('kubectl', args),
-      apply: deps.apply,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
     })
     if (phase !== 'Succeeded') {
       return {
@@ -857,8 +839,8 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
  * nothing. Deployed-but-unready is a FAIL — that is the silent case, where
  * the install believes it governs its sessions and does not.
  */
-async function runClaimDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
-  const { stdout: netd } = await deps.run('kubectl', [
+async function runClaimDatapathCheck(): Promise<CheckResult> {
+  const { stdout: netd } = await execFileAsync('kubectl', [
     'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
     '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
   ]).catch(() => ({ stdout: '' }))
@@ -933,9 +915,9 @@ export function netdNotReadyContainers(podsJson: string): string[] {
  * A user staring at "every session lost the internet" needs to be told
  * which of the two it is.
  */
-async function runDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runDatapathCheck(): Promise<CheckResult> {
   try {
-    const { stdout: calico } = await deps.run('kubectl', [
+    const { stdout: calico } = await execFileAsync('kubectl', [
       'get', 'daemonset', 'calico-node', '-n', 'kube-system',
       '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
     ])
@@ -949,13 +931,13 @@ async function runDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
       }
     }
 
-    const { stdout: netd } = await deps.run('kubectl', [
+    const { stdout: netd } = await execFileAsync('kubectl', [
       'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
       '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
     ]).catch(() => ({ stdout: '' }))
     const [netdReady, netdWanted] = netd.trim().split('/').map(Number)
     if (!netd.trim() || !(netdReady > 0) || netdReady !== netdWanted) {
-      const { stdout: pods } = await deps.run('kubectl', [
+      const { stdout: pods } = await execFileAsync('kubectl', [
         'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '-o', 'json',
       ]).catch(() => ({ stdout: '' }))
       // Which container is unhealthy is the whole diagnosis here: netd's
@@ -1003,10 +985,10 @@ const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
  * nested-containers e2e;
  * this probe stays busybox-simple (no sudo/setcap in the probe image).
  */
-async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runNestedMountProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
+    const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
@@ -1037,8 +1019,8 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
       },
     }, {
       timeoutMs: 60_000,
-      kubectl: (args) => deps.run('kubectl', args),
-      apply: deps.apply,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
     })
     if (phase !== 'Succeeded') {
       return {
@@ -1103,10 +1085,10 @@ async function runVapAvailabilityCheck(): Promise<CheckResult> {
  * up AND the outer yaac projected the inner ingress rules (an outdated
  * host yaac drops the dial).
  */
-async function runNestedRelayCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runNestedRelayCheck(): Promise<CheckResult> {
   let ip: string | undefined
   try {
-    const { stdout } = await deps.run('kubectl', [
+    const { stdout } = await execFileAsync('kubectl', [
       'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`, '-o', 'json',
     ])
     const list = JSON.parse(stdout) as { items?: Array<{ status?: { podIP?: string; phase?: string } }> }

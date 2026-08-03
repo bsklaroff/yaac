@@ -7,11 +7,11 @@ import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { execFileAsync } from '#platform/k8s/kubectl'
 import { ensureGvisorRuntime } from '#platform/k8s/gvisor'
-import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
-import { ensureRegistryClusterService } from '#features/cluster/registry-service'
+import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#platform/container/registry'
+import { ensureRegistryClusterService } from './registry-service'
 import { ensureBuilderRoleGuard } from '#features/images'
-import { ensureNetd } from '#features/cluster/netd'
-import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
+import { ensureNetd } from './netd'
+import { resetClusterCidrCache } from './cluster-cidrs'
 import {
   formatCheckResult,
   NODE_KUBELET_FLAGS_ENV,
@@ -20,7 +20,7 @@ import {
   NODE_PIDS_LIMIT,
   NODE_TASKSMAX_CONF,
   runClusterCheck,
-} from '#features/cluster/check'
+} from './check'
 import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#platform/container/runtime'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
@@ -192,38 +192,46 @@ export async function confirmDefault(question: string): Promise<boolean> {
   }
 }
 
-const defaultDeps: ClusterSetupDeps = {
-  run: execFileAsync,
-  runStreaming: runStreamingDefault,
-  log: (m) => { console.log(m) },
-  confirm: confirmDefault,
-  ensureRegistry: ensureLocalRegistry,
-  exposeRegistry: async () => {
-    const host = await ensureRegistryClusterService()
-    await ensureBuilderRoleGuard()
-    return host
-  },
-  ensureNetd,
-  check: () => runClusterCheck(),
-  platform: process.platform,
-  homedir: () => os.homedir(),
-  totalmem: () => os.totalmem(),
-  cpuCount: () => os.cpus().length,
-  readTextFile: (p) => fs.readFile(p, 'utf8').catch(() => null),
-  writeTextFile: async (p, content) => {
-    await fs.mkdir(path.dirname(p), { recursive: true })
-    await fs.writeFile(p, content)
-  },
-  fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
-  listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
-  fetchText: async (url) => {
-    // Node's fetch rather than curl: this runs on the host (unlike the
-    // gVisor fetch, which happens inside the node), and setup should not
-    // grow a host binary dependency for one GET.
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-    return res.text()
-  },
+/**
+ * The host/TTY wiring every setup runs on unless the caller substitutes its
+ * own. Built on call, not at module scope: this module is reachable from the
+ * feature barrel, and a module-scope object would make merely importing the
+ * barrel bind podman, the registry, and the check suite.
+ */
+function defaultDeps(): ClusterSetupDeps {
+  return {
+    run: execFileAsync,
+    runStreaming: runStreamingDefault,
+    log: (m) => { console.log(m) },
+    confirm: confirmDefault,
+    ensureRegistry: ensureLocalRegistry,
+    exposeRegistry: async () => {
+      const host = await ensureRegistryClusterService()
+      await ensureBuilderRoleGuard()
+      return host
+    },
+    ensureNetd,
+    check: () => runClusterCheck(),
+    platform: process.platform,
+    homedir: () => os.homedir(),
+    totalmem: () => os.totalmem(),
+    cpuCount: () => os.cpus().length,
+    readTextFile: (p) => fs.readFile(p, 'utf8').catch(() => null),
+    writeTextFile: async (p, content) => {
+      await fs.mkdir(path.dirname(p), { recursive: true })
+      await fs.writeFile(p, content)
+    },
+    fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
+    listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
+    fetchText: async (url) => {
+      // Node's fetch rather than curl: this runs on the host (unlike the
+      // gVisor fetch, which happens inside the node), and setup should not
+      // grow a host binary dependency for one GET.
+      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
+      return res.text()
+    },
+  }
 }
 
 /**
@@ -234,7 +242,7 @@ const defaultDeps: ClusterSetupDeps = {
  * inherits the server's stdio; only `log` lines reach the stream.
  */
 export function streamingClusterSetupDeps(log: (message: string) => void): ClusterSetupDeps {
-  return { ...defaultDeps, log, confirm: () => Promise.resolve(true) }
+  return { ...defaultDeps(), log, confirm: () => Promise.resolve(true) }
 }
 
 /**
@@ -254,7 +262,7 @@ export function kindEnv(): NodeJS.ProcessEnv {
  */
 export async function runClusterSetup(
   opts: ClusterSetupOptions = {},
-  deps: ClusterSetupDeps = defaultDeps,
+  deps: ClusterSetupDeps = defaultDeps(),
 ): Promise<boolean> {
   if (env.nested) {
     throw new ClusterSetupError(

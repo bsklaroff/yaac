@@ -24,7 +24,7 @@ import {
   TRUSTED_PARENT_COMPRESSION,
 } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
 import { serverLog } from '#log'
 import {
   attachImageBuildProject,

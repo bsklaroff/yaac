@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ProxyClient } from '#features/sessions/egress/proxy-client'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 import type * as imageBuilderModule from '#features/images/image-builder'
-import type * as registryModule from '#features/cluster/registry'
+import type * as registryModule from '#platform/container/registry'
 import type * as serverLogModule from '#log'
 
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
@@ -20,7 +20,7 @@ vi.mock('#features/images/image-builder', async (importOriginal) => ({
   contextHash: mockContextHash,
 }))
 
-vi.mock('#features/cluster/registry', async (importOriginal) => ({
+vi.mock('#platform/container/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryRef: (tag: string) => `localhost:5001/${tag}`,
   registryHasTag: vi.fn(),

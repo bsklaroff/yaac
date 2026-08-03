@@ -2,12 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  resetClusterCidrCache: vi.fn(),
-}))
-
 vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn(),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -16,22 +10,31 @@ vi.mock('#platform/k8s/kubectl', () => ({
   kubectlWithRetry: vi.fn(),
 }))
 
-import {
-  formatCheckResult,
-  netdNotReadyContainers,
-  runClusterCheck,
-  type ClusterCheckDeps,
-} from '#features/cluster/check'
+vi.mock('#platform/container/registry', () => ({
+  registryReachable: vi.fn().mockResolvedValue(true),
+  registryHost: vi.fn(() => 'localhost:5001'),
+  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
+  registryHasTag: vi.fn().mockResolvedValue(true),
+  pushImageToRegistry: vi.fn().mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36'),
+}))
+
+import { formatCheckResult, runClusterCheck } from '#features/cluster'
 import type { CheckResult } from '@yaac/shared/types'
-import { kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { pushImageToRegistry, registryReachable } from '#platform/container/registry'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
   armDeferredClusterBoot,
   _resetDeferredClusterBootForTests,
 } from '#platform/k8s/deferred-boot'
-import { sessionUid } from '#features/images/image-builder'
+import { sessionUid } from '#features/images'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
+const mockRun = vi.mocked(execFileAsync)
+const mockApply = vi.mocked(kubectlApply)
+const mockPush = vi.mocked(pushImageToRegistry)
+const mockReachable = vi.mocked(registryReachable)
 // The vap check probes through vapAvailable() (vcluster.ts), which runs on
 // kubectlWithRetry rather than deps.run.
 const mockRetry = vi.mocked(kubectlWithRetry)
@@ -128,22 +131,38 @@ function happyRun(): RunMock {
 }
 
 /** Pod-phase responses: every probe pod completes successfully. */
-function happyGetJson(_args: string[]): unknown {
+function happyGetJson(args: string[]): unknown {
+  // The node/apiserver reads the real cluster-cidrs probe makes for the
+  // policies the egress check exercises.
+  if (args[1] === 'nodes') {
+    return { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.7' }] } }] }
+  }
+  if (args[1] === 'endpoints') return { subsets: [{ addresses: [{ ip: '10.89.0.7' }] }] }
   return { status: { phase: 'Succeeded' } }
 }
 
-function makeDeps(
-  overrides: Omit<Partial<ClusterCheckDeps>, 'run'> & { run?: RunMock } = {},
-): ClusterCheckDeps & { run: RunMock } {
+interface Staged {
+  run: RunMock
+  apply: typeof mockApply
+  pushImage: typeof mockPush
+}
+
+/**
+ * Install the process-boundary fakes one check run needs — the subprocess
+ * runner, the registry ping and push, and kubectl apply — and hand back the
+ * call records the assertions read. `ensureNamespace` is a sibling and runs
+ * for real, so its Namespace apply shows up in `apply`.
+ */
+function stage(overrides: { run?: RunMock; registryReachable?: boolean } = {}): Staged {
   const run = overrides.run ?? happyRun()
-  return {
-    run: run as unknown as ClusterCheckDeps['run'],
-    registryReachable: overrides.registryReachable ?? vi.fn().mockResolvedValue(true),
-    pushImage: overrides.pushImage
-      ?? vi.fn().mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36'),
-    ensureNamespace: overrides.ensureNamespace ?? vi.fn().mockResolvedValue(undefined),
-    apply: overrides.apply ?? vi.fn().mockResolvedValue(undefined),
-  } as ClusterCheckDeps & { run: RunMock }
+  mockRun.mockClear()
+  mockApply.mockClear()
+  mockPush.mockClear()
+  mockRun.mockImplementation(run as never)
+  mockReachable.mockResolvedValue(overrides.registryReachable ?? true)
+  mockPush.mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36')
+  mockApply.mockResolvedValue(undefined)
+  return { run, apply: mockApply, pushImage: mockPush }
 }
 
 function byName(results: CheckResult[], name: string): CheckResult | undefined {
@@ -156,6 +175,7 @@ describe('runClusterCheck', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     mockGetJson.mockReset()
+    resetClusterCidrCache()
     // Probe pods complete successfully unless a test overrides.
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(happyGetJson(args)))
     // vapAvailable()'s kubectl probe answers unless a test overrides.
@@ -172,9 +192,9 @@ describe('runClusterCheck', () => {
     // A nested server that armed its cluster boot fronts an asleep
     // (scale-to-zero) vcluster — the check must not wake it or time out.
     armDeferredClusterBoot(async () => { /* never fired in this test */ })
-    const deps = makeDeps()
+    const deps = stage()
 
-    const { ok, results } = await runClusterCheck(deps)
+    const { ok, results } = await runClusterCheck()
 
     expect(ok).toBe(true)
     expect(results.map((r) => [r.name, r.status])).toEqual([['cluster', 'pass']])
@@ -185,8 +205,8 @@ describe('runClusterCheck', () => {
   })
 
   it('passes every check on a healthy single-node cluster', async () => {
-    const deps = makeDeps()
-    const { ok, results } = await runClusterCheck(deps)
+    const deps = stage()
+    const { ok, results } = await runClusterCheck()
 
     expect(results.map((r) => [r.name, r.status])).toEqual([
       ['kubectl', 'pass'],
@@ -253,8 +273,8 @@ describe('runClusterCheck', () => {
   it('skips the egress-layer and vcluster gates inside a nested yaac', async () => {
     process.env.YAAC_NESTED = '1'
     try {
-      const deps = makeDeps()
-      const { ok, results } = await runClusterCheck(deps)
+      stage()
+      const { ok, results } = await runClusterCheck()
       expect(ok).toBe(true)
       // The shared-machinery checks still run for real (inner registry,
       // inner namespace, inner probe).
@@ -293,7 +313,8 @@ describe('runClusterCheck', () => {
         }
         return happyResponses(file, args)
       })
-      const { ok, results } = await runClusterCheck(makeDeps({ run }))
+      stage({ run })
+      const { ok, results } = await runClusterCheck()
       expect(ok).toBe(true)
       expect(byName(results, 'datapath')?.status).toBe('warn')
     } finally {
@@ -312,7 +333,8 @@ describe('runClusterCheck', () => {
         }
         return happyResponses(file, args)
       })
-      const { ok, results } = await runClusterCheck(makeDeps({ run }))
+      stage({ run })
+      const { ok, results } = await runClusterCheck()
       expect(ok).toBe(false)
       const datapath = byName(results, 'datapath')
       expect(datapath?.status).toBe('fail')
@@ -322,6 +344,33 @@ describe('runClusterCheck', () => {
     }
   })
 
+  it('warns rather than crashing when the node list cannot be read', async () => {
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes'
+        && args.includes('json')) {
+        throw new Error('connection refused')
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { results } = await runClusterCheck()
+    // Node count is advisory (hostPath assumes one), so an unreadable list
+    // must not fail the run.
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'nodes')?.detail).toMatch(/could not list nodes.*connection refused/)
+  })
+
+  it('fails the namespace check with a rights hint when the namespace cannot be created', async () => {
+    stage()
+    mockApply.mockRejectedValue(new Error('namespaces is forbidden'))
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    expect(byName(results, 'namespace')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'namespace')?.detail).toMatch(/cannot create namespace.*forbidden/)
+    expect(byName(results, 'namespace')?.fix).toMatch(/admin rights/)
+  })
+
   it('short-circuits with a single failure when kubectl is missing', async () => {
     const run = vi.fn((file: string, args: string[]) => {
       if (file === 'kubectl' && args.includes('--client')) {
@@ -329,7 +378,8 @@ describe('runClusterCheck', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
 
     expect(ok).toBe(false)
     expect(results).toHaveLength(1)
@@ -344,7 +394,8 @@ describe('runClusterCheck', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
 
     expect(ok).toBe(false)
     expect(results.map((r) => r.name)).toEqual(['kubectl', 'cluster'])
@@ -360,7 +411,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
 
     expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
     expect(byName(results, 'probe')).toMatchObject({ status: 'pass' })
@@ -378,8 +430,8 @@ describe('runClusterCheck', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     })
-    const deps = makeDeps({ run })
-    const { ok, results } = await runClusterCheck(deps)
+    const deps = stage({ run })
+    const { ok, results } = await runClusterCheck()
 
     expect(ok).toBe(false)
     expect(byName(results, 'podman')).toMatchObject({ status: 'fail' })
@@ -389,7 +441,10 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'datapath')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.pushImage).not.toHaveBeenCalled()
-    expect(deps.apply).not.toHaveBeenCalled()
+    // No probe object reached the cluster (the namespace ensure is a
+    // sibling and may still have run).
+    const appliedKinds = deps.apply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+    expect(appliedKinds).not.toContain('Pod')
   })
 
   it('warns on node-fixups (pointing at setup --repair) when a fixup went missing', async () => {
@@ -406,7 +461,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'warn' })
     expect(fixups?.detail).toContain('DefaultTasksMax')
@@ -425,7 +481,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { results } = await runClusterCheck()
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'skip' })
     expect(fixups?.detail).toContain('not a podman container')
@@ -439,7 +496,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const gvisor = byName(results, 'gvisor')
     expect(gvisor).toMatchObject({ status: 'fail' })
@@ -460,7 +518,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     expect(byName(results, 'gvisor')).toMatchObject({
       status: 'fail',
@@ -506,7 +565,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     const stamp = byName(results, 'runtime-stamp')
     expect(stamp).toMatchObject({ status: 'warn' })
     expect(stamp?.detail).toContain('test-ns/yaac-old-session')
@@ -518,7 +578,8 @@ describe('runClusterCheck', () => {
   })
 
   it('passes the egress check when a session-labeled pod cannot reach the apiserver', async () => {
-    const { results } = await runClusterCheck(makeDeps())
+    stage()
+    const { results } = await runClusterCheck()
     expect(byName(results, 'egress')).toMatchObject({
       status: 'pass',
       detail: expect.stringContaining('default-denied at the CNI') as string,
@@ -534,7 +595,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
@@ -554,7 +616,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
@@ -562,7 +625,8 @@ describe('runClusterCheck', () => {
   })
 
   it('passes datapath when calico-node and netd are both rolled out', async () => {
-    const { results } = await runClusterCheck(makeDeps())
+    stage()
+    const { results } = await runClusterCheck()
     expect(byName(results, 'datapath')).toMatchObject({
       status: 'pass',
       detail: expect.stringContaining('policy enforced, egress redirected') as string,
@@ -578,7 +642,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const datapath = byName(results, 'datapath')
     expect(datapath).toMatchObject({ status: 'fail' })
@@ -612,11 +677,60 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { results } = await runClusterCheck()
     const datapath = byName(results, 'datapath')
     expect(datapath).toMatchObject({ status: 'fail' })
     expect(datapath?.detail).toContain('envoy: CrashLoopBackOff')
     expect(datapath?.fix).toContain('-c envoy')
+  })
+
+  it('dedupes the unhealthy netd containers and tolerates unreadable pod JSON', async () => {
+    const withPods = async (podsStdout: string): Promise<string> => {
+      const run = happyRun()
+      run.mockImplementation(async (file: string, args: string[]) => {
+        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+          && args[2] === 'yaac-netd') {
+          return { stdout: '0/1', stderr: '' }
+        }
+        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+          && args.includes('app=yaac-netd')) {
+          return { stdout: podsStdout, stderr: '' }
+        }
+        return happyResponses(file, args)
+      })
+      stage({ run })
+      const { results } = await runClusterCheck()
+      return byName(results, 'datapath')?.detail ?? ''
+    }
+
+    // One name per fault, however many pods carry it: a 50-node DaemonSet
+    // must not print the same crashing sidecar fifty times. Ready and
+    // nameless containers are not faults at all.
+    const pod = {
+      status: {
+        containerStatuses: [
+          { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
+          { name: 'netd', ready: true },
+          { ready: false },
+        ],
+      },
+    }
+    const detail = await withPods(JSON.stringify({ items: [pod, pod] }))
+    expect(detail.match(/envoy: CrashLoopBackOff/g)).toHaveLength(1)
+    expect(detail).not.toContain('netd: ')
+
+    // A container down with no state at all still gets named.
+    expect(await withPods(JSON.stringify({
+      items: [{ status: { containerStatuses: [{ name: 'netd', ready: false }] } }],
+    }))).toContain('netd: not ready')
+
+    // Unreadable output must not mask the real failure with a crash.
+    for (const junk of ['', 'not json', '{}']) {
+      const d = await withPods(junk)
+      expect(d).toContain('session egress has no redirect')
+      expect(d).not.toContain('(')
+    }
   })
 
   it('fails datapath when netd is absent (session egress has no redirect)', async () => {
@@ -631,7 +745,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const datapath = byName(results, 'datapath')
     expect(datapath).toMatchObject({ status: 'fail' })
@@ -639,8 +754,8 @@ describe('runClusterCheck', () => {
   })
 
   it('runs the nested-mount probe under the exact nested session securityContext', async () => {
-    const deps = makeDeps()
-    const { results } = await runClusterCheck(deps)
+    const deps = stage()
+    const { results } = await runClusterCheck()
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'pass' })
 
     const probePod = vi.mocked(deps.apply).mock.calls
@@ -685,7 +800,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     const nested = byName(results, 'nested-mount')
     expect(nested).toMatchObject({ status: 'warn' })
     expect(nested?.fix).toContain('cluster setup --repair')
@@ -696,7 +812,8 @@ describe('runClusterCheck', () => {
     // The check gates on vapAvailable() — the exact probe session-create
     // applies — so it is stubbed at the kubectl layer, not deps.run.
     mockRetry.mockRejectedValue(new Error("the server doesn't have a resource type"))
-    const { ok, results } = await runClusterCheck(makeDeps())
+    stage()
+    const { ok, results } = await runClusterCheck()
     const vap = byName(results, 'vap')
     expect(vap).toMatchObject({ status: 'warn' })
     expect(vap?.detail).toContain('ValidatingAdmissionPolicy API unavailable')
@@ -705,9 +822,10 @@ describe('runClusterCheck', () => {
   })
 
   it('fails the registry check with start instructions when nothing answers', async () => {
-    const { ok, results } = await runClusterCheck(makeDeps({
-      registryReachable: vi.fn().mockResolvedValue(false),
-    }))
+    stage({
+      registryReachable: false,
+    })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const registry = byName(results, 'registry')
     expect(registry).toMatchObject({ status: 'fail' })
@@ -722,7 +840,8 @@ describe('runClusterCheck', () => {
         ? { status: { phase: 'Failed' } }
         : happyGetJson(args),
     ))
-    const { ok, results } = await runClusterCheck(makeDeps())
+    stage()
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const probe = byName(results, 'probe')
     expect(probe).toMatchObject({ status: 'fail' })
@@ -741,7 +860,8 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     const probe = byName(results, 'probe')
     expect(probe).toMatchObject({ status: 'fail' })
@@ -757,38 +877,13 @@ describe('runClusterCheck', () => {
       }
       return happyResponses(file, args)
     })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
     expect(ok).toBe(false)
     expect(byName(results, 'probe')).toMatchObject({
       status: 'fail',
       detail: expect.stringContaining('stale data') as string,
     })
-  })
-})
-
-describe('netdNotReadyContainers', () => {
-  it('reports each not-ready container with its state reason', () => {
-    expect(netdNotReadyContainers(JSON.stringify({
-      items: [{
-        status: {
-          containerStatuses: [
-            { name: 'netd', ready: true, state: { running: {} } },
-            { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
-          ],
-        },
-      }],
-    }))).toEqual(['envoy: CrashLoopBackOff'])
-  })
-
-  it('falls back to a bare label and dedupes across pods', () => {
-    const pod = { status: { containerStatuses: [{ name: 'netd', ready: false }] } }
-    expect(netdNotReadyContainers(JSON.stringify({ items: [pod, pod] })))
-      .toEqual(['netd: not ready'])
-  })
-
-  it('yields nothing for unparseable or empty input', () => {
-    expect(netdNotReadyContainers('')).toEqual([])
-    expect(netdNotReadyContainers('not json')).toEqual([])
   })
 })
 

@@ -14,7 +14,7 @@ import {
   CA_CONFIGMAP_NAME,
 } from '#platform/k8s/pod-spec'
 import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '#features/cluster/proxy-constants'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '#platform/k8s/proxy-constants'
 import {
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
@@ -22,15 +22,15 @@ import {
   buildProxyRoleManifest,
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
-} from '#features/cluster/proxy-manifests'
+} from './proxy-manifests'
 import {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
   buildSessionEgressNpManifest,
   buildSessionIngressLockNpManifest,
-} from '#features/cluster/policy-manifests'
-import { nodeIpBlocks } from '#features/cluster/cluster-cidrs'
-import { ensureNetd } from '#features/cluster/netd'
+} from './policy-manifests'
+import { nodeIpBlocks } from './cluster-cidrs'
+import { ensureNetd } from './netd'
 
 /**
  * Host directory shared between the proxy pod (which runs ssh-agent on a

@@ -1,6 +1,6 @@
-import { confirmDefault, kindEnv } from '#features/cluster/setup'
+import { confirmDefault, kindEnv } from './setup'
 import { execFileAsync } from '#platform/k8s/kubectl'
-import { removeLocalRegistry, REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
+import { removeLocalRegistry, REGISTRY_CONTAINER_NAME } from '#platform/container/registry'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -22,22 +22,6 @@ export interface ClusterDeleteOptions {
   yes?: boolean
 }
 
-export interface ClusterDeleteDeps {
-  /** execFile-style runner, injectable for tests. */
-  run: typeof execFileAsync
-  log: (message: string) => void
-  /** Interactive yes/no gate; false when not a TTY. */
-  confirm: (question: string) => Promise<boolean>
-  removeRegistry: () => Promise<void>
-}
-
-const defaultDeps: ClusterDeleteDeps = {
-  run: execFileAsync,
-  log: (m) => { console.log(m) },
-  confirm: confirmDefault,
-  removeRegistry: removeLocalRegistry,
-}
-
 /**
  * Names of the kind clusters the podman provider can see. Throws
  * ClusterDeleteError (not a bare exit code) when kind cannot be queried at
@@ -46,9 +30,9 @@ const defaultDeps: ClusterDeleteDeps = {
  * (with spaces) when there are none; real cluster names never contain
  * whitespace, so whitespace-bearing lines are dropped to leave just names.
  */
-async function listKindClusters(deps: ClusterDeleteDeps): Promise<string[]> {
+async function listKindClusters(): Promise<string[]> {
   try {
-    const { stdout } = await deps.run('kind', ['get', 'clusters'], { env: kindEnv() })
+    const { stdout } = await execFileAsync('kind', ['get', 'clusters'], { env: kindEnv() })
     return stdout
       .split('\n')
       .map((l) => l.trim())
@@ -73,7 +57,6 @@ async function listKindClusters(deps: ClusterDeleteDeps): Promise<string[]> {
  */
 export async function runClusterDelete(
   opts: ClusterDeleteOptions = {},
-  deps: ClusterDeleteDeps = defaultDeps,
 ): Promise<void> {
   if (env.nested) {
     throw new ClusterDeleteError(
@@ -83,31 +66,31 @@ export async function runClusterDelete(
   }
 
   const cluster = env.kindCluster
-  const exists = (await listKindClusters(deps)).includes(cluster)
+  const exists = (await listKindClusters()).includes(cluster)
 
   if (!opts.yes) {
-    const proceed = await deps.confirm(
+    const proceed = await confirmDefault(
       `This deletes the kind cluster "${cluster}" and the local registry `
       + `container "${REGISTRY_CONTAINER_NAME}". Any running sessions stop, but `
       + 'their on-disk state and worktrees are kept. Continue?',
     )
     if (!proceed) {
-      deps.log('Aborted — nothing was deleted.')
+      console.log('Aborted — nothing was deleted.')
       return
     }
   }
 
   if (exists) {
-    deps.log(`Deleting kind cluster "${cluster}"...`)
-    await deps.run('kind', ['delete', 'cluster', '--name', cluster], { env: kindEnv() })
+    console.log(`Deleting kind cluster "${cluster}"...`)
+    await execFileAsync('kind', ['delete', 'cluster', '--name', cluster], { env: kindEnv() })
   } else {
-    deps.log(`No kind cluster "${cluster}" to delete.`)
+    console.log(`No kind cluster "${cluster}" to delete.`)
   }
 
-  deps.log(`Removing local registry container "${REGISTRY_CONTAINER_NAME}"...`)
-  await deps.removeRegistry()
+  console.log(`Removing local registry container "${REGISTRY_CONTAINER_NAME}"...`)
+  await removeLocalRegistry()
 
-  deps.log(
+  console.log(
     '\nDone. Sessions and worktrees on disk are untouched — run '
     + '`yaac cluster setup` to recreate the cluster when you need it.',
   )

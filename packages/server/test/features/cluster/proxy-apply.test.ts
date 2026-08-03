@@ -2,60 +2,168 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  resetClusterCidrCache: vi.fn(),
-}))
-
+// Everything faked here is a process boundary or another feature's barrel:
+// kubectl, podman (execFileAsync / the container runtime), the local
+// registry's HTTP calls, and the image feature's build pipeline. Nothing
+// inside features/cluster is mocked — so `ensureProxyResources` drives the
+// real proxy manifests, the real policy set, the real cluster-CIDR probes,
+// and the real netd (which is internal to the folder and covered only here
+// and through cluster setup).
 vi.mock('#platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-// ensureProxyResources applies the netd DaemonSet on the host path; it
-// builds images and talks to the cluster, so stub it out.
-vi.mock('#features/cluster/netd', () => ({
-  ensureNetd: vi.fn().mockResolvedValue(undefined),
+// netd promisifies node:child_process itself, so podman is faked at that
+// boundary rather than through kubectl's execFileAsync.
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((...allArgs: unknown[]) => {
+    const args = allArgs[1] as string[]
+    const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
+    // `podman image inspect --format {{.Architecture}}` — answer with the
+    // host arch so the mirror's arch guard passes.
+    const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
+    cb(null, { stdout: isArchProbe ? hostArch() : '', stderr: '' })
+  }),
 }))
 
-import { ensureNetd } from '#features/cluster/netd'
+vi.mock('#platform/container/registry', () => ({
+  registryHasTag: vi.fn().mockResolvedValue(true),
+  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
+  pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
+}))
+
+vi.mock('#platform/container/runtime', () => ({
+  imageExists: vi.fn().mockResolvedValue(true),
+}))
+
+vi.mock('#features/images', () => ({
+  contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
+  buildImage: vi.fn().mockResolvedValue(undefined),
+  registerImageBuild: vi.fn(() => 'build-1'),
+  finishImageBuild: vi.fn(),
+  failImageBuild: vi.fn(),
+}))
+
 import {
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  proxyServiceClusterIp,
   proxyDataHostDir,
-  sshAgentHostDir,
+  proxyServiceClusterIp,
   resetProxyClusterIpCache,
-} from '#features/cluster/proxy-apply'
+  sshAgentHostDir,
+} from '#features/cluster'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
+  DNS_STUB_PORT,
+  EGRESS_WORLD_DENY_NAME,
+  LABEL_ROLE,
+  NETD_APP_NAME,
+  NETD_LISTENER_PORT_BASE,
+  NETD_LISTENER_PORT_END,
   OUTER_CA_CONFIGMAP_NAME,
+  POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
-} from '#features/cluster/proxy-constants'
+  PROXY_INGRESS_NP_NAME,
+  PROXY_PORT,
+  PROXY_SA_NAME,
+  RELAY_PORT,
+  ROLE_INNER_PROXY,
+  SESSION_EGRESS_NP_NAME,
+  SESSION_INGRESS_LOCK_NP_NAME,
+  TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_TUNNEL_PORT,
+} from '#platform/k8s/proxy-constants'
+import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { imageExists } from '#platform/container/runtime'
+import { registryHasTag } from '#platform/container/registry'
+import { buildImage, failImageBuild, registerImageBuild } from '#features/images'
 import { CA_CERT_PATH } from '#platform/k8s/pod-spec'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { execFile } from 'node:child_process'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
+const mockPodman = vi.mocked(execFile)
+/** podman's arch string for this host, as assertMirrorArch expects it. */
+function hostArch(): string {
+  return process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch
+}
+/** The argv of every podman invocation recorded by the child_process fake. */
+const podmanArgs = (): string[][] =>
+  mockPodman.mock.calls.map((c) => c[1] as string[])
+const mockImageExists = vi.mocked(imageExists)
+const mockHasTag = vi.mocked(registryHasTag)
+
+const NODE_IP = '10.89.0.7'
+
+interface Manifest {
+  kind: string
+  metadata: { name: string; namespace?: string; labels?: Record<string, string> }
+  spec?: Record<string, unknown>
+}
+
+interface Rule {
+  to?: Array<Record<string, unknown>>
+  from?: Array<Record<string, unknown>>
+  ports?: Array<{ protocol: string; port: number; endPort?: number }>
+}
 
 let tmpDir: string
 
+/**
+ * Serve every cluster read `ensureProxyResources` makes: the node/apiserver
+ * addresses cluster-cidrs resolves the policy ipBlocks from, the Calico pool
+ * list netd's exclusion set comes from, and (by default) no live proxy
+ * Service. Individual tests override `kubectlGetJson` after calling this.
+ */
+function stageClusterReads(): void {
+  mockGetJson.mockImplementation((args: string[]) => {
+    if (args[1] === 'nodes') {
+      return Promise.resolve({
+        items: [{
+          status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
+          spec: { podCIDR: '10.244.0.0/24' },
+        }],
+      })
+    }
+    if (args[1] === 'endpoints') {
+      return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+    }
+    if (args[1]?.startsWith('ippools')) {
+      return Promise.resolve({ items: [{ spec: { cidr: '192.168.0.0/16' } }] })
+    }
+    return Promise.resolve(null)
+  })
+}
+
+const applied = (): Manifest[] => mockApply.mock.calls.map((c) => c[0] as Manifest)
+const kinds = (): string[] => applied().map((m) => m.kind)
+const byName = (name: string): Manifest | undefined =>
+  applied().find((m) => m.metadata.name === name)
+const specOf = (m: Manifest | undefined): Record<string, unknown> =>
+  (m?.spec ?? {})
+
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  mockApply.mockReset()
+  vi.clearAllMocks()
   mockApply.mockResolvedValue(undefined)
-  mockGetJson.mockReset()
-  mockRetry.mockReset()
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+  mockImageExists.mockResolvedValue(true)
+  mockHasTag.mockResolvedValue(true)
+  resetClusterCidrCache()
+  resetProxyClusterIpCache()
   vi.stubEnv('YAAC_USE_TOR', '')
 })
 
@@ -64,9 +172,14 @@ afterEach(async () => {
   vi.unstubAllEnvs()
 })
 
-describe('sshAgentHostDir / proxyDataHostDir', () => {
-  it('live under <dataDir>/run', () => {
+describe('sshAgentHostDir', () => {
+  it('lives under <dataDir>/run', () => {
     expect(sshAgentHostDir()).toBe(path.join(tmpDir, 'run', 'ssh-agent'))
+  })
+})
+
+describe('proxyDataHostDir', () => {
+  it('lives under <dataDir>/run', () => {
     expect(proxyDataHostDir()).toBe(path.join(tmpDir, 'run', 'proxy-data'))
   })
 })
@@ -109,10 +222,6 @@ describe('ensureProxyAuthSecret', () => {
 })
 
 describe('proxyServiceClusterIp', () => {
-  beforeEach(() => {
-    resetProxyClusterIpCache()
-  })
-
   it('returns the live (vcluster-allocated) ClusterIP of the proxy Service', async () => {
     mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
     expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
@@ -140,9 +249,20 @@ describe('proxyServiceClusterIp', () => {
   })
 })
 
+describe('resetProxyClusterIpCache', () => {
+  it('forces the next call to re-read the Service', async () => {
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.0.1' } })
+    await proxyServiceClusterIp()
+
+    resetProxyClusterIpCache()
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.0.2' } })
+    expect(await proxyServiceClusterIp()).toBe('10.96.0.2')
+  })
+})
+
 describe('ensureProxyResources', () => {
-  it('pre-creates host dirs, applies both manifests, and waits for the rollout', async () => {
-    mockGetJson.mockResolvedValue(null) // no live Service yet
+  it('pre-creates host dirs, applies the whole set in order, and waits for both rollouts', async () => {
+    stageClusterReads()
     await ensureProxyResources('localhost:5000/yaac-proxy:abc')
 
     // Host dirs exist (DirectoryOrCreate would have made them root-owned).
@@ -150,39 +270,333 @@ describe('ensureProxyResources', () => {
     await expect(fs.stat(sshAgentHostDir())).resolves.toBeDefined()
     await expect(fs.stat(proxyDataHostDir())).resolves.toBeDefined()
 
-    const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual([
+    expect(kinds()).toEqual([
       'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
       // Session egress, session ingress lock, proxy ingress, world-deny.
       'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      // netd: SA, ClusterRole, ClusterRoleBinding, Role, RoleBinding, DaemonSet.
+      'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Role', 'RoleBinding',
+      'DaemonSet',
     ])
     // The proxy Service ClusterIP is allocator-assigned and never deleted —
     // no pin migration, so ensureProxyResources issues no `delete service`.
-    expect(mockRetry).not.toHaveBeenCalledWith(
-      expect.arrayContaining(['delete', 'service']),
+    expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+    expect(mockRetry).toHaveBeenCalledWith(
+      ['rollout', 'status', `daemonset/${NETD_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
+      expect.objectContaining({ maxAttempts: 2 }),
     )
     expect(mockRetry).toHaveBeenCalledWith(
-      [
-        'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
-        '-n', 'test-ns',
-        '--timeout=180s',
-      ],
+      ['rollout', 'status', `deployment/${PROXY_APP_NAME}`, '-n', 'test-ns', '--timeout=180s'],
       expect.objectContaining({ maxAttempts: 2 }),
     )
   })
 
-  it('nested: projects the outer CA ConfigMap (read from CA_CERT_PATH) before the Deployment', async () => {
-    mockGetJson.mockResolvedValue(null)
-    vi.mocked(ensureNetd).mockClear()
+  it('runs one proxy replica on runc under Recreate, wired to its ports and auth secret', async () => {
+    stageClusterReads()
+    await ensureProxyResources('localhost:5000/yaac-proxy:abc')
+
+    const dep = applied().find((m) => m.kind === 'Deployment') as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: {
+        replicas: number
+        strategy: unknown
+        selector: { matchLabels: Record<string, string> }
+        template: {
+          metadata: { labels: Record<string, string> }
+          spec: {
+            serviceAccountName: string
+            automountServiceAccountToken: boolean
+            enableServiceLinks: boolean
+            runtimeClassName?: string
+            dnsPolicy?: string
+            securityContext?: { runAsUser?: number; runAsGroup?: number; fsGroup?: number }
+            volumes: Array<Record<string, unknown>>
+            containers: Array<{
+              image: string
+              ports: Array<Record<string, unknown>>
+              env: Array<Record<string, unknown>>
+              volumeMounts: Array<Record<string, unknown>>
+              securityContext?: { capabilities?: { add?: string[] } }
+              readinessProbe: { httpGet: unknown }
+            }>
+          }
+        }
+      }
+    }
+    expect(dep.metadata).toMatchObject({ name: PROXY_APP_NAME, namespace: 'test-ns' })
+    expect(dep.spec.replicas).toBe(1)
+    // Recreate, not RollingUpdate: two proxies would share the agent socket.
+    expect(dep.spec.strategy).toEqual({ type: 'Recreate' })
+    expect(dep.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
+    // Install identity on every proxy pod; no inner-proxy role when top-level.
+    expect(dep.spec.template.metadata.labels).toEqual({
+      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
+    })
+
+    const pod = dep.spec.template.spec
+    // Trusted infra runs on runc; DNS is the cluster default when top-level.
+    expect(pod.runtimeClassName).toBeUndefined()
+    expect(pod.dnsPolicy).toBeUndefined()
+    expect(pod.serviceAccountName).toBe(PROXY_SA_NAME)
+    expect(pod.automountServiceAccountToken).toBe(true)
+    expect(pod.enableServiceLinks).toBe(false)
+    // Runs as the server host uid, with fsGroup for the emptyDir HOME.
+    expect(pod.securityContext?.runAsUser).toBe(process.getuid?.())
+    expect(pod.securityContext?.fsGroup).toBe(process.getgid?.())
+    expect(pod.volumes).toEqual([
+      { name: 'credentials', hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' } },
+      { name: 'ssh-agent', hostPath: { path: sshAgentHostDir(), type: 'DirectoryOrCreate' } },
+      { name: 'proxy-data', hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' } },
+      { name: 'home', emptyDir: {} },
+    ])
+
+    const c = pod.containers[0]
+    expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
+    expect(c.ports).toEqual([
+      { containerPort: PROXY_PORT },
+      { containerPort: TRANSPARENT_HTTPS_PORT },
+      { containerPort: TRANSPARENT_HTTP_PORT },
+      { containerPort: TRANSPARENT_TUNNEL_PORT },
+      { containerPort: RELAY_PORT },
+      { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
+    ])
+    // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
+    expect(c.securityContext?.capabilities?.add).toEqual(['NET_BIND_SERVICE'])
+    expect(c.env).toContainEqual({ name: 'RELAY_PORT', value: String(RELAY_PORT) })
+    expect(c.env).toContainEqual({ name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) })
+    expect(c.env).toContainEqual({
+      name: 'PROXY_AUTH_SECRET',
+      valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
+    })
+    // HOME points at the emptyDir mount so the proxy's known_hosts writer
+    // works when it runs as the server uid, not the image's node user.
+    expect(c.env).toContainEqual({ name: 'HOME', value: '/home/proxy' })
+    expect(c.env).not.toContainEqual({ name: 'USE_TOR', value: '1' })
+    expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
+    expect(c.volumeMounts).toEqual([
+      { name: 'credentials', mountPath: '/yaac-credentials' },
+      { name: 'ssh-agent', mountPath: '/ssh-agent' },
+      { name: 'proxy-data', mountPath: '/data' },
+      { name: 'home', mountPath: '/home/proxy' },
+    ])
+  })
+
+  it('passes tor through to the proxy container when the host enables it', async () => {
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    stageClusterReads()
+    await ensureProxyResources('img')
+
+    const dep = applied().find((m) => m.kind === 'Deployment') as unknown as {
+      spec: { template: { spec: { containers: Array<{ env: Array<Record<string, unknown>> }> } } }
+    }
+    expect(dep.spec.template.spec.containers[0].env)
+      .toContainEqual({ name: 'USE_TOR', value: '1' })
+  })
+
+  it('locks the datapath: session egress to the node range, ingress to the proxy, world default-deny', async () => {
+    stageClusterReads()
+    await ensureProxyResources('img')
+
+    // Session egress: the node's netd listener range is the only world-ward
+    // path a session pod gets, which is what makes a missing redirect fail
+    // closed rather than open.
+    const egress = specOf(byName(SESSION_EGRESS_NP_NAME)) as { egress: Rule[] }
+    const nodeRule = egress.egress.find((r) =>
+      r.to?.some((p) => JSON.stringify(p).includes(NODE_IP)))
+    expect(nodeRule).toBeDefined()
+    const rangePorts = egress.egress.flatMap((r) => r.ports ?? [])
+      .find((p) => p.port === NETD_LISTENER_PORT_BASE)
+    expect(rangePorts?.endPort).toBe(NETD_LISTENER_PORT_END)
+
+    // Session ingress lock: only the proxy's relay dials reach streamd.
+    const lock = specOf(byName(SESSION_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
+    expect(lock.ingress.flatMap((r) => (r.ports ?? []).map((p) => p.port)))
+      .toContain(POD_STREAM_PORT)
+
+    // Proxy ingress: the transparent ports are node-only, so only netd's
+    // Envoy (host netns) can originate PROXY-protocol identity.
+    const proxyIngress = specOf(byName(PROXY_INGRESS_NP_NAME)) as { ingress: Rule[] }
+    const transparent = proxyIngress.ingress.find((r) =>
+      (r.ports ?? []).some((p) => p.port === TRANSPARENT_HTTPS_PORT))
+    expect(JSON.stringify(transparent?.from)).toContain(NODE_IP)
+
+    // World default-deny over everything that is not the proxy, a session,
+    // or a builder.
+    const worldDeny = specOf(byName(EGRESS_WORLD_DENY_NAME)) as {
+      egress: unknown[]; policyTypes: string[]
+    }
+    expect(worldDeny.egress).toEqual([])
+    expect(worldDeny.policyTypes).toEqual(['Egress'])
+  })
+
+  it('gives netd the union of Calico pools and node podCIDRs as its redirect exclusion set', async () => {
+    stageClusterReads()
+    await ensureProxyResources('img')
+
+    const ds = applied().find((m) => m.kind === 'DaemonSet') as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: { template: { spec: {
+        hostNetwork?: boolean
+        serviceAccountName: string
+        containers: Array<{ image: string; env: Array<{ name: string; value: string }> }>
+      } } }
+    }
+    expect(ds.metadata.name).toBe(NETD_APP_NAME)
+    const pod = ds.spec.template.spec
+    expect(pod.serviceAccountName).toBe(NETD_APP_NAME)
+    // The exclusion set unions both sources — too narrow is the dangerous
+    // direction, since an unlisted pod IP is treated as world and redirected.
+    const podCidrEnv = pod.containers
+      .flatMap((c) => c.env)
+      .find((e) => e.value?.includes('10.244.0.0/24'))
+    expect(podCidrEnv?.value).toContain('192.168.0.0/16')
+    // Both images resolve through the local registry, never upstream.
+    for (const c of pod.containers) expect(c.image).toMatch(/^localhost:5001\//)
+  })
+
+  it('builds the netd image when neither the registry nor podman has it', async () => {
+    stageClusterReads()
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockResolvedValue(false)
+
+    await ensureProxyResources('img')
+
+    expect(vi.mocked(registerImageBuild)).toHaveBeenCalledWith(
+      expect.objectContaining({ layer: 'netd', action: 'build' }),
+    )
+    expect(vi.mocked(buildImage)).toHaveBeenCalledWith(
+      expect.stringMatching(/^yaac-netd:/),
+      expect.stringContaining('Dockerfile'),
+      expect.any(String),
+    )
+    // Envoy is mirrored rather than built: pull the digest-pinned upstream,
+    // verify the arch, retag into the local mirror tag.
+    const argvs = podmanArgs()
+    expect(argvs).toContainEqual(['pull', expect.stringContaining('envoyproxy/envoy@')])
+    expect(argvs.some((a) => a[0] === 'tag')).toBe(true)
+  })
+
+  it('marks the netd build failed and rethrows when the image build dies', async () => {
+    stageClusterReads()
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockResolvedValue(false)
+    vi.mocked(buildImage).mockRejectedValueOnce(new Error('podman exploded'))
+
+    await expect(ensureProxyResources('img')).rejects.toThrow('podman exploded')
+    expect(vi.mocked(failImageBuild)).toHaveBeenCalledWith('build-1', 'podman exploded')
+  })
+
+  it('fails fast on a missing netd or Envoy image when prebuilt images are required', async () => {
+    stageClusterReads()
+    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
+    mockImageExists.mockResolvedValue(false)
+
+    // Envoy mirrored, netd not: the missing build is the one named.
+    mockHasTag.mockImplementation((tag: string) =>
+      Promise.resolve(!tag.startsWith('yaac-netd:')))
+    await expect(ensureProxyResources('img')).rejects.toThrow(/netd image .* is missing or stale/)
+
+    // netd present, Envoy absent: the mirror is what fails.
+    mockHasTag.mockImplementation((tag: string) =>
+      Promise.resolve(tag.startsWith('yaac-netd:')))
+    await expect(ensureProxyResources('img')).rejects.toThrow(/Envoy image .* is missing/)
+    // Nothing was pulled — that is the point of the gate.
+    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
+  })
+
+  it('refuses an Envoy mirror built for another architecture', async () => {
+    stageClusterReads()
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockImplementation((tag: string) =>
+      Promise.resolve(tag.startsWith('yaac-netd:')))
+    const realArch = process.arch
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true })
+    try {
+      // podman reports amd64, which is what x64 means — the mirror is fine.
+      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
+        const args = allArgs[1] as string[]
+        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
+        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
+        cb(null, { stdout: isArchProbe ? 'amd64' : '', stderr: '' })
+      }) as never)
+      await expect(ensureProxyResources('img')).resolves.toBeUndefined()
+
+      // A child manifest for the wrong platform must not be mirrored.
+      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
+        const args = allArgs[1] as string[]
+        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
+        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
+        cb(null, { stdout: isArchProbe ? 'arm64' : '', stderr: '' })
+      }) as never)
+      await expect(ensureProxyResources('img'))
+        .rejects.toThrow(/is a arm64 image but this host is amd64/)
+    } finally {
+      Object.defineProperty(process, 'arch', { value: realArch, configurable: true })
+    }
+  })
+
+  it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {
+    // Calico is a CRD: on a cluster without it the get fails, which is a
+    // missing source and not an error — the node podCIDRs still count.
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1]?.startsWith('ippools')) return Promise.reject(new Error('no such resource'))
+      if (args[1] === 'nodes') {
+        return Promise.resolve({
+          items: [{
+            status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
+            spec: { podCIDRs: ['10.244.0.0/24'] },
+          }],
+        })
+      }
+      if (args[1] === 'endpoints') {
+        return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+      }
+      return Promise.resolve(null)
+    })
+    await ensureProxyResources('img')
+    expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
+      .toContain('10.244.0.0/24')
+
+    // Nothing publishes a pod CIDR: kind's default is the last resort, since
+    // an empty exclusion set would redirect pod-to-pod traffic into the proxy.
+    vi.clearAllMocks()
+    resetClusterCidrCache()
+    mockApply.mockResolvedValue(undefined)
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    mockHasTag.mockResolvedValue(true)
+    mockImageExists.mockResolvedValue(true)
+    mockGetJson.mockImplementation((args: string[]) => {
+      if (args[1] === 'nodes') {
+        return Promise.resolve({
+          items: [{ status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] } }],
+        })
+      }
+      if (args[1] === 'endpoints') {
+        return Promise.resolve({ subsets: [{ addresses: [{ ip: NODE_IP }] }] })
+      }
+      return Promise.resolve(null)
+    })
+    await ensureProxyResources('img')
+    expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
+      .toContain('10.244.0.0/16')
+
+    // The pod-CIDR answer is cached for the process: a second ensure in the
+    // same server does not re-probe.
+    mockGetJson.mockClear()
+    await ensureProxyResources('img')
+    expect(mockGetJson.mock.calls.some((c) => (c[0])[1]?.startsWith('ippools')))
+      .toBe(false)
+  })
+
+  it('nested: projects the outer CA, marks the pod inner-proxy, and runs netd in claim mode', async () => {
+    stageClusterReads()
     // mockRestore() also clears the call record, so assert before restoring.
     const readSpy = vi.spyOn(fs, 'readFile').mockResolvedValue('OUTER-CA-PEM')
     await ensureProxyResources('img', { nested: true })
+
     // The outer CA is read from the inner yaac's own session-pod trust mount.
     expect(readSpy).toHaveBeenCalledWith(CA_CERT_PATH, 'utf8')
-    const cmCall = mockApply.mock.calls.find(
-      (c) => (c[0] as { kind: string }).kind === 'ConfigMap',
-    )
-    expect(cmCall?.[0]).toEqual({
+    expect(byName(OUTER_CA_CONFIGMAP_NAME)).toEqual({
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
@@ -190,11 +604,47 @@ describe('ensureProxyResources', () => {
     })
     // Applied before the Deployment so the configMap mount resolves on first
     // schedule (a missing source would keep the pod ContainerCreating).
-    const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds.indexOf('ConfigMap')).toBeLessThan(kinds.indexOf('Deployment'))
-    // netd runs nested too, in CLAIM mode: the inner install publishes what
-    // it wants redirected and the host validates and programs it.
-    expect(vi.mocked(ensureNetd)).toHaveBeenCalledWith({ nested: true })
+    expect(kinds().indexOf('ConfigMap')).toBeLessThan(kinds().indexOf('Deployment'))
+
+    const dep = applied().find((m) => m.kind === 'Deployment') as unknown as {
+      spec: { template: {
+        metadata: { labels: Record<string, string> }
+        spec: {
+          dnsPolicy?: string
+          dnsConfig?: { nameservers: string[] }
+          runtimeClassName?: string
+          volumes: Array<Record<string, unknown>>
+          containers: Array<{
+            env: Array<Record<string, unknown>>
+            volumeMounts: Array<Record<string, unknown>>
+          }>
+        }
+      } }
+    }
+    // yaac.role=inner-proxy is what keeps netd from redirecting the inner
+    // proxy into itself — its upstream dial must fall through to the outer.
+    expect(dep.spec.template.metadata.labels[LABEL_ROLE]).toBe(ROLE_INNER_PROXY)
+    // Still runc, and it resolves DNS via its own loopback stub rather than
+    // the vcluster's CoreDNS.
+    expect(dep.spec.template.spec.runtimeClassName).toBeUndefined()
+    expect(dep.spec.template.spec.dnsPolicy).toBe('None')
+    expect(dep.spec.template.spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] })
+    // Without the outer CA the chained upstream dial fails closed with
+    // "self-signed certificate in certificate chain".
+    expect(dep.spec.template.spec.containers[0].env)
+      .toContainEqual({ name: 'NODE_EXTRA_CA_CERTS', value: '/etc/yaac/outer-ca/proxy-ca.pem' })
+    expect(dep.spec.template.spec.volumes)
+      .toContainEqual({ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } })
+
+    // Claim-mode netd: the inner install publishes what it wants redirected
+    // through a ConfigMap and the host validates and programs it. No Envoy
+    // is mirrored and no pod CIDRs are read — it programs nothing itself.
+    const claimCm = applied().filter((m) => m.kind === 'ConfigMap')
+      .find((m) => m.metadata.name !== OUTER_CA_CONFIGMAP_NAME)
+    expect(claimCm).toBeDefined()
+    expect(kinds()).toContain('DaemonSet')
+    expect(kinds()).not.toContain('ClusterRole')
+    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
     readSpy.mockRestore()
   })
 })

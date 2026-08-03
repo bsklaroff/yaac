@@ -2,12 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  resetClusterCidrCache: vi.fn(),
-}))
-
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -17,7 +11,7 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('#features/cluster/registry', () => ({
+vi.mock('#platform/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
@@ -28,6 +22,15 @@ vi.mock('#platform/container/runtime', () => ({
 }))
 
 import {
+  ensureProjectRegistry,
+  gcOrphanProjectRegistries,
+  projectRegistryConfDropIn,
+  projectRegistryHost,
+  removeProjectRegistry,
+} from '#features/cluster'
+// Setup values: label keys, the pinned upstream digest, and the name/path
+// derivations the assertions below compare against.
+import {
   LABEL_NODE_WRITE,
   LABEL_REGISTRY_DATA_DIR_HASH,
   PROJECT_REGISTRY_PORT,
@@ -35,30 +38,17 @@ import {
   REGISTRY_IMAGE_DIGEST,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
-  buildProjectRegistryDeploymentManifest,
-  buildProjectRegistryServiceManifest,
-  buildRegistryCleanupPodManifest,
-  buildRegistryEgressNetworkPolicyManifest,
-  buildRegistryHostsWriterPodManifest,
-  buildRegistryIngressNetworkPolicyManifest,
-  buildRegistrySessionsNetworkPolicyManifest,
-  ensureProjectRegistry,
-  ensureRegistryImage,
-  gcOrphanProjectRegistries,
-  projectRegistryConfDropIn,
-  projectRegistryHost,
-  projectRegistryHostname,
   projectRegistryName,
   projectRegistryStorageHostPath,
-  removeProjectRegistry,
 } from '#features/cluster/project-registry'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
   execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
 import { imageExists } from '#platform/container/runtime'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -70,7 +60,16 @@ const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockImageExists = vi.mocked(imageExists)
 
-const NODE_LIST = { items: [{ metadata: { name: 'yaac-control-plane' } }] }
+const NODE_IP = '10.89.0.7'
+// Carries both what project-registry reads (the node name, to pin the writer
+// pod) and what the real cluster-cidrs probe reads (the InternalIP the
+// ingress policy admits containerd pulls from).
+const NODE_LIST = {
+  items: [{
+    metadata: { name: 'yaac-control-plane' },
+    status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
+  }],
+}
 
 beforeEach(() => {
   mockApply.mockReset()
@@ -88,42 +87,59 @@ beforeEach(() => {
   mockImageExists.mockResolvedValue(false)
 })
 
-describe('projectRegistryName', () => {
-  it('is deterministic with the yaac-reg prefix and an 8-char hash suffix', () => {
-    const name = projectRegistryName('demo')
-    expect(name).toBe(projectRegistryName('demo'))
-    expect(name).toMatch(/^yaac-reg-demo-[0-9a-f]{8}$/)
+const appliedAllKind = (kind: string): unknown[] =>
+  mockApply.mock.calls.map((c) => c[0] as { kind: string }).filter((m) => m.kind === kind)
+const appliedKind = (kind: string): unknown => appliedAllKind(kind)[0]
+
+/**
+ * A live cluster for an ensure: the Service has its allocator-assigned
+ * ClusterIP, one node answers (which is also what the real cluster-cidrs
+ * probe reads for the ingress policy), and the writer pod completed.
+ */
+function stageLiveCluster(): void {
+  resetClusterCidrCache()
+  mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+    if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
+    if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+    return cidrRead(args) ?? Promise.resolve(null)
+  })
+}
+
+/**
+ * The node read cluster-cidrs resolves the ingress policy's ipBlocks from.
+ * Every staged read defers to it so the real probe answers rather than a
+ * stubbed sibling.
+ */
+function cidrRead(args: string[]): Promise<unknown> | null {
+  return args[1] === 'nodes' ? Promise.resolve(NODE_LIST) : null
+}
+
+describe('projectRegistryHost', () => {
+  it('is the registry svc-DNS FQDN with its port, deterministic per slug', () => {
+    // FQDN, not the `.svc` shorthand: the proxy forwards only `.cluster.local`.
+    expect(projectRegistryHost('demo'))
+      .toMatch(/^yaac-reg-demo-[0-9a-f]{8}\.test-ns\.svc\.cluster\.local:5000$/)
+    expect(projectRegistryHost('demo')).toBe(projectRegistryHost('demo'))
   })
 
-  it('truncates long slugs but keeps them unique via the full-slug hash', () => {
-    const a = projectRegistryName('a'.repeat(30) + '-one')
-    const b = projectRegistryName('a'.repeat(30) + '-two')
+  it('truncates long slugs but keeps them distinct via the full-slug hash', () => {
+    const a = projectRegistryHost('a'.repeat(30) + '-one')
+    const b = projectRegistryHost('a'.repeat(30) + '-two')
     expect(a).not.toBe(b)
-    // DNS-label cap: prefix(9) + slug(≤21) + dash(1) + hash(8) ≤ 39.
-    expect(a.length).toBeLessThanOrEqual(39)
-    expect(a.length).toBeLessThanOrEqual(63)
+    // DNS-label cap: prefix(9) + slug(<=21) + dash(1) + hash(8) <= 39.
+    expect(a.split('.')[0].length).toBeLessThanOrEqual(39)
   })
 
   it('sanitizes slugs into DNS-safe names', () => {
-    expect(projectRegistryName('My_Project!')).toMatch(/^yaac-reg-my-project-[0-9a-f]{8}$/)
+    expect(projectRegistryHost('My_Project!')).toMatch(/^yaac-reg-my-project-[0-9a-f]{8}\./)
   })
 })
 
-describe('host / VIP / storage helpers', () => {
-  it('builds the registry svc-DNS host as a full .cluster.local FQDN', () => {
-    const name = projectRegistryName('demo')
-    // FQDN, not the `.svc` shorthand: the proxy forwards only `.cluster.local`.
-    expect(projectRegistryHostname('demo')).toBe(`${name}.test-ns.svc.cluster.local`)
-    expect(projectRegistryHost('demo')).toBe(`${name}.test-ns.svc.cluster.local:${PROJECT_REGISTRY_PORT}`)
-  })
-
-  it('scopes node-local storage by install hash and project slug', () => {
-    expect(projectRegistryStorageHostPath('demo')).toBe('/var/lib/yaac/registry/ddh16/demo')
-  })
-
+describe('projectRegistryConfDropIn', () => {
   it('renders an insecure drop-in scoped to the exact registry host', () => {
-    const conf = projectRegistryConfDropIn('demo')
-    expect(conf).toBe([
+    // Scoped to the one host: a blanket `insecure = true` would apply to
+    // every registry the in-pod engine talks to.
+    expect(projectRegistryConfDropIn('demo')).toBe([
       '[[registry]]',
       `location = "${projectRegistryHost('demo')}"`,
       'insecure = true',
@@ -132,321 +148,10 @@ describe('host / VIP / storage helpers', () => {
   })
 })
 
-describe('manifest builders', () => {
-  interface Deployment {
-    kind: string
-    metadata: { name: string; namespace: string; labels: Record<string, string> }
-    spec: {
-      replicas: number
-      strategy: { type: string }
-      selector: { matchLabels: Record<string, string> }
-      template: {
-        metadata: { labels: Record<string, string> }
-        spec: {
-          automountServiceAccountToken: boolean
-          enableServiceLinks: boolean
-          hostUsers?: boolean
-          runtimeClassName?: string
-          securityContext?: object
-          containers: Array<{
-            image: string
-            ports: Array<{ containerPort: number }>
-            readinessProbe: { httpGet: { path: string; port: number } }
-            volumeMounts: Array<{ name: string; mountPath: string }>
-          }>
-          volumes: Array<{ name: string; hostPath: { path: string; type: string } }>
-        }
-      }
-    }
-  }
-
-  it('builds a single-replica Recreate Deployment storing into the node-local hostPath', () => {
-    const m = buildProjectRegistryDeploymentManifest(
-      'demo', 'localhost:5001/yaac-registry2:abc',
-    ) as unknown as Deployment
-    expect(m.kind).toBe('Deployment')
-    expect(m.metadata.name).toBe(projectRegistryName('demo'))
-    expect(m.metadata.namespace).toBe('test-ns')
-    expect(m.metadata.labels).toEqual({
-      app: REGISTRY_APP_LABEL,
-      'yaac.project': 'demo',
-      [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
-    })
-    expect(m.spec.replicas).toBe(1)
-    expect(m.spec.strategy).toEqual({ type: 'Recreate' })
-    expect(m.spec.selector.matchLabels).toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
-
-    const spec = m.spec.template.spec
-    expect(spec.automountServiceAccountToken).toBe(false)
-    expect(spec.enableServiceLinks).toBe(false)
-    // Trusted infra, like the proxy: plain root on runc (no RuntimeClass),
-    // no hostUsers branch.
-    expect(spec.runtimeClassName).toBeUndefined()
-    expect(spec.hostUsers).toBeUndefined()
-    expect(spec.securityContext).toBeUndefined()
-    expect(spec.containers[0].image).toBe('localhost:5001/yaac-registry2:abc')
-    expect(spec.containers[0].ports).toEqual([{ containerPort: PROJECT_REGISTRY_PORT }])
-    expect(spec.containers[0].readinessProbe.httpGet)
-      .toEqual({ path: '/v2/', port: PROJECT_REGISTRY_PORT })
-    expect(spec.containers[0].volumeMounts)
-      .toEqual([{ name: 'storage', mountPath: '/var/lib/registry' }])
-    expect(spec.volumes).toEqual([{
-      name: 'storage',
-      hostPath: { path: '/var/lib/yaac/registry/ddh16/demo', type: 'DirectoryOrCreate' },
-    }])
-  })
-
-  it('builds a pinned-VIP ClusterIP Service with port == targetPort', () => {
-    expect(buildProjectRegistryServiceManifest('demo')).toEqual({
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: {
-        name: projectRegistryName('demo'),
-        namespace: 'test-ns',
-        labels: {
-          app: REGISTRY_APP_LABEL,
-          'yaac.project': 'demo',
-          [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
-        },
-      },
-      spec: {
-        type: 'ClusterIP',
-        selector: { app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' },
-        ports: [{
-          name: 'registry',
-          port: PROJECT_REGISTRY_PORT,
-          targetPort: PROJECT_REGISTRY_PORT,
-        }],
-      },
-    })
-  })
-
-  it('admits only this project\'s sessions to this project\'s registry', () => {
-    const m = buildRegistrySessionsNetworkPolicyManifest('demo') as unknown as {
-      metadata: { name: string }
-      spec: {
-        podSelector: {
-          matchLabels: Record<string, string>
-          matchExpressions: Array<{ key: string; operator: string }>
-        }
-        policyTypes: string[]
-        egress: Array<{
-          to: Array<{ podSelector: { matchLabels: Record<string, string> } }>
-          ports: Array<{ protocol: string; port: number }>
-        }>
-      }
-    }
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-sessions`)
-    // The Exists term keeps the policy off the registry pod itself.
-    expect(m.spec.podSelector.matchLabels).toEqual({ 'yaac.project': 'demo' })
-    expect(m.spec.podSelector.matchExpressions)
-      .toEqual([{ key: 'yaac.session-id', operator: 'Exists' }])
-    expect(m.spec.policyTypes).toEqual(['Egress'])
-    expect(m.spec.egress).toEqual([{
-      to: [{
-        podSelector: {
-          matchLabels: { app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' },
-        },
-      }],
-      ports: [{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }],
-    }])
-  })
-
-  it('locks registry ingress to same-project sessions and the node', () => {
-    const m = buildRegistryIngressNetworkPolicyManifest('demo', ['10.89.0.7/32']) as unknown as {
-      apiVersion: string
-      kind: string
-      metadata: { name: string; namespace: string; labels: Record<string, string> }
-      spec: {
-        podSelector: { matchLabels: Record<string, string> }
-        policyTypes: string[]
-        ingress: Array<{
-          from: Array<{
-            podSelector?: {
-              matchLabels: Record<string, string>
-              matchExpressions: Array<{ key: string; operator: string }>
-            }
-            ipBlock?: { cidr: string }
-          }>
-          ports: Array<{ protocol: string; port: number }>
-        }>
-      }
-    }
-    expect(m.apiVersion).toBe('networking.k8s.io/v1')
-    expect(m.kind).toBe('NetworkPolicy')
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-ingress`)
-    expect(m.metadata.namespace).toBe('test-ns')
-    expect(m.spec.podSelector.matchLabels)
-      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
-    expect(m.spec.policyTypes).toEqual(['Ingress'])
-
-    const [sessions, node] = m.spec.ingress
-    // Same-project sessions only — the receiving-side half of the
-    // cross-project lock (the sessions NetworkPolicy is the egress half).
-    expect(sessions.from).toEqual([{
-      podSelector: {
-        matchLabels: { 'yaac.project': 'demo' },
-        matchExpressions: [{ key: 'yaac.session-id', operator: 'Exists' }],
-      },
-    }])
-    expect(sessions.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
-    // Kubelet probes and node containerd pulls arrive from the host netns,
-    // which plain NetworkPolicy can only name by address.
-    expect(node.from).toEqual([{ ipBlock: { cidr: '10.89.0.7/32' } }])
-    expect(node.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
-  })
-
-  it('denies all registry-pod egress (nothing to fetch)', () => {
-    const m = buildRegistryEgressNetworkPolicyManifest('demo') as unknown as {
-      metadata: { name: string }
-      spec: {
-        podSelector: { matchLabels: Record<string, string> }
-        policyTypes: string[]
-        egress: unknown[]
-      }
-    }
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-egress`)
-    expect(m.spec.podSelector.matchLabels)
-      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
-    expect(m.spec.policyTypes).toEqual(['Egress'])
-    expect(m.spec.egress).toEqual([])
-  })
-})
-
-describe('node-write pod builders', () => {
-  interface Pod {
-    kind: string
-    metadata: { name: string; namespace: string; labels: Record<string, string> }
-    spec: {
-      nodeName: string
-      restartPolicy: string
-      automountServiceAccountToken: boolean
-      enableServiceLinks: boolean
-      hostUsers?: boolean
-      runtimeClassName?: string
-      securityContext?: object
-      containers: Array<{
-        image: string
-        command: string[]
-        volumeMounts: Array<{ name: string; mountPath: string }>
-      }>
-      volumes: Array<{ name: string; hostPath: { path: string; type: string } }>
-    }
-  }
-
-  it('writer pod pins the node and mounts only this registry\'s certs.d dir', () => {
-    const m = buildRegistryHostsWriterPodManifest(
-      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', '10.96.0.50', 0, 'ab12cd34',
-    ) as unknown as Pod
-    expect(m.kind).toBe('Pod')
-    // The per-run suffix keeps concurrent runs from fighting over one pod
-    // name (each would delete the other's pod mid-poll).
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-hosts-0-ab12cd34`)
-    expect(m.metadata.namespace).toBe('test-ns')
-    expect(m.metadata.labels).toEqual({
-      app: REGISTRY_APP_LABEL,
-      'yaac.project': 'demo',
-      [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
-      [LABEL_NODE_WRITE]: 'hosts',
-    })
-    // nodeName bypasses the scheduler — exact parity with the old
-    // every-node podman-exec loop, taints cannot strand the pod.
-    expect(m.spec.nodeName).toBe('yaac-control-plane')
-    expect(m.spec.restartPolicy).toBe('Never')
-    expect(m.spec.automountServiceAccountToken).toBe(false)
-    expect(m.spec.enableServiceLinks).toBe(false)
-    // Trusted infra, like the registry itself: plain root on runc (no
-    // RuntimeClass), no hostUsers.
-    expect(m.spec.runtimeClassName).toBeUndefined()
-    expect(m.spec.hostUsers).toBeUndefined()
-    expect(m.spec.securityContext).toBeUndefined()
-    expect(m.spec.containers[0].image).toBe('localhost:5001/yaac-registry2:abc')
-    const script = m.spec.containers[0].command[2]
-    expect(script).toContain(`[host."http://10.96.0.50:${PROJECT_REGISTRY_PORT}"]`)
-    expect(script).toContain('/host-certs/hosts.toml')
-    // Mount scoped to exactly this registry's certs.d dir; DirectoryOrCreate
-    // replaces the old mkdir -p.
-    expect(m.spec.volumes).toEqual([{
-      name: 'certs',
-      hostPath: {
-        path: `/etc/containerd/certs.d/${projectRegistryHost('demo')}`,
-        type: 'DirectoryOrCreate',
-      },
-    }])
-    expect(m.spec.containers[0].volumeMounts)
-      .toEqual([{ name: 'certs', mountPath: '/host-certs' }])
-  })
-
-  it('cleanup pod mounts the parents and removes both residue dirs', () => {
-    const m = buildRegistryCleanupPodManifest(
-      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', 0, 'ab12cd34',
-    ) as unknown as Pod
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-cleanup-0-ab12cd34`)
-    expect(m.metadata.labels[LABEL_NODE_WRITE]).toBe('cleanup')
-    expect(m.spec.nodeName).toBe('yaac-control-plane')
-    expect(m.spec.runtimeClassName).toBeUndefined()
-    // Parent mounts: removing the child dirs themselves (today's residue
-    // semantics) is impossible from inside a mount of the child.
-    expect(m.spec.volumes).toEqual([
-      { name: 'certs', hostPath: { path: '/etc/containerd/certs.d', type: 'DirectoryOrCreate' } },
-      { name: 'storage', hostPath: { path: '/var/lib/yaac/registry/ddh16', type: 'DirectoryOrCreate' } },
-    ])
-    const script = m.spec.containers[0].command[2]
-    expect(script).toBe(
-      `rm -rf '/host-certs/${projectRegistryHost('demo')}' '/host-storage/demo'`,
-    )
-  })
-})
-
-describe('ensureRegistryImage', () => {
-  it('pins the upstream by its multi-arch index digest', () => {
-    expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
-    expect(REGISTRY_MIRROR_TAG).toBe(`yaac-registry2:${REGISTRY_IMAGE_DIGEST.slice(7, 19)}`)
-  })
-
-  it('short-circuits when the registry already holds the mirror tag', async () => {
-    mockHasTag.mockResolvedValue(true)
-    await expect(ensureRegistryImage(false))
-      .resolves.toBe(`localhost:5001/${REGISTRY_MIRROR_TAG}`)
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
-  })
-
-  it('pushes a locally present mirror without pulling', async () => {
-    mockImageExists.mockResolvedValue(true)
-    await ensureRegistryImage(false)
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
-  })
-
-  it('pulls by digest and tags the mirror when absent', async () => {
-    await ensureRegistryImage(false)
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['pull', REGISTRY_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
-    )
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG],
-    )
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
-  })
-
-  it('fails fast under requirePrebuilt instead of pulling', async () => {
-    await expect(ensureRegistryImage(true)).rejects.toThrow(/missing/)
-    expect(mockExec).not.toHaveBeenCalled()
-  })
-})
-
 describe('ensureProjectRegistry', () => {
   beforeEach(() => {
     mockHasTag.mockResolvedValue(true)
-    // get service → live (allocator-assigned) ClusterIP; get nodes → one
-    // node; get pod → the writer pod completed.
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      return Promise.resolve(null)
-    })
+    stageLiveCluster()
   })
 
   it('applies Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
@@ -520,6 +225,8 @@ describe('ensureProjectRegistry', () => {
 
   it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
       if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
@@ -531,11 +238,140 @@ describe('ensureProjectRegistry', () => {
     await expect(ensureProjectRegistry('demo'))
       .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
   })
+
+  it('runs the registry as untrusted-free infra off a node-local hostPath', async () => {
+    await ensureProjectRegistry('demo')
+
+    const dep = appliedKind('Deployment') as {
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
+      spec: {
+        replicas: number
+        strategy: unknown
+        selector: { matchLabels: Record<string, string> }
+        template: { spec: {
+          automountServiceAccountToken: boolean
+          enableServiceLinks: boolean
+          runtimeClassName?: string
+          hostUsers?: boolean
+          securityContext?: unknown
+          volumes: Array<Record<string, unknown>>
+          containers: Array<{
+            image: string
+            ports: Array<Record<string, unknown>>
+            readinessProbe: { httpGet: unknown }
+            volumeMounts: Array<Record<string, unknown>>
+          }>
+        } }
+      }
+    }
+    expect(dep.metadata.name).toBe(projectRegistryName('demo'))
+    expect(dep.metadata.namespace).toBe('test-ns')
+    expect(dep.spec.replicas).toBe(1)
+    // Recreate, not RollingUpdate: two replicas would race on one hostPath.
+    expect(dep.spec.strategy).toEqual({ type: 'Recreate' })
+    expect(dep.spec.selector.matchLabels)
+      .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
+    const pod = dep.spec.template.spec
+    // Trusted yaac infra: no SA token, no service links, runc (no sentry to
+    // buy — it runs only the pinned upstream registry image).
+    expect(pod.automountServiceAccountToken).toBe(false)
+    expect(pod.enableServiceLinks).toBe(false)
+    expect(pod.runtimeClassName).toBeUndefined()
+    expect(pod.hostUsers).toBeUndefined()
+    expect(pod.securityContext).toBeUndefined()
+    expect(pod.containers[0].image).toMatch(/^localhost:5001\/yaac-registry2:/)
+    expect(pod.containers[0].ports).toEqual([{ containerPort: PROJECT_REGISTRY_PORT }])
+    // Storage is node-local and scoped by install hash + slug, like the
+    // shared image store.
+    expect(JSON.stringify(pod.volumes))
+      .toContain(projectRegistryStorageHostPath('demo'))
+
+    const svc = appliedKind('Service') as {
+      spec: { ports: Array<{ port: number; targetPort: number }> }
+    }
+    expect(svc.spec.ports[0].port).toBe(PROJECT_REGISTRY_PORT)
+    expect(svc.spec.ports[0].targetPort).toBe(PROJECT_REGISTRY_PORT)
+  })
+
+  it('fences the registry to its own project: sessions in, nothing out', async () => {
+    await ensureProjectRegistry('demo')
+
+    const nps = appliedAllKind('NetworkPolicy') as unknown as Array<{
+      metadata: { name: string; namespace: string }
+      spec: {
+        podSelector: { matchLabels: Record<string, string>; matchExpressions?: unknown }
+        policyTypes: string[]
+        egress?: Array<Record<string, unknown>>
+        ingress?: Array<{ from?: unknown; ports?: Array<{ protocol: string; port: number }> }>
+      }
+    }>
+    const name = projectRegistryName('demo')
+
+    // Only this project's sessions may egress to this project's registry.
+    const sessions = nps.find((m) => m.metadata.name === `${name}-sessions`)!
+    expect(sessions.spec.podSelector.matchLabels).toEqual({ 'yaac.project': 'demo' })
+    expect(sessions.spec.policyTypes).toEqual(['Egress'])
+
+    // Ingress admits same-project sessions and the node (containerd pulls),
+    // the latter by address through the real cluster-cidrs probe.
+    const ingress = nps.find((m) => m.metadata.name === `${name}-ingress`)!
+    expect(ingress.spec.policyTypes).toEqual(['Ingress'])
+    const node = ingress.spec.ingress!.find((r) => JSON.stringify(r.from).includes(NODE_IP))
+    expect(node?.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
+
+    // The registry pod itself has nothing to fetch, so its egress is empty.
+    const egress = nps.find((m) => m.metadata.name === `${name}-egress`)!
+    expect(egress.spec.policyTypes).toEqual(['Egress'])
+    expect(egress.spec.egress).toEqual([])
+  })
+
+  it('mirrors the pinned upstream registry image, pulling only when it is absent', async () => {
+    // Already in the local registry — no podman at all.
+    mockHasTag.mockResolvedValue(true)
+    await ensureProjectRegistry('demo')
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
+
+    // Present in podman but not pushed — push without pulling.
+    vi.clearAllMocks()
+    stageLiveCluster()
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockResolvedValue(true)
+    await ensureProjectRegistry('demo')
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
+
+    // Absent everywhere — pull by the multi-arch index digest, tag, push.
+    vi.clearAllMocks()
+    stageLiveCluster()
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockResolvedValue(false)
+    await ensureProjectRegistry('demo')
+    expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
+    expect(mockExec).toHaveBeenCalledWith(
+      'podman', ['pull', REGISTRY_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
+    )
+    expect(mockExec).toHaveBeenCalledWith(
+      'podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG],
+    )
+    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
+  })
+
+  it('fails fast instead of pulling when prebuilt images are required', async () => {
+    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
+    mockHasTag.mockResolvedValue(false)
+    mockImageExists.mockResolvedValue(false)
+    await expect(ensureProjectRegistry('demo')).rejects.toThrow(/missing/)
+    expect(mockExec).not.toHaveBeenCalled()
+    vi.unstubAllEnvs()
+  })
 })
 
 describe('removeProjectRegistry', () => {
   function mockClusterWithPodPhase(phase: string, hadRegistry = true): void {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
       if (args[1] === 'deployment,service') {
         return Promise.resolve({ items: hadRegistry ? [{}] : [] })
       }
@@ -600,6 +436,8 @@ describe('gcOrphanProjectRegistries', () => {
   it('removes registries whose project dir is gone, keeps live ones', async () => {
     await fs.mkdir(path.join(tmpDir, 'projects', 'alive'), { recursive: true })
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
       if (args[1] === 'services') {
         return Promise.resolve({
           items: [

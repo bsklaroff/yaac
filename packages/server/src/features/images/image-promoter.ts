@@ -11,7 +11,7 @@ import {
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
 } from '#platform/k8s/pod-spec'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
 import { imageExists } from '#platform/container/runtime'
 import { testEnv } from '@yaac/shared/env'
 import { shellQuote } from '#platform/shell'

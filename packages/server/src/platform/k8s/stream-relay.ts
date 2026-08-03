@@ -12,7 +12,7 @@ import {
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   RELAY_PORT,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 import type { RelayFactory } from '#platform/container/port'
 import { serverLog } from '#log'
 

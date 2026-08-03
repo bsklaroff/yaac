@@ -17,7 +17,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type * as execModule from '#platform/k8s/exec'
 import type * as kubectlModule from '#platform/k8s/kubectl'
-import type * as registryModule from '#features/cluster/registry'
+import type * as registryModule from '#platform/container/registry'
 
 const mockContainerExec = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/exec', async (importOriginal) => ({
@@ -36,7 +36,7 @@ vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
 }))
 
 const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-vi.mock('#features/cluster/registry', async (importOriginal) => ({
+vi.mock('#platform/container/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryHasTag: mockRegistryHasTag,
   registryRef: (tag: string) => `localhost:5001/${tag}`,

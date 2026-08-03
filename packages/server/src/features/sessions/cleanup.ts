@@ -14,7 +14,7 @@ import {
   getVclusterStatus,
   removeSessionVcluster,
   vclusterName,
-} from '#features/cluster/vcluster'
+} from '#features/cluster'
 import {
   cachedPackagesDir,
   projectDir,

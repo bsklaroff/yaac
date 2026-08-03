@@ -1,6 +1,5 @@
 import { k8sNamespace } from '#platform/k8s/kubectl'
 import {
-  LABEL_DATA_DIR_HASH,
   LABEL_SESSION_ID,
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
@@ -28,7 +27,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
   VCLUSTER_EGRESS_FLOOR_NP_NAME,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 
 /**
  * Every yaac egress/ingress policy, as plain `networking.k8s.io/v1`
@@ -410,12 +409,4 @@ export function buildVclusterControlPlaneNpManifest(
       { to: [{ podSelector: { matchLabels: { app: 'vcluster', release: vcName } } }] },
     ],
   }, labels)
-}
-
-/** Labels identifying an install's own objects for the inner projections. */
-export function innerProjectionLabels(installHash?: string): Record<string, string> {
-  return {
-    app: PROXY_APP_NAME,
-    ...(installHash ? { [LABEL_DATA_DIR_HASH]: installHash } : {}),
-  }
 }

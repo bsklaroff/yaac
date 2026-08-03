@@ -8,7 +8,7 @@ import {
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
-} from '#features/cluster/vcluster'
+} from '#features/cluster'
 import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 
 /**

@@ -4,7 +4,7 @@ import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
 import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
-import { proxyDataHostDir, sshAgentHostDir } from '#features/cluster/proxy-apply'
+import { proxyDataHostDir, sshAgentHostDir } from './proxy-apply'
 import {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
@@ -21,7 +21,7 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
  * dedicated dir (not the session CA mount) so it never collides with the

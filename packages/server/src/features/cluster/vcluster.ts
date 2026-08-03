@@ -8,16 +8,16 @@ import {
   buildInnerSessionIngressLockNpManifest,
   buildVclusterControlPlaneNpManifest,
   buildVclusterEgressFloorNpManifest,
-} from '#features/cluster/policy-manifests'
-import { apiserverIpBlocks, nodeIpBlocks } from '#features/cluster/cluster-cidrs'
-import { LABEL_VCLUSTER_NAMESPACE } from '#features/cluster/proxy-constants'
+} from './policy-manifests'
+import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
+import { LABEL_VCLUSTER_NAMESPACE } from '#platform/k8s/proxy-constants'
 import {
   ACTIVATOR_APP_NAME,
   buildActivatorVclusterRoleBindingManifest,
   buildActivatorVclusterRoleManifest,
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
-} from '#features/cluster/activator'
+} from './activator'
 import {
   dataDirHash,
   execFileAsync,
@@ -32,7 +32,7 @@ import {
 } from '#platform/k8s/gvisor'
 import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
 import { ensurePinnedBinary } from '#platform/k8s/pinned-binary'
-import { pushImageToRegistry, registryHasTag, registryHost } from '#features/cluster/registry'
+import { pushImageToRegistry, registryHasTag, registryHost } from '#platform/container/registry'
 import { imageExists } from '#platform/container/runtime'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'

@@ -1,31 +1,21 @@
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.mock('#features/cluster/cluster-cidrs', () => ({
-  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  clusterPodCidrs: vi.fn().mockResolvedValue(['10.244.0.0/16']),
-  resetClusterCidrCache: vi.fn(),
+vi.mock('#platform/k8s/kubectl', () => ({
+  k8sNamespace: vi.fn(() => 'test-ns'),
+  dataDirHash: vi.fn(() => 'ddh16'),
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
+  kubectlGetJson: vi.fn(),
+  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
-import {
-  CALICO_VERSION,
-  ClusterSetupError,
-  calicoImageRefs,
-  calicoManifestUrl,
-  ensureCalicoManifest,
-  confirmDefault,
-  defaultMachineResources,
-  diagnoseKindPodmanSkew,
-  effectiveMachineProvider,
-  ensurePodmanMachineSetup,
-  isLegacyMachineError,
-  kindEnv,
-  runClusterSetup,
-  streamingClusterSetupDeps,
-  type ClusterSetupDeps,
-} from '#features/cluster/setup'
+import { ClusterSetupError, runClusterSetup, streamingClusterSetupDeps } from '#features/cluster'
+// The deps shape is part of the public interface (streamingClusterSetupDeps
+// returns one); CALICO_VERSION is a pinned setup value for the assertions.
+import { CALICO_VERSION, type ClusterSetupDeps } from '#features/cluster/setup'
+import { nodeIpBlocks, resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
+import { kubectlGetJson } from '#platform/k8s/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#features/cluster/check'
 
 afterEach(() => {
@@ -112,6 +102,17 @@ function makeDeps(
     fileExists: overrides.fileExists ?? vi.fn().mockResolvedValue(false),
     listDir: overrides.listDir ?? vi.fn().mockResolvedValue([]),
   } as ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock }
+}
+
+/** readTextFile serving the committed pin, plus whatever else a case wants. */
+function calicoReads(rest: (p: string) => string | null) {
+  return vi.fn((p: string) => Promise.resolve(
+    p.endsWith('.sha256')
+      ? `${FAKE_CALICO_SHA256}  calico.yaml\n`
+      : p.includes('calico')
+        ? rest(p)
+        : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
+  ))
 }
 
 describe('runClusterSetup', () => {
@@ -303,15 +304,36 @@ describe('runClusterSetup', () => {
     // replaces. Reusing the old node `/32`s names a host that no longer
     // exists (every policy fails closed), and reusing the old pod CIDRs
     // makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the proxy.
-    vi.mocked(resetClusterCidrCache).mockClear()
+    resetClusterCidrCache()
+    const stageNode = (ip: string): void => {
+      vi.mocked(kubectlGetJson).mockResolvedValue({
+        items: [{ status: { addresses: [{ type: 'InternalIP', address: ip }] } }],
+      })
+    }
+    stageNode('10.89.0.7')
+    expect(await nodeIpBlocks()).toEqual(['10.89.0.7/32'])
+
     await runClusterSetup({}, makeDeps())
-    expect(resetClusterCidrCache).toHaveBeenCalled()
+
+    // The rebuilt cluster's node has a new address; a live cache would
+    // still answer with the dead one.
+    stageNode('10.89.0.9')
+    expect(await nodeIpBlocks()).toEqual(['10.89.0.9/32'])
   })
 
   it('--repair drops the CIDR caches too — the node address is why you repair', async () => {
-    vi.mocked(resetClusterCidrCache).mockClear()
+    resetClusterCidrCache()
+    vi.mocked(kubectlGetJson).mockResolvedValue({
+      items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.7' }] } }],
+    })
+    expect(await nodeIpBlocks()).toEqual(['10.89.0.7/32'])
+
     await runClusterSetup({ repair: true }, makeDeps())
-    expect(resetClusterCidrCache).toHaveBeenCalled()
+
+    vi.mocked(kubectlGetJson).mockResolvedValue({
+      items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.9' }] } }],
+    })
+    expect(await nodeIpBlocks()).toEqual(['10.89.0.9/32'])
   })
 
   it('--repair re-applies fixups without recreating the cluster', async () => {
@@ -355,98 +377,134 @@ describe('runClusterSetup', () => {
     expect((err as Error).message).toContain('nested')
     expect(deps.run).not.toHaveBeenCalled()
   })
-})
 
-describe('diagnoseKindPodmanSkew', () => {
-  it('flags podman >= 6 with a kind release <= v0.32.0', () => {
-    const msg = diagnoseKindPodmanSkew('podman version 6.0.0', 'kind v0.32.0 go1.24.4 darwin/arm64')
-    expect(msg).toContain('kind#4201')
-    expect(msg).toContain('bsklaroff/yaac/yaac-kind')
+  it('refuses a podman 6 / kind <= v0.32.0 pairing, pointing at the tapped build', async () => {
+    const deps = makeDeps({
+      run: vi.fn((file: string, args: string[]) => {
+        if (file === 'kind' && args[0] === 'version') {
+          return Promise.resolve({ stdout: 'kind v0.32.0 go1.24.4 darwin/arm64\n', stderr: '' })
+        }
+        return happyRun(file, args)
+      }) as RunMock,
+    })
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(/kind#4201/)
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(/bsklaroff\/yaac\/yaac-kind/)
   })
 
-  it('leaves the bare v0.33.0-alpha to the functional probe (may carry the fix)', () => {
-    expect(diagnoseKindPodmanSkew('podman version 6.1.0', 'kind v0.33.0-alpha go1.24 linux/amd64'))
-      .toBeNull()
-  })
-
-  it('is silent for podman 5.x with any kind', () => {
-    expect(diagnoseKindPodmanSkew('podman version 5.8.1', 'kind v0.32.0 go1.24 linux/amd64')).toBeNull()
-  })
-
-  it('leaves dev builds with a commit suffix to the functional probe', () => {
-    expect(diagnoseKindPodmanSkew(
-      'podman version 6.0.0',
-      'kind v0.33.0-alpha.100+f1ec7694f59f57 go1.24 linux/arm64',
-    )).toBeNull()
-  })
-
-  it('is silent for kind releases past the fix', () => {
-    expect(diagnoseKindPodmanSkew('podman version 6.0.0', 'kind v0.33.0 go1.24 linux/amd64')).toBeNull()
-  })
-
-  it('is silent on unparseable version output', () => {
-    expect(diagnoseKindPodmanSkew('garbage', 'garbage')).toBeNull()
-  })
-})
-
-describe('effectiveMachineProvider', () => {
-  it('returns undefined with no sources', () => {
-    expect(effectiveMachineProvider([])).toBeUndefined()
-  })
-
-  it('reads the provider from a base containers.conf', () => {
-    expect(effectiveMachineProvider(['[machine]\nprovider = "libkrun"\n'])).toBe('libkrun')
-  })
-
-  it('lets later drop-ins override earlier sources', () => {
-    expect(effectiveMachineProvider([
-      '[machine]\nprovider = "applehv"\n',
-      '[machine]\nprovider = "libkrun"\n',
-    ])).toBe('libkrun')
-  })
-
-  it('skips unparseable sources without losing earlier values', () => {
-    expect(effectiveMachineProvider([
-      '[machine]\nprovider = "libkrun"\n',
-      'not [ valid toml',
-    ])).toBe('libkrun')
-  })
-
-  it('ignores sources without a machine provider', () => {
-    expect(effectiveMachineProvider(['[engine]\nfoo = "bar"\n'])).toBeUndefined()
-  })
-})
-
-describe('isLegacyMachineError', () => {
   it.each([
-    'Error: machine was created with an older version of podman',
-    'machine config is incompatible with this podman',
-    'please run podman machine reset',
-    'the machine needs to be recreated',
-  ])('matches %j', (stderr) => {
-    expect(isLegacyMachineError(stderr)).toBe(true)
+    ['podman 5.x with a pre-fix kind', 'podman version 5.8.1\n', 'kind v0.32.0 go1.24 linux/amd64\n'],
+    ['a kind release past the fix', 'podman version 6.0.0\n', 'kind v0.33.0 go1.24 linux/amd64\n'],
+    ['a bare alpha that may carry the fix', 'podman version 6.1.0\n', 'kind v0.33.0-alpha go1.24 linux/amd64\n'],
+    ['a dev build with a commit suffix', 'podman version 6.0.0\n', 'kind v0.33.0-alpha.100+f1ec7694f59f57 go1.24 linux/arm64\n'],
+    ['unparseable version output', 'garbage\n', 'garbage\n'],
+  ])('leaves %s to the functional probe', async (_label, podmanOut, kindOut) => {
+    const deps = makeDeps({
+      run: vi.fn((file: string, args: string[]) => {
+        if (file === 'podman' && args[0] === '--version') {
+          return Promise.resolve({ stdout: podmanOut, stderr: '' })
+        }
+        if (file === 'kind' && args[0] === 'version') {
+          return Promise.resolve({ stdout: kindOut, stderr: '' })
+        }
+        return happyRun(file, args)
+      }) as RunMock,
+    })
+    await expect(runClusterSetup({}, deps)).resolves.toBe(true)
   })
 
-  it('does not match unrelated start failures', () => {
-    expect(isLegacyMachineError('Error: unable to start krunkit: exec format error')).toBe(false)
+  it('runs every kind invocation under the podman provider, host env forwarded', async () => {
+    const deps = makeDeps()
+    await runClusterSetup({}, deps)
+    const envs = [...deps.run.mock.calls, ...deps.runStreaming.mock.calls]
+      .filter(([f]) => f === 'kind')
+      .map(([, , opts]) => (opts as { env?: NodeJS.ProcessEnv } | undefined)?.env)
+      .filter((e): e is NodeJS.ProcessEnv => !!e)
+    expect(envs.length).toBeGreaterThan(0)
+    for (const env of envs) {
+      expect(env.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
+      // The full host env rides along, not just the provider knob.
+      expect(Object.keys(env).length).toBeGreaterThan(1)
+    }
   })
-})
 
-describe('defaultMachineResources', () => {
-  it('matches the README canon (8 cpus / 32 GiB) on a big host', () => {
-    expect(defaultMachineResources(128 * 1024 ** 3, 12)).toEqual({ cpus: 8, memoryMib: 32768 })
+  it('scales the machine to the host, flooring small hosts and capping big ones', async () => {
+    const initArgs = async (totalmem: number, cpuCount: number): Promise<string[]> => {
+      const run = vi.fn(async (file: string, args: string[]) => {
+        if (file === 'podman' && args[0] === 'machine' && args[1] === 'list') {
+          return { stdout: '[]', stderr: '' }
+        }
+        return happyRun(file, args)
+      }) as RunMock
+      const deps = makeDeps({
+        platform: 'darwin', run,
+        totalmem: () => totalmem,
+        cpuCount: () => cpuCount,
+      })
+      await runClusterSetup({}, deps)
+      return deps.runStreaming.mock.calls.find(([, a]) => a[1] === 'init')![1]
+    }
+
+    const pair = (args: string[], flag: string): string => args[args.indexOf(flag) + 1]
+    // README canon on a big host: 8 cpus / 32 GiB.
+    let args = await initArgs(128 * 1024 ** 3, 12)
+    expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['8', '32768'])
+    // Half the host memory on a smaller machine.
+    args = await initArgs(16 * 1024 ** 3, 4)
+    expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['4', '8192'])
+    // Floor: 2 cpus / 4 GiB.
+    args = await initArgs(4 * 1024 ** 3, 1)
+    expect([pair(args, '--cpus'), pair(args, '--memory')]).toEqual(['2', '4096'])
   })
 
-  it('halves the host memory on smaller machines', () => {
-    expect(defaultMachineResources(16 * 1024 ** 3, 4)).toEqual({ cpus: 4, memoryMib: 8192 })
+  it('resolves the machine provider across containers.conf and its drop-ins', async () => {
+    const withSources = async (
+      sources: Record<string, string>,
+      dropIns: string[] = [],
+    ): Promise<boolean> => {
+      const run = vi.fn(async (file: string, args: string[]) => {
+        if (file === 'podman' && args[0] === 'machine' && args[1] === 'list') {
+          return { stdout: '[]', stderr: '' }
+        }
+        return happyRun(file, args)
+      }) as RunMock
+      const deps = makeDeps({
+        platform: 'darwin', run,
+        listDir: vi.fn().mockResolvedValue(dropIns),
+        readTextFile: vi.fn((path: string) => {
+          const isDropIn = path.includes('containers.conf.d/')
+          for (const [frag, body] of Object.entries(sources)) {
+            const fragIsDropIn = frag !== 'containers.conf'
+            if (fragIsDropIn !== isDropIn) continue
+            if (path.includes(frag)) return Promise.resolve(body)
+          }
+          // A containers.conf path with nothing staged for it is absent.
+          if (path.includes('containers.conf')) return Promise.resolve(null)
+          return fakeCalicoReadTextFile(path)
+        }),
+      })
+      await runClusterSetup({}, deps)
+      // A drop-in is written only when the effective provider is not libkrun.
+      return vi.mocked(deps.writeTextFile).mock.calls
+        .some(([p]) => String(p).includes('99-yaac-machine-provider.conf'))
+    }
+
+    // No source at all, and a source with no machine provider: yaac must pin one.
+    expect(await withSources({})).toBe(true)
+    expect(await withSources({ 'containers.conf': '[engine]\nfoo = "bar"\n' })).toBe(true)
+    // A base containers.conf already naming libkrun: nothing to write.
+    expect(await withSources({ 'containers.conf': '[machine]\nprovider = "libkrun"\n' })).toBe(false)
+    // A later drop-in overrides an earlier source...
+    expect(await withSources(
+      { 'containers.conf': '[machine]\nprovider = "applehv"\n', '10-x.conf': '[machine]\nprovider = "libkrun"\n' },
+      ['10-x.conf'],
+    )).toBe(false)
+    // ...and an unparseable drop-in is skipped without losing the earlier value.
+    expect(await withSources(
+      { 'containers.conf': '[machine]\nprovider = "libkrun"\n', '10-x.conf': 'not [ valid toml' },
+      ['10-x.conf'],
+    )).toBe(false)
   })
 
-  it('floors at 2 cpus / 4 GiB', () => {
-    expect(defaultMachineResources(4 * 1024 ** 3, 1)).toEqual({ cpus: 2, memoryMib: 4096 })
-  })
-})
-
-describe('ensurePodmanMachineSetup', () => {
   function darwinDeps(
     overrides: Omit<Partial<ClusterSetupDeps>, 'run' | 'runStreaming'> & {
       run?: RunMock
@@ -477,7 +535,7 @@ describe('ensurePodmanMachineSetup', () => {
   it('writes the libkrun drop-in and inits a rootful machine when none exists', async () => {
     const run = machineRun([], [{ Name: 'podman-machine-default', Running: false, Default: true }])
     const deps = darwinDeps({ run })
-    await ensurePodmanMachineSetup(deps)
+    await runClusterSetup({}, deps)
 
     // Provider drop-in written (no containers.conf on disk in this test).
     const write = vi.mocked(deps.writeTextFile).mock.calls[0]
@@ -504,10 +562,14 @@ describe('ensurePodmanMachineSetup', () => {
     const deps = darwinDeps({
       run,
       readTextFile: vi.fn((p: string) => Promise.resolve(
-        p.endsWith('containers.conf') ? '[machine]\nprovider = "libkrun"\n' : null,
-      )),
+        p.endsWith('containers.conf')
+          ? '[machine]\nprovider = "libkrun"\n'
+          : p.includes('containers.conf.d')
+            ? null
+            : fakeCalicoReadTextFile(p),
+      )) as unknown as ClusterSetupDeps['readTextFile'],
     })
-    await ensurePodmanMachineSetup(deps)
+    await runClusterSetup({}, deps)
     expect(deps.writeTextFile).not.toHaveBeenCalled()
     // Already rootful and running: nothing to stop/set/start.
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(false)
@@ -525,7 +587,7 @@ describe('ensurePodmanMachineSetup', () => {
       },
     )
     const deps = darwinDeps({ run })
-    await ensurePodmanMachineSetup(deps)
+    await runClusterSetup({}, deps)
     const podmanMachineCalls = run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'machine')
       .map(([, a]) => a.slice(1).join(' '))
@@ -540,7 +602,7 @@ describe('ensurePodmanMachineSetup', () => {
       [{ Name: 'podman-machine-default', Running: true, Default: true, VMType: 'applehv' }],
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(false) })
-    const err = await ensurePodmanMachineSetup(deps).catch((e: unknown) => e)
+    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterSetupError)
     expect((err as Error).message).toContain('applehv')
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'rm')).toBe(false)
@@ -552,7 +614,7 @@ describe('ensurePodmanMachineSetup', () => {
       [{ Name: 'podman-machine-default', Running: false, Default: true, VMType: 'libkrun' }],
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(true) })
-    await ensurePodmanMachineSetup(deps)
+    await runClusterSetup({}, deps)
     expect(run.mock.calls.some(([f, a]) =>
       f === 'podman' && a.join(' ') === 'machine rm -f podman-machine-default')).toBe(true)
     expect(deps.runStreaming.mock.calls.some(([, a]) => a[1] === 'init')).toBe(true)
@@ -580,7 +642,7 @@ describe('ensurePodmanMachineSetup', () => {
       },
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(true) })
-    await ensurePodmanMachineSetup(deps)
+    await runClusterSetup({}, deps)
     expect(run.mock.calls.some(([f, a]) =>
       f === 'podman' && a.join(' ') === 'machine rm -f podman-machine-default')).toBe(true)
     expect(deps.runStreaming.mock.calls.some(([, a]) => a[1] === 'init')).toBe(true)
@@ -602,32 +664,106 @@ describe('ensurePodmanMachineSetup', () => {
       },
     )
     const deps = darwinDeps({ run })
-    const err = await ensurePodmanMachineSetup(deps).catch((e: unknown) => e)
+    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterSetupError)
     expect((err as Error).message).toContain('krunkit crashed')
     expect(deps.confirm).not.toHaveBeenCalled()
   })
-})
 
-describe('kindEnv', () => {
-  it('forwards the host env and forces the podman provider', () => {
-    vi.stubEnv('YAAC_KINDENV_PROBE', 'present')
-    const e = kindEnv()
-    expect(e.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
-    expect(e.YAAC_KINDENV_PROBE).toBe('present')
-    vi.unstubAllEnvs()
+  it('uses the cached Calico manifest when it matches the pin, without downloading', async () => {
+    const deps = makeDeps()
+    await runClusterSetup({}, deps)
+    expect(deps.fetchText).not.toHaveBeenCalled()
+    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
+      .toBe(false)
+    // The manifest reaches the cluster on kubectl apply's stdin.
+    const apply = deps.runStreaming.mock.calls
+      .find(([f, a]) => f === 'kubectl' && a.includes('apply'))
+    expect((apply?.[2] as { input?: string })?.input).toBe(FAKE_CALICO_MANIFEST)
   })
-})
 
-describe('confirmDefault', () => {
-  it('returns false without prompting when stdin is not a TTY', async () => {
-    const original = process.stdin.isTTY
-    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true })
-    try {
-      await expect(confirmDefault('proceed?')).resolves.toBe(false)
-    } finally {
-      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true })
-    }
+  it('downloads the pinned Calico manifest by tag, verifies it, and caches it', async () => {
+    const deps = makeDeps({ readTextFile: calicoReads(() => null) })
+    await runClusterSetup({}, deps)
+    expect(deps.fetchText).toHaveBeenCalledWith(
+      `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`,
+    )
+    const written = vi.mocked(deps.writeTextFile).mock.calls
+      .find(([p]) => String(p).includes(`calico-${CALICO_VERSION}.yaml`))
+    expect(written?.[1]).toBe(FAKE_CALICO_MANIFEST)
+  })
+
+  it('re-downloads when the cached Calico copy no longer matches the pin', async () => {
+    // A tampered-with or truncated cache must not be trusted just because
+    // it is on disk — the checksum is checked on every use, not on write.
+    const deps = makeDeps({ readTextFile: calicoReads(() => 'kind: DaemonSet # tampered\n') })
+    await runClusterSetup({}, deps)
+    expect(deps.fetchText).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a Calico download that fails the checksum, and caches nothing', async () => {
+    const deps = makeDeps({
+      readTextFile: calicoReads(() => null),
+      fetchText: vi.fn().mockResolvedValue('kind: Evil\n'),
+    })
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(ClusterSetupError)
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(/does not match the pinned checksum/)
+    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
+      .toBe(false)
+  })
+
+  it('reports an actionable error when the Calico download fails', async () => {
+    const deps = makeDeps({
+      readTextFile: calicoReads(() => null),
+      fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')),
+    })
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(
+      /Could not download the Calico manifest.*HTTP 503/s,
+    )
+  })
+
+  it('fails when the committed Calico checksum is missing (broken install)', async () => {
+    const deps = makeDeps({
+      readTextFile: vi.fn((p: string) => Promise.resolve(
+        p.includes('calico') || p.endsWith('.sha256')
+          ? null
+          : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
+      )),
+    })
+    await expect(runClusterSetup({}, deps)).rejects.toThrow(/checksum not found/)
+  })
+
+  it('mirrors the deduped image set the Calico manifest names, and nothing else', async () => {
+    const manifest = [
+      '        - name: upgrade-ipam',
+      '          image: quay.io/calico/cni:v3.32.1',
+      '        - name: install-cni',
+      '          image: quay.io/calico/cni:v3.32.1',
+      '          image: quay.io/calico/node:v3.32.1',
+      '  # image: not-a-ref',
+      '  imagePullPolicy: IfNotPresent',
+    ].join('\n')
+    const sha = crypto.createHash('sha256').update(manifest, 'utf8').digest('hex')
+    const deps = makeDeps({
+      readTextFile: vi.fn((p: string) => Promise.resolve(
+        p.endsWith('.sha256')
+          ? `${sha}  calico.yaml\n`
+          : p.includes('calico')
+            ? manifest
+            : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
+      )),
+    })
+    await runClusterSetup({}, deps)
+
+    const pulled = deps.run.mock.calls
+      .filter(([f, a]) => f === 'podman' && a[0] === 'image' && a[1] === 'exists')
+      .map(([, a]) => a[2])
+    // Deduped and sorted; prose and non-image keys are not refs.
+    expect(pulled.filter((r) => r.includes('calico'))).toEqual([
+      'quay.io/calico/cni:v3.32.1',
+      'quay.io/calico/node:v3.32.1',
+    ])
+    expect(pulled).not.toContain('not-a-ref')
   })
 })
 
@@ -642,102 +778,5 @@ describe('streamingClusterSetupDeps', () => {
   it('auto-approves confirms (no TTY; the caller already consented)', async () => {
     const deps = streamingClusterSetupDeps(() => { /* ignore */ })
     expect(await deps.confirm('delete the existing cluster?')).toBe(true)
-  })
-})
-
-describe('calicoManifestUrl', () => {
-  it('points at the release manifest for the pinned version, by tag', () => {
-    expect(calicoManifestUrl()).toBe(
-      `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`,
-    )
-  })
-
-  it('takes an explicit version (used when repinning)', () => {
-    expect(calicoManifestUrl('3.99.0')).toContain('/calico/v3.99.0/manifests/')
-  })
-})
-
-describe('ensureCalicoManifest', () => {
-  /** readTextFile that serves the pin, plus whatever else the test wants. */
-  function reads(rest: (p: string) => string | null) {
-    return vi.fn((p: string) => Promise.resolve(
-      p.endsWith('.sha256') ? `${FAKE_CALICO_SHA256}  calico.yaml\n` : rest(p),
-    ))
-  }
-
-  it('uses the cached manifest when it matches the pin, without downloading', async () => {
-    const deps = makeDeps()
-    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
-    expect(deps.fetchText).not.toHaveBeenCalled()
-    expect(deps.writeTextFile).not.toHaveBeenCalled()
-  })
-
-  it('downloads, verifies, and caches when the cache is absent', async () => {
-    const deps = makeDeps({ readTextFile: reads(() => null) })
-    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
-    expect(deps.fetchText).toHaveBeenCalledWith(calicoManifestUrl())
-    const written = (deps.writeTextFile as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(written?.[0]).toContain(`calico-${CALICO_VERSION}.yaml`)
-    expect(written?.[1]).toBe(FAKE_CALICO_MANIFEST)
-  })
-
-  it('re-downloads when the cached copy no longer matches the pin', async () => {
-    // A tampered-with or truncated cache must not be trusted just because
-    // it is on disk — the checksum is checked on every use, not on write.
-    const deps = makeDeps({ readTextFile: reads(() => 'kind: DaemonSet # tampered\n') })
-    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
-    expect(deps.fetchText).toHaveBeenCalledOnce()
-  })
-
-  it('refuses a download that fails the checksum, and caches nothing', async () => {
-    const deps = makeDeps({
-      readTextFile: reads(() => null),
-      fetchText: vi.fn().mockResolvedValue('kind: Evil\n'),
-    })
-    await expect(ensureCalicoManifest(deps)).rejects.toThrow(ClusterSetupError)
-    await expect(ensureCalicoManifest(deps)).rejects.toThrow(/does not match the pinned checksum/)
-    expect(deps.writeTextFile).not.toHaveBeenCalled()
-  })
-
-  it('reports an actionable error when the download fails', async () => {
-    const deps = makeDeps({
-      readTextFile: reads(() => null),
-      fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')),
-    })
-    await expect(ensureCalicoManifest(deps)).rejects.toThrow(
-      /Could not download the Calico manifest.*HTTP 503/s,
-    )
-  })
-
-  it('fails when the committed checksum is missing (broken install)', async () => {
-    const deps = makeDeps({ readTextFile: vi.fn(() => Promise.resolve(null)) })
-    await expect(ensureCalicoManifest(deps)).rejects.toThrow(/checksum not found/)
-  })
-})
-
-describe('calicoImageRefs', () => {
-  it('extracts the deduped, sorted image set from the vendored manifest', () => {
-    const yaml = [
-      '        - name: upgrade-ipam',
-      '          image: quay.io/calico/cni:v3.32.1',
-      '        - name: install-cni',
-      '          image: quay.io/calico/cni:v3.32.1',
-      '          image: quay.io/calico/node:v3.32.1',
-    ].join('\n')
-    expect(calicoImageRefs(yaml)).toEqual([
-      'quay.io/calico/cni:v3.32.1',
-      'quay.io/calico/node:v3.32.1',
-    ])
-  })
-
-  it('ignores anything that is not an image key', () => {
-    // Parsed rather than hard-coded so a version bump follows the
-    // manifest; it must not pick up prose or nested keys that merely
-    // mention an image.
-    expect(calicoImageRefs('  # image: not-a-ref\n  imagePullPolicy: IfNotPresent\n')).toEqual([])
-  })
-
-  it('returns nothing for an empty manifest', () => {
-    expect(calicoImageRefs('')).toEqual([])
   })
 })

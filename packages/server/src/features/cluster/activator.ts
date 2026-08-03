@@ -23,11 +23,9 @@ import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
 } from '#platform/k8s/pods'
-import { registryRef } from '#features/cluster/registry'
-import { apiserverIpBlocks, nodeIpBlocks } from '#features/cluster/cluster-cidrs'
-import { LABEL_VCLUSTER_NAMESPACE } from '#features/cluster/proxy-constants'
-import { resolveProxyImageTag } from '#features/sessions/egress/proxy-client'
-import { testEnv } from '@yaac/shared/env'
+import { registryRef } from '#platform/container/registry'
+import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
+import { LABEL_VCLUSTER_NAMESPACE } from '#platform/k8s/proxy-constants'
 
 export const ACTIVATOR_APP_NAME = 'yaac-vc-activator'
 
@@ -291,13 +289,14 @@ export async function getActivatorPodIp(): Promise<string> {
 }
 
 /**
- * Stand up (or converge) the activator. The image is the proxy sidecar
- * image, which `proxyClient.ensureRunning()` has already built and
- * pushed by the time any vcluster session reaches this point — the
- * create flow ensures the proxy before the vcluster.
+ * Stand up (or converge) the activator. It runs the proxy sidecar image,
+ * so the caller passes the tag: the session create flow ensures the proxy
+ * before the vcluster, and by then it has already built and pushed exactly
+ * that tag. Taking it as an argument is what keeps this feature below the
+ * session feature rather than reaching up into it for the same answer.
  */
-export async function ensureActivator(): Promise<void> {
-  const imageRef = registryRef(await resolveProxyImageTag(testEnv.proxyImage))
+export async function ensureActivator(proxyImageTag: string): Promise<void> {
+  const imageRef = registryRef(proxyImageTag)
   await kubectlApply(buildActivatorServiceAccountManifest())
   await kubectlApply(buildActivatorDeploymentManifest(imageRef))
   await kubectlApply(buildActivatorNetworkPolicyManifest(

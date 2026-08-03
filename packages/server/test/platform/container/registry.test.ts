@@ -53,7 +53,7 @@ import {
   registryReachable,
   registryRef,
   removeLocalRegistry,
-} from '#features/cluster/registry'
+} from '#platform/container/registry'
 
 const fetchMock = vi.fn<typeof fetch>()
 

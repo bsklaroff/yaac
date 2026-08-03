@@ -5,7 +5,7 @@ import {
   isClaimConfigMapName,
   renderNamespaceClaims,
   validateVclusterClaims,
-} from '#features/cluster/redirect-claims'
+} from '#features/cluster'
 import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { serverLog } from '#log'
 

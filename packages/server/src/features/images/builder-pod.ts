@@ -43,13 +43,15 @@ import {
   LABEL_ROLE,
   ROLE_BUILDER,
   EGRESS_WORLD_DENY_NAME,
-} from '#features/cluster/proxy-constants'
+} from '#platform/k8s/proxy-constants'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
-} from '#features/cluster/proxy-manifests'
-import { buildEgressWorldDenyNpManifest } from '#features/cluster/policy-manifests'
-import { vapAvailable } from '#features/cluster/vcluster'
+  buildEgressWorldDenyNpManifest,
+  ensureRegistryClusterService,
+  registryClusterHost,
+  vapAvailable,
+} from '#features/cluster'
 import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
 import {
   NESTED_ENGINE_CAPS,
@@ -57,7 +59,6 @@ import {
   NESTED_GRAPHROOT_VOLUME,
   graphrootMountAnnotations,
 } from '#platform/k8s/pod-spec'
-import { ensureRegistryClusterService, registryClusterHost } from '#features/cluster/registry-service'
 import { ensureSalvageWriterImage } from './image-promoter'
 import {
   parseContainerIgnore,
