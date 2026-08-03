@@ -7,8 +7,6 @@ import { setDataDir, piSessionsDir } from '@yaac/shared/project-paths'
 import {
   PI_BUSY_MARKERS,
   getSessionPiFirstUserMessage,
-  hasPiSessionLog,
-  listPiSessionRecords,
 } from '#features/sessions/agents/pi-status'
 
 describe('PI_BUSY_MARKERS', () => {
@@ -98,36 +96,5 @@ describe('pi first-message + session records', () => {
 
   it('returns undefined when no logs exist', async () => {
     expect(await getSessionPiFirstUserMessage(slug, 'other-session')).toBeUndefined()
-  })
-
-  it('reports hasPiSessionLog by presence of a matching jsonl file', async () => {
-    expect(await hasPiSessionLog(slug, 'sess-1')).toBe(false)
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
-    expect(await hasPiSessionLog(slug, 'sess-1')).toBe(true)
-    expect(await hasPiSessionLog(slug, 'no-such-session')).toBe(false)
-  })
-
-  it('lists a record per distinct session id in the shared dir', async () => {
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
-    await writeLog('150', 'sess-2', [{ type: 'message', message: { role: 'user', content: 'yo' } }])
-    // A log without the `<ts>_<id>` separator has no session id, so no record.
-    await fs.writeFile(path.join(piSessionsDir(slug), 'stray.jsonl'), '{}\n')
-    const records = await listPiSessionRecords(slug)
-    expect(records.map((r) => r.sessionId).sort()).toEqual(['sess-1', 'sess-2'])
-    for (const r of records) {
-      expect(r.birthtimeMs).toBeGreaterThan(0)
-      expect(r.lastActiveMs).toBeGreaterThan(0)
-    }
-  })
-
-  it('merges multiple logs sharing a session id into one record', async () => {
-    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'first' } }])
-    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'second' } }])
-    const records = await listPiSessionRecords(slug)
-    expect(records.map((r) => r.sessionId)).toEqual(['sess-1'])
-  })
-
-  it('returns no records for a project with no pi sessions', async () => {
-    expect(await listPiSessionRecords('empty-proj')).toEqual([])
   })
 })

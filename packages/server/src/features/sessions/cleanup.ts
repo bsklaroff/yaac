@@ -4,8 +4,7 @@ import path from 'node:path'
 import { listSessionJobs, listSessionPods, sessionJobName } from '#platform/k8s/pods'
 import { k8sNamespace, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
-import { evictOpencodeProbeCache } from '#features/sessions/agents/opencode'
-import { recordSessionDeleted } from '#features/sessions/deleted-store'
+import { recordSessionDeleted } from '#features/sessions/store'
 import { markSessionTerminating } from '#features/sessions/state'
 import { evictSessionStatus, isSessionStreamHealthy } from '#features/sessions/status-store'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
@@ -263,14 +262,13 @@ export async function cleanupSession(params: {
   // unwritten).
   await recordSessionDeleted(projectSlug, sessionId, cause)
 
-  // Drop any cached tmux-alive / opencode-probe entry and the watcher-fed
-  // status-store row so a subsequent caller doesn't see a stale value
-  // from this session (or, in the worst case, a value belonging to a
-  // brand-new session with the same id).
+  // Drop any cached tmux-alive entry and the watcher-fed status-store row
+  // so a subsequent caller doesn't see a stale value from this session (or,
+  // in the worst case, a value belonging to a brand-new session with the
+  // same id).
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictSessionStatus(projectSlug, sessionId)
-  evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -338,7 +336,7 @@ export async function cleanupSessionDetached(params: {
   /** Why the session died, when a reaper (not the user) is tearing it
    *  down — persisted so the deleted-session view can say so. */
   cause?: SessionDeathCause
-  /** Skip the deleted-store write, leaving whatever cause is already
+  /** Skip the deletion write, leaving whatever cause is already
    *  recorded intact. Set when the caller is *resuming* a teardown yaac
    *  already recorded — e.g. the stale reaper re-issuing the delete for a
    *  session whose in-memory terminating mark was lost to a server restart
@@ -372,7 +370,6 @@ export async function cleanupSessionDetached(params: {
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictSessionStatus(projectSlug, sessionId)
-  evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)

@@ -149,8 +149,9 @@ export function opencodeConfigDir(slug: string): string {
  * (sst/opencode#5241) and makes `opencode --continue` deterministic since
  * each container's DB only ever contains its own session.
  *
- * Persists across container teardown so `yaac session list -d` first-
- * message lookups still work via the meta cache below.
+ * Persists across container teardown, though nothing reads it host-side:
+ * an opencode session's first message is captured over HTTP while it runs
+ * and kept on its session row.
  */
 export function opencodeDataDir(slug: string, sessionId: string): string {
   return path.join(projectDir(slug), 'opencode-data', sessionId)
@@ -160,8 +161,8 @@ export function opencodeDataDir(slug: string, sessionId: string): string {
  * Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the container
  * (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every session's
  * settings, extensions, and JSONL session logs are shared across all sessions
- * of the project. Persists across container teardown, so `yaac session list -d`
- * first-message lookups read the logs directly (no meta cache needed).
+ * of the project. Persists across container teardown, so a deleted session's
+ * first message can still be parsed from its log on demand.
  */
 export function piDir(slug: string): string {
   return path.join(projectDir(slug), 'pi')

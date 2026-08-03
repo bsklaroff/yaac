@@ -1,17 +1,7 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { findSessionPod, listSessionPods } from '#platform/k8s/pods'
-import {
-  claudeDir,
-  codexTranscriptDir,
-  getProjectsDir,
-  worktreesDir,
-} from '@yaac/shared/project-paths'
 import { cleanupSession } from '#features/sessions/cleanup'
-import { clearSessionDeleted } from '#features/sessions/deleted-store'
+import { clearSessionDeleted, findSessionRow } from '#features/sessions/store'
 import { clearSessionTerminating, normalizeTool } from '#features/sessions/state'
-import { hasOpencodeMeta } from '#features/sessions/agents/opencode'
-import { hasPiSessionLog } from '#features/sessions/agents/pi-status'
 import { createSession, type SessionCreateResult } from '#features/sessions/create'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
@@ -23,37 +13,11 @@ export interface RestartResolution {
   jobName: string | null
 }
 
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p)
-    return true
-  } catch {
-    return false
-  }
-}
-
 /**
- * Pick the tool for a reaped session by looking at which per-tool artifact
- * survived: claude/codex/pi leave a JSONL log, opencode leaves a meta
- * snapshot keyed by session id. Prefers claude when several exist
- * (shouldn't happen — a session is created with a single tool) so the
- * resume path has deterministic fallback behaviour.
- */
-async function detectToolFromTranscript(slug: string, sessionId: string): Promise<AgentTool> {
-  const claudeJsonl = path.join(claudeDir(slug), 'projects', '-workspace', `${sessionId}.jsonl`)
-  if (await fileExists(claudeJsonl)) return 'claude'
-  const codexJsonl = path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
-  if (await fileExists(codexJsonl)) return 'codex'
-  if (await hasPiSessionLog(slug, sessionId)) return 'pi'
-  if (await hasOpencodeMeta(slug, sessionId)) return 'opencode'
-  return 'claude'
-}
-
-/**
- * Locate the project + tool for a session id. Prefers a live pod's
- * labels (authoritative about tool) and falls back to scanning preserved
- * worktree dirs and transcript files so deleted sessions can still be
- * restarted against their saved history.
+ * Locate the project + tool for a session id or id prefix. Prefers a live
+ * pod's labels (authoritative about tool) and falls back to the recorded
+ * session row, so a deleted session can still be restarted against its
+ * saved worktree and history.
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
@@ -68,30 +32,20 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
       }
     }
   } catch {
-    // Cluster unreachable — try filesystem fallback. If both paths fail we
+    // Cluster unreachable — try the recorded row. If both paths fail we
     // surface NOT_FOUND below; RUNTIME_UNAVAILABLE would be misleading
     // since the restart may still succeed when the cluster recovers by the
     // time createSession runs.
   }
 
-  let slugs: string[] = []
-  try {
-    slugs = await fs.readdir(getProjectsDir())
-  } catch {
-    slugs = []
-  }
-
-  for (const slug of slugs) {
-    let entries: string[]
-    try {
-      entries = await fs.readdir(worktreesDir(slug))
-    } catch {
-      continue
+  const row = await findSessionRow(idOrName)
+  if (row) {
+    return {
+      projectSlug: row.projectSlug,
+      sessionId: row.sessionId,
+      tool: row.tool,
+      jobName: null,
     }
-    const wt = entries.find((e) => e === idOrName || e.startsWith(idOrName))
-    if (!wt) continue
-    const tool = await detectToolFromTranscript(slug, wt)
-    return { projectSlug: slug, sessionId: wt, tool, jobName: null }
   }
 
   throw new ServerError(

@@ -78,7 +78,7 @@ export function DeletedSessionsButton({
     for (const e of optimisticDeleted) if (fetched.has(e.sessionId)) removeOptimisticDeleted(e.sessionId)
   }, [data, optimisticDeleted, removeOptimisticDeleted])
 
-  // A restart reuses the session id and clears its deleted-store row, so once
+  // A restart reuses the session id and clears its recorded deletion, so once
   // the restart takes effect the session drops out of the fetched list. Prune
   // it from `restarting` then — the filter below has done its job. Otherwise a
   // later re-delete of the same id re-enters `data` but stays hidden by that

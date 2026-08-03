@@ -2,16 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { projectDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#platform/db/client'
 import { importLegacyJsonStores } from '#platform/db/legacy-import'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
-import { getSessionTitles } from '#features/titles/titles'
-import {
-  getDeletedSessionOpencodeFirstUserMessage,
-  hasOpencodeMeta,
-  listOpencodeMetaEntries,
-} from '#features/sessions/agents/opencode'
+import { MAX_PROMPT_LENGTH, getProjectSessionRows, listSessionRows } from '#features/sessions/store'
 import { loadTokens } from '#http/token-store'
 
 // The legacy on-disk layout, rebuilt by hand: the production path builders
@@ -72,15 +67,16 @@ describe('importLegacyJsonStores', () => {
     expect(await exists(prefsPath())).toBe(false) // consumed all the same
   })
 
-  it('sweeps session titles across every project, dropping non-string entries', async () => {
+  it('sweeps session titles across every project onto their session rows', async () => {
     for (const slug of ['alpha', 'beta']) {
       await fs.mkdir(projectDir(slug), { recursive: true })
     }
     await fs.writeFile(titlesPath('alpha'), JSON.stringify({ s1: 'fix parser', junk: 42, blank: '' }))
     await fs.writeFile(titlesPath('beta'), JSON.stringify({ s2: 'docs pass' }))
     await importLegacyJsonStores()
-    expect(await getSessionTitles('alpha')).toEqual({ s1: 'fix parser' })
-    expect(await getSessionTitles('beta')).toEqual({ s2: 'docs pass' })
+    expect((await getProjectSessionRows('alpha')).get('s1')?.title).toBe('fix parser')
+    expect((await getProjectSessionRows('alpha')).get('junk')).toBeUndefined()
+    expect((await getProjectSessionRows('beta')).get('s2')?.title).toBe('docs pass')
     expect(await exists(titlesPath('alpha'))).toBe(false)
     expect(await exists(titlesPath('beta'))).toBe(false)
   })
@@ -91,11 +87,80 @@ describe('importLegacyJsonStores', () => {
     await fs.writeFile(file, JSON.stringify({ firstMessage: 'build a thing', capturedAt: '2026-05-01T00:00:00.000Z' }))
     const stat = await fs.lstat(file)
     await importLegacyJsonStores()
-    expect(await hasOpencodeMeta('proj', 'ocsess')).toBe(true)
-    expect(await getDeletedSessionOpencodeFirstUserMessage('proj', 'ocsess')).toBe('build a thing')
-    const [entry] = await listOpencodeMetaEntries('proj')
-    expect(Math.abs(entry.createdAt.getTime() - stat.birthtime.getTime())).toBeLessThanOrEqual(1)
+    const row = (await getProjectSessionRows('proj')).get('ocsess')
+    expect(row).toMatchObject({ tool: 'opencode', prompt: 'build a thing' })
+    expect(Math.abs((row?.createdAt.getTime() ?? 0) - stat.birthtime.getTime())).toBeLessThanOrEqual(1)
     expect(await exists(metaDir('proj'))).toBe(false)
+  })
+
+  it('adopts transcripts even when the data migration already seeded rows', async () => {
+    // The regression that matters on a real upgrade: the SQL migration
+    // folds the old side tables into agent_sessions before this runs, so a
+    // gate on "table is empty" would skip adoption on every install that
+    // had ever titled a session.
+    await fs.mkdir(projectDir('proj'), { recursive: true })
+    await fs.writeFile(titlesPath('proj'), JSON.stringify({ seeded: 'an older session' }))
+    await importLegacyJsonStores()
+    expect((await getProjectSessionRows('proj')).get('seeded')?.title).toBe('an older session')
+
+    // Now a *second* data dir state: rows exist, and a transcript-only
+    // session appears. A fresh DB replays the migration + import with rows
+    // already present.
+    const workspaceDir = path.join(claudeDir('proj'), 'projects', '-workspace')
+    await fs.mkdir(workspaceDir, { recursive: true })
+    await fs.writeFile(path.join(workspaceDir, 'transcript-only.jsonl'), '{}\n')
+    await closeDb()
+    // Clear the one-shot flag the way a fresh upgrade would: a new DB.
+    await fs.rm(path.join(getDataDir(), 'db'), { recursive: true, force: true })
+    await importLegacyJsonStores()
+
+    expect((await getProjectSessionRows('proj')).get('transcript-only')).toMatchObject({
+      tool: 'claude',
+    })
+  })
+
+  it('adopts pre-existing transcripts once, then leaves later ones alone', async () => {
+    const workspaceDir = path.join(claudeDir('proj'), 'projects', '-workspace')
+    await fs.mkdir(workspaceDir, { recursive: true })
+    await fs.writeFile(path.join(workspaceDir, 'old-session.jsonl'), '{}\n')
+    await importLegacyJsonStores()
+    expect((await getProjectSessionRows('proj')).get('old-session')).toMatchObject({
+      tool: 'claude',
+      transcriptPath: path.join(workspaceDir, 'old-session.jsonl'),
+    })
+
+    // A transcript that appears afterwards is a conversation the agent
+    // started for itself (`/clear`), not a session — the backfill is done.
+    await fs.writeFile(path.join(workspaceDir, 'post-clear.jsonl'), '{}\n')
+    await importLegacyJsonStores()
+    expect((await getProjectSessionRows('proj')).get('post-clear')).toBeUndefined()
+  })
+
+  it('corrects the tool a migrated title row guessed at, from the transcript', async () => {
+    await fs.mkdir(projectDir('proj'), { recursive: true })
+    const codexDirPath = path.join(codexTranscriptDir('proj'))
+    await fs.mkdir(codexDirPath, { recursive: true })
+    await fs.writeFile(path.join(codexDirPath, 'cx.jsonl'), '{}\n')
+    await fs.writeFile(titlesPath('proj'), JSON.stringify({ cx: 'a codex session' }))
+    await importLegacyJsonStores()
+    expect((await getProjectSessionRows('proj')).get('cx')).toMatchObject({
+      tool: 'codex',
+      title: 'a codex session',
+    })
+  })
+
+  it('normalizes an imported title and caps an imported prompt', async () => {
+    await fs.mkdir(projectDir('proj'), { recursive: true })
+    await fs.writeFile(titlesPath('proj'), JSON.stringify({ s1: '  spaced   out  ' }))
+    await fs.mkdir(metaDir('proj'), { recursive: true })
+    await fs.writeFile(
+      path.join(metaDir('proj'), 'oc.json'),
+      JSON.stringify({ firstMessage: 'x'.repeat(MAX_PROMPT_LENGTH + 500) }),
+    )
+    await importLegacyJsonStores()
+    const rows = await getProjectSessionRows('proj')
+    expect(rows.get('s1')?.title).toBe('spaced out')
+    expect(rows.get('oc')?.prompt).toHaveLength(MAX_PROMPT_LENGTH)
   })
 
   it('imports tokens with kind defaulting, dropping malformed entries', async () => {
@@ -125,6 +190,6 @@ describe('importLegacyJsonStores', () => {
     expect(await exists(prefsPath())).toBe(true)
     expect(await exists(tokensJsonPath())).toBe(true)
     expect(await exists(badMeta)).toBe(true) // and the dir stays with it
-    expect(await hasOpencodeMeta('proj', 'bad')).toBe(false)
+    expect(await listSessionRows('proj')).toEqual([])
   })
 })

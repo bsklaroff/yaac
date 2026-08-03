@@ -125,17 +125,6 @@ export type PiCredentialsFile = {
 }
 
 /**
- * Per-yaac-session opencode metadata cache. Stores the first-message
- * snapshot so deleted-session listings can still surface it without
- * needing to spin up a sqlite reader against the persisted DB.
- */
-export interface OpencodeSessionMeta {
-  firstMessage?: string
-  /** ISO timestamp of last successful capture. */
-  capturedAt?: string
-}
-
-/**
  * Summary view over per-tool credential files. Consumers (`auth list`,
  * session-create's per-tool placeholder wiring) read only kind / apiKey /
  * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
@@ -585,9 +574,9 @@ export interface DeletedSessionEntry {
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Session birth time. */
   createdAt: string
-  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the newest log's
-   *  mtime for claude/codex/pi; for opencode (no host transcript) the later
-   *  of its first-message capture and creation time, so it's approximate. */
+  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the transcript's
+   *  mtime, falling back to creation time for a session with no transcript
+   *  (opencode, which leaves none on the host) or whose transcript is gone. */
   lastActiveAt?: string
   /** When the session was deleted, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
    *  at delete time; the primary sort key (newest-deleted first). Absent for
@@ -603,7 +592,7 @@ export interface DeletedSessionEntry {
   deathDetail?: string
   /** Whether the user has viewed this death's detail — clears the "Deleted
    *  sessions" notification dot / row highlight. Server-persisted (on the
-   *  deleted_sessions row) so the acknowledgement is durable and shared across
+   *  session row) so the acknowledgement is durable and shared across
    *  clients; only meaningful when `deathReason` is set. */
   seen: boolean
   /** Pinned to the sidebar's "Background" section — the pin survives

@@ -3,20 +3,14 @@ import path from 'node:path'
 import { listSessionPods, isPrewarmed, type SessionPod } from '#platform/k8s/pods'
 import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { isDeferredClusterBootPending, triggerDeferredClusterBoot } from '#platform/k8s/deferred-boot'
-import { worktreeUpstreamBranch } from '#platform/git'
-import { projectDir, repoDir } from '@yaac/shared/project-paths'
-import {
-  getSessionFirstMessage,
-  normalizeTool,
-  pruneTerminating,
-  listBackgroundSessionIds,
-} from '#features/sessions/state'
+import { projectDir } from '@yaac/shared/project-paths'
+import { normalizeTool, pruneTerminating } from '#features/sessions/state'
+import { getProjectSessionRows, type SessionRow } from '#features/sessions/store'
 import { readSessionStatus, readSessionWaitingSince } from '#features/sessions/status-store'
 import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
 import { readAllGitAuthFailures } from '#features/projects/git-auth-failures'
-import { getSessionTitles } from '#features/titles/titles'
 import { classifySessionPods, watcherDisplayLiveness } from '#features/sessions/classify'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
@@ -44,49 +38,6 @@ const listActiveInflight = new Map<string, Promise<ActiveSessionsResult>>()
  */
 export function _clearListActiveInflightForTests(): void {
   listActiveInflight.clear()
-}
-
-/**
- * Session-branch upstream cache, keyed `<slug>/<sessionId>`. The upstream
- * (`branch.agent/<id>.merge`) is written during create (or a claim's
- * re-branch prep) before the session ever lists as a user session, and
- * nothing rewrites it while the session runs — but a spare mid-claim can
- * still be listed before its rewrite lands, so entries expire on a short
- * TTL rather than living forever. Without this, every 5s snapshot rebuild
- * spawned one `git config` subprocess per running session.
- */
-const UPSTREAM_BRANCH_CACHE_TTL_MS = 60_000
-const upstreamBranchCache = new Map<string, { value: string | null; atMs: number }>()
-
-/** Test-only: drop cached upstream branches. */
-export function _clearUpstreamBranchCacheForTests(): void {
-  upstreamBranchCache.clear()
-}
-
-async function cachedUpstreamBranch(
-  slug: string,
-  sessionId: string,
-  nowMs: number,
-): Promise<string | null> {
-  const key = `${slug}/${sessionId}`
-  const hit = upstreamBranchCache.get(key)
-  if (hit && nowMs - hit.atMs < UPSTREAM_BRANCH_CACHE_TTL_MS) return hit.value
-  // Lazy sweep so entries for long-gone sessions can't accumulate
-  // unboundedly in a long-lived server.
-  if (upstreamBranchCache.size > 256) {
-    for (const [k, v] of upstreamBranchCache) {
-      if (nowMs - v.atMs >= UPSTREAM_BRANCH_CACHE_TTL_MS) upstreamBranchCache.delete(k)
-    }
-  }
-  try {
-    const value = await worktreeUpstreamBranch(repoDir(slug), `agent/${sessionId}`)
-    upstreamBranchCache.set(key, { value, atMs: nowMs })
-    return value
-  } catch {
-    // Transient read failure — keep any expired hit rather than caching
-    // the failure; the next rebuild retries.
-    return hit?.value ?? null
-  }
 }
 
 /**
@@ -151,19 +102,17 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // permanently-greyed row.
   pruneTerminating(new Set(pods.map((p) => p.sessionId).filter((v): v is string => !!v)), Date.now())
 
-  // User-assigned titles, one file read per project — for both live and
-  // terminating rows (the latter keep their title on the way out).
-  const titleSlugs = [...new Set(
+  // Recorded session state — prompt, title, base branch, pin — one query per
+  // project for both live and terminating rows (the latter keep their title
+  // and pin on the way out).
+  const rowSlugs = [...new Set(
     [...running, ...terminating].map((p) => p.projectSlug).filter((v): v is string => !!v),
   )]
-  const titlesBySlug = new Map(await Promise.all(
-    titleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
+  const rowsBySlug = new Map(await Promise.all(
+    rowSlugs.map(async (slug) => [slug, await getProjectSessionRows(slug)] as const),
   ))
-  // Background pins, batched the same way — terminating rows keep their pin
-  // so they stay in the Background section on the way out.
-  const backgroundBySlug = new Map(await Promise.all(
-    titleSlugs.map(async (slug) => [slug, await listBackgroundSessionIds(slug)] as const),
-  ))
+  const rowFor = (p: SessionPod): SessionRow | undefined =>
+    p.projectSlug && p.sessionId ? rowsBySlug.get(p.projectSlug)?.get(p.sessionId) : undefined
 
   const sessions: SessionListEntry[] = await Promise.all(
     running.map(async (p): Promise<SessionListEntry> => {
@@ -180,28 +129,25 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           unforwardedPorts: [],
         }
       }
-      const [prompt, blockedHosts, baseBranch] = await Promise.all([
-        getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName),
-        readBlockedHosts(p.sessionId),
-        // The session branch's recorded upstream (branch.agent/<id>.merge in
-        // the shared repo config) — written at setup, rewritten by a claim's
-        // re-branch prep, so it's authoritative for a listed session.
-        cachedUpstreamBranch(p.projectSlug, p.sessionId, Date.now()),
-      ])
+      const row = rowFor(p)
+      const blockedHosts = await readBlockedHosts(p.sessionId)
       return {
         sessionId: p.sessionId,
         projectSlug: p.projectSlug,
         tool,
         status: readSessionStatus(p.projectSlug, p.sessionId),
-        createdAt: formatUtcTimestamp(p.createdAtMs),
+        // The recorded creation time, which — unlike the pod's — survives a
+        // restart. A session with no row yet (created by an older yaac, no
+        // transcript for the backfill to find) falls back to its pod.
+        createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
         waitingSinceMs: readSessionWaitingSince(p.projectSlug, p.sessionId),
-        prompt,
-        title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
+        prompt: row?.prompt,
+        title: row?.title,
         blockedHosts,
         forwardedPorts: getSessionPorts(p.sessionId),
         unforwardedPorts: getUnforwardedPorts(p.sessionId),
-        baseBranch: baseBranch ?? undefined,
-        background: backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined,
+        baseBranch: row?.baseBranch,
+        background: row?.background || undefined,
       }
     }),
   )
@@ -209,34 +155,24 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // Terminating rows: a distinct, non-interactive placeholder. Status is
   // forced to 'running' (never read from the status store, which was evicted
   // at teardown and would default to 'waiting' — the flash we're killing) and
-  // waitingSinceMs is omitted, so no attention badge fires. The first-message
-  // read is the cached-transcript overload (no jobName) so it never probes the
-  // dying container.
-  const terminatingRows: SessionListEntry[] = await Promise.all(
-    terminating.map(async (p): Promise<SessionListEntry> => {
-      const tool = normalizeTool(p.tool)
-      const prompt = p.sessionId && p.projectSlug
-        ? await getSessionFirstMessage(p.projectSlug, p.sessionId, tool)
-        : undefined
-      return {
-        sessionId: p.sessionId,
-        projectSlug: p.projectSlug,
-        tool,
-        status: 'running',
-        terminating: true,
-        createdAt: formatUtcTimestamp(p.createdAtMs),
-        prompt,
-        title: p.projectSlug ? titlesBySlug.get(p.projectSlug)?.[p.sessionId] : undefined,
-        blockedHosts: [],
-        forwardedPorts: [],
-        unforwardedPorts: [],
-        background: p.projectSlug
-          ? backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined
-          : undefined,
-      }
-    }),
-  )
-  sessions.push(...terminatingRows)
+  // waitingSinceMs is omitted, so no attention badge fires.
+  sessions.push(...terminating.map((p): SessionListEntry => {
+    const row = rowFor(p)
+    return {
+      sessionId: p.sessionId,
+      projectSlug: p.projectSlug,
+      tool: normalizeTool(p.tool),
+      status: 'running',
+      terminating: true,
+      createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
+      prompt: row?.prompt,
+      title: row?.title,
+      blockedHosts: [],
+      forwardedPorts: [],
+      unforwardedPorts: [],
+      background: row?.background || undefined,
+    }
+  }))
 
   // Project-wide git credential failures — independent of the session set
   // (a bad token persists with zero running sessions and blocks new ones).

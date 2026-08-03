@@ -18,6 +18,10 @@ import { defineConfig } from 'vitest/config'
 const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
 const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 
+/** Machine-readable record of the last run — see the `reporters` note below.
+ *  `scripts/test-failures.ts` renders the failures out of it. */
+const TEST_FAILURES_FILE = './.vitest-last-run.json'
+
 function unitProject(pkgDir: string, extra: object = {}) {
   return {
     extends: true as const,
@@ -39,6 +43,13 @@ export default defineConfig({
     // workers queued, a waiter can sit well past vitest's 10s default.
     // Raised to 600s so queued hooks don't false-fail as flakes.
     hookTimeout: 600_000,
+    // Every run also writes its failures to a file, so "what broke?" is a
+    // read, never a re-run. A full-suite run prints thousands of lines and
+    // takes minutes; whoever (or whatever) truncated the console output —
+    // a `| tail`, a scrollback limit, a killed terminal — can recover the
+    // failing test names, messages and stacks from here instead of paying
+    // for the suite twice. Overwritten per run, gitignored.
+    reporters: ['default', ['json', { outputFile: TEST_FAILURES_FILE }]],
     projects: [
       // Co-located per-package unit tests. Names are `unit:<pkg>`.
       unitProject('packages/cli'),

@@ -1,5 +1,5 @@
 import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
-import { captureOpencodeFirstMessages } from '#features/sessions/agents/opencode'
+import { captureSessionPrompts } from '#features/sessions/prompt-capture'
 import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reconcile'
 import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
 import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'
@@ -64,10 +64,12 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Mid-session image salvage (nested engines → shared store). Throttled
     // internally per session; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
-    { name: 'opencode-first-messages', triggers: ['session-pods'],
-      run: (s) => captureOpencodeFirstMessages(s) },
+    // First user message onto each session row — once per session, so
+    // every display path reads the prompt instead of parsing a transcript.
+    { name: 'session-prompts', triggers: ['session-pods'],
+      run: (s) => captureSessionPrompts(s) },
     // Model-generated titles for untitled sessions (right after first-message
-    // capture so a fresh opencode prompt is eligible the same pass).
+    // capture so a freshly captured prompt is eligible the same pass).
     { name: 'generated-titles', triggers: ['session-pods'],
       run: () => reconcileGeneratedTitles() },
     // ssh-agent heal only (attach-only probe, never bootstraps): agent

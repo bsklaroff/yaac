@@ -101,6 +101,16 @@ import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranc
 import { removeLegacyCodexHook } from '#features/sessions/agents/codex'
 import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode'
 import {
+  deleteSessionRow,
+  getSessionRow,
+  priorDeletionOf,
+  recordSessionCreated,
+  recordSessionDeleted,
+  restoreSessionDeletion,
+  setSessionBaseBranch,
+  type PriorDeletion,
+} from '#features/sessions/store'
+import {
   buildAgentCmd,
   typeInitialPrompt,
   type InitWindow,
@@ -405,6 +415,35 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 }
 
 /**
+ * Undo the pre-provisioning row write for a create that gave up. A fresh
+ * create invented the row, so it goes; a restart re-stamped a row that
+ * already carried the session's history (title, pin, captured prompt), so
+ * it is put back the way it was found — recorded as deleted — rather than
+ * erased.
+ */
+async function rollbackSessionRow(
+  projectSlug: string,
+  sessionId: string,
+  options: SessionCreateOptions,
+  priorDeletion: PriorDeletion | undefined,
+): Promise<void> {
+  try {
+    if (!options.resume) {
+      await deleteSessionRow(projectSlug, sessionId)
+    } else if (priorDeletion) {
+      // Exactly as the restart found it — including the cause it died of
+      // and whether the user had already seen that death.
+      await restoreSessionDeletion(projectSlug, sessionId, priorDeletion)
+    } else {
+      await recordSessionDeleted(projectSlug, sessionId)
+    }
+  } catch {
+    // Best-effort: the create is already failing, and the reaper records a
+    // row whose pod never arrived.
+  }
+}
+
+/**
  * Server-side implementation of `/session/create`. Provisions the
  * worktree, proxy rules, kubernetes Job, and port forwarders — all
  * long-lived resources that the server owns for the session's
@@ -509,6 +548,36 @@ export async function createSession(
   // Directory) mounts on first attempt: the Job is applied while the
   // checkout below may still be running.
   await fs.mkdir(wtDir, { recursive: true })
+
+  // Record the session BEFORE anything is provisioned, so no pod can ever
+  // exist without a row — a rowless pod is invisible to every path that
+  // reads recorded state (titles, background, the deleted listing, restart)
+  // and there is no safe way to tell one from an unclaimed spare later.
+  // A write failure therefore fails the create before it has built
+  // anything, and a create that fails later rolls the row back (see
+  // `rollbackSessionRow`). Prewarmed spares are not sessions until claimed,
+  // so the claim writes their row instead (see tryClaimPrewarmed).
+  //
+  // `baseBranch` is deliberately not here: it comes from the worktree leg
+  // that runs concurrently with the pod boot, and waiting for it would undo
+  // that overlap. It is stamped at the end.
+  // A restart is about to clear the row's deletion; remember it first, so a
+  // restart that then fails can put the row back rather than leaving a dead
+  // session looking alive (or forgetting how it died).
+  let priorDeletion: PriorDeletion | undefined
+  if (!options.prewarm) {
+    if (options.resume) {
+      priorDeletion = priorDeletionOf(
+        await getSessionRow(projectSlug, sessionId).catch(() => undefined),
+      )
+    }
+    await recordSessionCreated({
+      projectSlug,
+      sessionId,
+      tool,
+      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
+    })
+  }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
   // The independent legs of provisioning run concurrently: image
@@ -1165,6 +1234,7 @@ export async function createSession(
       // Release any pre-bound host ports so a retry (or the reaper) can
       // rebind them.
       for (const p of forwardedPorts) p.server.close()
+      if (!options.prewarm) await rollbackSessionRow(projectSlug, sessionId, options, priorDeletion)
       throw err instanceof SetupInputError ? err.inner : err
     }
   }
@@ -1175,6 +1245,18 @@ export async function createSession(
   if (forwardedPorts.length > 0) {
     const stop = startPortForwarders(relayTcpFactory(sessionId), forwardedPorts)
     registerSessionForwarders(sessionId, stop, forwardedPorts)
+  }
+
+  // The branch the worktree forked from, now that the (concurrent) checkout
+  // has resolved it. A separate write from the row above so recording the
+  // session never had to wait on provisioning; best-effort, since a missing
+  // base costs a sidebar chip and nothing else. A resume keeps what it
+  // already recorded — its worktree was left as-is.
+  if (!options.prewarm) {
+    const { upstreamStartPoint } = await worktreeTask
+    if (upstreamStartPoint !== undefined) {
+      await setSessionBaseBranch(projectSlug, sessionId, upstreamStartPoint.replace(/^origin\//, ''))
+    }
   }
 
   return {

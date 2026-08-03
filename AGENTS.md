@@ -3,6 +3,7 @@
 - Every CLI command argument and option must have an e2e test in `test/e2e-cli/` (or `test/e2e/`) at the repo root.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
 - Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
+- Running tests: pick the narrowest project (`pnpm vitest run --project unit:server [file]`, `--project api`, `--project e2e`), and never pipe a run through `tail`/`head` — the failure details print *before* the summary, so truncating leaves you knowing only that something failed. A full run takes minutes, so run it in the background and read its output file rather than blocking. Every run also writes `.vitest-last-run.json`; `pnpm test:failures` prints the failing test names, files, and assertions from it, so a lost or truncated console never costs a re-run.
 - A DB schema change (`packages/server/src/platform/db/schema.ts`) needs a Drizzle migration: generate it with a descriptive name via `pnpm --filter @yaac/server exec drizzle-kit generate --name <change>` (e.g. `add_deleted_sessions`), and commit the emitted `packages/server/drizzle/<timestamp>_<name>/` dir. Never keep drizzle's auto-generated random suffix (`<timestamp>_<adjective_noun>`, e.g. `melodic_polaris`) — if you already generated one, delete that dir and re-run with `--name`. Migrations apply automatically on server start (`getDb()` runs `migrate()`).
 - Limit all git commit message lines to 80 characters maximum.
 
@@ -73,7 +74,7 @@ artifact (`pnpm pack`, no hand-kept dependency list) plus a standalone Node.
 
 - Sessions run as Kubernetes Jobs (one single-pod Job per session) on a local single-node cluster; podman is only the image build engine (`podman build`/`podman push` to the local registry on `localhost:5000`).
 - Cluster access uses the `@kubernetes/client-node` library wherever a library call applies (reads, informers/watches); `kubectl exec` is used only where a library call doesn't make sense — streaming into session pods (PTYs, port-forward relays, tmux control-mode status). Primitive helpers live in `packages/server/src/platform/k8s/`; cluster lifecycle (setup/check/delete/vcluster/registry) lives in `packages/server/src/features/cluster/`.
-- E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
+- E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster. Developing inside a yaac session already satisfies this — the session ships a ready vcluster and podman, so e2e is runnable there and an e2e-affecting change should be run rather than left unverified (`yaac cluster check`'s `skipped — nested yaac` lines are expected).
 
 ## Playwright Test Scripts
 

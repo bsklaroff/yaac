@@ -1,13 +1,7 @@
-import { and, eq } from 'drizzle-orm'
 import type { SessionPod } from '#platform/k8s/pods'
-import { getDb } from '#platform/db/client'
-import { backgroundSessions } from '#platform/db/schema'
 import { getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '#features/sessions/agents/claude-status'
 import { getSessionCodexFirstUserMessage } from '#features/sessions/agents/codex'
-import {
-  getSessionOpencodeFirstUserMessage,
-  getDeletedSessionOpencodeFirstUserMessage,
-} from '#features/sessions/agents/opencode'
+import { getSessionOpencodeFirstUserMessage } from '#features/sessions/agents/opencode'
 import { getSessionPiFirstUserMessage } from '#features/sessions/agents/pi-status'
 import type { AgentTool, SessionDeathCause } from '@yaac/shared/types'
 
@@ -24,11 +18,11 @@ export function normalizeTool(raw: string | undefined): AgentTool {
 }
 
 /**
- * First-message lookup for `yaac session list`. `jobName` is required
- * for opencode (HTTP probe into the running container) and ignored for
- * claude/codex (they read JSONL files from host bind-mounts). Pass
- * `undefined` for deleted-session listings where the Job is gone —
- * opencode then reads from its on-disk meta cache.
+ * First-message lookup, used once per session by the capture step (and
+ * on demand for a session that died before it ran). `jobName` is required
+ * for opencode — it has no host transcript, so its first message can only
+ * come from an HTTP probe into the running container — and ignored for
+ * claude/codex/pi, which read JSONL files from host bind-mounts.
  */
 export async function getSessionFirstMessage(
   projectSlug: string,
@@ -39,10 +33,7 @@ export async function getSessionFirstMessage(
   if (tool === 'codex') return getSessionCodexFirstUserMessage(projectSlug, sessionId)
   if (tool === 'pi') return getSessionPiFirstUserMessage(projectSlug, sessionId)
   if (tool === 'opencode') {
-    if (jobName) {
-      return getSessionOpencodeFirstUserMessage(projectSlug, sessionId, jobName)
-    }
-    return getDeletedSessionOpencodeFirstUserMessage(projectSlug, sessionId)
+    return jobName ? getSessionOpencodeFirstUserMessage(jobName) : undefined
   }
   return getSessionClaudeFirstMessage(projectSlug, sessionId)
 }
@@ -143,44 +134,4 @@ export function pruneTerminating(livePodIds: Set<string>, nowMs = Date.now()): v
 /** Test helper: drop all marks. */
 export function _clearTerminatingForTests(): void {
   marks.clear()
-}
-
-// ---------------------------------------------------------------------------
-// Background pins
-// ---------------------------------------------------------------------------
-
-/**
- * Sessions pinned to the sidebar's "Background" section, stored in the
- * server DB keyed by (project, session). Presence of a row is the pin;
- * unpinning deletes it. Kept outside the container (like titles) so the
- * pin survives delete + restart — session ids are stable across restarts,
- * which is what lets a deleted background session keep its sidebar row.
- */
-
-/** Pin (or unpin) a session to the Background section. Idempotent. */
-export async function setSessionBackground(
-  slug: string,
-  sessionId: string,
-  background: boolean,
-): Promise<void> {
-  const db = await getDb()
-  if (background) {
-    await db.insert(backgroundSessions)
-      .values({ projectSlug: slug, sessionId })
-      .onConflictDoNothing()
-  } else {
-    await db.delete(backgroundSessions).where(and(
-      eq(backgroundSessions.projectSlug, slug),
-      eq(backgroundSessions.sessionId, sessionId),
-    ))
-  }
-}
-
-/** Session ids pinned to Background for a project. */
-export async function listBackgroundSessionIds(slug: string): Promise<Set<string>> {
-  const db = await getDb()
-  const rows = await db.select({ sessionId: backgroundSessions.sessionId })
-    .from(backgroundSessions)
-    .where(eq(backgroundSessions.projectSlug, slug))
-  return new Set(rows.map((r) => r.sessionId))
 }

@@ -1,44 +1,23 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
   sessionExec: vi.fn(),
 }))
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listSessionPods: vi.fn().mockResolvedValue([]),
-  }
-})
-
 import { sessionExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
-import { getDb, closeDb } from '#platform/db/client'
-import { opencodeSessionMeta } from '#platform/db/schema'
 import {
   pickOpencodeSession,
   OPENCODE_BUSY_MARKERS,
   getSessionOpencodeFirstUserMessage,
-  getDeletedSessionOpencodeFirstUserMessage,
-  ensureOpencodeFirstMessageCaptured,
-  captureOpencodeFirstMessages,
-  saveOpencodeMeta,
-  hasOpencodeMeta,
-  listOpencodeMetaEntries,
   ensureOpencodeConfigJson,
-  _clearOpencodeProbeCacheForTests,
 } from '#features/sessions/agents/opencode'
 
 const mockedExec = vi.mocked(sessionExec)
-const mockListPods = vi.mocked(listSessionPods)
 
 /**
  * The HTTP probe (`curl /session`) goes through `containerExec`; the
@@ -70,27 +49,11 @@ function sessionsStdout(
   return { stdout: json + '\n', stderr: '' }
 }
 
+
 describe('opencode-status', () => {
-  let tmpDir: string
-
-  // One PGlite per file: cold-init is the expensive part, so the tests
-  // share a data dir and wipe the meta table instead of recreating it.
-  beforeAll(async () => {
-    tmpDir = await createTempDataDir()
-  })
-
-  afterAll(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  beforeEach(async () => {
+  beforeEach(() => {
     mockedExec.mockReset()
-    _clearOpencodeProbeCacheForTests()
-    const db = await getDb()
-    await db.delete(opencodeSessionMeta)
   })
-
   describe('pickOpencodeSession', () => {
     it('picks the most-recently-updated root session', () => {
       const result = pickOpencodeSession({
@@ -143,150 +106,24 @@ describe('opencode-status', () => {
     })
   })
 
-  describe('meta snapshots (saveOpencodeMeta / hasOpencodeMeta / listOpencodeMetaEntries)', () => {
-    it('round-trips a snapshot and upserts in place, preserving createdAt', async () => {
-      expect(await hasOpencodeMeta('proj', 'sid')).toBe(false)
-      await saveOpencodeMeta('proj', 'sid', { firstMessage: 'one', capturedAt: '2026-01-01' })
-      expect(await hasOpencodeMeta('proj', 'sid')).toBe(true)
-      const [first] = await listOpencodeMetaEntries('proj')
-      expect(first.sessionId).toBe('sid')
-      expect(first.createdAt).toBeInstanceOf(Date)
-
-      await saveOpencodeMeta('proj', 'sid', { firstMessage: 'two', capturedAt: '2026-01-02' })
-      const entries = await listOpencodeMetaEntries('proj')
-      expect(entries).toHaveLength(1)
-      expect(entries[0].createdAt.getTime()).toBe(first.createdAt.getTime())
-      expect(await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')).toBe('two')
-    })
-
-    it('listOpencodeMetaEntries filters by project', async () => {
-      await saveOpencodeMeta('a', 's1', { firstMessage: 'x' })
-      await saveOpencodeMeta('b', 's2', { firstMessage: 'y' })
-      expect((await listOpencodeMetaEntries('a')).map((e) => e.sessionId)).toEqual(['s1'])
-    })
-  })
-
   describe('getSessionOpencodeFirstUserMessage', () => {
-    it('returns the title from the probe and caches it as a snapshot', async () => {
-      mockProbeResult(sessionsStdout(
-        [{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }],
-      ))
-      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
-      expect(msg).toBe('Refactor auth flow')
-
-      expect(await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')).toBe('Refactor auth flow')
-      const db = await getDb()
-      const [row] = await db.select().from(opencodeSessionMeta)
-      expect(typeof row.capturedAt).toBe('string')
+    it('returns the title of the container\'s session', async () => {
+      mockProbeResult(sessionsStdout([{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }]))
+      expect(await getSessionOpencodeFirstUserMessage('container')).toBe('Refactor auth flow')
     })
 
-    it('falls back to the cached snapshot when the probe yields no session', async () => {
-      await saveOpencodeMeta('proj', 'sid', { firstMessage: 'stale-but-useful', capturedAt: '2026-01-01' })
+    it('returns undefined when the probe yields no session', async () => {
       mockProbeResult(sessionsStdout([]))
-      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
-      expect(msg).toBe('stale-but-useful')
+      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
     })
 
-    it('returns undefined when neither the probe nor the snapshot have data', async () => {
+    it('returns undefined when the probe fails', async () => {
       mockProbeResult(new Error('exec failed'))
-      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
-      expect(msg).toBeUndefined()
-    })
-  })
-
-  describe('getDeletedSessionOpencodeFirstUserMessage', () => {
-    it('reads from the snapshot without touching the pod', async () => {
-      await saveOpencodeMeta('proj', 'sid', { firstMessage: 'cached title' })
-      const msg = await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')
-      expect(msg).toBe('cached title')
-      expect(mockedExec).not.toHaveBeenCalled()
-    })
-
-    it('returns undefined when no snapshot exists', async () => {
-      const msg = await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')
-      expect(msg).toBeUndefined()
-    })
-  })
-
-  describe('ensureOpencodeFirstMessageCaptured', () => {
-    it('skips the probe when a snapshot is already cached', async () => {
-      await saveOpencodeMeta('proj', 'sid', { firstMessage: 'already cached' })
-      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
-      expect(mockedExec).not.toHaveBeenCalled()
-    })
-
-    it('probes and persists the title when no snapshot exists yet', async () => {
-      mockProbeResult(sessionsStdout(
-        [{ id: 'ses_1', title: 'Fix the parser', updated: 1 }],
-      ))
-      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
-      expect(await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')).toBe('Fix the parser')
-    })
-
-    it('persists nothing when the session has no title yet (no message submitted)', async () => {
-      mockProbeResult(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
-      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
-      expect(await hasOpencodeMeta('proj', 'sid')).toBe(false)
+      expect(await getSessionOpencodeFirstUserMessage('container')).toBeUndefined()
     })
   })
 })
 
-describe('captureOpencodeFirstMessages', () => {
-  let tmpDir: string
-
-  function pod(overrides: { sessionId: string; tool: string }): SessionPod {
-    return {
-      jobName: `yaac-demo-${overrides.sessionId}`,
-      podName: `yaac-demo-${overrides.sessionId}-x1`,
-      sessionId: overrides.sessionId,
-      projectSlug: 'demo',
-      tool: overrides.tool,
-      phase: 'Running',
-      running: true,
-      terminating: false,
-      createdAtMs: 0,
-      labels: {},
-    }
-  }
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-    mockedExec.mockReset()
-    _clearOpencodeProbeCacheForTests()
-    mockListPods.mockReset()
-  })
-
-  afterEach(async () => {
-    vi.restoreAllMocks()
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('captures only running opencode sessions, skipping other tools', async () => {
-    mockListPods.mockResolvedValue([
-      pod({ sessionId: 'ocsess', tool: 'opencode' }),
-      pod({ sessionId: 'clsess', tool: 'claude' }),
-    ])
-    // Probe returns no session — the capture path still runs the curl exec
-    // for the opencode pod, which is the observable we assert on. Only the
-    // opencode session is probed; the claude session is filtered out before
-    // any curl (the tmux-liveness probes ride the same relay exec, so
-    // filter to the `/session` curls).
-    mockProbeResult(sessionsStdout([]))
-
-    await captureOpencodeFirstMessages()
-
-    const curlCalls = mockedExec.mock.calls.filter((c) => String(c[1]).includes('curl'))
-    expect(curlCalls.map((c) => c[0])).toEqual(['yaac-demo-ocsess'])
-  })
-
-  it('returns early without capturing when the cluster is unavailable', async () => {
-    mockListPods.mockRejectedValue(new Error('down'))
-
-    await expect(captureOpencodeFirstMessages()).resolves.toBeUndefined()
-    expect(mockedExec).not.toHaveBeenCalled()
-  })
-})
 
 interface OpencodeConfig {
   permission?: Record<string, unknown>

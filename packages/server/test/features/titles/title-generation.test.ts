@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#features/sessions/list', () => ({ listActiveSessions: vi.fn() }))
-vi.mock('#features/titles/titles', () => ({ setSessionTitle: vi.fn() }))
+vi.mock('#features/sessions/store', () => ({ setSessionTitle: vi.fn() }))
 vi.mock('#features/titles/title-summarizer', () => ({
   shouldGenerateTitle: vi.fn(),
   summarizeTitle: vi.fn(),
@@ -14,7 +14,7 @@ import {
   _resetTitleGenerationForTests,
 } from '#features/titles/title-generation'
 import { listActiveSessions } from '#features/sessions/list'
-import { setSessionTitle } from '#features/titles/titles'
+import { setSessionTitle } from '#features/sessions/store'
 import { shouldGenerateTitle, summarizeTitle } from '#features/titles/title-summarizer'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { serverLog } from '#log'

@@ -2,13 +2,24 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDb, type Db } from '#platform/db/client'
 import {
-  opencodeSessionMeta,
+  agentSessions,
   preferences,
-  sessionTitles,
   shortcutOverrides,
   tokens,
 } from '#platform/db/schema'
-import { DEFAULT_TOOL_KEY, isSerializedChord, isValidTool } from '#features/projects/preferences'
+import {
+  DEFAULT_TOOL_KEY,
+  SESSIONS_BACKFILLED_KEY,
+  isFlagSet,
+  isSerializedChord,
+  isValidTool,
+  setFlag,
+} from '#features/projects/preferences'
+import { MAX_PROMPT_LENGTH } from '#features/sessions/store'
+import { normalizeTitle } from '#features/titles/titles'
+import { worktreeUpstreamBranch } from '#platform/git'
+import { repoDir } from '@yaac/shared/project-paths'
+import { scanProjectTranscripts } from '#features/sessions/transcripts'
 import { serverLog } from '#log'
 import { getDataDir, getProjectsDir } from '@yaac/shared/paths'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -25,6 +36,9 @@ import { projectDir } from '@yaac/shared/project-paths'
  * crash mid-import just re-imports harmlessly. A malformed file is logged
  * and left in place. `.web-sessions.json` (pre-token-store web sessions) is
  * neither imported nor touched — those files were already ignored.
+ *
+ * Alongside them runs the one-shot session backfill (`backfillSessions`),
+ * which adopts sessions that predate the `agent_sessions` table.
  *
  * The legacy path builders live here, private: no other code reads these
  * files anymore.
@@ -102,10 +116,22 @@ async function importSessionTitles(db: Db, slug: string): Promise<void> {
   if (raw === null) return
   const obj = parseObject(p, raw)
   if (obj === null) return
-  const rows = Object.entries(obj).flatMap(([sessionId, title]) =>
-    typeof title === 'string' && title !== '' ? [{ projectSlug: slug, sessionId, title }] : [])
-  if (rows.length > 0) {
-    await db.insert(sessionTitles).values(rows).onConflictDoNothing()
+  const rows = Object.entries(obj).flatMap(([sessionId, title]) => {
+    if (typeof title !== 'string') return []
+    // Same normalization a rename goes through, so an imported title can't
+    // be a shape the store would never write.
+    const normalized = normalizeTitle(title)
+    return normalized === '' ? [] : [{ projectSlug: slug, sessionId, title: normalized, tool: 'claude' }]
+  })
+  for (const row of rows) {
+    // A session row may not exist yet (the backfill only sees sessions with
+    // a transcript); insert a placeholder so the title isn't lost, and let
+    // the tool default to claude — the same guess the SQL data migration
+    // makes, corrected by the transcript scan when one exists.
+    await db.insert(agentSessions).values(row).onConflictDoUpdate({
+      target: [agentSessions.projectSlug, agentSessions.sessionId],
+      set: { title: row.title },
+    })
   }
   await fs.unlink(p)
 }
@@ -138,13 +164,20 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
     // The meta file's birthtime is what deleted-session listing used to
     // sort by; carry it over as the row's createdAt.
     const stat = await fs.lstat(p)
-    await db.insert(opencodeSessionMeta).values({
+    // Capped like every other stored prompt (see MAX_PROMPT_LENGTH).
+    const firstMessage = typeof obj.firstMessage === 'string'
+      ? obj.firstMessage.slice(0, MAX_PROMPT_LENGTH)
+      : null
+    await db.insert(agentSessions).values({
       projectSlug: slug,
       sessionId: file.slice(0, -'.json'.length),
-      firstMessage: typeof obj.firstMessage === 'string' ? obj.firstMessage : null,
-      capturedAt: typeof obj.capturedAt === 'string' ? obj.capturedAt : null,
+      tool: 'opencode',
+      prompt: firstMessage,
       createdAt: stat.birthtime,
-    }).onConflictDoNothing()
+    }).onConflictDoUpdate({
+      target: [agentSessions.projectSlug, agentSessions.sessionId],
+      set: { tool: 'opencode', prompt: firstMessage },
+    })
     await fs.unlink(p)
   }
   if (!leftBehind) {
@@ -153,6 +186,53 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
     } catch {
       // Best-effort: a file that raced in keeps the dir; next boot retries.
     }
+  }
+}
+
+/**
+ * One-shot adoption of sessions that predate the `agent_sessions` table:
+ * every session a project's transcripts prove existed becomes a row, and
+ * rows the SQL data migration already created (from the old title /
+ * deleted / pin / opencode-meta tables) get their guessed `tool` and
+ * `createdAt` corrected from the file on disk.
+ *
+ * Gated on the table being empty rather than a marker row, and deliberately
+ * so: once yaac has recorded a single session, an unrecognized transcript is
+ * a conversation the agent started for itself (claude's `/clear` mints a new
+ * id and file), not a session — adopting those on every boot is exactly the
+ * phantom-row behaviour the spine replaces. A fresh install re-scans a few
+ * empty directories per boot until its first session, which costs nothing.
+ *
+ * `prompt` is left for the capture step / the deleted listing to fill
+ * lazily, so a data dir with thousands of transcripts doesn't pay a parse
+ * per file at startup.
+ */
+export async function backfillSessions(db: Db, slug: string): Promise<void> {
+  const records = await scanProjectTranscripts(slug)
+  for (const r of records) {
+    // The base branch the pre-upgrade session forked from still lives in
+    // the shared repo config, and nothing else would ever put it on the
+    // row — the display used to read it from git on every tick.
+    const baseBranch = await worktreeUpstreamBranch(repoDir(slug), `agent/${r.sessionId}`)
+      .catch(() => null)
+    const corrected = {
+      tool: r.tool,
+      createdAt: new Date(r.createdAtMs),
+      transcriptPath: r.transcriptPath,
+      ...(baseBranch !== null ? { baseBranch } : {}),
+    }
+    await db.insert(agentSessions)
+      .values({ projectSlug: slug, sessionId: r.sessionId, ...corrected })
+      .onConflictDoUpdate({
+        target: [agentSessions.projectSlug, agentSessions.sessionId],
+        // The SQL data migration had to guess `tool` and `created_at` from
+        // the folded side tables; the transcript on disk is the better
+        // source, so correcting them here is the point of this pass.
+        set: corrected,
+      })
+  }
+  if (records.length > 0) {
+    serverLog(`[db] adopted ${records.length} pre-existing session(s) in ${slug}`)
   }
 }
 
@@ -204,9 +284,21 @@ export async function importLegacyJsonStores(): Promise<void> {
   } catch {
     // No projects dir yet — nothing per-project to import.
   }
+  // Adopt pre-existing sessions before the legacy JSON stores, so a title or
+  // opencode snapshot lands on a row that already knows its tool and age.
+  //
+  // Gated on a durable flag, NOT on the table being empty: the SQL data
+  // migration seeds `agent_sessions` from the four folded side tables and
+  // runs (inside getDb) before this does, so any install that ever titled a
+  // session would look "already populated" and skip adoption forever —
+  // leaving the migration's guessed tool/createdAt in place and never
+  // adopting transcript-only sessions.
+  const backfilled = await isFlagSet(SESSIONS_BACKFILLED_KEY)
   for (const slug of slugs) {
+    if (!backfilled) await backfillSessions(db, slug)
     await importSessionTitles(db, slug)
     await importOpencodeMeta(db, slug)
   }
+  if (!backfilled) await setFlag(SESSIONS_BACKFILLED_KEY)
   await importTokens(db)
 }

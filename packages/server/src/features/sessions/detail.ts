@@ -2,6 +2,7 @@ import { findSessionPod, listSessionPods } from '#platform/k8s/pods'
 import { getVclusterStatus, type VclusterStatus } from '#features/cluster/vcluster'
 import { ServerError } from '@yaac/shared/errors'
 import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
+import { getSessionRow } from '#features/sessions/store'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
 import { readGitAuthFailures } from '#features/projects/git-auth-failures'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
@@ -87,5 +88,11 @@ export async function getSessionBlockedHosts(idOrName: string): Promise<string[]
 export async function getSessionPrompt(idOrName: string): Promise<string | undefined> {
   const match = await findSession(idOrName)
   if (!match.sessionId || !match.projectSlug) return undefined
+  // The captured prompt first: for opencode the live lookup is an exec into
+  // the pod, and this route can be polled, so a repeat caller must not cost
+  // one kubectl-exec each. Falls back to the live read for a session the
+  // capture step hasn't reached yet.
+  const row = await getSessionRow(match.projectSlug, match.sessionId).catch(() => undefined)
+  if (row?.prompt !== undefined) return row.prompt
   return getSessionFirstMessage(match.projectSlug, match.sessionId, match.tool, match.jobName)
 }

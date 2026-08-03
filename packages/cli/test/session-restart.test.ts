@@ -1,25 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/sessions/cleanup'
 import * as sessionCreate from '@yaac/server/features/sessions/create'
 import { resolveRestartTarget, restartSession } from '@yaac/server/features/sessions/restart'
-import { saveOpencodeMeta } from '@yaac/server/features/sessions/agents/opencode'
+import { recordSessionCreated } from '@yaac/server/features/sessions/store'
 import { closeDb } from '@yaac/server/platform/db/client'
 import { sessionRestart } from '#commands/session-restart'
-import {
-  claudeDir,
-  codexTranscriptDir,
-  worktreesDir,
-  projectDir,
-} from '@yaac/shared/project-paths'
+
 import type { SessionPod } from '@yaac/server/platform/k8s/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution
- * (live pod first, filesystem fallback for reaped sessions) and the
+ * (live pod first, recorded session row for reaped sessions) and the
  * handoff to `cleanupSession` + `createSession(resume: true)`. Pod
  * listing / createSession are mocked so we don't need a cluster.
  */
@@ -87,15 +80,9 @@ describe('resolveRestartTarget', () => {
     expect(info.jobName).toBe('yaac-demo-abcd1234')
   })
 
-  it('falls back to the worktree dir + claude transcript for a reaped session', async () => {
+  it('falls back to the recorded session row for a reaped session', async () => {
     listSpy.mockResolvedValueOnce([])
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'deadbeefdeadbeef'), { recursive: true })
-    await fs.mkdir(path.join(claudeDir('demo'), 'projects', '-workspace'), { recursive: true })
-    await fs.writeFile(
-      path.join(claudeDir('demo'), 'projects', '-workspace', 'deadbeefdeadbeef.jsonl'),
-      '',
-    )
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'deadbeefdeadbeef', tool: 'claude' })
     const info = await resolveRestartTarget('deadbeefdeadbeef')
     expect(info).toEqual({
       projectSlug: 'demo',
@@ -105,47 +92,32 @@ describe('resolveRestartTarget', () => {
     })
   })
 
-  it('detects tool=codex from the transcript file when no claude jsonl exists', async () => {
+  it('takes the tool from the row, for a tool that leaves no transcript', async () => {
     listSpy.mockResolvedValueOnce([])
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'codexsess'), { recursive: true })
-    await fs.mkdir(codexTranscriptDir('demo'), { recursive: true })
-    await fs.writeFile(path.join(codexTranscriptDir('demo'), 'codexsess.jsonl'), '')
-    const info = await resolveRestartTarget('codexsess')
-    expect(info.tool).toBe('codex')
-    expect(info.jobName).toBeNull()
-  })
-
-  it('detects tool=opencode from the meta snapshot when no jsonl transcript exists', async () => {
-    listSpy.mockResolvedValueOnce([])
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'ocsess'), { recursive: true })
-    await saveOpencodeMeta('demo', 'ocsess', { firstMessage: 'build a thing' })
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'ocsess', tool: 'opencode' })
     const info = await resolveRestartTarget('ocsess')
     expect(info.tool).toBe('opencode')
     expect(info.jobName).toBeNull()
   })
 
-  it('resolves a worktree-dir prefix match across projects', async () => {
+  it('resolves a recorded session by id prefix, across projects', async () => {
     listSpy.mockResolvedValueOnce([])
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'abcd1234ffff'), { recursive: true })
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'abcd1234ffff', tool: 'claude' })
     const info = await resolveRestartTarget('abcd')
     expect(info.sessionId).toBe('abcd1234ffff')
     expect(info.projectSlug).toBe('demo')
   })
 
-  it('throws NOT_FOUND when no pod and no worktree match', async () => {
+  it('throws NOT_FOUND when no pod and no recorded session match', async () => {
     listSpy.mockResolvedValueOnce([])
     await expect(resolveRestartTarget('missing')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
   })
 
-  it('falls through to the filesystem when the cluster is unavailable', async () => {
+  it('falls through to the recorded row when the cluster is unavailable', async () => {
     listSpy.mockRejectedValueOnce(new Error('connection refused'))
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'xyz'), { recursive: true })
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'xyz', tool: 'claude' })
     const info = await resolveRestartTarget('xyz')
     expect(info).toEqual({
       projectSlug: 'demo',
@@ -208,10 +180,9 @@ describe('restartSession', () => {
     expect(progress.some((m) => m.includes('Stopping session job yaac-demo-abcd1234'))).toBe(true)
   })
 
-  it('skips cleanup when no pod exists and falls back to the worktree', async () => {
+  it('skips cleanup when no pod exists and falls back to the recorded row', async () => {
     listSpy.mockResolvedValueOnce([])
-    await fs.mkdir(projectDir('demo'), { recursive: true })
-    await fs.mkdir(path.join(worktreesDir('demo'), 'deadbeef'), { recursive: true })
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'deadbeef', tool: 'claude' })
 
     await restartSession('deadbeef')
 
