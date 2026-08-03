@@ -8,8 +8,7 @@ import { reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, rec
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#features/titles'
-import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
-import { getActiveClusterCache, type DeltaSource } from '#platform/k8s/cluster-cache'
+import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
 import { serverLog } from '#log'
 
 /**

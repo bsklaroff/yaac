@@ -1,5 +1,4 @@
-import { bootStreamd, dialCtrlStream } from '#platform/k8s/stream-relay'
-import { isPrewarmed, type SessionPod } from '#platform/k8s/pods'
+import { type SessionPod, bootStreamd, dialCtrlStream, isPrewarmed } from '#platform/k8s'
 import { classifyClaudeTitle } from '#features/sessions/agents/claude-status'
 import { classifyCodexTitle } from '#features/sessions/agents/codex'
 import { OPENCODE_BUSY_MARKERS } from '#features/sessions/agents/opencode'

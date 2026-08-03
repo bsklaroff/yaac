@@ -1,4 +1,4 @@
-import type { SessionPod } from '#platform/k8s/pods'
+import { type SessionPod } from '#platform/k8s'
 import { isSessionStreamHealthy } from '#features/sessions/status-store'
 import { isSessionTerminating, deriveDeathCause } from '#features/sessions/state'
 import type { TmuxLiveness } from '#features/sessions/cleanup'

@@ -5,7 +5,7 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s/kubectl'
+} from './kubectl'
 
 /** Label keys attached to every session Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'

@@ -6,8 +6,7 @@
  * `cleanupSessionDetached`. The decision is the pure `computePrewarmPlan`;
  * this wrapper just lists pods and drives the side effects.
  */
-import { listSessionPods } from '#platform/k8s/pods'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import { type TickSnapshot, listSessionPods } from '#platform/k8s'
 import { getDefaultTool } from '#features/projects'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { createSession } from '#features/sessions/create'

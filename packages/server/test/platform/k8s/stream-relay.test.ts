@@ -7,24 +7,50 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', () => ({
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  kubectlGetJson: vi.fn(),
-  shellKubectlWithRetry: vi.fn(),
+// The relay's own boundary is the socket (a real listener below); its two
+// cluster reads — the proxy auth secret and, when nested, the inner proxy's
+// pod IP — are kubectl child processes, so those run for real too.
+type ExecResult = { stdout: string; stderr: string }
+type ExecCallback = (err: unknown, res?: ExecResult) => void
+const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
+const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
+vi.mock('node:child_process', () => ({
+  execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
+    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
+    void execFileMock(file, args).then(
+      (res) => actualCb(null, res),
+      (err: unknown) => actualCb(err),
+    )
+    return { stdin: { end: vi.fn() } }
+  },
+  exec: (command: string, opts: unknown, cb?: ExecCallback) => {
+    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
+    void execMock(command).then(
+      (res) => actualCb(null, res),
+      (err: unknown) => actualCb(err),
+    )
+  },
+  spawn: vi.fn(),
 }))
 
-import { kubectlGetJson } from '#platform/k8s/kubectl'
 import {
-  RelayDialError,
   RelayExecError,
-  _resetRelayCacheForTests,
+  bootStreamd,
   dialCtrlStream,
   dialPtyStream,
+  invalidateRelayAddr,
   relayDial,
   relayTcpFactory,
   sessionExec,
   sessionStreamToken,
   waitForStreamd,
+  RELAY_PORT,
+} from '#platform/k8s'
+// Internals: the dial-failure type the relay throws, the cache reset, and
+// the exec/boot seam waitForStreamd takes.
+import {
+  RelayDialError,
+  _resetRelayCacheForTests,
   type WaitForStreamdDeps,
 } from '#platform/k8s/stream-relay'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
@@ -33,7 +59,16 @@ const SECRET = 'relay-secret-0123456789abcdef'
 const SID = '0f9b2c4d-1111-2222-3333-444455556666'
 const JOB = `yaac-demo-${SID}`
 
-const mockGetJson = vi.mocked(kubectlGetJson)
+/** Serve the two kubectl reads: the proxy auth Secret and the pods list. */
+let podsPayload: unknown = { items: [] }
+function serveKubectl(): void {
+  execFileMock.mockImplementation((_file, args) => Promise.resolve({
+    stdout: JSON.stringify(args[1] === 'secret'
+      ? { data: { secret: Buffer.from(SECRET).toString('base64') } }
+      : podsPayload),
+    stderr: '',
+  }))
+}
 
 interface Received {
   auth: { token?: string; sessionId?: string }
@@ -48,6 +83,7 @@ interface Received {
  */
 function startFakeRelay(
   serve: (r: Received) => void,
+  fixedPort = 0,
 ): Promise<{ port: number; close: () => void }> {
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     socket.on('error', () => { /* test teardown */ })
@@ -70,7 +106,7 @@ function startFakeRelay(
     socket.on('data', onData)
   })
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(fixedPort, '127.0.0.1', () => {
       const port = (server.address() as net.AddressInfo).port
       resolve({ port, close: () => server.close() })
     })
@@ -81,9 +117,11 @@ let relay: { port: number; close: () => void } | null = null
 
 beforeEach(() => {
   _resetRelayCacheForTests()
-  mockGetJson.mockReset()
-  // The proxy auth secret read (cached after first fetch).
-  mockGetJson.mockResolvedValue({ data: { secret: Buffer.from(SECRET).toString('base64') } })
+  execFileMock.mockReset()
+  execMock.mockReset()
+  podsPayload = { items: [] }
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  serveKubectl()
 })
 
 afterEach(() => {
@@ -375,5 +413,58 @@ describe('waitForStreamd', () => {
     await expect(waitForStreamd(JOB, { timeoutMs: 3_000 }, deps))
       .rejects.toThrow(/streamd in .* not reachable after 3000ms: .*no route/)
     expect(deps.boot).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('bootStreamd', () => {
+  it('starts a detached streamd in the pod via one non-retried kubectl exec', async () => {
+    execMock.mockResolvedValue({ stdout: '', stderr: '' })
+    await bootStreamd(JOB)
+    expect(execMock).toHaveBeenCalledTimes(1)
+    const [command] = execMock.mock.calls[0]
+    expect(command).toBe(
+      `kubectl exec -n test-ns job/${JOB} -- `
+      + "sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'",
+    )
+  })
+
+  it('propagates the exec failure so the caller can fall back', async () => {
+    execMock.mockRejectedValue(Object.assign(new Error('kubectl failed'), { stderr: 'not found' }))
+    await expect(bootStreamd(JOB)).rejects.toThrow('kubectl failed')
+    expect(execMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('invalidateRelayAddr', () => {
+  const podLists = (): number =>
+    execFileMock.mock.calls.filter(([, args]) => args[1] === 'pods').length
+
+  it('drops the cached inner-proxy address so the next dial re-resolves it', async () => {
+    // Nested: the relay is the inner proxy's pod IP on the fixed relay port,
+    // read from the vcluster apiserver and cached until invalidated.
+    vi.stubEnv('YAAC_NESTED', '1')
+    podsPayload = {
+      items: [
+        { status: { phase: 'Pending', podIP: '198.51.100.9' } },
+        { status: { phase: 'Running', podIP: '127.0.0.1' } },
+      ],
+    }
+    relay = await startFakeRelay((r) => okThen(r), RELAY_PORT)
+
+    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
+    expect(podLists()).toBe(1)
+    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
+    expect(podLists()).toBe(1)
+
+    invalidateRelayAddr()
+    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
+    expect(podLists()).toBe(2)
+  })
+
+  it('surfaces a nested proxy with no pod IP yet as a dial failure', async () => {
+    vi.stubEnv('YAAC_NESTED', '1')
+    podsPayload = { items: [{ status: { phase: 'Pending' } }] }
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
+      .rejects.toThrow(/no inner proxy pod IP yet/)
   })
 })

@@ -1,4 +1,4 @@
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { sessionExec } from '#platform/k8s'
 import { sessionControlStreamSend } from '#features/sessions/control-stream-registry'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { SessionTerminalEntry } from '@yaac/shared/types'

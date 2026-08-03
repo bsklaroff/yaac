@@ -27,9 +27,16 @@
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
 import simpleGit from 'simple-git'
-import { containerExec } from '#platform/k8s/exec'
-import { k8sNamespace, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { LABEL_PREWARMED, LABEL_TOOL, isPrewarmed, listSessionPods, type SessionPod } from '#platform/k8s/pods'
+import {
+  LABEL_PREWARMED,
+  LABEL_TOOL,
+  type SessionPod,
+  containerExec,
+  isPrewarmed,
+  k8sNamespace,
+  kubectlWithRetry,
+  listSessionPods,
+} from '#platform/k8s'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveCredentialForUrl, resolveProjectConfig } from '#features/projects'

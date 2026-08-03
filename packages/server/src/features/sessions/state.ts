@@ -1,4 +1,4 @@
-import type { SessionPod } from '#platform/k8s/pods'
+import { type SessionPod } from '#platform/k8s'
 import { getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '#features/sessions/agents/claude-status'
 import { getSessionCodexFirstUserMessage } from '#features/sessions/agents/codex'
 import { getSessionOpencodeFirstUserMessage } from '#features/sessions/agents/opencode'

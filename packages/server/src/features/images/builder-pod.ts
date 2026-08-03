@@ -31,19 +31,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import {
+  EGRESS_WORLD_DENY_NAME,
+  LABEL_DATA_DIR_HASH,
+  LABEL_ROLE,
+  NESTED_ENGINE_CAPS,
+  NESTED_GRAPHROOT_PATH,
+  NESTED_GRAPHROOT_VOLUME,
+  ROLE_BUILDER,
+  RUNTIME_CLASS_GVISOR,
   dataDirHash,
+  ensureKubernetes,
+  graphrootMountAnnotations,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-  ensureKubernetes,
-} from '#platform/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
-import {
-  LABEL_ROLE,
-  ROLE_BUILDER,
-  EGRESS_WORLD_DENY_NAME,
-} from '#platform/k8s/proxy-constants'
+} from '#platform/k8s'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
@@ -52,13 +55,6 @@ import {
   registryClusterHost,
   vapAvailable,
 } from '#features/cluster'
-import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
-import {
-  NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_VOLUME,
-  graphrootMountAnnotations,
-} from '#platform/k8s/pod-spec'
 import { ensureSalvageWriterImage } from './image-promoter'
 import {
   parseContainerIgnore,

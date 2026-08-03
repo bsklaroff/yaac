@@ -17,8 +17,7 @@ import {
   type PendingSpawn,
   type SpawnResultWire,
 } from '#features/sessions/egress/proxy-client'
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import { type SessionPod, type TickSnapshot, listSessionPods } from '#platform/k8s'
 import { getDefaultTool } from '#features/projects'
 import { registerProvisioning, runProvisioned } from '#features/sessions/provisioning'
 import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#features/sessions/create'

@@ -1,14 +1,16 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
+  LABEL_PROJECT,
+  LABEL_SESSION_ID,
   dataDirHash,
   execFileAsync,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '#platform/k8s/pods'
+  runPodToCompletion,
+} from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { nodeIpBlocks } from './cluster-cidrs'

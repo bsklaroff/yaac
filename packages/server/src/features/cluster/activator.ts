@@ -17,15 +17,18 @@
  * vcluster and torn down with it — no standing cluster-wide grant).
  */
 
-import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import {
   LABEL_SESSION_ID,
   LABEL_VCLUSTER_MANAGED_BY,
+  LABEL_VCLUSTER_NAMESPACE,
   VCLUSTER_API_PORT,
-} from '#platform/k8s/pods'
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '#platform/k8s'
 import { registryRef } from '#platform/container'
 import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
-import { LABEL_VCLUSTER_NAMESPACE } from '#platform/k8s/proxy-constants'
 
 export const ACTIVATOR_APP_NAME = 'yaac-vc-activator'
 

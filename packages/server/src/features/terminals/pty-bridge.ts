@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { dialPtyStream, sessionExec } from '#platform/k8s/stream-relay'
-import { sessionIdFromJobName } from '#platform/k8s/pods'
+import { dialPtyStream, sessionExec, sessionIdFromJobName } from '#platform/k8s'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const DEFAULT_COLS = 80

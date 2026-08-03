@@ -1,7 +1,22 @@
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { dataDirHash, k8sNamespace, kubectlApply, kubectlWithRetry } from '#platform/k8s/kubectl'
+import {
+  DNS_STUB_PORT,
+  NETD_APP_NAME,
+  NETD_LISTENER_PORT_BASE,
+  NETD_LISTENER_SLOTS,
+  NETD_SA_NAME,
+  SSH_TUNNEL_SENTINEL,
+  TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_TUNNEL_PORT,
+  TUNNEL_INGRESS_PORT,
+  dataDirHash,
+  k8sNamespace,
+  kubectlApply,
+  kubectlWithRetry,
+} from '#platform/k8s'
 import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#features/images'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { NETD_DIR } from '@yaac/shared/project-paths'
@@ -12,18 +27,6 @@ import {
   INNER_CLAIM_CM_NAME,
   buildInnerClaimConfigMapManifest,
 } from './redirect-claims'
-import {
-  DNS_STUB_PORT,
-  NETD_APP_NAME,
-  NETD_SA_NAME,
-  NETD_LISTENER_PORT_BASE,
-  NETD_LISTENER_SLOTS,
-  SSH_TUNNEL_SENTINEL,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_TUNNEL_PORT,
-  TUNNEL_INGRESS_PORT,
-} from '#platform/k8s/proxy-constants'
 
 const execFileAsync = promisify(execFile)
 

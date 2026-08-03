@@ -3,46 +3,23 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  _resetDeferredClusterBootForTests,
   anySessionDirsExist,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
   isDeferredClusterBootPending,
   triggerDeferredClusterBoot,
-} from '#platform/k8s/deferred-boot'
+} from '#platform/k8s'
+// Internal, for the latch reset between cases.
+import { _resetDeferredClusterBootForTests } from '#platform/k8s/deferred-boot'
 
 beforeEach(() => {
   _resetDeferredClusterBootForTests()
 })
 
-describe('deferred cluster boot latch', () => {
+describe('awaitDeferredClusterBoot', () => {
   it('resolves immediately when nothing is armed (the outer-server no-op)', async () => {
     await expect(awaitDeferredClusterBoot()).resolves.toBeUndefined()
     triggerDeferredClusterBoot() // must not throw either
-  })
-
-  it('runs the armed boot exactly once across await + trigger', async () => {
-    const boot = vi.fn().mockResolvedValue(undefined)
-    armDeferredClusterBoot(boot)
-    expect(boot).not.toHaveBeenCalled()
-
-    triggerDeferredClusterBoot()
-    await awaitDeferredClusterBoot()
-    await awaitDeferredClusterBoot()
-    expect(boot).toHaveBeenCalledTimes(1)
-  })
-
-  it('lets the boot closure\'s own kubectl-style triggers re-enter safely', async () => {
-    // The armed closure's first cluster call goes through the kubectl
-    // choke point, which fires the trigger again mid-boot — that must
-    // not recurse into a second run.
-    const boot = vi.fn().mockImplementation(async () => {
-      triggerDeferredClusterBoot()
-      await Promise.resolve()
-    })
-    armDeferredClusterBoot(boot)
-    await awaitDeferredClusterBoot()
-    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('swallows (but completes on) a failing boot, like the eager best-effort path', async () => {
@@ -54,6 +31,19 @@ describe('deferred cluster boot latch', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('armDeferredClusterBoot', () => {
+  it('runs the armed boot exactly once across await + trigger', async () => {
+    const boot = vi.fn().mockResolvedValue(undefined)
+    armDeferredClusterBoot(boot)
+    expect(boot).not.toHaveBeenCalled()
+
+    triggerDeferredClusterBoot()
+    await awaitDeferredClusterBoot()
+    await awaitDeferredClusterBoot()
+    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('parks concurrent awaiters on the same in-flight run', async () => {
@@ -72,7 +62,24 @@ describe('deferred cluster boot latch', () => {
     expect(done).toBe(2)
     expect(boot).toHaveBeenCalledTimes(1)
   })
+})
 
+describe('triggerDeferredClusterBoot', () => {
+  it('lets the boot closure\'s own kubectl-style triggers re-enter safely', async () => {
+    // The armed closure's first cluster call goes through the kubectl
+    // choke point, which fires the trigger again mid-boot — that must
+    // not recurse into a second run.
+    const boot = vi.fn().mockImplementation(async () => {
+      triggerDeferredClusterBoot()
+      await Promise.resolve()
+    })
+    armDeferredClusterBoot(boot)
+    await awaitDeferredClusterBoot()
+    expect(boot).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('isDeferredClusterBootPending', () => {
   it('reports pending from arm until the boot settles, never on the outer server', async () => {
     expect(isDeferredClusterBootPending()).toBe(false)
 

@@ -1,4 +1,4 @@
-import { kubectlApply } from '#platform/k8s/kubectl'
+import { type TickSnapshot, createTickSnapshot, kubectlApply } from '#platform/k8s'
 import {
   CLAIM_KEY,
   buildRedirectClaimsConfigMapManifest,
@@ -6,7 +6,6 @@ import {
   renderNamespaceClaims,
   validateVclusterClaims,
 } from '#features/cluster'
-import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { serverLog } from '#log'
 
 /**

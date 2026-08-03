@@ -1,29 +1,82 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as clientNode from '@kubernetes/client-node'
+import type { KubernetesListObject, KubernetesObject } from '@kubernetes/client-node'
 
-vi.mock('#platform/k8s/client', () => ({
-  getCoreApi: vi.fn(() => ({
-    listNamespacedPod: vi.fn(() => Promise.resolve({ items: [] })),
-    listNamespacedService: vi.fn(() => Promise.resolve({ items: [] })),
-    listNamespace: vi.fn(() => Promise.resolve({ items: [] })),
-  })),
-  getBatchApi: vi.fn(() => ({
-    listNamespacedJob: vi.fn(() => Promise.resolve({ items: [] })),
-  })),
-}))
+/**
+ * The registry's boundary is @kubernetes/client-node: its API classes are
+ * what speak HTTP to the apiserver. Faking the list calls (and leaving
+ * KubeConfig real, loaded from a temp kubeconfig) runs the client
+ * singletons, the informer supervision and every object mapper for real —
+ * only the wire is fake.
+ */
+type ListMock = ReturnType<typeof vi.fn<
+  (opts?: { namespace?: string; labelSelector?: string }) => Promise<KubernetesListObject<KubernetesObject>>
+>>
+const emptyList = (): Promise<KubernetesListObject<KubernetesObject>> =>
+  Promise.resolve({ items: [] } as unknown as KubernetesListObject<KubernetesObject>)
+const listNamespacedPodMock: ListMock = vi.fn(emptyList)
+const listNamespacedServiceMock: ListMock = vi.fn(emptyList)
+const listNamespacedConfigMapMock: ListMock = vi.fn(emptyList)
+const listNamespaceMock: ListMock = vi.fn(emptyList)
+const listNamespacedJobMock: ListMock = vi.fn(emptyList)
+
+vi.mock('@kubernetes/client-node', async (importOriginal) => {
+  const actual = await importOriginal<typeof clientNode>()
+  return {
+    ...actual,
+    CoreV1Api: class {
+      listNamespacedPod = listNamespacedPodMock
+      listNamespacedService = listNamespacedServiceMock
+      listNamespacedConfigMap = listNamespacedConfigMapMock
+      listNamespace = listNamespaceMock
+    },
+    BatchV1Api: class {
+      listNamespacedJob = listNamespacedJobMock
+    },
+  }
+})
 
 import {
   ClusterCache,
+  LABEL_PROJECT,
+  LABEL_SESSION_ID,
+  LABEL_TOOL,
   getActiveClusterCache,
+  k8sNamespace,
   setActiveClusterCache,
   type DeltaSource,
-} from '#platform/k8s/cluster-cache'
+} from '#platform/k8s'
+// Internals, for setup only: the client reset hook, the informer surface the
+// fake implements, and the job-name label the raw pod fixtures carry.
+import { _resetK8sClientForTests } from '#platform/k8s/client'
 import type { InformerLike } from '#platform/k8s/informer-cache'
-import { k8sNamespace } from '#platform/k8s/kubectl'
-import { JOB_NAME_LABEL, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL } from '#platform/k8s/pods'
+import { JOB_NAME_LABEL } from '#platform/k8s/pods'
 
+const KUBECONFIG_YAML = `apiVersion: v1
+kind: Config
+clusters:
+- name: test-cluster
+  cluster:
+    server: https://127.0.0.1:1
+users:
+- name: test-user
+  user: {}
+contexts:
+- name: test-context
+  context:
+    cluster: test-cluster
+    user: test-user
+current-context: test-context
+`
+
+/** Fake client-node informer: records lifecycle calls, replays events. */
 class FakeInformer implements InformerLike {
   startCalls = 0
   stopCalls = 0
+  startImpl: () => Promise<void> = () => Promise.resolve()
   private readonly handlers = new Map<string, Array<(arg?: unknown) => void>>()
 
   // Cast: InformerLike['on'] is overloaded per verb; the fake stores every
@@ -36,7 +89,7 @@ class FakeInformer implements InformerLike {
 
   start(): Promise<void> {
     this.startCalls += 1
-    return Promise.resolve()
+    return this.startImpl()
   }
 
   stop(): Promise<void> {
@@ -73,41 +126,87 @@ const rawVclusterNs = {
   },
 }
 
-function makeCache(): {
+const listOf = (...items: unknown[]): Promise<KubernetesListObject<KubernetesObject>> =>
+  Promise.resolve({ items } as unknown as KubernetesListObject<KubernetesObject>)
+
+function makeCache(deps: { relistIntervalMs?: number; restartDelayMs?: number } = {}): {
   cache: ClusterCache
   informers: Map<string, { informer: FakeInformer; selector?: string }>
   deltas: DeltaSource[]
+  log: string[]
 } {
   const informers = new Map<string, { informer: FakeInformer; selector?: string }>()
+  const log: string[] = []
   const cache = new ClusterCache({
-    makeInformerFn: (path, _listFn, labelSelector) => {
+    makeInformerFn: (p, _listFn, labelSelector) => {
       const informer = new FakeInformer()
-      informers.set(path, { informer, ...(labelSelector !== undefined ? { selector: labelSelector } : {}) })
+      informers.set(p, { informer, ...(labelSelector !== undefined ? { selector: labelSelector } : {}) })
       return informer
     },
-    relistIntervalMs: 3_600_000,
-    log: () => {},
+    relistIntervalMs: deps.relistIntervalMs ?? 3_600_000,
+    log: (msg) => log.push(msg),
   })
   const deltas: DeltaSource[] = []
   cache.onDelta((source) => deltas.push(source))
-  return { cache, informers, deltas }
+  return { cache, informers, deltas, log }
 }
 
 async function flush(): Promise<void> {
   await new Promise((r) => setImmediate(r))
 }
 
-afterEach(() => {
+let tmpDir: string
+
+beforeEach(async () => {
+  vi.clearAllMocks()
+  listNamespacedPodMock.mockImplementation(emptyList)
+  listNamespacedServiceMock.mockImplementation(emptyList)
+  listNamespacedConfigMapMock.mockImplementation(emptyList)
+  listNamespaceMock.mockImplementation(emptyList)
+  listNamespacedJobMock.mockImplementation(emptyList)
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cluster-cache-'))
+  const file = path.join(tmpDir, 'config')
+  await fs.writeFile(file, KUBECONFIG_YAML)
+  vi.stubEnv('KUBECONFIG', file)
+  _resetK8sClientForTests()
+})
+
+afterEach(async () => {
   setActiveClusterCache(null)
+  _resetK8sClientForTests()
+  vi.unstubAllEnvs()
+  vi.useRealTimers()
+  await fs.rm(tmpDir, { recursive: true, force: true })
 })
 
 describe('ClusterCache', () => {
   const ns = k8sNamespace()
 
-  it('starts the three install-scoped informers with their selectors', async () => {
+  it('starts the three install-scoped informers and seeds them off the typed client', async () => {
+    // The list path yields deserialized class instances — Date timestamps,
+    // where the watch path delivers ISO strings. Both must map.
+    const created = new Date('2026-07-21T00:00:00Z')
+    listNamespacedPodMock.mockImplementation(() => {
+      const raw = rawPod('p1', 'alpha') as { metadata: { creationTimestamp: unknown } }
+      raw.metadata.creationTimestamp = created
+      return listOf(raw)
+    })
+    listNamespacedJobMock.mockImplementation(() => listOf({
+      metadata: {
+        name: 'yaac-alpha-p1',
+        labels: { [LABEL_SESSION_ID]: 'sid-p1', [LABEL_PROJECT]: 'alpha' },
+        creationTimestamp: created,
+      },
+      status: {},
+    }))
+    listNamespaceMock.mockImplementation(() => listOf({
+      ...(rawVclusterNs as object),
+      metadata: { ...rawVclusterNs.metadata, creationTimestamp: created },
+    }))
     const { cache, informers } = makeCache()
     cache.start()
     await flush()
+
     const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)
     const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)
     const namespaces = informers.get('/api/v1/namespaces')
@@ -117,19 +216,66 @@ describe('ClusterCache', () => {
     expect(jobs?.selector).toContain('yaac.data-dir-hash')
     expect(namespaces?.informer.startCalls).toBe(1)
     expect(namespaces?.selector).toContain('yaac.vcluster')
+
+    // The seed list goes through the memoized CoreV1Api/BatchV1Api clients,
+    // scoped to the install namespace and the same selector as the watch.
+    expect(listNamespacedPodMock).toHaveBeenCalledWith({
+      namespace: ns,
+      labelSelector: pods?.selector,
+    })
+    expect(listNamespacedJobMock).toHaveBeenCalledWith({
+      namespace: ns,
+      labelSelector: jobs?.selector,
+    })
+    expect(cache.sessionPods()).toEqual([expect.objectContaining({
+      podName: 'p1', createdAtMs: created.getTime(),
+    })])
+    expect(cache.sessionJobs()).toEqual([{
+      jobName: 'yaac-alpha-p1', sessionId: 'sid-p1', projectSlug: 'alpha',
+      createdAtMs: created.getTime(),
+    }])
+    expect(cache.vclusterNamespaces()).toEqual([{
+      name: 'yvc-abc', sessionId: 'sid-1', namespace: 'yvc-ns1',
+      creationTimestamp: created.toISOString(),
+    }])
     cache.stop()
   })
 
-  it('maps session-pod deltas into the cache and emits the source', async () => {
+  it('skips Job objects it cannot map', async () => {
+    const { cache, informers, deltas } = makeCache()
+    cache.start()
+    await flush()
+    const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)!.informer
+    // A Job without the session labels is not ours (nor is a shapeless one).
+    jobs.emit('add', { metadata: { name: 'some-other-job', creationTimestamp: '2026-07-21T00:00:00Z' } })
+    jobs.emit('add', {})
+    expect(cache.sessionJobs()).toEqual([])
+    expect(deltas.filter((d) => d === 'session-jobs')).toHaveLength(0)
+    cache.stop()
+  })
+
+  it('maps session-pod deltas into the cache, emits the source, and skips unmappable rows', async () => {
     const { cache, informers, deltas } = makeCache()
     cache.start()
     await flush()
     const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer
     pods.emit('add', rawPod('p1', 'alpha'))
     pods.emit('add', rawPod('p2', 'beta'))
+    // A pod with no yaac labels is not ours — dropped, not fatal.
+    pods.emit('add', { metadata: { name: 'kube-proxy' } })
     expect(deltas.filter((d) => d === 'session-pods')).toHaveLength(2)
     expect(cache.sessionPods().map((p) => p.podName).sort()).toEqual(['p1', 'p2'])
     expect(cache.sessionPods('alpha').map((p) => p.podName)).toEqual(['p1'])
+
+    // An update that maps to the identical row is not a delta; a delete is.
+    pods.emit('update', rawPod('p1', 'alpha'))
+    expect(deltas.filter((d) => d === 'session-pods')).toHaveLength(2)
+    pods.emit('delete', rawPod('p1', 'alpha'))
+    expect(cache.sessionPods().map((p) => p.podName)).toEqual(['p2'])
+    expect(deltas.filter((d) => d === 'session-pods')).toHaveLength(3)
+    // Deleting a row the cache never held is a no-op.
+    pods.emit('delete', rawPod('ghost'))
+    expect(deltas.filter((d) => d === 'session-pods')).toHaveLength(3)
     cache.stop()
   })
 
@@ -142,33 +288,78 @@ describe('ClusterCache', () => {
     namespaces.emit('add', rawVclusterNs)
     const vcPods = informers.get('/api/v1/namespaces/yvc-ns1/pods')
     const vcServices = informers.get('/api/v1/namespaces/yvc-ns1/services')
+    const vcConfigMaps = informers.get('/api/v1/namespaces/yvc-ns1/configmaps')
     expect(vcPods?.informer.startCalls).toBe(1)
     expect(vcPods?.selector).toBeUndefined()
     expect(vcServices?.informer.startCalls).toBe(1)
     expect(vcServices?.selector).toBe('vcluster.loft.sh/managed-by=yvc-abc')
+    // Claim ConfigMaps are picked out by name, so that informer runs unselected.
+    expect(vcConfigMaps?.informer.startCalls).toBe(1)
+    expect(vcConfigMaps?.selector).toBeUndefined()
     expect(deltas).toContain('vcluster-namespaces')
 
     namespaces.emit('delete', rawVclusterNs)
     expect(vcPods?.informer.stopCalls).toBe(1)
     expect(vcServices?.informer.stopCalls).toBe(1)
+    expect(vcConfigMaps?.informer.stopCalls).toBe(1)
     expect(cache.vclusterPods('yvc-ns1')).toBeNull()
     cache.stop()
   })
 
-  it('serves vcluster pods/services only from a healthy informer', async () => {
+  it('serves vcluster objects only from a healthy informer', async () => {
     const { cache, informers, deltas } = makeCache()
     cache.start()
     await flush()
     informers.get('/api/v1/namespaces')!.informer.emit('add', rawVclusterNs)
     await flush() // let the dynamic caches seed from their (empty) lists
     const vcPods = informers.get('/api/v1/namespaces/yvc-ns1/pods')!.informer
+    const vcServices = informers.get('/api/v1/namespaces/yvc-ns1/services')!.informer
+    const vcConfigMaps = informers.get('/api/v1/namespaces/yvc-ns1/configmaps')!.informer
 
     // Seeded but not yet connected → unhealthy → callers must list live.
     expect(cache.vclusterPods('yvc-ns1')).toBeNull()
+    expect(cache.vclusterServices('yvc-ns1')).toBeNull()
+    expect(cache.vclusterConfigMaps('yvc-ns1')).toBeNull()
+    // Unknown namespace: never cached at all.
+    expect(cache.vclusterPods('nope')).toBeNull()
+
     vcPods.emit('connect')
     vcPods.emit('add', { metadata: { name: 'syncer-0' }, status: { podIP: '10.1.2.3' } })
+    vcServices.emit('connect')
+    vcServices.emit('add', { metadata: { name: 'yaac-proxy-x-yaac-x-yvc' } })
+    vcConfigMaps.emit('connect')
+    vcConfigMaps.emit('add', { metadata: { name: 'claims' }, data: { claims: 'a,b' } })
     expect(deltas).toContain('vcluster-pods')
+    expect(deltas).toContain('vcluster-services')
+    expect(deltas).toContain('vcluster-configmaps')
     expect(cache.vclusterPods('yvc-ns1')).toEqual([{ labels: {}, name: 'syncer-0', podIP: '10.1.2.3' }])
+    expect(cache.vclusterServices('yvc-ns1'))
+      .toEqual([{ labels: {}, name: 'yaac-proxy-x-yaac-x-yvc' }])
+    expect(cache.vclusterConfigMaps('yvc-ns1'))
+      .toEqual([{ name: 'claims', data: { claims: 'a,b' } }])
+    cache.stop()
+  })
+
+  it('keeps the namespaces cache when one vcluster\'s informers cannot be created', async () => {
+    const informers = new Map<string, FakeInformer>()
+    const log: string[] = []
+    const cache = new ClusterCache({
+      makeInformerFn: (p) => {
+        if (p.includes('yvc-ns1')) throw new Error('informer factory failed')
+        const informer = new FakeInformer()
+        informers.set(p, informer)
+        return informer
+      },
+      relistIntervalMs: 3_600_000,
+      log: (msg) => log.push(msg),
+    })
+    cache.start()
+    await flush()
+    informers.get('/api/v1/namespaces')!.emit('add', rawVclusterNs)
+
+    expect(cache.vclusterNamespaces().map((v) => v.namespace)).toEqual(['yvc-ns1'])
+    expect(cache.vclusterPods('yvc-ns1')).toBeNull()
+    expect(log.some((l) => l.includes('change listener failed'))).toBe(true)
     cache.stop()
   })
 
@@ -180,12 +371,14 @@ describe('ClusterCache', () => {
     informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer.emit('connect')
     expect(cache.healthy('session-pods')).toBe(true)
     expect(cache.healthy('session-jobs')).toBe(false)
+    informers.get('/api/v1/namespaces')!.informer.emit('connect')
+    expect(cache.healthy('vcluster-namespaces')).toBe(true)
     cache.stop()
     expect(cache.healthy('session-pods')).toBe(false)
   })
 
   it('isolates a throwing delta listener', async () => {
-    const { cache, informers } = makeCache()
+    const { cache, informers, log } = makeCache()
     cache.onDelta(() => { throw new Error('boom') })
     const seen: DeltaSource[] = []
     cache.onDelta((s) => seen.push(s))
@@ -193,15 +386,111 @@ describe('ClusterCache', () => {
     await flush()
     informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer.emit('add', rawPod('p1'))
     expect(seen).toContain('session-pods')
+    expect(log.some((l) => l.includes('listener failed'))).toBe(true)
     cache.stop()
   })
 
-  it('active-cache singleton set/get round-trips', () => {
-    expect(getActiveClusterCache()).toBeNull()
+  it('restarts a failed informer with doubling backoff, resetting after a long-lived watch', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const { cache, informers } = makeCache()
+    cache.start()
+    await flush()
+    const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer
+    expect(pods.startCalls).toBe(1)
+
+    pods.emit('connect')
+    pods.emit('error', new Error('watch died'))
+    expect(cache.healthy('session-pods')).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(pods.startCalls).toBe(2)
+
+    // Rapid second failure → doubled delay.
+    pods.emit('error', new Error('watch died again'))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(pods.startCalls).toBe(2)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(pods.startCalls).toBe(3)
+
+    // A failure after ≥60s of uptime restarts at the base delay again.
+    await vi.advanceTimersByTimeAsync(61_000)
+    pods.emit('error', new Error('watch died once more'))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(pods.startCalls).toBe(4)
+    cache.stop()
+  })
+
+  it('treats a rejected informer start as an error and restarts', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const informers = new Map<string, FakeInformer>()
+    const cache = new ClusterCache({
+      makeInformerFn: (p) => {
+        const informer = new FakeInformer()
+        informer.startImpl = () => Promise.reject(new Error('no cluster'))
+        informers.set(p, informer)
+        return informer
+      },
+      relistIntervalMs: 3_600_000,
+      log: () => {},
+    })
+    cache.start()
+    await flush()
+    const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)!
+    pods.startImpl = () => Promise.resolve()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(pods.startCalls).toBe(2)
+    cache.stop()
+  })
+
+  it('relists on the interval, repairing ghost rows, and keeps the cache when a relist fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    listNamespacedPodMock.mockImplementation(() => listOf(rawPod('p1')))
+    const { cache, deltas, log } = makeCache({ relistIntervalMs: 60_000 })
+    cache.start()
+    await flush()
+    expect(cache.sessionPods().map((p) => p.podName)).toEqual(['p1'])
+
+    // A missed DELETE + missed ADD: the next relist replaces the whole set.
+    listNamespacedPodMock.mockImplementation(() => listOf(rawPod('p2')))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(cache.sessionPods().map((p) => p.podName)).toEqual(['p2'])
+    expect(deltas.filter((d) => d === 'session-pods')).toHaveLength(2)
+
+    // A failed relist is a cluster hiccup: keep what we have, log, retry later.
+    listNamespacedPodMock.mockImplementation(() => Promise.reject(new Error('apiserver down')))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(cache.sessionPods().map((p) => p.podName)).toEqual(['p2'])
+    expect(log.some((l) => l.includes('relist failed'))).toBe(true)
+    cache.stop()
+  })
+
+  it('stop() halts every informer, its restarts and its relists', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    const { cache, informers } = makeCache({ relistIntervalMs: 60_000 })
+    cache.start()
+    await flush()
+    const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer
+    pods.emit('error', new Error('watch died'))
+    const listsBeforeStop = listNamespacedPodMock.mock.calls.length
+    cache.stop()
+    expect(pods.stopCalls).toBe(1)
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(pods.startCalls).toBe(1)
+    expect(listNamespacedPodMock.mock.calls.length).toBe(listsBeforeStop)
+  })
+})
+
+describe('setActiveClusterCache', () => {
+  it('publishes the registry the display path and reconcile steps read', () => {
     const { cache } = makeCache()
     setActiveClusterCache(cache)
     expect(getActiveClusterCache()).toBe(cache)
     setActiveClusterCache(null)
+    expect(getActiveClusterCache()).toBeNull()
+  })
+})
+
+describe('getActiveClusterCache', () => {
+  it('is null outside the server, so callers fall back to one-shot lists', () => {
     expect(getActiveClusterCache()).toBeNull()
   })
 })

@@ -2,27 +2,29 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
-import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s/kubectl'
-import { isDeferredClusterBootPending } from '#platform/k8s/deferred-boot'
+import {
+  LABEL_SESSION_ID,
+  LABEL_VCLUSTER_MANAGED_BY,
+  NESTED_ENGINE_CAPS,
+  NETD_APP_NAME,
+  PROXY_APP_NAME,
+  RELAY_PORT,
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+  TRANSPARENT_HTTPS_PORT,
+  execFileAsync,
+  isDeferredClusterBootPending,
+  k8sNamespace,
+  kubectlApply,
+  runPodToCompletion,
+  runtimeClassSpec,
+} from '#platform/k8s'
 import {
   buildProxyIngressNpManifest,
   buildSessionEgressNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { NETD_APP_NAME } from '#platform/k8s/proxy-constants'
 import { ensureNamespace } from './proxy-apply'
-import {
-  PROXY_APP_NAME,
-  RELAY_PORT,
-  TRANSPARENT_HTTPS_PORT,
-} from '#platform/k8s/proxy-constants'
-import {
-  RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
-  runtimeClassSpec,
-} from '#platform/k8s/gvisor'
-import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, runPodToCompletion } from '#platform/k8s/pods'
-import { NESTED_ENGINE_CAPS } from '#platform/k8s/pod-spec'
 import { vapAvailable } from './vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container'
 import { sessionUid } from '#features/images'
@@ -131,7 +133,7 @@ export async function runClusterCheck(
   // A nested server whose deferred cluster attach hasn't fired yet fronts an
   // intentionally-asleep (scale-to-zero) vcluster and has no sessions by
   // construction (session create awaits the attach — see
-  // #platform/k8s/deferred-boot). Probing it here would either WAKE it — the
+  // deferred-boot in #platform/k8s). Probing it here would either WAKE it — the
   // very thing the deferral exists to prevent — or time out and surface as a
   // spurious "API server unreachable", which flips the web app's cluster gate
   // to the setup screen and blanks the workspace. Report ready without

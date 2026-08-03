@@ -1,13 +1,8 @@
-import { dataDirHash, k8sNamespace } from '#platform/k8s/kubectl'
-import { CA_CONFIGMAP_KEY } from '#platform/k8s/pod-spec'
-import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
-import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
-import { credentialsDir } from '@yaac/shared/project-paths'
-import { env } from '@yaac/shared/env'
-import { proxyDataHostDir, sshAgentHostDir } from './proxy-apply'
 import {
   BUILDER_ROLE_GUARD_NAME,
+  CA_CONFIGMAP_KEY,
   DNS_STUB_PORT,
+  LABEL_DATA_DIR_HASH,
   LABEL_ROLE,
   OUTER_CA_CONFIGMAP_NAME,
   POD_STREAM_PORT,
@@ -18,10 +13,16 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   ROLE_INNER_PROXY,
-  TRANSPARENT_HTTP_PORT,
+  RUNTIME_CLASS_GVISOR,
   TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
-} from '#platform/k8s/proxy-constants'
+  dataDirHash,
+  k8sNamespace,
+} from '#platform/k8s'
+import { credentialsDir } from '@yaac/shared/project-paths'
+import { env } from '@yaac/shared/env'
+import { proxyDataHostDir, sshAgentHostDir } from './proxy-apply'
 
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
  * dedicated dir (not the session CA mount) so it never collides with the

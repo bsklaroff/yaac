@@ -151,7 +151,8 @@ A `yaac server start` run from a session's initCommands would otherwise wake
 the vcluster seconds after the create-time sleep: server boot ensures the
 namespace/registry, starts the informer caches, and runs the reconciler —
 all API touches. A NESTED server with no sessions of its own therefore arms
-its cluster boot instead of running it (`#platform/k8s/deferred-boot`), and
+its cluster boot instead of running it (the deferred-boot latch in
+`#platform/k8s`), and
 the first real use fires it: session create awaits it explicitly (the
 namespace must exist before anything is applied into it), and any kubectl
 call kicks it as a fire-and-forget backstop. While the attach is pending the

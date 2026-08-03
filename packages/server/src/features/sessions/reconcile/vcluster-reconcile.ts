@@ -1,8 +1,14 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import {
+  type TickSnapshot,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+  listSessionJobs,
+  listSessionPods,
+  listVclusterNamespaces,
+} from '#platform/k8s'
 import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
@@ -12,7 +18,6 @@ import {
   vclusterSleepSliceName,
   waitForVclusterKubeconfig,
 } from '#features/cluster'
-import { listVclusterNamespaces } from '#platform/k8s/vcluster-objects'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 
 /**

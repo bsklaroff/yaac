@@ -1,4 +1,4 @@
-import { findSessionPod, listSessionPods } from '#platform/k8s/pods'
+import { findSessionPod, listSessionPods } from '#platform/k8s'
 import { getVclusterStatus, type VclusterStatus } from '#features/cluster'
 import { ServerError } from '@yaac/shared/errors'
 import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'

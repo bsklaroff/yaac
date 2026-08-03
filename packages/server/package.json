@@ -14,6 +14,7 @@
     "#http": "./src/http/index.js",
     "#platform/container": "./src/platform/container/index.js",
     "#platform/db": "./src/platform/db/index.js",
+    "#platform/k8s": "./src/platform/k8s/index.js",
     "#*": "./src/*.js"
   },
   "scripts": {

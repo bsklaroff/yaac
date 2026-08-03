@@ -2,19 +2,18 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
-} from '#platform/k8s/pod-spec'
+  PROXY_APP_NAME,
+  PROXY_AUTH_SECRET_NAME,
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '#platform/k8s'
 import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '#platform/k8s/proxy-constants'
 import {
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,

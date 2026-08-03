@@ -1,5 +1,5 @@
 import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
+import { type TickSnapshot, createTickSnapshot } from '#platform/k8s'
 import { serverLog } from '#log'
 
 /**

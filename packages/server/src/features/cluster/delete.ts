@@ -1,5 +1,5 @@
 import { confirmDefault, kindEnv } from './setup'
-import { execFileAsync } from '#platform/k8s/kubectl'
+import { execFileAsync } from '#platform/k8s'
 import { removeLocalRegistry, REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { env } from '@yaac/shared/env'
 

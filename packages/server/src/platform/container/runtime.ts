@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { ensureKubernetes } from '#platform/k8s/kubectl'
+import { ensureKubernetes } from '#platform/k8s'
 
 export const execFileAsync = promisify(execFile)
 

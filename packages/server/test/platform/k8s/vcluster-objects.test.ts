@@ -1,228 +1,107 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // The object layer's only boundary is the kubectl list call; the mappers are
-// pure. Nothing else is faked.
-vi.mock('#platform/k8s/kubectl', () => ({
-  k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
-  kubectlGetJson: vi.fn(),
+// pure and run for real behind it.
+type ExecResult = { stdout: string; stderr: string }
+type ExecCallback = (err: unknown, res?: ExecResult) => void
+const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
+vi.mock('node:child_process', () => ({
+  execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
+    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
+    void execFileMock(file, args).then(
+      (res) => actualCb(null, res),
+      (err: unknown) => actualCb(err),
+    )
+    return { stdin: { end: vi.fn() } }
+  },
+  exec: vi.fn(),
 }))
 
 import {
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
   LABEL_VCLUSTER_SESSION_ID,
-  listVclusterConfigMaps,
+  dataDirHash,
   listVclusterNamespaces,
-  listVclusterPods,
-  listVclusterServices,
-  mapVclusterConfigMapObject,
-  mapVclusterNamespaceObject,
-  mapVclusterPodObject,
-  mapVclusterServiceObject,
-  vclusterNamespaceSelector,
-} from '#platform/k8s/vcluster-objects'
-import { LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
-import { kubectlGetJson } from '#platform/k8s/kubectl'
-
-const mockGetJson = vi.mocked(kubectlGetJson)
+} from '#platform/k8s'
 
 const SID = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9'
 const VC = 'yvc-0a1b2c3d'
 /** The vcluster's dedicated host namespace: <install-ns>-vc-<sid8>. */
 const VCNS = 'test-ns-vc-0a1b2c3d'
 
+function rawNs(overrides: { creationTimestamp?: string | Date; labels?: Record<string, string> } = {}): unknown {
+  return {
+    metadata: {
+      name: VCNS,
+      creationTimestamp: overrides.creationTimestamp ?? '2026-06-15T00:00:00Z',
+      labels: overrides.labels ?? {
+        [LABEL_VCLUSTER]: VC,
+        [LABEL_VCLUSTER_SESSION_ID]: SID,
+        [LABEL_VCLUSTER_DATA_DIR_HASH]: dataDirHash(),
+      },
+    },
+  }
+}
+
+const listReturns = (payload: unknown): void => {
+  execFileMock.mockResolvedValue({ stdout: JSON.stringify(payload), stderr: '' })
+}
+
 beforeEach(() => {
-  mockGetJson.mockReset()
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  execFileMock.mockReset()
 })
 
-describe('vclusterNamespaceSelector', () => {
-  it('requires the vcluster label and scopes by data-dir-hash', () => {
-    expect(vclusterNamespaceSelector())
-      .toBe(`${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=ddh16`)
-  })
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 describe('listVclusterNamespaces', () => {
-  it('maps labeled vcluster namespaces to {name, sessionId, namespace, created}', async () => {
-    mockGetJson.mockResolvedValue({
+  it('maps labeled vcluster namespaces, scoped to this install', async () => {
+    listReturns({
       items: [
-        {
-          metadata: {
-            name: VCNS,
-            creationTimestamp: '2026-06-15T00:00:00Z',
-            labels: {
-              [LABEL_VCLUSTER]: VC,
-              [LABEL_VCLUSTER_SESSION_ID]: SID,
-              [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
-            },
-          },
-        },
-        // An unlabeled namespace is ignored (not a yaac vcluster).
-        { metadata: { name: 'something-else', creationTimestamp: '', labels: {} } },
-      ],
-    })
-    const list = await listVclusterNamespaces()
-    expect(list).toEqual([
-      { name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z' },
-    ])
-    // Scoped to this install via the label selector.
-    const call = mockGetJson.mock.calls.find((c) => (c[0])[1] === 'namespaces')
-    expect(call?.[0].join(' ')).toContain(`${LABEL_VCLUSTER_DATA_DIR_HASH}=ddh16`)
-  })
-})
-
-describe('listVclusterPods', () => {
-  it('lists all pods in the vcluster namespace, dropping malformed rows', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [
-        { metadata: { name: 'p1' }, status: { podIP: '10.0.0.1' } },
-        { metadata: { name: 'p2' } }, // no IP yet
-        {}, // malformed → dropped, not fatal
-      ],
-    })
-    await expect(listVclusterPods(VCNS)).resolves.toEqual([
-      { name: 'p1', podIP: '10.0.0.1', labels: {} },
-      { name: 'p2', labels: {} },
-    ])
-    expect(mockGetJson).toHaveBeenCalledWith(['get', 'pods', '-n', VCNS])
-  })
-
-  it('returns [] when the list call yields null (namespace gone)', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await expect(listVclusterPods(VCNS)).resolves.toEqual([])
-  })
-})
-
-describe('listVclusterServices', () => {
-  it('lists syncer-managed services by the managed-by label and maps them', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [
-        { metadata: { name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } } },
-        {}, // malformed → dropped
-      ],
-    })
-    await expect(listVclusterServices(VCNS, VC)).resolves.toEqual([
-      { name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } },
-    ])
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'services', '-n', VCNS, '-l', `${LABEL_VCLUSTER_MANAGED_BY}=${VC}`,
-    ])
-  })
-
-  it('returns [] when the list call yields null', async () => {
-    mockGetJson.mockResolvedValue(null)
-    await expect(listVclusterServices(VCNS, VC)).resolves.toEqual([])
-  })
-})
-
-describe('listVclusterConfigMaps', () => {
-  it('lists the vcluster namespace ConfigMaps, dropping unmappable ones', async () => {
-    mockGetJson.mockResolvedValue({
-      items: [
-        { metadata: { name: 'kube-root-ca.crt', namespace: VCNS }, data: { 'ca.crt': 'PEM' } },
+        rawNs(),
+        // An unlabeled namespace is not a yaac vcluster — skipped, not fatal.
+        { metadata: { name: 'kube-system', creationTimestamp: '', labels: {} } },
+        // Both ownership labels are required.
+        rawNs({ labels: { [LABEL_VCLUSTER]: VC } }),
+        // Malformed rows never take the listing down.
+        {},
         { metadata: {} },
       ],
     })
-    const cms = await listVclusterConfigMaps(VCNS)
-    expect(mockGetJson).toHaveBeenCalledWith(['get', 'configmaps', '-n', VCNS])
-    expect(cms).toHaveLength(1)
-    expect(cms[0].name).toBe('kube-root-ca.crt')
+    await expect(listVclusterNamespaces()).resolves.toEqual([
+      { name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z' },
+    ])
+    // Only namespaces this install owns: plain `yaac.vcluster` presence plus
+    // the data-dir-hash of this data dir.
+    expect(execFileMock).toHaveBeenCalledWith('kubectl', [
+      'get', 'namespaces',
+      '-l', `${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=${dataDirHash()}`,
+      '-o', 'json',
+    ])
   })
-})
 
-describe('mapVclusterNamespaceObject', () => {
-  const rawNs = (): { metadata: { name: string; creationTimestamp: string | Date; labels: Record<string, string> } } => ({
-    metadata: {
+  it('tolerates a namespace with no creationTimestamp', async () => {
+    // The GC grace anchor is optional in the schema; an empty string reads
+    // as epoch, which is exactly the "no grace left" answer we want.
+    listReturns({ items: [{ ...(rawNs() as object), metadata: {
       name: VCNS,
-      creationTimestamp: '2026-06-15T00:00:00Z',
       labels: {
         [LABEL_VCLUSTER]: VC,
         [LABEL_VCLUSTER_SESSION_ID]: SID,
-        [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
+        [LABEL_VCLUSTER_DATA_DIR_HASH]: dataDirHash(),
       },
-    },
+    } }] })
+    const [ns] = await listVclusterNamespaces()
+    expect(ns.creationTimestamp).toBe('')
   })
 
-  it('maps a labeled vcluster namespace to VclusterNamespaceInfo', () => {
-    expect(mapVclusterNamespaceObject(rawNs())).toEqual({
-      name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z',
-    })
-  })
-
-  it('normalizes a Date creationTimestamp (informer list-call class objects) to ISO', () => {
-    const raw = rawNs()
-    raw.metadata.creationTimestamp = new Date('2026-06-15T00:00:00Z')
-    expect(mapVclusterNamespaceObject(raw)?.creationTimestamp).toBe('2026-06-15T00:00:00.000Z')
-  })
-
-  it('returns null for a namespace without the vcluster ownership labels', () => {
-    expect(mapVclusterNamespaceObject({
-      metadata: { name: 'something-else', creationTimestamp: '', labels: {} },
-    })).toBeNull()
-    // Both ownership labels are required.
-    const raw = rawNs()
-    delete raw.metadata.labels[LABEL_VCLUSTER_SESSION_ID]
-    expect(mapVclusterNamespaceObject(raw)).toBeNull()
-  })
-
-  it('returns null for malformed objects instead of throwing', () => {
-    expect(mapVclusterNamespaceObject({})).toBeNull()
-    expect(mapVclusterNamespaceObject(null)).toBeNull()
-    expect(mapVclusterNamespaceObject({ metadata: {} })).toBeNull()
-  })
-})
-
-describe('mapVclusterPodObject', () => {
-  it('maps the pod name, IP and labels', () => {
-    expect(mapVclusterPodObject({
-      metadata: { name: 'p1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' } },
-      status: { podIP: '10.0.0.1' },
-    })).toEqual({
-      name: 'p1', podIP: '10.0.0.1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' },
-    })
-  })
-
-  it('omits podIP when the pod has none yet, and defaults labels', () => {
-    // Claim validation reads the syncer's managed-by label off these, so a
-    // label-less pod must map to an empty record rather than be dropped.
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: {} }))
-      .toEqual({ name: 'p1', labels: {} })
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' } }))
-      .toEqual({ name: 'p1', labels: {} })
-  })
-
-  it('returns null for malformed objects', () => {
-    expect(mapVclusterPodObject({})).toBeNull()
-    expect(mapVclusterPodObject({ metadata: {} })).toBeNull()
-  })
-})
-
-describe('mapVclusterServiceObject', () => {
-  it('maps the service name and labels', () => {
-    expect(mapVclusterServiceObject({
-      metadata: { name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } },
-    })).toEqual({ name: 'yaac-proxy-x-yaac-x-yvc-1', labels: { 'yaac.data-dir-hash': 'ddh16' } })
-  })
-
-  it('defaults missing labels to an empty record', () => {
-    expect(mapVclusterServiceObject({ metadata: { name: 'svc' } }))
-      .toEqual({ name: 'svc', labels: {} })
-  })
-
-  it('returns null for malformed objects', () => {
-    expect(mapVclusterServiceObject({})).toBeNull()
-    expect(mapVclusterServiceObject({ metadata: {} })).toBeNull()
-  })
-})
-
-describe('mapVclusterConfigMapObject', () => {
-  it('maps a ConfigMap to its name and data, and rejects a shapeless object', () => {
-    expect(mapVclusterConfigMapObject({
-      metadata: { name: 'claims', namespace: VCNS },
-      data: { claims: 'a,b' },
-    })).toEqual({ name: 'claims', data: { claims: 'a,b' } })
-    expect(mapVclusterConfigMapObject({})).toBeNull()
-    expect(mapVclusterConfigMapObject(null)).toBeNull()
+  it('returns [] when the list call yields nothing', async () => {
+    execFileMock.mockRejectedValue(
+      Object.assign(new Error('kubectl failed'), { stderr: 'Error from server (NotFound)' }),
+    )
+    await expect(listVclusterNamespaces()).resolves.toEqual([])
   })
 })

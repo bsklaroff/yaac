@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import type { HostPathMount } from '#platform/k8s/pod-spec'
+import { type HostPathMount } from '#platform/k8s'
 
 /**
  * The one session-bin script session pods cannot function without: the

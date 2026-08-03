@@ -1,4 +1,4 @@
-import { listSessionPods } from '#platform/k8s/pods'
+import { type TickSnapshot, listSessionPods } from '#platform/k8s'
 import { classifySessionPods } from '#features/sessions/classify'
 import { probeTmuxLiveness } from '#features/sessions/cleanup'
 import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
@@ -8,7 +8,6 @@ import {
   type SessionCaptureNeed,
 } from '#features/sessions/store'
 import { sessionTranscriptPath } from '#features/sessions/transcripts'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { testEnv } from '@yaac/shared/env'
 
 /**

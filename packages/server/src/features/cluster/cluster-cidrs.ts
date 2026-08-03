@@ -1,4 +1,4 @@
-import { kubectlGetJson } from '#platform/k8s/kubectl'
+import { kubectlGetJson } from '#platform/k8s'
 
 /**
  * The CIDR literals the policies need.

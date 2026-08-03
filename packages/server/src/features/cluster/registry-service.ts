@@ -17,11 +17,7 @@
  * (production namespace) and lazily by the builder engine (per-run e2e
  * namespaces).
  */
-import {
-  execFileAsync,
-  k8sNamespace,
-  kubectlApply,
-} from '#platform/k8s/kubectl'
+import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s'
 import { REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { ensureNamespace } from './proxy-apply'
 

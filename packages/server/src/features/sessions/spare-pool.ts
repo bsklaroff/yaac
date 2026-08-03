@@ -1,5 +1,5 @@
 import simpleGit from 'simple-git'
-import { containerExec } from '#platform/k8s/exec'
+import { containerExec } from '#platform/k8s'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration } from '#features/sessions/egress/proxy-registration'
 import { repoDir } from '@yaac/shared/project-paths'

@@ -12,7 +12,7 @@
  * point — with the agent's real index left untouched.
  */
 
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { sessionExec } from '#platform/k8s'
 import type { ChangeStatus, SessionChange, SessionChanges } from '@yaac/shared/types'
 
 /** Cap the returned diff body so a huge changeset can't blow up the response;

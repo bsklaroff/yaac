@@ -15,8 +15,8 @@
  * watch events, so the parse has to accept both.
  */
 import { z } from 'zod'
-import { dataDirHash, kubectlGetJson } from '#platform/k8s/kubectl'
-import { LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
+import { dataDirHash, kubectlGetJson } from './kubectl'
+import { LABEL_VCLUSTER_MANAGED_BY } from './pods'
 
 /** Ownership + install-scope labels yaac stamps on every vcluster namespace. */
 export const LABEL_VCLUSTER = 'yaac.vcluster'

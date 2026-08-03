@@ -13,9 +13,11 @@ interface FakeChild extends EventEmitter {
 const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
 
 vi.mock('node:child_process', () => ({
-  // The tunnel reaches the container barrel for startPortForwarders, and the
-  // barrel promisifies execFile at module eval; nothing here calls it.
+  // The tunnel reaches the container barrel for startPortForwarders and the
+  // kubectl module for the namespace; both promisify a runner at module
+  // eval. Nothing here calls either — only spawn matters.
   execFile: vi.fn(),
+  exec: vi.fn(),
   spawn: (file: string, args: string[]) => {
     const child = new EventEmitter() as FakeChild
     child.stdin = new PassThrough()
@@ -32,26 +34,24 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-vi.mock('#platform/k8s/kubectl', () => ({
-  k8sNamespace: vi.fn(() => 'test-ns'),
-}))
-
 vi.mock('#log', () => ({
   serverLog: vi.fn(),
 }))
 
-import { ExecTunnel } from '#platform/k8s/exec-tunnel'
+import { ExecTunnel } from '#platform/k8s'
 import { serverLog } from '#log'
 
 let tunnel: ExecTunnel | null = null
 
 beforeEach(() => {
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   spawned.length = 0
 })
 
 afterEach(() => {
   tunnel?.stop()
   tunnel = null
+  vi.unstubAllEnvs()
 })
 
 /** Open a client socket to the tunnel, send a payload, read the echo. */

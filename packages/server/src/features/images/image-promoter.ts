@@ -1,16 +1,14 @@
-import { containerExec } from '#platform/k8s/exec'
 import {
+  LABEL_DATA_DIR_HASH,
+  SHARED_IMAGE_STORE_DST_PATH,
+  SHARED_IMAGE_STORE_PATH,
+  containerExec,
   dataDirHash,
   execFileAsync,
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
-import {
-  SHARED_IMAGE_STORE_DST_PATH,
-  SHARED_IMAGE_STORE_PATH,
-} from '#platform/k8s/pod-spec'
+} from '#platform/k8s'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { testEnv } from '@yaac/shared/env'
 import { shellQuote } from '#platform/shell'

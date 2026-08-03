@@ -5,14 +5,14 @@ import { PassThrough } from 'node:stream'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { env } from '@yaac/shared/env'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
-import { k8sNamespace, kubectlGetJson } from '#platform/k8s/kubectl'
-import { sessionIdFromJobName } from '#platform/k8s/pods'
-import { containerExec } from '#platform/k8s/exec'
+import { k8sNamespace, kubectlGetJson } from './kubectl'
+import { sessionIdFromJobName } from './pods'
+import { containerExec } from './exec'
 import {
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   RELAY_PORT,
-} from '#platform/k8s/proxy-constants'
+} from './proxy-constants'
 import type { RelayFactory } from '#platform/container'
 import { serverLog } from '#log'
 

@@ -1,5 +1,4 @@
-import { containerExec } from '#platform/k8s/exec'
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { containerExec, sessionExec } from '#platform/k8s'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,

@@ -1,4 +1,4 @@
-import { listSessionJobs, listSessionPods, type SessionJob, type SessionPod } from '#platform/k8s/pods'
+import { listSessionJobs, listSessionPods, type SessionJob, type SessionPod } from './pods'
 import {
   listVclusterConfigMaps,
   listVclusterNamespaces,
@@ -8,8 +8,8 @@ import {
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
-} from '#platform/k8s/vcluster-objects'
-import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
+} from './vcluster-objects'
+import { getActiveClusterCache } from './cluster-cache'
 
 /**
  * One reconcile pass's shared view of the cluster. Each getter answers

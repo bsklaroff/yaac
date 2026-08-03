@@ -1,4 +1,4 @@
-import { k8sNamespace, shellKubectlWithRetry, type KubectlExecOptions } from '#platform/k8s/kubectl'
+import { k8sNamespace, shellKubectlWithRetry, type KubectlExecOptions } from './kubectl'
 
 /**
  * kubectl target for a session Job. `kubectl exec job/<name>` resolves the

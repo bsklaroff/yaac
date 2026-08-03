@@ -1,8 +1,13 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { listSessionPods, isPrewarmed, type SessionPod } from '#platform/k8s/pods'
-import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
-import { isDeferredClusterBootPending, triggerDeferredClusterBoot } from '#platform/k8s/deferred-boot'
+import {
+  type SessionPod,
+  getActiveClusterCache,
+  isDeferredClusterBootPending,
+  isPrewarmed,
+  listSessionPods,
+  triggerDeferredClusterBoot,
+} from '#platform/k8s'
 import { projectDir } from '@yaac/shared/project-paths'
 import { normalizeTool, pruneTerminating } from '#features/sessions/state'
 import { getProjectSessionRows, type SessionRow } from '#features/sessions/store'

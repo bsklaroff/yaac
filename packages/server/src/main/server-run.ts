@@ -8,13 +8,18 @@ import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '
 import { closeDb, getDb, importLegacyJsonStores } from '#platform/db'
 import { EventHub } from '#main/events'
 import { attachPty, type SocketLike } from '#features/terminals'
-import { invalidateRelayAddr } from '#platform/k8s/stream-relay'
+import {
+  ClusterCache,
+  anySessionDirsExist,
+  armDeferredClusterBoot,
+  invalidateRelayAddr,
+  listSessionPods,
+  setActiveClusterCache,
+} from '#platform/k8s'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
 import { PortDetectorManager } from '#features/sessions/forwarders/port-detector'
-import { ClusterCache, setActiveClusterCache } from '#platform/k8s/cluster-cache'
-import { anySessionDirsExist, armDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import { refreshClaudeBundledSkills } from '#features/skills'
 import { onSessionStatusChanged } from '#features/sessions/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -33,7 +38,6 @@ import { ensureNamespace, gcOrphanProjectRegistries } from '#features/cluster'
 import { ensureLocalRegistry } from '#platform/container'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
-import { listSessionPods } from '#platform/k8s/pods'
 import { resolveProjectConfig } from '#features/projects'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

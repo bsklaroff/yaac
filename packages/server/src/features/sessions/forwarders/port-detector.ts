@@ -1,6 +1,5 @@
 import type net from 'node:net'
-import { relayDial } from '#platform/k8s/stream-relay'
-import { isPrewarmed, type SessionPod } from '#platform/k8s/pods'
+import { type SessionPod, isPrewarmed, relayDial } from '#platform/k8s'
 import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
 import { serverLog } from '#log'
 

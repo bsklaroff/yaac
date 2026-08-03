@@ -1,5 +1,4 @@
-import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import { type TickSnapshot, listSessionJobs, listSessionPods } from '#platform/k8s'
 import { classifySessionPods } from '#features/sessions/classify'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached } from '#features/sessions/cleanup'
 import { isSessionTerminating } from '#features/sessions/state'

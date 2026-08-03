@@ -1,5 +1,4 @@
-import { runtimeClassSpec } from '#platform/k8s/gvisor'
-import { LABEL_SESSION_ID } from '#platform/k8s/pods'
+import { runtimeClassSpec } from './gvisor'
 
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
 export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
@@ -360,12 +359,5 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
         },
       },
     },
-  }
-}
-
-/** Sanity guard used by session-create: labels must carry the session id. */
-export function assertSessionLabels(labels: Record<string, string>): void {
-  if (!labels[LABEL_SESSION_ID]) {
-    throw new Error(`session Job labels missing ${LABEL_SESSION_ID}`)
   }
 }

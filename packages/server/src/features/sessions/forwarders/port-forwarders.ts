@@ -11,7 +11,7 @@
  * double-registers a batch.
  */
 
-import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
+import { relayTcpFactory, sessionExec } from '#platform/k8s'
 import { reserveAvailablePort, startPortForwarders } from '#platform/container'
 import type { ReservedPort } from '#platform/container'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'

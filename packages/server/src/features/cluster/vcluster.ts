@@ -9,7 +9,24 @@ import {
   buildVclusterEgressFloorNpManifest,
 } from './policy-manifests'
 import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
-import { LABEL_VCLUSTER_NAMESPACE } from '#platform/k8s/proxy-constants'
+import {
+  LABEL_SESSION_ID,
+  LABEL_VCLUSTER,
+  LABEL_VCLUSTER_DATA_DIR_HASH,
+  LABEL_VCLUSTER_MANAGED_BY,
+  LABEL_VCLUSTER_NAMESPACE,
+  LABEL_VCLUSTER_SESSION_ID,
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+  VCLUSTER_API_PORT,
+  dataDirHash,
+  ensurePinnedBinary,
+  execFileAsync,
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '#platform/k8s'
 import {
   ACTIVATOR_APP_NAME,
   buildActivatorVclusterRoleBindingManifest,
@@ -17,25 +34,6 @@ import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
 } from './activator'
-import {
-  dataDirHash,
-  execFileAsync,
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import {
-  RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
-} from '#platform/k8s/gvisor'
-import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
-import {
-  LABEL_VCLUSTER,
-  LABEL_VCLUSTER_DATA_DIR_HASH,
-  LABEL_VCLUSTER_SESSION_ID,
-} from '#platform/k8s/vcluster-objects'
-import { ensurePinnedBinary } from '#platform/k8s/pinned-binary'
 import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#platform/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'

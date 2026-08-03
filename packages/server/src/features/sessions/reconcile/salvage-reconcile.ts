@@ -1,5 +1,4 @@
-import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
-import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
+import { getActiveClusterCache, isPrewarmed, listSessionPods } from '#platform/k8s'
 import { isSessionTerminating } from '#features/sessions/state'
 import { salvageSessionImages } from '#features/images'
 

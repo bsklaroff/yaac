@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import type { HostPathMount } from '#platform/k8s/pod-spec'
+import { type HostPathMount } from '#platform/k8s'
 
 /**
  * In-pod personal skills root for each agent tool. yaac's bundled skills are

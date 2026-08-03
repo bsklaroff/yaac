@@ -1,4 +1,4 @@
-import { findSessionPod, listSessionJobs, listSessionPods } from '#platform/k8s/pods'
+import { findSessionPod, listSessionJobs, listSessionPods } from '#platform/k8s'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { ServerError } from '@yaac/shared/errors'
 

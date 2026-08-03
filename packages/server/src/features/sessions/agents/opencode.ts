@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { sessionExec } from '#platform/k8s'
 
 /**
  * Status markers + first-message lookup for opencode sessions.

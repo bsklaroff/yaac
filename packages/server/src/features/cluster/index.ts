@@ -24,7 +24,7 @@
 //
 //  - The datapath's *names and ports* are a zero-import constant vocabulary
 //    the stream relay, the pod spec, and the image builders read, so they
-//    live in `#platform/k8s/proxy-constants`.
+//    live in `#platform/k8s`.
 //  - The *local OCI registry* is a podman container and an HTTP endpoint
 //    with no Kubernetes object in it, which the image builders, the proxy
 //    client, and server start all push to, so it lives in
@@ -33,7 +33,7 @@
 //    publishes, their mappers, and the one-shot lists — is what the informer
 //    registry and the reconcile snapshot read, and it is the same job
 //    `pods.ts` does for session pods, so it lives in
-//    `#platform/k8s/vcluster-objects`. What stays here is the vcluster
+//    `#platform/k8s`. What stays here is the vcluster
 //    *lifecycle*: provisioning, sleep/wake, status and teardown.
 
 export {

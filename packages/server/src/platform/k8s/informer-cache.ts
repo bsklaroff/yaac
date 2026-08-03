@@ -4,7 +4,7 @@ import {
   type KubernetesListObject,
   type KubernetesObject,
 } from '@kubernetes/client-node'
-import { getKubeConfig } from '#platform/k8s/client'
+import { getKubeConfig } from './client'
 import { serverLog } from '#log'
 
 /**

@@ -13,31 +13,32 @@ import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/e
 import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
 import { ensureContainerRuntime, reserveAvailablePort, startPortForwarders } from '#platform/container'
 import {
-  relayTcpFactory,
-  sessionExec,
-  sessionStreamToken,
-  waitForStreamd,
-} from '#platform/k8s/stream-relay'
-import type { ReservedPort } from '#platform/container'
-import { waitForJobPodReady } from '#platform/k8s/pod-wait'
-import { createKeyedMutex } from '#platform/keyed-mutex'
-import { dataDirHash, k8sNamespace, kubectlApply, kubectlWithRetry } from '#platform/k8s/kubectl'
-// Aliased: this module uses a local `env: string[]` for the pod's env vars.
-import { env as yaacEnv, testEnv } from '@yaac/shared/env'
-import {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
-  sessionJobName,
-} from '#platform/k8s/pods'
-import {
-  buildSessionJobManifest,
+  SSH_TUNNEL_SENTINEL,
+  TUNNEL_INGRESS_PORT,
   type HostPathMount,
   type NestedContainersParams,
-} from '#platform/k8s/pod-spec'
-import { SSH_TUNNEL_SENTINEL, TUNNEL_INGRESS_PORT } from '#platform/k8s/proxy-constants'
+  awaitDeferredClusterBoot,
+  buildSessionJobManifest,
+  dataDirHash,
+  k8sNamespace,
+  kubectlApply,
+  kubectlWithRetry,
+  relayTcpFactory,
+  sessionExec,
+  sessionJobName,
+  sessionStreamToken,
+  waitForJobPodReady,
+  waitForStreamd,
+} from '#platform/k8s'
+import type { ReservedPort } from '#platform/container'
+import { createKeyedMutex } from '#platform/keyed-mutex'
+// Aliased: this module uses a local `env: string[]` for the pod's env vars.
+import { env as yaacEnv, testEnv } from '@yaac/shared/env'
 import {
   ensureActivator,
   ensureProjectRegistry,
@@ -51,7 +52,6 @@ import {
   vclusterName,
   waitForVclusterKubeconfig,
 } from '#features/cluster'
-import { awaitDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import {
   repoDir,
   claudeDir,

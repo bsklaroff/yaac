@@ -34,15 +34,11 @@ import {
   dataDirHash,
   ensureKubernetes,
   execFileAsync,
-  isNotFoundKubectlError,
-  isTransientKubectlError,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-  retryTransient,
-  shellKubectlWithRetry,
-} from '#platform/k8s/kubectl'
+} from '#platform/k8s'
 import { getDataDir, setDataDir } from '@yaac/shared/paths'
 
 function stderrError(stderr: string): Error {
@@ -87,93 +83,6 @@ describe('dataDirHash', () => {
     const b = dataDirHash()
     expect(a1).toBe(a2)
     expect(b).not.toBe(a1)
-  })
-})
-
-describe('isTransientKubectlError', () => {
-  it.each([
-    'connection refused',
-    'dial tcp 127.0.0.1:6443: connect: ECONNREFUSED',
-    'net/http: TLS handshake timeout',
-    'i/o timeout',
-    'context deadline exceeded',
-    'etcdserver: request timed out',
-    'etcdserver: leader changed',
-    'the server is currently unable to handle the request',
-    'temporarily unavailable',
-    'too many requests',
-    'error dialing backend',
-    'Unable to upgrade connection: pod does not exist',
-  ])('matches transient stderr: %s', (stderr) => {
-    expect(isTransientKubectlError(stderr)).toBe(true)
-  })
-
-  it('matches case-insensitively', () => {
-    expect(isTransientKubectlError('CONNECTION REFUSED')).toBe(true)
-  })
-
-  it('does not match permanent failures', () => {
-    expect(isTransientKubectlError('Error from server (NotFound): jobs.batch "x" not found')).toBe(false)
-    expect(isTransientKubectlError('permission denied')).toBe(false)
-    expect(isTransientKubectlError('')).toBe(false)
-  })
-})
-
-describe('isNotFoundKubectlError', () => {
-  it('matches the apiserver (NotFound) reason', () => {
-    expect(isNotFoundKubectlError('Error from server (NotFound): secrets "x" not found')).toBe(true)
-    expect(isNotFoundKubectlError('error: the server doesn\'t have a resource type "Foo" not found')).toBe(true)
-  })
-
-  it('does not match other errors', () => {
-    expect(isNotFoundKubectlError('connection refused')).toBe(false)
-    expect(isNotFoundKubectlError('')).toBe(false)
-  })
-})
-
-describe('retryTransient', () => {
-  const stderrOf = (err: unknown): string => (err as { stderr?: string })?.stderr ?? ''
-
-  it('returns the first successful result without retrying', async () => {
-    const run = vi.fn().mockResolvedValue('ok')
-    await expect(retryTransient(run, {}, stderrOf)).resolves.toBe('ok')
-    expect(run).toHaveBeenCalledTimes(1)
-  })
-
-  it('retries while stderrOf extracts a transient error, then succeeds', async () => {
-    const run = vi.fn()
-      .mockRejectedValueOnce(stderrError('connection refused'))
-      .mockResolvedValue('finally')
-    await expect(
-      retryTransient(run, { baseDelay: 1, maxAttempts: 3 }, stderrOf),
-    ).resolves.toBe('finally')
-    expect(run).toHaveBeenCalledTimes(2)
-  })
-
-  it('rethrows non-transient errors immediately, preserving the original', async () => {
-    const run = vi.fn().mockRejectedValue(stderrError('permission denied'))
-    await expect(
-      retryTransient(run, { baseDelay: 1, maxAttempts: 5 }, stderrOf),
-    ).rejects.toThrow('kubectl failed')
-    expect(run).toHaveBeenCalledTimes(1)
-  })
-
-  it('gives up after maxAttempts even when errors stay transient', async () => {
-    const run = vi.fn().mockRejectedValue(stderrError('i/o timeout'))
-    await expect(
-      retryTransient(run, { baseDelay: 1, maxAttempts: 3 }, stderrOf),
-    ).rejects.toThrow('kubectl failed')
-    expect(run).toHaveBeenCalledTimes(3)
-  })
-
-  it('classifies via the injected stderr extraction, not the error itself', async () => {
-    // A transient message in the error text is NOT retried when stderrOf
-    // does not surface it — the extraction seam is authoritative.
-    const run = vi.fn().mockRejectedValue(new Error('connection refused'))
-    await expect(
-      retryTransient(run, { baseDelay: 1, maxAttempts: 5 }, () => ''),
-    ).rejects.toThrow('connection refused')
-    expect(run).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -223,52 +132,6 @@ describe('kubectlWithRetry', () => {
     await kubectlWithRetry(['apply', '-f', '-'], { input: '{"kind":"Job"}' })
     expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'])
     expect(stdinEndMock).toHaveBeenCalledWith('{"kind":"Job"}')
-  })
-})
-
-describe('shellKubectlWithRetry', () => {
-  beforeEach(() => {
-    execMock.mockReset()
-  })
-
-  it('returns stdout/stderr on first successful call', async () => {
-    execMock.mockResolvedValue({ stdout: 'ok', stderr: '' })
-    const result = await shellKubectlWithRetry('kubectl exec -n yaac job/x -- true')
-    expect(result.stdout).toBe('ok')
-    expect(execMock).toHaveBeenCalledTimes(1)
-    expect(execMock).toHaveBeenCalledWith('kubectl exec -n yaac job/x -- true')
-  })
-
-  it('retries on transient stderr and eventually succeeds', async () => {
-    execMock
-      .mockRejectedValueOnce(stderrError('error dialing backend'))
-      .mockResolvedValue({ stdout: 'finally', stderr: '' })
-    const result = await shellKubectlWithRetry('kubectl exec job/x -- true', {
-      baseDelay: 1,
-      maxAttempts: 5,
-    })
-    expect(result.stdout).toBe('finally')
-    expect(execMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('also classifies via the error message when stderr is empty', async () => {
-    execMock
-      .mockRejectedValueOnce(new Error('net dial: i/o timeout'))
-      .mockResolvedValue({ stdout: 'back', stderr: '' })
-    const result = await shellKubectlWithRetry('kubectl get pods', {
-      baseDelay: 1,
-      maxAttempts: 3,
-    })
-    expect(result.stdout).toBe('back')
-    expect(execMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not retry on non-transient errors', async () => {
-    execMock.mockRejectedValue(stderrError('permission denied'))
-    await expect(
-      shellKubectlWithRetry('kubectl get pods', { baseDelay: 1, maxAttempts: 5 }),
-    ).rejects.toThrow('kubectl failed')
-    expect(execMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -330,7 +193,23 @@ describe('ensureKubernetes', () => {
 })
 
 describe('execFileAsync', () => {
-  it('is exported as a function', () => {
-    expect(typeof execFileAsync).toBe('function')
+  beforeEach(() => {
+    execFileMock.mockReset()
+  })
+
+  // The bare promisified runner the setup/delete paths use for non-kubectl
+  // binaries (kind, podman, vcluster) — no namespace, no retries.
+  it('runs a binary with its argv and resolves stdout/stderr', async () => {
+    execFileMock.mockResolvedValue({ stdout: 'kind v0.30.0', stderr: '' })
+    await expect(execFileAsync('kind', ['version'])).resolves.toEqual({
+      stdout: 'kind v0.30.0', stderr: '',
+    })
+    expect(execFileMock).toHaveBeenCalledWith('kind', ['version'])
+  })
+
+  it('rejects without retrying when the binary fails', async () => {
+    execFileMock.mockRejectedValue(stderrError('connection refused'))
+    await expect(execFileAsync('kind', ['get', 'clusters'])).rejects.toThrow('kubectl failed')
+    expect(execFileMock).toHaveBeenCalledTimes(1)
   })
 })

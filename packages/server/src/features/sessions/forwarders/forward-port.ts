@@ -1,4 +1,4 @@
-import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
+import { isPrewarmed, listSessionPods } from '#platform/k8s'
 import { addSessionForwarder } from '#features/sessions/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
 import { addPortForwardToProjectConfig } from '#features/projects'

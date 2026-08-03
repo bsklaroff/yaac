@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getProjectsDir } from '@yaac/shared/project-paths'
-import { listSessionPods, isPrewarmed } from '#platform/k8s/pods'
 import {
   isDeferredClusterBootPending,
+  isPrewarmed,
+  listSessionPods,
   triggerDeferredClusterBoot,
-} from '#platform/k8s/deferred-boot'
+} from '#platform/k8s'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 export interface ProjectListEntry {

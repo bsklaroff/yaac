@@ -1,4 +1,4 @@
-import { findSessionPod, listSessionPods } from '#platform/k8s/pods'
+import { findSessionPod, listSessionPods } from '#platform/k8s'
 import { cleanupSession } from '#features/sessions/cleanup'
 import { clearSessionDeleted, findSessionRow } from '#features/sessions/store'
 import { clearSessionTerminating, normalizeTool } from '#features/sessions/state'

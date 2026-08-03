@@ -1,7 +1,7 @@
 import { Watch, type V1Pod } from '@kubernetes/client-node'
-import { getCoreApi, getKubeConfig } from '#platform/k8s/client'
-import { k8sNamespace } from '#platform/k8s/kubectl'
-import { JOB_NAME_LABEL } from '#platform/k8s/pods'
+import { getCoreApi, getKubeConfig } from './client'
+import { k8sNamespace } from './kubectl'
+import { JOB_NAME_LABEL } from './pods'
 
 /**
  * Waiting for one session pod to become Ready, event-driven: a typed-client

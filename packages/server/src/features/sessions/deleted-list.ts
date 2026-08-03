@@ -1,4 +1,4 @@
-import { listSessionPods } from '#platform/k8s/pods'
+import { listSessionPods } from '#platform/k8s'
 import { listSessionRows, setSessionCapture, type SessionRow } from '#features/sessions/store'
 import { sessionTranscriptPath, transcriptLastActiveMs } from '#features/sessions/transcripts'
 import { getSessionFirstMessage } from '#features/sessions/state'

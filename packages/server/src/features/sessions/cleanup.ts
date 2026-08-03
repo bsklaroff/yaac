@@ -1,9 +1,15 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { listSessionJobs, listSessionPods, sessionJobName } from '#platform/k8s/pods'
-import { k8sNamespace, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
+import {
+  RelayExecError,
+  k8sNamespace,
+  kubectlWithRetry,
+  listSessionJobs,
+  listSessionPods,
+  sessionExec,
+  sessionJobName,
+} from '#platform/k8s'
 import { recordSessionDeleted } from '#features/sessions/store'
 import { markSessionTerminating } from '#features/sessions/state'
 import { evictSessionStatus, isSessionStreamHealthy } from '#features/sessions/status-store'

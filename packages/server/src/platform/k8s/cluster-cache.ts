@@ -1,10 +1,10 @@
-import { getBatchApi, getCoreApi } from '#platform/k8s/client'
+import { getBatchApi, getCoreApi } from './client'
 import {
   InformerCache,
   type InformerCacheDeps,
   type MakeInformerFn,
-} from '#platform/k8s/informer-cache'
-import { k8sNamespace } from '#platform/k8s/kubectl'
+} from './informer-cache'
+import { k8sNamespace } from './kubectl'
 import {
   LABEL_VCLUSTER_MANAGED_BY,
   mapSessionJobObject,
@@ -13,7 +13,7 @@ import {
   sessionPodSelector,
   type SessionJob,
   type SessionPod,
-} from '#platform/k8s/pods'
+} from './pods'
 import {
   mapVclusterConfigMapObject,
   mapVclusterNamespaceObject,
@@ -24,7 +24,7 @@ import {
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
-} from '#platform/k8s/vcluster-objects'
+} from './vcluster-objects'
 import { serverLog } from '#log'
 
 /**

@@ -11,10 +11,15 @@ import {
   ensureProxyResources,
   resetProxyClusterIpCache,
 } from '#features/cluster'
-import { PROXY_APP_NAME, PROXY_PORT } from '#platform/k8s/proxy-constants'
-import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import {
+  PROXY_APP_NAME,
+  PROXY_PORT,
+  ExecTunnel,
+  k8sNamespace,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '#platform/k8s'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
-import { ExecTunnel } from '#platform/k8s/exec-tunnel'
 import { listSshEntries } from '#features/projects'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'

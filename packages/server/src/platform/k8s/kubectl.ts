@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
-import { triggerDeferredClusterBoot } from '#platform/k8s/deferred-boot'
+import { triggerDeferredClusterBoot } from './deferred-boot'
 
 export const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)

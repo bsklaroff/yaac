@@ -9,42 +9,25 @@ vi.mock('#platform/k8s/kubectl', () => ({
 }))
 
 import {
-  JOB_NAME_LABEL,
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
-  LABEL_VCLUSTER_MANAGED_BY,
-  VCLUSTER_API_PORT,
   findSessionPod,
   isPrewarmed,
   listSessionJobs,
   listSessionPods,
-  mapSessionJobObject,
-  mapSessionPodObject,
   runPodToCompletion,
   sessionIdFromJobName,
   sessionJobName,
-  sessionJobSelector,
-  toEpochMs,
   type SessionPod,
-} from '#platform/k8s/pods'
+} from '#platform/k8s'
+// Internal, for fixtures only: the kubelet's own job-name label.
+import { JOB_NAME_LABEL } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
-
-describe('label constants', () => {
-  it('match the wire values used by selectors and manifests', () => {
-    expect(LABEL_PROJECT).toBe('yaac.project')
-    expect(LABEL_SESSION_ID).toBe('yaac.session-id')
-    expect(LABEL_DATA_DIR_HASH).toBe('yaac.data-dir-hash')
-    expect(LABEL_TOOL).toBe('yaac.tool')
-    // Cycle-free home for the constants bootstrap and vcluster share.
-    expect(LABEL_VCLUSTER_MANAGED_BY).toBe('vcluster.loft.sh/managed-by')
-    expect(VCLUSTER_API_PORT).toBe(8443)
-  })
-})
 
 describe('sessionJobName', () => {
   const SID = '01234567-89ab-cdef-0123-456789abcdef'
@@ -77,18 +60,22 @@ describe('sessionJobName', () => {
     expect(name).toHaveLength(63)
   })
 
-  it('sessionIdFromJobName recovers the UUID tail for any slug shape', () => {
+  it('collapses double dashes', () => {
+    expect(sessionJobName('a--b', 'abcd')).toBe('yaac-a-b-abcd')
+  })
+})
+
+describe('sessionIdFromJobName', () => {
+  const SID = '01234567-89ab-cdef-0123-456789abcdef'
+
+  it('recovers the UUID tail for any slug shape', () => {
     for (const slug of ['demo', 'MyProj', 'my_proj.x', '-foo-', 'a'.repeat(40)]) {
       expect(sessionIdFromJobName(sessionJobName(slug, SID))).toBe(SID)
     }
   })
 
-  it('sessionIdFromJobName rejects names too short to carry a session UUID', () => {
+  it('rejects names too short to carry a session UUID', () => {
     expect(() => sessionIdFromJobName('yaac-demo-abcd')).toThrow(/not a session job name/)
-  })
-
-  it('collapses double dashes', () => {
-    expect(sessionJobName('a--b', 'abcd')).toBe('yaac-a-b-abcd')
   })
 })
 
@@ -158,10 +145,6 @@ describe('listSessionPods', () => {
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
       labels: expect.any(Object) as Record<string, string>,
     }])
-  })
-
-  it('label constant is the canonical prefixed job-name label', () => {
-    expect(JOB_NAME_LABEL).toBe('batch.kubernetes.io/job-name')
   })
 
   it('throws when the job-name label is missing', async () => {
@@ -381,96 +364,6 @@ describe('listSessionJobs', () => {
   it('returns [] when the list call yields null', async () => {
     mockGetJson.mockResolvedValue(null)
     await expect(listSessionJobs()).resolves.toEqual([])
-  })
-})
-
-describe('toEpochMs', () => {
-  it('parses ISO strings (kubectl JSON and watch events)', () => {
-    expect(toEpochMs('2026-06-01T00:00:00Z')).toBe(Date.parse('2026-06-01T00:00:00Z'))
-  })
-
-  it('reads Date instances (informer list-call class objects)', () => {
-    expect(toEpochMs(new Date(1_750_000_000_000))).toBe(1_750_000_000_000)
-  })
-})
-
-describe('mapSessionPodObject', () => {
-  it('maps a valid raw pod object to a SessionPod', () => {
-    expect(mapSessionPodObject(rawPod())).toEqual({
-      jobName: 'yaac-demo-s1',
-      podName: 'yaac-demo-s1-x1y2z',
-      sessionId: 's1',
-      projectSlug: 'demo',
-      tool: 'codex',
-      phase: 'Running',
-      running: true,
-      terminating: false,
-      createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
-      labels: expect.any(Object) as Record<string, string>,
-    })
-  })
-
-  it('accepts a Date creationTimestamp (informer list-call class objects)', () => {
-    const raw = rawPod()
-    ;(raw.metadata as { creationTimestamp: unknown }).creationTimestamp =
-      new Date('2026-06-01T00:00:00Z')
-    expect(mapSessionPodObject(raw)?.createdAtMs).toBe(Date.parse('2026-06-01T00:00:00Z'))
-  })
-
-  it('returns null for malformed objects instead of throwing', () => {
-    expect(mapSessionPodObject({})).toBeNull()
-    // Missing the job-name label.
-    expect(mapSessionPodObject(rawPod({
-      labels: {
-        [LABEL_SESSION_ID]: 's1',
-        [LABEL_PROJECT]: 'demo',
-        [LABEL_TOOL]: 'codex',
-      },
-    }))).toBeNull()
-  })
-})
-
-function rawJob(): {
-  metadata: { name: string; labels: Record<string, string>; creationTimestamp: string | Date }
-} {
-  return {
-    metadata: {
-      name: 'yaac-demo-s1',
-      labels: { [LABEL_SESSION_ID]: 's1', [LABEL_PROJECT]: 'demo' },
-      creationTimestamp: '2026-06-01T00:00:00Z',
-    },
-  }
-}
-
-describe('mapSessionJobObject', () => {
-  it('maps a valid raw Job object to a SessionJob', () => {
-    expect(mapSessionJobObject(rawJob())).toEqual({
-      jobName: 'yaac-demo-s1',
-      sessionId: 's1',
-      projectSlug: 'demo',
-      createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
-    })
-  })
-
-  it('accepts a Date creationTimestamp (informer list-call class objects)', () => {
-    const raw = rawJob()
-    raw.metadata.creationTimestamp = new Date('2026-06-01T00:00:00Z')
-    expect(mapSessionJobObject(raw)?.createdAtMs).toBe(Date.parse('2026-06-01T00:00:00Z'))
-  })
-
-  it('returns null when the labels are missing or the object is malformed', () => {
-    const raw = rawJob()
-    raw.metadata.labels = {}
-    expect(mapSessionJobObject(raw)).toBeNull()
-    expect(mapSessionJobObject({})).toBeNull()
-  })
-})
-
-describe('sessionJobSelector', () => {
-  it('scopes by data-dir-hash and requires the session-id label', () => {
-    expect(sessionJobSelector()).toBe('yaac.data-dir-hash=ddh0123456789abc,yaac.session-id')
-    expect(sessionJobSelector()).toContain(LABEL_DATA_DIR_HASH)
-    expect(sessionJobSelector()).toContain(LABEL_SESSION_ID)
   })
 })
 

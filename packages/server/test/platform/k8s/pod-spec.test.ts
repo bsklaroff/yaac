@@ -1,58 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import {
-  CA_BUNDLE_KEY,
-  CA_BUNDLE_PATH,
-  CA_CERT_PATH,
-  CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
-  CA_MOUNT_DIR,
   NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_TMPFS_BYTES,
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
-  assertSessionLabels,
   buildSessionJobManifest,
   graphrootMountAnnotations,
-  parseEnvEntry,
   type NestedContainersParams,
+} from '#platform/k8s'
+// Internals, for fixtures and bounds only: the in-container cert dir, the
+// sentry tmpfs cap, and the params the builder takes.
+import {
+  CA_MOUNT_DIR,
+  NESTED_GRAPHROOT_TMPFS_BYTES,
   type SessionJobParams,
 } from '#platform/k8s/pod-spec'
-
-describe('CA constants', () => {
-  it('compose the in-container cert path from dir + key', () => {
-    expect(CA_CONFIGMAP_NAME).toBe('yaac-proxy-ca')
-    expect(CA_CONFIGMAP_KEY).toBe('proxy-ca.pem')
-    expect(CA_MOUNT_DIR).toBe('/etc/yaac/certs')
-    expect(CA_CERT_PATH).toBe('/etc/yaac/certs/proxy-ca.pem')
-  })
-
-  it('compose the combined-bundle path from dir + bundle key', () => {
-    expect(CA_BUNDLE_KEY).toBe('ca-bundle.pem')
-    expect(CA_BUNDLE_PATH).toBe('/etc/yaac/certs/ca-bundle.pem')
-    expect(CA_BUNDLE_PATH).not.toBe(CA_CERT_PATH)
-  })
-})
-
-describe('parseEnvEntry', () => {
-  it('splits NAME=VALUE at the first equals sign', () => {
-    expect(parseEnvEntry('FOO=bar')).toEqual({ name: 'FOO', value: 'bar' })
-  })
-
-  it('keeps equals signs inside the value', () => {
-    expect(parseEnvEntry('URL=http://x:sid@host:10255?a=b')).toEqual({
-      name: 'URL',
-      value: 'http://x:sid@host:10255?a=b',
-    })
-  })
-
-  it('returns an empty value for a bare name', () => {
-    expect(parseEnvEntry('NOVALUE')).toEqual({ name: 'NOVALUE', value: '' })
-  })
-
-  it('handles an empty value after the equals sign', () => {
-    expect(parseEnvEntry('EMPTY=')).toEqual({ name: 'EMPTY', value: '' })
-  })
-})
 
 function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
   return {
@@ -198,10 +160,15 @@ describe('buildSessionJobManifest', () => {
   })
 
   it('parses env entries, preserving equals signs inside values', () => {
-    const c = build().spec.template.spec.containers[0]
+    // NAME=VALUE splits at the FIRST `=` (proxy URLs carry more), a bare
+    // name is an empty value, and so is a trailing `=`.
+    const c = build({ env: ['YAAC_SESSION_ID=abcd', 'X=a=b', 'BARE', 'EMPTY='] })
+      .spec.template.spec.containers[0]
     expect(c.env).toEqual([
       { name: 'YAAC_SESSION_ID', value: 'abcd' },
       { name: 'X', value: 'a=b' },
+      { name: 'BARE', value: '' },
+      { name: 'EMPTY', value: '' },
     ])
   })
 
@@ -286,138 +253,129 @@ describe('buildSessionJobManifest', () => {
       readOnly: true,
     })
   })
+
+  describe('nestedContainers', () => {
+    const nested: NestedContainersParams = {
+      sharedImagesHostPath: '/var/lib/yaac/imagecache/ddh16/demo',
+    }
+
+    it('leaves the non-nested manifest byte-identical when nested is absent', () => {
+      const withoutField = buildSessionJobManifest(params())
+      const withUndefined = buildSessionJobManifest({ ...params(), nested: undefined })
+      expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
+
+      const spec = build().spec.template.spec
+      expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+      expect(spec.initContainers).toBeUndefined()
+      expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
+      // No graphroot-tmpfs annotations on a non-nested pod.
+      expect(build().spec.template.metadata.annotations).toBeUndefined()
+      expect(spec.containers[0].resources).toEqual({
+        requests: { memory: String(1 * 1024 ** 3) },
+        limits: { memory: String(8 * 1024 ** 3) },
+      })
+    })
+
+    it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
+      const spec = build({ nested }).spec.template.spec
+      expect(spec.runtimeClassName).toBe('gvisor-nested')
+      expect(spec.hostUsers).toBeUndefined()
+    })
+
+    it('inner-yaac nested: no RuntimeClass, no userns', () => {
+      const spec = build({ nested, innerYaac: true }).spec.template.spec
+      expect(spec.runtimeClassName).toBeUndefined()
+      expect(spec.hostUsers).toBeUndefined()
+    })
+
+    it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
+      // The graphroot is disk-backed page cache, not pod memory — its size is
+      // deliberately decoupled from memoryLimitBytes.
+      expect(() => buildSessionJobManifest({
+        ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
+      })).not.toThrow()
+    })
+
+    it('adds the rootful engine caps and no fsGroup on the session container', () => {
+      const spec = build({ nested }).spec.template.spec
+      // seccompProfile stays RuntimeDefault (runsc installs its own host
+      // seccomp regardless); no fsGroup — the rootful graphroot is root-owned.
+      expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+      expect(spec.containers[0].securityContext).toEqual({
+        capabilities: {
+          add: [
+            'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+            'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+          ],
+        },
+      })
+    })
+
+    it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
+      const m = build({ nested })
+      const spec = m.spec.template.spec
+      const cap = 8 * 1024 ** 3
+      // Disk medium (no `medium: Memory`): runsc pages the sentry tmpfs
+      // against a filestore file inside this emptyDir on the node's disk.
+      // sizeLimit carries slack above the sentry's size= cap so kubelet
+      // eviction can't race the sentry's ENOSPC.
+      expect(spec.volumes).toContainEqual({
+        name: 'podman-graphroot',
+        emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'podman-graphroot',
+        mountPath: NESTED_GRAPHROOT_PATH,
+      })
+      // The runsc mount annotations make it a sentry tmpfs (file caps for
+      // setcap builds); keyed on the volume name. `type: bind` (not tmpfs) is
+      // what selects the DISK-backed variant — see
+      // NESTED_GRAPHROOT_ANNOTATIONS.
+      expect(m.spec.template.metadata.annotations).toEqual({
+        'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
+        'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
+        'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
+      })
+    })
+
+    it('mounts the shared image store rw at both paths with no chown init', () => {
+      const spec = build({ nested }).spec.template.spec
+      expect(spec.volumes).toContainEqual({
+        name: 'shared-images',
+        hostPath: { path: '/var/lib/yaac/imagecache/ddh16/demo', type: 'DirectoryOrCreate' },
+      })
+      // rw mount (no readOnly key): additionalimagestores creates lock dirs.
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'shared-images',
+        mountPath: SHARED_IMAGE_STORE_PATH,
+      })
+      // A second mount of the same volume — the promoter's write-side
+      // destination root, dodging the read-only additional-store lock.
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'shared-images',
+        mountPath: SHARED_IMAGE_STORE_DST_PATH,
+      })
+      // The rootful engine reads/writes the store as root, so there is no
+      // chown init container anymore.
+      expect(spec.initContainers).toBeUndefined()
+    })
+
+    it('keeps the resources identical to a non-nested pod (memory only)', () => {
+      const resources = build({ nested }).spec.template.spec.containers[0].resources
+      expect(resources).toEqual({
+        requests: { memory: String(1 * 1024 ** 3) },
+        limits: { memory: String(8 * 1024 ** 3) },
+      })
+    })
+  })
 })
 
-describe('buildSessionJobManifest — nestedContainers', () => {
-  const nested: NestedContainersParams = {
-    sharedImagesHostPath: '/var/lib/yaac/imagecache/ddh16/demo',
-  }
-
-  it('leaves the non-nested manifest byte-identical when nested is absent', () => {
-    const withoutField = buildSessionJobManifest(params())
-    const withUndefined = buildSessionJobManifest({ ...params(), nested: undefined })
-    expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
-
-    const spec = build().spec.template.spec
-    expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
-    expect(spec.initContainers).toBeUndefined()
-    expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
-    // No graphroot-tmpfs annotations on a non-nested pod.
-    expect(build().spec.template.metadata.annotations).toBeUndefined()
-    expect(spec.containers[0].resources).toEqual({
-      requests: { memory: String(1 * 1024 ** 3) },
-      limits: { memory: String(8 * 1024 ** 3) },
-    })
-  })
-
-  it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
-    const spec = build({ nested }).spec.template.spec
-    expect(spec.runtimeClassName).toBe('gvisor-nested')
-    expect(spec.hostUsers).toBeUndefined()
-  })
-
-  it('inner-yaac nested: no RuntimeClass, no userns', () => {
-    const spec = build({ nested, innerYaac: true }).spec.template.spec
-    expect(spec.runtimeClassName).toBeUndefined()
-    expect(spec.hostUsers).toBeUndefined()
-  })
-
-  it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
-    // The graphroot is disk-backed page cache, not pod memory — its size is
-    // deliberately decoupled from memoryLimitBytes.
-    expect(() => buildSessionJobManifest({
-      ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
-    })).not.toThrow()
-  })
-
-  it('adds the rootful engine caps and no fsGroup on the session container', () => {
-    const spec = build({ nested }).spec.template.spec
-    // seccompProfile stays RuntimeDefault (runsc installs its own host
-    // seccomp regardless); no fsGroup — the rootful graphroot is root-owned.
-    expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
-    expect(spec.containers[0].securityContext).toEqual({
-      capabilities: {
-        add: [
-          'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
-          'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
-        ],
-      },
-    })
-  })
-
-  it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
-    const m = build({ nested })
-    const spec = m.spec.template.spec
-    const cap = 8 * 1024 ** 3
-    // Disk medium (no `medium: Memory`): runsc pages the sentry tmpfs
-    // against a filestore file inside this emptyDir on the node's disk.
-    // sizeLimit carries slack above the sentry's size= cap so kubelet
-    // eviction can't race the sentry's ENOSPC.
-    expect(spec.volumes).toContainEqual({
-      name: 'podman-graphroot',
-      emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
-    })
-    expect(spec.containers[0].volumeMounts).toContainEqual({
-      name: 'podman-graphroot',
-      mountPath: NESTED_GRAPHROOT_PATH,
-    })
-    // The runsc mount annotations make it a sentry tmpfs (file caps for
-    // setcap builds); keyed on the volume name. `type: bind` (not tmpfs) is
-    // what selects the DISK-backed variant — see
-    // NESTED_GRAPHROOT_ANNOTATIONS.
-    expect(m.spec.template.metadata.annotations).toEqual({
-      'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
-      'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
-      'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
-    })
-  })
-
-  it('parameterizes the graphroot annotations on size (builder pods use 16Gi)', () => {
+describe('graphrootMountAnnotations', () => {
+  it('parameterizes the sentry graphroot mount on size (builder pods use 16Gi)', () => {
     expect(graphrootMountAnnotations(16 * 1024 ** 3)).toEqual({
       'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
       'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
       'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${16 * 1024 ** 3}`,
     })
-  })
-
-  it('mounts the shared image store rw at both paths with no chown init', () => {
-    const spec = build({ nested }).spec.template.spec
-    expect(spec.volumes).toContainEqual({
-      name: 'shared-images',
-      hostPath: { path: '/var/lib/yaac/imagecache/ddh16/demo', type: 'DirectoryOrCreate' },
-    })
-    // rw mount (no readOnly key): additionalimagestores creates lock dirs.
-    expect(spec.containers[0].volumeMounts).toContainEqual({
-      name: 'shared-images',
-      mountPath: SHARED_IMAGE_STORE_PATH,
-    })
-    // A second mount of the same volume — the promoter's write-side
-    // destination root, dodging the read-only additional-store lock.
-    expect(spec.containers[0].volumeMounts).toContainEqual({
-      name: 'shared-images',
-      mountPath: SHARED_IMAGE_STORE_DST_PATH,
-    })
-    // The rootful engine reads/writes the store as root, so there is no
-    // chown init container anymore.
-    expect(spec.initContainers).toBeUndefined()
-  })
-
-  it('keeps the resources identical to a non-nested pod (memory only)', () => {
-    const resources = build({ nested }).spec.template.spec.containers[0].resources
-    expect(resources).toEqual({
-      requests: { memory: String(1 * 1024 ** 3) },
-      limits: { memory: String(8 * 1024 ** 3) },
-    })
-  })
-})
-
-describe('assertSessionLabels', () => {
-  it('passes when the session-id label is present', () => {
-    expect(() => assertSessionLabels({ 'yaac.session-id': 'abc' })).not.toThrow()
-  })
-
-  it('throws when the session-id label is missing or empty', () => {
-    expect(() => assertSessionLabels({})).toThrow(/yaac\.session-id/)
-    expect(() => assertSessionLabels({ 'yaac.session-id': '' })).toThrow(/yaac\.session-id/)
   })
 })

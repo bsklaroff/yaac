@@ -1,4 +1,4 @@
-import { listSessionPods, findSessionPod } from '#platform/k8s/pods'
+import { findSessionPod, listSessionPods } from '#platform/k8s'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedSession {
