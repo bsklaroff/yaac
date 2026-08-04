@@ -152,6 +152,25 @@ export interface BuildOptions {
   onLog?: (line: string) => void
 }
 
+/**
+ * Host build budgets, the pair the in-pod build gets from its idle budgets
+ * plus BUILDER_ACTIVE_DEADLINE_SECONDS.
+ *
+ * Idle is the primary signal: `podman build` goes quiet only between the
+ * progress ticks of one RUN step, so ten minutes without a byte means the
+ * engine is wedged, however long the build has legitimately been running
+ * (see streaming-proc.ts). It cannot be the only signal, because it never
+ * fires on a build that is wedged but chatty — a RUN step retrying in a
+ * loop, a download stuck at 3% still emitting ticks. That build holds the
+ * image-store lock, which blocks and idle-kills every host build behind it,
+ * so it gets a total backstop too. An hour, chosen the way the pod deadline
+ * is — far above any honest build, far below never — and shorter than the
+ * pod's, because the host layers are yaac-shipped Dockerfiles over pinned
+ * upstreams rather than whatever a project's own Dockerfile does.
+ */
+const HOST_BUILD_IDLE_TIMEOUT_MS = 600_000
+const HOST_BUILD_TOTAL_TIMEOUT_MS = 3600_000
+
 export async function buildImage(
   imageName: string,
   dockerfile: string,
@@ -178,7 +197,8 @@ export async function buildImage(
     tag: imageName,
     logPrefix: `[build ${imageName}] `,
     onLog: opts.onLog,
-    timeoutMs: 600_000,
+    idleTimeoutMs: HOST_BUILD_IDLE_TIMEOUT_MS,
+    timeoutMs: HOST_BUILD_TOTAL_TIMEOUT_MS,
   })
 }
 

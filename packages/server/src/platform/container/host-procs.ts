@@ -24,11 +24,12 @@
  * or a failed kill degrades to the old behaviour (one duplicate build), so
  * nothing here is allowed to fail a build.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { serverLocalPath } from '@yaac/shared/paths'
-import { serverLog, pipeToServerLog } from '#log'
+import { serverLog } from '#log'
+import { killGroup, runStreamingProcess } from '#platform/streaming-proc'
 import { execFileAsync } from './runtime'
 
 /** How long a reaped orphan gets to honour SIGTERM before SIGKILL. */
@@ -82,6 +83,11 @@ export interface TrackedPodmanOpts {
   onLog?: (line: string) => void
   /** Hard cap on the run. */
   timeoutMs: number
+  /**
+   * Optional silence budget, the primary bound for a build (see
+   * streaming-proc.ts). Omit where only the hard cap makes sense.
+   */
+  idleTimeoutMs?: number
 }
 
 /**
@@ -91,31 +97,28 @@ export interface TrackedPodmanOpts {
  */
 export function runTrackedPodman(args: string[], opts: TrackedPodmanOpts): Promise<void> {
   const verb = args[0] ?? 'podman'
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: opts.timeoutMs,
-    })
-    if (child.pid !== undefined) {
-      live.set(child.pid, { child, record: { pid: child.pid, tag: opts.tag, verb } })
+  let child: ChildProcess | null = null
+  const forget = (): void => {
+    if (child?.pid === undefined || !live.delete(child.pid)) return
+    persist()
+  }
+  return runStreamingProcess('podman', args, {
+    logPrefix: opts.logPrefix,
+    onLog: opts.onLog,
+    idleTimeoutMs: opts.idleTimeoutMs,
+    timeoutMs: opts.timeoutMs,
+    label: `podman ${verb}`,
+    onSpawn: (spawned) => {
+      child = spawned
+      if (spawned.pid === undefined) return
+      live.set(spawned.pid, { child: spawned, record: { pid: spawned.pid, tag: opts.tag, verb } })
       persist()
-    }
-    pipeToServerLog(child.stdout, opts.logPrefix, opts.onLog)
-    pipeToServerLog(child.stderr, opts.logPrefix, opts.onLog)
-
-    const forget = (): void => {
-      if (child.pid === undefined || !live.delete(child.pid)) return
-      persist()
-    }
-    child.on('close', (code) => {
-      forget()
-      if (code === 0) resolve()
-      else reject(new Error(`podman ${verb} exited with code ${code}`))
-    })
-    child.on('error', (err) => {
-      forget()
-      reject(err)
-    })
+    },
+    // Forgotten on `exit` — the process is dead — rather than on `close`,
+    // whose pipes a grandchild can hold open indefinitely: a pid left in the
+    // file outlives the process, and after pid reuse the shutdown handler or
+    // the next boot's sweep would signal whatever inherited the number.
+    onExit: forget,
   })
 }
 
@@ -133,13 +136,9 @@ export function runTrackedPodman(args: string[], opts: TrackedPodmanOpts): Promi
 export function killTrackedPodmanProcs(): void {
   if (live.size === 0) return
   serverLog(`[podman] aborting ${live.size} in-flight host process(es)`)
-  for (const { child } of live.values()) {
-    try {
-      child.kill('SIGTERM')
-    } catch {
-      // already exited
-    }
-  }
+  // The group, not the child: podman spawns the build container as a child
+  // of its own, and only signalling podman leaves that holding the lock.
+  for (const { child } of live.values()) killGroup(child, 'SIGTERM')
   live.clear()
 }
 

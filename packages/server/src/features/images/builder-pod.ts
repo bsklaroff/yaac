@@ -65,6 +65,7 @@ import {
   stringHash,
   type ImageLayer,
 } from './image-builder'
+import { runStreamingProcess } from '#platform/streaming-proc'
 import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
 
@@ -113,18 +114,35 @@ export const BUILDER_MEMORY_REQUEST_BYTES = 2 * 1024 ** 3
 export const BUILDER_CPU_REQUEST_MILLIS = 500
 
 /**
- * Whole-pod bound, above the sum of the per-phase budgets for a two-layer
- * chain (ready 60 + pull 180 + 2×(build 600 + push 120) = 1680s) — the
- * last-resort stop for a pod the server crashed away from.
+ * Whole-pod bound, and with idle per-phase budgets below it the only cap on
+ * how long a build may run. It stops two things: a pod the server crashed
+ * away from, and a build that is wedged but chatty — one that keeps printing
+ * and so never trips an idle budget.
+ *
+ * Four hours is a chosen "hours, not minutes" value, not derived from
+ * anything: far above any honest chain (a cold multi-layer chain compiling a
+ * toolchain), far below never. Raising it costs what the reap comment below
+ * describes — a stuck builder parks its memory reservation for that long,
+ * and two builders do not fit on a typical node — which is bounded by
+ * `release()` deleting the pod inline on failure and by the reaper deleting
+ * every pod that predates this server process.
  */
-export const BUILDER_ACTIVE_DEADLINE_SECONDS = 1800
+export const BUILDER_ACTIVE_DEADLINE_SECONDS = 4 * 3600
 
-/** Per-phase exec budgets (ms). */
+/**
+ * Per-phase exec budgets (ms). Every one is an *idle* budget — time since
+ * the step last produced output (see streaming-proc.ts) — not a cap on the
+ * step's duration. Only the pod's readiness wait is a true total: nothing
+ * streams while a pod schedules.
+ */
 export const BUILDER_READY_TIMEOUT_MS = 60_000
-export const BUILDER_PULL_TIMEOUT_MS = 180_000
-export const BUILDER_BUILD_TIMEOUT_MS = 600_000
-export const BUILDER_PUSH_TIMEOUT_MS = 120_000
-export const BUILDER_CONTEXT_TIMEOUT_MS = 120_000
+export const BUILDER_PULL_IDLE_TIMEOUT_MS = 180_000
+export const BUILDER_BUILD_IDLE_TIMEOUT_MS = 600_000
+export const BUILDER_PUSH_IDLE_TIMEOUT_MS = 120_000
+export const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
+
+/** Hard cap on any one exec: the pod is gone by then, so kubectl is too. */
+const BUILDER_EXEC_TOTAL_TIMEOUT_MS = (BUILDER_ACTIVE_DEADLINE_SECONDS + 300) * 1000
 
 /**
  * Sanity cap on the streamed build context. Contexts are dedicated build
@@ -387,14 +405,13 @@ interface PodExecOptions {
   input?: NodeJS.ReadableStream
   onLog?: (line: string) => void
   logPrefix: string
-  timeoutMs: number
+  /** Silence, not duration, that ends the step (see streaming-proc.ts). */
+  idleTimeoutMs: number
 }
 
 /**
  * `kubectl exec -i` into the builder pod, streaming stdout/stderr lines to
- * the server log and the caller (the build-tracking registry). Uses spawn
- * (not the buffered kubectl helpers): build output is unbounded and must
- * stream.
+ * the server log and the caller (the build-tracking registry).
  */
 async function execInBuilderPod(
   podName: string,
@@ -402,35 +419,16 @@ async function execInBuilderPod(
   opts: PodExecOptions,
 ): Promise<void> {
   const args = ['exec', '-i', '-n', k8sNamespace(), `pod/${podName}`, '--', ...command]
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('kubectl', args, {
-      stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      timeout: opts.timeoutMs,
-    })
-    const tail: string[] = []
-    const onLine = (line: string): void => {
-      tail.push(line)
-      if (tail.length > 20) tail.shift()
-      opts.onLog?.(line)
-    }
-    pipeToServerLog(child.stdout, opts.logPrefix, onLine)
-    pipeToServerLog(child.stderr, opts.logPrefix, onLine)
-    if (opts.input !== undefined && child.stdin) {
-      // The remote side can exit before consuming all input (a failed
-      // extract) — swallow the EPIPE; the exit code carries the verdict.
-      child.stdin.on('error', () => {})
-      opts.input.pipe(child.stdin)
-    }
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else {
-        reject(new Error(
-          `builder exec [${command.join(' ').slice(0, 120)}] exited with code ${code}`
-          + (tail.length ? `:\n${tail.join('\n')}` : ''),
-        ))
-      }
-    })
-    child.on('error', reject)
+  await runStreamingProcess('kubectl', args, {
+    input: opts.input,
+    onLog: opts.onLog,
+    logPrefix: opts.logPrefix,
+    idleTimeoutMs: opts.idleTimeoutMs,
+    // No exec can outlive the pod it runs in, so the pod's own deadline is
+    // this one's hard cap.
+    timeoutMs: BUILDER_EXEC_TOTAL_TIMEOUT_MS,
+    label: `builder exec [${command.join(' ').slice(0, 120)}]`,
+    tailLines: 20,
   })
 }
 
@@ -473,7 +471,7 @@ async function streamContextToPod(
         input: tar.stdout,
         onLog: opts.onLog,
         logPrefix: opts.logPrefix,
-        timeoutMs: BUILDER_CONTEXT_TIMEOUT_MS,
+        idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS,
       }),
       tarExit,
     ])
@@ -586,7 +584,7 @@ export class BuilderPodLease {
       ], { timeout: BUILDER_READY_TIMEOUT_MS + 15_000, maxAttempts: 1 })
       await execInBuilderPod(name, ['sh', '-c', builderStorageConfScript()], {
         logPrefix: `[builder ${name}] `,
-        timeoutMs: 30_000,
+        idleTimeoutMs: 30_000,
       })
     } catch (err) {
       const blocked = await builderPodBlockDetail(name)
@@ -610,6 +608,9 @@ export class BuilderPodLease {
 
 interface BuilderPodStatus {
   status?: {
+    phase?: string
+    /** Pod-level reason, e.g. `DeadlineExceeded`. */
+    reason?: string
     conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>
     containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string } } }>
   }
@@ -624,6 +625,15 @@ interface BuilderPodStatus {
  * useful — the caller then keeps the bare timeout.
  */
 export function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
+  if (pod?.status?.reason === 'DeadlineExceeded') {
+    // The one failure the exec's own budgets cannot describe: a build that
+    // kept producing output never trips the idle timeout, so the pod's
+    // whole-pod deadline is what ended it — and kubectl, whose connection
+    // died with the pod, only reports a signal.
+    return 'stopped at the whole-pod deadline '
+      + `(activeDeadlineSeconds=${BUILDER_ACTIVE_DEADLINE_SECONDS}) — the build `
+      + 'was still producing output, so no per-step idle budget applied'
+  }
   const unscheduled = pod?.status?.conditions
     ?.find((c) => c.type === 'PodScheduled' && c.status !== 'True')
   if (unscheduled) {
@@ -673,13 +683,30 @@ export async function buildLayerInPod(
   const clusterHost = registryClusterHost()
   const logPrefix = `[build ${layer.tag}] `
   const execOpts = { onLog: ctx.onLog, logPrefix }
+  try {
+    await runLayerBuild(pod, layer, ctx, clusterHost, execOpts)
+  } catch (err) {
+    // A failed exec may be the pod dying under it (the deadline above all),
+    // which kubectl can only report as a signal — ask the pod itself.
+    const blocked = await builderPodBlockDetail(pod)
+    if (!blocked) throw err
+    throw new Error(`${err instanceof Error ? err.message : String(err)}\n${blocked}`)
+  }
+}
 
+async function runLayerBuild(
+  pod: string,
+  layer: ImageLayer,
+  ctx: EngineBuildContext,
+  clusterHost: string,
+  execOpts: { onLog?: (line: string) => void; logPrefix: string },
+): Promise<void> {
   const parentTag = layer.buildArgs?.BASE_IMAGE
   if (parentTag) {
     await execInBuilderPod(
       pod,
       ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
-      { ...execOpts, timeoutMs: BUILDER_PULL_TIMEOUT_MS },
+      { ...execOpts, idleTimeoutMs: BUILDER_PULL_IDLE_TIMEOUT_MS },
     )
   }
 
@@ -693,7 +720,7 @@ export async function buildLayerInPod(
       clusterHost,
       cacheRepo: buildCacheRepo(ctx.projectSlug),
     })],
-    { ...execOpts, timeoutMs: BUILDER_BUILD_TIMEOUT_MS },
+    { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
   )
 
   // Delta push: parent blobs were just pulled from this registry, so
@@ -703,13 +730,13 @@ export async function buildLayerInPod(
   await execInBuilderPod(
     pod,
     ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],
-    { ...execOpts, timeoutMs: BUILDER_PUSH_TIMEOUT_MS },
+    { ...execOpts, idleTimeoutMs: BUILDER_PUSH_IDLE_TIMEOUT_MS },
   )
 }
 
 /** Age past which a builder pod is unconditionally a leak: comfortably
  *  above BUILDER_ACTIVE_DEADLINE_SECONDS, so no live build can reach it. */
-export const BUILDER_REAP_AGE_MS = 45 * 60_000
+export const BUILDER_REAP_AGE_MS = 5 * 3600_000
 
 const BUILDER_REAP_INTERVAL_MS = 10 * 60_000
 let lastReapMs = 0
@@ -721,7 +748,7 @@ let lastReapMs = 0
  * how young it is. Reaping it on age alone would leave its 8 GiB memory
  * reservation parked on the node, and since two builders do not fit on a
  * typical node, EVERY build after a restart fails to schedule until the
- * dead pod's active deadline fires half an hour later.
+ * dead pod's active deadline fires hours later.
  */
 const SERVER_START_MS = Date.now()
 

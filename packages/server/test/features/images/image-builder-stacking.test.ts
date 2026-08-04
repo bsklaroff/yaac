@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { setupStackingHarness } from './stacking-harness'
@@ -86,6 +86,61 @@ describe('buildImage', () => {
     const { buildImage } = await h.load()
     await buildImage('img:tag', '/some/Dockerfile', '/some', { K: 'v' }, { noCache: true })
     expect(h.operations).toEqual(['build img:tag [K=v] --no-cache'])
+  })
+
+  // The build budget is idle, not total: a long build that keeps logging must
+  // survive well past it, and only silence may end one.
+  it('lets a build run past its idle budget as long as it keeps logging', async () => {
+    h.holdBuilds()
+    const { buildImage } = await h.load()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const lines: string[] = []
+    const build = buildImage('img:tag', '/some/Dockerfile', '/some', undefined, {
+      onLog: (l) => lines.push(l),
+    })
+    const settled = vi.fn()
+    void build.then(settled, settled)
+
+    for (let step = 1; step <= 4; step++) {
+      await vi.advanceTimersByTimeAsync(9 * 60_000)
+      h.heldBuilds[0].log(`STEP ${step}/4: RUN make`)
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(settled).not.toHaveBeenCalled() // 36 minutes in, never killed
+    expect(h.heldBuilds[0].signals).toEqual([])
+    expect(lines).toEqual([
+      'STEP 1/4: RUN make', 'STEP 2/4: RUN make', 'STEP 3/4: RUN make', 'STEP 4/4: RUN make',
+    ])
+
+    // Silence ends it — and the failure surfaces on the signal, without
+    // waiting for a child that may never close (see the harness's `kill`).
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await expect(build).rejects.toThrow('podman build produced no output for 600s')
+    expect(h.heldBuilds[0].signals).toEqual(['SIGTERM'])
+  })
+
+  // The case idle cannot see: a build wedged in a retry loop keeps printing,
+  // resets the clock forever, and holds the image-store lock against every
+  // build behind it. The total backstop is the only thing that ends it.
+  it('stops a build that is wedged but chatty at the total backstop', async () => {
+    h.holdBuilds()
+    const { buildImage } = await h.load()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const build = buildImage('img:tag', '/some/Dockerfile', '/some')
+    const settled = vi.fn()
+    void build.then(settled, settled)
+
+    // A line every 5 minutes for just under an hour: never idle.
+    for (let i = 0; i < 11; i++) {
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      h.heldBuilds[0].log(`retrying (attempt ${i})`)
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(settled).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await expect(build).rejects.toThrow('podman build still running after 3600s')
+    expect(h.heldBuilds[0].signals).toEqual(['SIGTERM'])
   })
 })
 

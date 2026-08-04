@@ -8,6 +8,7 @@
  */
 import { beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 // Type-only: the values come from the dynamic imports in `load`, which must
 // run after vi.resetModules() to pick up the mocks below.
@@ -19,11 +20,26 @@ export const HASH_RE = '[0-9a-f]{16}'
 
 type ImagesModules = typeof imageBuilder & typeof buildCoordinator
 
+/** A podman build the fake is holding open, for tests that drive its clock. */
+export interface HeldBuild {
+  /** Write a line of build output — the idle timeout's only "still alive" signal. */
+  log(line: string): void
+  /** Signals the runner has sent this child's process group, in order. */
+  readonly signals: string[]
+}
+
 export interface StackingHarness {
   /** Real temp data dir for this test; write Dockerfiles under it before `load`. */
   readonly dataDir: string
   /** Ordered `build <tag> [k=v,…][ --no-cache]` rows in build order. */
   readonly operations: string[]
+  /**
+   * Stop the podman fake from exiting on its own, so a test owns when (and
+   * whether) a build produces output. Held builds land in `heldBuilds`.
+   * Call before `load`.
+   */
+  holdBuilds(): void
+  readonly heldBuilds: HeldBuild[]
   /** Import the feature fresh against the fakes below. Call after staging files. */
   load(): Promise<ImagesModules>
 }
@@ -32,16 +48,26 @@ export interface StackingHarness {
  * Register the per-test data dir and process-boundary fakes, and return the
  * handle the test drives. Call once inside a `describe`.
  */
+/** Fictional pids: the process.kill spy below never lets one reach the OS. */
+const FAKE_PID_BASE = 990_001
+
 export function setupStackingHarness(): StackingHarness {
   const operations: string[] = []
-  const state = { dataDir: '' }
+  const heldBuilds: HeldBuild[] = []
+  /** Group pid (negative) -> what the fake child does when signalled. */
+  const killedGroups = new Map<number, (signal: string) => void>()
+  const state = { dataDir: '', hold: false }
 
   beforeEach(async () => {
     operations.length = 0
+    heldBuilds.length = 0
+    killedGroups.clear()
+    state.hold = false
     state.dataDir = await createTempDataDir()
   })
 
   afterEach(async () => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.doUnmock('node:child_process')
     vi.doUnmock('#platform/container/registry')
@@ -83,9 +109,37 @@ export function setupStackingHarness(): StackingHarness {
         const suffix = buildArgPairs.length ? ` [${buildArgPairs.join(',')}]` : ''
         const noCache = args.includes('--no-cache') ? ' --no-cache' : ''
         operations.push(`build ${imageName}${suffix}${noCache}`)
-        const emitter = new EventEmitter()
-        process.nextTick(() => emitter.emit('close', 0))
-        return emitter
+        // Real streams: the idle timeout watches them for output, so a
+        // stubbed `on` would make every build look permanently silent.
+        // `exitCode`/`signalCode` are what `killGroup` checks before
+        // signalling, and the pid is what it signals (negated: the group).
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          pid: FAKE_PID_BASE + heldBuilds.length,
+          exitCode: null as number | null,
+          signalCode: null as string | null,
+          kill: vi.fn(),
+        })
+        if (!state.hold) {
+          process.nextTick(() => child.emit('close', 0))
+          return child
+        }
+        const signals: string[] = []
+        killedGroups.set(-child.pid, (signal) => {
+          signals.push(signal)
+          // The process dies, but `close` never comes: a grandchild
+          // inherited the stdio pipes and holds them open. A killed run must
+          // settle on the process being gone, not on the pipes draining.
+          child.exitCode = null
+          child.signalCode = signal
+          child.emit('exit', null, signal)
+        })
+        heldBuilds.push({
+          signals,
+          log: (line: string) => { child.stdout.write(`${line}\n`) },
+        })
+        return child
       }),
     }))
 
@@ -132,6 +186,18 @@ export function setupStackingHarness(): StackingHarness {
   return {
     get dataDir() { return state.dataDir },
     operations,
+    heldBuilds,
+    holdBuilds() {
+      state.hold = true
+      // Held children are killed by pid — spied, so a fictional pid can
+      // never reach a real process group.
+      vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal: string) => {
+        const die = killedGroups.get(pid)
+        if (!die) throw new Error(`ESRCH: unexpected process.kill(${pid})`)
+        die(signal)
+        return true
+      }) as typeof process.kill)
+    },
     load,
   }
 }

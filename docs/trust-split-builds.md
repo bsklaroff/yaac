@@ -98,6 +98,30 @@ Build flow, per layer tag `T` with parent tag `P`:
 5. Delete the pod on success or failure; a background reconcile
    (`reconcileBuilderPodGc`) reaps any leaked `yaac.role=builder` pods.
 
+Every build — in a pod or on the host engine — is bounded by a pair of
+timeouts, run by the shared `platform/streaming-proc.ts`:
+
+- An **idle** timeout per exec step, the primary signal: the clock resets
+  on every byte the step writes, and while the context tar streams in, on
+  every byte accepted. A build has no honest *total* duration — a cold
+  chain compiling a toolchain runs many times longer than a warm rebuild,
+  and a total cap kills exactly those, mid-progress — whereas silence
+  reliably means wedged, since podman emits a line per step, layer and
+  progress tick.
+- A **total** backstop, for the case idle cannot see: a build wedged but
+  chatty (a `RUN` step retrying in a loop) never goes silent, and would
+  otherwise hold the image-store lock forever. In a pod that backstop is
+  the pod's `activeDeadlineSeconds`; on the host it is `buildImage`'s own
+  total budget, which is shorter — the host only ever builds yaac-shipped
+  layers over pinned upstreams.
+
+Either expiry signals the child's whole process group — builds spawn
+grandchildren that would otherwise keep the lock — and the failure is
+raised as soon as the process is dead, without waiting for pipes a
+surviving grandchild can hold open. A pod killed by its deadline shows up
+to the caller only as a signalled `kubectl`, so that failure is annotated
+from the pod's own status (`builderPodBlockReason`).
+
 ## The registry is the only image bus
 
 Builder pods pull parents from the local registry and push products back;

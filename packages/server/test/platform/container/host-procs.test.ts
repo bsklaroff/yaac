@@ -18,6 +18,9 @@ interface FakeChild extends EventEmitter {
   stdout: EventEmitter
   stderr: EventEmitter
   kill: ReturnType<typeof vi.fn>
+  /** Null while running — `killGroup` refuses to signal a reaped pid. */
+  exitCode: number | null
+  signalCode: string | null
 }
 const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
 let nextPid = 4001
@@ -44,6 +47,8 @@ vi.mock('node:child_process', () => ({
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
     child.kill = vi.fn()
+    child.exitCode = null
+    child.signalCode = null
     spawned.push({ file, args, child })
     return child
   },
@@ -117,7 +122,7 @@ describe('runTrackedPodman', () => {
     await expect(done).resolves.toBeUndefined()
     expect(readState()).toEqual([])
     expect(vi.mocked(pipeToServerLog)).toHaveBeenCalledWith(
-      expect.anything(), '[build yaac-tools:abc] ', undefined,
+      expect.anything(), '[build yaac-tools:abc] ', expect.any(Function),
     )
   })
 
@@ -131,9 +136,11 @@ describe('runTrackedPodman', () => {
     })
     expect(readState().map((r) => r.tag)).toEqual(['a:1', 'b:2'])
     expect(readState().map((r) => r.verb)).toEqual(['build', 'push'])
-    expect(vi.mocked(pipeToServerLog)).toHaveBeenCalledWith(
-      expect.anything(), '[build a:1] ', onLog,
-    )
+    // The runner wraps `onLog` (it keeps a tail for failure messages), so
+    // the thread-through is asserted by driving a line through the wrapper.
+    const piped = vi.mocked(pipeToServerLog).mock.calls.filter((c) => c[1] === '[build a:1] ').at(-1)
+    piped?.[2]?.('STEP 1/3: FROM yaac-base:x')
+    expect(onLog).toHaveBeenCalledWith('STEP 1/3: FROM yaac-base:x')
 
     spawned[0].child.emit('close', 0)
     await build
@@ -163,7 +170,12 @@ describe('runTrackedPodman', () => {
 })
 
 describe('killTrackedPodmanProcs', () => {
-  it('SIGTERMs every in-flight podman child', () => {
+  it('SIGTERMs the process group of every in-flight podman child', () => {
+    // The group, not the child: podman runs the build container as a child
+    // of its own, and that is what holds the image-store lock. Children are
+    // spawned detached (`streaming-proc.ts`), so the negated pid is the
+    // group — spied, never really signalled, since these pids are fictional.
+    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
     void runTrackedPodman(['build', '-t', 'a:1', '.'], {
       tag: 'a:1', logPrefix: '', timeoutMs: 1000,
     }).catch(() => {})
@@ -173,8 +185,8 @@ describe('killTrackedPodmanProcs', () => {
 
     killTrackedPodmanProcs()
 
-    expect(spawned[0].child.kill).toHaveBeenCalledWith('SIGTERM')
-    expect(spawned[1].child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(kill).toHaveBeenCalledWith(-spawned[0].child.pid!, 'SIGTERM')
+    expect(kill).toHaveBeenCalledWith(-spawned[1].child.pid!, 'SIGTERM')
     // The records stay on disk: the shutdown path exits without waiting for
     // the children, so only the next boot's sweep — which re-verifies each
     // pid against `ps` — is allowed to clear them.
