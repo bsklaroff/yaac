@@ -1,7 +1,8 @@
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { serverLog, pipeToServerLog } from '#log'
+import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
+import { runTrackedPodman } from './host-procs'
 
 const execFileAsync = promisify(execFile)
 
@@ -159,19 +160,13 @@ export async function pushImageToRegistry(
     ? ['--compression-format', opts.compressionFormat]
     : []
   serverLog(`[registry] pushing ${localTag} -> ${ref}`)
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', ['push', '--tls-verify=false', ...compressionArgs, localTag, ref], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 600_000,
-    })
-    const prefix = `[push ${localTag}] `
-    pipeToServerLog(child.stdout, prefix, opts.onLog)
-    pipeToServerLog(child.stderr, prefix, opts.onLog)
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`podman push exited with code ${code}`))
-    })
-    child.on('error', reject)
+  // Tracked like the builds: an orphaned push holds the image-store lock
+  // against the next server's first build.
+  await runTrackedPodman(['push', '--tls-verify=false', ...compressionArgs, localTag, ref], {
+    tag: localTag,
+    logPrefix: `[push ${localTag}] `,
+    onLog: opts.onLog,
+    timeoutMs: 600_000,
   })
   return ref
 }

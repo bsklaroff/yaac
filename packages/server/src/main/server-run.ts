@@ -36,7 +36,11 @@ import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { gcOrphanEphemeralModuleDirs, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { ensureNamespace, gcOrphanProjectRegistries, sweepLegacyImageStore } from '#features/cluster'
-import { ensureLocalRegistry } from '#platform/container'
+import {
+  ensureLocalRegistry,
+  killTrackedPodmanProcs,
+  reapOrphanedPodmanProcs,
+} from '#platform/container'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
 import { resolveProjectConfig } from '#features/projects'
@@ -356,6 +360,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     clusterCache?.stop()
     statusWatchers?.stopAll()
     portDetector?.stopAll()
+    // Abort in-flight host builds/pushes. Podman commits an image tag only
+    // when the build finishes, so an orphaned `podman build` is invisible
+    // to the next server's exists check — it would start a second build of
+    // the same tag and the two would fight over the layer cache.
+    killTrackedPodmanProcs()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -413,6 +422,18 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Everything below touches the cluster — grouped so a NESTED server
   // can defer it (see below).
   const startClusterWork = async (): Promise<void> => {
+    // Kill any podman build/push a previous server left running before the
+    // first thing that could duplicate it (the registry bootstrap's own
+    // podman calls, then the reconciler's prewarm sweep). The graceful path
+    // above already SIGTERMs them, so this only fires after a crash, a
+    // SIGKILL, or a host reboot — the cases builder-pod GC covers on the
+    // cluster side via SERVER_START_MS.
+    try {
+      await reapOrphanedPodmanProcs()
+    } catch (err) {
+      serverLog(`[server] orphan podman reap failed: ${String(err)}`)
+    }
+
     // Best-effort cluster bootstrap: the local registry and the yaac
     // namespace are cheap to ensure and needed by the first session.
     // Failures are logged, not fatal — the server can serve project/auth

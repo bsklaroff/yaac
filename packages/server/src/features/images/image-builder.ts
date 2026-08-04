@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 import {
   PROJECT_DOCKERFILE,
@@ -9,8 +8,8 @@ import {
   resolveProjectBuildDir,
   resolveUserBuildDir,
 } from '#features/projects'
-import { imageExists } from '#platform/container'
-import { serverLog, pipeToServerLog } from '#log'
+import { imageExists, runTrackedPodman } from '#platform/container'
+import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 export function stringHash(content: string): string {
@@ -172,19 +171,14 @@ export async function buildImage(
   }
   args.push(context)
 
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 600_000,
-    })
-    const prefix = `[build ${imageName}] `
-    pipeToServerLog(child.stdout, prefix, opts.onLog)
-    pipeToServerLog(child.stderr, prefix, opts.onLog)
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`podman build exited with code ${code}`))
-    })
-    child.on('error', reject)
+  // Tracked, not a bare spawn: an orphaned build survives the server, and
+  // its tag lands in the store only at the end — so the next server would
+  // see the tag missing and start a duplicate build alongside it.
+  await runTrackedPodman(args, {
+    tag: imageName,
+    logPrefix: `[build ${imageName}] `,
+    onLog: opts.onLog,
+    timeoutMs: 600_000,
   })
 }
 
