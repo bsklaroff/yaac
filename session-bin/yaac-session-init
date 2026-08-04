@@ -18,8 +18,9 @@
 #   - init windows + the agent respawn (need the populated worktree).
 #
 # Inputs (env, set by session-create): YAAC_TOOL, YAAC_GIT_NAME,
-# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, and for nested-containers sessions
-# YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
+# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, for SSH-remote projects
+# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), and for nested-containers
+# sessions YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
 set -eu
 
 # Keep in sync with CONTAINER_TMUX_SOCK (packages/shared/src/paths.ts): the
@@ -94,6 +95,28 @@ $TMUX \
   set-option -t yaac status-right-length 80 \; \
   set-option -t yaac status-right "$YAAC_STATUS_RIGHT" \; \
   bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server
+
+# ssh-agent forwarding (SSH-remote projects only). The agent itself runs in
+# the proxy pod and never hands out key bytes — it only signs — so all this
+# does is carry the agent protocol: a UNIX socket at SSH_AUTH_SOCK, relayed
+# per connection to the proxy's agent listener, which admits list/sign
+# messages only. The transport is TCP rather
+# than a shared host directory because a hostPath UNIX socket only
+# rendezvous between pods on the SAME node; the proxy authenticates the
+# connection by its source pod IP.
+#
+# 0600 keeps the socket to the session user (the whole pod is one trust
+# domain either way). Backgrounded with setsid, like streamd, so the hook's
+# exec stream can close while the forwarder keeps running under the pod's
+# init. `fork` dials the proxy once per agent connection, so a replaced
+# proxy pod (image upgrade, eviction) heals on the next `git push` — the
+# Service ClusterIP the upstream names outlives the pod behind it.
+if [ -n "${YAAC_SSH_AGENT_UPSTREAM:-}" ] && [ -n "${SSH_AUTH_SOCK:-}" ]; then
+  mkdir -p "$(dirname "$SSH_AUTH_SOCK")"
+  rm -f "$SSH_AUTH_SOCK"
+  setsid socat "UNIX-LISTEN:$SSH_AUTH_SOCK,fork,mode=0600" \
+    "TCP:$YAAC_SSH_AGENT_UPSTREAM" >>/tmp/ssh-agent-forward.log 2>&1 </dev/null &
+fi
 
 # Nested sessions: start the in-pod ROOTFUL podman engine (it serves the
 # Docker Engine API on the socket DOCKER_HOST points at). Backgrounded so

@@ -21,6 +21,17 @@ export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 export const CA_BUNDLE_PATH = `${CA_MOUNT_DIR}/${CA_BUNDLE_KEY}`
 
 /**
+ * Directory inside session pods holding the forwarded ssh-agent socket, and
+ * the socket path SSH_AUTH_SOCK names. Pod-local scratch (an emptyDir, see
+ * buildSessionJobManifest): the agent itself lives in the proxy pod and is
+ * reached over TCP (SSH_AGENT_PORT), so nothing here is shared between pods
+ * — only the in-pod forwarder writes it, and only the session's own ssh
+ * client reads it.
+ */
+export const SSH_AGENT_MOUNT = '/ssh-agent'
+export const SSH_AGENT_SOCKET_PATH = `${SSH_AGENT_MOUNT}/socket`
+
+/**
  * In-container mount point of the cross-session shared image store
  * (`additionalimagestores` in the nestable image's storage.conf). Mounted
  * rw because podman unconditionally creates lock-file directories inside
@@ -286,6 +297,14 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
     configMap: { name: CA_CONFIGMAP_NAME },
   })
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
+
+  // Scratch dir for the ssh-agent forwarder's socket (SSH_AUTH_SOCK). An
+  // emptyDir, unconditionally: it is pod-local by design (the agent is in
+  // the proxy pod, reached over TCP), and creating it here keeps the
+  // forwarder from needing root to mkdir it in the container rootfs. Pods
+  // whose project has no SSH remote simply leave it empty.
+  volumes.push({ name: 'ssh-agent', emptyDir: {} })
+  volumeMounts.push({ name: 'ssh-agent', mountPath: SSH_AGENT_MOUNT })
 
   if (p.nested) {
     // Per-session ROOTFUL graphroot: a disk emptyDir promoted to a

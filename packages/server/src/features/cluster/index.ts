@@ -60,7 +60,6 @@ export {
   proxyDataHostDir,
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
-  sshAgentHostDir,
 } from './proxy-apply'
 export {
   buildBuilderRoleGuardBindingManifest,

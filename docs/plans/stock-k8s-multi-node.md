@@ -117,10 +117,11 @@ the PV; no node automount units, no "mount before kubelet" ordering.
 - **Unix-socket hostPath rendezvous is dead cross-node.** tmux is fine
   (every consumer already goes through exec/streamd, and the socket can be
   pod-local emptyDir once the pane log needn't outlive the pod). The
-  **ssh-agent socket** shared between the proxy pod and session pods via
-  `sshAgentHostDir` is the real break: agent forwarding must move onto the
-  stream relay (a `tcp`/`ctrl` streamd channel carrying the agent
-  protocol) or a per-session agent. This is a discrete work item.
+  **ssh-agent socket** was the real break, and is **done**: the proxy
+  serves the agent protocol on its own port, session pods run a local
+  forwarder that re-exposes it at the unchanged `SSH_AUTH_SOCK` path, and
+  the socket dir is a pod-local emptyDir (docs/session-egress.md, "The two
+  direct pod→proxy dials").
 - e2e scratch (`e2eTmpBase`) hostPath fixtures become PVC-backed on the
   stock backend.
 
@@ -293,8 +294,9 @@ shaped.
    - buildkitd-in-cluster + push/pull against DOCR or in-cluster registry.
 2. **Host-decoupling that pays off on single-node too** (land on the
    current backend first): buildkit builds behind a builder abstraction,
-   registry in-cluster, salvage-via-registry, ssh-agent over the stream
-   relay, tmux socket to emptyDir, shared/node-local root split in
+   registry in-cluster, salvage-via-registry, ~~ssh-agent off the hostPath
+   socket~~ (done — over the proxy's agent port, not the stream relay),
+   tmux socket to emptyDir, shared/node-local root split in
    `project-paths.ts`.
 3. **Server-in-cluster mode:** volume-source abstraction in `pod-spec.ts`
    (hostPath | PVC), server Deployment + PVCs, `yaac cluster attach`

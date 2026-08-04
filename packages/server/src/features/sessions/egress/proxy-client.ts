@@ -149,11 +149,6 @@ export interface SpawnResultWire {
 
 // --- ProxyClient ---
 
-/** Path inside session and proxy pods where the ssh-agent socket lives. */
-export const SSH_AGENT_SOCKET_PATH = '/ssh-agent/socket'
-/** Mount point inside pods for the shared agent-socket hostPath dir. */
-export const SSH_AGENT_MOUNT = '/ssh-agent'
-
 /** In-container path of the proxy CA cert (mounted from the ConfigMap). */
 export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 

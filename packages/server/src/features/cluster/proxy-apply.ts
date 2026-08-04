@@ -32,16 +32,6 @@ import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
 
 /**
- * Host directory shared between the proxy pod (which runs ssh-agent on a
- * socket here) and session pods (which point SSH_AUTH_SOCK at it).
- * Single-node assumption: hostPath UNIX sockets only cross pods on the
- * same node.
- */
-export function sshAgentHostDir(): string {
-  return path.join(getDataDir(), 'run', 'ssh-agent')
-}
-
-/**
  * Host directory backing the proxy's `/data` (CA key/cert, tor state).
  * Persisting it across pod replacements keeps the MITM CA stable, so
  * session pods' mounted CA stays valid through proxy image upgrades.
@@ -124,7 +114,6 @@ export async function ensureProxyResources(
   // Pre-create the credentials dir with tight permissions before any pod
   // mounts it — DirectoryOrCreate would make it root-owned 0755.
   await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
-  await fs.mkdir(sshAgentHostDir(), { recursive: true })
   await fs.mkdir(proxyDataHostDir(), { recursive: true })
 
   // Nested (inner) yaac: NetworkPolicy is a core API every vcluster

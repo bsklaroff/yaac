@@ -82,9 +82,9 @@ applies two RuntimeClasses:
 - `gvisor-nested` — adds `--net-raw` / `--allow-packet-socket-write` for the
   in-sandbox container engine.
 
-Both handlers set `host-uds=all` (the ssh-agent and tmux sockets live on
-gofer-backed hostPath mounts and must rendezvous across sandboxes as real
-host sockets) and `allow-suid` (runsc drops the setuid bit by default,
+Both handlers set `host-uds=all` (the tmux socket lives on a gofer-backed
+hostPath mount and must rendezvous across sandboxes as a real host socket)
+and `allow-suid` (runsc drops the setuid bit by default,
 google/gvisor#5299 — the image's passwordless `sudo` is a feature, and the
 rootful engine bootstrap needs it). Every manifest builder stamps
 `runtimeClassName` explicitly (no webhooks); cluster check has a `gvisor`

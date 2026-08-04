@@ -47,6 +47,7 @@ import {
 } from './spawn-queue'
 import type { SpawnResult } from './spawn-queue'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
+import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
 import {
@@ -82,6 +83,11 @@ const DATA_DIR = '/data'
 // UDP/53 DNS stub: session pods point their resolver here. Optional so
 // non-cluster test runs can skip it.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
+// TCP port carrying the ssh-agent protocol to entitled session pods (see
+// ssh-agent-relay.ts). Optional for the same reason as the DNS stub: a
+// non-cluster test run has no pod-watch to authenticate anyone with, so it
+// simply doesn't listen.
+const SSH_AGENT_PORT = process.env.SSH_AGENT_PORT
 // Sinkhole answer for EXTERNAL names: decorative — netd redirects egress by
 // port (443/80) and the proxy routes by SNI/Host, never by the dialed address.
 const DNS_SINKHOLE_IPV4 = '198.18.0.1'
@@ -2385,8 +2391,9 @@ const SSH_HOME = path.join(requireEnv('HOME'), '.ssh')
 const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
 const knownHostsByHost = new Map<string, string>()
 
-// The proxy talks to the real agent socket directly (set by entrypoint.sh);
-// session pods use the 0666 socat bridge alongside it.
+// The pod-local agent socket (created by entrypoint.sh under $HOME). The
+// proxy talks to it directly; session pods reach it through the
+// SSH_AGENT_PORT listener, which splices to this same path.
 const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
 
 function writeKnownHostsFile(): void {
@@ -3048,6 +3055,29 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
 })
 
+// ── ssh-agent forwarding (session pod → this pod's agent) ──────────────────
+//
+// The transport that replaced the hostPath socket the proxy and session pods
+// used to share: a session pod's local forwarder splices its SSH_AUTH_SOCK
+// UNIX socket to this listener, which splices to the agent. Identity is the
+// source pod IP (pod-watch), entitlement is the session's registered SSH
+// remote — see ssh-agent-relay.ts for the full gate.
+const sshAgentServer = SSH_AGENT_PORT
+  ? createSshAgentServer({
+    agentSock: AGENT_SOCK,
+    resolveSession,
+    repoUrlFor: (sessionId) => sessionRepoUrl.get(sessionId),
+  })
+  : null
+if (sshAgentServer && SSH_AGENT_PORT) {
+  sshAgentServer.on('error', (err: Error) => {
+    console.error('[proxy] ssh-agent server error:', err)
+  })
+  sshAgentServer.listen(parseInt(SSH_AGENT_PORT, 10), '0.0.0.0', () => {
+    console.log(`[proxy] ssh-agent listener on port ${SSH_AGENT_PORT}`)
+  })
+}
+
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
 // Session pods resolve against the proxy. External names get the sinkhole;
 // internal names (`*.svc`) are forwarded to cluster DNS on the top-level proxy
@@ -3101,6 +3131,7 @@ process.on('SIGTERM', () => {
   transparentHttpServer.close()
   transparentTunnelServer.close()
   relayServer.close()
+  sshAgentServer?.close()
   dnsServer?.close()
   server.close(() => process.exit(0))
 })

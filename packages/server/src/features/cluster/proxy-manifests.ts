@@ -15,6 +15,7 @@ import {
   ROLE_BUILDER,
   ROLE_INNER_PROXY,
   RUNTIME_CLASS_GVISOR,
+  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
@@ -23,7 +24,7 @@ import {
 } from '#platform/k8s'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
-import { proxyDataHostDir, sshAgentHostDir } from './proxy-apply'
+import { proxyDataHostDir } from './proxy-apply'
 
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
  * dedicated dir (not the session CA mount) so it never collides with the
@@ -34,8 +35,8 @@ const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 /**
  * Pod securityContext running the proxy as the server's own host uid/gid.
  * The proxy reads/writes hostPath dirs the server creates (the CA in
- * /data, the ssh-agent socket dir, and the 0700 credentials dir);
- * matching the creator's uid is what makes those accessible. The image's
+ * /data and the 0700 credentials dir); matching the creator's uid is what
+ * makes those accessible. The image's
  * default `node` uid (1000) only worked on applehv, whose virtiofs
  * ignored ownership — libkrun's enforces it, so a uid mismatch is EACCES.
  *
@@ -94,8 +95,10 @@ export function buildProxyDeploymentManifest(
     },
     spec: {
       replicas: 1,
-      // Recreate, not RollingUpdate: two proxy pods would race over the
-      // shared hostPath ssh-agent socket during the overlap window.
+      // Recreate, not RollingUpdate: proxy state that is memory-only by
+      // design (the ssh-agent's identities) lives in whichever pod the
+      // Service happens to pick, so an overlap window would hand some
+      // sessions an agent the server has not loaded keys into.
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
@@ -115,10 +118,8 @@ export function buildProxyDeploymentManifest(
           // No runtimeClassName: the proxy is trusted yaac infra and runs on
           // runc — the sentry buys no containment for yaac-shipped code and
           // its CPU cost starves the node (see the gvisor.ts module doc).
-          // The ssh-agent socket on the hostPath dir is then a plain host
-          // socket, which sandboxed sessions still dial fine through their
-          // own handler's host-uds=all. The inner (nested) proxy is a
-          // vcluster tenant pod and equally stamps nothing.
+          // The inner (nested) proxy is a vcluster tenant pod and equally
+          // stamps nothing.
           // Nested (inner) proxy: resolve upstream hostnames via its OWN DNS
           // stub (loopback), not the vcluster CoreDNS. The inner proxy carries
           // `managed-by`, so the outer yaac's fallback redirect catches its
@@ -150,6 +151,7 @@ export function buildProxyDeploymentManifest(
                 { containerPort: TRANSPARENT_HTTP_PORT },
                 { containerPort: TRANSPARENT_TUNNEL_PORT },
                 { containerPort: RELAY_PORT },
+                { containerPort: SSH_AGENT_PORT },
                 { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
               ],
               env: [
@@ -164,6 +166,10 @@ export function buildProxyDeploymentManifest(
                 { name: 'RELAY_PORT', value: String(RELAY_PORT) },
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
+                // ssh-agent forwarding: the proxy splices this port to its
+                // own in-memory agent for entitled session pods, which
+                // re-expose it as SSH_AUTH_SOCK's UNIX socket in-pod.
+                { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
                 {
                   name: 'PROXY_AUTH_SECRET',
                   valueFrom: {
@@ -174,8 +180,9 @@ export function buildProxyDeploymentManifest(
                 // below), which need not own the image's /home/node — so
                 // point HOME at a dedicated emptyDir (writable via fsGroup)
                 // rather than the CA-bearing /data, keeping ssh material
-                // (only public known_hosts) out of the persisted secret
-                // dir. Only the proxy's known_hosts writer resolves HOME;
+                // (the agent socket and the public known_hosts) out of the
+                // persisted secret dir. The entrypoint's ssh-agent socket
+                // and the proxy's known_hosts writer both resolve HOME;
                 // ssh-add expands ~ via getpwuid (not $HOME), so the proxy
                 // hands it the file explicitly with -H.
                 { name: 'HOME', value: '/home/proxy' },
@@ -201,7 +208,6 @@ export function buildProxyDeploymentManifest(
               },
               volumeMounts: [
                 { name: 'credentials', mountPath: '/yaac-credentials' },
-                { name: 'ssh-agent', mountPath: '/ssh-agent' },
                 { name: 'proxy-data', mountPath: '/data' },
                 { name: 'home', mountPath: '/home/proxy' },
                 ...(opts.nested
@@ -216,17 +222,15 @@ export function buildProxyDeploymentManifest(
               hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' },
             },
             {
-              name: 'ssh-agent',
-              hostPath: { path: sshAgentHostDir(), type: 'DirectoryOrCreate' },
-            },
-            {
               name: 'proxy-data',
               hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' },
             },
-            // Writable HOME for the proxy's ssh-add/known_hosts. emptyDir
-            // (not hostPath) so fsGroup can make it group-writable by the
-            // non-root proxy uid, and so nothing the proxy writes under
-            // HOME persists onto the host.
+            // Writable HOME for the proxy's ssh-agent socket, ssh-add and
+            // known_hosts. emptyDir (not hostPath) so fsGroup can make it
+            // group-writable by the non-root proxy uid, and so nothing the
+            // proxy writes under HOME persists onto the host. The agent
+            // socket is pod-local now that session pods reach the agent
+            // over SSH_AGENT_PORT instead of a shared host directory.
             { name: 'home', emptyDir: {} },
             // Nested (inner) proxy: the outer CA, projected by the server into
             // the vcluster as a ConfigMap (buildOuterProxyCaConfigMapManifest).
@@ -380,6 +384,10 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
+        // ssh-agent forwarding: session pods dial this on the Service
+        // ClusterIP (the address they already carry as their resolver), so
+        // the agent moves with the proxy pod, node and all.
+        { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },
         { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
       ],
     },

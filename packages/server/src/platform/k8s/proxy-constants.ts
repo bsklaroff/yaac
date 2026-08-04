@@ -47,6 +47,22 @@ export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
  * CAP_NET_BIND_SERVICE so the non-root proxy can bind <1024). */
 export const DNS_STUB_PORT = 53
 /**
+ * ssh-agent forwarding listener: the proxy speaks the ssh-agent protocol
+ * here, spliced to its own in-memory agent. Session pods run a local
+ * forwarder (socat) that re-exposes it as the UNIX socket SSH_AUTH_SOCK
+ * names, so a pod's ssh client is unchanged while the rendezvous becomes a
+ * TCP hop the two pods can make from different nodes — a hostPath UNIX
+ * socket only meets on one.
+ *
+ * Reachable only by session pods (buildProxyIngressNpManifest admits this
+ * port from the session selector alone), and the proxy re-checks the source
+ * pod IP against its pod-watch before splicing. Key bytes stay in the proxy,
+ * and the client→agent direction is filtered to identity listings and
+ * signature requests — an add/remove/lock never reaches an agent every
+ * session shares (k8s/proxy/ssh-agent-relay.ts).
+ */
+export const SSH_AGENT_PORT = 10261
+/**
  * Relay listener: the proxy's authenticated CONNECT into session pods'
  * streamd (docs/stream-relay.md). The server dials it, sends one auth
  * line ({token: proxyAuthSecret, sessionId}), and the proxy splices the

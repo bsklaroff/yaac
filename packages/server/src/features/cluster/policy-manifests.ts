@@ -18,6 +18,7 @@ import {
   ROLE_INNER_PROXY,
   SESSION_EGRESS_NP_NAME,
   SESSION_INGRESS_LOCK_NP_NAME,
+  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
@@ -100,8 +101,14 @@ const sessionPodSelector = {
  * and it still cannot reach the proxy's transparent ports (those are
  * node-only, see buildProxyIngressNpManifest).
  *
- * DNS is the one direct dial: the proxy's stub on 53/udp, which session
- * pods point `dnsPolicy: None` at.
+ * Two direct dials to the proxy, both to the pod itself rather than the
+ * world: its DNS stub on 53/udp (which session pods point `dnsPolicy: None`
+ * at) and its ssh-agent listener on SSH_AGENT_PORT, which the in-pod
+ * forwarder re-exposes as SSH_AUTH_SOCK's UNIX socket. Neither reaches
+ * anything outside the cluster, and the agent port is a signing oracle for
+ * destination-constrained keys only — the proxy re-checks that the source
+ * pod IP resolves to a session whose registered remote is SSH, and admits
+ * only list/sign messages onto the shared agent.
  *
  * Deliberately NO in-cluster allowance for the per-project registry (5000)
  * or the vcluster API (8443): this policy is install-wide, so it cannot
@@ -126,7 +133,7 @@ export function buildSessionEgressNpManifest(nodeCidrs: string[]): Record<string
       },
       {
         to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-        ports: [udp(DNS_STUB_PORT)],
+        ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
       },
     ],
   })
@@ -165,8 +172,12 @@ export function buildSessionIngressLockNpManifest(): Record<string, unknown> {
  * pod netns and never traverses this policy at all — the network-side
  * allowance exists for a node-local server using the direct-TCP override.
  *
- * DNS is the one pod-facing port: session pods in this namespace, and
- * vcluster-synced pods in labeled vcluster namespaces.
+ * Two pod-facing ports, and only for session pods in this namespace (DNS
+ * additionally for vcluster-synced pods in labeled vcluster namespaces):
+ * the DNS stub, and the ssh-agent listener. The agent port is deliberately
+ * NOT open to vcluster-synced pods — a nested install forwards its OWN
+ * inner proxy's agent to its own sessions, and the outer agent holds keys
+ * that install never had.
  */
 export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(PROXY_INGRESS_NP_NAME, k8sNamespace(), {
@@ -187,7 +198,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
       },
       {
         from: [{ podSelector: sessionPodSelector }],
-        ports: [udp(DNS_STUB_PORT)],
+        ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
       },
       {
         // A vcluster's synced pods resolve through the outer stub when no
@@ -335,6 +346,20 @@ export function buildInnerProxyIngressNpManifest(
       {
         from: [{ podSelector: { matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: vcName } } }],
         ports: [udp(DNS_STUB_PORT)],
+      },
+      {
+        // ssh-agent forwarding for the inner install's OWN sessions: the
+        // synced session pods of this vcluster reach the inner proxy's
+        // agent, which holds only the keys that install uploaded. Scoped to
+        // synced pods carrying a session id, so the vcluster's other
+        // workloads (its control plane, a tenant's own pods) get nothing.
+        from: [{
+          podSelector: {
+            matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: vcName },
+            matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+          },
+        }],
+        ports: [tcp(SSH_AGENT_PORT)],
       },
     ],
   })

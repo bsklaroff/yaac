@@ -12,18 +12,19 @@ if [ "$USE_TOR" = "1" ]; then
   done
 fi
 
-# Run ssh-agent on a private socket; the proxy talks to it directly via
-# SSH_AUTH_SOCK. Force-remove stale sockets from a prior run (the volume
-# persists across restarts).
-rm -f /ssh-agent/socket /ssh-agent/agent.sock
-eval "$(ssh-agent -a /ssh-agent/agent.sock)"
-export SSH_AUTH_SOCK=/ssh-agent/agent.sock
-
-# Bridge a world-connectable socket for session pods. They run in user
-# namespaces, so the agent socket (owned by the proxy's host uid) shows up
-# as owned by an unmapped uid inside them and a 0600 socket would be
-# unreachable; a 0666 bridge is connectable regardless of the owner remap.
-# `fork` gives each session connection its own relay to the agent.
-socat "UNIX-LISTEN:/ssh-agent/socket,fork,mode=0666" "UNIX-CONNECT:/ssh-agent/agent.sock" &
+# Run ssh-agent on a socket under the pod's emptyDir HOME; the proxy talks
+# to it directly via SSH_AUTH_SOCK. Nothing outside this pod opens it: session
+# pods reach the agent over the proxy's SSH_AGENT_PORT listener, which splices
+# to this socket after authenticating the source pod (see proxy.ts).
+#
+# Force-remove the socket first: HOME is an emptyDir, whose lifetime is the
+# POD's, not the container's, so a container restart (crash, OOM) reruns this
+# script against the previous agent's leftover socket file. `ssh-agent -a`
+# would then fail to bind (EADDRINUSE) and, under `set -e`, crash-loop the
+# proxy — taking agent forwarding down for every session until the pod is
+# deleted by hand.
+rm -f "$HOME/agent.sock"
+eval "$(ssh-agent -a "$HOME/agent.sock")"
+export SSH_AUTH_SOCK="$HOME/agent.sock"
 
 exec ./node_modules/.bin/tsx proxy.ts
