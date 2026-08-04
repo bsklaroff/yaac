@@ -157,6 +157,24 @@ cannot follow a symlink. One that no longer resolves, whether it dangles or is
 gone outright, is cleared: a path that resolves nowhere is worse than no path,
 since every reader would keep stat-ing it forever.
 
+`agent_sessions.transcriptPath` stores that path the same way the record tree
+does — **relative to the tool home**, never absolute. The home carries the data
+dir, so an absolute path would pin every row to the directory that wrote it,
+and moving a data dir (a restored backup, a changed `YAAC_DATA_DIR`) would
+strand all of them silently, since the readers only ever stat these paths.
+`toStoredTranscriptPath` / `fromStoredTranscriptPath` in
+`features/sessions/transcripts.ts` are the only place the two forms meet: the
+store encodes on write and decodes in the single projection every reader comes
+through, so nothing else sees anything but an absolute path. Encoding can fail
+where decoding cannot — a transcript outside the home has no relative form, and
+records as null, the same verdict the hook reaches. A second startup pass
+(`relativizeTranscriptPaths`, after the symlink resolve) re-homes rows written
+before the column held this form; one whose absolute path is not inside the
+home is cleared, which is the moved-data-dir case, and the record tree puts the
+right path back on the next reconcile tick. Neither pass can be a
+`migration.sql`: the relative form depends on the data dir and the row's
+per-project tool home, and SQL can see neither.
+
 ## First messages
 
 Capture is per conversation: each agent session gets its own opening message,

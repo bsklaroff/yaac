@@ -1,5 +1,7 @@
+import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { claudeDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#platform/db/client'
 import {
   deleteProjectWorktrees,
@@ -192,7 +194,13 @@ describe('session store', () => {
       ])
       await create('has-transcript')
       await recordAgentSessions('proj', 'has-transcript', [
-        { tool: 'claude', agentSessionId: 'conv-b', transcriptPath: '/tmp/t.jsonl' },
+        {
+          tool: 'claude',
+          agentSessionId: 'conv-b',
+          // Inside the tool home: the column stores paths relative to it, so
+          // one outside has no storable form and would record as null.
+          transcriptPath: path.join(claudeDir('proj'), 'projects', '-workspace', 'conv-b.jsonl'),
+        },
       ])
       await create('gone')
       await recordWorktreeStopped('proj', 'gone')

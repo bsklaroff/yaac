@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_TOOL_KEY,
   SESSIONS_BACKFILLED_KEY,
+  TRANSCRIPT_PATHS_RELATIVE_KEY,
   TRANSCRIPT_PATHS_RESOLVED_KEY,
   isFlagSet,
   isSerializedChord,
@@ -21,9 +22,15 @@ import {
 } from '#features/projects'
 import { MAX_PROMPT_LENGTH } from '#features/sessions/worktree-store'
 import { normalizeTitle } from '@yaac/shared/titles'
+import type { AgentTool } from '@yaac/shared/types'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
-import { scanProjectTranscripts } from '#features/sessions/transcripts'
+import {
+  fromStoredTranscriptPath,
+  rehomeTranscriptPath,
+  scanProjectTranscripts,
+  toStoredTranscriptPath,
+} from '#features/sessions/transcripts'
 import { serverLog } from '#log'
 import { getProjectsDir, serverLocalPath } from '@yaac/shared/paths'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -266,18 +273,22 @@ async function linkPreUpgradeAgentSession(
   tool: string,
   fields: { createdAt: Date; transcriptPath?: string | undefined; firstPrompt?: string | null },
 ): Promise<void> {
+  // The scan hands back absolute paths; the column is home-relative.
+  const stored = fields.transcriptPath !== undefined
+    ? await toStoredTranscriptPath(slug, tool as AgentTool, fields.transcriptPath)
+    : null
   await db.insert(agentSessions).values({
     projectSlug: slug,
     tool,
     agentSessionId: worktreeId,
     createdAt: fields.createdAt,
-    transcriptPath: fields.transcriptPath ?? null,
+    transcriptPath: stored,
     firstPrompt: fields.firstPrompt ?? null,
   }).onConflictDoUpdate({
     target: [agentSessions.projectSlug, agentSessions.tool, agentSessions.agentSessionId],
     set: {
       createdAt: fields.createdAt,
-      ...(fields.transcriptPath !== undefined ? { transcriptPath: fields.transcriptPath } : {}),
+      ...(stored !== null ? { transcriptPath: stored } : {}),
     },
   })
   await db.insert(worktreeAgentSessions).values({
@@ -290,6 +301,67 @@ async function linkPreUpgradeAgentSession(
     firstSeenAt: fields.createdAt,
     lastSeenAt: fields.createdAt,
   }).onConflictDoNothing()
+}
+
+/**
+ * Rewrite absolute recorded transcript paths to the home-relative form the
+ * column now stores (`toStoredTranscriptPath`).
+ *
+ * Every path written before this existed carried the data dir, so the rows
+ * only resolved on the machine and in the directory that wrote them.
+ *
+ * A path that is not inside this install's tool home is one the data dir has
+ * *moved* out from under (a restored backup, a changed `YAAC_DATA_DIR`).
+ * Those are re-homed rather than dropped: the row names its project and tool,
+ * and every home is `<root>/projects/<slug>/<tool>`, so the tail survives the
+ * move on its own. Waiting for the reconciler instead would strand them —
+ * it visits only *running* worktrees, and after a restore nothing is running,
+ * so a stopped worktree that never restarts would lose the pointer for good
+ * while its transcript and link tree sat intact in the new data dir. Only a
+ * path with no recoverable tail at all becomes NULL.
+ *
+ * Not a `migration.sql`: the relative form depends on `getDataDir()` and on
+ * the row's per-project tool home, neither of which SQL can see.
+ */
+async function relativizeTranscriptPaths(db: Db): Promise<void> {
+  if (await isFlagSet(TRANSCRIPT_PATHS_RELATIVE_KEY)) return
+  const rows = await db.select({
+    projectSlug: agentSessions.projectSlug,
+    tool: agentSessions.tool,
+    agentSessionId: agentSessions.agentSessionId,
+    transcriptPath: agentSessions.transcriptPath,
+  }).from(agentSessions).where(isNotNull(agentSessions.transcriptPath))
+
+  let rewritten = 0
+  let rehomed = 0
+  let dropped = 0
+  for (const r of rows) {
+    // Already relative — a row written since the change, or a re-run.
+    if (r.transcriptPath === null || !path.isAbsolute(r.transcriptPath)) continue
+    const tool = r.tool as AgentTool
+    const inHome = await toStoredTranscriptPath(r.projectSlug, tool, r.transcriptPath)
+    // Not under this install's home means the data dir moved. The row still
+    // names its project and tool, and every home is
+    // `<root>/projects/<slug>/<tool>`, so the tail is recoverable outright —
+    // no waiting for the worktree to run again, which for a stopped one may
+    // be never.
+    const stored = inHome ?? rehomeTranscriptPath(r.projectSlug, tool, r.transcriptPath)
+    await db.update(agentSessions).set({ transcriptPath: stored }).where(and(
+      eq(agentSessions.projectSlug, r.projectSlug),
+      eq(agentSessions.tool, r.tool),
+      eq(agentSessions.agentSessionId, r.agentSessionId),
+    ))
+    if (stored === null) dropped++
+    else if (inHome === null) rehomed++
+    else rewritten++
+  }
+  await setFlag(TRANSCRIPT_PATHS_RELATIVE_KEY)
+  if (rewritten > 0 || rehomed > 0 || dropped > 0) {
+    serverLog(
+      `[db] relativized ${rewritten} transcript path(s), `
+      + `re-homed ${rehomed} from a moved data dir, dropped ${dropped}`,
+    )
+  }
 }
 
 const TOKEN_KINDS = ['durable', 'one-time', 'web']
@@ -356,6 +428,12 @@ export async function importLegacyJsonStores(): Promise<void> {
     await importOpencodeMeta(db, slug)
   }
   if (!backfilled) await setFlag(SESSIONS_BACKFILLED_KEY)
+  // Strictly before the symlink resolve. This step is pure re-encoding of
+  // the column and never touches the disk; that one interprets the stored
+  // path against it, and reads an unstattable path as a symlink someone
+  // deleted. Run the other way round, every row from a moved data dir would
+  // be nulled as a dead symlink before it could be re-homed.
+  await relativizeTranscriptPaths(db)
   await resolveSymlinkedTranscripts(db)
   await importTokens(db)
 }
@@ -394,10 +472,19 @@ async function resolveSymlinkedTranscripts(db: Db): Promise<void> {
   let resolved = 0
   for (const r of rows) {
     if (r.transcriptPath === null) continue
-    const link = await fs.lstat(r.transcriptPath).catch(() => null)
+    // Work in absolute space: the column is home-relative, and a relative
+    // path handed to lstat would resolve against the cwd — every row would
+    // look like a symlink someone deleted and be nulled.
+    const tool = r.tool as AgentTool
+    const abs = fromStoredTranscriptPath(r.projectSlug, tool, r.transcriptPath)
+    if (abs === undefined) continue
+    const link = await fs.lstat(abs).catch(() => null)
     if (link !== null && !link.isSymbolicLink()) continue
-    const target = await fs.realpath(r.transcriptPath).catch(() => null)
-    await db.update(agentSessions).set({ transcriptPath: target }).where(and(
+    const target = await fs.realpath(abs).catch(() => null)
+    const stored = target === null
+      ? null
+      : await toStoredTranscriptPath(r.projectSlug, tool, target)
+    await db.update(agentSessions).set({ transcriptPath: stored }).where(and(
       eq(agentSessions.projectSlug, r.projectSlug),
       eq(agentSessions.tool, r.tool),
       eq(agentSessions.agentSessionId, r.agentSessionId),
