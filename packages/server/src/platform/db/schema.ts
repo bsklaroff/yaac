@@ -97,7 +97,10 @@ export const agentSessions = snakeCase.table('agent_sessions', {
   tool: text().notNull(),
   agentSessionId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  /** Host path of the conversation's transcript, when the tool leaves one. */
+  /** The conversation's transcript, *relative to the tool home* — never
+   *  absolute, so the row survives the data dir moving (see
+   *  `toStoredTranscriptPath`). Null when the tool leaves no transcript, or
+   *  when the path has no home-relative form. */
   transcriptPath: text(),
   /** This conversation's own first user message (the worktree keeps the
    *  founding one separately — they differ after a `/clear`). */

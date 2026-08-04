@@ -13,7 +13,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { claudeDir, codexDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
-import { closeDb, importLegacyJsonStores } from '#platform/db'
+import { eq } from 'drizzle-orm'
+import { agentSessions, closeDb, getDb, importLegacyJsonStores } from '#platform/db'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
 import {
   MAX_PROMPT_LENGTH,
@@ -271,6 +272,71 @@ describe('importLegacyJsonStores', () => {
     expect(gone?.transcriptPath).toBeUndefined()
     const [unlinked] = await listWorktreeAgentSessions('proj', 'wt-unlinked')
     expect(unlinked?.transcriptPath).toBeUndefined()
+  })
+
+  it('rewrites an absolute recorded path to its home-relative form', async () => {
+    // Every path recorded before the column went relative is absolute, so it
+    // only resolved in the data dir that wrote it. The sweep re-homes them;
+    // the store still hands back an absolute path, so no reader notices.
+    const real = path.join(claudeDir('proj'), 'projects', '-workspace', 'conv-abs.jsonl')
+    await fs.mkdir(path.dirname(real), { recursive: true })
+    await fs.writeFile(real, '{}\n')
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-abs' })
+    await recordAgentSessions('proj', 'wt-abs', [
+      { tool: 'claude', agentSessionId: 'conv-abs', transcriptPath: real },
+    ])
+    // Back to the pre-change on-disk state the sweep exists to find.
+    const db = await getDb()
+    await db.update(agentSessions).set({ transcriptPath: real })
+      .where(eq(agentSessions.agentSessionId, 'conv-abs'))
+
+    await importLegacyJsonStores()
+
+    const [stored] = await db.select({ p: agentSessions.transcriptPath }).from(agentSessions)
+      .where(eq(agentSessions.agentSessionId, 'conv-abs'))
+    expect(stored?.p).toBe(path.join('projects', '-workspace', 'conv-abs.jsonl'))
+    const [row] = await listWorktreeAgentSessions('proj', 'wt-abs')
+    expect(row?.transcriptPath).toBe(real)
+  })
+
+  it('re-homes an absolute path that a moved data dir stranded', async () => {
+    // The restored-backup case: the row names a home this install does not
+    // have. Waiting for the reconciler would strand it — that visits only
+    // running worktrees, and after a restore nothing is running — so the
+    // sweep recovers the tail from the /projects/<slug>/<tool>/ boundary.
+    // The transcript itself came across in the backup, at the same
+    // home-relative spot under the new data dir.
+    const moved = path.join(claudeDir('proj'), 'projects', '-workspace', 'c.jsonl')
+    await fs.mkdir(path.dirname(moved), { recursive: true })
+    await fs.writeFile(moved, '{}\n')
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-moved' })
+    await recordAgentSessions('proj', 'wt-moved', [
+      { tool: 'claude', agentSessionId: 'conv-moved' },
+    ])
+    const db = await getDb()
+    await db.update(agentSessions)
+      .set({ transcriptPath: '/old/home/.yaac/projects/proj/claude/projects/-workspace/c.jsonl' })
+      .where(eq(agentSessions.agentSessionId, 'conv-moved'))
+
+    await importLegacyJsonStores()
+
+    const [row] = await listWorktreeAgentSessions('proj', 'wt-moved')
+    expect(row?.transcriptPath).toBe(moved)
+  })
+
+  it('drops an absolute path with no recoverable home', async () => {
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-lost' })
+    await recordAgentSessions('proj', 'wt-lost', [
+      { tool: 'claude', agentSessionId: 'conv-lost' },
+    ])
+    const db = await getDb()
+    await db.update(agentSessions).set({ transcriptPath: '/somewhere/unrelated/c.jsonl' })
+      .where(eq(agentSessions.agentSessionId, 'conv-lost'))
+
+    await importLegacyJsonStores()
+
+    const [row] = await listWorktreeAgentSessions('proj', 'wt-lost')
+    expect(row?.transcriptPath).toBeUndefined()
   })
 
   it('leaves a real transcript path untouched', async () => {

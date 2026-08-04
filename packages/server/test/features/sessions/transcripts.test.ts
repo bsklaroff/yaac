@@ -2,13 +2,22 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { setDataDir, claudeDir, codexTranscriptDir, piSessionsDir } from '@yaac/shared/project-paths'
 import {
+  setDataDir,
+  claudeDir,
+  codexDir,
+  codexTranscriptDir,
+  piSessionsDir,
+} from '@yaac/shared/project-paths'
+import {
+  fromStoredTranscriptPath,
   listPiJsonlFiles,
   piSessionLogs,
+  rehomeTranscriptPath,
   scanProjectTranscripts,
   sessionIdFromPiLog,
   sessionTranscriptPath,
+  toStoredTranscriptPath,
   transcriptLastActiveMs,
 } from '#features/sessions/transcripts'
 
@@ -134,6 +143,104 @@ describe('transcripts', () => {
 
       await fs.rm(file)
       expect(await transcriptLastActiveMs(file)).toBeUndefined()
+    })
+  })
+
+  describe('toStoredTranscriptPath', () => {
+    it('strips the tool home, per tool', async () => {
+      expect(await toStoredTranscriptPath(slug, 'claude', claudeLog('sid')))
+        .toBe(path.join('projects', '-workspace', 'sid.jsonl'))
+      const rollout = path.join(codexDir(slug), 'sessions', '2026', 'rollout-x.jsonl')
+      expect(await toStoredTranscriptPath(slug, 'codex', rollout))
+        .toBe(path.join('sessions', '2026', 'rollout-x.jsonl'))
+      const piLog = path.join(piSessionsDir(slug), '20260101-120000_sid.jsonl')
+      expect(await toStoredTranscriptPath(slug, 'pi', piLog))
+        .toBe(path.join('agent', 'sessions', '20260101-120000_sid.jsonl'))
+    })
+
+    it('refuses a path with no home-relative form', async () => {
+      // Outside the home — the same verdict the in-pod hook reaches when it
+      // writes an empty record.
+      expect(await toStoredTranscriptPath(slug, 'claude', '/tmp/elsewhere.jsonl')).toBeNull()
+      // Another project's home is just as much an escape.
+      expect(await toStoredTranscriptPath(slug, 'claude', claudeDir('other'))).toBeNull()
+      // opencode has no host home at all.
+      expect(await toStoredTranscriptPath(slug, 'opencode', '/anything.jsonl')).toBeNull()
+    })
+
+    it('relativizes a path that resolved through a symlinked data dir', async () => {
+      // The legacy-symlink branch of readWorktreeLinks hands back realpath
+      // output, so on a data dir with a symlinked component the literal home
+      // is not a textual prefix of it.
+      const real = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-real-'))
+      const link = path.join(tmpDir, 'linked-data')
+      await fs.symlink(real, link)
+      setDataDir(link)
+      try {
+        await fs.mkdir(claudeDir(slug), { recursive: true })
+        const viaReal = path.join(await fs.realpath(claudeDir(slug)), 'projects', 'x.jsonl')
+        expect(await toStoredTranscriptPath(slug, 'claude', viaReal))
+          .toBe(path.join('projects', 'x.jsonl'))
+      } finally {
+        setDataDir(tmpDir)
+        await fs.rm(real, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('fromStoredTranscriptPath', () => {
+    it('rejoins the tool home', () => {
+      expect(fromStoredTranscriptPath(slug, 'claude', path.join('projects', 'a.jsonl')))
+        .toBe(path.join(claudeDir(slug), 'projects', 'a.jsonl'))
+    })
+
+    it('round-trips what toStoredTranscriptPath produced', async () => {
+      const abs = claudeLog('sid')
+      const stored = await toStoredTranscriptPath(slug, 'claude', abs)
+      expect(stored).not.toBeNull()
+      expect(fromStoredTranscriptPath(slug, 'claude', stored ?? '')).toBe(abs)
+    })
+
+    it('passes an absolute value straight through', () => {
+      // A row the relativize sweep has not reached; joining it onto the home
+      // would fabricate a path that resolves nowhere.
+      expect(fromStoredTranscriptPath(slug, 'claude', '/old/home/t.jsonl'))
+        .toBe('/old/home/t.jsonl')
+    })
+
+    it('refuses a stored value that climbs out of the home', () => {
+      // The encoder can never emit this; the guard keeps the pair symmetric
+      // in what it refuses, whatever else ever writes the column.
+      expect(fromStoredTranscriptPath(slug, 'claude', '../../../../etc/passwd'))
+        .toBeUndefined()
+      expect(fromStoredTranscriptPath(slug, 'claude', 'projects/../../../etc/passwd'))
+        .toBeUndefined()
+    })
+  })
+
+  describe('rehomeTranscriptPath', () => {
+    it('recovers the tail from a path another data dir wrote', () => {
+      // The restored-backup case: the old root is gone, but every home is
+      // <root>/projects/<slug>/<tool>, so the boundary is enough.
+      const old = `/old/box/.yaac/projects/${slug}/claude/projects/-workspace/c.jsonl`
+      expect(rehomeTranscriptPath(slug, 'claude', old))
+        .toBe(path.join('projects', '-workspace', 'c.jsonl'))
+    })
+
+    it('takes the innermost home when a nested yaac repeats the marker', () => {
+      const nested = `/old/.yaac/projects/${slug}/sessions/s1/nested-yaac`
+        + `/projects/${slug}/claude/projects/-workspace/c.jsonl`
+      expect(rehomeTranscriptPath(slug, 'claude', nested))
+        .toBe(path.join('projects', '-workspace', 'c.jsonl'))
+    })
+
+    it('gives up when the marker is absent or the tool has no home', () => {
+      expect(rehomeTranscriptPath(slug, 'claude', '/somewhere/else/c.jsonl')).toBeNull()
+      // Another project's home is not this row's.
+      expect(rehomeTranscriptPath(slug, 'claude', '/old/projects/other/claude/x.jsonl'))
+        .toBeNull()
+      expect(rehomeTranscriptPath(slug, 'opencode', `/old/projects/${slug}/opencode/x`))
+        .toBeNull()
     })
   })
 })

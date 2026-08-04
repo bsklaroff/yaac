@@ -1,6 +1,10 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions } from '#platform/db'
 import { MAX_PROMPT_LENGTH } from '#features/sessions/worktree-store'
+import {
+  fromStoredTranscriptPath,
+  toStoredTranscriptPath,
+} from '#features/sessions/transcripts'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
@@ -48,6 +52,8 @@ export interface AgentSessionRow {
   tool: AgentTool
   agentSessionId: string
   createdAt: Date
+  /** Absolute — the column stores it home-relative, and this layer is where
+   *  the two forms meet (see `toStoredTranscriptPath`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
@@ -109,13 +115,19 @@ export async function recordAgentSessions(
 
     for (const d of discovered) {
       const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
+      // Null means "no home-relative form", which is not the same as "no
+      // path": it must not overwrite a good stored value, so the fill branch
+      // below omits the column entirely rather than clearing it.
+      const stored = d.transcriptPath !== undefined
+        ? await toStoredTranscriptPath(projectSlug, d.tool, d.transcriptPath)
+        : null
       // Only ever fill in — a resumed conversation is rediscovered from a
       // second worktree and must not lose what the first one learned. Built
       // first because an empty `set` is an error, not a no-op: a conversation
       // discovered with nothing but its id (the common first sighting) has to
       // take the DO NOTHING branch.
       const fill = {
-        ...(d.transcriptPath !== undefined ? { transcriptPath: d.transcriptPath } : {}),
+        ...(stored !== null ? { transcriptPath: stored } : {}),
         ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
         ...(d.firstPrompt !== undefined
           ? {
@@ -131,7 +143,7 @@ export async function recordAgentSessions(
         tool: d.tool,
         agentSessionId: d.agentSessionId,
         createdAt: seenAt,
-        transcriptPath: d.transcriptPath ?? null,
+        transcriptPath: stored,
         firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
         lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
       }
@@ -260,6 +272,11 @@ type LinkedSelect = {
 }
 
 function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
+  // The column is home-relative; every consumer wants an absolute path, and
+  // this is the one projection they all come through.
+  const transcriptPath = r.transcriptPath !== null
+    ? fromStoredTranscriptPath(r.projectSlug, r.tool as AgentTool, r.transcriptPath)
+    : undefined
   return {
     projectSlug: r.projectSlug,
     worktreeId: r.worktreeId,
@@ -271,7 +288,7 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
     firstSeenAt: r.firstSeenAt,
     lastSeenAt: r.lastSeenAt,
     ...(r.paneId !== null ? { paneId: r.paneId } : {}),
-    ...(r.transcriptPath !== null ? { transcriptPath: r.transcriptPath } : {}),
+    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
     ...(r.firstPrompt !== null ? { firstPrompt: r.firstPrompt } : {}),
     ...(r.lastActiveAt !== null ? { lastActiveAt: r.lastActiveAt } : {}),
   }
@@ -393,11 +410,16 @@ export async function setAgentSessionCapture(
   agentSessionId: string,
   capture: { firstPrompt?: string; transcriptPath?: string },
 ): Promise<void> {
+  // As in recordAgentSessions: an unexpressible path leaves the column alone
+  // rather than clearing what an earlier pass managed to record.
+  const stored = capture.transcriptPath !== undefined
+    ? await toStoredTranscriptPath(projectSlug, tool, capture.transcriptPath)
+    : null
   const values = {
     ...(capture.firstPrompt !== undefined
       ? { firstPrompt: capture.firstPrompt.slice(0, MAX_PROMPT_LENGTH) }
       : {}),
-    ...(capture.transcriptPath !== undefined ? { transcriptPath: capture.transcriptPath } : {}),
+    ...(stored !== null ? { transcriptPath: stored } : {}),
   }
   if (Object.keys(values).length === 0) return
   try {
