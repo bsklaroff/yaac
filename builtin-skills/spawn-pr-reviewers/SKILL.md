@@ -1,6 +1,6 @@
 ---
 name: spawn-pr-reviewers
-description: Watch this project's GitHub repo for newly opened PRs and spawn a sibling yaac session to review each one — posting its findings back to the PR and re-reviewing on follow-up commits and comments. Use when the user wants automatic code review of incoming PRs. Takes an optional reviewer argument (`<model>`, `<tool>:<model>`, or `:<model>` to let the tool be resolved); defaults to Fable 5.
+description: Watch this project's GitHub repo for newly opened PRs and spawn a sibling yaac session to review each one — posting its findings back to the PR and re-reviewing on follow-up commits and comments. Use when the user wants automatic code review of incoming PRs. Requires a reviewer argument naming the model (`<model>`, `<tool>:<model>`, or `:<model>` to let the tool be resolved); there is no default — ask which model to review with if it is missing.
 ---
 
 You are running **inside a yaac worktree**. This skill sets up **continuous
@@ -17,14 +17,20 @@ It builds on two other shipped skills:
 
 ## The reviewer argument
 
-One **optional argument** names the agent to review with:
+One **required argument** names the agent to review with:
 
 | Argument | Meaning |
 |---|---|
-| *(omitted)* | `claude-fable-5` — **the default** |
 | `<model>` | a model id, e.g. `claude-opus-4-8` — you resolve the tool |
 | `:<model>` | same as above; the empty tool says "pick one for me" explicitly |
 | `<tool>:<model>` | an explicit pair, e.g. `codex:gpt-5.6-sol` |
+
+There is **no default model**. If the argument is missing, run
+`yaac-spawn --models`, show the user the authed tools and the model ids they
+accept, and ask which to review with — then stop until they answer. Do not
+pick one for them and do not arm the watcher first: a watcher armed without a
+reviewer baselines its seen-state, so PRs opened while you wait for the answer
+are recorded as seen and never reviewed.
 
 Run `yaac-spawn --models` before the first spawn — it lists which tools have
 host credentials and every model id each one accepts. Then:

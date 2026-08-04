@@ -92,11 +92,12 @@ describe('spawn-pr-reviewers skill', () => {
     // the per-reviewer half re-scopes it to that one PR's activity.
     expect(body).toContain('yaac-watch-prs --events opened')
     expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
-    // The spawn half must name a tool and model, defaulting to Fable 5, and
-    // resolve the tool itself when the argument names only a model.
+    // The spawn half must name a tool and model, and resolve the tool itself
+    // when the argument names only a model. The model is required with no
+    // default, so no model id is baked in anywhere as one.
     expect(body).toContain('yaac-spawn --tool <tool> --model <model>')
     expect(body).toContain('yaac-spawn --models')
-    expect(body).toContain('claude-fable-5')
+    expect(body).toContain('**no default model**')
   })
 })
 
