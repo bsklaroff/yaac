@@ -7,9 +7,12 @@ in-pod daemon, entirely off the apiserver. Session-create provisioning
 rides it too: the pod's postStart hook (`session-bin/yaac-session-init`)
 starts streamd before the container reports Ready, so every setup command
 the server still runs (worktree gitdir rewrite, branch upstream, init
-windows + agent respawn) is a relay exec. `kubectl exec` survives only
-where no stream can exist: the streamd self-heal re-boot, claim-time
-retool/rebranch prep, and non-session infra pods. Before the relay, each
+windows + agent respawn) is a relay exec. Claiming a prewarmed spare rides
+it the same way — the claim gates on `waitForStreamd` before its first
+mutation, then re-branches, retools, and re-applies the git identity over
+the relay. `kubectl exec` survives only where no stream can be gated on:
+the streamd self-heal re-boot, the teardown-time image-salvage survey, and
+non-session infra pods. Before the relay, each
 of these paths held a kubectl child per stream (or per TCP connection),
 and every chunk crossed pod → containerd shim → kubelet → apiserver →
 kubectl → server — with gVisor making the pod side extra expensive.

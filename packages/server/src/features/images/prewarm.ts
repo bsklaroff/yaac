@@ -31,11 +31,12 @@ import {
   LABEL_PREWARMED,
   LABEL_TOOL,
   type SessionPod,
-  containerExec,
   isPrewarmed,
   k8sNamespace,
   kubectlWithRetry,
   listSessionPods,
+  sessionExec,
+  waitForStreamd,
 } from '#platform/k8s'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
@@ -241,6 +242,17 @@ export async function tryClaimPrewarmed(
     }
     if (!chosen) return undefined
 
+    // Every in-pod command below this line — re-branch, retool, the git
+    // identity re-apply — rides the spare's streamd over the relay, so gate
+    // on it once here, before the first mutation. The liveness check above
+    // is nearly always proof enough (it is itself a relay exec), but its
+    // verdict is cached for seconds and can be short-circuited by stream
+    // health, so it is not a guarantee. This is: it re-boots a streamd that
+    // died since (the same kubectl-exec self-heal the status watcher uses),
+    // and on failure aborts while the spare is still untouched, so the
+    // claim degrades to a cold create instead of burning the spare.
+    await waitForStreamd(chosen.jobName, { timeoutMs: 10_000 })
+
     // Branch prep: the spare's warmed branch is read from its recorded
     // upstream (`branch.agent/<id>.merge` in the shared /repo/.git/config —
     // written before the tmux session exists, so always present on a
@@ -313,9 +325,24 @@ export async function tryClaimPrewarmed(
     // Re-apply git identity so the claiming user's identity wins over the
     // server-global one the spare was warmed with. Skipped when the caller
     // (e.g. the webapp) sends no identity — the warmed-in global is correct.
+    //
+    // One exec, and non-fatal. This runs PAST the commit point, against a
+    // session that is already whole, over a relay whose readiness gate may
+    // be minutes old by now (a re-branch fetches and resets in between). A
+    // hiccup here would otherwise reap a perfectly good claimed session
+    // over a step the no-identity path skips outright.
     if (gitUser) {
-      await containerExec(chosen.jobName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
-      await containerExec(chosen.jobName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+      const { sessionId: claimedId } = chosen
+      await sessionExec(
+        chosen.jobName,
+        `git config --global user.name '${shellEscape(gitUser.name)}'`
+        + ` && git config --global user.email '${shellEscape(gitUser.email)}'`,
+      ).catch((err: unknown) => {
+        console.warn(
+          `Git identity for claimed session ${claimedId} not applied `
+          + `(the warmed-in global stands): ${(err as Error).message}`,
+        )
+      })
     }
 
     // A claim that moved the spare to another branch records the branch it

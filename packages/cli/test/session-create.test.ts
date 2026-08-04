@@ -101,7 +101,12 @@ vi.mock('@yaac/server/platform/container/port', () => ({
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
 } satisfies Partial<typeof portModule>))
 
-vi.mock('@yaac/server/platform/k8s/stream-relay', () => ({
+// Spread the real module so its error classes keep their identity:
+// verifyAgentWindowAlive branches on `instanceof RelayExecError`, and a
+// stand-in class would silently send the first test that exercises a relay
+// failure down the wrong branch.
+vi.mock('@yaac/server/platform/k8s/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof streamRelayModule>(),
   bootStreamd: vi.fn().mockResolvedValue(undefined),
   relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
   sessionStreamToken: vi.fn().mockResolvedValue('stream-token'),
@@ -134,6 +139,10 @@ vi.mock('@yaac/shared/project-paths', () => ({
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
   PACKAGE_ROOT: '/tmp/yaac-package',
+  // Read at module-eval time by features/cluster/setup, which session
+  // create reaches through the #features/cluster barrel (→ delete.ts →
+  // setup.ts). Independent of how stream-relay is mocked.
+  CALICO_DIR: '/tmp/yaac-package/k8s/calico',
 }))
 
 vi.mock('@yaac/server/features/projects/config', () => ({
@@ -244,6 +253,7 @@ import { resolveAllowedHosts } from '@yaac/server/features/sessions/egress/defau
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
 import { relayTcpFactory, sessionExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
+import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
 import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/sessions/forwarders/port-forwarders'
 
@@ -1048,7 +1058,7 @@ describe('retoolSpare', () => {
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
-    mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
+    mockSessionExec.mockResolvedValue({ stdout: '', stderr: '' })
   })
 
   it('re-registers the proxy session for the new tool, then renames + respawns the agent window', async () => {
@@ -1063,17 +1073,23 @@ describe('retoolSpare', () => {
         projectSlug: 'demo',
       }),
     )
-    const cmds = mockContainerExec.mock.calls.map((c) => c[1])
+    const cmds = mockSessionExec.mock.calls.map((c) => c[1])
     expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
     const respawn = cmds.find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:codex')
     expect(respawn).toContain('codex --yolo')
+    // The rename keeps its dial retries, so it has to survive having
+    // already run: the fallback passes when the window is already renamed.
+    const rename = cmds.find((c) => c.includes('rename-window'))!
+    expect(rename).toContain('|| ')
+    expect(rename).toContain('grep -qxF codex')
+    expect(mockSessionExec.mock.calls.every((c) => c[2]?.maxAttempts === undefined)).toBe(true)
   })
 
   it('boots the new agent with the spare\'s own session id', async () => {
     await retoolSpare({ ...spare, tool: 'codex' }, 'claude')
 
-    const respawn = mockContainerExec.mock.calls.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    const respawn = mockSessionExec.mock.calls.map((c) => c[1]).find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:claude')
     expect(respawn).toContain('--session-id spare1')
   })
@@ -1082,7 +1098,7 @@ describe('retoolSpare', () => {
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.registerSession).mockRejectedValue(new Error('proxy down'))
     await expect(retoolSpare(spare, 'codex')).rejects.toThrow('proxy down')
-    expect(mockContainerExec).not.toHaveBeenCalled()
+    expect(mockSessionExec).not.toHaveBeenCalled()
   })
 })
 

@@ -50,7 +50,7 @@ describe('buildRebranchPrep', () => {
     )
   })
 
-  it('kills and re-creates every init window in order', () => {
+  it('pairs each kill with its re-create in one exec, so a re-run is a no-op', () => {
     const prep = buildRebranchPrep({
       branch: 'dev',
       sha: 'abc123',
@@ -59,11 +59,25 @@ describe('buildRebranchPrep', () => {
       respawnTool: null,
     })
     expect(prep.windowExecs).toEqual([
-      `sh -c "${TMUX} kill-window -t yaac:api 2>/dev/null || true"`,
-      initWindowCommand({ name: 'api', cmd: 'pnpm dev', hidePane: false }),
-      `sh -c "${TMUX} kill-window -t yaac:web 2>/dev/null || true"`,
-      initWindowCommand({ name: 'web', cmd: 'pnpm web', hidePane: true }),
+      `${TMUX} kill-window -t yaac:api 2>/dev/null; `
+      + initWindowCommand({ name: 'api', cmd: 'pnpm dev', hidePane: false }),
+      `${TMUX} kill-window -t yaac:web 2>/dev/null; `
+      + initWindowCommand({ name: 'web', cmd: 'pnpm web', hidePane: true }),
     ])
+  })
+
+  it('leaves an init command carrying double quotes intact (one shell pass)', () => {
+    // The kill+create pair is joined with `;` rather than wrapped in a
+    // second `sh -c "…"`: a wrapper would put the user's command inside
+    // double quotes, where its own `"` would end the string early.
+    const prep = buildRebranchPrep({
+      branch: 'dev',
+      sha: 'abc123',
+      config: { initCommands: [{ name: 'api', commands: ['pnpm run "build:dev"'] }] },
+      sessionId: 's1',
+      respawnTool: null,
+    })
+    expect(prep.windowExecs[0]).toContain(`'cd /workspace && pnpm run "build:dev"'`)
   })
 
   it('appends the agent respawn last when requested', () => {
