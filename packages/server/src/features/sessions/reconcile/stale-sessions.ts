@@ -66,10 +66,15 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // but whose agent will never start. The liveness probe above calls that
   // healthy forever, so additionally require the agent pane to have left
   // the placeholder once the grace window has passed. Only a conclusive
-  // `placeholder` verdict reaps; `unknown` keeps the session.
+  // `placeholder` verdict reaps; `unknown` keeps the session. A create
+  // this process is still running is exempt regardless of age — its pane
+  // is legitimately the placeholder for as long as provisioning takes,
+  // and the grace only bounds the crashed-create case.
+  const provisioningIds = new Set(listProvisioning().map((p) => p.worktreeId))
   const placeholderStale: StaleSessionInfo[] = []
   await Promise.all(running.map(async (p) => {
     if (!p.projectSlug || !p.sessionId) return
+    if (provisioningIds.has(p.sessionId)) return
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) return
     if (await probeAgentPaneState(p.projectSlug, p.sessionId) !== 'placeholder') return
@@ -142,7 +147,6 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // restart. Requiring the same row to look podless across the whole window
   // makes one bad listing cost nothing. The map is in-memory, so a server
   // restart re-arms every timer, which errs toward not recording.
-  const provisioningIds = new Set(listProvisioning().map((p) => p.worktreeId))
   const livePodIds = new Set(pods.map((p) => p.sessionId))
   try {
     const liveRows = await listLiveWorktreeRows()

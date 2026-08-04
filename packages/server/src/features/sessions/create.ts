@@ -416,12 +416,14 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 
     // Warm the engine from the project registry — the pull half of the
     // image salvage, so an agent's first `docker build` hits the layers
-    // this project's earlier sessions built. Awaited: the cache has to be
-    // in the store before the agent runs, or the first build races it.
-    // Best-effort and bounded, so a registry-less or slow project ends up
-    // with a cold cache, never a failed create.
-    emit('Warming the image cache...', options)
-    await primeSessionImages({ jobName, projectSlug, sessionId })
+    // this project's earlier sessions built. Deliberately NOT awaited: the
+    // registry can hold gigabytes, and a pull decompressing inside the
+    // sandbox takes minutes — the agent must not wait on it. An agent
+    // build racing the prime is benign (the engine's store locking
+    // serializes them; worst case a layer is rebuilt instead of pulled).
+    // Best-effort and bounded either way, so a registry-less or slow
+    // project ends up with a cold cache, never a failed create.
+    void primeSessionImages({ jobName, projectSlug, sessionId })
   }
 
   // Open the init windows and swap the keepalive placeholder for the real

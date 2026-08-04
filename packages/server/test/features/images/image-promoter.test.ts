@@ -222,6 +222,9 @@ describe('primeSessionImages', () => {
     expect(cmd).toContain('/v2/_catalog?n=1000')
     expect(cmd).toContain('/v2/$repo/tags/list')
     expect(cmd).toContain('podman pull --tls-verify=false "$ref"')
+    // The prime runs in the background while the agent works, so it takes
+    // the lowest scheduling priority (children inherit it).
+    expect(cmd).toContain('renice -n 19 $$')
     // A named tag gets its original name back; a chain tag keeps none, so
     // it stays a dangling cache entry exactly like a local --layers build.
     expect(cmd).toContain(`case "$tag" in ${CACHE_TAG_PREFIX}*) ;; *) podman tag "$ref" "$repo:$tag"`)

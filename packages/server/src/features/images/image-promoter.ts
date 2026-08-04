@@ -351,6 +351,10 @@ export function buildPrimeScript(registryHost: string): string {
   const arrayScrape = `tr -d ' "' | sed -e 's/.*\\[//' -e 's/\\].*//' | tr ',' '\\n'`
   return [
     'set -u',
+    // The prime runs while the agent works (create does not await it), so
+    // take the lowest scheduling priority — the pulls' decompression must
+    // never compete with the agent for CPU. Children inherit the niceness.
+    'command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true',
     'command -v podman >/dev/null 2>&1 || exit 0',
     'command -v curl >/dev/null 2>&1 || exit 0',
     `REG=${registryHost}`,

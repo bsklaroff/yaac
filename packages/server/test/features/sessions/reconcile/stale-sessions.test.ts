@@ -215,6 +215,19 @@ describe('reconcileStaleSessions', () => {
     expect(log).toContain('agent never started')
   })
 
+  it('keeps a placeholder pane past grace while its create is still provisioning', async () => {
+    mockListPods.mockResolvedValue([pod('warming-1')])
+    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockPaneProbe.mockResolvedValue('placeholder')
+    mockListProvisioning.mockReturnValue([
+      { worktreeId: 'warming-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Warming…', createdAt: '2026-08-01 00:00:00' },
+    ])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
   it('keeps a placeholder pane while the pod is inside the grace window', async () => {
     const fresh = { ...pod('fresh-1'), createdAtMs: Date.now() }
     mockListPods.mockResolvedValue([fresh])
