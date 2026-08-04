@@ -281,10 +281,10 @@ export async function cleanupSession(params: {
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
-  // Salvage built image layers into the project's shared store before the
+  // Salvage built image layers into the project's registry before the
   // pod (and its graphroot tmpfs) is destroyed. Best-effort, and the
-  // in-pod survey self-gates on the nested mounts, so non-nested sessions
-  // (and already-dead pods) no-op.
+  // in-pod survey self-gates on podman, so non-nested sessions (and
+  // already-dead pods) no-op.
   await salvageSessionImages({ jobName, projectSlug, sessionId })
 
   // Delete the session Job; the pod's terminationGracePeriodSeconds (5s)

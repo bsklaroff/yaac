@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
+  LABEL_ROLE,
   LABEL_SESSION_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
@@ -18,6 +19,7 @@ import { nodeIpBlocks } from './cluster-cidrs'
 import { imageExists } from '#platform/container'
 import { projectDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
+import { serverLog } from '#log'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
@@ -93,11 +95,12 @@ export function projectRegistryHost(projectSlug: string): string {
 
 /**
  * Node-local hostPath backing the registry's storage. Node-local (not
- * under the data dir) like the shared image store: registry blob layouts
- * are hostile to virtiofs, and loss on cluster recreate only costs
- * re-pushes. Known growth tradeoff: stale content-hash tags accumulate
- * until project removal or cluster recreate (registry:2 GC wants a
- * quiesced registry, so no in-place pruning in v1).
+ * under the data dir) on purpose: registry blob layouts are hostile to
+ * virtiofs, and loss on cluster recreate only costs re-pushes. Growth is
+ * bounded by reconcileProjectRegistryGc, which reclaims the blobs behind
+ * manifests no tag points at; live tags are never collected, so
+ * a project that keeps minting NEW tags (content-hash image chains) still
+ * grows until it is removed.
  */
 export function projectRegistryStorageHostPath(projectSlug: string): string {
   return `/var/lib/yaac/registry/${dataDirHash()}/${projectSlug}`
@@ -150,6 +153,7 @@ function registrySelector(projectSlug: string): string {
 export function buildProjectRegistryDeploymentManifest(
   projectSlug: string,
   imageRef: string,
+  opts: { readOnly?: boolean } = {},
 ): Record<string, unknown> {
   const name = projectRegistryName(projectSlug)
   const selector = { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug }
@@ -178,6 +182,25 @@ export function buildProjectRegistryDeploymentManifest(
               name: 'registry',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
+              // Manifest DELETE, which the image cache's retire leg uses to
+              // drop chain slots a shorter rebuild no longer fills, and
+              // which is what leaves their blobs collectable. Scoped by the
+              // same policies as every other write to this registry: only
+              // this project's own sessions can reach it.
+              //
+              // `readOnly` is the maintenance window a blob collect runs in
+              // (reconcileProjectRegistryGc): pulls and the catalog keep
+              // serving, pushes and deletes answer 405. Spelled as an
+              // inline YAML MAP — the `…_READONLY_ENABLED=true` spelling
+              // collapses the key to a scalar and registry 2.8 panics at
+              // boot with "readonly config key must contain additional
+              // keys".
+              env: [
+                { name: 'REGISTRY_STORAGE_DELETE_ENABLED', value: 'true' },
+                ...(opts.readOnly
+                  ? [{ name: 'REGISTRY_STORAGE_MAINTENANCE_READONLY', value: '{enabled: true}' }]
+                  : []),
+              ],
               ports: [{ containerPort: PROJECT_REGISTRY_PORT }],
               readinessProbe: {
                 httpGet: { path: '/v2/', port: PROJECT_REGISTRY_PORT },
@@ -371,7 +394,7 @@ export function buildRegistryEgressNetworkPolicyManifest(
  */
 function buildNodeWritePodManifest(
   projectSlug: string,
-  kind: 'hosts' | 'cleanup',
+  kind: 'hosts' | 'cleanup' | 'gc',
   name: string,
   nodeName: string,
   imageRef: string,
@@ -478,6 +501,113 @@ export function buildRegistryCleanupPodManifest(
       { name: 'certs', mountPath: '/host-certs' },
       { name: 'storage', mountPath: '/host-storage' },
     ],
+  )
+}
+
+/** In-GC-pod mount point of the registry storage — the `rootdirectory`
+ *  the image's stock config.yml already points `registry` at. */
+const GC_STORAGE_PATH = '/var/lib/registry'
+/** The stock config the mirrored image ships, which the GC run re-reads. */
+const GC_CONFIG_PATH = '/etc/docker/registry/config.yml'
+/** v2 layout root holding one directory per repository. */
+const GC_REPOS_PATH = `${GC_STORAGE_PATH}/docker/registry/v2/repositories`
+
+/**
+ * Content-hash generations kept per yaac-built repo. Deliberately far
+ * above the host engine's HOST_GENERATIONS_KEPT of 2: the host's
+ * generations are sequential rebuilds of ONE chain, so "current + one
+ * rollback" covers it, whereas a project registry serves every session at
+ * once and each session on its own branch mints its own hash. The live set
+ * is therefore as wide as the fleet, not one deep — keep enough that a
+ * parallel session's image is never the thing retention evicts.
+ */
+export const REGISTRY_GENERATIONS_KEPT = 8
+
+/**
+ * The retention pass the collect runs first, and the ONLY thing in this
+ * subsystem that drops a tag someone could still name.
+ *
+ * `--delete-untagged` alone cannot bound a repo whose every build mints a
+ * NEW tag: yaac's own chain is content-hash tagged (`yaac-tools:<hash>`),
+ * so each source change adds a generation that stays tagged, and therefore
+ * stays collectable-by-nothing, forever. This retires all but the newest
+ * REGISTRY_GENERATIONS_KEPT of them, which is exactly the policy
+ * image-gc.ts already applies to the host engine.
+ *
+ * Two guards keep it off anything else, because a tag here is otherwise a
+ * promise to whoever pulls it:
+ *  - the repo must be yaac-built (`yaac-…`, optionally under a `localhost`
+ *    push prefix) — mirroring image-gc's YAAC_IMAGE_REPO, so a session's
+ *    own `myapp` repo is never touched;
+ *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
+ *    and the cache's `yaac-cache-…` slots can never match.
+ * Retiring a tag only unlinks the name; the manifest it pointed at and its
+ * blobs are what the `--delete-untagged` collect then reclaims.
+ *
+ * Done on the storage layout rather than the delete API because the
+ * collect runs inside the read-only window, where DELETE answers 405 —
+ * and that window is also what guarantees no client is mid-push while the
+ * names move.
+ */
+export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): string {
+  return [
+    `[ -d ${GC_REPOS_PATH} ] || exit 0`,
+    'retired=0',
+    `for tagdir in $(find ${GC_REPOS_PATH} -type d -path '*/_manifests/tags' 2>/dev/null); do`,
+    `  repo=\${tagdir#${GC_REPOS_PATH}/}; repo=\${repo%/_manifests/tags}`,
+    '  case "$repo" in',
+    '    yaac-*|localhost/yaac-*|localhost:*/yaac-*) ;;',
+    '    *) continue;;',
+    '  esac',
+    // Newest first by tag-dir mtime, which for these tags is their
+    // CREATION time: a re-push writes `current/link` and an `index/…`
+    // entry INSIDE the tag directory, which does not bump the directory's
+    // own mtime. Content-hash tags are write-once, so creation order is
+    // exactly the generation order wanted here — but that makes this
+    // ordering unsafe to reuse for a mutable tag, which would sort by when
+    // it first appeared rather than when it last moved.
+    `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +${keep + 1}); do`,
+    '    rm -rf "$tagdir/$stale" && retired=$((retired+1))',
+    '  done',
+    'done',
+    'echo "retired-generations $retired"',
+  ].join('\n')
+}
+
+/**
+ * One-shot pod reclaiming a project's registry blobs: retire stale
+ * content-hash generations, then `registry garbage-collect
+ * --delete-untagged` against the storage hostPath with the registry's own
+ * binary and stock config.
+ *
+ * `--delete-untagged` is what makes this worth running at all. Both image
+ * flows into this registry REUSE tags — the image cache pushes
+ * `<repo>:<tag>` and `<repo>:yaac-cache-<tag>-<n>` under the names the
+ * session already had, and a rebuilt tag re-points at fresh bytes — so
+ * every rebuild leaves the previous manifest referenced by no tag at all.
+ * Those are exactly the manifests this deletes, and their blobs go with
+ * them. The retention pass above is what feeds it the one class of
+ * garbage it could not otherwise see.
+ */
+export function buildRegistryGcPodManifest(
+  projectSlug: string,
+  imageRef: string,
+  nodeName: string,
+  runId: string,
+): Record<string, unknown> {
+  return buildNodeWritePodManifest(
+    projectSlug,
+    'gc',
+    `${projectRegistryName(projectSlug)}-gc-${runId}`,
+    nodeName,
+    imageRef,
+    `${buildRegistryRetentionScript()}\n`
+    + `/bin/registry garbage-collect --delete-untagged=true ${GC_CONFIG_PATH}`,
+    [{
+      name: 'storage',
+      hostPath: { path: projectRegistryStorageHostPath(projectSlug), type: 'DirectoryOrCreate' },
+    }],
+    [{ name: 'storage', mountPath: GC_STORAGE_PATH }],
   )
 }
 
@@ -640,8 +770,216 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   }
 }
 
+/**
+ * Node-local root the retired image store used to occupy, keyed by
+ * install. Nothing mounts it any more — the cross-session image cache is
+ * the project registry — so on a machine that ran an older yaac it is
+ * multi-GB of dead weight (the store measured 25GB after a day of e2e
+ * churn). Swept once per server start.
+ */
+const LEGACY_IMAGE_STORE_ROOT = '/var/lib/yaac/imagecache'
+
+/** Marker for the one-shot legacy-store sweep pods. */
+export const ROLE_LEGACY_STORE_SWEEP = 'legacy-image-store-sweep'
+
+/**
+ * One-shot pod deleting this install's retired image-store root on one
+ * node. Mounts the PARENT so the install's own directory goes with its
+ * contents, exactly like the registry cleanup pod. Pinned by `nodeName`;
+ * a node that never ran the old store just sees nothing to delete.
+ */
+export function buildLegacyStoreSweepPodManifest(
+  imageRef: string,
+  nodeName: string,
+  nodeIndex: number,
+  runId: string,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name: `yaac-imagecache-sweep-${nodeIndex}-${runId}`,
+      namespace: k8sNamespace(),
+      labels: {
+        [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
+        [LABEL_ROLE]: ROLE_LEGACY_STORE_SWEEP,
+      },
+    },
+    spec: {
+      nodeName,
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      priorityClassName: PRIORITY_CLASS_INFRA,
+      containers: [{
+        name: 'sweep',
+        image: imageRef,
+        imagePullPolicy: 'IfNotPresent',
+        command: ['sh', '-c', `rm -rf '/host-imagecache/${dataDirHash()}'`],
+        volumeMounts: [{ name: 'imagecache', mountPath: '/host-imagecache' }],
+      }],
+      volumes: [{
+        name: 'imagecache',
+        hostPath: { path: LEGACY_IMAGE_STORE_ROOT, type: 'DirectoryOrCreate' },
+      }],
+    },
+  }
+}
+
+/**
+ * Reclaim the retired node-local image store on every node, once per
+ * server start. Best-effort and idempotent: the second run finds nothing.
+ * Skipped entirely when the registry mirror this needs is not in the local
+ * registry yet — the next start will catch it.
+ */
+export async function sweepLegacyImageStore(): Promise<void> {
+  if (!await registryHasTag(REGISTRY_MIRROR_TAG)) return
+  const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+  const runId = crypto.randomBytes(4).toString('hex')
+  for (const [i, node] of (await listNodeNames()).entries()) {
+    await runNodeWritePod(buildLegacyStoreSweepPodManifest(imageRef, node, i, runId))
+      .catch((err: unknown) => {
+        console.warn(`Legacy image-store sweep on ${node} failed: ${String(err)}`)
+      })
+  }
+}
+
 interface RawServiceList {
   items: Array<{ metadata: { labels?: Record<string, string> } }>
+}
+
+/**
+ * How often one project's registry is collected. Long on purpose: a pass
+ * costs the registry a restart, and what it reclaims (the previous
+ * generation of each rebuilt tag) accrues over hours, not minutes.
+ */
+export const REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60_000
+
+/** Deadline for the collect run itself — it walks every blob in the store. */
+export const REGISTRY_GC_TIMEOUT_MS = 10 * 60_000
+
+/** Last collect per project — module state, so a server restart just
+ *  means the next resync pass is eligible again. */
+const lastRegistryGcMs = new Map<string, number>()
+
+/** Test hook: forget the per-project throttle and any in-flight collect. */
+export function _resetRegistryGcForTests(): void {
+  lastRegistryGcMs.clear()
+  inFlightCollect = null
+}
+
+/** The collect running right now, if any. One at a time across the whole
+ *  install: each holds a registry in maintenance mode for minutes. */
+let inFlightCollect: Promise<void> | null = null
+
+/** Test hook: await the detached collect this pass started. */
+export function _registryGcSettledForTests(): Promise<void> {
+  return inFlightCollect ?? Promise.resolve()
+}
+
+interface RawRegistryPods {
+  items: Array<{ spec?: { nodeName?: string } }>
+}
+
+/**
+ * Start a blob reclaim in ONE project registry.
+ *
+ * `registry garbage-collect` is only safe when nothing can be pushing: a
+ * push that has uploaded blobs but not yet its manifest looks exactly like
+ * garbage, so a concurrent push can have its layers deleted underneath it.
+ * Upstream's answer is "read-only mode, or not running at all" — and NOT
+ * RUNNING is not an option here, because an active project's session count
+ * never reaches zero, so a collect gated on idleness would never run for
+ * the registries that actually grow.
+ *
+ * The collect therefore takes a MAINTENANCE WINDOW: the Deployment is
+ * rolled with read-only maintenance on, which keeps pulls and the catalog
+ * serving while pushes and deletes answer 405 (verified against this pin).
+ * A salvage push or retire that lands in the window fails best-effort and
+ * is retried on its next cycle — the ledger and the retired-shape memo
+ * only record what actually succeeded — while pulls, which a live session
+ * and its synced pods depend on, never stop working. The cost is two
+ * `Recreate` rollouts: a few seconds of unavailability at each edge.
+ *
+ * DETACHED, one project per pass, never two at once: a collect is two
+ * rollouts plus a pod run — minutes — and reconcile steps run
+ * sequentially, so awaiting it here would stall every later step and every
+ * later tick behind it (the same reason the image-salvage step detaches).
+ */
+export async function reconcileProjectRegistryGc(now = Date.now()): Promise<void> {
+  if (inFlightCollect) return
+  let services: RawServiceList | null
+  try {
+    services = await kubectlGetJson<RawServiceList>([
+      'get', 'services', '-n', k8sNamespace(),
+      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
+    ])
+  } catch (err) {
+    console.warn(`Registry GC: failed to list registries: ${(err as Error).message}`)
+    return
+  }
+  for (const item of services?.items ?? []) {
+    const slug = item.metadata.labels?.[LABEL_PROJECT]
+    if (!slug) continue
+    const last = lastRegistryGcMs.get(slug)
+    if (last !== undefined && now - last < REGISTRY_GC_INTERVAL_MS) continue
+    lastRegistryGcMs.set(slug, now)
+    inFlightCollect = collectProjectRegistry(slug)
+      .catch((err: unknown) => {
+        console.warn(`Registry GC for ${slug} failed: ${String(err)}`)
+      })
+      .finally(() => { inFlightCollect = null })
+    return
+  }
+}
+
+/**
+ * The collect itself, under the project's ensure mutex. That mutex is what
+ * makes a session create safe against a running collect — and also the one
+ * place a create can wait on one: worst case it blocks for the two
+ * rollouts plus REGISTRY_GC_TIMEOUT_MS. At the 6h cadence that is rare,
+ * but it is where the latency comes from.
+ */
+async function collectProjectRegistry(projectSlug: string): Promise<void> {
+  await registryEnsureMutex(projectSlug, async () => {
+    const name = projectRegistryName(projectSlug)
+    const ns = k8sNamespace()
+    const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+    const roll = async (readOnly: boolean): Promise<void> => {
+      await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef, { readOnly }))
+      await kubectlWithRetry([
+        'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
+      ], { timeout: 130_000, maxAttempts: 2 })
+    }
+
+    await roll(true)
+    try {
+      // The storage is node-local, so the collect has to land on the node
+      // the registry serves from. No pod at all means nothing has ever
+      // served, so there is nothing to collect.
+      const pods = await kubectlGetJson<RawRegistryPods>([
+        'get', 'pods', '-l', registrySelector(projectSlug), '-n', ns,
+      ])
+      const nodeName = pods?.items?.[0]?.spec?.nodeName
+      if (!nodeName) return
+      const runId = crypto.randomBytes(4).toString('hex')
+      const { phase, logs } = await runPodToCompletion(
+        buildRegistryGcPodManifest(projectSlug, imageRef, nodeName, runId),
+        { timeoutMs: REGISTRY_GC_TIMEOUT_MS, pollMs: 1000 },
+      )
+      if (phase !== 'Succeeded') {
+        throw new Error(`collect pod did not complete (phase ${phase})`
+          + (logs.trim() ? `; logs: ${logs.trim()}` : ''))
+      }
+      serverLog(`[server] registry gc: project=${projectSlug} ${logs.trim().split('\n').pop() ?? ''}`)
+    } finally {
+      // Unconditional: a failed collect must never strand the registry in
+      // maintenance mode, where every salvage push would answer 405.
+      await roll(false).catch((err: unknown) => {
+        console.warn(`Registry GC: failed to restore ${projectSlug} to serving: ${String(err)}`)
+      })
+    }
+  })
 }
 
 /**

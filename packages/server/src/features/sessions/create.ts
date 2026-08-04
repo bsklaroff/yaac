@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureImage, pushImageShared, sharedImageStoreHostPath } from '#features/images'
+import { ensureImage, primeSessionImages, pushImageShared } from '#features/images'
 import { proxyClient, resolveProxyImageTag } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/egress/proxy-registration'
 import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
@@ -18,7 +18,6 @@ import {
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
   type HostPathMount,
-  type NestedContainersParams,
   awaitDeferredClusterBoot,
   buildSessionJobManifest,
   dataDirHash,
@@ -223,7 +222,7 @@ interface SessionSetupParams {
   hostPathMounts: HostPathMount[]
   /** Live proxy Service ClusterIP — the pod's resolver + egress redirect target. */
   proxyHost: string
-  nested?: NestedContainersParams
+  nested?: boolean
   /** Inner (nested) yaac — don't stamp a RuntimeClass (see SessionJobParams). */
   innerYaac?: boolean
   tool: AgentTool
@@ -391,8 +390,8 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   }
 
   // Nested sessions: the postStart hook started the rootful in-pod engine
-  // in the background (yaac-session-init, which also writes the
-  // virtualCluster registries.conf drop-in from YAAC_REGISTRY_CONF_B64).
+  // in the background (yaac-session-init, which also writes the project
+  // registries.conf drop-in from YAAC_REGISTRY_CONF_B64).
   // Gate on `docker version` here so a broken engine fails the create with
   // a clear error instead of a confusing "cannot connect to docker" the
   // first time the agent runs.
@@ -414,6 +413,15 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
         await new Promise((r) => setTimeout(r, 500))
       }
     }
+
+    // Warm the engine from the project registry — the pull half of the
+    // image salvage, so an agent's first `docker build` hits the layers
+    // this project's earlier sessions built. Awaited: the cache has to be
+    // in the store before the agent runs, or the first build races it.
+    // Best-effort and bounded, so a registry-less or slow project ends up
+    // with a cold cache, never a failed create.
+    emit('Warming the image cache...', options)
+    await primeSessionImages({ jobName, projectSlug, sessionId })
   }
 
   // Open the init windows and swap the keepalive placeholder for the real
@@ -565,6 +573,10 @@ export async function createSession(
   // (and rejects an explicit `nestedContainers: false` alongside it).
   const virtualCluster = config.virtualCluster === true
   const nestedContainers = config.nestedContainers === true || virtualCluster
+  // The per-project registry backs both the vcluster image flow and the
+  // nested engine's image cache — but an inner yaac cannot host one (see
+  // the ensure below).
+  const projectRegistry = nestedContainers && !yaacEnv.nested
 
   // Recursion cap: an inner yaac (running inside a vcluster session)
   // must not stand up vcluster-in-vcluster — the depth buys nothing
@@ -735,21 +747,28 @@ export async function createSession(
     emit('Ensuring proxy deployment...', options)
     await proxyClient.ensureRunning()
 
-    // virtualCluster sessions get a per-project push registry — the image
-    // source for vcluster synced pods and yaac-in-yaac — plus their own
-    // virtual cluster. The pod reaches both on their in-cluster ClusterIPs,
-    // which it resolves through the proxy's split-horizon DNS (`*.svc` →
-    // cluster CoreDNS), so no pinned VIP or hostAliases is needed; the
-    // per-project/per-session NetworkPolicies these ensures apply admit the
-    // flows, scoped to the session's own registry and vcluster.
-    // The vcluster is created here so its cold start overlaps the image,
-    // worktree, and fs-prep legs; the kubeconfig is awaited at the end of
-    // this leg, just before the mounts are assembled.
-    let vclusterFreshlyCreated = false
-    if (virtualCluster) {
+    // Every nested session gets the per-project push registry: it is the
+    // image source for vcluster synced pods and yaac-in-yaac, AND the bus
+    // the in-pod engine's cross-session image cache rides (salvage pushes,
+    // the next session pulls — see image-promoter.ts). The pod reaches it
+    // on its in-cluster ClusterIP, resolved through the proxy's
+    // split-horizon DNS (`*.svc` → cluster CoreDNS), so no pinned VIP or
+    // hostAliases is needed; the per-project NetworkPolicies this ensure
+    // applies admit the flow, scoped to the session's own registry.
+    // Never inside an INNER yaac: its vcluster's synced-pod policy denies
+    // the node hostPath the registry storage needs, so those sessions run
+    // without a cross-session image cache (image-promoter self-gates too).
+    if (projectRegistry) {
       emit('Ensuring project registry...', options)
       await ensureProjectRegistry(projectSlug)
+    }
 
+    // virtualCluster sessions additionally get their own virtual cluster,
+    // created here so its cold start overlaps the image, worktree, and
+    // fs-prep legs; the kubeconfig is awaited at the end of this leg, just
+    // before the mounts are assembled.
+    let vclusterFreshlyCreated = false
+    if (virtualCluster) {
       // The wake activator that serves this (and every) vcluster's
       // scale-to-zero — before the vcluster so its pod IP is available to
       // the sleep step below. Runs the proxy image the ensureRunning()
@@ -1214,10 +1233,12 @@ export async function createSession(
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(projectSlug, sessionId, forwardedPorts)}`)
   if (nestedContainers) {
     env.push('YAAC_NESTED_ENGINE=1')
-    if (virtualCluster) {
+    if (projectRegistry) {
       // The per-project registries.conf drop-in, written by the script
       // (sudo) before the engine starts. Base64 keeps the TOML free of
-      // env-value quoting concerns.
+      // env-value quoting concerns. Every nested session needs it: the
+      // registry is plain HTTP, and the image cache pushes/pulls through
+      // it even when there is no vcluster.
       const conf = Buffer.from(projectRegistryConfDropIn(projectSlug), 'utf8').toString('base64')
       env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
     }
@@ -1226,12 +1247,6 @@ export async function createSession(
   // vcluster wiring (KUBECONFIG, nested data dir, registry host) resolved
   // in the cluster leg.
   env.push(...cluster.vclusterEnv)
-
-  // Nested-containers pod wiring: shared image store hostPath (node-local)
-  // + graphroot/securityContext branch in the manifest.
-  const nested: NestedContainersParams | undefined = nestedContainers
-    ? { sharedImagesHostPath: sharedImageStoreHostPath(projectSlug) }
-    : undefined
 
   // Inside a nested (inner) yaac no runtimeClassName is stamped — the
   // vcluster has no RuntimeClass objects, and the syncer sets the synced
@@ -1278,7 +1293,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts, launching,
-    proxyHost: cluster.proxyHost, nested, innerYaac, tool, initWindows,
+    proxyHost: cluster.proxyHost, nested: nestedContainers, innerYaac, tool, initWindows,
     piProvider: toolAuthByTool.pi?.piProvider,
     options, worktree: worktreeTask,
   }

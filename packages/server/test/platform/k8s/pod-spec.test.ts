@@ -2,13 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   CA_CONFIGMAP_NAME,
   NESTED_GRAPHROOT_PATH,
-  SHARED_IMAGE_STORE_DST_PATH,
-  SHARED_IMAGE_STORE_PATH,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
   buildSessionJobManifest,
   graphrootMountAnnotations,
-  type NestedContainersParams,
 } from '#platform/k8s'
 // Internals, for fixtures and bounds only: the in-container cert dir, the
 // sentry tmpfs cap, and the params the builder takes.
@@ -302,9 +299,7 @@ describe('buildSessionJobManifest', () => {
   })
 
   describe('nestedContainers', () => {
-    const nested: NestedContainersParams = {
-      sharedImagesHostPath: '/var/lib/yaac/imagecache/ddh16/demo',
-    }
+    const nested = true
 
     it('leaves the non-nested manifest byte-identical when nested is absent', () => {
       const withoutField = buildSessionJobManifest(params())
@@ -314,7 +309,7 @@ describe('buildSessionJobManifest', () => {
       const spec = build().spec.template.spec
       expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
       expect(spec.initContainers).toBeUndefined()
-      expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
+      expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
       // No graphroot-tmpfs annotations on a non-nested pod.
       expect(build().spec.template.metadata.annotations).toBeUndefined()
       expect(spec.containers[0].resources).toEqual({
@@ -392,25 +387,18 @@ describe('buildSessionJobManifest', () => {
       })
     })
 
-    it('mounts the shared image store rw at both paths with no chown init', () => {
+    it('mounts nothing for the image cache — it rides the project registry', () => {
+      const plain = build().spec.template.spec
       const spec = build({ nested }).spec.template.spec
-      expect(spec.volumes).toContainEqual({
-        name: 'shared-images',
-        hostPath: { path: '/var/lib/yaac/imagecache/ddh16/demo', type: 'DirectoryOrCreate' },
-      })
-      // rw mount (no readOnly key): additionalimagestores creates lock dirs.
-      expect(spec.containers[0].volumeMounts).toContainEqual({
-        name: 'shared-images',
-        mountPath: SHARED_IMAGE_STORE_PATH,
-      })
-      // A second mount of the same volume — the promoter's write-side
-      // destination root, dodging the read-only additional-store lock.
-      expect(spec.containers[0].volumeMounts).toContainEqual({
-        name: 'shared-images',
-        mountPath: SHARED_IMAGE_STORE_DST_PATH,
-      })
-      // The rootful engine reads/writes the store as root, so there is no
-      // chown init container anymore.
+      // The cross-session cache is a push/pull against the project's
+      // in-cluster registry, so nesting adds exactly ONE volume (the
+      // graphroot) and nothing that ties the pod to a node. Asserted as a
+      // delta against the non-nested spec rather than an exact list, which
+      // any unrelated volume would break. No chown init either — the
+      // rootful engine owns its graphroot.
+      expect(spec.volumes.map((v) => v.name))
+        .toEqual([...plain.volumes.map((v) => v.name), 'podman-graphroot'])
+      expect(JSON.stringify(spec)).not.toContain('shared-images')
       expect(spec.initContainers).toBeUndefined()
     })
 

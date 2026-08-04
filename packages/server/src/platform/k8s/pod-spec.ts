@@ -32,28 +32,6 @@ export const SSH_AGENT_MOUNT = '/ssh-agent'
 export const SSH_AGENT_SOCKET_PATH = `${SSH_AGENT_MOUNT}/socket`
 
 /**
- * In-container mount point of the cross-session shared image store
- * (`additionalimagestores` in the nestable image's storage.conf). Mounted
- * rw because podman unconditionally creates lock-file directories inside
- * the store path (containers/storage#1733) — store CONTENT is only ever
- * written node-side by the salvage writer pod (image-promoter.ts);
- * session-side writes are lock files only.
- */
-export const SHARED_IMAGE_STORE_PATH = '/var/lib/shared-images'
-
-/**
- * A second mount of the SAME shared-image-store hostPath, used by the
- * salvage survey as its tar handoff directory (a bulk sequential write —
- * the one gofer write pattern that's fast). Distinct path, same
- * directory: the store is also listed in `additionalimagestores`, which
- * podman opens with a read-only lock, so in-pod writes addressed under
- * SHARED_IMAGE_STORE_PATH would collide with that lock; a separate path
- * podman doesn't recognize as its own additional store stays out of the
- * way, and the node-side writer sees the tar in the same directory.
- */
-export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
-
-/**
  * In-container path of the per-session ROOTFUL podman graphroot — podman's
  * default `/var/lib/containers/storage` lives under this dir (the image's
  * storage.conf sets graphroot there). Backed by a sentry-internal tmpfs
@@ -162,23 +140,6 @@ export interface HostPathMount {
   type?: 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 }
 
-/**
- * Nested-containers (in-pod rootless podman) parameters. Present only for
- * `nestedContainers: true` sessions — non-nested pod specs are
- * byte-identical to a spec built without this field.
- */
-export interface NestedContainersParams {
-  /**
-   * Node-local hostPath backing the cross-session shared image store
-   * (`/var/lib/yaac/imagecache/<dataDirHash>/<projectSlug>`). Root-owned
-   * `DirectoryOrCreate`: the rootful in-sandbox engine reads it (as its
-   * `additionalimagestores` lower), the salvage survey drops its tar
-   * handoff in it, and the node-side writer pod populates it — all as
-   * root, so no ownership fixup is needed.
-   */
-  sharedImagesHostPath: string
-}
-
 export interface SessionJobParams {
   jobName: string
   namespace: string
@@ -236,8 +197,14 @@ export interface SessionJobParams {
    * (buildEgressRedirectCecManifest) — no per-pod redirect-init/relay sidecar.
    */
   proxyHost: string
-  /** In-pod podman wiring; absent for non-nested sessions. */
-  nested?: NestedContainersParams
+  /**
+   * In-pod podman: the rootful-engine graphroot, cap set, and gVisor
+   * handler. False (or absent) leaves the pod spec byte-identical to one
+   * built without the field. The engine's cross-session image cache needs
+   * nothing here — it rides the project registry (image-promoter.ts), not
+   * a mount.
+   */
+  nested?: boolean
   /**
    * postStart lifecycle hook command (argv). Session pods run
    * `yaac-session-init` here — the kubelet holds the container's Ready
@@ -319,16 +286,6 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
       emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
     })
     volumeMounts.push({ name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH })
-    // Cross-session shared image store (additionalimagestores). rw — see
-    // SHARED_IMAGE_STORE_PATH. Mounted at a second path too
-    // (SHARED_IMAGE_STORE_DST_PATH) so the teardown promoter can write to
-    // it without colliding with the read-only additional-store lock.
-    volumes.push({
-      name: 'shared-images',
-      hostPath: { path: p.nested.sharedImagesHostPath, type: 'DirectoryOrCreate' },
-    })
-    volumeMounts.push({ name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH })
-    volumeMounts.push({ name: 'shared-images', mountPath: SHARED_IMAGE_STORE_DST_PATH })
   }
 
   return {

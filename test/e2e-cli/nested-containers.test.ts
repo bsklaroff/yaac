@@ -241,7 +241,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     await testEnv.cleanup()
   })
 
-  it('builds with in-pod podman and reuses layers across sessions via the shared store', async () => {
+  it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
     const slug = 'nested-cache'
     await setupProject(slug)
 
@@ -250,20 +250,22 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const name1 = session1.jobName
 
     // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
-    // podman socket, the shared store is mounted rw (root-owned — the
-    // rootful engine and the salvage survey use it as root), and the system
-    // storage.conf points additionalimagestores at it.
+    // podman socket, the engine has NO additional image store (the
+    // cross-session cache is the project registry, so nothing pins a
+    // session to one node), and the registry is reachable as an insecure
+    // (plain HTTP) registry via the per-project drop-in.
     const { stdout: dockerVer } = await execInJob(name1, ['docker', 'version'], { timeout: 30_000 })
     expect(dockerVer.toLowerCase()).toContain('podman')
     const { stdout: storageConf } = await execInJob(name1, [
       'cat', '/etc/containers/storage.conf',
     ])
-    expect(storageConf).toContain('/var/lib/shared-images')
-    // Root-owned hostPath (DirectoryOrCreate) — no chown-init under rootful.
-    const { stdout: storeOwner } = await execInJob(name1, [
-      'stat', '-c', '%u', '/var/lib/shared-images',
+    expect(storageConf).not.toContain('additionalimagestores')
+    const { stdout: regConf } = await execInJob(name1, [
+      'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
-    expect(storeOwner.trim()).toBe('0')
+    const registryHost = /location = "([^"]+)"/.exec(regConf)?.[1] ?? ''
+    expect(registryHost).toMatch(/^yaac-reg-nested-cache-[0-9a-f]{8}\..+:5000$/)
+    expect(regConf).toContain('insecure = true')
 
     // The rootful graphroot (a root-owned tmpfs at /var/lib/containers) is
     // populated by the engine; assert a root write lands.
@@ -273,35 +275,36 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     ])
     expect(graphProbe.trim()).toBe('WRITABLE')
 
-    // The shared image store's two mounts are the SAME directory: a write
-    // through the salvage's -dst mount is visible via the additional-store
-    // mount the session reads. Both are root-owned (the rootful survey
-    // writes them), so probe via sudo.
-    await execInJob(name1, [
-      'sh', '-c', 'sudo sh -c "echo dst-probe > /var/lib/shared-images-dst/.yaac-write-probe"',
-    ])
-    const { stdout: storeProbe } = await execInJob(name1, [
-      'sh', '-c', 'cat /var/lib/shared-images/.yaac-write-probe',
-    ])
-    expect(storeProbe.trim()).toBe('dst-probe')
-
-    // Build a tiny image (FROM scratch — no network involved).
-    await execInJob(name1, [
-      'sh', '-c',
+    // Build a two-step image (FROM scratch — no network involved). The
+    // second step exists so the build leaves an INTERMEDIATE image behind:
+    // that is what a later, divergent build has to match, and it only
+    // survives if the salvage carried the ancestor chain too.
+    const buildProbe = (tag: string, lastStep: string): string =>
       'mkdir -p /tmp/b && cd /tmp/b && '
       + 'echo cache-payload > marker && '
-      + 'printf "FROM scratch\\nCOPY marker /marker\\n" > Dockerfile && '
-      + 'docker build -t yaac-cache-probe:v1 .',
-    ], { timeout: 120_000 })
-    const { stdout: id1raw } = await execInJob(name1, [
-      'sh', '-c', 'docker image inspect --format "{{.Id}}" yaac-cache-probe:v1',
-    ])
-    const imageId1 = id1raw.trim()
-    expect(imageId1).toBeTruthy()
+      + `printf "FROM scratch\\nCOPY marker /marker\\nCOPY marker /${lastStep}\\n" > Dockerfile && `
+      + `docker build -t ${tag} .`
+    await execInJob(name1, ['sh', '-c', buildProbe('yaac-cache-probe:v1', 'marker2')], {
+      timeout: 120_000,
+    })
+    const inspect = async (job: string, ref: string, field: string): Promise<string> => {
+      const { stdout } = await execInJob(job, [
+        'sh', '-c', `docker image inspect --format "{{.${field}}}" ${ref} 2>&1 || echo MISSING`,
+      ])
+      return stdout.trim()
+    }
+    const imageId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Id')
+    const parentId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Parent')
+    // Both real ids (the `sha256:` prefix is engine-dependent) — in
+    // particular a NON-empty parent, since every "reused the intermediate"
+    // assertion below would pass vacuously against two empty strings.
+    expect(imageId1).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
+    expect(parentId1).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
 
     // --- Delete session 1 ---
-    // Detached cleanup order: image salvage (in-pod survey+save → node-side
-    // writer load) → job delete. Job absence proves the whole pipeline ran.
+    // Detached cleanup order: image salvage (in-pod survey → in-pod push to
+    // the project registry) → job delete. Job absence proves the whole
+    // pipeline ran.
     const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.sessionId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
@@ -310,32 +313,39 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const session2 = await createSession(slug)
     expect(session2.sessionId).not.toBe(session1.sessionId)
 
-    // Rebuild the identical Dockerfile: with session 1's layers promoted
-    // into the shared store, this is a pure cache hit — identical image id.
-    await execInJob(session2.jobName, [
+    // The salvage's product is visible in the project's registry: the image
+    // under its own name, and its ancestor chain under bounded
+    // `yaac-cache-<tag>-<n>` tags in the same repo.
+    const { stdout: catalog } = await execInJob(session2.jobName, [
+      'sh', '-c', `curl -fsS --max-time 20 http://${registryHost}/v2/_catalog`,
+    ], { timeout: 30_000 })
+    expect(catalog).toContain('localhost/yaac-cache-probe')
+    const { stdout: tags } = await execInJob(session2.jobName, [
       'sh', '-c',
-      'mkdir -p /tmp/b && cd /tmp/b && '
-      + 'echo cache-payload > marker && '
-      + 'printf "FROM scratch\\nCOPY marker /marker\\n" > Dockerfile && '
-      + 'docker build -t yaac-cache-probe:v2 .',
-    ], { timeout: 120_000 })
-    const { stdout: id2raw } = await execInJob(session2.jobName, [
-      'sh', '-c', 'docker image inspect --format "{{.Id}}" yaac-cache-probe:v2',
-    ])
-    expect(id2raw.trim()).toBe(imageId1)
+      `curl -fsS --max-time 20 http://${registryHost}/v2/localhost/yaac-cache-probe/tags/list`,
+    ], { timeout: 30_000 })
+    expect(tags).toContain('"v1"')
+    expect(tags).toContain('"yaac-cache-v1-1"')
 
-    // Salvage tag restore: session 1's image is reachable in
-    // session 2 by NAME, not just by layer id. The save/load handoff moves
-    // images by id (podman save of an id carries no names), so without the
-    // writer's tag pass the image would exist in the store but be unreferenceable as
-    // `yaac-cache-probe:v1`. A by-name inspect against session 2's fresh
-    // graphroot (which never built :v1) can only resolve through the
-    // additional store, so a hit proves the restore ran.
-    const { stdout: byName } = await execInJob(session2.jobName, [
-      'sh', '-c',
-      'docker image inspect --format "{{.Id}}" yaac-cache-probe:v1 2>&1 || echo TAG_MISSING',
-    ])
-    expect(byName.trim()).toBe(imageId1)
+    // Prime (session setup) pulled them back, so session 1's image is
+    // reachable in session 2 by NAME, with the same id: the push/pull
+    // round trip preserves the config digest, which IS the image id.
+    expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')).toBe(imageId1)
+
+    // Rebuilding the identical Dockerfile is a pure cache hit — identical
+    // image id, nothing rebuilt.
+    await execInJob(session2.jobName, ['sh', '-c', buildProbe('yaac-cache-probe:v2', 'marker2')], {
+      timeout: 120_000,
+    })
+    expect(await inspect(session2.jobName, 'yaac-cache-probe:v2', 'Id')).toBe(imageId1)
+
+    // And a build that DIVERGES at the last step still hits the cache for
+    // the shared prefix: its parent is session 1's intermediate image,
+    // which only the salvaged ancestor chain could have supplied.
+    await execInJob(session2.jobName, ['sh', '-c', buildProbe('yaac-cache-probe:v3', 'marker3')], {
+      timeout: 120_000,
+    })
+    expect(await inspect(session2.jobName, 'yaac-cache-probe:v3', 'Parent')).toBe(parentId1)
 
     await runYaac(serverEnv, 'worktree', 'stop', session2.sessionId)
   }, 900_000)

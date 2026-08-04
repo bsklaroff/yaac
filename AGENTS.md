@@ -8,6 +8,7 @@
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
 - Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
 - Running tests: pick the narrowest project (`pnpm vitest run --project unit:server [file]`, `--project api`, `--project e2e`), and never pipe a run through `tail`/`head` — the failure details print *before* the summary, so truncating leaves you knowing only that something failed. A full run takes minutes, so run it in the background and read its output file rather than blocking. Every run also writes `.vitest-last-run.json`; `pnpm test:failures` prints the failing test names, files, and assertions from it, so a lost or truncated console never costs a re-run.
+- Don't let monitoring shells stack up. A backgrounded command already notifies you when it exits, so wait for that notification instead of spawning `sleep N; tail …` checks against its log. If you must poll, keep at most ONE `until <done>; do sleep …; done` waiter armed at a time and let it report. Repeated pollers pile up as live shells and end up competing for CPU with the job they are watching — which is exactly how a long build or lint run gets starved.
 - A dev session's init commands build and start the server once (`pnpm build`, `yaac server start`); they do **not** run `pnpm watch`. The running server therefore keeps serving whatever `dist/` held when the session started. To test a source change by hand against the live server/cluster, first make `dist/` current — a one-shot `pnpm build`, or start the `pnpm watch` loop yourself (build + serve + rebuild-on-change) and leave it running for the session.
 - A DB schema change (`packages/server/src/platform/db/schema.ts`) needs a Drizzle migration: generate it with a descriptive name via `pnpm --filter @yaac/server exec drizzle-kit generate --name <change>` (e.g. `add_deleted_sessions`), and commit the emitted `packages/server/drizzle/<timestamp>_<name>/` dir. Never keep drizzle's auto-generated random suffix (`<timestamp>_<adjective_noun>`, e.g. `melodic_polaris`) — if you already generated one, delete that dir and re-run with `--name`. Migrations apply automatically on server start (`getDb()` runs `migrate()`).
 - Limit all git commit message lines to 80 characters maximum.
@@ -104,7 +105,7 @@ The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
 per-project registries (`packages/server/src/features/cluster/project-registry.ts`), the vcluster
 image set (`k8s/vcluster/images.json`), and `quay.io/podman/stable` for the
-image-salvage writer pod (`packages/server/src/features/images/image-promoter.ts`),
+sandboxed builder pods (`packages/server/src/features/images/builder-pod.ts`),
 and `envoyproxy/envoy` for netd's redirect sidecar
 (`packages/server/src/features/cluster/netd.ts`).
 

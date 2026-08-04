@@ -10,7 +10,12 @@
 // through the entry points below.
 
 export { ensureImage, pushImageShared, rebuildProjectImage } from './build-coordinator'
-export { BUILDER_CONTEXT_MAX_BYTES, ensureBuilderRoleGuard, reconcileBuilderPodGc } from './builder-pod'
+export {
+  BUILDER_CONTEXT_MAX_BYTES,
+  ensureBuilderImage,
+  ensureBuilderRoleGuard,
+  reconcileBuilderPodGc,
+} from './builder-pod'
 export {
   baseImageHash,
   buildImage,
@@ -34,6 +39,6 @@ export {
 } from './image-builds'
 export { reconcileHostImageGc } from './image-gc'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
-export { ensureSalvageWriterImage, salvageSessionImages, sharedImageStoreHostPath } from './image-promoter'
+export { primeSessionImages, salvageSessionImages } from './image-promoter'
 export { tryClaimPrewarmed } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
