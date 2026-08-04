@@ -140,6 +140,34 @@ per-node image cache seeded ahead of the pod. It is deliberately not
 built: it adds a node-local store, its GC, and version pinning across
 host and pod to save the pull on a rare, prewarm-hidden path.
 
+## A restart aborts every in-flight build
+
+Podman commits an image tag only when the build finishes, so a build that
+outlives its server is invisible to the successor's existence check: it
+starts a second build of the same tag, and the two fight over the shared
+layer cache and the image-store lock. Both halves of the split therefore
+die with the server.
+
+- **Builder pods.** `reconcileBuilderPodGc` deletes any
+  `yaac.role=builder` pod created before this process started (the
+  data-dir lock admits one server per install, so an older pod can only
+  belong to a dead one). The reconciler runs it ahead of the prewarm
+  step on the boot pass, so the leaked pod's memory reservation is
+  released before anything tries to schedule a replacement.
+- **Host podman.** `podman build`/`podman push` children run through
+  `platform/container/host-procs.ts`, which SIGTERMs them from the
+  shutdown handler and records each pid in `<data dir>/host-podman.json`
+  first. A host pid carries no label to select on, so the file is what
+  makes the crash path reapable: `reapOrphanedPodmanProcs` reads it once
+  at boot, confirms via `ps` that the pid is still a podman invocation
+  carrying the recorded tag (a pid-reuse guard), and terminates it —
+  SIGTERM so podman releases the store lock, escalating to SIGKILL after
+  a grace period.
+
+The in-memory build registry that feeds the webapp's build list is *not*
+persisted: with the build itself aborted there is no live work to
+reattach to, and the next prewarm sweep re-derives what is missing.
+
 ## Server wiring
 
 - A `BuildEngine` seam (`features/images/build-engine.ts`,
