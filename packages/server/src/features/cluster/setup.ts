@@ -5,7 +5,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
-import { ensureGvisorRuntime, execFileAsync } from '#platform/k8s'
+import { ensureGvisorRuntime, ensurePriorityClasses, execFileAsync } from '#platform/k8s'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { ensureRegistryClusterService } from './registry-service'
 import { ensureBuilderRoleGuard } from '#features/images'
@@ -148,6 +148,9 @@ export interface ClusterSetupDeps {
   /** Builds/pushes the netd + Envoy images and applies the DaemonSet.
    *  Injectable for the same reason as exposeRegistry. */
   ensureNetd: () => Promise<void>
+  /** Installs the infra/session PriorityClasses. Injectable for the same
+   *  reason as the two above. */
+  ensurePriorityClasses: () => Promise<void>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -210,6 +213,7 @@ function defaultDeps(): ClusterSetupDeps {
       return host
     },
     ensureNetd,
+    ensurePriorityClasses,
     check: () => runClusterCheck(),
     platform: process.platform,
     homedir: () => os.homedir(),
@@ -294,6 +298,7 @@ export async function runClusterSetup(
     await deps.ensureRegistry()
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
+    await installPriorityClasses(deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
     await deployNetd(deps)
@@ -310,6 +315,7 @@ export async function runClusterSetup(
     const nodes = await kindNodes(deps, cluster)
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
+    await installPriorityClasses(deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
     await deployNetd(deps)
@@ -695,6 +701,22 @@ async function exposeRegistryInCluster(deps: ClusterSetupDeps): Promise<void> {
       + 'trust-split image builds will retry this on first use.',
     )
   }
+}
+
+/**
+ * Install the infra/session PriorityClasses. Runs in `--repair` too: like
+ * the gVisor RuntimeClasses, these are cluster-scoped objects the manifest
+ * builders name, so this is how a cluster created by an older yaac gets
+ * them on upgrade (the server re-ensures them at boot as well).
+ *
+ * Deliberately NOT fail-soft: a pod naming a class the apiserver doesn't
+ * have is rejected, and a Job whose pod is rejected hangs rather than
+ * failing, so finishing setup without them would trade a clear error here
+ * for a mystifying one at the next session create.
+ */
+async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
+  deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
+  await deps.ensurePriorityClasses()
 }
 
 /**

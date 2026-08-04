@@ -28,6 +28,7 @@ import {
   _resetDeferredClusterBootForTests,
 } from '#platform/k8s/deferred-boot'
 import { sessionUid } from '#features/images'
+import { buildPriorityClassManifests } from '#platform/k8s'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -52,6 +53,30 @@ async function simulateProbeWrite(): Promise<void> {
   await fs.writeFile(path.join(getDataDir(), '.cluster-check-write'), 'ok\n')
 }
 
+interface LivePriorityClass {
+  metadata: { name: string }
+  value: number
+  preemptionPolicy: string
+}
+
+/**
+ * The installed PriorityClasses as the apiserver hands them back: same
+ * objects `yaac cluster setup` applies, except that kubernetes materializes
+ * the omitted preemptionPolicy into an explicit PreemptLowerPriority — the
+ * asymmetry the check has to tolerate.
+ */
+function livePriorityClasses(): LivePriorityClass[] {
+  return (buildPriorityClassManifests() as unknown as Array<{
+    metadata: { name: string }
+    value: number
+    preemptionPolicy?: string
+  }>).map((c) => ({
+    metadata: { name: c.metadata.name },
+    value: c.value,
+    preemptionPolicy: c.preemptionPolicy ?? 'PreemptLowerPriority',
+  }))
+}
+
 /**
  * deps.run implementation covering every probe the all-pass path makes.
  * `kubectl logs` echoes back the nonce file runClusterCheck wrote so the
@@ -71,6 +96,9 @@ async function happyResponses(
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass') {
     return { stdout: 'gvisor gvisor-nested runc', stderr: '' }
+  }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
+    return { stdout: JSON.stringify({ items: livePriorityClasses() }), stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-gvisor') {
     return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
@@ -215,6 +243,7 @@ describe('runClusterCheck', () => {
       ['podman', 'pass'],
       ['registry', 'pass'],
       ['namespace', 'pass'],
+      ['priority-classes', 'pass'],
       ['node-fixups', 'pass'],
       ['gvisor', 'pass'],
       ['probe', 'pass'],
@@ -486,6 +515,50 @@ describe('runClusterCheck', () => {
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'skip' })
     expect(fixups?.detail).toContain('not a podman container')
+  })
+
+  it('fails priority-classes (and skips the probes) when a class is missing', async () => {
+    // The failure this names: the apiserver rejects a pod that references a
+    // class it does not have, so a session Job applies and then hangs with
+    // no pod — with nothing else in the check pointing at the cause.
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
+        const items = livePriorityClasses().filter((c) => c.metadata.name !== 'yaac-session')
+        return Promise.resolve({ stdout: JSON.stringify({ items }), stderr: '' })
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    const pcs = byName(results, 'priority-classes')
+    expect(pcs).toMatchObject({ status: 'fail' })
+    expect(pcs?.detail).toContain('yaac-session')
+    expect(pcs?.fix).toContain('yaac cluster setup --repair')
+    expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
+  })
+
+  it('warns (without failing) when an installed PriorityClass has drifted', async () => {
+    // A class an older yaac installed with different numbers still lets
+    // every pod schedule — it just ranks them wrong, so this is not fatal.
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
+        const items = livePriorityClasses().map((c) =>
+          c.metadata.name === 'yaac-infra' ? { ...c, value: 42 } : c)
+        return Promise.resolve({ stdout: JSON.stringify({ items }), stderr: '' })
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(true)
+    const pcs = byName(results, 'priority-classes')
+    expect(pcs).toMatchObject({ status: 'warn' })
+    expect(pcs?.detail).toContain('yaac-infra')
+    // Warn-only: the rest of the suite still runs.
+    expect(byName(results, 'probe')).toMatchObject({ status: 'pass' })
   })
 
   it('fails gvisor (and skips the probes) when a RuntimeClass is missing', async () => {

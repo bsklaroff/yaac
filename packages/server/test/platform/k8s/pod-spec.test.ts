@@ -12,6 +12,7 @@ import {
 // sentry tmpfs cap, and the params the builder takes.
 import {
   CA_MOUNT_DIR,
+  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
   type SessionJobParams,
 } from '#platform/k8s/pod-spec'
@@ -31,6 +32,9 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     hostPathMounts: [],
     memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
+    cpuRequestMillis: 250,
+    ephemeralStorageRequestBytes: 2 * 1024 ** 3,
+    ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     // The pinned proxy Service VIP — an IP, never a DNS name.
     proxyHost: '10.96.0.179',
     ...overrides,
@@ -52,6 +56,7 @@ interface Manifest {
         enableServiceLinks: boolean
         hostUsers?: boolean
         runtimeClassName?: string
+        priorityClassName?: string
         dnsPolicy?: string
         dnsConfig?: { nameservers: string[] }
         securityContext: { seccompProfile: { type: string }; fsGroup?: number }
@@ -149,14 +154,37 @@ describe('buildSessionJobManifest', () => {
     ).toBe(30)
   })
 
-  it('configures the session container: image, pull policy, workdir, memory request/limit', () => {
+  it('configures the session container: image, pull policy, workdir, requests/limits', () => {
     const c = build().spec.template.spec.containers[0]
     expect(c.name).toBe('session')
     expect(c.image).toBe('localhost:5000/yaac-tools:abc')
     expect(c.imagePullPolicy).toBe('IfNotPresent')
     expect(c.workingDir).toBe('/workspace')
-    expect(c.resources.requests.memory).toBe(String(1 * 1024 ** 3))
-    expect(c.resources.limits.memory).toBe(String(8 * 1024 ** 3))
+    // Every dimension the scheduler bin-packs on is requested — a pod with
+    // no cpu request is free capacity as far as the scheduler is concerned.
+    expect(c.resources.requests).toEqual({
+      cpu: '250m',
+      memory: String(1 * 1024 ** 3),
+      'ephemeral-storage': String(2 * 1024 ** 3),
+    })
+    // Memory and disk are capped, cpu deliberately is not: a CFS quota
+    // throttles an interactive session even on an idle node.
+    expect(c.resources.limits).toEqual({
+      memory: String(8 * 1024 ** 3),
+      'ephemeral-storage': String(16 * 1024 ** 3),
+    })
+    expect(c.resources.limits).not.toHaveProperty('cpu')
+  })
+
+  it('puts host session pods on the low-priority tier and inner ones on none', () => {
+    // Infra (proxy, registries, builders) outranks this, so a full node
+    // sheds a session rather than the network every session depends on.
+    expect(build().spec.template.spec.priorityClassName).toBe('yaac-session')
+    // Inner (vcluster) pods stamp nothing, like runtimeClassName: the
+    // syncer drops the class name host-side but copies preemptionPolicy,
+    // and the host's priority admission plugin rejects that combination —
+    // a pod that never syncs is a session that never starts.
+    expect(build({ innerYaac: true }).spec.template.spec.priorityClassName).toBeUndefined()
   })
 
   it('parses env entries, preserving equals signs inside values', () => {
@@ -271,8 +299,15 @@ describe('buildSessionJobManifest', () => {
       // No graphroot-tmpfs annotations on a non-nested pod.
       expect(build().spec.template.metadata.annotations).toBeUndefined()
       expect(spec.containers[0].resources).toEqual({
-        requests: { memory: String(1 * 1024 ** 3) },
-        limits: { memory: String(8 * 1024 ** 3) },
+        requests: {
+          cpu: '250m',
+          memory: String(1 * 1024 ** 3),
+          'ephemeral-storage': String(2 * 1024 ** 3),
+        },
+        limits: {
+          memory: String(8 * 1024 ** 3),
+          'ephemeral-storage': String(16 * 1024 ** 3),
+        },
       })
     })
 
@@ -360,12 +395,28 @@ describe('buildSessionJobManifest', () => {
       expect(spec.initContainers).toBeUndefined()
     })
 
-    it('keeps the resources identical to a non-nested pod (memory only)', () => {
+    it('adds the graphroot volume to the ephemeral-storage limit, nothing else', () => {
       const resources = build({ nested }).spec.template.spec.containers[0].resources
+      // kubelet charges emptyDir volumes to the pod's ephemeral-storage
+      // limit, so the nested limit has to clear the graphroot's own
+      // sizeLimit — otherwise the first real `docker build` evicts the
+      // session, which a backoffLimit-0 Job never comes back from. Requests
+      // stay put: the graphroot is a ceiling, not a steady state.
       expect(resources).toEqual({
-        requests: { memory: String(1 * 1024 ** 3) },
-        limits: { memory: String(8 * 1024 ** 3) },
+        requests: {
+          cpu: '250m',
+          memory: String(1 * 1024 ** 3),
+          'ephemeral-storage': String(2 * 1024 ** 3),
+        },
+        limits: {
+          memory: String(8 * 1024 ** 3),
+          'ephemeral-storage': String(16 * 1024 ** 3 + NESTED_GRAPHROOT_SIZELIMIT_BYTES),
+        },
       })
+      const graphroot = build({ nested }).spec.template.spec.volumes
+        .find((v) => v.name === 'podman-graphroot')
+      expect(Number(resources.limits['ephemeral-storage']))
+        .toBeGreaterThan(Number(graphroot?.emptyDir?.sizeLimit))
     })
   })
 })

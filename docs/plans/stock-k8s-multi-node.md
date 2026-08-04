@@ -232,10 +232,11 @@ instead of assuming them.
 
 ### 6. Scheduling, capacity, disruption
 
-- Session pods must gain CPU (and ephemeral-storage) requests alongside the
-  existing memory request — multi-node bin-packing needs them; add a
-  PriorityClass split (infra > sessions).
-- Node-pool autoscaling works out of the box once requests are honest.
+- **Honest requests + the priority split: shipped** on the current backend.
+  Session pods request cpu and ephemeral-storage alongside memory (no cpu
+  limit — a CFS quota throttles an interactive agent), and every yaac pod
+  names a PriorityClass, infra above sessions (docs/cluster-setup.md).
+  Node-pool autoscaling works out of the box now that requests are honest.
 - **Node drains kill sessions**: Jobs with `restartPolicy: Never`,
   `backoffLimit: 0`, and node-local scratch do not survive a node-pool
   upgrade. v1 answer: document it, surface a "node draining" session state,
@@ -294,7 +295,7 @@ shaped.
    current backend first): buildkit builds behind a builder abstraction,
    registry in-cluster, salvage-via-registry, ssh-agent over the stream
    relay, tmux socket to emptyDir, shared/node-local root split in
-   `project-paths.ts`, honest CPU requests.
+   `project-paths.ts`.
 3. **Server-in-cluster mode:** volume-source abstraction in `pod-spec.ts`
    (hostPath | PVC), server Deployment + PVCs, `yaac cluster attach`
    installer, provider-aware check.

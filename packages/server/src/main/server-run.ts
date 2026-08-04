@@ -12,6 +12,7 @@ import {
   ClusterCache,
   anySessionDirsExist,
   armDeferredClusterBoot,
+  ensurePriorityClasses,
   invalidateRelayAddr,
   listSessionPods,
   setActiveClusterCache,
@@ -423,6 +424,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await (async () => {
       await ensureLocalRegistry()
       await ensureNamespace()
+      // Cluster-scoped and idempotent, like the RuntimeClasses `cluster
+      // setup` installs — re-ensured here because every pod yaac creates
+      // names one, and a cluster set up by an older yaac has neither.
+      await ensurePriorityClasses()
     })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
     // A server restart loses the in-memory forwarder registry while

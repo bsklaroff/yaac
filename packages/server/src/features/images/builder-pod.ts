@@ -37,6 +37,7 @@ import {
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
+  PRIORITY_CLASS_BUILDER,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
   dataDirHash,
@@ -80,6 +81,22 @@ export const BUILDER_GRAPHROOT_SIZELIMIT_BYTES = BUILDER_GRAPHROOT_TMPFS_BYTES +
 /** Pod memory limit. Layer data lives in the disk-backed graphroot, not
  *  memory, so this bounds build processes only. */
 export const BUILDER_MEMORY_LIMIT_BYTES = 8 * 1024 ** 3
+
+/**
+ * Scheduler reservation for a builder, well under the limit above. Explicit
+ * because kubernetes defaults an omitted request UP TO the limit: a
+ * limits-only builder reserved the whole 8Gi ceiling, which on a
+ * request-saturated node is 8 sessions' worth of memory that one routine
+ * build would have to displace to schedule. Compression is the same bet
+ * sessions make — a build's steady state is well below its peak, and the
+ * peak is still allowed by the limit.
+ */
+export const BUILDER_MEMORY_REQUEST_BYTES = 2 * 1024 ** 3
+
+/** cpu floor, no ceiling — same reasoning as session pods (a CFS quota
+ *  would only make builds slower on an idle node). Builds are burstier
+ *  than a session, hence the larger share. */
+export const BUILDER_CPU_REQUEST_MILLIS = 500
 
 /**
  * Whole-pod bound, above the sum of the per-phase budgets for a two-layer
@@ -160,6 +177,11 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       runtimeClassName: RUNTIME_CLASS_GVISOR,
+      // Above sessions (a build one is waiting on should outlive it under
+      // node pressure), but the builder class forbids preemption: a build
+      // that waits for room costs a session create some latency, where a
+      // preempted session pod is gone for good (backoffLimit 0).
+      priorityClassName: PRIORITY_CLASS_BUILDER,
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
       },
@@ -172,6 +194,10 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
           capabilities: { add: NESTED_ENGINE_CAPS },
         },
         resources: {
+          requests: {
+            cpu: `${BUILDER_CPU_REQUEST_MILLIS}m`,
+            memory: String(BUILDER_MEMORY_REQUEST_BYTES),
+          },
           limits: { memory: String(BUILDER_MEMORY_LIMIT_BYTES) },
         },
         volumeMounts: [{

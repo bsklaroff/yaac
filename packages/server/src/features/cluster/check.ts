@@ -12,6 +12,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
+  buildPriorityClassManifests,
   execFileAsync,
   isDeferredClusterBootPending,
   k8sNamespace,
@@ -235,6 +236,10 @@ export async function runClusterCheck(
     })
   }
 
+  // 6a. PriorityClasses — cluster-scoped objects the pod builders name;
+  // read-only, so it runs before the probe gates rather than behind them.
+  add(await runPriorityClassCheck())
+
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
@@ -431,6 +436,64 @@ const GVISOR_FIX =
   + '(copies pinned runsc + containerd-shim-runsc-v1 onto the kind node, '
   + 'registers the runsc handlers in containerd, and applies the '
   + 'gvisor/gvisor-nested RuntimeClasses)'
+
+const PRIORITY_CLASS_FIX =
+  'Install the yaac PriorityClasses with: yaac cluster setup --repair\n'
+  + '(the yaac server also re-applies them on every start)'
+
+/**
+ * The PriorityClass gate: every yaac pod but the session pods of a nested
+ * install names one, and the apiserver REJECTS a pod naming a class it does
+ * not have — for a session that means the Job applies fine and then hangs
+ * with no pod, which is the failure this probe exists to name. Drifted
+ * values (a class an older yaac installed with different numbers) only warn:
+ * the pods still schedule, they just rank wrong.
+ */
+async function runPriorityClassCheck(): Promise<CheckResult> {
+  const expected = buildPriorityClassManifests() as Array<{
+    metadata: { name: string }
+    value: number
+    preemptionPolicy?: string
+  }>
+  try {
+    const { stdout } = await execFileAsync('kubectl', ['get', 'priorityclass', '-o', 'json'])
+    const live = new Map((JSON.parse(stdout) as {
+      items: Array<{ metadata?: { name?: string }; value?: number; preemptionPolicy?: string }>
+    }).items.map((c) => [c.metadata?.name ?? '', c]))
+
+    const missing = expected.filter((e) => !live.has(e.metadata.name))
+    if (missing.length > 0) {
+      return {
+        name: 'priority-classes', status: 'fail',
+        detail: `missing PriorityClass(es): ${missing.map((e) => e.metadata.name).join(', ')}`,
+        fix: PRIORITY_CLASS_FIX,
+      }
+    }
+    const drifted = expected.filter((e) => {
+      const c = live.get(e.metadata.name)
+      // Kubernetes materializes the omitted policy as PreemptLowerPriority.
+      const wantPolicy = e.preemptionPolicy ?? 'PreemptLowerPriority'
+      return c?.value !== e.value || (c?.preemptionPolicy ?? 'PreemptLowerPriority') !== wantPolicy
+    })
+    if (drifted.length > 0) {
+      return {
+        name: 'priority-classes', status: 'warn',
+        detail: `PriorityClass(es) differ from this yaac's: ${drifted.map((e) => e.metadata.name).join(', ')}`,
+        fix: PRIORITY_CLASS_FIX,
+      }
+    }
+    return {
+      name: 'priority-classes', status: 'pass',
+      detail: `${expected.map((e) => e.metadata.name).join(', ')} present`,
+    }
+  } catch (err) {
+    return {
+      name: 'priority-classes', status: 'fail',
+      detail: `could not read PriorityClasses (${truncate(err)})`,
+      fix: PRIORITY_CLASS_FIX,
+    }
+  }
+}
 
 /**
  * The gVisor gate: session pods run under `runtimeClassName: gvisor` with no
