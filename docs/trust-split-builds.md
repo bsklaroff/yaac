@@ -114,6 +114,63 @@ untrusted build:
   the project whose image the attacker already controls. `--cache-ttl`
   bounds reads.
 
+### Collecting the step cache
+
+Each Dockerfile edit mints fresh cache keys and strands the old ones, so
+the cache repos need a sweep of their own (`reconcileBuildCacheGc`, every
+few hours). It retires cache tags no build has written for one
+`--cache-ttl` — already misses on the read side, so retirement costs no
+hit — and reads that age off the tag link's mtime, which a cache hit
+refreshes when it re-pushes the entry: retention is last-used, not
+first-built.
+
+Like the per-project registries' collect (docs/nested-containers.md), the
+sweep untags by removing the tag directory in the registry's own storage
+and reclaims blobs with the registry binary's `garbage-collect
+--delete-untagged` — the delete API answers 405 until the container is
+recreated with `REGISTRY_STORAGE_DELETE_ENABLED`. That collect is global
+rather than scoped to the cache repos, which makes one property of this
+registry load-bearing: **nothing may live in it untagged or as an index.**
+Blobs shared with a still-tagged image survive because the mark phase
+walks that manifest, and the digest-pinned mirrors are stored as
+single-arch children under tags of their own. A digest-only push, or a
+manifest list whose children the mark phase never walks, would be
+collected out from under its users.
+
+What the sweep cannot borrow is that collect's read-only maintenance
+window: the window is an env change rolled through a Deployment, while the
+shared registry is a plain podman container whose storage lives in its own
+writable layer, so recreating it to set the same env would drop every
+pushed image. The two hazards of collecting a live registry are handled
+directly instead:
+
+- A push racing the collect can lose blobs between upload and manifest
+  `PUT`, leaving an image that pulls broken forever — the `registryHasTag`
+  skip means nothing re-pushes it. Three signals hold the collect off: an
+  in-progress upload, any link file written in the last few minutes (a
+  just-committed blob, a cross-repo mount, a just-PUT manifest — none of
+  which leave an upload dir behind), and this server's own in-flight
+  builds and pushes. The first two are read off the registry's filesystem,
+  so they cover builder pods and e2e servers too, and both are re-read
+  immediately before the collect, since the untag that precedes it takes
+  time. A push that *starts* inside the collect is the one window left
+  open; only the maintenance window would close it, so the collect is kept
+  rare and short instead.
+- The registry caches blob descriptors in memory, so after a collect a
+  re-pushed digest writes a link with no blob behind it and the tag 404s
+  permanently. The restart that clears them runs in an unconditional
+  `finally` — a collect that failed part-way through deleting is when it
+  matters most — followed by re-ensuring the cluster Service, since the
+  restart can move the registry's address. A marker file in the
+  registry's storage records that a collect began, so a restart lost to a
+  failed `podman restart` or to the server dying mid-collect is redone by
+  the next sweep; nothing else would, since the tags that pass retired are
+  already gone and a later sweep finds nothing to retire.
+
+The pass detaches and never overlaps itself, like the per-project collect
+and for the same reason: reconcile passes are serialized, and a collecting
+pass is minutes of exec plus a restart.
+
 The `yaac-registry` container lives on the podman `kind` network, not in
 cluster DNS, so it is exposed to pods via a selectorless Service +
 EndpointSlice pointing at its kind-network IP, written by cluster

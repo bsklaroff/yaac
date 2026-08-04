@@ -67,6 +67,16 @@ const realizedTags = new Set<string>()
 const pushedTags = new Set<string>()
 
 /**
+ * True while this server is building or pushing an image. Every build ends
+ * in registry writes (its step cache, then its product), so the build-cache
+ * collect stands down on it — the one pusher class the registry's own
+ * filesystem signals see late.
+ */
+export function imageWorkInFlight(): boolean {
+  return inflightBuilds.size > 0 || inflightPushes.size > 0
+}
+
+/**
  * Build one layer, coalescing with any in-flight build of the same tag.
  * The winner creates the build-registry entry and owns its lifecycle;
  * joiners attach their project slug and share the outcome (including a

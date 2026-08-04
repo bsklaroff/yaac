@@ -5,7 +5,7 @@ import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reco
 import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
 import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'
 import { reconcileVclusters } from '#features/sessions/reconcile/vcluster-reconcile'
-import { reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, reconcilePrewarmPool } from '#features/images'
+import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, reconcilePrewarmPool } from '#features/images'
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#features/titles'
@@ -104,6 +104,10 @@ export function defaultReconcileSteps(): ReconcileStep[] {
       run: (s) => reconcileRedirectClaims(s) },
     // Host podman image GC. Throttled internally to every few hours.
     { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
+    // Registry-side counterpart: retire step-cache tags no build has used
+    // in a cache-ttl and collect their blobs. Throttled internally, and it
+    // stands down while anything is pushing.
+    { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
   ]
 }
 

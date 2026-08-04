@@ -9,6 +9,7 @@
 // directly by their own tests, which may reach inside, and transitively
 // through the entry points below.
 
+export { reconcileBuildCacheGc } from './build-cache-gc'
 export { ensureImage, pushImageShared, rebuildProjectImage } from './build-coordinator'
 export {
   BUILDER_CONTEXT_MAX_BYTES,
