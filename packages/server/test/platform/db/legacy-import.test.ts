@@ -12,10 +12,19 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { claudeDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
 import { closeDb, importLegacyJsonStores } from '#platform/db'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
-import { MAX_PROMPT_LENGTH, getProjectSessionRows, listSessionRows } from '#features/sessions/store'
+import {
+  MAX_PROMPT_LENGTH,
+  getProjectWorktreeRows,
+  listWorktreeRows,
+  recordWorktreeCreated,
+} from '#features/sessions/worktree-store'
+import {
+  listWorktreeAgentSessions,
+  recordAgentSessions,
+} from '#features/sessions/agent-session-store'
 import { loadTokens } from '#http'
 
 // The legacy on-disk layout, rebuilt by hand: the production path builders
@@ -83,9 +92,9 @@ describe('importLegacyJsonStores', () => {
     await fs.writeFile(titlesPath('alpha'), JSON.stringify({ s1: 'fix parser', junk: 42, blank: '' }))
     await fs.writeFile(titlesPath('beta'), JSON.stringify({ s2: 'docs pass' }))
     await importLegacyJsonStores()
-    expect((await getProjectSessionRows('alpha')).get('s1')?.title).toBe('fix parser')
-    expect((await getProjectSessionRows('alpha')).get('junk')).toBeUndefined()
-    expect((await getProjectSessionRows('beta')).get('s2')?.title).toBe('docs pass')
+    expect((await getProjectWorktreeRows('alpha')).get('s1')?.title).toBe('fix parser')
+    expect((await getProjectWorktreeRows('alpha')).get('junk')).toBeUndefined()
+    expect((await getProjectWorktreeRows('beta')).get('s2')?.title).toBe('docs pass')
     expect(await exists(titlesPath('alpha'))).toBe(false)
     expect(await exists(titlesPath('beta'))).toBe(false)
   })
@@ -96,8 +105,11 @@ describe('importLegacyJsonStores', () => {
     await fs.writeFile(file, JSON.stringify({ firstMessage: 'build a thing', capturedAt: '2026-05-01T00:00:00.000Z' }))
     const stat = await fs.lstat(file)
     await importLegacyJsonStores()
-    const row = (await getProjectSessionRows('proj')).get('ocsess')
-    expect(row).toMatchObject({ tool: 'opencode', prompt: 'build a thing' })
+    const row = (await getProjectWorktreeRows('proj')).get('ocsess')
+    expect(row).toBeDefined()
+    expect(await listWorktreeAgentSessions('proj', 'ocsess')).toMatchObject([
+      { tool: 'opencode', firstPrompt: 'build a thing' },
+    ])
     expect(Math.abs((row?.createdAt.getTime() ?? 0) - stat.birthtime.getTime())).toBeLessThanOrEqual(1)
     expect(await exists(metaDir('proj'))).toBe(false)
   })
@@ -110,7 +122,7 @@ describe('importLegacyJsonStores', () => {
     await fs.mkdir(projectDir('proj'), { recursive: true })
     await fs.writeFile(titlesPath('proj'), JSON.stringify({ seeded: 'an older session' }))
     await importLegacyJsonStores()
-    expect((await getProjectSessionRows('proj')).get('seeded')?.title).toBe('an older session')
+    expect((await getProjectWorktreeRows('proj')).get('seeded')?.title).toBe('an older session')
 
     // Now a *second* data dir state: rows exist, and a transcript-only
     // session appears. A fresh DB replays the migration + import with rows
@@ -123,9 +135,9 @@ describe('importLegacyJsonStores', () => {
     await fs.rm(path.join(getDataDir(), 'db'), { recursive: true, force: true })
     await importLegacyJsonStores()
 
-    expect((await getProjectSessionRows('proj')).get('transcript-only')).toMatchObject({
-      tool: 'claude',
-    })
+    expect((await getProjectWorktreeRows('proj')).get('transcript-only')).toBeDefined()
+    expect(await listWorktreeAgentSessions('proj', 'transcript-only'))
+      .toMatchObject([{ tool: 'claude' }])
   })
 
   it('adopts pre-existing transcripts once, then leaves later ones alone', async () => {
@@ -133,16 +145,22 @@ describe('importLegacyJsonStores', () => {
     await fs.mkdir(workspaceDir, { recursive: true })
     await fs.writeFile(path.join(workspaceDir, 'old-session.jsonl'), '{}\n')
     await importLegacyJsonStores()
-    expect((await getProjectSessionRows('proj')).get('old-session')).toMatchObject({
+    expect((await getProjectWorktreeRows('proj')).get('old-session')).toBeDefined()
+    // The transcript now hangs off the worktree's one agent session — before
+    // the split, its conversation id WAS the worktree id, so the adoption can
+    // record it rather than guess.
+    expect(await listWorktreeAgentSessions('proj', 'old-session')).toMatchObject([{
+      agentSessionId: 'old-session',
       tool: 'claude',
+      active: true,
       transcriptPath: path.join(workspaceDir, 'old-session.jsonl'),
-    })
+    }])
 
-    // A transcript that appears afterwards is a conversation the agent
-    // started for itself (`/clear`), not a session — the backfill is done.
+    // A transcript that appears afterwards belongs to a conversation the hook
+    // links on its own, not to a worktree — the backfill is done.
     await fs.writeFile(path.join(workspaceDir, 'post-clear.jsonl'), '{}\n')
     await importLegacyJsonStores()
-    expect((await getProjectSessionRows('proj')).get('post-clear')).toBeUndefined()
+    expect((await getProjectWorktreeRows('proj')).get('post-clear')).toBeUndefined()
   })
 
   it('corrects the tool a migrated title row guessed at, from the transcript', async () => {
@@ -152,10 +170,12 @@ describe('importLegacyJsonStores', () => {
     await fs.writeFile(path.join(codexDirPath, 'cx.jsonl'), '{}\n')
     await fs.writeFile(titlesPath('proj'), JSON.stringify({ cx: 'a codex session' }))
     await importLegacyJsonStores()
-    expect((await getProjectSessionRows('proj')).get('cx')).toMatchObject({
-      tool: 'codex',
+    // The title stays on the worktree; the corrected tool is on its
+    // conversation, which is what a worktree's tool now means.
+    expect((await getProjectWorktreeRows('proj')).get('cx')).toMatchObject({
       title: 'a codex session',
     })
+    expect(await listWorktreeAgentSessions('proj', 'cx')).toMatchObject([{ tool: 'codex' }])
   })
 
   it('normalizes an imported title and caps an imported prompt', async () => {
@@ -167,9 +187,12 @@ describe('importLegacyJsonStores', () => {
       JSON.stringify({ firstMessage: 'x'.repeat(MAX_PROMPT_LENGTH + 500) }),
     )
     await importLegacyJsonStores()
-    const rows = await getProjectSessionRows('proj')
+    const rows = await getProjectWorktreeRows('proj')
     expect(rows.get('s1')?.title).toBe('spaced out')
-    expect(rows.get('oc')?.prompt).toHaveLength(MAX_PROMPT_LENGTH)
+    // The opencode meta file's first message lands on the conversation, which
+    // is where a worktree's founding ask lives.
+    const [ocFirst] = await listWorktreeAgentSessions('proj', 'oc')
+    expect(ocFirst?.firstPrompt).toHaveLength(MAX_PROMPT_LENGTH)
   })
 
   it('imports tokens with kind defaulting, dropping malformed entries', async () => {
@@ -199,6 +222,69 @@ describe('importLegacyJsonStores', () => {
     expect(await exists(prefsPath())).toBe(true)
     expect(await exists(tokensJsonPath())).toBe(true)
     expect(await exists(badMeta)).toBe(true) // and the dir stays with it
-    expect(await listSessionRows('proj')).toEqual([])
+    expect(await listWorktreeRows('proj')).toEqual([])
+  })
+
+  it('resolves a recorded transcript path that is a yaac symlink to its target', async () => {
+    // yaac used to index codex's rollouts with a symlink per session, and
+    // capture stored *that* path — so every pre-link-tree codex row points at
+    // a symlink. Resolving them is what lets the symlinks stop being written:
+    // afterwards the DB holds a real path, which is all any reader needs.
+    const rollout = path.join(codexDir('proj'), 'sessions', 'rollout-2026-abc.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    await fs.writeFile(rollout, '{}\n')
+    const linkDir = path.join(codexDir('proj'), '.yaac-transcripts')
+    await fs.mkdir(linkDir, { recursive: true })
+    const link = path.join(linkDir, 'wt-codex.jsonl')
+    await fs.symlink(rollout, link)
+
+    const dangling = path.join(linkDir, 'wt-gone.jsonl')
+    await fs.symlink(path.join(codexDir('proj'), 'sessions', 'missing.jsonl'), dangling)
+
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-codex' })
+    await recordAgentSessions('proj', 'wt-codex', [
+      { tool: 'codex', agentSessionId: 'wt-codex', transcriptPath: link },
+    ])
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-gone' })
+    await recordAgentSessions('proj', 'wt-gone', [
+      { tool: 'codex', agentSessionId: 'wt-gone', transcriptPath: dangling },
+    ])
+    // …and one whose symlink was deleted outright rather than left dangling.
+    // Same dead end by a different route, so it must not survive the sweep as
+    // a path that resolves nowhere.
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-unlinked' })
+    await recordAgentSessions('proj', 'wt-unlinked', [
+      {
+        tool: 'codex',
+        agentSessionId: 'wt-unlinked',
+        transcriptPath: path.join(linkDir, 'wt-unlinked.jsonl'),
+      },
+    ])
+
+    await importLegacyJsonStores()
+
+    const [resolved] = await listWorktreeAgentSessions('proj', 'wt-codex')
+    expect(resolved?.transcriptPath).toBe(await fs.realpath(rollout))
+    // A dangling one becomes null: a path resolving nowhere is worse than
+    // none, since every reader would keep stat-ing it forever.
+    const [gone] = await listWorktreeAgentSessions('proj', 'wt-gone')
+    expect(gone?.transcriptPath).toBeUndefined()
+    const [unlinked] = await listWorktreeAgentSessions('proj', 'wt-unlinked')
+    expect(unlinked?.transcriptPath).toBeUndefined()
+  })
+
+  it('leaves a real transcript path untouched', async () => {
+    const real = path.join(claudeDir('proj'), 'projects', '-workspace', 'conv-a.jsonl')
+    await fs.mkdir(path.dirname(real), { recursive: true })
+    await fs.writeFile(real, '{}\n')
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-claude' })
+    await recordAgentSessions('proj', 'wt-claude', [
+      { tool: 'claude', agentSessionId: 'conv-a', transcriptPath: real },
+    ])
+
+    await importLegacyJsonStores()
+
+    const [row] = await listWorktreeAgentSessions('proj', 'wt-claude')
+    expect(row?.transcriptPath).toBe(real)
   })
 })

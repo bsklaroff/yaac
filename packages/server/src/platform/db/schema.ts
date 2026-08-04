@@ -1,4 +1,4 @@
-import { boolean, primaryKey, snakeCase, text, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, integer, primaryKey, snakeCase, text, timestamp } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's on-disk PGlite database — the home for
@@ -35,43 +35,103 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
 })
 
 /**
- * Every session yaac has ever created, one row per (project, session id).
+ * Every worktree yaac has ever created, one row per (project, worktree id).
  * This is the spine: the cluster stays authoritative for "is it running",
  * and this table for "did it exist, and what is it". A row is inserted by
  * session create (and by a prewarmed spare's claim — spares themselves get
  * no row, which is why teardown only ever UPDATEs), never deleted: a
- * `deletedAt` row IS the deleted-session listing, and a restart clears the
- * column again because session ids are reused verbatim.
+ * `stoppedAt` row IS the stopped-worktree listing, and a restart clears the
+ * column again because worktree ids are reused verbatim.
  *
- * `prompt` is the first user message, captured once by the reconciler
- * instead of re-parsed from the transcript on every list tick.
- * `transcriptPath` (null for opencode, which leaves no host transcript) is
- * what the deleted listing stats for last-activity. `deathReason` /
- * `deathDetail` are set only when the stale reaper — not the user — removed
- * the session, so a reused id can't inherit a stale cause; `deathSeen`
- * tracks whether the user has viewed that detail (the "Deleted sessions"
- * notification dot), durable across devices and daemon restarts.
+ * A row is 1-1 with a git worktree, which is why stopping keeps it: teardown
+ * prunes the session dir but never `worktreeDir`, so a stopped row is a
+ * worktree still on disk, diff and all, waiting to be restarted.
+ *
+ * Neither the tool nor the founding ask lives here: both are read off the
+ * worktree's *first* agent session, which is the thing that actually has
+ * them. That is also what makes them survive a `/clear` — the new
+ * conversation is a second row, so the first one's opening message stays the
+ * worktree's label. Session create records that first conversation with this
+ * row, so a worktree always has one. `deathReason` / `deathDetail` are set only when
+ * the stale reaper — not the user — tore the session down, so a reused id
+ * can't inherit a stale cause; `deathSeen` tracks whether the user has viewed
+ * that detail (the "Stopped worktrees" notification dot), durable across
+ * devices and daemon restarts. The death columns keep their name against
+ * `stoppedAt` on purpose: every stop stamps the latter, only an abnormal one
+ * stamps the former.
  */
-export const agentSessions = snakeCase.table('agent_sessions', {
+export const worktrees = snakeCase.table('worktrees', {
   projectSlug: text().notNull(),
-  sessionId: text().notNull(),
-  tool: text().notNull(),
+  worktreeId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  /** First user message; null until the capture step sees one. */
-  prompt: text(),
   /** Display title — user-assigned or model-generated. */
   title: text(),
   /** Branch the worktree forked from (no `origin/` prefix). */
   baseBranch: text(),
-  /** Host path of the agent's transcript, when the tool leaves one. */
-  transcriptPath: text(),
   /** Pinned to the sidebar's "Background" section. */
   background: boolean().notNull().default(false),
-  deletedAt: timestamp({ withTimezone: true }),
+  stoppedAt: timestamp({ withTimezone: true }),
   deathReason: text(),
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
+}, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
+
+/**
+ * One row per agent conversation — a claude/codex/pi/opencode session, keyed
+ * by the *tool's own* id rather than yaac's. Distinct from a worktree because
+ * a user creates these constantly: every `/clear`, `/resume` and `/compact`,
+ * and every `claude` started in a second terminal, is a new one.
+ *
+ * Project-scoped, not worktree-scoped, because the tool homes yaac mounts
+ * (`claudeDir`, `piDir`, `codexDir`) are per project and shared by all its
+ * sessions — any session of a project can resume any of its conversations,
+ * which is exactly why the link below is many-to-many.
+ *
+ * Rows are discovered, not authored: the in-pod SessionStart hook links each
+ * conversation into the worktree's link tree and the registry reconciler
+ * imports them. `transcriptPath` is null for opencode (no host transcript) and
+ * for a conversation whose transcript has since been removed.
+ */
+export const agentSessions = snakeCase.table('agent_sessions', {
+  projectSlug: text().notNull(),
+  tool: text().notNull(),
+  agentSessionId: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** Host path of the conversation's transcript, when the tool leaves one. */
+  transcriptPath: text(),
+  /** This conversation's own first user message (the worktree keeps the
+   *  founding one separately — they differ after a `/clear`). */
+  firstPrompt: text(),
+  /** Transcript mtime at the last reconcile; the stopped listing's
+   *  last-activity, and unknowable once the pod is gone for opencode. */
+  lastActiveAt: timestamp({ withTimezone: true }),
+}, (t) => [primaryKey({ columns: [t.projectSlug, t.tool, t.agentSessionId] })])
+
+/**
+ * Which agent sessions belong to which worktree. Many-to-many: a worktree
+ * accumulates conversations over its life, and one conversation can be
+ * resumed into a second worktree.
+ *
+ * `active` means *this conversation had a live agent process in this worktree
+ * the last time the worktree was observed running*. The registry maintains it
+ * from the live pane set while the pod runs, and teardown deliberately leaves
+ * it alone — that freeze is what a restart reads back to decide what to bring
+ * up again. `ordinal` orders that restore (0 is the primary agent window, the
+ * one that keeps the `yaac:<tool>` name); `paneId` is where it was last seen.
+ */
+export const worktreeAgentSessions = snakeCase.table('worktree_agent_sessions', {
+  projectSlug: text().notNull(),
+  worktreeId: text().notNull(),
+  tool: text().notNull(),
+  agentSessionId: text().notNull(),
+  active: boolean().notNull().default(true),
+  ordinal: integer().notNull().default(0),
+  paneId: text(),
+  firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({
+  columns: [t.projectSlug, t.worktreeId, t.tool, t.agentSessionId],
+})])
 
 /** All client credentials (durable bearers, one-time exchange tokens, web
  *  sessions) — faithful to TokenEntry. Name-uniqueness via PK matches the

@@ -3,7 +3,7 @@ name: push-pr
 description: Commit pending changes on the current branch, rebase onto latest origin/main, push to a new named branch on origin, open a GitHub PR, then watch the PR for reviewer comments (via yaac-watch-prs) and address them as they arrive. Use when the user wants to push the current branch out as a PR. Takes an optional branch-name argument; if omitted, a descriptive name is generated from the changes.
 ---
 
-You are running **inside a yaac session**. This skill commits any pending
+You are running **inside a yaac worktree**. This skill commits any pending
 work on the current branch, rebases it onto the latest `origin/main`, pushes
 it to a **new named branch on origin**, sets that branch as the current
 branch's upstream, opens a GitHub PR against `main`, and then **watches the
@@ -67,7 +67,7 @@ Never use `git -C`, always just use `git` commands from the working directory.
       step 3 of the section below, don't notify you about themselves.
     - `yaac-watch-prs` baselines on its first poll, so only comments posted
       *after* the watch starts surface. It does no author filtering: comments
-      from your own account posted by the user or by sibling yaac sessions
+      from your own account posted by the user or by sibling yaac worktrees
       surface (address them like any reviewer comment), and so do your own
       replies (recognize and ignore those — see below).
     - If the repo has no GitHub remote or the PR number can't be resolved,
@@ -82,7 +82,7 @@ The watcher does not filter by author, so **your own replies come back as
 `[comment]` events**. Before acting on a notification, check whether it is a
 comment you posted yourself earlier in this session — if so, ignore it and
 keep watching; never reply to your own comment. Same-account comments you did
-*not* post (the user and sibling yaac sessions share the account) are real
+*not* post (the user and sibling yaac worktrees share the account) are real
 events — address them like any reviewer comment.
 
 For each notification:

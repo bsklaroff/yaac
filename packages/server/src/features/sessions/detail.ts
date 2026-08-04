@@ -1,8 +1,8 @@
 import { findSessionPod, listSessionPods } from '#platform/k8s'
 import { getVclusterStatus, type VclusterStatus } from '#features/cluster'
 import { ServerError } from '@yaac/shared/errors'
-import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
-import { getSessionRow } from '#features/sessions/store'
+import { getAgentSessionFirstMessage, normalizeTool } from '#features/sessions/state'
+import { firstAgentSession } from '#features/sessions/agent-session-store'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
 import { readGitAuthFailures } from '#features/projects'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
@@ -92,7 +92,10 @@ export async function getSessionPrompt(idOrName: string): Promise<string | undef
   // the pod, and this route can be polled, so a repeat caller must not cost
   // one kubectl-exec each. Falls back to the live read for a session the
   // capture step hasn't reached yet.
-  const row = await getSessionRow(match.projectSlug, match.sessionId).catch(() => undefined)
-  if (row?.prompt !== undefined) return row.prompt
-  return getSessionFirstMessage(match.projectSlug, match.sessionId, match.tool, match.jobName)
+  const first = await firstAgentSession(match.projectSlug, match.sessionId).catch(() => undefined)
+  if (first?.firstPrompt !== undefined) return first.firstPrompt
+  // Fall back to the transcript the conversation recorded, not to a path
+  // derived from the worktree id — codex's rollout name is underivable, and
+  // the recorded path is the only handle on it.
+  return getAgentSessionFirstMessage(first?.tool ?? match.tool, first?.transcriptPath, match.jobName)
 }

@@ -1,5 +1,6 @@
 import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
 import { captureSessionPrompts } from '#features/sessions/prompt-capture'
+import { reconcileAgentSessions } from '#features/sessions/agent-session-registry'
 import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reconcile'
 import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
 import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'
@@ -60,8 +61,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Mid-session image salvage (nested engines → shared store). Throttled
     // internally per session; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
-    // First user message onto each session row — once per session, so
-    // every display path reads the prompt instead of parsing a transcript.
+    // Which agent sessions each worktree holds, and which are live — read
+    // from the in-pod hook's link tree crossed with the watcher's pane set.
+    // Before session-prompts, whose work list is the conversations this
+    // discovers.
+    { name: 'agent-sessions', triggers: ['session-pods'],
+      run: (s) => reconcileAgentSessions(s) },
+    // First user message onto each conversation, and the founding one onto
+    // the worktree — once per subject, so every display path reads the
+    // prompt instead of parsing a transcript.
     { name: 'session-prompts', triggers: ['session-pods'],
       run: (s) => captureSessionPrompts(s) },
     // Model-generated titles for untitled sessions (right after first-message

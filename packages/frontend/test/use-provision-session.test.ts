@@ -12,14 +12,14 @@ describe('useProvisionSession', () => {
     const { result } = renderHook(() => useProvisionSession())
 
     act(() => {
-      result.current('proj', 'claude', 'create', 'sid-1', () => Promise.resolve({ sessionId: 'sid-1' }))
+      result.current('proj', 'claude', 'create', 'sid-1', () => Promise.resolve({ worktreeId: 'sid-1' }))
     })
 
     expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
-      { sessionId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Starting…' },
+      { worktreeId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Starting…' },
     ])
     // Auto-open: selected and the project switched so progress shows immediately.
-    expect(useUiStore.getState().selectedSessionId).toBe('sid-1')
+    expect(useUiStore.getState().selectedWorktreeId).toBe('sid-1')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
   })
 
@@ -29,12 +29,12 @@ describe('useProvisionSession', () => {
     act(() => {
       result.current('proj', 'claude', 'create', 'sid-2', (_sid, onProgress) => {
         onProgress('Pulling image…')
-        return Promise.resolve({ sessionId: 'sid-2' })
+        return Promise.resolve({ worktreeId: 'sid-2' })
       })
     })
 
     await waitFor(() => {
-      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.sessionId === 'sid-2')
+      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.worktreeId === 'sid-2')
       expect(row?.message).toBe('Pulling image…')
     })
   })
@@ -44,20 +44,20 @@ describe('useProvisionSession', () => {
 
     act(() => {
       // op resolves with a DIFFERENT id than requested — a claimed spare.
-      result.current('proj', 'claude', 'create', 'requested-id', () => Promise.resolve({ sessionId: 'spare-id' }))
+      result.current('proj', 'claude', 'create', 'requested-id', () => Promise.resolve({ worktreeId: 'spare-id' }))
     })
 
     await waitFor(() => {
       // Optimistic row for the requested id is dropped...
-      expect(useUiStore.getState().optimisticProvisioning.find((e) => e.sessionId === 'requested-id')).toBeUndefined()
+      expect(useUiStore.getState().optimisticProvisioning.find((e) => e.worktreeId === 'requested-id')).toBeUndefined()
       // ...and the real (claimed) session is selected.
-      expect(useUiStore.getState().selectedSessionId).toBe('spare-id')
+      expect(useUiStore.getState().selectedWorktreeId).toBe('spare-id')
     })
     // The optimistic row is RE-KEYED to the claimed id (not just dropped) so the
     // auto-open survives the gap until the snapshot lists the spare — otherwise
     // App's auto-select would steal the pane back to an existing session.
     expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
-      { sessionId: 'spare-id', projectSlug: 'proj', tool: 'claude', kind: 'create' },
+      { worktreeId: 'spare-id', projectSlug: 'proj', tool: 'claude', kind: 'create' },
     ])
   })
 
@@ -65,13 +65,13 @@ describe('useProvisionSession', () => {
     const { result } = renderHook(() => useProvisionSession())
 
     act(() => {
-      result.current('proj', 'claude', 'create', 'same-id', () => Promise.resolve({ sessionId: 'same-id' }))
+      result.current('proj', 'claude', 'create', 'same-id', () => Promise.resolve({ worktreeId: 'same-id' }))
     })
 
     // Give the resolved promise a chance to run; the row must NOT be dropped.
     await new Promise((r) => setTimeout(r, 0))
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toContain('same-id')
-    expect(useUiStore.getState().selectedSessionId).toBe('same-id')
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toContain('same-id')
+    expect(useUiStore.getState().selectedWorktreeId).toBe('same-id')
   })
 
   it('surfaces an error on the optimistic row when the op rejects', async () => {
@@ -82,10 +82,10 @@ describe('useProvisionSession', () => {
     })
 
     await waitFor(() => {
-      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.sessionId === 'sid-3')
+      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.worktreeId === 'sid-3')
       expect(row?.error).toBe('boom')
     })
     // The row was still added and selected even though the op failed.
-    expect(useUiStore.getState().selectedSessionId).toBe('sid-3')
+    expect(useUiStore.getState().selectedWorktreeId).toBe('sid-3')
   })
 })

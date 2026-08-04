@@ -48,9 +48,11 @@ export {
 export {
   DEFAULT_TOOL_KEY,
   SESSIONS_BACKFILLED_KEY,
+  TRANSCRIPT_PATHS_RESOLVED_KEY,
   clearShortcutOverrides,
   getDefaultTool,
   getShortcutOverrides,
+  clearFlag,
   isFlagSet,
   isSerializedChord,
   isValidTool,

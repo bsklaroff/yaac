@@ -1,9 +1,9 @@
 ---
 name: yaac-spawn
-description: Start a sibling yaac session in this project with an initial prompt, via the in-session `yaac-spawn` command. Use when the user asks to spawn, fork, or kick off another yaac session, or to farm a task out to a parallel session.
+description: Start a sibling yaac worktree in this project with an initial prompt, via the in-session `yaac-spawn` command. Use when the user asks to spawn, fork, or kick off another yaac worktree, or to farm a task out to a parallel one.
 ---
 
-You are running **inside a yaac session**. The `yaac-spawn` command (already on
+You are running **inside a yaac worktree**. The `yaac-spawn` command (already on
 PATH) asks the host yaac server to start a **new sibling session in this same
 project** and deliver a prompt to its agent. Use it directly — this skill is
 just the manual.

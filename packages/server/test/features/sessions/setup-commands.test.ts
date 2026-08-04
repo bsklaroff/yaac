@@ -20,7 +20,7 @@ describe('buildWorktreeLinkExec', () => {
     expect(cmd).toBe(
       "echo 'gitdir: /repo/.git/worktrees/sid-1' > /workspace/.git"
       + " && echo '/workspace/.git' > /repo/.git/worktrees/sid-1/gitdir"
-      + " && printf 'yaac session sid-1' > /repo/.git/worktrees/sid-1/locked",
+      + " && printf 'yaac worktree sid-1' > /repo/.git/worktrees/sid-1/locked",
     )
   })
 })
@@ -53,13 +53,13 @@ describe('validateInitWindows', () => {
 
 describe('buildWindowsExec', () => {
   it('with no init windows, only respawns the agent into the keepalive window', () => {
-    const cmd = buildWindowsExec([], 'claude', 'claude --session-id x')
+    const cmd = buildWindowsExec([], 'claude', [{ tool: 'claude', cmd: 'claude --session-id x' }])
     expect(cmd).toBe(`${TMUX} respawn-window -k -t yaac:claude 'claude --session-id x'`)
   })
 
   it('chains each init window before the agent respawn', () => {
     const wins = validateInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
-    const cmd = buildWindowsExec(wins, 'codex', 'codex --yolo')
+    const cmd = buildWindowsExec(wins, 'codex', [{ tool: 'codex', cmd: 'codex --yolo' }])
     const [initPart, respawnPart] = cmd.split(' && tmux -S ')
     expect(initPart).toContain('new-window -d -t yaac -n init')
     expect(initPart).toContain('pnpm install && pnpm dev')

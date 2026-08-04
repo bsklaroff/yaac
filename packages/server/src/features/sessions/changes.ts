@@ -24,7 +24,7 @@
 import { sessionExec } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { worktreeUpstreamBranch } from '#platform/git'
-import { getSessionRow } from '#features/sessions/store'
+import { getWorktreeRow } from '#features/sessions/worktree-store'
 import { repoDir } from '@yaac/shared/project-paths'
 import type { ChangeStatus, SessionChange, SessionChanges } from '@yaac/shared/types'
 
@@ -329,7 +329,7 @@ export async function sessionForkBranch(projectSlug: string, sessionId: string):
  *  (see sessionForkBranch for why that order). Either read failing is not
  *  fatal: the pod script has its own fallback. */
 async function recordedForkBranch(projectSlug: string, sessionId: string): Promise<string | null> {
-  const row = await getSessionRow(projectSlug, sessionId).catch(() => undefined)
+  const row = await getWorktreeRow(projectSlug, sessionId).catch(() => undefined)
   if (row?.baseBranch) return row.baseBranch
   return worktreeUpstreamBranch(repoDir(projectSlug), `agent/${sessionId}`).catch(() => null)
 }

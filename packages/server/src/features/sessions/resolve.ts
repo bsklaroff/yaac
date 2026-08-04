@@ -1,4 +1,5 @@
 import { findSessionPod, getActiveClusterCache, listSessionPods, type SessionPod } from '#platform/k8s'
+import { findWorktreeRow } from '#features/sessions/worktree-store'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedSession {
@@ -68,4 +69,28 @@ export async function resolveSessionContainer(
     projectSlug: match.projectSlug,
     state,
   }
+}
+
+/**
+ * Resolve a worktree whatever state it is in — running pod first, then the
+ * recorded row.
+ *
+ * The pod-only resolver above answers "which container", so it rightly fails
+ * when there is none. Anything that reads *recorded* state must not: a
+ * stopped worktree keeps its row, its checkout and its conversation links,
+ * and listing those is exactly what you do before restarting it. Restart
+ * falls back the same way, for the same reason.
+ */
+export async function resolveWorktreeRecord(
+  idOrName: string,
+): Promise<{ projectSlug: string; worktreeId: string }> {
+  try {
+    const match = findSessionPod(await listSessionPods(), idOrName)
+    if (match) return { projectSlug: match.projectSlug, worktreeId: match.sessionId }
+  } catch {
+    // Cluster unreachable — the row still answers.
+  }
+  const row = await findWorktreeRow(idOrName)
+  if (row) return { projectSlug: row.projectSlug, worktreeId: row.worktreeId }
+  throw new ServerError('NOT_FOUND', `worktree ${idOrName} not found`)
 }

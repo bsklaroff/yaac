@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
 import { createSession } from './lib/createSession'
-import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
+import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
 import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
 import { configuredTools, useAuthList } from './lib/useAuthList'
@@ -23,7 +23,7 @@ import { newlyWaitingSessions, shouldChime, waitingSpellKeys } from './lib/atten
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
-import type { CheckResult, ServerSnapshot, SessionListEntry } from '@yaac/shared/types'
+import type { CheckResult, ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-token'
 type ClusterState = 'ready' | 'not-ready'
@@ -91,21 +91,21 @@ function App(): JSX.Element {
 
   // Chime the moment a session flips to waiting (it needs input) — the audible
   // sibling of the tray badge + notification. Seed silently on the first
-  // snapshot so sessions already waiting on load don't all fire; skip the
+  // snapshot so worktrees already waiting on load don't all fire; skip the
   // session the user is actively watching (selected + window focused — they can
   // see it flip); gate on the sound preference.
   const soundEnabled = useUiStore((s) => s.soundEnabled)
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const waitingSpells = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!snapshot) return
-    const current = waitingSpellKeys(snapshot.sessions)
+    const current = waitingSpellKeys(snapshot.worktrees)
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
-    const fresh = newlyWaitingSessions(waitingSpells.current, snapshot.sessions)
+    const fresh = newlyWaitingSessions(waitingSpells.current, snapshot.worktrees)
     waitingSpells.current = current
-    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedSessionId : null
+    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorktreeId : null
     if (soundEnabled && shouldChime(fresh, watching)) playChime()
-  }, [snapshot, soundEnabled, selectedSessionId])
+  }, [snapshot, soundEnabled, selectedWorktreeId])
 
   let content: JSX.Element
   if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
@@ -131,7 +131,7 @@ function App(): JSX.Element {
 
 /** A session's display name for dialog copy — title, else prompt (which can
  *  be a whole first message, so clipped), else the placeholder. */
-function sessionName(session: SessionListEntry | null): string {
+function sessionName(session: WorktreeListEntry | null): string {
   const name = session ? session.title || session.prompt || 'New session' : ''
   return name.length > 60 ? `${name.slice(0, 60)}…` : name
 }
@@ -143,7 +143,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const endDelete = useUiStore((s) => s.endDelete)
   const optimisticProvisioning = useUiStore((s) => s.optimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectSession = useUiStore((s) => s.selectSession)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const readWaiting = useUiStore((s) => s.readWaiting)
@@ -151,7 +151,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
 
   const projects = snapshot?.projects ?? []
-  const sessions = snapshot?.sessions ?? []
+  const worktrees = snapshot?.worktrees ?? []
   // Server-tracked provisioning rows + local optimistic ones (snapshot wins).
   const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
@@ -160,7 +160,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // Ongoing changes are mirrored by the store subscription.
   useEffect(() => {
     const s = useUiStore.getState()
-    persistSelection(s.activeProjectSlug, s.selectedSessionId)
+    persistSelection(s.activeProjectSlug, s.selectedWorktreeId)
   }, [])
 
   // Default the rail selection to the first project once projects arrive, and
@@ -177,22 +177,22 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // server's cleanup landed — stop tracking it so the set can't leak (or
   // wrongly hide a future session that reuses the id).
   useEffect(() => {
-    const live = new Set(sessions.map((s) => s.sessionId))
+    const live = new Set(worktrees.map((s) => s.worktreeId))
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
-  }, [sessions, pendingDeleteIds, endDelete])
+  }, [worktrees, pendingDeleteIds, endDelete])
 
   // Once the server knows a provisioning id (as a real session or its own
   // provisioning row), drop the local optimistic copy — the snapshot is the
   // source of truth from here, carrying live progress and reload-survival.
   useEffect(() => {
     const known = new Set<string>([
-      ...sessions.map((s) => s.sessionId),
-      ...(snapshot?.provisioning ?? []).map((p) => p.sessionId),
+      ...worktrees.map((s) => s.worktreeId),
+      ...(snapshot?.provisioning ?? []).map((p) => p.worktreeId),
     ])
-    for (const e of optimisticProvisioning) if (known.has(e.sessionId)) removeOptimisticProvisioning(e.sessionId)
-  }, [sessions, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
+    for (const e of optimisticProvisioning) if (known.has(e.worktreeId)) removeOptimisticProvisioning(e.worktreeId)
+  }, [worktrees, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
 
-  const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
+  const scoped = worktrees.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
 
   // Session shortcuts, window-captured so the chord is swallowed before
@@ -211,7 +211,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const provision = useProvisionSession()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
   const attentionTarget = resolveAttentionTarget(
-    scoped.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId)),
+    scoped.filter((s) => !s.stopping && !pendingDeleteIds.includes(s.worktreeId)),
     readWaiting,
   )
   const authList = useAuthList()
@@ -219,18 +219,18 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const newSession = (): void => {
     if (!activeProjectSlug) return
     const slug = activeProjectSlug
-    const tool = resolveNewSessionTool(sessions, selectedSessionId, configured)
+    const tool = resolveNewSessionTool(worktrees, selectedWorktreeId, configured)
     if (!tool) return
-    const sessionId = randomUUID()
-    provision(slug, tool, 'create', sessionId,
+    const worktreeId = randomUUID()
+    provision(slug, tool, 'create', worktreeId,
       (sid, onProgress) => createSession(slug, tool, onProgress, sid))
   }
-  const [confirmDelete, setConfirmDelete] = useState<SessionListEntry | null>(null)
-  const selectedSession = selectedSessionId && !pendingDeleteIds.includes(selectedSessionId)
-    ? sessions.find((s) => s.sessionId === selectedSessionId && !s.terminating) ?? null
+  const [confirmDelete, setConfirmDelete] = useState<WorktreeListEntry | null>(null)
+  const selectedSession = selectedWorktreeId && !pendingDeleteIds.includes(selectedWorktreeId)
+    ? worktrees.find((s) => s.worktreeId === selectedWorktreeId && !s.stopping) ?? null
     : null
-  const shortcutCtx = useRef({ rowIds, selectedSessionId, selectedSession, newSession, attentionTarget })
-  shortcutCtx.current = { rowIds, selectedSessionId, selectedSession, newSession, attentionTarget }
+  const shortcutCtx = useRef({ rowIds, selectedWorktreeId, selectedSession, newSession, attentionTarget })
+  shortcutCtx.current = { rowIds, selectedWorktreeId, selectedSession, newSession, attentionTarget }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -264,7 +264,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         case 'next-session': {
           const delta = cycleDeltaFor(id)
           if (delta === null) return
-          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedSessionId ?? undefined, delta)
+          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedWorktreeId ?? undefined, delta)
           if (!next) return
           e.preventDefault()
           e.stopPropagation()
@@ -287,46 +287,46 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       .catch((e: unknown) => console.error(e))
   }, [])
 
-  // Auto-select: never show an empty pane when the project has sessions — pick
+  // Auto-select: never show an empty pane when the project has worktrees — pick
   // the first waiting one (else the first visible). But never override a
   // selected provisioning row (it's not in `scoped`, so it would otherwise be
   // stolen) — auto-open on create relies on the selection sticking.
   useEffect(() => {
     if (!activeProjectSlug) return
-    if (selectedSessionId && scopedProvisioning.some((p) => p.sessionId === selectedSessionId)) return
+    if (selectedWorktreeId && scopedProvisioning.some((p) => p.worktreeId === selectedWorktreeId)) return
     // Terminating rows are excluded so a session deleted out from under the
     // user (CLI/reaper) auto-navigates to a live one instead of showing a
     // dying container.
-    const visible = scoped.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId))
+    const visible = scoped.filter((s) => !s.stopping && !pendingDeleteIds.includes(s.worktreeId))
     if (visible.length === 0) return
-    if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return
+    if (selectedWorktreeId && visible.some((s) => s.worktreeId === selectedWorktreeId)) return
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
-    selectSession(pick.sessionId)
-  }, [activeProjectSlug, scopedProvisioning, scoped, selectedSessionId, pendingDeleteIds, selectSession])
+    selectSession(pick.worktreeId)
+  }, [activeProjectSlug, scopedProvisioning, scoped, selectedWorktreeId, pendingDeleteIds, selectSession])
   // Viewing a waiting session marks its current spell read — the pane shows
   // it, so it no longer needs attention. Covers both selecting a waiting
   // session and the open session flipping running → waiting under the
   // user's eyes.
   useEffect(() => {
-    if (!selectedSessionId) return
-    const open = sessions.find((s) => s.sessionId === selectedSessionId)
-    if (open?.status === 'waiting') markWaitingRead(selectedSessionId, open.waitingSinceMs ?? 0)
-  }, [selectedSessionId, sessions, markWaitingRead])
+    if (!selectedWorktreeId) return
+    const open = worktrees.find((s) => s.worktreeId === selectedWorktreeId)
+    if (open?.status === 'waiting') markWaitingRead(selectedWorktreeId, open.waitingSinceMs ?? 0)
+  }, [selectedWorktreeId, worktrees, markWaitingRead])
 
   // GC read marks whose waiting spell is over (session running, gone, or
   // waiting anew with a fresh waitingSinceMs). Only against hydrated frames:
-  // before the first snapshot lands, `sessions` is the empty fallback, and
+  // before the first snapshot lands, `worktrees` is the empty fallback, and
   // syncing against it would wipe every restored mark — re-flagging all
-  // waiting sessions as unread on every reload.
+  // waiting worktrees as unread on every reload.
   useEffect(() => {
     if (!snapshot) return
-    syncWaitingRead(sessions
+    syncWaitingRead(worktrees
       .filter((s) => s.status === 'waiting')
-      .map((s) => ({ sessionId: s.sessionId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
-  }, [snapshot, sessions, syncWaitingRead])
+      .map((s) => ({ worktreeId: s.worktreeId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
+  }, [snapshot, worktrees, syncWaitingRead])
 
-  // Per-project count of unread waiting sessions → the rail attention badge.
-  const attention = unreadWaitingBySlug(sessions, readWaiting, pendingDeleteIds)
+  // Per-project count of unread waiting worktrees → the rail attention badge.
+  const attention = unreadWaitingBySlug(worktrees, readWaiting, pendingDeleteIds)
 
   return (
     // Rail + sidebar sit flush on the base layer; the session pane floats
@@ -342,7 +342,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         <Sidebar
           projectSlug={activeProjectSlug}
           projectRemoteUrl={projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''}
-          sessions={scoped}
+          worktrees={scoped}
           provisioning={scopedProvisioning}
           connected={connected}
           gitAuthFailures={(activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []}
@@ -361,7 +361,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         description="Stops and removes the session's container. The session history and worktree will be saved, and can be restarted."
         confirmLabel="Delete"
         onConfirm={() => {
-          if (confirmDelete) deleteSessionOptimistic(confirmDelete)
+          if (confirmDelete) stopWorktreeOptimistic(confirmDelete)
           setConfirmDelete(null)
         }}
       />

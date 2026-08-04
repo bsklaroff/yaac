@@ -15,7 +15,7 @@ import { getDefaultTool } from '@yaac/server/features/projects/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
 import type * as sessionCreateModule from '@yaac/server/features/sessions/create'
 import type * as projectAddModule from '@yaac/server/features/projects/add'
-import type * as sessionDeleteModule from '@yaac/server/features/sessions/delete'
+import type * as sessionDeleteModule from '@yaac/server/features/sessions/stop'
 import type * as sessionRestartModule from '@yaac/server/features/sessions/restart'
 import type * as projectRemoveModule from '@yaac/server/features/projects/remove'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
@@ -31,12 +31,12 @@ vi.mock('@yaac/server/features/sessions/create', async () => {
   }
 })
 
-vi.mock('@yaac/server/features/sessions/delete', () => ({
-  deleteSession: vi.fn(),
+vi.mock('@yaac/server/features/sessions/stop', () => ({
+  stopWorktree: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
 
 vi.mock('@yaac/server/features/sessions/restart', () => ({
-  restartSession: vi.fn(),
+  restartWorktree: vi.fn(),
 } satisfies Partial<typeof sessionRestartModule>))
 
 vi.mock('@yaac/server/features/projects/add', async () => {
@@ -62,8 +62,8 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
 })
 
 import { createSession } from '@yaac/server/features/sessions/create'
-import { deleteSession } from '@yaac/server/features/sessions/delete'
-import { restartSession } from '@yaac/server/features/sessions/restart'
+import { stopWorktree } from '@yaac/server/features/sessions/stop'
+import { restartWorktree } from '@yaac/server/features/sessions/restart'
 import { addProject } from '@yaac/server/features/projects/add'
 import { removeProject } from '@yaac/server/features/projects/remove'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/sessions/provisioning'
@@ -129,8 +129,8 @@ function installLoopbackAgent(): () => void {
 }
 
 const mockCreateSession = vi.mocked(createSession)
-const mockDeleteSession = vi.mocked(deleteSession)
-const mockRestartSession = vi.mocked(restartSession)
+const mockDeleteSession = vi.mocked(stopWorktree)
+const mockRestartSession = vi.mocked(restartWorktree)
 const mockAddProject = vi.mocked(addProject)
 const mockRemoveProject = vi.mocked(removeProject)
 
@@ -522,10 +522,10 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /session/create', () => {
+  describe('POST /worktree/create', () => {
     it('rejects missing project', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/create', withAuth({
+      const res = await app.request('/worktree/create', withAuth({
         method: 'POST',
         body: JSON.stringify({}),
       }))
@@ -534,7 +534,7 @@ describe('write routes', () => {
 
     it('rejects an unknown tool with VALIDATION', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/create', withAuth({
+      const res = await app.request('/worktree/create', withAuth({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
       }))
@@ -548,14 +548,14 @@ describe('write routes', () => {
         opts.onProgress?.('Fetching latest from remote...')
         opts.onProgress?.('Creating session job yaac-demo-sess-x...')
         return Promise.resolve({
-          sessionId: 'sess-x',
+          worktreeId: 'sess-x',
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
         })
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.create.$post({
+      const res = await client.worktree.create.$post({
         json: {
           project: 'demo',
           gitUser: { name: 'A', email: 'a@b' },
@@ -571,7 +571,7 @@ describe('write routes', () => {
         {
           type: 'result',
           result: {
-            sessionId: 'sess-x',
+            worktreeId: 'sess-x',
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
@@ -586,7 +586,7 @@ describe('write routes', () => {
     it('emits a terminal error event when createSession throws', async () => {
       mockCreateSession.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.create.$post({ json: { project: 'demo' } })
+      const res = await client.worktree.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
@@ -596,10 +596,10 @@ describe('write routes', () => {
 
     it('threads a branch into createSession', async () => {
       mockCreateSession.mockResolvedValue({
-        sessionId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.create.$post({ json: { project: 'demo', branch: 'dev' } })
+      const res = await client.worktree.create.$post({ json: { project: 'demo', branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
       expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
@@ -607,7 +607,7 @@ describe('write routes', () => {
 
     it('rejects an empty branch with VALIDATION', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/create', withAuth({
+      const res = await app.request('/worktree/create', withAuth({
         method: 'POST',
         body: JSON.stringify({ project: 'demo', branch: '' }),
       }))
@@ -616,11 +616,11 @@ describe('write routes', () => {
 
     it('threads a client-supplied sessionId into createSession', async () => {
       mockCreateSession.mockResolvedValue({
-        sessionId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
       })
       const id = '11111111-1111-4111-8111-111111111111'
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.create.$post({ json: { project: 'demo', sessionId: id } })
+      const res = await client.worktree.create.$post({ json: { project: 'demo', worktreeId: id } })
       expect(res.status).toBe(200)
       await res.text()
       expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({ sessionId: id }))
@@ -628,9 +628,9 @@ describe('write routes', () => {
 
     it('rejects a non-uuid sessionId with VALIDATION', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/create', withAuth({
+      const res = await app.request('/worktree/create', withAuth({
         method: 'POST',
-        body: JSON.stringify({ project: 'demo', sessionId: 'not-a-uuid' }),
+        body: JSON.stringify({ project: 'demo', worktreeId: 'not-a-uuid' }),
       }))
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string } }
@@ -638,47 +638,47 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /session/provisioning/:id/dismiss', () => {
+  describe('POST /worktree/provisioning/:id/dismiss', () => {
     it('removes the registry entry and returns 204', async () => {
-      registerProvisioning({ sessionId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      registerProvisioning({ worktreeId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
+      const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)
-      expect(listProvisioning().some((p) => p.sessionId === 'dz-1')).toBe(false)
+      expect(listProvisioning().some((p) => p.worktreeId === 'dz-1')).toBe(false)
     })
 
     it('is idempotent for an unknown id', async () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
+      const res = await client.worktree.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
       expect(res.status).toBe(204)
     })
   })
 
-  describe('POST /session/restart', () => {
+  describe('POST /worktree/restart', () => {
     it('rejects missing sessionId', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/restart', withAuth({
+      const res = await app.request('/worktree/restart', withAuth({
         method: 'POST',
         body: JSON.stringify({}),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('streams progress and a result event from restartSession', async () => {
+    it('streams progress and a result event from restartWorktree', async () => {
       mockRestartSession.mockImplementation((_id, opts) => {
         opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
         opts?.onProgress?.('Reusing existing worktree at /wt/sess-x')
         return Promise.resolve({
-          sessionId: 'sess-x',
+          worktreeId: 'sess-x',
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
         })
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.restart.$post({
+      const res = await client.worktree.restart.$post({
         json: {
-          sessionId: 'sess-x',
+          worktreeId: 'sess-x',
           gitUser: { name: 'A', email: 'a@b' },
         },
       })
@@ -691,7 +691,7 @@ describe('write routes', () => {
         {
           type: 'result',
           result: {
-            sessionId: 'sess-x',
+            worktreeId: 'sess-x',
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
@@ -703,10 +703,10 @@ describe('write routes', () => {
       }))
     })
 
-    it('emits a terminal error event when restartSession throws', async () => {
+    it('emits a terminal error event when restartWorktree throws', async () => {
       mockRestartSession.mockRejectedValue(new ServerError('NOT_FOUND', 'missing'))
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.restart.$post({ json: { sessionId: 'nope' } })
+      const res = await client.worktree.restart.$post({ json: { worktreeId: 'nope' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
@@ -715,24 +715,24 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /session/delete', () => {
-    it('rejects missing sessionId', async () => {
+  describe('POST /worktree/stop', () => {
+    it('rejects a missing worktreeId', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/delete', withAuth({
+      const res = await app.request('/worktree/stop', withAuth({
         method: 'POST',
         body: JSON.stringify({}),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('delegates to deleteSession and returns the result', async () => {
+    it('delegates to stopWorktree and returns the result', async () => {
       mockDeleteSession.mockResolvedValue({
-        sessionId: 'sess-x',
+        worktreeId: 'sess-x',
         projectSlug: 'demo',
         jobName: 'yaac-demo-sess-x',
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.session.delete.$post({ json: { sessionId: 'sess-x' } })
+      const res = await client.worktree.stop.$post({ json: { worktreeId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
     })

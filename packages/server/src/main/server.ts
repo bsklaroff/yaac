@@ -18,7 +18,7 @@ import {
   type TokenStore,
 } from '#http'
 import { projectApp } from '#routes/projects'
-import { sessionApp } from '#routes/sessions'
+import { worktreeApp } from '#routes/worktrees'
 import { toolApp } from '#routes/skills'
 import { authApp } from '#routes/auth'
 import { createClusterApp, type ClusterRouteDeps } from '#routes/cluster'
@@ -152,7 +152,7 @@ export function buildApp(deps: ServerAppDeps) {
       authRequired: !isCredentialOptional(),
     }))
     .route('/project', projectApp)
-    .route('/session', sessionApp)
+    .route('/worktree', worktreeApp)
     .route('/tool', toolApp)
     .route('/tokens', createTokensApp(tokens))
     .route('/auth', authApp)

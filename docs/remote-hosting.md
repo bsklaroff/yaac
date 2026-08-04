@@ -63,7 +63,7 @@ reachable from the server's own loopback.
 
 ```sh
 yaac remote set https://srv.<tailnet>.ts.net --token <token-from-step-4>
-yaac session list                    # talks to the server
+yaac worktree list                   # talks to the server
 yaac open                            # prints/opens an authed webapp URL
 ```
 

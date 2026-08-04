@@ -53,7 +53,6 @@ import {
   claudeDir,
   claudeJsonFile,
   codexDir,
-  codexTranscriptDir,
   nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
@@ -90,18 +89,25 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
+import { clearPanePointers } from '#features/sessions/agent-links'
+import { ensureClaudeHooks } from '#features/sessions/agents/claude-hooks'
 import { removeLegacyCodexHook } from '#features/sessions/agents/codex'
 import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode'
 import {
-  deleteSessionRow,
-  getSessionRow,
-  priorDeletionOf,
-  recordSessionCreated,
-  recordSessionDeleted,
-  restoreSessionDeletion,
-  setSessionBaseBranch,
-  type PriorDeletion,
-} from '#features/sessions/store'
+  deleteWorktreeAgentSessions,
+  recordAgentSessions,
+  setActiveAgentSessions,
+} from '#features/sessions/agent-session-store'
+import {
+  deleteWorktreeRow,
+  getWorktreeRow,
+  priorStopOf,
+  recordWorktreeCreated,
+  recordWorktreeStopped,
+  restoreWorktreeStop,
+  setWorktreeBaseBranch,
+  type PriorStop,
+} from '#features/sessions/worktree-store'
 import {
   buildAgentCmd,
   typeInitialPrompt,
@@ -163,6 +169,13 @@ export interface SessionCreateOptions {
    */
   resume?: boolean
   /**
+   * The agent sessions to bring up, in window order — what restart reads
+   * back from the frozen active set. Each gets its own tmux window
+   * (`agentWindowName`), the first respawning the placeholder. Empty (the
+   * default) starts one fresh conversation pinned to the worktree id.
+   */
+  resumeAgentSessions?: Array<{ agentSessionId: string; tool: AgentTool }>
+  /**
    * Provision a prewarmed spare: stamp the `yaac.prewarmed` pod label so the
    * session is hidden from user-facing views until claimed on a later
    * `session create`. Set by the prewarm reconciler; never by a user create.
@@ -189,13 +202,13 @@ export interface SessionCreateOptions {
   /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
-   * `yaac session create` can show what the server is doing.
+   * `yaac worktree create` can show what the server is doing.
    */
   onProgress?: (message: string) => void
 }
 
 export interface SessionCreateResult {
-  sessionId: string
+  worktreeId: string
   jobName: string
   forwardedPorts: PortMapping[]
   tool: AgentTool
@@ -214,6 +227,10 @@ interface SessionSetupParams {
   /** Inner (nested) yaac — don't stamp a RuntimeClass (see SessionJobParams). */
   innerYaac?: boolean
   tool: AgentTool
+  /** The conversations to bring up, in window order — the same list the
+   *  worktree's rows were written from, so the DB can never name one the
+   *  agent did not open. */
+  launching: Array<{ agentSessionId: string; tool: AgentTool }>
   /** Pre-validated init windows (validateInitWindows ran in createSession). */
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
@@ -263,7 +280,7 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, innerYaac, tool, initWindows, piProvider,
+    proxyHost, nested, innerYaac, tool, launching, initWindows, piProvider,
     options, worktree,
   } = params
 
@@ -404,14 +421,25 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // options, and the placeholder window were configured by the postStart
   // hook; the placeholder never reaches the user, who attaches after setup
   // completes.
-  const agentCmd = buildAgentCmd(tool, sessionId, options.resume === true, piProvider, options.model)
+  // One command per conversation, from the same list that was recorded with
+  // the worktree row — the two must not diverge, or the DB would name a
+  // conversation the agent never opened.
+  //
+  // Only a *resume* passes `--resume`: a restart with nothing recorded falls
+  // back to the worktree-id pin, which is the pre-hook worktree's path.
+  const resumesConversation = (options.resumeAgentSessions ?? []).length > 0
+    || options.resume === true
+  const agentCmds = launching.map((a) => ({
+    tool: a.tool,
+    cmd: buildAgentCmd(a.tool, a.agentSessionId, resumesConversation, piProvider, options.model),
+  }))
   const toolLabel =
     tool === 'codex' ? 'Codex' :
     tool === 'opencode' ? 'OpenCode' :
     tool === 'pi' ? 'Pi' :
     'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
-  await sessionExec(jobName, buildWindowsExec(initWindows, tool, agentCmd))
+  await sessionExec(jobName, buildWindowsExec(initWindows, tool, agentCmds))
 
   if (options.initialPrompt !== undefined) {
     emit('Sending initial prompt...', options)
@@ -430,17 +458,25 @@ async function rollbackSessionRow(
   projectSlug: string,
   sessionId: string,
   options: SessionCreateOptions,
-  priorDeletion: PriorDeletion | undefined,
+  priorDeletion: PriorStop | undefined,
 ): Promise<void> {
   try {
     if (!options.resume) {
-      await deleteSessionRow(projectSlug, sessionId)
+      // The links go with the row, and the conversations behind them: a
+      // create that never came up should leave nothing, and nothing else
+      // prunes either. Caught separately so a failure here cannot skip the row
+      // delete below — the row is what makes the worktree visible, and leaking
+      // it is far worse than leaking a conversation nothing lists.
+      try {
+        await deleteWorktreeAgentSessions(projectSlug, sessionId)
+      } catch { /* best-effort */ }
+      await deleteWorktreeRow(projectSlug, sessionId)
     } else if (priorDeletion) {
       // Exactly as the restart found it — including the cause it died of
       // and whether the user had already seen that death.
-      await restoreSessionDeletion(projectSlug, sessionId, priorDeletion)
+      await restoreWorktreeStop(projectSlug, sessionId, priorDeletion)
     } else {
-      await recordSessionDeleted(projectSlug, sessionId)
+      await recordWorktreeStopped(projectSlug, sessionId)
     }
   } catch {
     // Best-effort: the create is already failing, and the reaper records a
@@ -546,6 +582,17 @@ export async function createSession(
   const initWindows = validateInitWindows(config)
 
   const sessionId = options.sessionId ?? crypto.randomUUID()
+  // The conversations this create will launch, decided here rather than at
+  // agent-command time so they can be recorded alongside the worktree row.
+  // A worktree's tool and founding ask are read off its first conversation,
+  // so a worktree with none has neither — and could not be restarted. Making
+  // create the authority (discovery only ever adds to what it wrote) is what
+  // keeps that from depending on a hook firing, which for opencode never
+  // happens at all: it has no host link tree.
+  const launching: Array<{ agentSessionId: string; tool: AgentTool }> =
+    options.resumeAgentSessions !== undefined && options.resumeAgentSessions.length > 0
+      ? options.resumeAgentSessions
+      : [{ agentSessionId: sessionId, tool }]
   const wtDir = worktreeDir(projectSlug, sessionId)
   const jobName = sessionJobName(projectSlug, sessionId)
 
@@ -569,19 +616,26 @@ export async function createSession(
   // A restart is about to clear the row's deletion; remember it first, so a
   // restart that then fails can put the row back rather than leaving a dead
   // session looking alive (or forgetting how it died).
-  let priorDeletion: PriorDeletion | undefined
+  let priorDeletion: PriorStop | undefined
   if (!options.prewarm) {
     if (options.resume) {
-      priorDeletion = priorDeletionOf(
-        await getSessionRow(projectSlug, sessionId).catch(() => undefined),
+      priorDeletion = priorStopOf(
+        await getWorktreeRow(projectSlug, sessionId).catch(() => undefined),
       )
     }
-    await recordSessionCreated({
-      projectSlug,
-      sessionId,
-      tool,
-      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
-    })
+    await recordWorktreeCreated({ projectSlug, worktreeId: sessionId })
+    // The worktree's tool and founding ask are read off this, so it is
+    // recorded with the row rather than left to discovery. An initial prompt
+    // is the first conversation's opening message by definition — the user
+    // typed it before the agent had said anything.
+    await recordAgentSessions(projectSlug, sessionId, launching.map((a, i) => ({
+      tool: a.tool,
+      agentSessionId: a.agentSessionId,
+      ...(i === 0 && options.initialPrompt !== undefined
+        ? { firstPrompt: options.initialPrompt }
+        : {}),
+    })))
+    await setActiveAgentSessions(projectSlug, sessionId, launching)
   }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
@@ -902,16 +956,17 @@ export async function createSession(
     // these flags the user is forced to log in inside every session.
     await seedClaudeJson(claudeJson)
     await seedClaudeSettings(path.join(claude, 'settings.json'))
+    // Register the agent-session discovery hook (the script is baked into the
+    // image; this only points claude at it). Best-effort: without it the
+    // session still runs, with only the `--session-id`-pinned conversation
+    // known to yaac.
+    await ensureClaudeHooks(path.join(claude, 'settings.json')).catch(() => {})
 
-    // Codex: pre-create the transcript symlink dir (host-side readers like the
-    // deleted-session list and restart expect it to exist). The SessionStart
-    // hook that populates it — symlinking each session's rollout JSONL into
-    // .yaac-transcripts/<YAAC_SESSION_ID>.jsonl — now ships as a Codex managed
-    // hook baked into the image at /etc/codex (dockerfiles/Dockerfile.tools),
-    // which Codex trusts by policy, so nothing is seeded into the mounted codex
-    // dir. For projects predating the managed hook, strip the stale user-layer
-    // hook so it stops triggering Codex's /hooks trust-approval prompt.
-    await fs.mkdir(codexTranscriptDir(projectSlug), { recursive: true })
+    // Codex discovers its conversations through the same managed SessionStart
+    // hook as the others (/etc/codex, baked into the image and trusted by
+    // policy), so nothing is seeded into the mounted codex dir. For projects
+    // predating that hook, strip the stale user-layer one so it stops
+    // triggering Codex's /hooks trust-approval prompt.
     await removeLegacyCodexHook(codex)
 
     // opencode: grant the websearch permission in the shared opencode.json so
@@ -929,6 +984,12 @@ export async function createSession(
     // Per-session host dir holding the tmux server socket and pane log.
     const tmuxHostDir = sessionTmuxDir(projectSlug, sessionId)
     await fs.mkdir(tmuxHostDir, { recursive: true })
+
+    // Forget which agent session sat on which pane in the *previous* life:
+    // tmux pane ids restart from %0, so a stale pointer would attribute this
+    // life's pane to the conversation the last one ran there. The linked
+    // conversation history under `sessions/` is deliberately kept.
+    await clearPanePointers(projectSlug, sessionId)
 
     const ephemeralMounts = await prepareEphemeralMounts(
       cachedPackages,
@@ -1049,9 +1110,11 @@ export async function createSession(
   // container. The proxy injects the real credentials on API calls. All
   // tools' vars go in (each gated on its own credential's kind) because the
   // pod spec is immutable and a prewarmed spare may be retooled at claim
-  // time. The vars are only sentinels: the proxy swaps placeholders solely
-  // for the session's *registered* tool (updated on retool), so carrying
-  // another tool's placeholder grants no access to its credential.
+  // time. The vars are only sentinels: the proxy swaps a placeholder for
+  // whichever host it is being sent to, without regard to the session's tool,
+  // so carrying another tool's placeholder does grant access to its
+  // credential — a deliberate widening (see k8s/proxy/proxy.ts). What keeps
+  // the proxy off a user's own traffic is the sentinel match, not the tool.
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`)
   }
@@ -1214,7 +1277,7 @@ export async function createSession(
   // individual exec calls against a dead pod.
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
-    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
+    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts, launching,
     proxyHost: cluster.proxyHost, nested, innerYaac, tool, initWindows,
     piProvider: toolAuthByTool.pi?.piProvider,
     options, worktree: worktreeTask,
@@ -1271,12 +1334,12 @@ export async function createSession(
   if (!options.prewarm) {
     const { upstreamStartPoint } = await worktreeTask
     if (upstreamStartPoint !== undefined) {
-      await setSessionBaseBranch(projectSlug, sessionId, upstreamStartPoint.replace(/^origin\//, ''))
+      await setWorktreeBaseBranch(projectSlug, sessionId, upstreamStartPoint.replace(/^origin\//, ''))
     }
   }
 
   return {
-    sessionId,
+    worktreeId: sessionId,
     jobName,
     forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
     tool,

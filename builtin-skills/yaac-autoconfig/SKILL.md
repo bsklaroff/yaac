@@ -1,9 +1,9 @@
 ---
 name: yaac-autoconfig
-description: Generate a yaac-config.json template for the current repo — a config that installs, builds, and starts the project's dev server and forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new sessions, or expose a running dev server / preview from a yaac session.
+description: Generate a yaac-config.json template for the current repo — a config that installs, builds, and starts the project's dev server and forwards its ports — for the user to apply to their project's yaac config. Use when the user asks to auto-configure yaac for this project, get the app running in new worktrees, or expose a running dev server / preview from a yaac worktree.
 ---
 
-You are running **inside a yaac session** — a sandboxed container holding a
+You are running **inside a yaac worktree** — a sandboxed container holding a
 checkout of some project. This skill writes a `yaac-config.json` to that repo's
 root that, **once the user applies it to their project config**, makes *future*
 sessions boot with the app already built, running, and reachable from the host

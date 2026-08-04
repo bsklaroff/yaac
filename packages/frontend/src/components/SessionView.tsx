@@ -40,7 +40,7 @@ import {
   type DropTarget,
   type Workspace,
 } from '#lib/layout'
-import type { ServerSnapshot, ProvisioningSessionEntry, SessionTerminalEntry } from '@yaac/shared/types'
+import type { ServerSnapshot, ProvisioningWorktreeEntry, SessionTerminalEntry } from '@yaac/shared/types'
 
 /** Gap between column cards. */
 const GAP = 8
@@ -86,9 +86,9 @@ export function SessionView({
   provisioning,
 }: {
   snapshot: ServerSnapshot | undefined
-  provisioning: ProvisioningSessionEntry[]
+  provisioning: ProvisioningWorktreeEntry[]
 }): JSX.Element {
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const focusNonce = useUiStore((s) => s.focusNonce)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
@@ -105,9 +105,9 @@ export function SessionView({
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
   const queryClient = useQueryClient()
-  const sessions = snapshot?.sessions ?? []
-  const session = sessions.find((s) => s.sessionId === selectedSessionId)
-  const sid = session?.sessionId ?? null
+  const sessions = snapshot?.worktrees ?? []
+  const session = sessions.find((s) => s.worktreeId === selectedWorktreeId)
+  const sid = session?.worktreeId ?? null
   // Project-wide flag; shown in the header because a rejected credential
   // fails git fetch/push inside this session too.
   const gitAuthFailures = (session && snapshot?.gitAuthFailures?.[session.projectSlug]) || []
@@ -123,7 +123,7 @@ export function SessionView({
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
   // hijacks a session you're viewing; you click the row to see its status.
-  const creatingHere = session ? null : provisioning.find((p) => p.sessionId === selectedSessionId) ?? null
+  const creatingHere = session ? null : provisioning.find((p) => p.worktreeId === selectedWorktreeId) ?? null
 
   // The session's workspace: missing key = the default single agent column;
   // null = explicitly emptied.
@@ -214,7 +214,7 @@ export function SessionView({
     })
   }, [sid, layout])
 
-  const liveIds = new Set(sessions.map((s) => s.sessionId))
+  const liveIds = new Set(sessions.map((s) => s.worktreeId))
   const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.indexOf('|'))))
 
   // Last shown rect per kept-alive terminal — hidden panes freeze here so
@@ -239,9 +239,9 @@ export function SessionView({
   // out dozens of kubectl PTYs at once; uncovered sessions just keep the
   // old click-to-attach behavior.
   const eagerIdsKey = sessions
-    .filter((s) => !s.terminating)
+    .filter((s) => !s.stopping)
     .slice(0, EAGER_ATTACH_MAX)
-    .map((s) => s.sessionId)
+    .map((s) => s.worktreeId)
     .join(',')
   useEffect(() => {
     if (wsSize.w <= 0 || wsSize.h <= 0 || eagerIdsKey === '') return
@@ -590,7 +590,7 @@ export function SessionView({
             </button>
           )}
           <SessionTitle
-            sessionId={session.sessionId}
+            worktreeId={session.worktreeId}
             title={session.title ?? ''}
             prompt={session.prompt ?? ''}
           />
@@ -613,7 +613,7 @@ export function SessionView({
             <AddIcon size={14} />
           </button>
           <button
-            onClick={() => openChanges(session.sessionId)}
+            onClick={() => openChanges(session.worktreeId)}
             title="Review changes"
             aria-label="Review changes"
             className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
@@ -624,7 +624,7 @@ export function SessionView({
           </button>
           {embedPreview && previewPorts.length > 0 && (
             <button
-              onClick={() => openPreview(session.sessionId, previewPorts[0].containerPort)}
+              onClick={() => openPreview(session.worktreeId, previewPorts[0].containerPort)}
               title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
               aria-label="Open preview"
               className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
@@ -640,7 +640,7 @@ export function SessionView({
           {session.unforwardedPorts.length > 0 && (
             <UnforwardedPortsBadge
               ports={session.unforwardedPorts}
-              sessionId={session.sessionId}
+              worktreeId={session.worktreeId}
               exposeHost={snapshot?.forwardBindHost ?? '127.0.0.1'}
               iconSize={11}
               className="hover:bg-surface-3"
@@ -654,7 +654,7 @@ export function SessionView({
             />
           )}
           {session.blockedHosts.length > 0 && (
-            <BlockedHostsBadge hosts={session.blockedHosts} sessionId={session.sessionId} iconSize={12} className="hover:bg-[#d65858]/25" />
+            <BlockedHostsBadge hosts={session.blockedHosts} worktreeId={session.worktreeId} iconSize={12} className="hover:bg-[#d65858]/25" />
           )}
           {/* Tool name sits at the far right, past any chits that appear. */}
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
@@ -709,7 +709,7 @@ export function SessionView({
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {group.tabs.map((t) => renderTab(t, {
                 isActive: group.active === t,
-                onSelect: () => focusTerminal(session.sessionId, t),
+                onSelect: () => focusTerminal(session.worktreeId, t),
                 draggable: true,
               }))}
               <button
@@ -733,7 +733,7 @@ export function SessionView({
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {targets.map((t) => renderTab(t, {
                 isActive: activeTab === t,
-                onSelect: () => focusTerminal(session.sessionId, t),
+                onSelect: () => focusTerminal(session.worktreeId, t),
                 draggable: false,
               }))}
               <button
@@ -813,7 +813,7 @@ export function SessionView({
               {preview ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <SessionPreview
-                    sessionId={id}
+                    worktreeId={id}
                     ports={previewPorts}
                     currentPort={previewPortForSession}
                     onSwitchPort={(p) => setPreviewPort(id, p)}
@@ -822,10 +822,10 @@ export function SessionView({
               ) : changes ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   {(() => {
-                    const cs = sessions.find((s) => s.sessionId === id)
+                    const cs = sessions.find((s) => s.worktreeId === id)
                     return (
                       <SessionChanges
-                        sessionId={id}
+                        worktreeId={id}
                         projectSlug={cs?.projectSlug ?? ''}
                         baseBranch={cs?.baseBranch}
                       />
@@ -836,7 +836,7 @@ export function SessionView({
                 <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
                   <SessionTerminal
                     key={`${key}:${terminalNonces[id] ?? 0}`}
-                    sessionId={id}
+                    worktreeId={id}
                     target={target}
                     // On-screen panes render; the rest are kept-alive but
                     // hidden (a hidden tab keeps its rect, so it's the right

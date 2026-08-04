@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/sessions/cleanup'
-import * as sessionCreate from '@yaac/server/features/sessions/create'
-import { resolveRestartTarget, restartSession } from '@yaac/server/features/sessions/restart'
-import { recordSessionCreated } from '@yaac/server/features/sessions/store'
+import * as worktreeCreate from '@yaac/server/features/sessions/create'
+import { resolveRestartTarget, restartWorktree } from '@yaac/server/features/sessions/restart'
+import { recordWorktreeCreated } from '@yaac/server/features/sessions/worktree-store'
+import { recordAgentSessions } from '@yaac/server/features/sessions/agent-session-store'
 import { closeDb } from '@yaac/server/platform/db/client'
-import { sessionRestart } from '#commands/session-restart'
+import { worktreeRestart } from '#commands/worktree-restart'
 
 import type { SessionPod } from '@yaac/server/platform/k8s/pods'
 
@@ -55,7 +56,7 @@ describe('resolveRestartTarget', () => {
     const info = await resolveRestartTarget('abcd1234')
     expect(info).toEqual({
       projectSlug: 'demo',
-      sessionId: 'abcd1234',
+      worktreeId: 'abcd1234',
       tool: 'claude',
       jobName: 'yaac-demo-abcd1234',
     })
@@ -76,17 +77,17 @@ describe('resolveRestartTarget', () => {
   it('resolves from a live pod by session id prefix', async () => {
     listSpy.mockResolvedValueOnce([pod()])
     const info = await resolveRestartTarget('abcd')
-    expect(info.sessionId).toBe('abcd1234')
+    expect(info.worktreeId).toBe('abcd1234')
     expect(info.jobName).toBe('yaac-demo-abcd1234')
   })
 
   it('falls back to the recorded session row for a reaped session', async () => {
     listSpy.mockResolvedValueOnce([])
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'deadbeefdeadbeef', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'deadbeefdeadbeef' })
     const info = await resolveRestartTarget('deadbeefdeadbeef')
     expect(info).toEqual({
       projectSlug: 'demo',
-      sessionId: 'deadbeefdeadbeef',
+      worktreeId: 'deadbeefdeadbeef',
       tool: 'claude',
       jobName: null,
     })
@@ -94,7 +95,12 @@ describe('resolveRestartTarget', () => {
 
   it('takes the tool from the row, for a tool that leaves no transcript', async () => {
     listSpy.mockResolvedValueOnce([])
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'ocsess', tool: 'opencode' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'ocsess' })
+    // The tool comes from the worktree's first conversation, which create
+    // records alongside the row — a worktree has no tool of its own.
+    await recordAgentSessions('demo', 'ocsess', [
+      { tool: 'opencode', agentSessionId: 'ocsess' },
+    ])
     const info = await resolveRestartTarget('ocsess')
     expect(info.tool).toBe('opencode')
     expect(info.jobName).toBeNull()
@@ -102,9 +108,9 @@ describe('resolveRestartTarget', () => {
 
   it('resolves a recorded session by id prefix, across projects', async () => {
     listSpy.mockResolvedValueOnce([])
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'abcd1234ffff', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'abcd1234ffff' })
     const info = await resolveRestartTarget('abcd')
-    expect(info.sessionId).toBe('abcd1234ffff')
+    expect(info.worktreeId).toBe('abcd1234ffff')
     expect(info.projectSlug).toBe('demo')
   })
 
@@ -117,18 +123,18 @@ describe('resolveRestartTarget', () => {
 
   it('falls through to the recorded row when the cluster is unavailable', async () => {
     listSpy.mockRejectedValueOnce(new Error('connection refused'))
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'xyz', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'xyz' })
     const info = await resolveRestartTarget('xyz')
     expect(info).toEqual({
       projectSlug: 'demo',
-      sessionId: 'xyz',
+      worktreeId: 'xyz',
       tool: 'claude',
       jobName: null,
     })
   })
 })
 
-describe('restartSession', () => {
+describe('restartWorktree', () => {
   let tmpDir: string
   let listSpy: ReturnType<typeof vi.fn<() => Promise<SessionPod[]>>>
   let cleanupSpy: ReturnType<typeof vi.fn>
@@ -139,7 +145,7 @@ describe('restartSession', () => {
     listSpy = vi.fn()
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
     createSpy = vi.fn().mockResolvedValue({
-      sessionId: 'abcd1234',
+      worktreeId: 'abcd1234',
       jobName: 'yaac-demo-abcd1234',
       forwardedPorts: [],
       tool: 'claude',
@@ -150,8 +156,8 @@ describe('restartSession', () => {
     vi.spyOn(cleanup, 'cleanupSession').mockImplementation(
       cleanupSpy as unknown as typeof cleanup.cleanupSession,
     )
-    vi.spyOn(sessionCreate, 'createSession').mockImplementation(
-      createSpy as unknown as typeof sessionCreate.createSession,
+    vi.spyOn(worktreeCreate, 'createSession').mockImplementation(
+      createSpy as unknown as typeof worktreeCreate.createSession,
     )
   })
 
@@ -165,7 +171,7 @@ describe('restartSession', () => {
     listSpy.mockResolvedValueOnce([pod()])
 
     const progress: string[] = []
-    await restartSession('abcd1234', { onProgress: (m) => progress.push(m) })
+    await restartWorktree('abcd1234', { onProgress: (m) => progress.push(m) })
 
     expect(cleanupSpy).toHaveBeenCalledWith({
       jobName: 'yaac-demo-abcd1234',
@@ -176,15 +182,18 @@ describe('restartSession', () => {
       resume: true,
       sessionId: 'abcd1234',
       tool: 'claude',
+      // Nothing was recorded as active, so there is nothing to resume by id —
+      // the worktree comes back with one fresh conversation.
+      resumeAgentSessions: [],
     }))
     expect(progress.some((m) => m.includes('Stopping session job yaac-demo-abcd1234'))).toBe(true)
   })
 
   it('skips cleanup when no pod exists and falls back to the recorded row', async () => {
     listSpy.mockResolvedValueOnce([])
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'deadbeef', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'deadbeef' })
 
-    await restartSession('deadbeef')
+    await restartWorktree('deadbeef')
 
     expect(cleanupSpy).not.toHaveBeenCalled()
     expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
@@ -197,7 +206,7 @@ describe('restartSession', () => {
   it('forwards gitUser into createSession', async () => {
     listSpy.mockResolvedValueOnce([pod()])
 
-    await restartSession('abcd1234', {
+    await restartWorktree('abcd1234', {
       gitUser: { name: 'A', email: 'a@b' },
     })
 
@@ -207,8 +216,8 @@ describe('restartSession', () => {
   })
 })
 
-describe('sessionRestart (CLI shim)', () => {
+describe('worktreeRestart (CLI shim)', () => {
   it('is exported as a function', () => {
-    expect(typeof sessionRestart).toBe('function')
+    expect(typeof worktreeRestart).toBe('function')
   })
 })

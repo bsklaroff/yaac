@@ -6,7 +6,8 @@ import { PI_BUSY_MARKERS } from '#features/sessions/agents/pi-status'
 import { normalizeTool } from '#features/sessions/state'
 import {
   evictSessionStatus,
-  setSessionStatus,
+  setLiveAgentPanes,
+  setPaneStatus,
   setSessionStreamHealth,
   type SessionAgentStatus,
 } from '#features/sessions/status-store'
@@ -18,7 +19,7 @@ import {
 import { ControlModeClient, type ControlModeNotification } from '#features/sessions/control-mode'
 import { serverLog } from '#log'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
-import type { AgentTool } from '@yaac/shared/types'
+import { AGENT_TOOLS, type AgentTool } from '@yaac/shared/types'
 
 /**
  * Per-session status watchers: one persistent tmux control-mode client
@@ -127,6 +128,46 @@ export function classifyAgentObservation(tool: AgentTool, observed: string): Ses
   return classifyClaudeTitle(observed)
 }
 
+/** Subscription names are per pane, never shared — see `subscriptionName`. */
+const SUBSCRIPTION_PREFIX = 'status-'
+
+/**
+ * The tmux subscription name for one agent pane.
+ *
+ * It MUST be unique per pane: `refresh-client -B <name>:<pane>:<format>`
+ * keys subscriptions by name, so subscribing a second pane under a name the
+ * client already holds *replaces* the first rather than adding to it, and
+ * that pane silently stops reporting. With one agent per worktree the bug is
+ * invisible; with two, only the last-subscribed pane ever pushes a status —
+ * a waiting primary agent reads as running and never raises attention.
+ *
+ * The pane id's `%` is dropped so the name stays alphanumeric.
+ */
+function subscriptionName(paneId: string): string {
+  return `${SUBSCRIPTION_PREFIX}${paneId.replace('%', '')}`
+}
+
+/**
+ * The agent tool a tmux window runs, or undefined when it is not an agent
+ * window. The worktree's original agent keeps the bare tool name (so every
+ * existing `yaac:<tool>` pane target still resolves); the extra conversations
+ * a restart brings back, or a user opens, are `<tool>-2`, `<tool>-3`, …
+ *
+ * Any tool matches, not just the worktree's: a worktree can hold a codex
+ * conversation beside its claude ones, and matching only the worktree's tool
+ * would drop that window from the live pane set — which in turn leaves its
+ * link inactive, so the next restart silently forgets a conversation that was
+ * running when the worktree stopped.
+ *
+ * Init-command windows and scratch shells are excluded — they have no agent
+ * status to classify. An agent a user starts by hand inside a *scratch*
+ * window is therefore linked as a conversation (its hook still fires) but
+ * carries no status dot; naming the window after the tool is what opts it in.
+ */
+export function agentWindowTool(windowName: string): AgentTool | undefined {
+  return AGENT_TOOLS.find((t) => windowName === t || new RegExp(`^${t}-\\d+$`).test(windowName))
+}
+
 /**
  * tmux attach-client flags for a status watcher. `read-only` (it must never
  * inject input), `ignore-size` (kept out of window-size negotiation, so it
@@ -159,7 +200,11 @@ export class SessionStatusWatcher {
   private child: AttachChild | null = null
   private client: ControlModeClient | null = null
   private registeredSend: ControlStreamSend | null = null
-  private agentPaneId: string | null = null
+  /** Panes we hold a status subscription on, each with the tool its window
+   *  runs — a worktree's panes need not share one, and the pushed value is
+   *  classified against that tool's grammar. Reset with the stream, since a
+   *  new tmux client carries none of the old one's subscriptions. */
+  private subscribedPanes = new Map<string, AgentTool>()
   private stopped = false
   private streamGeneration = 0
   private backoffMs: number
@@ -233,28 +278,17 @@ export class SessionStatusWatcher {
   }
 
   /**
-   * Post-attach setup, all over the stream: resolve the agent pane id,
-   * then subscribe to the tool's status format. tmux pushes the current
+   * Post-attach setup, all over the stream: enumerate the agent panes and
+   * subscribe to the tool's status format on each. tmux pushes the current
    * value at its next ~1s format check, so the first classification
    * arrives without any change; until then the attach itself already
    * proves tmux is up.
    */
   private async init(generation: number, client: ControlModeClient): Promise<void> {
-    const { tool } = this.session
     const send = (cmd: string): Promise<string> =>
       withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`)
 
-    const paneId = (await send(`display-message -p -t yaac:${tool}.0 '#{pane_id}'`)).trim()
-    if (!paneId.startsWith('%')) throw new Error(`unexpected pane id ${JSON.stringify(paneId)}`)
-    if (generation !== this.streamGeneration || this.stopped) return
-    this.agentPaneId = paneId
-
-    // Single-quote the -B argument: tmux processes C escapes (`\b`, `\t`, …)
-    // inside double quotes, which would corrupt an ERE word boundary in the
-    // status format; single quotes carry the format string literally. Safe
-    // because the format literal never contains a `'` (a pane title's runtime
-    // value is expanded later, per-client — it's not on this command line).
-    await send(`refresh-client -B 'status:${paneId}:${statusFormat(tool)}'`)
+    await this.syncAgentPanes(generation, send)
     if (generation !== this.streamGeneration || this.stopped) return
     setSessionStreamHealth(this.session.slug, this.session.sessionId, true)
 
@@ -271,6 +305,64 @@ export class SessionStatusWatcher {
     this.heartbeatTimer = setInterval(() => void this.heartbeat(generation), this.heartbeatIntervalMs)
   }
 
+  /**
+   * Enumerate the panes running an agent and subscribe a status format on
+   * each. An agent pane is one whose window is an agent window — `<tool>` for
+   * the worktree's original agent, `<tool>-2`, `<tool>-3`, … for the extra
+   * conversations a restart brings back or a user opens. Init windows and
+   * scratch shells are deliberately excluded: they have no agent status to
+   * classify.
+   *
+   * Re-run on every heartbeat and on window add/close, so a conversation
+   * opened (or closed) mid-session is picked up without a reconnect. Already
+   * subscribed panes are skipped, since re-subscribing the same pane under
+   * the same name would just duplicate pushes.
+   */
+  private async syncAgentPanes(
+    generation: number,
+    send: (cmd: string) => Promise<string>,
+  ): Promise<void> {
+    const listed = await send(
+      "list-panes -s -F '#{pane_id} #{window_name}' -t yaac",
+    )
+    if (generation !== this.streamGeneration || this.stopped) return
+
+    const panes = listed.split('\n')
+      .map((line) => line.trim().split(' '))
+      .flatMap(([paneId, windowName]) => {
+        if (paneId === undefined || !paneId.startsWith('%') || windowName === undefined) return []
+        const paneTool = agentWindowTool(windowName)
+        // Classify each pane against ITS tool's grammar, not the worktree's:
+        // a pi pane read with claude's title format is permanently
+        // misclassified.
+        return paneTool === undefined ? [] : [{ paneId, tool: paneTool }]
+      })
+
+    if (panes.length === 0) {
+      // Nothing to classify yet (the agent window is still being created).
+      // Deliberately not published as an empty live set: that would read as
+      // "every agent exited" and deactivate the worktree's conversations.
+      return
+    }
+
+    for (const { paneId, tool: paneTool } of panes) {
+      if (this.subscribedPanes.has(paneId)) continue
+      // Single-quote the -B argument: tmux processes C escapes (`\b`, `\t`, …)
+      // inside double quotes, which would corrupt an ERE word boundary in the
+      // status format; single quotes carry the format string literally. Safe
+      // because the format literal never contains a `'` (a pane title's runtime
+      // value is expanded later, per-client — it's not on this command line).
+      await send(`refresh-client -B '${subscriptionName(paneId)}:${paneId}:${statusFormat(paneTool)}'`)
+      if (generation !== this.streamGeneration || this.stopped) return
+      this.subscribedPanes.set(paneId, paneTool)
+    }
+    const liveIds = panes.map((p) => p.paneId)
+    for (const paneId of [...this.subscribedPanes.keys()]) {
+      if (!liveIds.includes(paneId)) this.subscribedPanes.delete(paneId)
+    }
+    setLiveAgentPanes(this.session.slug, this.session.sessionId, liveIds)
+  }
+
   private onNotification(generation: number, n: ControlModeNotification): void {
     if (generation !== this.streamGeneration || this.stopped) return
     if (n.kind === 'exit') {
@@ -278,17 +370,37 @@ export class SessionStatusWatcher {
       // the child exits right after; let that path run teardown once.
       return
     }
+    if (n.kind === 'windows-changed') {
+      // A conversation was opened or closed; re-enumerate off the hot path.
+      void this.resyncPanes(generation)
+      return
+    }
     if (n.kind === 'subscription') {
-      if (n.name !== 'status' || n.paneId !== this.agentPaneId) return
-      this.recordStatus(classifyAgentObservation(this.session.tool, n.value))
+      const paneTool = this.subscribedPanes.get(n.paneId)
+      if (!n.name.startsWith(SUBSCRIPTION_PREFIX) || paneTool === undefined) return
+      setPaneStatus(
+        this.session.slug,
+        this.session.sessionId,
+        n.paneId,
+        classifyAgentObservation(paneTool, n.value),
+      )
       return
     }
     // %output — never subscribed to now (every watcher attaches no-output),
     // so agent pane redraws don't reach us. Ignored if one ever does.
   }
 
-  private recordStatus(status: SessionAgentStatus): void {
-    setSessionStatus(this.session.slug, this.session.sessionId, status)
+  /** Re-enumerate panes on the open stream, swallowing failures: a wedged
+   *  stream is the heartbeat's business, not this path's. */
+  private async resyncPanes(generation: number): Promise<void> {
+    const client = this.client
+    if (!client || generation !== this.streamGeneration || this.stopped) return
+    try {
+      await this.syncAgentPanes(generation, (cmd) =>
+        withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`))
+    } catch {
+      // the heartbeat owns wedge detection
+    }
   }
 
   /**
@@ -302,6 +414,10 @@ export class SessionStatusWatcher {
     this.heartbeatInFlight = true
     try {
       await withTimeout(client.send('display-message -p ok'), this.commandTimeoutMs, 'heartbeat')
+      // Doubles as the pane-set refresh: window notifications cover the
+      // common case, but a pane that came and went between them (or one added
+      // while the stream was down) is caught here.
+      await this.resyncPanes(generation)
     } catch (err) {
       this.onStreamDown(generation, `heartbeat failed: ${String(err)}`)
     } finally {
@@ -331,7 +447,7 @@ export class SessionStatusWatcher {
     this.client = null
     this.child?.kill('SIGTERM')
     this.child = null
-    this.agentPaneId = null
+    this.subscribedPanes.clear()
   }
 
   private scheduleRespawn(): void {

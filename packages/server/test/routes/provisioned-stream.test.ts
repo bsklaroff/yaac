@@ -39,23 +39,23 @@ describe('streamProvisioned', () => {
     const { res, events } = await request('sid-1', (onProgress) => {
       onProgress('step one')
       onProgress('step two')
-      return Promise.resolve({ sessionId: 'sid-1', jobName: 'job-1' })
+      return Promise.resolve({ worktreeId: 'sid-1', jobName: 'job-1' })
     })
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('application/x-ndjson')
     expect(events).toEqual([
       { type: 'progress', message: 'step one' },
       { type: 'progress', message: 'step two' },
-      { type: 'result', result: { sessionId: 'sid-1', jobName: 'job-1' } },
+      { type: 'result', result: { worktreeId: 'sid-1', jobName: 'job-1' } },
     ])
   })
 
   it('mirrors progress into a registered provisioning row and drops it on success', async () => {
-    registerProvisioning({ sessionId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
     let messageDuringRun: string | undefined
     await request('sid-1', (onProgress) => {
       onProgress('Creating job...')
-      messageDuringRun = listProvisioning().find((p) => p.sessionId === 'sid-1')?.message
+      messageDuringRun = listProvisioning().find((p) => p.worktreeId === 'sid-1')?.message
       return Promise.resolve({ ok: true })
     })
     expect(messageDuringRun).toBe('Creating job...')
@@ -65,13 +65,13 @@ describe('streamProvisioned', () => {
   })
 
   it('emits a terminal error event and marks the row failed (kept until dismissed)', async () => {
-    registerProvisioning({ sessionId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
+    registerProvisioning({ worktreeId: 'sid-1', projectSlug: 'demo', tool: 'claude', kind: 'restart' })
     const { events } = await request('sid-1', () =>
       Promise.reject(new ServerError('NOT_FOUND', 'missing')))
     expect(events).toEqual([
       { type: 'error', error: { code: 'NOT_FOUND', message: 'missing' } },
     ])
-    const row = listProvisioning().find((p) => p.sessionId === 'sid-1')
+    const row = listProvisioning().find((p) => p.worktreeId === 'sid-1')
     expect(row?.error).toBe('missing')
   })
 
@@ -87,11 +87,11 @@ describe('streamProvisioned', () => {
     // progress must still stream, and no row may appear or get resurrected.
     const { events } = await request('sid-2', (onProgress) => {
       onProgress('Claiming prewarmed session...')
-      return Promise.resolve({ sessionId: 'spare-1' })
+      return Promise.resolve({ worktreeId: 'spare-1' })
     })
     expect(events).toEqual([
       { type: 'progress', message: 'Claiming prewarmed session...' },
-      { type: 'result', result: { sessionId: 'spare-1' } },
+      { type: 'result', result: { worktreeId: 'spare-1' } },
     ])
     expect(listProvisioning()).toEqual([])
     // Only the post-result snapshot push — registry no-ops don't notify.

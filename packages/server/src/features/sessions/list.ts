@@ -10,8 +10,17 @@ import {
 } from '#platform/k8s'
 import { projectDir } from '@yaac/shared/project-paths'
 import { normalizeTool, pruneTerminating } from '#features/sessions/state'
-import { getProjectSessionRows, type SessionRow } from '#features/sessions/store'
-import { readSessionStatus, readSessionWaitingSince } from '#features/sessions/status-store'
+import { getProjectWorktreeRows, type WorktreeRow } from '#features/sessions/worktree-store'
+import {
+  readPaneStatus,
+  readSessionStatus,
+  readSessionWaitingSince,
+} from '#features/sessions/status-store'
+import {
+  getProjectAgentSessions,
+  toAgentSessionEntry,
+  type AgentSessionLinkRow,
+} from '#features/sessions/agent-session-store'
 import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
@@ -20,7 +29,7 @@ import { classifySessionPods, watcherDisplayLiveness } from '#features/sessions/
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { ActiveSessionsResult, SessionListEntry } from '@yaac/shared/types'
+import type { ActiveSessionsResult, WorktreeListEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(slug: string): Promise<void> {
   try {
@@ -114,21 +123,38 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
     [...running, ...terminating].map((p) => p.projectSlug).filter((v): v is string => !!v),
   )]
   const rowsBySlug = new Map(await Promise.all(
-    rowSlugs.map(async (slug) => [slug, await getProjectSessionRows(slug)] as const),
+    rowSlugs.map(async (slug) => [slug, await getProjectWorktreeRows(slug)] as const),
   ))
-  const rowFor = (p: SessionPod): SessionRow | undefined =>
+  const rowFor = (p: SessionPod): WorktreeRow | undefined =>
     p.projectSlug && p.sessionId ? rowsBySlug.get(p.projectSlug)?.get(p.sessionId) : undefined
 
-  const sessions: SessionListEntry[] = await Promise.all(
-    running.map(async (p): Promise<SessionListEntry> => {
+  // The conversations inside each worktree, one query per project — the same
+  // shape as the rows above, so a snapshot never pays per row.
+  const idsBySlug = new Map<string, string[]>()
+  for (const p of [...running, ...terminating]) {
+    if (!p.projectSlug || !p.sessionId) continue
+    idsBySlug.set(p.projectSlug, [...(idsBySlug.get(p.projectSlug) ?? []), p.sessionId])
+  }
+  const agentsBySlug = new Map(await Promise.all(
+    rowSlugs.map(async (slug) =>
+      [slug, await getProjectAgentSessions(slug, idsBySlug.get(slug) ?? [])] as const),
+  ))
+  const agentsFor = (p: SessionPod): AgentSessionLinkRow[] =>
+    (p.projectSlug && p.sessionId
+      ? agentsBySlug.get(p.projectSlug)?.get(p.sessionId)
+      : undefined) ?? []
+
+  const worktrees: WorktreeListEntry[] = await Promise.all(
+    running.map(async (p): Promise<WorktreeListEntry> => {
       const tool = normalizeTool(p.tool)
       if (!p.sessionId || !p.projectSlug) {
         return {
-          sessionId: p.sessionId,
+          worktreeId: p.sessionId,
           projectSlug: p.projectSlug,
           tool,
           status: 'running',
           createdAt: formatUtcTimestamp(p.createdAtMs),
+          agentSessions: [],
           blockedHosts: [],
           forwardedPorts: [],
           unforwardedPorts: [],
@@ -137,17 +163,21 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
       const row = rowFor(p)
       const blockedHosts = await readBlockedHosts(p.sessionId)
       return {
-        sessionId: p.sessionId,
+        worktreeId: p.sessionId,
         projectSlug: p.projectSlug,
         tool,
+        // Aggregate over the worktree's live agents (see status-store).
         status: readSessionStatus(p.projectSlug, p.sessionId),
         // The recorded creation time, which — unlike the pod's — survives a
         // restart. A session with no row yet (created by an older yaac, no
         // transcript for the backfill to find) falls back to its pod.
         createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
         waitingSinceMs: readSessionWaitingSince(p.projectSlug, p.sessionId),
-        prompt: row?.prompt,
+        // The founding ask is the first conversation's opening message —
+        // the worktree has none of its own.
+        prompt: agentsFor(p)[0]?.firstPrompt,
         title: row?.title,
+        agentSessions: agentsFor(p).map((l) => toAgentSessionEntry(l, liveStatus(p.projectSlug, p.sessionId, l))),
         blockedHosts,
         forwardedPorts: getSessionPorts(p.sessionId),
         unforwardedPorts: getUnforwardedPorts(p.sessionId),
@@ -161,17 +191,18 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // forced to 'running' (never read from the status store, which was evicted
   // at teardown and would default to 'waiting' — the flash we're killing) and
   // waitingSinceMs is omitted, so no attention badge fires.
-  sessions.push(...terminating.map((p): SessionListEntry => {
+  worktrees.push(...terminating.map((p): WorktreeListEntry => {
     const row = rowFor(p)
     return {
-      sessionId: p.sessionId,
+      worktreeId: p.sessionId,
       projectSlug: p.projectSlug,
       tool: normalizeTool(p.tool),
       status: 'running',
-      terminating: true,
+      stopping: true,
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
-      prompt: row?.prompt,
+      prompt: agentsFor(p)[0]?.firstPrompt,
       title: row?.title,
+      agentSessions: [],
       blockedHosts: [],
       forwardedPorts: [],
       unforwardedPorts: [],
@@ -188,5 +219,24 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
       : {})
     : allGitAuthFailures
 
-  return { sessions, stale, gitAuthFailures }
+  return { worktrees, stale, gitAuthFailures }
+}
+
+/**
+ * A live conversation's own busy/idle, from the pane it sits on. A
+ * conversation with no live pane (the worktree's history) has none, which is
+ * how a client tells "still open" from "was open".
+ */
+function liveStatus(
+  projectSlug: string,
+  worktreeId: string,
+  l: AgentSessionLinkRow,
+): { status: 'running' | 'waiting'; waitingSinceMs?: number } | undefined {
+  if (!l.active || l.paneId === undefined) return undefined
+  const pane = readPaneStatus(projectSlug, worktreeId, l.paneId)
+  if (pane === undefined) return undefined
+  return {
+    status: pane.status,
+    ...(pane.waitingSinceMs !== undefined ? { waitingSinceMs: pane.waitingSinceMs } : {}),
+  }
 }

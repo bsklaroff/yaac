@@ -3,10 +3,10 @@ import { classifySessionPods } from '#features/sessions/classify'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached } from '#features/sessions/cleanup'
 import { isSessionTerminating } from '#features/sessions/state'
 import {
-  listDeletedSessionIds,
-  listLiveSessionRows,
-  recordSessionDeleted,
-} from '#features/sessions/store'
+  listStoppedWorktreeIds,
+  listLiveWorktreeRows,
+  recordWorktreeStopped,
+} from '#features/sessions/worktree-store'
 import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
@@ -121,7 +121,7 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   const ourStuck: typeof stuckTerminating = []
   const externalStuck: typeof stuckTerminating = []
   if (stuckTerminating.length > 0) {
-    const recorded = await listDeletedSessionIds().catch(() => new Set<string>())
+    const recorded = await listStoppedWorktreeIds().catch(() => new Set<string>())
     for (const t of stuckTerminating) {
       if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
       else externalStuck.push(t)
@@ -142,15 +142,15 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // restart. Requiring the same row to look podless across the whole window
   // makes one bad listing cost nothing. The map is in-memory, so a server
   // restart re-arms every timer, which errs toward not recording.
-  const provisioningIds = new Set(listProvisioning().map((p) => p.sessionId))
+  const provisioningIds = new Set(listProvisioning().map((p) => p.worktreeId))
   const livePodIds = new Set(pods.map((p) => p.sessionId))
   try {
-    const liveRows = await listLiveSessionRows()
+    const liveRows = await listLiveWorktreeRows()
     const seen = new Set<string>()
     for (const row of liveRows) {
-      const rowKey = `${row.projectSlug}/${row.sessionId}`
+      const rowKey = `${row.projectSlug}/${row.worktreeId}`
       seen.add(rowKey)
-      if (livePodIds.has(row.sessionId) || provisioningIds.has(row.sessionId)) {
+      if (livePodIds.has(row.worktreeId) || provisioningIds.has(row.worktreeId)) {
         missingSince.delete(rowKey)
         continue
       }
@@ -161,17 +161,17 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
       }
       if (nowMs - since < PODLESS_ROW_GRACE_MS) continue
       missingSince.delete(rowKey)
-      // A row that captured a prompt or a transcript path had an agent
-      // running, so its Job went away out-of-band; one that captured
-      // neither never got that far.
+      // A row with a captured prompt or a linked agent session had an
+      // agent running, so its Job went away out-of-band; one with neither
+      // never got that far.
       const cause = row.ran
         ? { reason: 'orphaned' as const, detail: 'Job and pod deleted out-of-band' }
         : { reason: 'never-started' as const, detail: 'session create did not complete' }
       serverLog(
-        `[server] stale-reaper: recording session=${row.sessionId} as ${cause.reason}`
+        `[server] stale-reaper: recording worktree=${row.worktreeId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
       )
-      await recordSessionDeleted(row.projectSlug, row.sessionId, cause)
+      await recordWorktreeStopped(row.projectSlug, row.worktreeId, cause)
     }
     // Forget timers for rows that are no longer live (deleted, restarted,
     // or their project removed), so the map tracks only what it watches.

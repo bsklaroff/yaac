@@ -187,9 +187,9 @@ yaac [command]
 
 Commands:
   open            Open the web app in your browser (starts the server if needed)
-  cluster         Manage the kubernetes cluster yaac runs sessions on
+  cluster         Manage the kubernetes cluster yaac runs worktrees on
   project         Manage projects
-  session         Manage sessions
+  worktree        Manage worktrees (a git worktree + its container and agents)
   config          Edit project configuration files (via the server)
   auth            Manage credentials (GitHub tokens and tool API keys)
   remote          Point this CLI at a remote yaac server
@@ -199,25 +199,29 @@ yaac cluster <command>
   setup [--repair]  Create the kind cluster, registry, and CNI wiring
                     (--repair re-applies the node fixups without recreating)
   delete [-y]       Delete the kind cluster and local registry, keeping
-                    on-disk sessions and worktrees (-y skips confirmation)
+                    on-disk worktrees and their checkouts (-y skips confirmation)
 
 yaac project <command>
   list              List all projects
   add <remote-url>  Add a project (HTTPS URL or SSH URL like git@host:path)
   rebuild <project> Rebuild the agent-CLI image layer with --no-cache
 
-yaac session <command>
-  create [options] <project>  Create a new session for a project
+yaac worktree <command>
+  create [options] <project>  Create a new worktree for a project
     -t, --tool <tool>         Agent tool to use (claude, codex, opencode, or pi)
     -b, --branch <branch>     Reference branch for the worktree (defaults to
                               the project's referenceBranch config, else the
                               remote default branch)
-  list [options] [project]    List active sessions
-    -d, --deleted             List deleted sessions from agent history
-  delete <session-id>         Delete a session and clean up its resources
+  list [options] [project]    List running worktrees
+    -s, --stopped             List stopped worktrees (checkouts are kept)
+  stop <worktree-id>          Stop a worktree: tear down its container,
+                              keep its checkout and diff
+  restart <worktree-id>       Restart a worktree, resuming the agent sessions
+                              that were running when it stopped
+  agents <worktree-id>        List the worktree's agent sessions (open first)
   attach <container-id>       Attach to the agent tmux session
-  shell <container-id>        Open a raw shell in the session container
-  monitor [options] [project] Poll and display active sessions in real-time
+  shell <container-id>        Open a raw shell in the worktree container
+  monitor [options] [project] Poll and display running worktrees in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 
 yaac tool <command>
@@ -261,6 +265,12 @@ yaac centralizes credentials on the host and injects them into session traffic t
 - `~/.yaac/.credentials/codex.json` — Codex credentials
 - `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 - `~/.yaac/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
+
+A worktree is tool-agnostic — it holds whatever agent sessions you open in it,
+in any mix — so injection is not scoped to one tool: **any agent in any
+worktree can spend any credential the host has signed in**. The proxy only
+rewrites requests carrying the placeholder sentinel it put in the container's
+env, so traffic you authenticate yourself passes through untouched.
 
 The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
 
@@ -410,7 +420,7 @@ Example `yaac-config.json` with all options:
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
 - **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
-- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new session worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac session create --branch <branch>`, or the branch typeahead in the webapp's new-session popover (which can also pin a new default). Changing it affects new sessions only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
+- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new session worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-session popover (which can also pin a new default). Changing it affects new sessions only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
 ## Environment variables
 

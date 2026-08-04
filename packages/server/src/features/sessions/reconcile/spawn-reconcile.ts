@@ -129,7 +129,7 @@ export async function handleSpawnRequest(
   // same row lifecycle as a user-initiated create — the spawned session shows
   // provisioning progress in the webapp and a failed spawn leaves a failed
   // row (dismissable) instead of vanishing silently.
-  registerProvisioning({ sessionId: newSessionId, projectSlug, tool, kind: 'create' })
+  registerProvisioning({ worktreeId: newSessionId, projectSlug, tool, kind: 'create' })
   // Detached: the caller gets the minted id immediately; a failed create
   // is a lost fire, logged here.
   void runProvisioned(newSessionId, (onProgress) =>

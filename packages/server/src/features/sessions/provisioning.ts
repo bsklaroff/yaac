@@ -16,12 +16,12 @@
 import { toErrorBody } from '#http'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentTool, ProvisioningSessionEntry } from '@yaac/shared/types'
+import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
 
 interface ProvisioningEntry {
-  sessionId: string
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
   kind: ProvisioningKind
@@ -42,14 +42,14 @@ let nextSeq = 0
  *  creating/restarting session is shown — entries are only dropped when the
  *  create/restart resolves (the routes remove them) or on dismiss. */
 export function registerProvisioning(input: {
-  sessionId: string
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
   kind: ProvisioningKind
   message?: string
 }): void {
-  entries.set(input.sessionId, {
-    sessionId: input.sessionId,
+  entries.set(input.worktreeId, {
+    worktreeId: input.worktreeId,
     projectSlug: input.projectSlug,
     tool: input.tool,
     kind: input.kind,
@@ -62,8 +62,8 @@ export function registerProvisioning(input: {
 
 /** Update the progress message of a tracked entry. No-op if absent — a late
  *  progress callback must not resurrect a removed or dismissed entry. */
-export function updateProvisioningMessage(sessionId: string, message: string): void {
-  const e = entries.get(sessionId)
+export function updateProvisioningMessage(worktreeId: string, message: string): void {
+  const e = entries.get(worktreeId)
   if (!e) return
   e.message = message
   delete e.error
@@ -72,8 +72,8 @@ export function updateProvisioningMessage(sessionId: string, message: string): v
 
 /** Mark a tracked entry as failed; kept (no TTL) until dismissed. No-op if
  *  absent. */
-export function failProvisioning(sessionId: string, error: string): void {
-  const e = entries.get(sessionId)
+export function failProvisioning(worktreeId: string, error: string): void {
+  const e = entries.get(worktreeId)
   if (!e) return
   e.error = error
   notifySessionListChanged()
@@ -81,8 +81,8 @@ export function failProvisioning(sessionId: string, error: string): void {
 
 /** Drop an entry (provisioning resolved, or user dismissed). Notifies only if
  *  it actually removed something, to avoid a spurious broadcast. */
-export function removeProvisioning(sessionId: string): void {
-  if (entries.delete(sessionId)) notifySessionListChanged()
+export function removeProvisioning(worktreeId: string): void {
+  if (entries.delete(worktreeId)) notifySessionListChanged()
 }
 
 /**
@@ -97,30 +97,30 @@ export function removeProvisioning(sessionId: string): void {
  * provision in the sidebar exactly like a user-initiated create.
  */
 export async function runProvisioned<T>(
-  sessionId: string,
+  worktreeId: string,
   run: (onProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
   try {
-    const result = await run((message) => updateProvisioningMessage(sessionId, message))
+    const result = await run((message) => updateProvisioningMessage(worktreeId, message))
     // Drop the row before the caller sees the result — its notify pushes the
     // snapshot that swaps it for the now-ready session (buildSnapshot hides
     // the session while the row exists), and a client gone mid-provision
     // can't leave the row stuck.
-    removeProvisioning(sessionId)
+    removeProvisioning(worktreeId)
     notifySessionListChanged()
     return result
   } catch (err) {
-    failProvisioning(sessionId, toErrorBody(err).body.error.message)
+    failProvisioning(worktreeId, toErrorBody(err).body.error.message)
     throw err
   }
 }
 
 /** Snapshot projection of the registry, oldest first (by insertion order). */
-export function listProvisioning(): ProvisioningSessionEntry[] {
+export function listProvisioning(): ProvisioningWorktreeEntry[] {
   return [...entries.values()]
     .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq)
     .map((e) => ({
-      sessionId: e.sessionId,
+      worktreeId: e.worktreeId,
       projectSlug: e.projectSlug,
       tool: e.tool,
       kind: e.kind,

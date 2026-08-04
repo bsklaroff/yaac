@@ -28,10 +28,40 @@ import { closeDb } from '#platform/db/client'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { captureSessionPrompts } from '#features/sessions/prompt-capture'
 import {
-  getProjectSessionRows,
-  recordSessionCreated,
-  setSessionCapture,
-} from '#features/sessions/store'
+  getProjectWorktreeRows,
+  recordWorktreeCreated,
+} from '#features/sessions/worktree-store'
+import {
+  listWorktreeAgentSessions,
+  recordAgentSessions,
+} from '#features/sessions/agent-session-store'
+
+/**
+ * Link a conversation to a worktree the way the registry reconciler would,
+ * so the capture step has something to capture for. Capture is now
+ * per-conversation: the worktree's own prompt is whatever its *first*
+ * conversation opened with.
+ */
+/** The worktree's founding ask: its first conversation's opening message. */
+async function foundingAsk(worktreeId: string): Promise<string | undefined> {
+  const [first] = await listWorktreeAgentSessions('demo', worktreeId)
+  return first?.firstPrompt
+}
+
+function seedAgentSession(
+  worktreeId: string,
+  agentSessionId: string,
+  transcriptPath?: string,
+  tool: 'claude' | 'codex' | 'opencode' | 'pi' = 'claude',
+  firstPrompt?: string,
+): Promise<void> {
+  return recordAgentSessions('demo', worktreeId, [{
+    tool,
+    agentSessionId,
+    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+    ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+  }])
+}
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockedExec = vi.mocked(sessionExec)
@@ -49,6 +79,13 @@ function pod(sessionId: string, tool = 'claude'): SessionPod {
     createdAtMs: Date.now(),
     labels: {},
   }
+}
+
+/** Where a claude transcript for `id` lands, without writing one. */
+async function transcriptPathFor(id: string): Promise<string> {
+  const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
+  await fs.mkdir(dir, { recursive: true })
+  return path.join(dir, `${id}.jsonl`)
 }
 
 async function writeClaudeTranscript(sessionId: string, firstMessage: string): Promise<string> {
@@ -74,60 +111,73 @@ describe('captureSessionPrompts', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('stores the first message and the transcript path on the row', async () => {
+  it('stores the first message on both the conversation and the worktree', async () => {
     const file = await writeClaudeTranscript('sid-1', 'refactor the parser')
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'sid-1', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sid-1' })
+    await seedAgentSession('sid-1', 'sid-1', file)
     mockListPods.mockResolvedValue([pod('sid-1')])
 
     await captureSessionPrompts()
 
-    expect((await getProjectSessionRows('demo')).get('sid-1')).toMatchObject({
-      prompt: 'refactor the parser',
-      transcriptPath: file,
-    })
+    // The worktree's founding ask...
+    expect(await foundingAsk('sid-1')).toBe('refactor the parser')
+    // ...and the conversation's own, which is the same one here because this
+    // is the worktree's first conversation.
+    expect((await listWorktreeAgentSessions('demo', 'sid-1'))[0])
+      .toMatchObject({ agentSessionId: 'sid-1', firstPrompt: 'refactor the parser' })
+  })
+
+  it('keeps the founding ask when a later conversation opens differently', async () => {
+    // What `/clear` produces: a second conversation whose opening message is
+    // not the ask the worktree was created for. The sidebar keeps the first.
+    const first = await writeClaudeTranscript('conv-a', 'the original ask')
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sid-1' })
+    await seedAgentSession('sid-1', 'conv-a', first)
+    mockListPods.mockResolvedValue([pod('sid-1')])
+    await captureSessionPrompts()
+
+    const second = await writeClaudeTranscript('conv-b', 'something else entirely')
+    await seedAgentSession('sid-1', 'conv-b', second)
+    await captureSessionPrompts()
+
+    expect(await foundingAsk('sid-1')).toBe('the original ask')
+    const links = await listWorktreeAgentSessions('demo', 'sid-1')
+    expect(links.map((l) => [l.agentSessionId, l.firstPrompt])).toEqual([
+      ['conv-a', 'the original ask'],
+      ['conv-b', 'something else entirely'],
+    ])
   })
 
   it('leaves the row alone until the agent has been prompted', async () => {
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'sid-1', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sid-1' })
+    await seedAgentSession('sid-1', 'sid-1', await transcriptPathFor('sid-1'))
     mockListPods.mockResolvedValue([pod('sid-1')])
 
     await captureSessionPrompts()
-    expect((await getProjectSessionRows('demo')).get('sid-1')?.prompt).toBeUndefined()
+    expect(await foundingAsk('sid-1')).toBeUndefined()
 
     // …and picks it up on a later pass, once there is one.
     await writeClaudeTranscript('sid-1', 'later ask')
     await captureSessionPrompts()
-    expect((await getProjectSessionRows('demo')).get('sid-1')?.prompt).toBe('later ask')
+    expect(await foundingAsk('sid-1')).toBe('later ask')
   })
 
-  it('stamps the transcript path of a session that was created with a prompt', async () => {
-    // The mainstream `session create -p` / spawn path: nothing to capture,
-    // but the deleted listing needs a path to stat for last activity.
-    await recordSessionCreated({
-      projectSlug: 'demo', sessionId: 'sid-1', tool: 'claude', prompt: 'already captured',
-    })
+  it('keeps the create-time prompt over whatever the transcript opens with', async () => {
+    // The mainstream `worktree create -p` / spawn path: create records the
+    // conversation it launches with the ask the user typed, and that is the
+    // worktree's founding ask. Capture must leave it alone — re-reading a
+    // transcript that has since been compacted would replace it with whatever
+    // the log now starts with.
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sid-1' })
     const file = await writeClaudeTranscript('sid-1', 'a different first message')
+    await seedAgentSession('sid-1', 'sid-1', file, 'claude', 'already captured')
     mockListPods.mockResolvedValue([pod('sid-1')])
 
     await captureSessionPrompts()
 
-    expect((await getProjectSessionRows('demo')).get('sid-1')).toMatchObject({
-      prompt: 'already captured', // the stored prompt wins over the transcript
-      transcriptPath: file,
-    })
-  })
-
-  it('does no work once a session has both its prompt and its path', async () => {
-    await recordSessionCreated({
-      projectSlug: 'demo', sessionId: 'sid-1', tool: 'claude', prompt: 'already captured',
-    })
-    await setSessionCapture('demo', 'sid-1', { transcriptPath: '/tmp/already.jsonl' })
-    mockListPods.mockResolvedValue([pod('sid-1')])
-
-    await captureSessionPrompts()
-
-    // Short-circuits before listing pods at all.
-    expect(mockListPods).not.toHaveBeenCalled()
+    expect(await foundingAsk('sid-1')).toBe('already captured')
+    expect((await listWorktreeAgentSessions('demo', 'sid-1'))[0]?.firstPrompt)
+      .toBe('already captured')
   })
 
   it('ignores a live pod with no recorded session', async () => {
@@ -138,11 +188,12 @@ describe('captureSessionPrompts', () => {
 
     await captureSessionPrompts()
 
-    expect(await getProjectSessionRows('demo')).toEqual(new Map())
+    expect(await getProjectWorktreeRows('demo')).toEqual(new Map())
   })
 
   it('probes an opencode session over HTTP, since it leaves no transcript', async () => {
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'oc-1', tool: 'opencode' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'oc-1' })
+    await seedAgentSession('oc-1', 'oc-1', undefined, 'opencode')
     mockListPods.mockResolvedValue([pod('oc-1', 'opencode')])
     mockedExec.mockImplementation((_job: string, cmd: string) =>
       cmd.includes('curl')
@@ -154,17 +205,16 @@ describe('captureSessionPrompts', () => {
 
     await captureSessionPrompts()
 
-    const row = (await getProjectSessionRows('demo')).get('oc-1')
-    expect(row?.prompt).toBe('build a thing')
-    expect(row?.transcriptPath).toBeUndefined()
+    expect(await foundingAsk('oc-1')).toBe('build a thing')
   })
 
-  it('skips a session with no live pod, and survives an unreachable cluster', async () => {
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'sid-1', tool: 'claude' })
-    await writeClaudeTranscript('sid-1', 'never seen')
+  it('skips a worktree with no live pod, and survives an unreachable cluster', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'sid-1' })
+    const file = await writeClaudeTranscript('sid-1', 'never seen')
+    await seedAgentSession('sid-1', 'sid-1', file)
 
     await captureSessionPrompts() // no pods listed
-    expect((await getProjectSessionRows('demo')).get('sid-1')?.prompt).toBeUndefined()
+    expect(await foundingAsk('sid-1')).toBeUndefined()
 
     mockListPods.mockRejectedValue(new Error('cluster down'))
     await expect(captureSessionPrompts()).resolves.toBeUndefined()

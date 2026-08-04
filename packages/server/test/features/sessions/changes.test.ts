@@ -15,7 +15,7 @@ vi.mock('#platform/git', () => ({
 import { sessionExec } from '#platform/k8s/stream-relay'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { closeDb } from '#platform/db/client'
-import { recordSessionCreated } from '#features/sessions/store'
+import { recordWorktreeCreated } from '#features/sessions/worktree-store'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   statusFromCode,
@@ -551,8 +551,8 @@ describe('sessionForkBranch', () => {
   // the pane reports a session with a whole PR in it as having no changes. The
   // row is ours and says `main`.
   it('prefers the session row’s recorded base over the worktree’s upstream', async () => {
-    await recordSessionCreated({
-      projectSlug: 'demo', sessionId: 'sid-pushed', tool: 'claude', baseBranch: 'main',
+    await recordWorktreeCreated({
+      projectSlug: 'demo', worktreeId: 'sid-pushed', baseBranch: 'main',
     })
     mockUpstream.mockResolvedValue('feature/pushed-pr')
     expect(await sessionForkBranch('demo', 'sid-pushed')).toBe('main')

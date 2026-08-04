@@ -73,10 +73,10 @@ export function NewSessionButton(
   const isDefault = branchValue === (defaultResolved ?? '')
 
   const create = (tool: AgentTool): void => {
-    const sessionId = randomUUID()
+    const worktreeId = randomUUID()
     const branch = branchValue && !isDefault ? branchValue : undefined
     setOpen(false)
-    provision(projectSlug, tool, 'create', sessionId,
+    provision(projectSlug, tool, 'create', worktreeId,
       (sid, onProgress) => createSession(projectSlug, tool, onProgress, sid, branch))
   }
 

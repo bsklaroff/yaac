@@ -50,12 +50,12 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  * render. Only available in Electron; a browser build shows a fallback link.
  */
 export function SessionPreview({
-  sessionId,
+  worktreeId,
   ports,
   currentPort,
   onSwitchPort,
 }: {
-  sessionId: string
+  worktreeId: string
   /** Forwarded ports available to preview for the session. */
   ports: PortMapping[]
   /** Which container port the pane currently shows. */
@@ -89,7 +89,7 @@ export function SessionPreview({
     const host = hostRef.current
     if (!host) return
     const wv = document.createElement('webview') as unknown as PreviewWebview
-    wv.setAttribute('partition', `persist:preview-${sessionId}`)
+    wv.setAttribute('partition', `persist:preview-${worktreeId}`)
     wv.setAttribute('allowpopups', 'true')
     wv.style.width = '100%'
     wv.style.height = '100%'
@@ -128,7 +128,7 @@ export function SessionPreview({
       wv.remove()
       wvRef.current = null
     }
-  }, [electron, sessionId])
+  }, [electron, worktreeId])
 
   // Point the webview at the current forwarded port when it (re)appears.
   useEffect(() => {

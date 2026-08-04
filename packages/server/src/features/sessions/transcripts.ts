@@ -79,23 +79,25 @@ export async function piSessionLogs(projectSlug: string, sessionId: string): Pro
 /**
  * The transcript path to record for a session, or undefined when the tool
  * leaves none (opencode) or hasn't written one yet. claude and codex have
- * deterministic paths keyed by the session id — codex's is the symlink its
- * SessionStart hook plants, which re-points if the agent starts a new
- * conversation. pi picks its own filename, so its newest log wins.
+ * a deterministic path keyed by the session id. codex is absent: its rollout
+ * filename is not derivable from any id, so only the recorded path finds it.
+ * pi picks its own filename, so its newest log wins.
  */
 export async function sessionTranscriptPath(
   projectSlug: string,
   sessionId: string,
   tool: AgentTool,
 ): Promise<string | undefined> {
-  if (tool === 'opencode') return undefined
+  // codex is absent on purpose: it names its rollout files unpredictably, so
+  // nothing derives one from a session id. yaac used to index them with a
+  // symlink; the DB now carries the path instead, and a codex conversation
+  // the DB does not know is simply unresolvable.
+  if (tool === 'opencode' || tool === 'codex') return undefined
   if (tool === 'pi') {
     const logs = await piSessionLogs(projectSlug, sessionId)
     return logs[logs.length - 1]
   }
-  const file = tool === 'codex'
-    ? path.join(codexTranscriptDir(projectSlug), `${sessionId}.jsonl`)
-    : path.join(claudeTranscriptDir(projectSlug), `${sessionId}.jsonl`)
+  const file = path.join(claudeTranscriptDir(projectSlug), `${sessionId}.jsonl`)
   return await exists(file) ? file : undefined
 }
 
@@ -119,12 +121,13 @@ async function collect(
     if (sessionId === undefined) continue
     const full = path.isAbsolute(file) ? file : path.join(dir, file)
     try {
-      // stat, not lstat: a codex transcript is a symlink to the rollout, and
+      // stat follows through, so a recorded path that is still a legacy
+      // symlink stats its target rather than the link itself.
       // it's the rollout's timestamps we want.
       const s = await fs.stat(full)
       out.push({ sessionId, tool, transcriptPath: full, createdAtMs: s.birthtimeMs })
     } catch {
-      // Unstattable (raced deletion, dangling codex symlink) — skip.
+      // Unstattable (raced deletion, dangling legacy symlink) — skip.
     }
   }
   return out

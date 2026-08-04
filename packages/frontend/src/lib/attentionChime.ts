@@ -1,12 +1,12 @@
-import type { SessionListEntry } from '@yaac/shared/types'
+import type { WorktreeListEntry } from '@yaac/shared/types'
 
-type WaitingLike = Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>
+type WaitingLike = Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>
 
 /** Keys a session's current waiting spell — id + the spell's start. Keying by
  *  the spell means a re-waiting session yields a new key, so the chime fires
  *  once per spell, not once per snapshot frame that repeats it. */
 export function waitingKey(s: WaitingLike): string {
-  return `${s.sessionId}:${s.waitingSinceMs ?? 0}`
+  return `${s.worktreeId}:${s.waitingSinceMs ?? 0}`
 }
 
 /** The set of waiting-spell keys in a snapshot — one per session now waiting. */
@@ -29,5 +29,5 @@ export function newlyWaitingSessions(prev: Set<string>, sessions: WaitingLike[])
  * so every newly-waiting one is worth a nudge).
  */
 export function shouldChime(fresh: WaitingLike[], watching: string | null): boolean {
-  return fresh.some((s) => s.sessionId !== watching)
+  return fresh.some((s) => s.worktreeId !== watching)
 }

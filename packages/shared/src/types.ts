@@ -422,29 +422,64 @@ export interface GitAuthFailure {
   atMs: number
 }
 
-export interface SessionListEntry {
-  sessionId: string
+/**
+ * One agent conversation inside a worktree — a claude/codex/pi/opencode
+ * session. Several can be live at once (a second terminal, or a `/clear`
+ * that left the old conversation's window open), and the ones that are not
+ * live are the worktree's history.
+ */
+export interface AgentSessionEntry {
+  /** The tool's own conversation id, not yaac's. */
+  agentSessionId: string
+  tool: AgentTool
+  /** Restore order; 0 is the worktree's original agent. */
+  ordinal: number
+  /** Had a live agent process when the worktree was last observed running —
+   *  and therefore what a restart brings back. */
+  active: boolean
+  /** Live only: this conversation's own busy/idle, from its pane. */
+  status?: 'running' | 'waiting'
+  /** Live only: epoch ms when this conversation's waiting spell began. */
+  waitingSinceMs?: number
+  /** This conversation's own first user message (the worktree keeps the
+   *  founding one separately — they differ after a `/clear`). */
+  prompt?: string
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
+  lastActiveAt?: string
+}
+
+export interface WorktreeListEntry {
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
+  /**
+   * The worktree's aggregate: `waiting` if ANY of its agent sessions is
+   * waiting, else `running`. Waiting is the actionable state — an agent that
+   * needs you needs you whether or not a sibling is still working.
+   */
   status: 'running' | 'waiting'
-  /** The session's container is being torn down (its pod has a deletion
-   *  timestamp, or a delete was just issued). Orthogonal to `status`: the
+  /** The worktree's container is being torn down (its pod has a deletion
+   *  timestamp, or a stop was just issued). Orthogonal to `status`: the
    *  row is on its way out and should render as a non-interactive
-   *  "terminating…" placeholder rather than a live session. */
-  terminating?: boolean
+   *  "stopping…" placeholder rather than a live worktree. */
+  stopping?: boolean
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Epoch ms when the current waiting spell began, stamped by the
    *  server's push-fed status store at the transition itself. Only set
-   *  while status is 'waiting'; a new spell gets a new value, so clients
-   *  can tell "still the same wait" from "waited, ran, waits again" —
-   *  even for sub-second turns. In-memory on the server: a restart (or a
-   *  still-booting session with no watcher yet) has no stamp, which
-   *  clients treat as its own spell. */
+   *  while status is 'waiting'; the *earliest* waiting agent wins, so a
+   *  second agent going idle joins the spell in progress rather than
+   *  restarting it. In-memory on the server: a restart (or a still-booting
+   *  worktree with no watcher yet) has no stamp, which clients treat as
+   *  its own spell. */
   waitingSinceMs?: number
+  /** The founding ask — the first user message of the worktree's first
+   *  agent session. Survives a `/clear` that discards that conversation. */
   prompt?: string
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
+  /** Every conversation the worktree has hosted, in restore order. */
+  agentSessions: AgentSessionEntry[]
   blockedHosts: string[]
   /** Live host→container forwards owned by the server (from the
    *  forwarder registry). Empty until forwarders are (re)provisioned —
@@ -455,14 +490,14 @@ export interface SessionListEntry {
    *  sensitive, and infra ports. Drives the "forward this port?" badge;
    *  self-clears when a port is forwarded or its listener stops. */
   unforwardedPorts: number[]
-  /** The remote branch this session's worktree tracks (its reference
-   *  branch), read from the session branch's recorded upstream. Unset when
-   *  the upstream record is missing or unreadable. */
+  /** The remote branch this worktree tracks (its reference branch), read
+   *  from the session branch's recorded upstream. Unset when the upstream
+   *  record is missing or unreadable. */
   baseBranch?: string
   /** Pinned to the sidebar's "Background" section. Orthogonal to `status`
-   *  and `terminating`: a background session stays in that section whatever
-   *  state it's in (and, via `DeletedSessionEntry.background`, even after
-   *  deletion). Server-persisted so the pin survives restarts. */
+   *  and `stopping`: a background worktree stays in that section whatever
+   *  state it's in (and, via `StoppedWorktreeEntry.background`, even after
+   *  it stops). Server-persisted so the pin survives restarts. */
   background?: boolean
 }
 
@@ -586,7 +621,7 @@ export interface StaleSessionInfo {
 }
 
 export interface ActiveSessionsResult {
-  sessions: SessionListEntry[]
+  worktrees: WorktreeListEntry[]
   stale: StaleSessionInfo[]
   /** Project slug -> git credentials the upstream rejected. Project-wide,
    *  not per-session: one bad token affects every session of the project.
@@ -594,36 +629,41 @@ export interface ActiveSessionsResult {
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
-export interface DeletedSessionEntry {
-  sessionId: string
+export interface StoppedWorktreeEntry {
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
-  /** 'YYYY-MM-DD HH:MM:SS' (UTC). Session birth time. */
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). Worktree birth time. */
   createdAt: string
-  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the transcript's
-   *  mtime, falling back to creation time for a session with no transcript
-   *  (opencode, which leaves none on the host) or whose transcript is gone. */
+  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the newest
+   *  transcript mtime across every conversation the worktree hosted, so a
+   *  worktree the user `/clear`ed an hour ago reads as an hour old rather
+   *  than as old as its opening question. Falls back to creation time when
+   *  nothing is readable (opencode leaves no host transcript). */
   lastActiveAt?: string
-  /** When the session was deleted, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
-   *  at delete time; the primary sort key (newest-deleted first). Absent for
-   *  sessions removed out-of-band, which fall back to `lastActiveAt`. */
-  deletedAt?: string
-  /** First user message from the transcript, if any. */
+  /** When the worktree was stopped, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
+   *  at stop time; the primary sort key (newest-stopped first). Absent for
+   *  worktrees removed out-of-band, which fall back to `lastActiveAt`. */
+  stoppedAt?: string
+  /** The founding ask — the first conversation's first user message. */
   prompt?: string
-  /** User-assigned display title (survives delete; ids are stable). */
+  /** User-assigned display title (survives stopping; ids are stable). */
   title?: string
-  /** Why the session died, when the reaper (not the user) removed it. */
+  /** Every conversation the worktree hosted, in restore order. The ones
+   *  marked `active` are what a restart brings back. */
+  agentSessions: AgentSessionEntry[]
+  /** Why the session died, when the reaper (not the user) stopped it. */
   deathReason?: SessionDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
-  /** Whether the user has viewed this death's detail — clears the "Deleted
-   *  sessions" notification dot / row highlight. Server-persisted (on the
-   *  session row) so the acknowledgement is durable and shared across
+  /** Whether the user has viewed this death's detail — clears the "Stopped
+   *  worktrees" notification dot / row highlight. Server-persisted (on the
+   *  worktree row) so the acknowledgement is durable and shared across
    *  clients; only meaningful when `deathReason` is set. */
   seen: boolean
   /** Pinned to the sidebar's "Background" section — the pin survives
-   *  deletion (session ids are stable across restarts), so a deleted
-   *  background session keeps a sidebar row with a restart action. */
+   *  stopping (worktree ids are stable across restarts), so a stopped
+   *  background worktree keeps a sidebar row with a restart action. */
   background?: boolean
 }
 
@@ -657,13 +697,13 @@ export interface ProjectSummary {
 }
 
 /**
- * A session that is currently provisioning — a create or restart in flight,
+ * A worktree that is currently provisioning — a create or restart in flight,
  * tracked in server memory and surfaced in the snapshot so the webapp renders
  * it as a first-class, selectable sidebar row that survives a reload (with live
- * progress) until the real session lands or a failure is dismissed.
+ * progress) until the real worktree lands or a failure is dismissed.
  */
-export interface ProvisioningSessionEntry {
-  sessionId: string
+export interface ProvisioningWorktreeEntry {
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
   kind: 'create' | 'restart'
@@ -730,14 +770,14 @@ export type ClusterSetupEvent =
 /**
  * Full picture of server-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
- * `snapshot`. Mirrors the union of `GET /session/list` and
+ * `snapshot`. Mirrors the union of `GET /worktree/list` and
  * `GET /project/list`.
  */
 export interface ServerSnapshot {
-  sessions: SessionListEntry[]
+  worktrees: WorktreeListEntry[]
   stale: StaleSessionInfo[]
   projects: ProjectSummary[]
-  provisioning: ProvisioningSessionEntry[]
+  provisioning: ProvisioningWorktreeEntry[]
   /** Project slug -> git credentials the upstream rejected (project-wide;
    *  see ActiveSessionsResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>

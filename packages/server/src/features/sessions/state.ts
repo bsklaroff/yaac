@@ -1,8 +1,8 @@
 import { type SessionPod } from '#platform/k8s'
-import { getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '#features/sessions/agents/claude-status'
-import { getSessionCodexFirstUserMessage } from '#features/sessions/agents/codex'
+import { getFirstUserMessage } from '#features/sessions/agents/claude-status'
+import { getCodexFirstUserMessage } from '#features/sessions/agents/codex'
 import { getSessionOpencodeFirstUserMessage } from '#features/sessions/agents/opencode'
-import { getSessionPiFirstUserMessage } from '#features/sessions/agents/pi-status'
+import { getPiFirstUserMessage } from '#features/sessions/agents/pi-status'
 import type { AgentTool, SessionDeathCause } from '@yaac/shared/types'
 
 // ---------------------------------------------------------------------------
@@ -18,24 +18,25 @@ export function normalizeTool(raw: string | undefined): AgentTool {
 }
 
 /**
- * First-message lookup, used once per session by the capture step (and
- * on demand for a session that died before it ran). `jobName` is required
- * for opencode — it has no host transcript, so its first message can only
- * come from an HTTP probe into the running container — and ignored for
- * claude/codex/pi, which read JSONL files from host bind-mounts.
+ * One agent session's first user message, read from the transcript recorded
+ * for it. There is deliberately no by-id variant: a conversation started by
+ * `/clear` has an id yaac never chose, and codex's rollout filename is not
+ * derivable from any id at all — the recorded path is the only handle.
+ *
+ * opencode is the exception it always is: no host transcript, so its first
+ * message comes from an HTTP probe into the running container and is
+ * unavailable once the pod is gone.
  */
-export async function getSessionFirstMessage(
-  projectSlug: string,
-  sessionId: string,
+export async function getAgentSessionFirstMessage(
   tool: AgentTool,
+  transcriptPath: string | undefined,
   jobName?: string,
 ): Promise<string | undefined> {
-  if (tool === 'codex') return getSessionCodexFirstUserMessage(projectSlug, sessionId)
-  if (tool === 'pi') return getSessionPiFirstUserMessage(projectSlug, sessionId)
-  if (tool === 'opencode') {
-    return jobName ? getSessionOpencodeFirstUserMessage(jobName) : undefined
-  }
-  return getSessionClaudeFirstMessage(projectSlug, sessionId)
+  if (tool === 'opencode') return jobName ? getSessionOpencodeFirstUserMessage(jobName) : undefined
+  if (transcriptPath === undefined) return undefined
+  if (tool === 'codex') return getCodexFirstUserMessage(transcriptPath)
+  if (tool === 'pi') return getPiFirstUserMessage(transcriptPath)
+  return getFirstUserMessage(transcriptPath)
 }
 
 // ---------------------------------------------------------------------------

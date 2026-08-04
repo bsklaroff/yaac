@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 vi.mock('#features/sessions/list', () => ({ listActiveSessions: vi.fn() }))
-vi.mock('#features/sessions/store', () => ({ setSessionTitle: vi.fn() }))
+vi.mock('#features/sessions/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
 vi.mock('#features/sessions/notify', () => ({ notifySessionListChanged: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
@@ -20,15 +20,15 @@ import { _resetTitleSummarizerForTests } from '#features/titles/title-summarizer
 import { LLAMA_CPP_TAG } from '#features/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveSessions } from '#features/sessions/list'
-import { setSessionTitle } from '#features/sessions/store'
+import { setWorktreeTitle } from '#features/sessions/worktree-store'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { execFileAsync } from '#platform/k8s/kubectl'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import type { SessionListEntry } from '@yaac/shared/types'
+import type { WorktreeListEntry } from '@yaac/shared/types'
 
 const mockList = vi.mocked(listActiveSessions)
-const mockSetTitle = vi.mocked(setSessionTitle)
+const mockSetTitle = vi.mocked(setWorktreeTitle)
 const mockNotify = vi.mocked(notifySessionListChanged)
 const mockExec = vi.mocked(execFileAsync)
 const mockLog = vi.mocked(serverLog)
@@ -65,9 +65,9 @@ function stubPlatform(platform: NodeJS.Platform, arch: string): void {
   Object.defineProperty(process, 'arch', { value: arch, configurable: true })
 }
 
-function session(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
+function session(overrides: Partial<WorktreeListEntry> = {}): WorktreeListEntry {
   return {
-    sessionId: 's1',
+    worktreeId: 's1',
     projectSlug: 'p',
     tool: 'claude',
     status: 'waiting',
@@ -76,12 +76,13 @@ function session(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],
+    agentSessions: [],
     ...overrides,
   }
 }
 
-function listOf(...sessions: SessionListEntry[]): void {
-  mockList.mockResolvedValue({ sessions, stale: [], gitAuthFailures: {} })
+function listOf(...worktrees: WorktreeListEntry[]): void {
+  mockList.mockResolvedValue({ worktrees, stale: [], gitAuthFailures: {} })
 }
 
 /** Pre-create the pinned binary and model so a run takes the cached path. */
@@ -218,8 +219,8 @@ describe('reconcileGeneratedTitles', () => {
     // no content word with its prompt and would be worse than the fallback.
     reply = (input) => Promise.resolve(input.includes('parser') ? ' "..." ' : 'adolescent symphony')
     listOf(
-      session({ sessionId: 'empty', prompt: 'the parser has a bug with nested arrays, please fix it today' }),
-      session({ sessionId: 'halluc', prompt: PROMPT }),
+      session({ worktreeId: 'empty', prompt: 'the parser has a bug with nested arrays, please fix it today' }),
+      session({ worktreeId: 'halluc', prompt: PROMPT }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -237,8 +238,8 @@ describe('reconcileGeneratedTitles', () => {
       // No content word (4+ chars) to judge by — kept as-is.
       : 'Fix it now')
     listOf(
-      session({ sessionId: 'gha', prompt: 'set up a github actions workflow that runs lint and unit tests on every pull request' }),
-      session({ sessionId: 'link', projectSlug: 'q', prompt: 'the build is failing on macos with a linker error about missing symbols, figure out why' }),
+      session({ worktreeId: 'gha', prompt: 'set up a github actions workflow that runs lint and unit tests on every pull request' }),
+      session({ worktreeId: 'link', projectSlug: 'q', prompt: 'the build is failing on macos with a linker error about missing symbols, figure out why' }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -247,7 +248,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockSetTitle).toHaveBeenCalledWith('q', 'link', 'Fix it now')
   })
 
-  it('serializes inference across sessions and sets the runtime up once', async () => {
+  it('serializes inference across worktrees and sets the runtime up once', async () => {
     let inFlight = 0
     let maxInFlight = 0
     reply = async () => {
@@ -257,7 +258,7 @@ describe('reconcileGeneratedTitles', () => {
       inFlight -= 1
       return TITLE
     }
-    listOf(session(), session({ sessionId: 's2', projectSlug: 'q' }))
+    listOf(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await new Promise((r) => setTimeout(r, 50))
 
@@ -275,12 +276,12 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockList).not.toHaveBeenCalled()
   })
 
-  it('skips titled sessions, promptless ones, and prompts short enough to label themselves', async () => {
+  it('skips titled worktrees, promptless ones, and prompts short enough to label themselves', async () => {
     await seedCache()
     listOf(
-      session({ sessionId: 'titled', title: 'My session' }),
-      session({ sessionId: 'no-prompt', prompt: undefined }),
-      session({ sessionId: 'short', prompt: 'x'.repeat(48) }),
+      session({ worktreeId: 'titled', title: 'My session' }),
+      session({ worktreeId: 'no-prompt', prompt: undefined }),
+      session({ worktreeId: 'short', prompt: 'x'.repeat(48) }),
     )
     await reconcileGeneratedTitles()
     await flush()
@@ -321,7 +322,7 @@ describe('reconcileGeneratedTitles', () => {
 
   it('logs a setup failure once and fast-fails the rest of the backoff window', async () => {
     mockExec.mockRejectedValue(new Error('curl: (6) Could not resolve host'))
-    listOf(session(), session({ sessionId: 's2', projectSlug: 'q' }))
+    listOf(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await flush()
 
@@ -353,13 +354,13 @@ describe('reconcileGeneratedTitles', () => {
   it('logs an inference failure and keeps the runtime cached for the next session', async () => {
     await seedCache()
     reply = () => Promise.reject(new Error('llama-completion exited 1'))
-    listOf(session(), session({ sessionId: 's2', projectSlug: 'q' }))
+    listOf(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
     await reconcileGeneratedTitles()
     await flush()
 
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] inference failed'))
     expect(mockSetTitle).not.toHaveBeenCalled()
-    // Setup succeeded, so both sessions reached the model.
+    // Setup succeeded, so both worktrees reached the model.
     expect(inferences()).toHaveLength(2)
   })
 

@@ -24,7 +24,7 @@ beforeEach(() => {
 })
 
 function register(id: string, over: Partial<{ projectSlug: string; tool: 'claude' | 'codex' | 'opencode'; kind: 'create' | 'restart'; message: string }> = {}): void {
-  registerProvisioning({ sessionId: id, projectSlug: 'p', tool: 'claude', kind: 'create', ...over })
+  registerProvisioning({ worktreeId: id, projectSlug: 'p', tool: 'claude', kind: 'create', ...over })
 }
 
 describe('registerProvisioning', () => {
@@ -32,7 +32,7 @@ describe('registerProvisioning', () => {
     register('a')
     const list = listProvisioning()
     expect(list).toHaveLength(1)
-    expect(list[0]).toMatchObject({ sessionId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…' })
+    expect(list[0]).toMatchObject({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…' })
     expect(typeof list[0].createdAt).toBe('string')
     expect(notify).toHaveBeenCalledTimes(1)
   })
@@ -68,7 +68,7 @@ describe('failProvisioning', () => {
   it('marks an entry failed and keeps it', () => {
     register('a')
     failProvisioning('a', 'no token')
-    expect(listProvisioning()[0]).toMatchObject({ sessionId: 'a', error: 'no token' })
+    expect(listProvisioning()[0]).toMatchObject({ worktreeId: 'a', error: 'no token' })
   })
 
   it('is a no-op for an unknown id', () => {
@@ -112,7 +112,7 @@ describe('runProvisioned', () => {
     await expect(
       runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
     ).rejects.toThrow('missing')
-    expect(listProvisioning()[0]).toMatchObject({ sessionId: 'a', error: 'missing' })
+    expect(listProvisioning()[0]).toMatchObject({ worktreeId: 'a', error: 'missing' })
   })
 
   it('leaves the registry alone when the caller never registered a row', async () => {
@@ -135,7 +135,7 @@ describe('listProvisioning', () => {
     // Ordered by a monotonic insertion counter, so 'b' (registered first)
     // comes first regardless of whether the two share a millisecond clock
     // read — the sessionId tiebreak used to flip this under parallel load.
-    expect(list.map((e) => e.sessionId)).toEqual(['b', 'a'])
+    expect(list.map((e) => e.worktreeId)).toEqual(['b', 'a'])
     expect(list[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
   })
 })

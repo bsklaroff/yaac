@@ -21,10 +21,10 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The reaper reads session rows to tell a yaac-issued delete (whose
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
-vi.mock('#features/sessions/store', () => ({
-  listDeletedSessionIds: vi.fn(),
-  listLiveSessionRows: vi.fn(),
-  recordSessionDeleted: vi.fn(),
+vi.mock('#features/sessions/worktree-store', () => ({
+  listStoppedWorktreeIds: vi.fn(),
+  listLiveWorktreeRows: vi.fn(),
+  recordWorktreeStopped: vi.fn(),
 }))
 vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
@@ -32,10 +32,10 @@ import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '#features/sessions/cleanup'
 import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import {
-  listDeletedSessionIds,
-  listLiveSessionRows,
-  recordSessionDeleted,
-} from '#features/sessions/store'
+  listStoppedWorktreeIds,
+  listLiveWorktreeRows,
+  recordWorktreeStopped,
+} from '#features/sessions/worktree-store'
 import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
 import {
@@ -48,9 +48,9 @@ const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
-const mockListDeletedIds = vi.mocked(listDeletedSessionIds)
-const mockListLiveRows = vi.mocked(listLiveSessionRows)
-const mockRecordDeleted = vi.mocked(recordSessionDeleted)
+const mockListDeletedIds = vi.mocked(listStoppedWorktreeIds)
+const mockListLiveRows = vi.mocked(listLiveWorktreeRows)
+const mockRecordDeleted = vi.mocked(recordWorktreeStopped)
 const mockListProvisioning = vi.mocked(listProvisioning)
 const mockLog = vi.mocked(serverLog)
 
@@ -167,7 +167,7 @@ describe('reconcileStaleSessions', () => {
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
     // Same pod state as the out-of-band case (terminating, no in-memory mark:
-    // dropped by a restart or the TTL), but the row's recorded deletedAt
+    // dropped by a restart or the TTL), but the row's recorded stoppedAt
     // proves yaac issued this delete. Resume teardown WITHOUT restamping so
     // the real cause (a plain user delete) survives — no "removed outside
     // yaac".
@@ -285,9 +285,9 @@ describe('reconcileStaleSessions', () => {
   })
 
   describe('rows whose pod is missing', () => {
-    const row = (sessionId: string, ran = false) => ({
+    const row = (worktreeId: string, ran = false) => ({
       projectSlug: 'proj',
-      sessionId,
+      worktreeId,
       ran,
     })
 
@@ -364,7 +364,7 @@ describe('reconcileStaleSessions', () => {
       mockListPods.mockResolvedValue([])
       mockListLiveRows.mockResolvedValue([row('slow-build')])
       mockListProvisioning.mockReturnValue([
-        { sessionId: 'slow-build', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Building…', createdAt: '2026-08-01 00:00:00' },
+        { worktreeId: 'slow-build', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Building…', createdAt: '2026-08-01 00:00:00' },
       ])
 
       await reconcileStaleSessions()

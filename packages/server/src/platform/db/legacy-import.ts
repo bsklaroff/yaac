@@ -1,21 +1,25 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import { getDb, type Db } from './client'
 import {
   agentSessions,
   preferences,
   shortcutOverrides,
   tokens,
+  worktreeAgentSessions,
+  worktrees,
 } from './schema'
 import {
   DEFAULT_TOOL_KEY,
   SESSIONS_BACKFILLED_KEY,
+  TRANSCRIPT_PATHS_RESOLVED_KEY,
   isFlagSet,
   isSerializedChord,
   isValidTool,
   setFlag,
 } from '#features/projects'
-import { MAX_PROMPT_LENGTH } from '#features/sessions/store'
+import { MAX_PROMPT_LENGTH } from '#features/sessions/worktree-store'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -121,15 +125,15 @@ async function importSessionTitles(db: Db, slug: string): Promise<void> {
     // Same normalization a rename goes through, so an imported title can't
     // be a shape the store would never write.
     const normalized = normalizeTitle(title)
-    return normalized === '' ? [] : [{ projectSlug: slug, sessionId, title: normalized, tool: 'claude' }]
+    return normalized === '' ? [] : [{ projectSlug: slug, worktreeId: sessionId, title: normalized, tool: 'claude' }]
   })
   for (const row of rows) {
-    // A session row may not exist yet (the backfill only sees sessions with
+    // A worktree row may not exist yet (the backfill only sees worktrees with
     // a transcript); insert a placeholder so the title isn't lost, and let
     // the tool default to claude — the same guess the SQL data migration
     // makes, corrected by the transcript scan when one exists.
-    await db.insert(agentSessions).values(row).onConflictDoUpdate({
-      target: [agentSessions.projectSlug, agentSessions.sessionId],
+    await db.insert(worktrees).values(row).onConflictDoUpdate({
+      target: [worktrees.projectSlug, worktrees.worktreeId],
       set: { title: row.title },
     })
   }
@@ -168,15 +172,19 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
     const firstMessage = typeof obj.firstMessage === 'string'
       ? obj.firstMessage.slice(0, MAX_PROMPT_LENGTH)
       : null
-    await db.insert(agentSessions).values({
+    const worktreeId = file.slice(0, -'.json'.length)
+    await db.insert(worktrees).values({
       projectSlug: slug,
-      sessionId: file.slice(0, -'.json'.length),
-      tool: 'opencode',
-      prompt: firstMessage,
+      worktreeId,
       createdAt: stat.birthtime,
-    }).onConflictDoUpdate({
-      target: [agentSessions.projectSlug, agentSessions.sessionId],
-      set: { tool: 'opencode', prompt: firstMessage },
+    }).onConflictDoNothing({
+      target: [worktrees.projectSlug, worktrees.worktreeId],
+    })
+    // The tool and the first message live on the conversation, which for a
+    // pre-split worktree is the one pinned to its id.
+    await linkPreUpgradeAgentSession(db, slug, worktreeId, 'opencode', {
+      createdAt: stat.birthtime,
+      firstPrompt: firstMessage,
     })
     await fs.unlink(p)
   }
@@ -221,19 +229,67 @@ async function backfillSessions(db: Db, slug: string): Promise<void> {
       transcriptPath: r.transcriptPath,
       ...(baseBranch !== null ? { baseBranch } : {}),
     }
-    await db.insert(agentSessions)
-      .values({ projectSlug: slug, sessionId: r.sessionId, ...corrected })
+    const { transcriptPath, ...worktreeFields } = corrected
+    await db.insert(worktrees)
+      .values({ projectSlug: slug, worktreeId: r.sessionId, ...worktreeFields })
       .onConflictDoUpdate({
-        target: [agentSessions.projectSlug, agentSessions.sessionId],
+        target: [worktrees.projectSlug, worktrees.worktreeId],
         // The SQL data migration had to guess `tool` and `created_at` from
         // the folded side tables; the transcript on disk is the better
         // source, so correcting them here is the point of this pass.
-        set: corrected,
+        set: worktreeFields,
       })
+    // A pre-upgrade session pinned the agent's conversation id to the
+    // worktree id, so its one conversation is knowable without any link
+    // tree — record it so every downstream path sees a uniform model.
+    await linkPreUpgradeAgentSession(db, slug, r.sessionId, r.tool, {
+      createdAt: new Date(r.createdAtMs),
+      transcriptPath,
+    })
   }
   if (records.length > 0) {
     serverLog(`[db] adopted ${records.length} pre-existing session(s) in ${slug}`)
   }
+}
+
+/**
+ * Record the single agent session a pre-upgrade worktree had, and link it
+ * active. Everything before the split ran `claude --session-id <worktreeId>`
+ * (and the codex/pi equivalents), so the conversation id IS the worktree id —
+ * this is a fact, not a guess. Marked active so a restart brings the worktree
+ * back exactly as it would have before.
+ */
+async function linkPreUpgradeAgentSession(
+  db: Db,
+  slug: string,
+  worktreeId: string,
+  tool: string,
+  fields: { createdAt: Date; transcriptPath?: string | undefined; firstPrompt?: string | null },
+): Promise<void> {
+  await db.insert(agentSessions).values({
+    projectSlug: slug,
+    tool,
+    agentSessionId: worktreeId,
+    createdAt: fields.createdAt,
+    transcriptPath: fields.transcriptPath ?? null,
+    firstPrompt: fields.firstPrompt ?? null,
+  }).onConflictDoUpdate({
+    target: [agentSessions.projectSlug, agentSessions.tool, agentSessions.agentSessionId],
+    set: {
+      createdAt: fields.createdAt,
+      ...(fields.transcriptPath !== undefined ? { transcriptPath: fields.transcriptPath } : {}),
+    },
+  })
+  await db.insert(worktreeAgentSessions).values({
+    projectSlug: slug,
+    worktreeId,
+    tool,
+    agentSessionId: worktreeId,
+    active: true,
+    ordinal: 0,
+    firstSeenAt: fields.createdAt,
+    lastSeenAt: fields.createdAt,
+  }).onConflictDoNothing()
 }
 
 const TOKEN_KINDS = ['durable', 'one-time', 'web']
@@ -300,5 +356,54 @@ export async function importLegacyJsonStores(): Promise<void> {
     await importOpencodeMeta(db, slug)
   }
   if (!backfilled) await setFlag(SESSIONS_BACKFILLED_KEY)
+  await resolveSymlinkedTranscripts(db)
   await importTokens(db)
+}
+
+/**
+ * Rewrite recorded transcript paths that point at a yaac-made symlink to the
+ * file behind it.
+ *
+ * yaac used to index codex's transcripts with a symlink per session
+ * (`.yaac-transcripts/<id>.jsonl`) because codex names its rollout files
+ * unpredictably and there is no way to derive one from a session id. Capture
+ * stored *that* path, so every codex row recorded before the link tree points
+ * at a symlink rather than at a transcript — and the hook no longer maintains
+ * those symlinks, so the ones on disk are the last that will ever exist.
+ *
+ * Resolving them now is what lets the symlinks go: afterwards the DB holds a
+ * real path for every row, which is the only thing any reader needs. Must run
+ * while the old symlinks are still present, which is why it lives in the
+ * startup sweep rather than in a migration — SQL cannot follow a symlink.
+ *
+ * A dangling one becomes NULL: a path that resolves nowhere is worse than no
+ * path, since every reader would keep stat-ing it forever. So does one that is
+ * already gone — the era this targets recorded symlink paths, so a path that
+ * `lstat` cannot see at all is a symlink someone deleted, which is the same
+ * dead end by a different route.
+ */
+async function resolveSymlinkedTranscripts(db: Db): Promise<void> {
+  if (await isFlagSet(TRANSCRIPT_PATHS_RESOLVED_KEY)) return
+  const rows = await db.select({
+    projectSlug: agentSessions.projectSlug,
+    tool: agentSessions.tool,
+    agentSessionId: agentSessions.agentSessionId,
+    transcriptPath: agentSessions.transcriptPath,
+  }).from(agentSessions).where(isNotNull(agentSessions.transcriptPath))
+
+  let resolved = 0
+  for (const r of rows) {
+    if (r.transcriptPath === null) continue
+    const link = await fs.lstat(r.transcriptPath).catch(() => null)
+    if (link !== null && !link.isSymbolicLink()) continue
+    const target = await fs.realpath(r.transcriptPath).catch(() => null)
+    await db.update(agentSessions).set({ transcriptPath: target }).where(and(
+      eq(agentSessions.projectSlug, r.projectSlug),
+      eq(agentSessions.tool, r.tool),
+      eq(agentSessions.agentSessionId, r.agentSessionId),
+    ))
+    resolved++
+  }
+  await setFlag(TRANSCRIPT_PATHS_RESOLVED_KEY)
+  if (resolved > 0) serverLog(`[db] resolved ${resolved} symlinked transcript path(s)`)
 }

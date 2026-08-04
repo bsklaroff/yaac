@@ -115,7 +115,7 @@ describe('tryClaimPrewarmed', () => {
   it('claims a ready spare: removes the label, re-applies identity, returns its id', async () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result).toEqual({ sessionId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
+    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
     expect(mockKubectl).toHaveBeenCalledWith(
       ['label', 'pod', 'yaac-p-spare-x', '-n', 'ns', `${LABEL_PREWARMED}-`],
     )
@@ -137,7 +137,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
 
-    expect(result).toEqual({ sessionId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
+    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', undefined)
     expect(mockKubectl).toHaveBeenCalledWith([
       'label', 'pod', 'yaac-p-spare-x', '-n', 'ns',
@@ -159,7 +159,7 @@ describe('tryClaimPrewarmed', () => {
       spare({ createdAtMs: 1_000 }),
     ])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRetool).not.toHaveBeenCalled()
   })
 
@@ -221,14 +221,14 @@ describe('tryClaimPrewarmed', () => {
     mockExec.mockRejectedValue(new Error('stream relay dial: timeout'))
 
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockCleanupDetached).not.toHaveBeenCalled()
   })
 
   it('skips the git-config execs when no identity is supplied', async () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', undefined, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockExec).not.toHaveBeenCalled()
   })
 
@@ -254,7 +254,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
 
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockFetchOrigin).toHaveBeenCalledTimes(1)
     expect(mockRebranch).toHaveBeenCalledWith(
       expect.objectContaining({ jobName: 'yaac-p-spare' }),
@@ -281,7 +281,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'develop', 'cafebabe1234', true)
   })
 
@@ -296,7 +296,7 @@ describe('tryClaimPrewarmed', () => {
   it('a model override retools a spare whose tool already matches (agent must respawn with --model)', async () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, undefined, 'claude-opus-4-8')
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRetool).toHaveBeenCalledWith(
       expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', 'claude-opus-4-8',
     )
@@ -311,7 +311,7 @@ describe('tryClaimPrewarmed', () => {
   it('a model override on a re-branched claim skips the rebranch respawn (retool respawns with --model)', async () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev', 'claude-opus-4-8')
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', false)
     expect(mockRetool).toHaveBeenCalledWith(
       expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', 'claude-opus-4-8',
@@ -356,7 +356,7 @@ describe('tryClaimPrewarmed', () => {
     mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
     mockWorktreeUpstream.mockResolvedValue('develop')
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', true)
   })
 
@@ -366,7 +366,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue('develop')
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'main', 'cafebabe1234', true)
   })
 
@@ -374,7 +374,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     mockWorktreeUpstream.mockResolvedValue(null)
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result?.sessionId).toBe('spare1')
+    expect(result?.worktreeId).toBe('spare1')
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockFetchOrigin).not.toHaveBeenCalled()
   })

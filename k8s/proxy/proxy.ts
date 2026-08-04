@@ -1270,16 +1270,20 @@ function buildDynamicRules(
     }
   }
 
-  // Anthropic credential swap is gated on the session being registered for
-  // tool=claude (matching the codex/opencode gates below — a session must
-  // never be able to spend another tool's credential; every pod carries all
-  // placeholder env vars so prewarmed spares can be retooled, and a retool
-  // re-registers the session, moving this gate with it) and on the inbound
-  // request carrying our placeholder sentinel. Requests that don't match
+  // Credential swaps are gated on the inbound request carrying our
+  // placeholder sentinel, and on nothing else. Requests that don't match
   // (e.g. a user manually passing their own API key through the proxy) pass
   // through unmodified — the proxy only rewrites traffic it knows it
   // originated the placeholder for.
-  if (hostname === ANTHROPIC_API_HOST && sessionTool.get(sessionId) === 'claude') {
+  //
+  // There is deliberately no longer a per-tool gate here. A worktree is
+  // tool-agnostic: it holds whatever agent sessions the user opens in it, in
+  // any mix, so "the session's tool" is not a property that exists to gate
+  // on. Every pod already carries every tool's placeholder env (spares are
+  // retoolable), so the gate only ever decided which of those placeholders
+  // resolved — and any agent in any worktree may now spend any credential the
+  // host has signed in. That is a real widening, and the intended one.
+  if (hostname === ANTHROPIC_API_HOST) {
     const creds = readClaudeCreds()
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
     const incomingAuth = headerValue(reqHeaders, 'authorization')
@@ -1308,8 +1312,7 @@ function buildDynamicRules(
   // through unmodified. `ChatGPT-Account-Id` is populated by Codex from the
   // real top-level `account_id` in the mounted auth.json, so it passes
   // through unchanged.
-  if ((hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST)
-    && sessionTool.get(sessionId) === 'codex') {
+  if (hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST) {
     const creds = readCodexCreds()
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     if (creds && creds.kind === 'api-key'
@@ -1344,13 +1347,13 @@ function buildDynamicRules(
   // through untouched. Which header carries the key varies by provider
   // (x-api-key for Anthropic-style, Authorization: Bearer for the rest), so
   // swapApiKeyHeader substitutes wherever the sentinel appears.
-  if (sessionTool.get(sessionId) === 'opencode') {
+  {
     const creds = readOpencodeCreds()
     if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) {
       swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
   }
-  if (sessionTool.get(sessionId) === 'pi') {
+  {
     const creds = readPiCreds()
     if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) {
       swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
@@ -1698,21 +1701,19 @@ function handleMitm(
 
     // OAuth token endpoints need multi-step body capture + response rewrite:
     // swap placeholder refresh_token outbound, then capture real tokens +
-    // swap placeholders inbound. Null when this isn't the token endpoint,
-    // when no OAuth bundle is on disk (nothing to swap), or when the session
-    // isn't registered for the matching tool — only a claude session may
-    // drive a claude token refresh (codex likewise), so one tool's session
-    // can't rotate or exercise another tool's credential. (The host-side
-    // tool sign-in flow never traverses the session proxy, so it's
-    // unaffected.)
+    // swap placeholders inbound. Null when this isn't the token endpoint or
+    // no OAuth bundle is on disk (nothing to swap). Not gated on the
+    // session's tool: a worktree is tool-agnostic, so any agent in it may
+    // drive any signed-in tool's refresh. (The host-side tool sign-in flow
+    // never traverses the session proxy, so it's unaffected.)
     const claudeTokenBundle =
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
-      && sessionId !== null && sessionTool.get(sessionId) === 'claude'
+      && sessionId !== null
         ? readClaudeOAuthBundle()
         : null
     const codexTokenBundle =
       hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
-      && sessionId !== null && sessionTool.get(sessionId) === 'codex'
+      && sessionId !== null
         ? readCodexOAuthBundle()
         : null
 

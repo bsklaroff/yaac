@@ -20,8 +20,8 @@ function oneLine(s: string): string {
  * space still drags the window; the interactive children opt out via `.no-drag`,
  * which is also what lets the label's text be selected for copy/paste.
  */
-export function SessionTitle({ sessionId, title, prompt }: {
-  sessionId: string
+export function SessionTitle({ worktreeId, title, prompt }: {
+  worktreeId: string
   /** Stored display title; empty when the session has none yet. */
   title: string
   /** First user prompt — shown as the label fallback when there's no title. */
@@ -42,7 +42,7 @@ export function SessionTitle({ sessionId, title, prompt }: {
   const displayed = title || prompt
 
   // Switching sessions drops any open editor (the field is seeded on mount).
-  useEffect(() => { setEditing(false) }, [sessionId])
+  useEffect(() => { setEditing(false) }, [worktreeId])
 
   useEffect(() => {
     if (editing) {
@@ -71,7 +71,7 @@ export function SessionTitle({ sessionId, title, prompt }: {
     // a model-generated title — or the prompt fallback still awaiting one — is
     // preserved rather than frozen as a user-set title.
     if (next === seed) return
-    void renameSession(sessionId, next)
+    void renameSession(worktreeId, next)
       .catch((e: unknown) => console.error('rename failed', e))
   }
 

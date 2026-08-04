@@ -28,7 +28,7 @@ function appWithAuth(): { app: Hono; tokens: ReturnType<typeof createTokenStore>
   app.get('/assets/*', (c) => c.text('asset'))
   app.post('/auth/web-session', (c) => c.text('exchanged'))
   app.get('/auth/web-session', (c) => c.text('probe ok'))
-  app.get('/session/list', (c) => c.text('protected ok'))
+  app.get('/worktree/list', (c) => c.text('protected ok'))
   return { app, tokens }
 }
 
@@ -54,7 +54,7 @@ describe('cookieOrBearerAuth', () => {
 
   it('gates API paths and the GET web-session probe', async () => {
     const { app } = appWithAuth()
-    for (const path of ['/session/list', '/auth/web-session']) {
+    for (const path of ['/worktree/list', '/auth/web-session']) {
       const res = await app.request(path)
       expect(res.status).toBe(401)
       const body = await res.json() as { error: { code: string } }
@@ -64,11 +64,11 @@ describe('cookieOrBearerAuth', () => {
 
   it('accepts a correct bearer, case-insensitively', async () => {
     const { app } = appWithAuth()
-    const a = await app.request('/session/list', {
+    const a = await app.request('/worktree/list', {
       headers: { authorization: 'Bearer shh' },
     })
     expect(a.status).toBe(200)
-    const b = await app.request('/session/list', {
+    const b = await app.request('/worktree/list', {
       headers: { authorization: 'bearer shh' },
     })
     expect(b.status).toBe(200)
@@ -79,7 +79,7 @@ describe('cookieOrBearerAuth', () => {
     // Both shapes the constant-time compare has to handle: a same-length
     // near-miss and a length mismatch (which it must reject, not throw on).
     for (const bearer of ['shX', 'a-much-longer-guess']) {
-      const res = await app.request('/session/list', {
+      const res = await app.request('/worktree/list', {
         headers: { authorization: `Bearer ${bearer}` },
       })
       expect(res.status).toBe(401)
@@ -92,7 +92,7 @@ describe('cookieOrBearerAuth', () => {
     const { app, tokens } = appWithAuth()
     const entry = tokens.create('laptop')
 
-    const ok = await app.request('/session/list', {
+    const ok = await app.request('/worktree/list', {
       headers: { authorization: `Bearer ${entry.token}` },
     })
     expect(ok.status).toBe(200)
@@ -101,7 +101,7 @@ describe('cookieOrBearerAuth', () => {
   it('rejects a one-time token or a web session presented as a bearer', async () => {
     const { app, tokens } = appWithAuth()
     for (const bearer of [tokens.mintExchangeToken().token, mintSession(tokens)]) {
-      const res = await app.request('/session/list', {
+      const res = await app.request('/worktree/list', {
         headers: { authorization: `Bearer ${bearer}` },
       })
       expect(res.status).toBe(401)
@@ -113,7 +113,7 @@ describe('cookieOrBearerAuth', () => {
   it('lets a valid cookie override a stale bearer', async () => {
     const { app, tokens } = appWithAuth()
     const sid = mintSession(tokens)
-    const res = await app.request('/session/list', {
+    const res = await app.request('/worktree/list', {
       headers: {
         authorization: 'Bearer stale',
         cookie: `${sessionCookieName()}=${sid}`,
@@ -127,12 +127,12 @@ describe('cookieOrBearerAuth', () => {
     const sid = mintSession(tokens)
     expect(sid.length).toBeGreaterThan(0)
 
-    const ok = await app.request('/session/list', {
+    const ok = await app.request('/worktree/list', {
       headers: { cookie: `${sessionCookieName()}=${sid}` },
     })
     expect(ok.status).toBe(200)
 
-    const bad = await app.request('/session/list', {
+    const bad = await app.request('/worktree/list', {
       headers: { cookie: `${sessionCookieName()}=bogus` },
     })
     expect(bad.status).toBe(401)
@@ -141,7 +141,7 @@ describe('cookieOrBearerAuth', () => {
   it('rejects a durable token presented as a cookie', async () => {
     const { app, tokens } = appWithAuth()
     const entry = tokens.create('laptop')
-    const res = await app.request('/session/list', {
+    const res = await app.request('/worktree/list', {
       headers: { cookie: `${sessionCookieName()}=${entry.token}` },
     })
     expect(res.status).toBe(401)
@@ -150,9 +150,9 @@ describe('cookieOrBearerAuth', () => {
   it('skips the gate entirely on a loopback-only deployment', async () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '')
     const { app } = appWithAuth()
-    expect((await app.request('/session/list')).status).toBe(200)
+    expect((await app.request('/worktree/list')).status).toBe(200)
     // Not even a wrong bearer is rejected — the gate is not consulted at all.
-    const wrong = await app.request('/session/list', {
+    const wrong = await app.request('/worktree/list', {
       headers: { authorization: 'Bearer nope' },
     })
     expect(wrong.status).toBe(200)
@@ -161,7 +161,7 @@ describe('cookieOrBearerAuth', () => {
   it('re-enforces the gate once remote hosting is configured', async () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '')
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect((await appWithAuth().app.request('/session/list')).status).toBe(401)
+    expect((await appWithAuth().app.request('/worktree/list')).status).toBe(401)
   })
 
   it('bypasses a nested yaac despite inherited remote-host env', async () => {
@@ -171,7 +171,7 @@ describe('cookieOrBearerAuth', () => {
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     vi.stubEnv('YAAC_TRUST_PROXY', '1')
     vi.stubEnv('YAAC_NESTED', '1')
-    expect((await appWithAuth().app.request('/session/list')).status).toBe(200)
+    expect((await appWithAuth().app.request('/worktree/list')).status).toBe(200)
   })
 })
 

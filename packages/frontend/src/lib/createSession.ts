@@ -3,7 +3,7 @@ import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import type { AgentTool } from '@yaac/shared/types'
 
 export interface CreateSessionResult {
-  sessionId: string
+  worktreeId: string
   jobName: string
   tool: AgentTool
 }
@@ -33,48 +33,48 @@ export async function createSession(
   project: string,
   tool: AgentTool,
   onProgress: (message: string) => void,
-  sessionId?: string,
+  worktreeId?: string,
   branch?: string,
 ): Promise<CreateSessionResult> {
   const body = {
     project,
     tool,
-    ...(sessionId ? { sessionId } : {}),
+    ...(worktreeId ? { worktreeId } : {}),
     ...(branch ? { branch } : {}),
   }
-  return await streamSessionOp('/session/create', body, onProgress) as CreateSessionResult
+  return await streamSessionOp('/worktree/create', body, onProgress) as CreateSessionResult
 }
 
 export async function restartSession(
-  sessionId: string,
+  worktreeId: string,
   onProgress: (message: string) => void,
   meta?: { projectSlug?: string; tool?: AgentTool },
-): Promise<{ sessionId: string }> {
-  return await streamSessionOp('/session/restart', { sessionId, ...meta }, onProgress) as { sessionId: string }
+): Promise<{ worktreeId: string }> {
+  return await streamSessionOp('/worktree/restart', { worktreeId, ...meta }, onProgress) as { worktreeId: string }
 }
 
 /** Dismiss a provisioning row (drops the server registry entry; used for a
  *  failed create/restart). Idempotent server-side. */
-export async function dismissProvisioning(sessionId: string): Promise<void> {
-  await api.session.provisioning[':id'].dismiss.$post({ param: { id: sessionId } })
+export async function dismissProvisioning(worktreeId: string): Promise<void> {
+  await api.worktree.provisioning[':id'].dismiss.$post({ param: { id: worktreeId } })
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
-  await api.session.delete.$post({ json: { sessionId } })
+export async function stopWorktree(worktreeId: string): Promise<void> {
+  await api.worktree.stop.$post({ json: { worktreeId } })
 }
 
 /** Set a session's display title (blank clears it back to the prompt). */
-export async function renameSession(sessionId: string, title: string): Promise<void> {
-  await api.session[':id'].title.$post({ param: { id: sessionId }, json: { title } })
+export async function renameSession(worktreeId: string, title: string): Promise<void> {
+  await api.worktree[':id'].title.$post({ param: { id: worktreeId }, json: { title } })
 }
 
 /** Pin (or unpin) a session to the sidebar's "Background" section. Addressed
  *  by (project, session) rather than a container lookup so it works for
  *  deleted sessions too — the pin outlives the container. */
-export async function setSessionBackground(
+export async function setWorktreeBackground(
   projectSlug: string,
-  sessionId: string,
+  worktreeId: string,
   background: boolean,
 ): Promise<void> {
-  await api.session['set-background'].$post({ json: { projectSlug, sessionId, background } })
+  await api.worktree['set-background'].$post({ json: { projectSlug, worktreeId, background } })
 }

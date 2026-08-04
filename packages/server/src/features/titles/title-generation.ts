@@ -11,7 +11,7 @@
  * don't-regenerate after a user deliberately clears a generated title.
  */
 import { listActiveSessions } from '#features/sessions/list'
-import { setSessionTitle } from '#features/sessions/store'
+import { setWorktreeTitle } from '#features/sessions/worktree-store'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { serverLog } from '#log'
@@ -25,31 +25,31 @@ const attempted = new Set<string>()
 export async function reconcileGeneratedTitles(): Promise<void> {
   if (!env.autoTitles) return
 
-  let sessions
+  let worktrees
   try {
-    sessions = (await listActiveSessions()).sessions
+    worktrees = (await listActiveSessions()).worktrees
   } catch {
     return
   }
 
-  for (const session of sessions) {
-    const { projectSlug, sessionId, title, prompt } = session
-    const key = `${projectSlug}:${sessionId}`
+  for (const worktree of worktrees) {
+    const { projectSlug, worktreeId, title, prompt } = worktree
+    const key = `${projectSlug}:${worktreeId}`
     if (attempted.has(key)) continue
     if (title !== undefined || prompt === undefined || !shouldGenerateTitle(prompt)) continue
     attempted.add(key)
-    void generateOne(projectSlug, sessionId, prompt)
+    void generateOne(projectSlug, worktreeId, prompt)
   }
 }
 
-async function generateOne(slug: string, sessionId: string, prompt: string): Promise<void> {
+async function generateOne(slug: string, worktreeId: string, prompt: string): Promise<void> {
   try {
     const title = await summarizeTitle(prompt)
     if (title === undefined) return
-    await setSessionTitle(slug, sessionId, title)
+    await setWorktreeTitle(slug, worktreeId, title)
     notifySessionListChanged()
   } catch (err) {
-    serverLog(`[titles] ${slug}/${sessionId}: ${String(err)}`)
+    serverLog(`[titles] ${slug}/${worktreeId}: ${String(err)}`)
   }
 }
 

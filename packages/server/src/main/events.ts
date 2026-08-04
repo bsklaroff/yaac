@@ -24,18 +24,18 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
   ])
-  // A session with a provisioning entry is mid-create/mid-restart (or failed,
-  // awaiting dismissal) — the row, not the session, is what clients should
-  // render. The pod lists as an active session well before setup finishes
+  // A worktree with a provisioning entry is mid-create/mid-restart (or
+  // failed, awaiting dismissal) — the row, not the worktree, is what clients
+  // should render. The pod lists as running well before setup finishes
   // (pod Running + tmux up ≠ agent and init windows exist), so surfacing it
   // would make the webapp swap the placeholder for terminals that can't
-  // attach yet. Suppressing the session until the create/restart route drops
-  // the entry (on resolve) swaps row → ready session in one snapshot, and
+  // attach yet. Suppressing the worktree until the create/restart route drops
+  // the entry (on resolve) swaps row → ready worktree in one snapshot, and
   // keeps an id from ever appearing in both lists.
   const provisioning = listProvisioning()
-  const provisioningIds = new Set(provisioning.map((p) => p.sessionId))
+  const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
   return {
-    sessions: active.sessions.filter((s) => !provisioningIds.has(s.sessionId)),
+    worktrees: active.worktrees.filter((w) => !provisioningIds.has(w.worktreeId)),
     stale: active.stale,
     projects,
     provisioning,

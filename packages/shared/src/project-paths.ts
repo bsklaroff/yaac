@@ -131,6 +131,48 @@ export function codexTranscriptFile(slug: string, sessionId: string): string {
 }
 
 /**
+ * Per-tool host-mounted home. The tools whose home is shared across a
+ * project's sessions (`.claude`, `.codex`, `.pi`) are the ones that can hold
+ * agent-session links; opencode keeps its history in a per-session sqlite DB
+ * inside the container and has no host home to link into, so it has no entry
+ * here (its conversations are enumerated over HTTP while the pod runs).
+ */
+export function toolHomeDir(slug: string, tool: 'claude' | 'codex' | 'pi'): string {
+  if (tool === 'claude') return claudeDir(slug)
+  if (tool === 'codex') return codexDir(slug)
+  return piDir(slug)
+}
+
+/**
+ * Root of the agent-session link tree a tool's SessionStart hook maintains
+ * inside its host-mounted home. One subtree per worktree (the hook keys it by
+ * `$YAAC_SESSION_ID`, which is the worktree id) — see `worktreeLinksDir`.
+ */
+export function agentLinksDir(slug: string, tool: 'claude' | 'codex' | 'pi'): string {
+  return path.join(toolHomeDir(slug, tool), '.yaac-links')
+}
+
+/**
+ * One worktree's link subtree, holding:
+ *   `sessions/<agentSessionId>.jsonl` — symlink to the live transcript, one
+ *      per agent session the worktree has ever hosted (its history);
+ *   `panes/<paneId>` — a pointer file naming the agent session currently on
+ *      that tmux pane (its live set).
+ *
+ * Written by the in-pod hook, read host-side by the agent-session registry.
+ * Both are needed: the symlinks survive the pod (so a stopped worktree can
+ * still list its history) while the pane pointers are what make "active"
+ * knowable.
+ */
+export function worktreeLinksDir(
+  slug: string,
+  tool: 'claude' | 'codex' | 'pi',
+  worktreeId: string,
+): string {
+  return path.join(agentLinksDir(slug, tool), worktreeId)
+}
+
+/**
  * Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across
  * sessions within the same project so that model selection, permissions,

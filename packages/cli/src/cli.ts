@@ -5,13 +5,14 @@ import { exitOnApiError } from '@yaac/shared/server-api'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectRebuild } from '#commands/project-rebuild'
-import { sessionCreate } from '#commands/session-create'
-import { sessionList } from '#commands/session-list'
-import { sessionDelete } from '#commands/session-delete'
-import { sessionRestart } from '#commands/session-restart'
-import { sessionAttach } from '#commands/session-attach'
-import { sessionShell } from '#commands/session-shell'
-import { sessionMonitor } from '#commands/session-monitor'
+import { worktreeCreate } from '#commands/worktree-create'
+import { worktreeList } from '#commands/worktree-list'
+import { worktreeStop } from '#commands/worktree-stop'
+import { worktreeRestart } from '#commands/worktree-restart'
+import { worktreeAttach } from '#commands/worktree-attach'
+import { worktreeShell } from '#commands/worktree-shell'
+import { worktreeMonitor } from '#commands/worktree-monitor'
+import { worktreeAgents } from '#commands/worktree-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
@@ -31,7 +32,7 @@ import { openWebapp } from '@yaac/server/main/webapp'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
-import type { SessionMonitorOptions } from '#commands/session-monitor'
+import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
 
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
 // here so every command — `cluster setup` (kind inherits our env) and the
@@ -124,7 +125,7 @@ program
 
 const cluster = program
   .command('cluster')
-  .description('Manage the kubernetes cluster yaac runs sessions on')
+  .description('Manage the kubernetes cluster yaac runs worktrees on')
   .configureHelp({ formatHelp: nestedHelp })
 
 cluster
@@ -142,7 +143,7 @@ cluster
 
 cluster
   .command('delete')
-  .description('Delete the kind cluster and local registry (keeps sessions and worktrees)')
+  .description('Delete the kind cluster and local registry (keeps worktrees and their checkouts)')
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
     await clusterDelete(options)
@@ -170,66 +171,72 @@ project
   .argument('<project>', 'Project slug')
   .action(projectRebuild)
 
-const session = program
-  .command('session')
-  .description('Manage sessions')
+const worktree = program
+  .command('worktree')
+  .description('Manage worktrees — a git worktree plus the container and agents running in it')
   .configureHelp({ formatHelp: nestedHelp })
 
-session
+worktree
   .command('create')
-  .description('Create a new session for a project')
+  .description('Create a new worktree for a project')
   .argument('<project>', 'Project slug')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
-  .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the session is up')
+  .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the worktree is up')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi')
-  .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
-    await sessionCreate(project, options)
+  .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
+    await worktreeCreate(project, options)
   })
 
-session
+worktree
   .command('list')
-  .description('List active sessions')
+  .description('List running worktrees')
   .argument('[project]', 'Filter by project slug')
-  .option('-d, --deleted', 'List deleted sessions from Claude Code history')
-  .option('-n, --num <n>', 'With -d, cap deleted results to N rows (default 25)', (v) => Number.parseInt(v, 10))
-  .option('-a, --all', 'With -d, show all deleted rows without a cap')
-  .action(sessionList)
+  .option('-s, --stopped', 'List stopped worktrees (their checkouts are kept, and they can be restarted)')
+  .option('-n, --num <n>', 'With -s, cap stopped results to N rows (default 25)', (v) => Number.parseInt(v, 10))
+  .option('-a, --all', 'With -s, show all stopped rows without a cap')
+  .action(worktreeList)
 
-session
-  .command('delete')
-  .description('Delete a session and clean up its resources')
-  .argument('<session-id>', 'Session ID, container name, or container ID')
-  .action(sessionDelete)
+worktree
+  .command('stop')
+  .description('Stop a worktree: tear down its container, keep its checkout and diff')
+  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .action(worktreeStop)
 
-session
+worktree
   .command('restart')
-  .description('Restart a session: kill its container, reuse its worktree, resume the agent')
-  .argument('<session-id>', 'Session ID, container name, or container ID')
-  .action(async (sessionId: string) => {
-    await sessionRestart(sessionId)
+  .description('Restart a worktree: kill its container, reuse its checkout, resume the agents that were running')
+  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .action(async (worktreeId: string) => {
+    await worktreeRestart(worktreeId)
   })
 
-session
+worktree
+  .command('agents')
+  .description('List the agent sessions a worktree holds (open ones first)')
+  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .action(worktreeAgents)
+
+worktree
   .command('attach')
-  .description('Attach to the Claude Code tmux session')
-  .argument('<container-id>', 'Session ID or container name')
+  .description('Attach to the worktree\'s tmux session')
+  .argument('<container-id>', 'Worktree ID or container name')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
-  .action(sessionAttach)
+  .action(worktreeAttach)
 
-session
+worktree
   .command('shell')
-  .description('Open an interactive zsh shell in the session container')
-  .argument('<container-id>', 'Session ID or container name')
-  .action(sessionShell)
+  .description('Open an interactive zsh shell in the worktree container')
+  .argument('<container-id>', 'Worktree ID or container name')
+  .action(worktreeShell)
 
-session
+worktree
   .command('monitor')
-  .description('Poll and display active sessions in real-time')
+  .description('Poll and display running worktrees in real-time')
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
-  .action(async (project: string | undefined, options: SessionMonitorOptions) => {
-    await sessionMonitor(project, options)
+  .action(async (project: string | undefined, options: WorktreeMonitorOptions) => {
+    await worktreeMonitor(project, options)
   })
 
 const tool = program

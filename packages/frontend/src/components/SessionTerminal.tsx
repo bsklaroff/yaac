@@ -25,12 +25,12 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
  * rides the upgrade.
  */
 export function SessionTerminal({
-  sessionId,
+  worktreeId,
   target = 'agent',
   visible = true,
   focusKey,
 }: {
-  sessionId: string
+  worktreeId: string
   /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
   target?: string
   /** Whether this pane is on-screen. Drives the WebGL renderer's lifetime:
@@ -211,7 +211,7 @@ export function SessionTerminal({
       // first frame, avoiding the cold-start resize that garbles
       // full-screen TUIs.
       const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const params = new URLSearchParams({ id: sessionId, target })
+      const params = new URLSearchParams({ id: worktreeId, target })
       if (term.cols > 0 && term.rows > 0) {
         params.set('cols', String(term.cols))
         params.set('rows', String(term.rows))
@@ -328,7 +328,7 @@ export function SessionTerminal({
       term.dispose()
       termRef.current = null
     }
-  }, [sessionId, target])
+  }, [worktreeId, target])
 
   // Bind the WebGL context to visibility: a pane going off-screen releases its
   // context (freeing a slot in the browser's limited pool), and coming back
