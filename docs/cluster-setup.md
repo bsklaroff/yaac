@@ -179,7 +179,31 @@ only kind's provider breaks.
    pods are stamped `gvisor` by the syncer. Trusted yaac infra (the proxy,
    registries, node-write pods, vcluster control planes) runs on runc — a
    sentry per infra pod starves the node for no containment gain.
-5. **Calico** — upstream's classic KDD/iptables release manifest for the
+5. **PriorityClasses** — `yaac-infra` (1000000) > `yaac-builder` (100000) >
+   `yaac-session` (1000). The proxy and per-project registries take the
+   infra tier, ephemeral image builders the builder tier, session pods the
+   session tier. The split is about who dies when a node fills up — losing
+   the egress proxy costs *every* session its DNS and its route to the
+   world, while losing one session costs one session, and kubelet's
+   node-pressure eviction orders by priority.
+
+   Only infra may **preempt**; builders and sessions set `preemptionPolicy:
+   Never`. A preempted pod is deleted and a session Job (`backoffLimit: 0`)
+   never comes back, so nothing below the infra tier is allowed to buy its
+   own scheduling with a session's life — a build that waits costs a session
+   create some latency instead.
+
+   Two deliberate omissions. netd stays on `system-node-critical` — it is
+   node infrastructure, like kube-proxy. Per-session **vcluster control
+   planes** stamp nothing and so sit at 0, *below* sessions: they are
+   Deployment-managed and come back, and a session does not. Sessions
+   created by a *nested* yaac against their vcluster also stamp nothing —
+   the syncer drops the class name host-side but copies `preemptionPolicy`,
+   and the host rejects that pod outright.
+
+   `yaac cluster check` verifies the classes, and the yaac server re-applies
+   them at every start, so an existing cluster picks them up on upgrade.
+6. **Calico** — upstream's classic KDD/iptables release manifest for the
    pinned version, fetched once and verified against the checksum committed
    in `k8s/calico/`, then cached at
    `$YAAC_DATA_DIR/cache/calico-<version>.yaml` so a cluster recreate does
@@ -199,6 +223,28 @@ yaac cluster setup --repair
 ```
 
 `yaac cluster check` detects when they're missing and points here.
+
+## What a session reserves
+
+Each session container requests **250m cpu, 1Gi memory, 2Gi
+ephemeral-storage**, and is limited to **8Gi memory and 16Gi
+ephemeral-storage** (plus the podman graphroot's own volume cap on a
+nested-containers session, which kubelet charges to the same limit). Requests
+are the scheduler's reservation and sit well under the limits: the node is
+deliberately overcommitted, the way many mostly-idle sessions want.
+
+There is no cpu **limit** — cpu is compressible, so a session bursts into
+whatever the node has spare and falls back to its 250m share only when
+contended; a limit would be a CFS quota that throttles the agent even on an
+idle node. Memory and disk are capped because they are not compressible: one
+session must not be able to take the node down with it.
+
+The practical effect is a ceiling on concurrent sessions, whichever of cpu or
+memory runs out first — roughly `cores × 4` and `GB ÷ 1` respectively (each
+session's vcluster control plane, on a `virtualCluster` project, reserves on
+top of that). At 4 GB per core the two ceilings coincide; above that, cpu
+binds first, and a session that no longer fits sits `Pending` with an
+`Insufficient cpu` event rather than failing outright.
 
 ## Runtimes and uids
 
@@ -226,7 +272,8 @@ does, or its writes to `/workspace` will fail with `Permission denied`.
 ## Verifying
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
-namespace, and the node fixups, asserts the RuntimeClasses exist and that a
+namespace, the PriorityClasses and the node fixups, asserts the
+RuntimeClasses exist and that a
 `gvisor`-class pod really runs inside the sentry, then runs an end-to-end
 probe pod — on the gvisor tier, like session pods — that exercises all of
 the wiring above, including a hostPath **write** at the session uid. It

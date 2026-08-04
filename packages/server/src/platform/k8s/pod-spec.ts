@@ -1,4 +1,5 @@
 import { runtimeClassSpec } from './gvisor'
+import { priorityClassSpec } from './priority-classes'
 
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
 export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
@@ -187,6 +188,37 @@ export interface SessionJobParams {
   /** Hard cgroup cap; exceeding it OOM-kills the container. */
   memoryLimitBytes: number
   /**
+   * CPU floor in millicores, and deliberately NO ceiling. Without a request
+   * a session pod is invisible to the scheduler's bin-packing — it costs a
+   * node nothing, which is survivable on one local node and wrong anywhere
+   * capacity is planned or autoscaled. A LIMIT is a different thing and the
+   * wrong default here: cpu is compressible, so contention already resolves
+   * by weight (the request IS the weight), while a limit is enforced as a
+   * CFS quota that throttles inside every 100ms period — an interactive
+   * agent session would stall on a node that is otherwise idle. Sessions
+   * therefore burst into whatever the node has spare and only fall back to
+   * their share when it is contended.
+   */
+  cpuRequestMillis: number
+  /**
+   * Node-disk floor: the container's writable layer, its logs, and its
+   * emptyDir volumes (hostPath mounts are not ephemeral storage, so the
+   * repo, worktrees and caches don't count). Same overcommit shape as
+   * memory — a request far below the limit, since most sessions never come
+   * near it.
+   */
+  ephemeralStorageRequestBytes: number
+  /**
+   * Ephemeral-storage ceiling; kubelet evicts the pod when the pod's total
+   * usage exceeds it. Unlike cpu this limit earns its keep: node disk is
+   * incompressible and shared, and one session filling it takes down every
+   * pod on the node, so bounding the blast radius to the offender is worth
+   * the eviction risk. Nested sessions get the graphroot emptyDir's own
+   * sizeLimit added on top (see the resources block) — kubelet counts that
+   * volume against this number.
+   */
+  ephemeralStorageLimitBytes: number
+  /**
    * Pinned proxy Service ClusterIP. Session pods point their resolver at it
    * (dnsConfig below) so the proxy's DNS stub answers, and their 443/80
    * egress is redirected to it by netd's per-pod DNAT rules
@@ -299,6 +331,10 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
+          // The bottom scheduling tier: a full node sheds a session before
+          // it sheds the proxy every session's network runs through. Inner
+          // (vcluster) pods stamp none — see priorityClassSpec.
+          ...priorityClassSpec({ inner: p.innerYaac }),
           // Session pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
@@ -350,8 +386,25 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
                 },
               } : {}),
               resources: {
-                requests: { memory: String(p.memoryRequestBytes) },
-                limits: { memory: String(p.memoryLimitBytes) },
+                requests: {
+                  cpu: `${p.cpuRequestMillis}m`,
+                  memory: String(p.memoryRequestBytes),
+                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes),
+                },
+                // No cpu limit — see cpuRequestMillis.
+                limits: {
+                  memory: String(p.memoryLimitBytes),
+                  // kubelet charges a pod's emptyDir volumes to its
+                  // ephemeral-storage limit, so a nested pod's limit must
+                  // clear the graphroot volume's own sizeLimit or the first
+                  // real `docker build` evicts the session — which is fatal
+                  // (backoffLimit 0). Adding it here rather than at the call
+                  // site keeps that accounting next to the constant.
+                  'ephemeral-storage': String(
+                    p.ephemeralStorageLimitBytes
+                    + (p.nested ? NESTED_GRAPHROOT_SIZELIMIT_BYTES : 0),
+                  ),
+                },
               },
             },
           ],

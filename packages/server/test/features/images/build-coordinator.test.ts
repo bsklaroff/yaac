@@ -140,7 +140,9 @@ import {
   BUILDER_CONTEXT_MAX_BYTES,
   BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
   BUILDER_GRAPHROOT_TMPFS_BYTES,
+  BUILDER_CPU_REQUEST_MILLIS,
   BUILDER_MEMORY_LIMIT_BYTES,
+  BUILDER_MEMORY_REQUEST_BYTES,
 } from '#features/images/builder-pod'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -196,13 +198,17 @@ interface PodManifest {
     automountServiceAccountToken: boolean
     enableServiceLinks: boolean
     runtimeClassName: string
+    priorityClassName: string
     securityContext: { seccompProfile: { type: string } }
     containers: Array<{
       image: string
       imagePullPolicy: string
       command: string[]
       securityContext: { capabilities: { add: string[] } }
-      resources: { limits: { memory: string } }
+      resources: {
+        requests: Record<string, string>
+        limits: { memory: string }
+      }
       volumeMounts: Array<{ name: string; mountPath: string }>
     }>
     volumes: Array<{ name: string; emptyDir: { sizeLimit: string } }>
@@ -425,12 +431,23 @@ describe('ensureImage', () => {
     })
     // Sandboxed, bounded and unprivileged pod-side.
     expect(pod.spec.runtimeClassName).toBe('gvisor')
+    // Above sessions for eviction, but on the no-preemption tier: a build
+    // must never displace a running session to start.
+    expect(pod.spec.priorityClassName).toBe('yaac-builder')
     expect(pod.spec.restartPolicy).toBe('Never')
     expect(pod.spec.activeDeadlineSeconds).toBe(BUILDER_ACTIVE_DEADLINE_SECONDS)
     expect(pod.spec.automountServiceAccountToken).toBe(false)
     expect(pod.spec.enableServiceLinks).toBe(false)
     expect(pod.spec.securityContext.seccompProfile.type).toBe('RuntimeDefault')
     expect(pod.spec.containers[0].resources.limits.memory).toBe(String(BUILDER_MEMORY_LIMIT_BYTES))
+    // Requested explicitly, well under the limit: kubernetes defaults an
+    // omitted request UP TO the limit, which would reserve the whole 8Gi
+    // ceiling — 8 sessions' worth of node — for one routine build.
+    expect(pod.spec.containers[0].resources.requests).toEqual({
+      cpu: `${BUILDER_CPU_REQUEST_MILLIS}m`,
+      memory: String(BUILDER_MEMORY_REQUEST_BYTES),
+    })
+    expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')

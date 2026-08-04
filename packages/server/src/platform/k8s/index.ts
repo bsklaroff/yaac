@@ -56,6 +56,12 @@ export {
   graphrootMountAnnotations,
 } from './pod-spec'
 export type { HostPathMount, NestedContainersParams } from './pod-spec'
+export {
+  PRIORITY_CLASS_BUILDER,
+  PRIORITY_CLASS_INFRA,
+  buildPriorityClassManifests,
+  ensurePriorityClasses,
+} from './priority-classes'
 export { waitForJobPodReady } from './pod-wait'
 export {
   LABEL_DATA_DIR_HASH,

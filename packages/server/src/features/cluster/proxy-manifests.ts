@@ -6,6 +6,7 @@ import {
   LABEL_ROLE,
   OUTER_CA_CONFIGMAP_NAME,
   POD_STREAM_PORT,
+  PRIORITY_CLASS_INFRA,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   PROXY_PORT,
@@ -106,6 +107,11 @@ export function buildProxyDeploymentManifest(
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
+          // Infra tier: losing the proxy costs every session on the cluster
+          // its DNS and its entire route to the world, so it outranks the
+          // sessions under node pressure and can preempt one when a full
+          // node leaves it nowhere to run.
+          priorityClassName: PRIORITY_CLASS_INFRA,
           // No runtimeClassName: the proxy is trusted yaac infra and runs on
           // runc — the sentry buys no containment for yaac-shipped code and
           // its CPU cost starves the node (see the gvisor.ts module doc).

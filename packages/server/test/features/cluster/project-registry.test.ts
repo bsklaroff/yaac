@@ -252,6 +252,7 @@ describe('ensureProjectRegistry', () => {
           automountServiceAccountToken: boolean
           enableServiceLinks: boolean
           runtimeClassName?: string
+          priorityClassName?: string
           hostUsers?: boolean
           securityContext?: unknown
           volumes: Array<Record<string, unknown>>
@@ -277,6 +278,9 @@ describe('ensureProjectRegistry', () => {
     expect(pod.automountServiceAccountToken).toBe(false)
     expect(pod.enableServiceLinks).toBe(false)
     expect(pod.runtimeClassName).toBeUndefined()
+    // Infra tier: the project's sessions pull their images from here, so it
+    // outranks them when the node runs out of room.
+    expect(pod.priorityClassName).toBe('yaac-infra')
     expect(pod.hostUsers).toBeUndefined()
     expect(pod.securityContext).toBeUndefined()
     expect(pod.containers[0].image).toMatch(/^localhost:5001\/yaac-registry2:/)

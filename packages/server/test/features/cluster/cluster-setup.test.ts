@@ -88,6 +88,7 @@ function makeDeps(
     exposeRegistry: overrides.exposeRegistry
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
     ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
+    ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
@@ -127,6 +128,9 @@ describe('runClusterSetup', () => {
     // netd deployed before the check, so the datapath gate has something
     // to verify on a freshly-created cluster.
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
+    // Cluster-scoped objects the manifest builders name — a pod naming a
+    // missing PriorityClass is rejected, so setup installs them.
+    expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
 
     // Cluster recreated: delete (best-effort) then create from the bundled
     // config with $HOME substituted, under the podman provider.
@@ -184,6 +188,18 @@ describe('runClusterSetup', () => {
     expect(rcApply?.[2]?.input).toContain('"gvisor-nested"')
 
     expect(deps.check).toHaveBeenCalledOnce()
+  })
+
+  it('aborts when the PriorityClasses cannot be installed', async () => {
+    // Unlike the registry Service and netd (both re-ensured lazily by the
+    // server), a missing PriorityClass makes the apiserver REJECT every pod
+    // that names one — and a rejected session pod hangs its Job instead of
+    // failing it. So this one is not fail-soft.
+    const deps = makeDeps({
+      ensurePriorityClasses: vi.fn().mockRejectedValue(new Error('apiserver said no')),
+    })
+    await expect(runClusterSetup({}, deps)).rejects.toThrow('apiserver said no')
+    expect(deps.check).not.toHaveBeenCalled()
   })
 
   it('returns false when the finishing cluster check fails', async () => {
@@ -346,6 +362,7 @@ describe('runClusterSetup', () => {
     // Re-applied on --repair too: that is how an existing cluster picks
     // netd up on a yaac upgrade (same rationale as the gVisor install).
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
+    expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
     // No delete/create/Calico — only the fixups (incl. the gVisor install,
     // whose RuntimeClass apply is the one streaming call) and the check.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)

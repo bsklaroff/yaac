@@ -289,6 +289,21 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     hostPathMounts,
     memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
+    // 250m per session pairs with the 1Gi memory request at 4 GB/core, so
+    // the cpu-imposed ceiling on concurrent sessions lands beside the
+    // memory-imposed one on ordinary developer hardware (8 cores/32 GB:
+    // 32 sessions by cpu, 32 by memory) — honest for bin-packing without
+    // becoming the reason a session stops scheduling. Real usage is far
+    // below it: an agent session is idle between turns and bursts freely,
+    // since nothing here sets a cpu limit.
+    cpuRequestMillis: 250,
+    // Sessions keep their repo, worktrees and caches on hostPath mounts,
+    // which are not ephemeral storage — what lands here is the writable
+    // layer, logs, and (nested only) the podman graphroot emptyDir. 2Gi
+    // covers the steady state; the 16Gi ceiling is a blast-radius bound on
+    // a session filling the node's disk, not a budget anyone should hit.
+    ephemeralStorageRequestBytes: 2 * 1024 ** 3,
+    ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     proxyHost,
     nested,
     innerYaac,

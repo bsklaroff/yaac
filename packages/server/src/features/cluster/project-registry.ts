@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
   LABEL_SESSION_ID,
+  PRIORITY_CLASS_INFRA,
   dataDirHash,
   execFileAsync,
   k8sNamespace,
@@ -169,6 +170,9 @@ export function buildProjectRegistryDeploymentManifest(
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
+          // Infra tier: the project's sessions pull their images from here,
+          // so evicting it to make room for a session is backwards.
+          priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
               name: 'registry',
@@ -390,6 +394,9 @@ function buildNodeWritePodManifest(
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
+      // Infra tier: it is pinned to one node (nodeName) and a session pod
+      // filling that node must not keep the registry wiring from landing.
+      priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
         name: 'write',
         image: imageRef,

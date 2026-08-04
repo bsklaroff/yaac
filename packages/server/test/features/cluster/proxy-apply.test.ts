@@ -308,6 +308,7 @@ describe('ensureProxyResources', () => {
             automountServiceAccountToken: boolean
             enableServiceLinks: boolean
             runtimeClassName?: string
+            priorityClassName?: string
             dnsPolicy?: string
             securityContext?: { runAsUser?: number; runAsGroup?: number; fsGroup?: number }
             volumes: Array<Record<string, unknown>>
@@ -337,6 +338,9 @@ describe('ensureProxyResources', () => {
     // Trusted infra runs on runc; DNS is the cluster default when top-level.
     expect(pod.runtimeClassName).toBeUndefined()
     expect(pod.dnsPolicy).toBeUndefined()
+    // Infra tier: losing the proxy costs every session its network, so it
+    // outranks sessions when a full node has to shed something.
+    expect(pod.priorityClassName).toBe('yaac-infra')
     expect(pod.serviceAccountName).toBe(PROXY_SA_NAME)
     expect(pod.automountServiceAccountToken).toBe(true)
     expect(pod.enableServiceLinks).toBe(false)
