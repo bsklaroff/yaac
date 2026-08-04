@@ -556,6 +556,70 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       expect(got).toEqual(hostPortFor)
     }, 30_000)
 
+    // The review pane's data. The pod-side script resolves the fork point and
+    // snapshots the worktree into an index of its own, so this is the only
+    // place the whole path — base resolution, committed + uncommitted staging,
+    // the completion marker — runs for real.
+    it('reports committed and uncommitted worktree changes on /session/:id/changes', async () => {
+      await execInJob(jobName, ['sh', '-c',
+        'cd /workspace && printf "committed\\n" > committed.txt'
+        + ' && git add committed.txt && git -c user.email=t@t -c user.name=t commit -qm "add committed.txt"'
+        + ' && printf "working\\n" > untracked.txt'
+        + ' && printf "\\nappended\\n" >> README.md',
+      ])
+
+      const res = await fetch(`${base}/session/${sessionId}/changes`, { headers: auth })
+      expect(res.status).toBe(200)
+      const body = await res.json() as {
+        base: string
+        baseResolved: boolean
+        files: Array<{ path: string; status: string; additions: number }>
+        diff: string
+        truncated: boolean
+      }
+
+      // A real fork point was found, so the committed file must be in the diff
+      // — collapsing the base to HEAD is what used to make committed work
+      // vanish and the pane claim "No changes".
+      expect(body.baseResolved).toBe(true)
+      expect(body.base).toMatch(/^[0-9a-f]{40}$/)
+      const byPath = new Map(body.files.map((f) => [f.path, f]))
+      expect(byPath.get('committed.txt')?.status).toBe('added')
+      expect(byPath.get('untracked.txt')?.status).toBe('added')
+      expect(byPath.get('README.md')?.status).toBe('modified')
+      expect(body.diff).toContain('+committed')
+      expect(body.diff).toContain('+working')
+      expect(body.truncated).toBe(false)
+
+      // The agent's own index and HEAD are untouched by our snapshot: the
+      // staged/committed state is exactly what the commit above left.
+      const { stdout: porcelain } = await execInJob(jobName, [
+        'sh', '-c', 'cd /workspace && git status --porcelain',
+      ])
+      expect(porcelain).toContain('?? untracked.txt')
+      expect(porcelain).toContain(' M README.md')
+      expect(porcelain).not.toContain('committed.txt') // committed, not left staged
+
+      // Polling must stay correct across runs — the index is reused, so a
+      // second call has to see a subsequent edit rather than a stale snapshot.
+      await execInJob(jobName, ['sh', '-c',
+        'cd /workspace && rm -f untracked.txt && printf "second\\n" > later.txt',
+      ])
+      const res2 = await fetch(`${base}/session/${sessionId}/changes`, { headers: auth })
+      expect(res2.status).toBe(200)
+      const body2 = await res2.json() as { files: Array<{ path: string }> }
+      const paths2 = body2.files.map((f) => f.path)
+      expect(paths2).toContain('later.txt')
+      expect(paths2).toContain('committed.txt')
+      expect(paths2).not.toContain('untracked.txt') // deletion picked up
+
+      // Leave the worktree as we found it — later tests read git state.
+      await execInJob(jobName, ['sh', '-c',
+        'cd /workspace && rm -f later.txt && git checkout -- README.md'
+        + ' && git reset -q --hard HEAD~1',
+      ])
+    }, 60_000)
+
     it('relay accepts sequential requests while the event loop stays responsive', async () => {
       // Regression: startPortForwarders needs the Node event loop to
       // accept TCP connections. A wedged event loop would let the first
