@@ -4,7 +4,12 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { listActiveSessions } from '#features/sessions/list'
 import { listDeletedSessions } from '#features/sessions/deleted-list'
-import { recordDeathSeen, setSessionBackground, setSessionTitle } from '#features/sessions/store'
+import {
+  recordAllDeathsSeen,
+  recordDeathSeen,
+  setSessionBackground,
+  setSessionTitle,
+} from '#features/sessions/store'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '#features/sessions/detail'
 import { deleteSession } from '#features/sessions/delete'
 import { restartSession } from '#features/sessions/restart'
@@ -154,6 +159,16 @@ export const sessionApp = new Hono()
     async (c) => {
       const { projectSlug, sessionId } = c.req.valid('json')
       await recordDeathSeen(projectSlug, sessionId)
+      return c.body(null, 204)
+    },
+  )
+  // The same acknowledgement for a whole project at once ("mark all as read"),
+  // so a burst of deaths doesn't have to be clicked through row by row.
+  .post(
+    '/mark-all-deaths-seen',
+    zv('json', z.object({ projectSlug: z.string().min(1) })),
+    async (c) => {
+      await recordAllDeathsSeen(c.req.valid('json').projectSlug)
       return c.body(null, 204)
     },
   )

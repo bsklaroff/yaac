@@ -237,6 +237,23 @@ export async function recordDeathSeen(projectSlug: string, sessionId: string): P
   }
 }
 
+/**
+ * Mark every recorded abnormal death in a project seen (the user dismissed
+ * the whole deleted-sessions notification at once). Scoped to rows that
+ * actually died, so it can't pre-acknowledge a death that hasn't happened.
+ */
+export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
+  try {
+    const db = await getDb()
+    await db.update(agentSessions).set({ deathSeen: true }).where(and(
+      eq(agentSessions.projectSlug, projectSlug),
+      isNotNull(agentSessions.deathReason),
+    ))
+  } catch {
+    // Non-fatal — a lost write just re-shows the dot.
+  }
+}
+
 /** Set (or, with a blank title, clear) a session's display title. */
 export async function setSessionTitle(
   projectSlug: string,

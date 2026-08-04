@@ -9,7 +9,7 @@ import {
   listSessionRows,
 } from '@yaac/server/features/sessions/store'
 
-describe('POST /session/mark-death-seen', () => {
+describe('session death read-marks', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -54,6 +54,39 @@ describe('POST /session/mark-death-seen', () => {
       // @ts-expect-error — sessionId is required
       json: { projectSlug: 'proj' },
     })
+    expect(res.status).toBe(400)
+  })
+
+  it('marks every death in the project seen at once, scoped to that project', async () => {
+    // Two deaths and a plain delete here, plus a death in another project that
+    // must be left alone.
+    await recordSessionCreated({ projectSlug: 'proj', sessionId: 'sid-1', tool: 'claude' })
+    await recordSessionCreated({ projectSlug: 'proj', sessionId: 'sid-2', tool: 'claude' })
+    await recordSessionCreated({ projectSlug: 'proj', sessionId: 'sid-3', tool: 'claude' })
+    await recordSessionCreated({ projectSlug: 'other', sessionId: 'sid-4', tool: 'claude' })
+    await recordSessionDeleted('proj', 'sid-1', { reason: 'oom' })
+    await recordSessionDeleted('proj', 'sid-2', { reason: 'evicted' })
+    await recordSessionDeleted('proj', 'sid-3') // user-initiated: never a death
+    await recordSessionDeleted('other', 'sid-4', { reason: 'crashed' })
+
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const res = await client.session['mark-all-deaths-seen'].$post({ json: { projectSlug: 'proj' } })
+    expect(res.status).toBe(204)
+
+    expect(await seen('sid-1')).toBe(true)
+    expect(await seen('sid-2')).toBe(true)
+    // A plain delete has no death to acknowledge, and the other project's death
+    // keeps flagging.
+    expect(await seen('sid-3')).toBe(false)
+    expect(
+      (await listSessionRows('other')).find((r) => r.sessionId === 'sid-4')?.deathSeen,
+    ).toBe(false)
+  })
+
+  it('rejects a mark-all with no project', async () => {
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    // @ts-expect-error — projectSlug is required
+    const res = await client.session['mark-all-deaths-seen'].$post({ json: {} })
     expect(res.status).toBe(400)
   })
 })

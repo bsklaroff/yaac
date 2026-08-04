@@ -6,12 +6,16 @@ import type { DeletedSessionEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
-vi.mock('#lib/deletedApi', () => ({ getDeletedSessions: vi.fn(), markDeathSeen: vi.fn() }))
+vi.mock('#lib/deletedApi', () => ({
+  getDeletedSessions: vi.fn(),
+  markDeathSeen: vi.fn(),
+  markAllDeathsSeen: vi.fn(),
+}))
 vi.mock('#lib/createSession', () => ({ restartSession: vi.fn() }))
 vi.mock('#lib/useProvisionSession', () => ({ useProvisionSession: () => provision }))
 
 import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
-import { getDeletedSessions, markDeathSeen } from '#lib/deletedApi'
+import { getDeletedSessions, markAllDeathsSeen, markDeathSeen } from '#lib/deletedApi'
 import { useUiStore } from '#store'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -43,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getDeletedSessions).mockResolvedValue(TWO)
   vi.mocked(markDeathSeen).mockResolvedValue(undefined)
+  vi.mocked(markAllDeathsSeen).mockResolvedValue(undefined)
 })
 
 afterEach(cleanup)
@@ -160,6 +165,33 @@ describe('DeletedSessionsButton', () => {
     fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
     await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
+  })
+
+  it('clears every death at once from the overlay header', async () => {
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's1', title: 'Plain delete' }),
+      entry({ sessionId: 's3', title: 'OOMed run', deathReason: 'oom' }),
+      entry({ sessionId: 's4', title: 'Evicted run', deathReason: 'evicted' }),
+    ])
+    await open() // top row is the plain delete → both deaths stay unseen
+    expect(await screen.findByTitle('2 sessions died unexpectedly')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark all as read' }))
+    await waitFor(() => expect(markAllDeathsSeen).toHaveBeenCalledWith('proj'))
+    // Optimistic patch: the dot clears without a refetch, and with nothing left
+    // unread the button itself goes away.
+    await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Mark all as read' })).toBeNull()
+    // Selecting a row that is already marked doesn't re-post a per-row ack.
+    fireEvent.click(screen.getAllByText('OOMed run')[0])
+    await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
+    expect(markDeathSeen).not.toHaveBeenCalled()
+  })
+
+  it('offers no mark-all when every deletion was user-initiated', async () => {
+    await open() // TWO are plain deletes (no deathReason)
+    await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Mark all as read' })).toBeNull()
   })
 
   it('labels a plain delete as Deleted with no Cause row', async () => {

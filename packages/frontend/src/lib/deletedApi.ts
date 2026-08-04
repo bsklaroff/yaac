@@ -39,3 +39,16 @@ export async function markDeathSeen(projectSlug: string, sessionId: string): Pro
     // clears again. Swallow so fire-and-forget callers need no .catch.
   }
 }
+
+/**
+ * Mark every abnormal death in the project seen at once — the overlay's
+ * "Mark all as read". Same durability and best-effort semantics as
+ * `markDeathSeen`; a lost write just re-shows the dot.
+ */
+export async function markAllDeathsSeen(projectSlug: string): Promise<void> {
+  try {
+    await api.session['mark-all-deaths-seen'].$post({ json: { projectSlug } })
+  } catch {
+    // Best-effort — see markDeathSeen.
+  }
+}

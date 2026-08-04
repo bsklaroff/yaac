@@ -6,7 +6,7 @@ import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { restartSession } from '#lib/createSession'
-import { getDeletedSessions, markDeathSeen } from '#lib/deletedApi'
+import { getDeletedSessions, markAllDeathsSeen, markDeathSeen } from '#lib/deletedApi'
 import { useProvisionSession } from '#lib/useProvisionSession'
 import { isUnseenDeath, useUiStore } from '#store'
 import { describeSessionDeathReason } from '@yaac/shared/death-reason'
@@ -125,6 +125,17 @@ export function DeletedSessionsButton({
     )
   }, [open, selected, projectSlug, queryClient])
 
+  // Dismiss every death at once. Same server-persisted acknowledgement the
+  // per-row view makes, with the same optimistic cache patch so the dot and
+  // row highlights clear without waiting for a refetch.
+  const onMarkAllRead = (): void => {
+    void markAllDeathsSeen(projectSlug)
+    queryClient.setQueriesData<DeletedSessionEntry[]>(
+      { queryKey: ['deleted', projectSlug] },
+      (old) => old?.map((e) => (e.deathReason ? { ...e, seen: true } : e)),
+    )
+  }
+
   const onConfirmRestart = (entry: DeletedSessionEntry): void => {
     setConfirm(null)
     setRestarting((r) => [...r, entry.sessionId])
@@ -170,14 +181,27 @@ export function DeletedSessionsButton({
           data-[ending-style]:opacity-0">
           <div className="flex items-center justify-between">
             <Dialog.Title className="text-xs font-semibold text-text-dim">Deleted sessions</Dialog.Title>
-            <Dialog.Close
-              title="Close"
-              aria-label="Close"
-              className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text"
-            >
-              <CloseIcon size={14} />
-            </Dialog.Close>
+            <div className="flex items-center gap-2">
+              {/* Only offered when there is something unread to clear. */}
+              {unseenDeaths > 0 && (
+                <button
+                  type="button"
+                  onClick={onMarkAllRead}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-text-faint transition
+                    hover:bg-surface-2 hover:text-text"
+                >
+                  Mark all as read
+                </button>
+              )}
+              <Dialog.Close
+                title="Close"
+                aria-label="Close"
+                className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <CloseIcon size={14} />
+              </Dialog.Close>
+            </div>
           </div>
 
           {merged.length === 0 ? (
