@@ -1,15 +1,16 @@
 import { isPrewarmed, listSessionPods, type TickSnapshot } from '#platform/k8s'
-import { classifySessionPods } from '#features/sessions/classify'
-import { probeTmuxLiveness } from '#features/sessions/cleanup'
-import { readAllWorktreeLinks, type AgentSessionLink } from '#features/sessions/agent-links'
+import { classifySessionPods, liveAgentPanes, probeTmuxLiveness } from '#features/status'
+import {
+  normalizeTool,
+  readAllWorktreeLinks,
+  sessionTranscriptPath,
+  type AgentSessionLink,
+} from '#features/agents'
 import {
   recordAgentSessions,
   setActiveAgentSessions,
   type DiscoveredAgentSession,
-} from '#features/sessions/agent-session-store'
-import { liveAgentPanes } from '#features/sessions/status-store'
-import { normalizeTool } from '#features/sessions/state'
-import { sessionTranscriptPath } from '#features/sessions/transcripts'
+} from './agent-session-store'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
 

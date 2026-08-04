@@ -1,6 +1,5 @@
-import { listActiveSessions } from '#features/sessions/list'
+import { listActiveSessions, listProvisioning } from '#features/sessions'
 import { listProjects } from '#features/projects'
-import { listProvisioning } from '#features/sessions/provisioning'
 import { listImageBuilds } from '#features/images'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
 import { serverLog } from '#log'

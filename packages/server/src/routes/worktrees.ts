@@ -2,35 +2,38 @@ import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { listActiveSessions } from '#features/sessions/list'
-import { listStoppedWorktrees } from '#features/sessions/stopped-list'
 import {
+  createSession,
+  getSessionBlockedHosts,
+  getSessionChanges,
+  getSessionDetail,
+  getSessionPrompt,
+  listActiveSessions,
+  listStoppedWorktrees,
+  listWorktreeAgentSessions,
+  notifySessionListChanged,
   recordAllDeathsSeen,
   recordDeathSeen,
+  registerProvisioning,
+  removeProvisioning,
+  resolveSessionContainer,
+  resolveWorktreeRecord,
+  restartWorktree,
+  sessionForkBranch,
   setWorktreeBackground,
   setWorktreeTitle,
-} from '#features/sessions/worktree-store'
-import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '#features/sessions/detail'
-import { stopWorktree } from '#features/sessions/stop'
-import { restartWorktree } from '#features/sessions/restart'
-import { createSession, type SessionCreateOptions } from '#features/sessions/create'
-import { typeInitialPrompt, MODEL_RE } from '#features/sessions/agent-command'
+  stopWorktree,
+  toAgentSessionEntry,
+  type SessionCreateOptions,
+} from '#features/sessions'
+import { typeInitialPrompt, MODEL_RE } from '#features/agents'
 import { tryClaimPrewarmed } from '#features/images'
 import { getDefaultTool } from '#features/projects'
-import { registerProvisioning, removeProvisioning } from '#features/sessions/provisioning'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
-import { allowSessionHost } from '#features/sessions/egress/allow-host'
-import { forwardSessionPort } from '#features/sessions/forwarders/forward-port'
-import { dismissSessionPort } from '#features/sessions/forwarders/port-detector'
-import { resolveSessionContainer, resolveWorktreeRecord } from '#features/sessions/resolve'
-import { notifySessionListChanged } from '#features/sessions/notify'
+import { allowSessionHost } from '#features/egress'
+import { dismissSessionPort, forwardSessionPort } from '#features/forwarders'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals'
-import { getSessionChanges, sessionForkBranch } from '#features/sessions/changes'
-import {
-  listWorktreeAgentSessions,
-  toAgentSessionEntry,
-} from '#features/sessions/agent-session-store'
 
 export const worktreeApp = new Hono()
   .get(

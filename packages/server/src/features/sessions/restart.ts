@@ -1,12 +1,13 @@
 import { findSessionPod, listSessionPods } from '#platform/k8s'
-import { cleanupSession } from '#features/sessions/cleanup'
-import { clearWorktreeStopped, findWorktreeRow } from '#features/sessions/worktree-store'
+import { cleanupSession } from './cleanup'
+import { clearWorktreeStopped, findWorktreeRow } from './worktree-store'
 import {
   firstAgentSession,
   listActiveAgentSessions,
-} from '#features/sessions/agent-session-store'
-import { clearSessionTerminating, normalizeTool } from '#features/sessions/state'
-import { createSession, type SessionCreateResult } from '#features/sessions/create'
+} from './agent-session-store'
+import { normalizeTool } from '#features/agents'
+import { clearSessionTerminating } from '#features/status'
+import { createSession, type SessionCreateResult } from './create'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
 

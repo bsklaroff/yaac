@@ -20,7 +20,7 @@ import { listProjects, resolveProjectConfig } from '#features/projects'
 import { resolveImageChain } from './image-builder'
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { forgetImageBuild, getImageBuild, hasBlockingFailure } from './image-builds'
-import { proxyClient } from '#features/sessions/egress/proxy-client'
+import { proxyClient } from '#features/egress'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 

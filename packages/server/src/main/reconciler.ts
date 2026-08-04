@@ -1,15 +1,24 @@
-import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
-import { captureSessionPrompts } from '#features/sessions/prompt-capture'
-import { reconcileAgentSessions } from '#features/sessions/agent-session-registry'
-import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reconcile'
-import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
-import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'
-import { reconcileVclusters } from '#features/sessions/reconcile/vcluster-reconcile'
-import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, reconcilePrewarmPool } from '#features/images'
-import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
-import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
+import {
+  captureSessionPrompts,
+  reconcileAgentSessions,
+  reconcileImageSalvage,
+  reconcileSpawnRequests,
+  reconcileStaleSessions,
+} from '#features/sessions'
+import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
+import {
+  reconcileProjectRegistryGc,
+  reconcileRedirectClaims,
+  reconcileVclusters,
+} from '#features/cluster'
+import {
+  reconcileBuildCacheGc,
+  reconcileBuilderPodGc,
+  reconcileHostImageGc,
+  reconcileImagePrewarm,
+  reconcilePrewarmPool,
+} from '#features/images'
 import { reconcileGeneratedTitles } from '#features/titles'
-import { reconcileProjectRegistryGc } from '#features/cluster'
 import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
 import { serverLog } from '#log'
 

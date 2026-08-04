@@ -8,8 +8,7 @@
  */
 import { type TickSnapshot, listSessionPods } from '#platform/k8s'
 import { getDefaultTool } from '#features/projects'
-import { cleanupSessionDetached } from '#features/sessions/cleanup'
-import { createSession } from '#features/sessions/create'
+import { cleanupSessionDetached, createSession } from '#features/sessions'
 import {
   claiming,
   computePrewarmPlan,

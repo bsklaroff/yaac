@@ -10,10 +10,8 @@
  * `attempted` set covers in-flight dedup, failure memory, and
  * don't-regenerate after a user deliberately clears a generated title.
  */
-import { listActiveSessions } from '#features/sessions/list'
-import { setWorktreeTitle } from '#features/sessions/worktree-store'
+import { listActiveSessions, notifySessionListChanged, setWorktreeTitle } from '#features/sessions'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
-import { notifySessionListChanged } from '#features/sessions/notify'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 

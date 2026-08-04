@@ -1,10 +1,10 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions } from '#platform/db'
-import { MAX_PROMPT_LENGTH } from '#features/sessions/worktree-store'
+import { MAX_PROMPT_LENGTH } from './worktree-store'
 import {
   fromStoredTranscriptPath,
   toStoredTranscriptPath,
-} from '#features/sessions/transcripts'
+} from '#features/agents'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 

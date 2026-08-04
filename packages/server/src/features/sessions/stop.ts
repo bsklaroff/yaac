@@ -1,5 +1,5 @@
 import { findSessionPod, listSessionJobs, listSessionPods } from '#platform/k8s'
-import { cleanupSessionDetached } from '#features/sessions/cleanup'
+import { cleanupSessionDetached } from './cleanup'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface StoppedWorktreeInfo {

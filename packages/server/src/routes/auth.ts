@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { authAgentHub, clearAuth, listAuth, requestPlanUsageRefresh } from '#features/auth'
 import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#features/projects'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
-import { proxyClient } from '#features/sessions/egress/proxy-client'
+import { proxyClient } from '#features/egress'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
 const httpsCredentialSchema = z.object({

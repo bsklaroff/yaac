@@ -12,7 +12,7 @@ import {
   TEST_PROXY_CONFIG,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { ProxyClient } from '@yaac/server/features/egress/proxy-client'
 
 const execFileAsync = promisify(execFile)
 

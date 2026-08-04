@@ -109,7 +109,7 @@ conversation whose transcript is outside the home, or not yet written, is
 recorded with an empty body: the conversation is still real, only its path is
 unknown.
 
-`features/sessions/agent-links.ts` also reads the tree an older hook wrote,
+`features/agents/agent-links.ts` also reads the tree an older hook wrote,
 where a `sessions/` entry was a symlink named `<agentSessionId>.jsonl` pointing
 at the transcript. Those trees are on disk for every worktree that ran before
 the record format, and a pod launched from an older image keeps writing them
@@ -163,7 +163,7 @@ dir, so an absolute path would pin every row to the directory that wrote it,
 and moving a data dir (a restored backup, a changed `YAAC_DATA_DIR`) would
 strand all of them silently, since the readers only ever stat these paths.
 `toStoredTranscriptPath` / `fromStoredTranscriptPath` in
-`features/sessions/transcripts.ts` are the only place the two forms meet: the
+`features/agents/transcripts.ts` are the only place the two forms meet: the
 store encodes on write and decodes in the single projection every reader comes
 through, so nothing else sees anything but an absolute path. Encoding can fail
 where decoding cannot — a transcript outside the home has no relative form, and
@@ -184,7 +184,7 @@ through that link.
 
 The `session-prompts` reconcile step does this once per conversation, so a
 settled worktree costs one indexed read and no I/O. Where the transcripts live per tool
-is `features/sessions/transcripts.ts`. A worktree that died before capture
+is `features/agents/transcripts.ts`. A worktree that died before capture
 parses its first conversation's transcript on demand from the stopped listing,
 and the result is persisted.
 

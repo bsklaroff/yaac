@@ -20,7 +20,7 @@ import {
   isValidTool,
   setFlag,
 } from '#features/projects'
-import { MAX_PROMPT_LENGTH } from '#features/sessions/worktree-store'
+import { MAX_PROMPT_LENGTH } from '#features/sessions'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool } from '@yaac/shared/types'
 import { worktreeUpstreamBranch } from '#platform/git'
@@ -30,7 +30,7 @@ import {
   rehomeTranscriptPath,
   scanProjectTranscripts,
   toStoredTranscriptPath,
-} from '#features/sessions/transcripts'
+} from '#features/agents'
 import { serverLog } from '#log'
 import { getProjectsDir, serverLocalPath } from '@yaac/shared/paths'
 import { projectDir } from '@yaac/shared/project-paths'

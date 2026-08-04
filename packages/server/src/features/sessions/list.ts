@@ -9,23 +9,24 @@ import {
   triggerDeferredClusterBoot,
 } from '#platform/k8s'
 import { projectDir } from '@yaac/shared/project-paths'
-import { normalizeTool, pruneTerminating } from '#features/sessions/state'
-import { getProjectWorktreeRows, type WorktreeRow } from '#features/sessions/worktree-store'
+import { normalizeTool } from '#features/agents'
+import { getProjectWorktreeRows, type WorktreeRow } from './worktree-store'
 import {
+  classifySessionPods,
+  pruneTerminating,
   readPaneStatus,
   readSessionStatus,
   readSessionWaitingSince,
-} from '#features/sessions/status-store'
+  watcherDisplayLiveness,
+} from '#features/status'
 import {
   getProjectAgentSessions,
   toAgentSessionEntry,
   type AgentSessionLinkRow,
-} from '#features/sessions/agent-session-store'
-import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
-import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
-import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
+} from './agent-session-store'
+import { getSessionPorts, getUnforwardedPorts } from '#features/forwarders'
+import { readBlockedHosts } from '#features/egress'
 import { readAllGitAuthFailures } from '#features/projects'
-import { classifySessionPods, watcherDisplayLiveness } from '#features/sessions/classify'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import { formatUtcTimestamp } from '@yaac/shared/time'

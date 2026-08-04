@@ -70,7 +70,7 @@ vi.mock('#commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/features/sessions/egress/proxy-client', () => ({
+vi.mock('@yaac/server/features/egress/proxy-client', () => ({
   proxyClient: {
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),
@@ -84,7 +84,7 @@ vi.mock('@yaac/server/features/sessions/egress/proxy-client', () => ({
   // (a partial object value is not assignable to the full property type).
 }))
 
-vi.mock('@yaac/server/features/sessions/egress/default-allowed-hosts', async (importOriginal) => {
+vi.mock('@yaac/server/features/egress/default-allowed-hosts', async (importOriginal) => {
   const actual = await importOriginal<typeof allowedHostsModule>()
   return {
     ...actual,
@@ -197,15 +197,15 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/features/sessions/agents/codex', () => ({
+vi.mock('@yaac/server/features/agents/codex', () => ({
   removeLegacyCodexHook: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof codexAgentModule>))
 
-vi.mock('@yaac/server/features/sessions/agents/opencode', () => ({
+vi.mock('@yaac/server/features/agents/opencode', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof opencodeAgentModule>))
 
-vi.mock('@yaac/server/features/sessions/forwarders/port-forwarders', () => ({
+vi.mock('@yaac/server/features/forwarders/port-forwarders', () => ({
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
   registerSessionForwarders: vi.fn(),
   stopSessionForwarders: vi.fn(),
@@ -247,7 +247,7 @@ import {
   setWorktreeBaseBranch,
 } from '@yaac/server/features/sessions/worktree-store'
 import { recordAgentSessions } from '@yaac/server/features/sessions/agent-session-store'
-import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/sessions/agent-command'
+import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/agents/agent-command'
 import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
 import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
@@ -255,18 +255,18 @@ import { ensureImage, pushImageShared } from '@yaac/server/features/images/build
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import { containerExec } from '@yaac/server/platform/k8s/exec'
 import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
-import { proxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { proxyClient } from '@yaac/server/features/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/features/projects/config'
 import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/features/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
-import { resolveAllowedHosts } from '@yaac/server/features/sessions/egress/default-allowed-hosts'
+import { resolveAllowedHosts } from '@yaac/server/features/egress/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
 import { relayTcpFactory, sessionExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
 import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
-import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/sessions/forwarders/port-forwarders'
+import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/forwarders/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -1172,10 +1172,10 @@ describe('resolveInitWindows', () => {
   })
 })
 
-import type * as allowedHostsModule from '@yaac/server/features/sessions/egress/default-allowed-hosts'
+import type * as allowedHostsModule from '@yaac/server/features/egress/default-allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
-import type * as codexAgentModule from '@yaac/server/features/sessions/agents/codex'
-import type * as opencodeAgentModule from '@yaac/server/features/sessions/agents/opencode'
+import type * as codexAgentModule from '@yaac/server/features/agents/codex'
+import type * as opencodeAgentModule from '@yaac/server/features/agents/opencode'
 import type * as runtimeModule from '@yaac/server/platform/container/runtime'
 import type * as imageBuilderModule from '@yaac/server/features/images/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/features/images/build-coordinator'
@@ -1185,7 +1185,7 @@ import type * as portModule from '@yaac/server/platform/container/port'
 import type * as projectConfigModule from '@yaac/server/features/projects/config'
 import type * as credentialsModule from '@yaac/server/features/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
-import type * as portForwardersModule from '@yaac/server/features/sessions/forwarders/port-forwarders'
+import type * as portForwardersModule from '@yaac/server/features/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/features/sessions/worktree-store'
 import type * as agentStoreModule from '@yaac/server/features/sessions/agent-session-store'
 import type * as cleanupModule from '@yaac/server/features/sessions/cleanup'

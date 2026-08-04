@@ -43,6 +43,7 @@ export {
   vclusterSleepSliceName,
 } from './activator'
 export { formatCheckResult, runClusterCheck } from './check'
+export { reconcileRedirectClaims } from './redirect-claim-reconcile'
 export { ClusterDeleteError, runClusterDelete } from './delete'
 export { buildEgressWorldDenyNpManifest } from './policy-manifests'
 export {
@@ -90,3 +91,4 @@ export {
   waitForVclusterKubeconfig,
 } from './vcluster'
 export type { VclusterStatus } from './vcluster'
+export { reconcileVclusters } from './vcluster-reconcile'

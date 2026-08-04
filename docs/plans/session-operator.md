@@ -268,7 +268,7 @@ yaac controller reconciles a `Session` into:
    per-session vcluster namespace (`features/cluster/vcluster.ts`), the
    per-project registry (`features/cluster/project-registry.ts`), the
    inner-redirect/attribution CEC+CNP projections
-   (`features/sessions/reconcile/*`), and image salvage
+   (the reconcile steps behind `#features/sessions`), and image salvage
    (`features/images/image-promoter.ts`).
 
 This deletes most of Phases 1–2's generic machinery (pod lifecycle, TTL,

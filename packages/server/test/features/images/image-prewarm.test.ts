@@ -13,7 +13,7 @@ vi.mock('#features/images/build-coordinator', () => ({
 // unbound-method rule). image-builds itself is the real in-memory registry so
 // retry's forget/re-fire behavior is exercised end-to-end.
 const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn().mockResolvedValue(undefined) }))
-vi.mock('#features/sessions/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
+vi.mock('#features/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {

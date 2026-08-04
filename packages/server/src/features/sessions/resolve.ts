@@ -1,5 +1,5 @@
 import { findSessionPod, getActiveClusterCache, listSessionPods, type SessionPod } from '#platform/k8s'
-import { findWorktreeRow } from '#features/sessions/worktree-store'
+import { findWorktreeRow } from './worktree-store'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedSession {

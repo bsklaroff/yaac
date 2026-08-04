@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { stream } from 'hono/streaming'
-import { runProvisioned } from '#features/sessions/provisioning'
+import { runProvisioned } from '#features/sessions'
 import { toErrorBody } from '#http'
 
 /**
