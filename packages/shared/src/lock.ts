@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir } from '#paths'
+import { serverLocalPath } from '#paths'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
 
+/** SERVER-LOCAL: the lock is 1:1 with the server process. */
 export function serverLockPath(): string {
-  return path.join(getDataDir(), SERVER_LOCK_FILENAME)
+  return serverLocalPath(SERVER_LOCK_FILENAME)
 }
 
 export async function readLock(): Promise<ServerLock | null> {

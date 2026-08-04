@@ -25,7 +25,7 @@ import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { scanProjectTranscripts } from '#features/sessions/transcripts'
 import { serverLog } from '#log'
-import { getDataDir, getProjectsDir } from '@yaac/shared/paths'
+import { getProjectsDir, serverLocalPath } from '@yaac/shared/paths'
 import { projectDir } from '@yaac/shared/project-paths'
 
 /**
@@ -49,7 +49,7 @@ import { projectDir } from '@yaac/shared/project-paths'
  */
 
 function legacyPreferencesPath(): string {
-  return path.join(getDataDir(), '.preferences.json')
+  return serverLocalPath('.preferences.json')
 }
 
 function legacySessionTitlesPath(slug: string): string {
@@ -61,7 +61,7 @@ function legacyOpencodeMetaDir(slug: string): string {
 }
 
 function legacyTokensPath(): string {
-  return path.join(getDataDir(), 'tokens.json')
+  return serverLocalPath('tokens.json')
 }
 
 async function readIfExists(p: string): Promise<string | null> {

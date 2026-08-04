@@ -4,7 +4,7 @@ import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import type { PGlite } from '@electric-sql/pglite'
 import { env } from '@yaac/shared/env'
-import { getDataDir, PACKAGE_ROOT } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 
 /**
  * The server's on-disk PGlite database (embedded Postgres, WAL-backed).
@@ -31,8 +31,12 @@ const MIGRATIONS_DIR = env.bundled
 
 let cached: { dir: string; promise: Promise<Db> } | null = null
 
+/**
+ * SERVER-LOCAL, hard requirement: pglite is an embedded single-writer
+ * store and must never live on a network filesystem.
+ */
 function dbDir(): string {
-  return path.join(getDataDir(), 'db')
+  return serverLocalPath('db')
 }
 
 async function openDb(dir: string, prev: Promise<Db> | null): Promise<Db> {

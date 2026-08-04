@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { type SessionPod, listSessionPods } from '#platform/k8s'
 import { removeProjectRegistry } from '#features/cluster'
-import { projectDir } from '@yaac/shared/project-paths'
+import { projectDir, projectRoots } from '@yaac/shared/project-paths'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { deleteProjectWorktrees } from '#features/sessions/worktree-store'
 import { deleteProjectAgentSessions } from '#features/sessions/agent-session-store'
@@ -55,5 +55,11 @@ export async function removeProject(slug: string): Promise<void> {
   await deleteProjectWorktrees(slug)
   await deleteProjectAgentSessions(slug)
 
-  await fs.rm(dir, { recursive: true, force: true })
+  // Both tier roots: the project's node-local tree (the pnpm store and
+  // opencode data) is not under `dir` once the tiers are separate volumes,
+  // and nothing else would ever reclaim it — the orphan GC sweeps sessions
+  // within a project, not a project whose record is gone. One rm today.
+  for (const root of projectRoots(slug)) {
+    await fs.rm(root, { recursive: true, force: true })
+  }
 }

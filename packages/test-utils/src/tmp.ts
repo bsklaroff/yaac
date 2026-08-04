@@ -7,9 +7,17 @@ import path from 'node:path'
  * stores). These get hostPath-mounted into pods, so the path must exist
  * identically on the pod's node.
  *
+ * That makes the whole base SHARED-tier by contract (the tier legend lives
+ * in packages/shared/src/paths.ts): a test data dir created under it holds
+ * all three tiers of a yaac install, and the shared one is the binding
+ * constraint. It is picked here rather than from `sharedRoot()` because
+ * the base is chosen BEFORE any data dir exists, from the ambient
+ * environment — the test process's own data dir is a temp dir under it.
+ *
  * On a host that's `os.tmpdir()` (OS-cleaned, `TMPDIR`-respecting —
  * subject to the kind extraMount note in CLAUDE.md). Inside a nested
- * yaac session it is NOT: `/tmp` (and `$HOME`) are the inner pod's
+ * yaac session it is NOT (`nestedYaacDataDir`, itself SHARED-tier in the
+ * outer install): `/tmp` (and `$HOME`) are the inner pod's
  * overlay filesystem, invisible to the node, so a `/tmp/...` hostPath
  * can never be satisfied and pods hang Pending. The nested data dir
  * (`$YAAC_DATA_DIR`) is a node-shared virtiofs mount at the same

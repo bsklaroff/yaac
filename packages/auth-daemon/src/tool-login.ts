@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
-import { ensureDataDir, getDataDir } from '@yaac/shared/project-paths'
+import { ensureDataDir, serverLocalRoot } from '@yaac/shared/project-paths'
 import { persistToolLogin } from '@yaac/shared/tool-auth'
 import {
   claudeKeychainService,
@@ -214,8 +214,12 @@ export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Pro
 
   // Scratch config homes live under the data dir, not /tmp — codex refuses
   // to set up its helper binaries under a temp dir and warns loudly.
+  // SERVER-LOCAL, and mkdtemp does not create parents: `ensureDataDir()`
+  // only makes the shared projects tree, so this root needs its own mkdir
+  // for the day the two are different volumes.
   await ensureDataDir()
-  const scratchDir = await fs.mkdtemp(path.join(getDataDir(), 'login-'))
+  await fs.mkdir(serverLocalRoot(), { recursive: true })
+  const scratchDir = await fs.mkdtemp(path.join(serverLocalRoot(), 'login-'))
   const s = registry.create(
     { id: id ?? crypto.randomUUID(), tool, status: 'running' },
     'Sign-in timed out after 15 minutes.',

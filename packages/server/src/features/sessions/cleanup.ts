@@ -23,10 +23,12 @@ import {
 } from '#features/cluster'
 import {
   cachedPackagesDir,
-  projectDir,
-  sessionDir,
+  projectsRoots,
+  sessionRoots,
+  sessionsRoots,
 } from '@yaac/shared/project-paths'
-import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@yaac/shared/paths'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { shellQuote } from '#platform/shell'
 import type { SessionDeathCause } from '@yaac/shared/types'
 import { stopSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
 import { serverLog } from '#log'
@@ -319,13 +321,12 @@ export async function cleanupSession(params: {
     force: true,
   })
 
-  // Remove the per-session dir (tmux socket dir, vcluster kubeconfig,
+  // Remove the per-session dirs (tmux socket dir, vcluster kubeconfig,
   // nested-yaac data). The pod is gone; the hostPath-mount sources are
   // garbage now.
-  await fs.rm(sessionDir(projectSlug, sessionId), {
-    recursive: true,
-    force: true,
-  })
+  for (const dir of sessionRoots(projectSlug, sessionId)) {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 
   console.log(`Session ${sessionId} cleaned up.`)
 }
@@ -381,10 +382,11 @@ export async function cleanupSessionDetached(params: {
   await removeSessionFromProxy(sessionId)
 
   const modulesDir = sessionModulesDir(projectSlug, sessionId)
-  const ephemeralModulesRm = `rm -rf '${modulesDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
+  const ephemeralModulesRm = `rm -rf ${shellQuote(modulesDir)} 2>/dev/null || true`
 
-  const sessDir = sessionDir(projectSlug, sessionId)
-  const sessionDirRm = `rm -rf '${sessDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
+  const sessionDirRms = sessionRoots(projectSlug, sessionId).map(
+    (dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`,
+  )
 
   const script = [
     `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
@@ -392,7 +394,7 @@ export async function cleanupSessionDetached(params: {
     // sessions no-op (every line carries --ignore-not-found + `|| true`).
     buildVclusterCleanupShellCommand(vclusterName(sessionId)),
     ephemeralModulesRm,
-    sessionDirRm,
+    ...sessionDirRms,
   ].join('; ')
 
   const spawnDetachedTeardown = (): void => {
@@ -436,12 +438,14 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     return
   }
 
-  let projectSlugs: string[]
-  try {
-    projectSlugs = await fs.readdir(getProjectsDir())
-  } catch {
-    return
-  }
+  // Slugs from BOTH roots: a project whose shared half is already gone can
+  // still have a node-local tree (pnpm store, opencode data) to sweep, and
+  // enumerating only the shared root would never generate its slug.
+  const slugLists = await Promise.all(
+    projectsRoots().map((root) => fs.readdir(root).catch((): string[] => [])),
+  )
+  const projectSlugs = [...new Set(slugLists.flat())]
+  if (!projectSlugs.length) return
 
   for (const slug of projectSlugs) {
     const modulesRoot = path.join(cachedPackagesDir(slug), 'modules')
@@ -460,22 +464,25 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
       }
     }
 
-    // Per-session tmux bind-mount dirs live under <projectDir>/sessions/<sid>/tmux.
-    // The parent `sessions/` dir is unique to this feature, so a flat
-    // readdir of `sessions/` gives us the session id list directly.
-    const sessionsRoot = path.join(projectDir(slug), 'sessions')
-    let sessionEntries: string[] = []
-    try {
-      sessionEntries = await fs.readdir(sessionsRoot)
-    } catch { /* missing sessions dir → nothing to sweep there */ }
-    for (const sid of sessionEntries) {
-      if (liveSessionIds.has(sid)) continue
-      const dir = path.join(sessionsRoot, sid)
+    // Per-session dirs live under `<slug>/sessions/<sid>` on both roots —
+    // shared (vcluster kubeconfig, nested-yaac data, staged skills) and
+    // node-local (the tmux socket dir); `sessionsRoots` owns that pairing
+    // and collapses to one entry today. The `sessions/` dir is unique to
+    // this feature, so a flat readdir gives the session id list directly.
+    for (const sessionsRoot of sessionsRoots(slug)) {
+      let sessionEntries: string[] = []
       try {
-        await fs.rm(dir, { recursive: true, force: true })
-        console.log(`Removed orphan session dir ${dir}`)
-      } catch (err) {
-        console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
+        sessionEntries = await fs.readdir(sessionsRoot)
+      } catch { /* missing sessions dir → nothing to sweep there */ }
+      for (const sid of sessionEntries) {
+        if (liveSessionIds.has(sid)) continue
+        const dir = path.join(sessionsRoot, sid)
+        try {
+          await fs.rm(dir, { recursive: true, force: true })
+          console.log(`Removed orphan session dir ${dir}`)
+        } catch (err) {
+          console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
+        }
       }
     }
   }

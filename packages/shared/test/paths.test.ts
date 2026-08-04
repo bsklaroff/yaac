@@ -27,6 +27,24 @@ import {
   NETD_DIR,
   CALICO_DIR,
   calicoManifestCachePath,
+  sharedRoot,
+  nodeLocalRoot,
+  serverLocalRoot,
+  sharedPath,
+  sharedProjectPath,
+  nodeLocalProjectPath,
+  serverLocalPath,
+  nodeLocalSessionDir,
+  sessionRoots,
+  sessionsRoots,
+  projectRoots,
+  projectsRoots,
+  sessionDir,
+  sessionTmuxDir,
+  sessionVclusterDir,
+  nestedYaacDataDir,
+  opencodeDataDir,
+  cacheVolumeDir,
 } from '#project-paths'
 import { serverLogPath, expandTilde, findRepoRoot } from '#paths'
 
@@ -159,6 +177,60 @@ describe('paths', () => {
     const pin = await fs.readFile(path.join(CALICO_DIR, 'calico.yaml.sha256'), 'utf8')
     expect(pin.trim()).toMatch(/^[0-9a-f]{64}\b/)
     await expect(fs.stat(path.join(CALICO_DIR, 'calico.yaml'))).rejects.toThrow()
+  })
+})
+
+describe('storage tiers', () => {
+  afterEach(() => {
+    setDataDir('/tmp/yaac-path-test')
+  })
+
+  it('resolves all three roots to the one data dir (single-node backend)', () => {
+    setDataDir('/tmp/yaac-test')
+    expect(sharedRoot()).toBe('/tmp/yaac-test')
+    expect(nodeLocalRoot()).toBe('/tmp/yaac-test')
+    expect(serverLocalRoot()).toBe('/tmp/yaac-test')
+  })
+
+  it('joins per tier', () => {
+    setDataDir('/tmp/yaac-test')
+    expect(sharedPath('.credentials')).toBe('/tmp/yaac-test/.credentials')
+    expect(sharedProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
+    expect(nodeLocalProjectPath('my-repo', 'opencode-data', 'abc123'))
+      .toBe('/tmp/yaac-test/projects/my-repo/opencode-data/abc123')
+    expect(serverLocalPath('db')).toBe('/tmp/yaac-test/db')
+  })
+
+  // The node-local tier is where a re-rooting would show up first, and the
+  // paths below are also what a session pod mounts today — freeze them so
+  // classifying a dir can never move it by accident.
+  it('keeps node-local session paths where the single-node backend puts them', () => {
+    setDataDir('/tmp/yaac-test')
+    const proj = '/tmp/yaac-test/projects/my-repo'
+    expect(cachedPackagesDir('my-repo')).toBe(`${proj}/.cached-packages`)
+    expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${proj}/opencode-data/abc123`)
+    expect(nodeLocalSessionDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123`)
+    expect(sessionTmuxDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123/tmux`)
+  })
+
+  it('pairs both roots for whole-session, whole-project, and all-project sweeps', () => {
+    setDataDir('/tmp/yaac-test')
+    // One entry each while the tiers coincide — the dedup is what keeps
+    // cleanup from rm-ing (and the GC from reading) the same dir twice.
+    expect(sessionRoots('my-repo', 'abc123'))
+      .toEqual(['/tmp/yaac-test/projects/my-repo/sessions/abc123'])
+    expect(sessionsRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo/sessions'])
+    expect(projectRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo'])
+    expect(projectsRoots()).toEqual(['/tmp/yaac-test/projects'])
+  })
+
+  it('keeps the shared half of a session dir beside the node-local half', () => {
+    setDataDir('/tmp/yaac-test')
+    const sess = '/tmp/yaac-test/projects/my-repo/sessions/abc123'
+    expect(sessionDir('my-repo', 'abc123')).toBe(sess)
+    expect(sessionVclusterDir('my-repo', 'abc123')).toBe(`${sess}/vcluster`)
+    expect(nestedYaacDataDir('my-repo', 'abc123')).toBe(`${sess}/nested-yaac`)
+    expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/projects/my-repo/cache-volumes/pnpm')
   })
 })
 

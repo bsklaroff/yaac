@@ -1,6 +1,9 @@
 import { exec, execFile } from 'node:child_process'
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
+// Install IDENTITY, not storage — the label hash must stay stable when
+// the storage tiers split (see dataDirHash below).
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
 import { triggerDeferredClusterBoot } from './deferred-boot'
@@ -24,6 +27,9 @@ export function k8sNamespace(): string {
  * cannot contain `/`, so the raw path (today's `yaac.data-dir` podman
  * label) can't be carried over — the hash keeps the same property of
  * scoping queries to this yaac install while staying label-safe.
+ *
+ * Hashes the install root, not a storage tier: this is an identity, not a
+ * place to put bytes, and it must stay stable when the tiers split.
  */
 export function dataDirHash(): string {
   return crypto.createHash('sha256').update(getDataDir()).digest('hex').slice(0, 16)

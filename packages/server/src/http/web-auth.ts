@@ -2,6 +2,9 @@ import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '@yaac/shared/env'
+// Install IDENTITY, not storage — the cookie hash must stay stable when
+// the storage tiers split (see sessionCookieName below).
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir } from '@yaac/shared/paths'
 
 /** Base name of the HttpOnly cookie that carries a webapp session. */
@@ -20,7 +23,9 @@ let cookieNameCache: { dir: string; name: string } | null = null
  * storing a same-named one at all (browsers refuse to let an insecure origin
  * overwrite a Secure cookie), stranding the nested webapp unauthenticated.
  * The data dir is unique per install (1:1 with the server lock), so hashing
- * it gives each co-hosted server an independent cookie. Memoized per data
+ * it gives each co-hosted server an independent cookie. Like the cluster
+ * label hash, this uses the install root as an IDENTITY rather than as a
+ * storage tier, so it is unaffected when the tiers split. Memoized per data
  * dir; re-derives when it changes (tests call `setDataDir`).
  */
 export function sessionCookieName(): string {
