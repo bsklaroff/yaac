@@ -24,9 +24,12 @@ import type * as registryServiceModule from '#features/cluster/registry-service'
  * spawn fake: records invocations and returns an inert child that closes
  * with `spawnState.closeCode` on the next tick. Context file lists are read
  * at spawn time — builder-pod deletes the list file once tar exits.
+ *
+ * `spawnState.hold` keeps matching children open instead, so a test can own
+ * when they speak and when they die — that is the only way to drive the
+ * idle build timeout.
  */
-interface FakeStream {
-  on: ReturnType<typeof vi.fn>
+type FakeStream = EventEmitter & {
   pipe: ReturnType<typeof vi.fn>
   setEncoding: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
@@ -36,9 +39,30 @@ interface FakeChild extends EventEmitter {
   stdout: FakeStream
   stderr: FakeStream
   stdin: FakeStream
+  pid: number
+  /** Null while running — `killGroup` refuses to signal a reaped pid. */
+  exitCode: number | null
+  signalCode: string | null
 }
+/** A held child: its output tap and the signals its process group got. */
+interface HeldChild {
+  log: (line: string) => void
+  signals: string[]
+}
+/** Fictional pids: the process.kill spy never lets one reach the OS. */
+const FAKE_PID_BASE = 990_001
 const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[] }>)
-const spawnState = vi.hoisted(() => ({ closeCode: 0 }))
+const held = vi.hoisted(() => [] as HeldChild[])
+/** Group pid (negative) -> what the held fake child does when signalled. */
+const killers = vi.hoisted(() => new Map<number, (signal: string) => void>())
+const spawnState = vi.hoisted(() => ({
+  closeCode: 0,
+  /** Per-command exit code, for tests where only one step fails. */
+  codeFor: null as null | ((file: string, args: string[]) => number | undefined),
+  hold: null as null | ((file: string, args: string[]) => boolean),
+  /** Announces each held child, so a test can await one instead of polling. */
+  onHold: null as null | (() => void),
+}))
 const tarLists = vi.hoisted(() => [] as string[][])
 const readListFile = vi.hoisted(() => (listFile: string): string[] => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -48,8 +72,8 @@ const readListFile = vi.hoisted(() => (listFile: string): string[] => {
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof childProcessModule>()
-  const fakeStream = (): FakeStream => ({
-    on: vi.fn(), pipe: vi.fn(), setEncoding: vi.fn(), end: vi.fn(), destroy: vi.fn(),
+  const fakeStream = (): FakeStream => Object.assign(new EventEmitter(), {
+    pipe: vi.fn(), setEncoding: vi.fn(), end: vi.fn(), destroy: vi.fn(),
   })
   return {
     ...actual,
@@ -58,11 +82,27 @@ vi.mock('node:child_process', async (importOriginal) => {
       child.stdout = fakeStream()
       child.stderr = fakeStream()
       child.stdin = fakeStream()
+      child.pid = FAKE_PID_BASE + spawned.length
+      child.exitCode = null
+      child.signalCode = null
       if (file === 'tar' && args.includes('-T')) {
         tarLists.push(readListFile(args[args.indexOf('-T') + 1]))
       }
       spawned.push({ file, args })
-      process.nextTick(() => child.emit('close', spawnState.closeCode))
+      if (spawnState.hold?.(file, args)) {
+        const signals: string[] = []
+        killers.set(-child.pid, (signal) => {
+          signals.push(signal)
+          child.signalCode = signal
+          child.emit('exit', null, signal)
+          child.emit('close', null, signal)
+        })
+        held.push({ signals, log: (line) => child.stdout.emit('data', `${line}\n`) })
+        spawnState.onHold?.()
+      } else {
+        const code = spawnState.codeFor?.(file, args) ?? spawnState.closeCode
+        process.nextTick(() => child.emit('close', code))
+      }
       return child
     },
   }
@@ -129,6 +169,7 @@ import { clearAllImageBuildsForTests, listImageBuilds } from '#features/images/i
 // Bounds and layout constants: expected values, not units under test.
 import {
   BUILDER_ACTIVE_DEADLINE_SECONDS,
+  BUILDER_BUILD_IDLE_TIMEOUT_MS,
   BUILDER_CONTEXT_DIR,
   BUILDER_CONTEXT_MAX_BYTES,
   BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
@@ -263,7 +304,20 @@ beforeEach(() => {
   clearAllImageBuildsForTests()
   spawned.length = 0
   tarLists.length = 0
+  held.length = 0
+  killers.clear()
   spawnState.closeCode = 0
+  spawnState.codeFor = null
+  spawnState.hold = null
+  spawnState.onHold = null
+  // Held children are killed by pid (negated: the group). Spied, so a
+  // fictional pid can never reach a real process group.
+  vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal: string) => {
+    const die = killers.get(pid)
+    if (!die) throw new Error(`ESRCH: unexpected process.kill(${pid})`)
+    die(signal)
+    return true
+  }) as typeof process.kill)
   mockImageExists.mockResolvedValue(false)
   // Registry state, the process boundary the builder pod's own image
   // ensure also crosses: only the pinned podman-stable mirror is present,
@@ -281,6 +335,8 @@ beforeEach(() => {
 afterEach(async () => {
   _clearBuildCoordinatorForTests()
   clearAllImageBuildsForTests()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
   vi.unstubAllEnvs()
   for (const dir of tmpDirs.splice(0)) {
     await fs.rm(dir, { recursive: true, force: true })
@@ -627,6 +683,53 @@ describe('ensureImage', () => {
     mockKubectlGetJson.mockResolvedValue({ status: {} })
     chain([await podLayer({ tag: 'yaac-base:p3', buildArgs: undefined })])
     await expect(ensureImage('proj')).rejects.toThrow('timed out')
+  })
+
+  it('kills an in-pod build only once it stops producing output', async () => {
+    // The in-pod build budget is idle, not total: a slow layer that keeps
+    // logging must outlive it, and only silence ends the build.
+    spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
+    const reachedBuild = new Promise<void>((r) => { spawnState.onHold = r })
+    chain([await podLayer({ buildArgs: undefined })])
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const build = ensureImage('proj')
+    const settled = vi.fn()
+    void build.then(settled, settled)
+
+    // The steps before the build (context stat, tar) are filesystem IO,
+    // which no amount of timer advancing completes — wait them out for real.
+    await reachedBuild
+    expect(held).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(BUILDER_BUILD_IDLE_TIMEOUT_MS - 1_000)
+    held[0].log('STEP 2/5: RUN cargo build --release')
+    await vi.advanceTimersByTimeAsync(BUILDER_BUILD_IDLE_TIMEOUT_MS - 1_000)
+    expect(settled).not.toHaveBeenCalled()
+    expect(held[0].signals).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(build).rejects.toThrow(
+      /builder exec \[podman build .*\] produced no output for 600s/,
+    )
+    expect(held[0].signals).toEqual(['SIGTERM'])
+    // The pod the wedged build was holding is released, not leaked.
+    expect(deleteCalls().length).toBeGreaterThan(0)
+  })
+
+  it('blames the whole-pod deadline when the pod dies under the build', async () => {
+    // A build that keeps printing never trips an idle budget, so the pod's
+    // deadline is what ends it — and kubectl, whose connection died with the
+    // pod, can only report a signal. The pod's own status has the reason.
+    spawnState.codeFor = (file, args) =>
+      (file === 'kubectl' && args.includes('build') ? 137 : undefined)
+    mockKubectlGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pod' ? { status: { phase: 'Failed', reason: 'DeadlineExceeded' } } : null,
+    ))
+    chain([await podLayer({ buildArgs: undefined })])
+
+    await expect(ensureImage('proj')).rejects.toThrow(
+      /exited with code 137[\s\S]*stopped at the whole-pod deadline/,
+    )
   })
 
   it('rejects a dockerfile outside its context, and an oversized context', async () => {

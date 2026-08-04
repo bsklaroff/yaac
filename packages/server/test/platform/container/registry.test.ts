@@ -236,8 +236,12 @@ describe('pushImageToRegistry', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const onLog = vi.fn()
     await pushImageToRegistry('yaac-tools:abc', { onLog })
-    expect(vi.mocked(pipeToServerLog)).toHaveBeenCalledWith(
-      expect.anything(), '[push yaac-tools:abc] ', onLog,
-    )
+    // The runner wraps `onLog` (it keeps a tail for failure messages), so
+    // the thread-through is asserted by driving a line through the wrapper.
+    const piped = vi.mocked(pipeToServerLog).mock.calls
+      .filter((c) => c[1] === '[push yaac-tools:abc] ').at(-1)
+    expect(piped).toBeDefined()
+    piped?.[2]?.('Copying blob sha256:deadbeef')
+    expect(onLog).toHaveBeenCalledWith('Copying blob sha256:deadbeef')
   })
 })
