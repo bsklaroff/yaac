@@ -1,5 +1,5 @@
 import simpleGit from 'simple-git'
-import { containerExec } from '#platform/k8s'
+import { sessionExec } from '#platform/k8s'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration } from '#features/sessions/egress/proxy-registration'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -30,6 +30,9 @@ import type { PiProvider } from '@yaac/shared/tool-providers'
  * respawned agent survived. The pod's tool label flips in the claim's
  * commit call. Throws on failure — the caller must treat the spare as
  * tainted (registration, window name, and label may disagree) and reap it.
+ *
+ * The in-pod commands ride the stream relay, so the caller must have gated
+ * on `waitForStreamd` (the claim path does, before its first mutation).
  */
 export async function retoolSpare(
   spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
@@ -48,8 +51,18 @@ export async function retoolSpare(
     spare.sessionId,
     buildSessionRegistration({ config, remoteUrl, tool, projectSlug: spare.projectSlug }),
   )
-  await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
-  await containerExec(
+  // Written to tolerate having already run, so the dial retries stay on:
+  // by the time a claim gets here any throw reaps the spare, and a blip on
+  // the shared port-forward is far likelier than the rename failing for
+  // real. The fallback passes only when the window already carries the new
+  // name — a genuine failure still exits nonzero, with tmux's own stderr
+  // (deliberately not silenced) explaining it.
+  await sessionExec(
+    spare.jobName,
+    `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`
+    + ` || ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}`,
+  )
+  await sessionExec(
     spare.jobName,
     `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, false, piProvider, model)}'`,
   )
@@ -112,11 +125,18 @@ export function buildRebranchPrep(params: {
   const { branch, sha, config, sessionId, respawnTool, piProvider } = params
   const windowExecs: string[] = []
   for (const win of resolveInitWindows(config)) {
-    // hidePane windows are gone once their command finishes, so the kill
-    // must tolerate a missing window; `|| true` also keeps containerExec's
-    // retry from hammering a kill that already succeeded.
-    windowExecs.push(`sh -c "${TMUX} kill-window -t yaac:${win.name} 2>/dev/null || true"`)
-    windowExecs.push(initWindowCommand(win))
+    // Kill and re-create in ONE exec, so re-running the pair is a no-op.
+    // Split across two execs it is not: tmux allows duplicate window
+    // names, so a `new-window` that ran but whose reply was lost leaves a
+    // second window of the same name behind, racing two copies of the init
+    // command over one worktree (two concurrent `pnpm install`s), and a
+    // later kill-window removes only one of them. Paired, a re-run kills
+    // whatever the lost attempt created before making its own. The kill
+    // tolerates a missing window — hidePane windows are gone once their
+    // command finishes — and `;` keeps its status out of the result.
+    windowExecs.push(
+      `${TMUX} kill-window -t yaac:${win.name} 2>/dev/null; ${initWindowCommand(win)}`,
+    )
   }
   if (respawnTool) {
     windowExecs.push(
@@ -140,6 +160,11 @@ export function buildRebranchPrep(params: {
  * validates the branch exists BEFORE calling; from the first exec on, a
  * failure means the spare is tainted (worktree, upstream, and windows may
  * disagree) and the caller must reap it.
+ *
+ * Like `retoolSpare`, the in-pod commands ride the stream relay, so the
+ * caller must have gated on `waitForStreamd` first. Each is written to be
+ * a no-op when re-run (see `buildRebranchPrep`), so they keep the default
+ * dial retries.
  */
 export async function rebranchSpare(
   spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
@@ -159,10 +184,15 @@ export async function rebranchSpare(
     respawnTool: respawnAgent ? spare.tool as AgentTool : null,
     piProvider,
   })
-  await containerExec(spare.jobName, prep.resetExec)
+  // The reset+clean walks the whole worktree, so it gets a wider deadline
+  // than the relay's 30s default (kubectl exec ran it unbounded). Only the
+  // run phase widens — sessionExec caps the dial separately — and a read
+  // timeout past that is not retried, so a still-running git can't be
+  // raced by a second one over the same index.lock.
+  await sessionExec(spare.jobName, prep.resetExec, { timeout: 120_000 })
   await withUpstreamConfigLock(spare.projectSlug, async () => {
-    await containerExec(spare.jobName, prep.upstreamExec)
+    await sessionExec(spare.jobName, prep.upstreamExec)
   })
-  for (const cmd of prep.windowExecs) await containerExec(spare.jobName, cmd)
+  for (const cmd of prep.windowExecs) await sessionExec(spare.jobName, cmd)
   if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, spare.tool as AgentTool)
 }

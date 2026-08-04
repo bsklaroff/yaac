@@ -22,9 +22,8 @@ import { serverLog } from '#log'
  * the status watcher's tmux control stream, forwarded TCP, one-shot pod
  * commands — rides a plain TCP connection through the proxy's relay
  * listener into the pod's streamd, entirely off the apiserver. kubectl
- * exec survives only for session-create provisioning (the bounded setup
- * execs that run before streamd exists, incl. `bootStreamd`) and
- * non-session infra pods.
+ * exec survives only where streamd cannot be gated on — `bootStreamd`,
+ * the teardown-time image-salvage survey — and for non-session infra pods.
  *
  * Wire shape per stream: one relay auth line
  * `{token: <proxyAuthSecret>, sessionId}`, then one streamd handshake
@@ -185,9 +184,25 @@ export async function sessionStreamToken(sessionId: string): Promise<string> {
   return crypto.createHmac('sha256', secret).update(sessionId).digest('hex')
 }
 
-/** Transport-level dial failure (relay unreachable, refused handshake,
- *  timeout) — never conclusive about the pod's state. */
-export class RelayDialError extends Error {}
+/** Transport-level failure (relay unreachable, refused handshake,
+ *  timeout, a reply that never arrived) — never a verdict on the
+ *  command's outcome, unlike RelayExecError. Whether the command
+ *  nonetheless *ran* is `afterDispatch`. */
+export class RelayDialError extends Error {
+  constructor(
+    message: string,
+    /**
+     * True when the transport failed AFTER the command was handed to
+     * streamd — a reply-read timeout, or the socket dropping mid-read.
+     * The pod may well have run the command, so re-issuing it is a
+     * *re-run*, not a retry: `sessionExec` stops retrying on these, and
+     * a caller whose command isn't idempotent is spared a duplicate.
+     */
+    readonly afterDispatch = false,
+  ) {
+    super(message)
+  }
+}
 
 /**
  * Open one stream to a session's streamd: dial the relay, pipeline the
@@ -298,12 +313,12 @@ function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
     const chunks: Buffer[] = []
     const timer = setTimeout(() => {
       socket.destroy()
-      reject(new RelayDialError(`stream read timeout after ${timeoutMs}ms`))
+      reject(new RelayDialError(`stream read timeout after ${timeoutMs}ms`, true))
     }, timeoutMs)
     socket.on('data', (c: Buffer) => chunks.push(c))
     socket.on('error', (err: Error) => {
       clearTimeout(timer)
-      reject(new RelayDialError(err.message))
+      reject(new RelayDialError(err.message, true))
     })
     socket.on('close', () => {
       clearTimeout(timer)
@@ -314,10 +329,15 @@ function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
 }
 
 export interface RelayExecOptions {
-  /** Overall deadline (dial + run). Default 30s. */
+  /**
+   * Overall deadline (dial + run). Default 30s. Widen it for a command
+   * that legitimately runs long — the *dial* stays capped at
+   * DIAL_TIMEOUT_MS regardless, so a long budget can't turn a hung
+   * transport into a multi-minute stall.
+   */
   timeout?: number
-  /** Dial-failure retries (a clean nonzero exit is never retried — the
-   *  command ran). Default 3. */
+  /** Dial-failure retries. Neither a clean nonzero exit nor a failure
+   *  past dispatch is retried — in both cases the command ran. Default 3. */
   maxAttempts?: number
 }
 
@@ -328,6 +348,10 @@ export interface RelayExecOptions {
  * one shell pass, like the host-shell pass `containerExec` gave it).
  * Resolves `{stdout, stderr}` on exit 0; throws RelayExecError on a
  * nonzero exit and RelayDialError when the pod was never reached.
+ *
+ * Retries cover only the dial: once streamd has the command, a failure
+ * (nonzero exit, or a `afterDispatch` transport drop) is final, so a
+ * non-idempotent command can't be issued twice behind the caller's back.
  */
 export async function sessionExec(
   jobName: string,
@@ -341,17 +365,22 @@ export async function sessionExec(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const started = Date.now()
     try {
+      // The dial gets its own (bounded) deadline: `timeout` is the budget
+      // for the COMMAND, and letting it govern the dial too would make a
+      // hung transport cost `timeout` per attempt before anyone notices.
       const socket = await relayDial(
         sessionId,
         { kind: 'exec', cmd: ['sh', '-c', cmd] },
-        { timeoutMs },
+        { timeoutMs: Math.min(DIAL_TIMEOUT_MS, timeoutMs) },
       )
       const body = await readAll(socket, Math.max(1, timeoutMs - (Date.now() - started)))
       let result: { exitCode?: number; stdout?: string; stderr?: string }
       try {
         result = JSON.parse(body.toString('utf8')) as typeof result
       } catch {
-        throw new RelayDialError('malformed exec result')
+        // Dispatched: streamd answered the handshake, so whatever came
+        // back (truncated, empty, garbage) followed a command that ran.
+        throw new RelayDialError('malformed exec result', true)
       }
       const { exitCode = 1, stdout = '', stderr = '' } = result
       if (exitCode === 0) return { stdout, stderr }
@@ -361,7 +390,11 @@ export async function sessionExec(
       )
     } catch (err) {
       lastErr = err as Error
-      if (!(err instanceof RelayDialError) || attempt === maxAttempts) throw err
+      if (
+        !(err instanceof RelayDialError)
+        || err.afterDispatch
+        || attempt === maxAttempts
+      ) throw err
       await new Promise((r) => setTimeout(r, 250 * attempt))
     }
   }
@@ -605,11 +638,16 @@ export function relayTcpFactory(sessionId: string): RelayFactory {
  * EADDRINUSE. Used by session-create's setup and the status watcher's
  * self-heal.
  */
-export async function bootStreamd(jobName: string): Promise<void> {
+export async function bootStreamd(
+  jobName: string,
+  /** Deadline for the kubectl exec. Callers on a budget (waitForStreamd)
+   *  pass what is left of theirs so the heal can't overrun it. */
+  opts: { timeout?: number } = {},
+): Promise<void> {
   await containerExec(
     jobName,
     `sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'`,
-    { maxAttempts: 1, timeout: 15_000 },
+    { maxAttempts: 1, timeout: opts.timeout ?? 15_000 },
   )
 }
 
@@ -622,7 +660,8 @@ export interface WaitForStreamdDeps {
 
 /**
  * Gate on a session pod's streamd answering the relay — session-create's
- * "in-pod setup done" signal. The pod's postStart hook (yaac-session-init)
+ * "in-pod setup done" signal, and the prewarm claim's readiness gate
+ * before it mutates a spare. The pod's postStart hook (yaac-session-init)
  * starts streamd last, so a successful relay exec proves the git config and
  * tmux server it configured are in place, and every setup command that
  * follows can ride the relay instead of kubectl exec.
@@ -632,6 +671,12 @@ export interface WaitForStreamdDeps {
  * takes a beat to bind. Halfway through the budget, `bootStreamd` re-runs
  * the daemon via kubectl exec once — the same self-heal the status watcher
  * uses — so a streamd that failed to start in the hook still recovers.
+ *
+ * The heal is checked BEFORE the deadline gives up, and its kubectl exec
+ * is capped at what remains of the budget. Otherwise a short budget (the
+ * claim path's 10s) could both overrun — the boot's own timeout is not
+ * the caller's — and expire on a probe cycle that straddles the halfway
+ * mark, throwing without ever attempting the one thing that heals it.
  */
 export async function waitForStreamd(
   jobName: string,
@@ -654,14 +699,19 @@ export async function waitForStreamd(
       // A non-dial error means the pod ran the command — streamd is up but
       // something else is wrong; surface it.
       if (!(err instanceof RelayDialError)) throw err
-      if (Date.now() >= deadline) {
+      const expired = Date.now() >= deadline
+      if (!healed && (expired || Date.now() >= deadline - timeoutMs / 2)) {
+        healed = true
+        // Bounded by what's left, but never zero: an expired budget still
+        // buys one boot + one probe, which beats giving up un-healed.
+        await d.boot(jobName, { timeout: Math.max(1_000, deadline - Date.now()) })
+          .catch(() => { /* dial loop keeps trying */ })
+        continue
+      }
+      if (expired) {
         throw new Error(
           `streamd in ${jobName} not reachable after ${timeoutMs}ms: ${err.message}`,
         )
-      }
-      if (!healed && Date.now() >= deadline - timeoutMs / 2) {
-        healed = true
-        await d.boot(jobName).catch(() => { /* dial loop keeps trying */ })
       }
       await d.sleepMs(300)
     }

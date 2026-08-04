@@ -15,10 +15,13 @@ export function execTarget(jobName: string): string {
  * (quoting handled by the caller) — the k8s replacement for
  * `podman exec <container> <cmd>`.
  *
- * Scope: session-create provisioning (the bounded setup execs that run
- * before streamd exists, incl. claim-time retool/rebranch prep) and the
- * streamd boot/self-heal itself. Steady-state session-pod commands ride
- * the stream relay instead (`sessionExec` in platform/k8s/stream-relay).
+ * Scope: the streamd boot/self-heal itself (`bootStreamd` — the one exec
+ * that must work when no stream can reach the pod) and pod commands that
+ * cannot gate on streamd, such as the teardown-time image salvage survey.
+ * Everything else on a session pod rides the stream relay instead
+ * (`sessionExec` in platform/k8s/stream-relay), including session-create
+ * setup and claim-time retool/rebranch prep, which gate on
+ * `waitForStreamd` first.
  */
 export async function containerExec(
   jobName: string,

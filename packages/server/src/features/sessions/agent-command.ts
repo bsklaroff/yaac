@@ -1,4 +1,4 @@
-import { containerExec, sessionExec } from '#platform/k8s'
+import { RelayExecError, sessionExec } from '#platform/k8s'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
@@ -252,13 +252,29 @@ export function buildAgentWindowCheck(tool: AgentTool): string {
   return `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}"`
 }
 
+/**
+ * Runs on the claim path, after `waitForStreamd`, so it rides the relay.
+ * Only a `RelayExecError` is a verdict about the window: the probe reached
+ * the pod and `grep` found no such window. A transport failure proves
+ * nothing about the agent, so it propagates as itself rather than
+ * masquerading as a missing tool.
+ *
+ * The probe is `list-windows | grep`, so a dead tmux server exits nonzero
+ * too — its stderr ("no server running on ...") is the difference between
+ * that and a missing tool, and carrying it keeps the operator off the
+ * wrong trail.
+ */
 export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
   try {
-    await containerExec(jobName, buildAgentWindowCheck(tool))
-  } catch {
+    await sessionExec(jobName, buildAgentWindowCheck(tool))
+  } catch (err) {
+    if (!(err instanceof RelayExecError)) throw err
+    const detail = err.stderr.trim()
     throw new Error(
       `agent "${tool}" exited right after its respawn in ${jobName} — `
-      + 'likely not installed in the image this spare was warmed from',
+      + 'likely not installed in the image this spare was warmed from'
+      + (detail ? ` (probe stderr: ${detail})` : ''),
+      { cause: err },
     )
   }
 }

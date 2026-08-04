@@ -19,7 +19,10 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn(),
   kubectlApply: vi.fn(),
 }))
-vi.mock('#platform/k8s/exec', () => ({ containerExec: vi.fn() }))
+vi.mock('#platform/k8s/stream-relay', () => ({
+  sessionExec: vi.fn(),
+  waitForStreamd: vi.fn(),
+}))
 vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listSessionPods: vi.fn(),
@@ -50,7 +53,7 @@ import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '#
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { kubectlWithRetry } from '#platform/k8s/kubectl'
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec, waitForStreamd } from '#platform/k8s/stream-relay'
 import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
@@ -59,7 +62,8 @@ import { ServerError } from '@yaac/shared/errors'
 const mockListPods = vi.mocked(listSessionPods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
 const mockKubectl = vi.mocked(kubectlWithRetry)
-const mockExec = vi.mocked(containerExec)
+const mockExec = vi.mocked(sessionExec)
+const mockWaitForStreamd = vi.mocked(waitForStreamd)
 const mockRetool = vi.mocked(retoolSpare)
 const mockRebranch = vi.mocked(rebranchSpare)
 const mockCleanupDetached = vi.mocked(cleanupSessionDetached)
@@ -95,6 +99,7 @@ describe('tryClaimPrewarmed', () => {
     mockTmuxAlive.mockResolvedValue(true)
     mockKubectl.mockResolvedValue(undefined as never)
     mockExec.mockResolvedValue(undefined as never)
+    mockWaitForStreamd.mockResolvedValue(undefined)
     mockRetool.mockResolvedValue(undefined)
     mockRebranch.mockResolvedValue(undefined)
     mockCleanupDetached.mockResolvedValue(undefined)
@@ -114,7 +119,11 @@ describe('tryClaimPrewarmed', () => {
     expect(mockKubectl).toHaveBeenCalledWith(
       ['label', 'pod', 'yaac-p-spare-x', '-n', 'ns', `${LABEL_PREWARMED}-`],
     )
-    expect(mockExec).toHaveBeenCalledTimes(2) // user.name + user.email
+    // One exec carries both identity settings.
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    expect(mockExec.mock.calls[0][1]).toBe(
+      "git config --global user.name 'A B' && git config --global user.email 'a@b.co'",
+    )
     expect(claiming.size).toBe(0) // released in finally
   })
 
@@ -182,11 +191,38 @@ describe('tryClaimPrewarmed', () => {
     expect(claiming.size).toBe(0)
   })
 
+  it('gates on streamd before the first mutation, and leaves the spare alone if it never answers', async () => {
+    mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
+    mockWaitForStreamd.mockRejectedValue(new Error('streamd not reachable after 10000ms'))
+
+    expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
+    expect(mockWaitForStreamd).toHaveBeenCalledWith('yaac-p-spare', { timeoutMs: 10_000 })
+    // Nothing ran against the pod, so the spare is untainted: no retool, no
+    // relabel, and no reap — the claim just degrades to a cold create.
+    expect(mockRetool).not.toHaveBeenCalled()
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockKubectl).not.toHaveBeenCalled()
+    expect(mockCleanupDetached).not.toHaveBeenCalled()
+    expect(claiming.size).toBe(0)
+  })
+
   it('falls through (undefined) and clears the reservation if the relabel fails', async () => {
     mockListPods.mockResolvedValue([spare()])
     mockKubectl.mockRejectedValue(new Error('pod gone'))
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
     expect(claiming.size).toBe(0)
+  })
+
+  it('keeps the claimed session when the identity re-apply fails', async () => {
+    // It runs past the commit point over a step the no-identity path skips
+    // outright, so a relay hiccup must not reap a whole good session.
+    mockListPods.mockResolvedValue([spare()])
+    mockExec.mockRejectedValue(new Error('stream relay dial: timeout'))
+
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockCleanupDetached).not.toHaveBeenCalled()
   })
 
   it('skips the git-config execs when no identity is supplied', async () => {

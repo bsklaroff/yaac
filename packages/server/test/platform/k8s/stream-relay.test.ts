@@ -230,6 +230,23 @@ describe('sessionExec', () => {
       .rejects.toBeInstanceOf(RelayDialError)
     expect(dials).toBe(3)
   })
+
+  it('does not retry a transport failure past dispatch — the command may have run', async () => {
+    // The handshake was accepted, so streamd HAS the command; the reply
+    // is then lost. Re-issuing would be a re-run, not a retry — which for
+    // a `new-window` means a duplicate window, not a harmless repeat.
+    let dials = 0
+    await withRelay((r) => {
+      dials++
+      r.socket.write('{"ok":true}\n')
+      setTimeout(() => r.socket.destroy(), 10)
+    })
+    const err = await sessionExec(JOB, 'tmux new-window', { maxAttempts: 3, timeout: 2_000 })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RelayDialError)
+    expect((err as RelayDialError).afterDispatch).toBe(true)
+    expect(dials).toBe(1)
+  })
 })
 
 describe('dialCtrlStream', () => {
@@ -413,6 +430,25 @@ describe('waitForStreamd', () => {
     await expect(waitForStreamd(JOB, { timeoutMs: 3_000 }, deps))
       .rejects.toThrow(/streamd in .* not reachable after 3000ms: .*no route/)
     expect(deps.boot).toHaveBeenCalledTimes(1)
+  })
+
+  it('still heals when the budget expires before the halfway mark is observed', async () => {
+    // A probe cycle can straddle both marks on a short budget (the claim
+    // path's 10s). Giving up without ever re-booting streamd would skip
+    // the one thing that fixes the case this exists for.
+    const deps = makeDeps(vi.fn().mockImplementation(() => {
+      vi.advanceTimersByTime(9_000) // one slow cycle: past halfway AND past the deadline
+      return Promise.reject(new RelayDialError('no route'))
+    }))
+    await expect(waitForStreamd(JOB, { timeoutMs: 5_000 }, deps)).rejects.toThrow(/not reachable/)
+    expect(deps.boot).toHaveBeenCalledTimes(1)
+  })
+
+  it('caps the heal at the remaining budget so a short deadline cannot overrun', async () => {
+    const deps = makeDeps(vi.fn().mockRejectedValue(new RelayDialError('no route')))
+    await expect(waitForStreamd(JOB, { timeoutMs: 10_000 }, deps)).rejects.toThrow(/not reachable/)
+    const [, bootOpts] = deps.boot.mock.calls[0] as [string, { timeout: number }]
+    expect(bootOpts.timeout).toBeLessThanOrEqual(10_000)
   })
 })
 
