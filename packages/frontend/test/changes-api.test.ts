@@ -27,7 +27,7 @@ describe('isChangesTarget', () => {
 
 describe('getSessionChanges', () => {
   it('GETs the session changes endpoint and returns the body', async () => {
-    const changes: SessionChanges = { base: 'abc123', files: [], diff: '', truncated: false }
+    const changes: SessionChanges = { base: 'abc123', baseResolved: true, files: [], diff: '', truncated: false }
     const fetchMock = stub(changes)
     const result = await getSessionChanges('abc-123')
     const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')

@@ -25,6 +25,7 @@ const BRANCHES: ProjectBranches = {
 
 const PAYLOAD: SessionChangesData = {
   base: 'abc123',
+  baseResolved: true,
   files: [
     { path: 'src/app.ts', status: 'modified', additions: 2, deletions: 1, binary: false },
     { path: 'new.ts', status: 'added', additions: 2, deletions: 0, binary: false },
@@ -158,6 +159,7 @@ describe('SessionChanges', () => {
   it('renders a renamed file as old → new with the old path in its title', async () => {
     mock.mockResolvedValue({
       base: 'abc',
+      baseResolved: true,
       files: [
         { path: 'src/new-name.ts', status: 'renamed', additions: 0, deletions: 0, binary: false, oldPath: 'src/old-name.ts' },
       ],
@@ -174,6 +176,7 @@ describe('SessionChanges', () => {
   it('syntax-highlights the diff for a recognized language', async () => {
     mock.mockResolvedValue({
       base: 'abc',
+      baseResolved: true,
       files: [{ path: 'src/app.ts', status: 'added', additions: 1, deletions: 0, binary: false }],
       diff: [
         'diff --git a/src/app.ts b/src/app.ts',
@@ -192,6 +195,7 @@ describe('SessionChanges', () => {
   it('renders an unrecognized language as plain, un-tokenized text', async () => {
     mock.mockResolvedValue({
       base: 'abc',
+      baseResolved: true,
       files: [{ path: 'notes.unknownext', status: 'added', additions: 1, deletions: 0, binary: false }],
       diff: [
         'diff --git a/notes.unknownext b/notes.unknownext',
@@ -208,9 +212,29 @@ describe('SessionChanges', () => {
   })
 
   it('shows an empty state when nothing changed', async () => {
-    mock.mockResolvedValue({ base: 'abc', files: [], diff: '', truncated: false })
+    mock.mockResolvedValue({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
     renderPane()
     await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
+  })
+
+  // An unresolved fork point means the diff only covered uncommitted work, so
+  // an empty result says nothing about what was committed. Calling that "no
+  // changes" is the lie; name the branch we couldn't find instead.
+  it('distinguishes an unresolved fork point from having no changes', async () => {
+    mock.mockResolvedValue({ base: 'abc', baseResolved: false, files: [], diff: '', truncated: false })
+    renderPane({ baseBranch: 'never-pushed' })
+    await waitFor(() => expect(screen.getByText('Nothing uncommitted')).toBeTruthy())
+    expect(screen.queryByText('No changes yet')).toBeNull()
+    expect(screen.getByText(/Couldn’t find the fork point for “never-pushed”/)).toBeTruthy()
+    // The header pill must not contradict the body.
+    expect(screen.getByText('nothing uncommitted')).toBeTruthy()
+    expect(screen.queryByText('no changes')).toBeNull()
+  })
+
+  it('flags a listed diff as uncommitted-only when the fork point is unresolved', async () => {
+    mock.mockResolvedValue({ ...PAYLOAD, baseResolved: false })
+    renderPane()
+    await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
   })
 
   it('warns when the diff was truncated', async () => {
@@ -314,7 +338,7 @@ describe('SessionChanges', () => {
   })
 
   it('keeps the base picker reachable even when there are no changes', async () => {
-    mock.mockResolvedValue({ base: 'abc', files: [], diff: '', truncated: false })
+    mock.mockResolvedValue({ base: 'abc', baseResolved: true, files: [], diff: '', truncated: false })
     renderPane({ baseBranch: 'main' })
     await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
     expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()

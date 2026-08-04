@@ -21,8 +21,7 @@ import { dismissSessionPort } from '#features/sessions/forwarders/port-detector'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals'
-import { getSessionChanges } from '#features/sessions/changes'
-import { worktreeUpstreamBranch } from '#platform/git'
+import { getSessionChanges, sessionForkBranch } from '#features/sessions/changes'
 import { repoDir } from '@yaac/shared/project-paths'
 
 export const sessionApp = new Hono()
@@ -215,9 +214,8 @@ export const sessionApp = new Hono()
       // base label. Passed as the DEFAULT diff base so committed work stays
       // visible even after the agent renames and pushes its branch, which makes
       // the current branch's own @{upstream} collapse the merge-base to HEAD.
-      const forkBranch = await worktreeUpstreamBranch(
-        repoDir(projectSlug), `agent/${sessionId}`,
-      ).catch(() => null)
+      // Cached, because this endpoint is polled.
+      const forkBranch = await sessionForkBranch(repoDir(projectSlug), sessionId)
       return c.json(await getSessionChanges(jobName, c.req.valid('query').base, forkBranch ?? undefined))
     },
   )

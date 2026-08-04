@@ -485,13 +485,18 @@ export interface SessionChange {
 /**
  * The review diff for a session — everything the agent changed since the
  * worktree forked from its base branch (committed + staged + unstaged +
- * untracked), computed with a throwaway index so it never disturbs the
+ * untracked), computed against an index of our own so it never disturbs the
  * agent's own git state.
  */
 export interface SessionChanges {
   /** The base commit the diff is taken against (merge-base with the fork
    *  point), or HEAD when no upstream is resolvable. */
   base: string
+  /** False when no fork point was resolvable and `base` fell back to HEAD. The
+   *  diff then covers only UNCOMMITTED work, so an empty `files` means "nothing
+   *  uncommitted", not "nothing changed" — say so rather than showing the
+   *  ordinary no-changes state. */
+  baseResolved: boolean
   files: SessionChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
    *  Capped for size — see `truncated`. */

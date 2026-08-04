@@ -232,9 +232,16 @@ export function SessionChanges(
             <span className="text-[#f85149]">−{totals.del}</span>
           </>
         ) : (
-          <span className="text-text-faint">no changes</span>
+          // Only "no changes" when the fork point actually resolved — otherwise
+          // committed work simply wasn't in the diff to begin with.
+          <span className="text-text-faint">{data && !data.baseResolved ? 'nothing uncommitted' : 'no changes'}</span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-1">
+          {data && !data.baseResolved && files.length > 0 && (
+            <span title="No fork point for the base branch — only uncommitted work is shown." className="text-[#d29922]">
+              uncommitted only
+            </span>
+          )}
           {data?.truncated && (
             <span className="text-text-faint">diff truncated (large changeset)</span>
           )}
@@ -261,8 +268,24 @@ export function SessionChanges(
 
       {files.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
-          <p className="text-xs text-text-dim">No changes yet</p>
-          <p className="text-[11px] text-text-faint">Edits the agent makes in its worktree show up here.</p>
+          {/* An unresolved base means the diff ran against HEAD, so committed
+              work is missing from it — claiming "no changes" there is a lie.
+              Name the branch we couldn't find instead, so the fix (push it, or
+              pick another base) is obvious. */}
+          {data && !data.baseResolved ? (
+            <>
+              <p className="text-xs text-text-dim">Nothing uncommitted</p>
+              <p className="text-[11px] text-text-faint">
+                Couldn’t find the fork point for “{baseLabel}”, so committed work isn’t shown.
+                Push that branch, or pick another base above.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-text-dim">No changes yet</p>
+              <p className="text-[11px] text-text-faint">Edits the agent makes in its worktree show up here.</p>
+            </>
+          )}
         </div>
       ) : visible.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
