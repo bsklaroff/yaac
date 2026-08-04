@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+/** Real `sh -n` syntax check (the kubectl execFileAsync here is a mock). */
+const runSh = promisify(execFile)
 
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -26,7 +31,9 @@ import {
   gcOrphanProjectRegistries,
   projectRegistryConfDropIn,
   projectRegistryHost,
+  reconcileProjectRegistryGc,
   removeProjectRegistry,
+  sweepLegacyImageStore,
 } from '#features/cluster'
 // Setup values: label keys, the pinned upstream digest, and the name/path
 // derivations the assertions below compare against.
@@ -38,6 +45,10 @@ import {
   REGISTRY_IMAGE_DIGEST,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
+  REGISTRY_GC_INTERVAL_MS,
+  REGISTRY_GENERATIONS_KEPT,
+  _registryGcSettledForTests,
+  _resetRegistryGcForTests,
   projectRegistryName,
   projectRegistryStorageHostPath,
 } from '#features/cluster/project-registry'
@@ -470,5 +481,204 @@ describe('gcOrphanProjectRegistries', () => {
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
     await expect(gcOrphanProjectRegistries()).resolves.toBeUndefined()
+  })
+})
+
+describe('reconcileProjectRegistryGc', () => {
+  /** One registry serving from `node`, plus the poll a collect pod needs. */
+  function registryOn(node: string | undefined): void {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
+      if (args[1] === 'services') {
+        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
+      }
+      if (args[1] === 'pods') {
+        return Promise.resolve({ items: node ? [{ spec: { nodeName: node } }] : [] })
+      }
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+      return Promise.resolve(null)
+    })
+  }
+  const kubectlArgs = (): string[][] => mockRetry.mock.calls.map((c) => c[0])
+  /** Whether each applied registry Deployment was the read-only one. */
+  const rollouts = (): boolean[] => mockApply.mock.calls
+    .map((c) => c[0] as { kind: string; spec?: { template?: { spec?: { containers?: Array<
+      { env?: Array<{ name: string }> }> } } } })
+    .filter((m) => m.kind === 'Deployment')
+    .map((m) => (m.spec?.template?.spec?.containers?.[0]?.env ?? [])
+      .some((e) => e.name === 'REGISTRY_STORAGE_MAINTENANCE_READONLY'))
+
+  beforeEach(() => {
+    _resetRegistryGcForTests()
+  })
+
+  /** The step detaches its collect, so tests await the work it started. */
+  const gcPass = async (now: number): Promise<void> => {
+    await reconcileProjectRegistryGc(now)
+    await _registryGcSettledForTests()
+  }
+
+  it('collects behind a read-only window, then restores serving mode', async () => {
+    registryOn('node-a')
+    await gcPass(1_000)
+
+    // Read-only in, serving out. Not scale-to-zero: an active project's
+    // session count never reaches zero, and pulls have to keep working.
+    expect(rollouts()).toEqual([true, false])
+    expect(kubectlArgs().filter((a) => a[0] === 'scale')).toEqual([])
+    const pod = mockApply.mock.calls.map((c) => c[0] as {
+      kind: string
+      metadata: { name: string; labels: Record<string, string> }
+      spec: {
+        nodeName: string
+        containers: Array<{ image: string; command: string[] }>
+        volumes: Array<{ hostPath: { path: string } }>
+      }
+    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!
+    // Pinned to the node holding the store — the storage is node-local.
+    expect(pod.spec.nodeName).toBe('node-a')
+    expect(pod.spec.volumes[0].hostPath.path).toBe(projectRegistryStorageHostPath('demo'))
+    const script = pod.spec.containers[0].command[2]
+    expect(script).toContain(
+      '/bin/registry garbage-collect --delete-untagged=true /etc/docker/registry/config.yml')
+    expect(pod.metadata.labels['yaac.node-write']).toBe('gc')
+
+    // Retention runs FIRST: it is what turns a stale content-hash
+    // generation into the untagged manifest the collect can then reclaim.
+    expect(script.indexOf('retired-generations'))
+      .toBeLessThan(script.indexOf('garbage-collect'))
+  })
+
+  it('retires only yaac content-hash generations, never a name someone could pull', async () => {
+    registryOn('node-a')
+    await gcPass(1_000)
+    const script = (mockApply.mock.calls.map((c) => c[0] as {
+      kind: string; metadata: { name: string }
+      spec: { containers: Array<{ command: string[] }> }
+    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
+      .spec.containers[0].command[2]
+    // Repo guard mirrors image-gc's YAAC_IMAGE_REPO, so a session's own
+    // `myapp` repo is out of scope...
+    expect(script).toContain('yaac-*|localhost/yaac-*|localhost:*/yaac-*')
+    // ...and the tag guard is the content-hash shape, so `v1`, `latest`
+    // and the cache's `yaac-cache-…` slots can never match.
+    expect(script).toContain("grep -Ex '[0-9a-f]{16}'")
+    // Newest-first, keeping current + one rollback (the host-side policy).
+    expect(script).toContain('ls -1t')
+    expect(script).toContain(`tail -n +${REGISTRY_GENERATIONS_KEPT + 1}`)
+  })
+
+  it('sends valid POSIX shell into the collect pod', async () => {
+    registryOn('node-a')
+    await gcPass(1_000)
+    const script = (mockApply.mock.calls.map((c) => c[0] as {
+      kind: string; metadata: { name: string }
+      spec: { containers: Array<{ command: string[] }> }
+    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
+      .spec.containers[0].command[2]
+    await expect(runSh('sh', ['-n', '-c', script])).resolves.toBeTruthy()
+  })
+
+  it('collects a project whose sessions are live — idleness is not required', async () => {
+    registryOn('node-a')
+    // Nothing about the pass consults session pods: read-only is what
+    // makes a concurrent push safe, and a push that 405s is retried.
+    await gcPass(1_000)
+    expect(rollouts()).toEqual([true, false])
+  })
+
+  it('throttles to one collect per project per interval', async () => {
+    registryOn('node-a')
+    await gcPass(1_000)
+    mockApply.mockClear()
+    await gcPass(1_000 + REGISTRY_GC_INTERVAL_MS - 1)
+    expect(rollouts()).toEqual([])
+    await gcPass(1_000 + REGISTRY_GC_INTERVAL_MS)
+    expect(rollouts()).toEqual([true, false])
+  })
+
+  it('restores serving mode when the collect fails', async () => {
+    registryOn('node-a')
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      const cidr = cidrRead(args)
+      if (cidr) return cidr
+      if (args[1] === 'services') {
+        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
+      }
+      if (args[1] === 'pods') return Promise.resolve({ items: [{ spec: { nodeName: 'node-a' } }] })
+      // The collect pod never reaches Succeeded.
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
+      return Promise.resolve(null)
+    })
+    await gcPass(1_000)
+    // A failed collect must never strand the registry in maintenance mode.
+    expect(rollouts()).toEqual([true, false])
+  })
+
+  it('runs no collect pod for a registry that has never served', async () => {
+    registryOn(undefined)
+    await gcPass(1_000)
+    expect(rollouts()).toEqual([true, false])
+    expect(mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind))
+      .not.toContain('Pod')
+  })
+
+  it('returns without waiting on the collect it starts', async () => {
+    registryOn('node-a')
+    // Reconcile steps run sequentially, so a step that awaited a collect
+    // (two rollouts + a pod run) would stall every later step and every
+    // later tick behind it. Hold the first rollout open and check the step
+    // has already returned with the registry still in maintenance mode.
+    let release = (): void => {}
+    const held = new Promise<{ stdout: string; stderr: string }>((r) => {
+      release = () => r({ stdout: '', stderr: '' })
+    })
+    mockRetry.mockImplementation((args: string[]) =>
+      args[0] === 'rollout' ? held : Promise.resolve({ stdout: '', stderr: '' }))
+
+    await reconcileProjectRegistryGc(1_000)
+    expect(rollouts()).not.toContain(false)
+
+    release()
+    await _registryGcSettledForTests()
+  })
+
+  it('tolerates an unreachable cluster', async () => {
+    mockGetJson.mockRejectedValue(new Error('connection refused'))
+    await expect(reconcileProjectRegistryGc(1_000)).resolves.toBeUndefined()
+  })
+})
+
+describe('sweepLegacyImageStore', () => {
+  it('removes this install\'s retired image-store dir on every node', async () => {
+    mockHasTag.mockResolvedValue(true)
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+      return Promise.resolve(null)
+    })
+
+    await sweepLegacyImageStore()
+
+    const pods = mockApply.mock.calls.map((c) => c[0] as {
+      spec: {
+        nodeName: string
+        containers: Array<{ command: string[] }>
+        volumes: Array<{ hostPath: { path: string } }>
+      }
+    })
+    expect(pods).toHaveLength(NODE_LIST.items.length)
+    // Scoped to this install's subdirectory, mounting the parent so the
+    // directory itself goes too.
+    expect(pods[0].spec.volumes[0].hostPath.path).toBe('/var/lib/yaac/imagecache')
+    expect(pods[0].spec.containers[0].command[2]).toBe("rm -rf '/host-imagecache/ddh16'")
+    expect(pods.map((p) => p.spec.nodeName)).toEqual(NODE_LIST.items.map((n) => n.metadata.name))
+  })
+
+  it('waits for the mirror image rather than failing the boot path', async () => {
+    mockHasTag.mockResolvedValue(false)
+    await expect(sweepLegacyImageStore()).resolves.toBeUndefined()
+    expect(mockApply).not.toHaveBeenCalled()
   })
 })

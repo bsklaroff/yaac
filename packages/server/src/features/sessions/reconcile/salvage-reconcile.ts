@@ -5,14 +5,14 @@ import { salvageSessionImages } from '#features/images'
 /**
  * Mid-session image salvage: run the (idempotent, self-gating) salvage
  * for each live session every SALVAGE_INTERVAL_MS, so a nested session's
- * built/pulled images land in the project's shared store WHILE the
+ * built/pulled images land in the project's registry WHILE the
  * session is alive. Teardown then only ships the delta since the last
  * run — the multi-GB first salvage of a project's base chain happens in
  * the background instead of blocking termination.
  *
  * Cost when there is nothing to do: one exec per session per interval
  * (the in-pod survey self-gates for non-nested engines and reports
- * no-op when every image is already in the store).
+ * no-op when every image is already in the registry).
  */
 export const SALVAGE_INTERVAL_MS = 10 * 60_000
 

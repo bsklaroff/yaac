@@ -3,9 +3,8 @@ import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
 /**
- * Periodic GC of the host podman engine's image store — the build-side
- * counterpart of the shared-store GC in the salvage writer
- * (image-promoter.ts). Every content-hash rebuild re-tags under the same
+ * Periodic GC of the host podman engine's image store. Every
+ * content-hash rebuild re-tags under the same
  * repository (`yaac-base:<hash>`, `yaac-user-<slug>:<hash>`, …) and each
  * tag pins its whole intermediate layer chain, so the engine accumulates
  * generations without bound (measured: 23 yaac-base tags, ~14GB

@@ -124,11 +124,11 @@ fi
 # gates on `docker version` over the relay before anything needs it, and a
 # dead-on-arrival engine surfaces its log tail there.
 if [ "${YAAC_NESTED_ENGINE:-}" = "1" ]; then
-  # virtualCluster sessions: drop a registries.conf.d entry marking the
-  # per-project registry (plain HTTP on :5000) insecure, so user-driven
-  # `docker push` works without --tls-verify gymnastics. Written before the
-  # engine starts; per-project host, so it can't live in the shared
-  # nestable image layer. Rootful engine reads /etc/containers — sudo.
+  # Drop a registries.conf.d entry marking the per-project registry (plain
+  # HTTP on :5000) insecure, so user-driven `docker push` and the server's
+  # image-cache push/pull work without --tls-verify gymnastics. Written
+  # before the engine starts; per-project host, so it can't live in the
+  # shared nestable image layer. Rootful engine reads /etc/containers — sudo.
   if [ -n "${YAAC_REGISTRY_CONF_B64:-}" ]; then
     sudo -n mkdir -p /etc/containers/registries.conf.d
     printf %s "$YAAC_REGISTRY_CONF_B64" | base64 -d \

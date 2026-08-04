@@ -9,6 +9,7 @@ import { reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, rec
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#features/titles'
+import { reconcileProjectRegistryGc } from '#features/cluster'
 import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
 import { serverLog } from '#log'
 
@@ -58,9 +59,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped sessions). No-op when the pool size is 0.
     { name: 'prewarm-pool', triggers: ['session-pods'], run: (s) => reconcilePrewarmPool(s) },
-    // Mid-session image salvage (nested engines → shared store). Throttled
+    // Mid-session image salvage (nested engines → project registry). Throttled
     // internally per session; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
+    // Blob reclaim in one project registry per pass. It cannot wait for a
+    // project to go idle — an active one never does — so it takes a
+    // read-only maintenance window instead, and detaches. Throttled
+    // internally; after the salvage, so a just-pushed generation is the
+    // one that survives the collect.
+    { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
     // Which agent sessions each worktree holds, and which are live — read
     // from the in-pod hook's link tree crossed with the watcher's pane set.
     // Before session-prompts, whose work list is the conversations this

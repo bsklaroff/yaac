@@ -5,8 +5,8 @@
  * Untrusted Dockerfiles (`Dockerfile.yaac` / `Dockerfile.user` — user- and
  * agent-editable) never execute on the host podman engine. Each build
  * request gets a throwaway gVisor pod running the pinned podman-stable
- * image (shared with the salvage writer); adjacent untrusted layers in one
- * chain reuse the pod via a BuilderPodLease. Per layer the flow is:
+ * image; adjacent untrusted layers in one chain reuse the pod via a
+ * BuilderPodLease. Per layer the flow is:
  *
  *   1. bootstrap /etc/containers/storage.conf (native overlay on the
  *      sentry tmpfs graphroot — the stock image forces fuse-overlayfs,
@@ -30,6 +30,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { testEnv } from '@yaac/shared/env'
 import {
   EGRESS_WORLD_DENY_NAME,
   LABEL_DATA_DIR_HASH,
@@ -42,6 +44,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   dataDirHash,
   ensureKubernetes,
+  execFileAsync,
   graphrootMountAnnotations,
   k8sNamespace,
   kubectlApply,
@@ -56,7 +59,6 @@ import {
   registryClusterHost,
   vapAvailable,
 } from '#features/cluster'
-import { ensureSalvageWriterImage } from './image-promoter'
 import {
   parseContainerIgnore,
   collectContextFiles,
@@ -65,6 +67,18 @@ import {
 } from './image-builder'
 import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
+
+/**
+ * Digest-pinned upstream image the builder pods run — podman + coreutils,
+ * mirrored into the local registry like the vcluster image set (the digest
+ * IS the pin; no content-hash tag). Pinned near the session engines'
+ * podman major so store metadata stays compatible. Never the session's own
+ * image: its binaries are user-customizable and must not run yaac-driven
+ * builds.
+ */
+export const BUILDER_UPSTREAM_IMAGE =
+  'quay.io/podman/stable@sha256:25d49cf990843962043942db172c7ef5c6f85012384aada7976aec65906ae209'
+export const BUILDER_LOCAL_TAG = 'podman-stable:v5.5'
 
 /**
  * Sentry tmpfs cap for the builder graphroot: parent chain (~5GB for the
@@ -141,6 +155,28 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
 export function buildCacheRepo(projectSlug: string): string {
   const slug = projectSlug.toLowerCase().replace(/[^a-z0-9._-]/g, '-')
   return `yaac-buildcache-${slug}`
+}
+
+/** Ensure the pinned builder image is present in the local registry,
+ *  mirroring it from upstream on first use (same convention as
+ *  ensureVclusterImages — the digest is the pin). */
+export async function ensureBuilderImage(
+  requirePrebuilt = testEnv.requirePrebuiltImages,
+): Promise<string> {
+  if (!await registryHasTag(BUILDER_LOCAL_TAG)) {
+    if (!await imageExists(BUILDER_LOCAL_TAG)) {
+      if (requirePrebuilt) {
+        throw new Error(
+          `builder image ${BUILDER_LOCAL_TAG} is missing. `
+          + 'Restart the test run so the global setup can mirror it.',
+        )
+      }
+      await execFileAsync('podman', ['pull', BUILDER_UPSTREAM_IMAGE], { timeout: 600_000 })
+      await execFileAsync('podman', ['tag', BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG])
+    }
+    await pushImageToRegistry(BUILDER_LOCAL_TAG)
+  }
+  return registryRef(BUILDER_LOCAL_TAG)
 }
 
 /** Builder pod name: hash of the first layer tag + entropy, so concurrent
@@ -536,7 +572,7 @@ export class BuilderPodLease {
         + `Run \`yaac cluster check\`.\n${detail}`,
       )
     }
-    const imageRef = await ensureSalvageWriterImage()
+    const imageRef = await ensureBuilderImage()
     await ensureRegistryClusterService()
     await ensureBuilderNetworkPolicies()
 

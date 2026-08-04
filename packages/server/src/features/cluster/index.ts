@@ -50,7 +50,9 @@ export {
   gcOrphanProjectRegistries,
   projectRegistryConfDropIn,
   projectRegistryHost,
+  reconcileProjectRegistryGc,
   removeProjectRegistry,
+  sweepLegacyImageStore,
 } from './project-registry'
 export {
   ensureCaConfigMap,

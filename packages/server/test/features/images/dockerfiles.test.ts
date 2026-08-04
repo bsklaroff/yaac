@@ -85,8 +85,10 @@ describe('Dockerfile.nestable', () => {
     // Rootful graphroot at podman's default (a tmpfs is mounted there by
     // the pod spec so setcap builds keep their file caps).
     expect(content).toContain('graphroot = "/var/lib/containers/storage"')
-    // Cross-session layer cache rides additionalimagestores.
-    expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
+    // No additionalimagestores lower: the cross-session layer cache is the
+    // project registry (pushed at salvage, pulled into a fresh session), so
+    // nothing here ties a nested session to the node that built its images.
+    expect(content).not.toContain('additionalimagestores =')
   })
 
   it('auto-trusts the session MITM CA in both trust shapes', async () => {

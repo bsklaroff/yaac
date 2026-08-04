@@ -35,7 +35,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { gcOrphanEphemeralModuleDirs, isTmuxSessionAlive } from '#features/sessions/cleanup'
-import { ensureNamespace, gcOrphanProjectRegistries } from '#features/cluster'
+import { ensureNamespace, gcOrphanProjectRegistries, sweepLegacyImageStore } from '#features/cluster'
 import { ensureLocalRegistry } from '#platform/container'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
@@ -488,6 +488,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // catches `project remove` runs that raced an unavailable cluster.
     void gcOrphanProjectRegistries()
       .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
+
+    // Reclaim the retired node-local image store (the cross-session cache
+    // is the project registry now). Multi-GB on a machine that ran an
+    // older yaac, and nothing mounts it any more.
+    void sweepLegacyImageStore()
+      .catch((err) => serverLog(`[server] legacy image-store sweep failed: ${String(err)}`))
   }
 
   // A NESTED server's cluster is its session's born-at-zero vcluster

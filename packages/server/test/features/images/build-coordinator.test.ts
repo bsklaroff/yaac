@@ -18,7 +18,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 import type * as imageBuilderModule from '#features/images/image-builder'
-import type * as imagePromoterModule from '#features/images/image-promoter'
 import type * as registryServiceModule from '#features/cluster/registry-service'
 
 /**
@@ -112,12 +111,6 @@ vi.mock('#features/cluster/cluster-cidrs', () => ({
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#features/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 
-const mockEnsureSalvageWriterImage = vi.hoisted(() => vi.fn())
-vi.mock('#features/images/image-promoter', async (importOriginal) => ({
-  ...(await importOriginal<typeof imagePromoterModule>()),
-  ensureSalvageWriterImage: mockEnsureSalvageWriterImage,
-}))
-
 const mockEnsureRegistryClusterService = vi.hoisted(() => vi.fn())
 vi.mock('#features/cluster/registry-service', async (importOriginal) => ({
   ...(await importOriginal<typeof registryServiceModule>()),
@@ -141,6 +134,7 @@ import {
   BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
   BUILDER_GRAPHROOT_TMPFS_BYTES,
   BUILDER_CPU_REQUEST_MILLIS,
+  BUILDER_LOCAL_TAG,
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#features/images/builder-pod'
@@ -271,11 +265,13 @@ beforeEach(() => {
   tarLists.length = 0
   spawnState.closeCode = 0
   mockImageExists.mockResolvedValue(false)
-  mockHasTag.mockResolvedValue(false)
+  // Registry state, the process boundary the builder pod's own image
+  // ensure also crosses: only the pinned podman-stable mirror is present,
+  // so `ensureBuilderImage` resolves to its ref without pulling or pushing.
+  mockHasTag.mockImplementation((tag: string) => Promise.resolve(tag === BUILDER_LOCAL_TAG))
   mockRemoveImage.mockResolvedValue(undefined)
   mockVapAvailable.mockResolvedValue(true)
   mockEnsureKubernetes.mockResolvedValue(undefined)
-  mockEnsureSalvageWriterImage.mockResolvedValue('localhost:5001/podman-stable:v5.5')
   mockEnsureRegistryClusterService.mockResolvedValue(CLUSTER_HOST)
   mockKubectlApply.mockResolvedValue(undefined)
   mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
@@ -416,7 +412,6 @@ describe('ensureImage', () => {
 
     // Infra ensured, then the role guard, egress policy and pod applied.
     expect(mockEnsureKubernetes).toHaveBeenCalled()
-    expect(mockEnsureSalvageWriterImage).toHaveBeenCalled()
     expect(mockEnsureRegistryClusterService).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
       'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'Pod',
@@ -449,6 +444,9 @@ describe('ensureImage', () => {
     })
     expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
+    // The pinned podman-stable mirror, resolved by the module's own image
+    // ensure — never the session's user-customizable image.
+    expect(pod.spec.containers[0].image).toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
     // Graphroot on a sentry tmpfs emptyDir.

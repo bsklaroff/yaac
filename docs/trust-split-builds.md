@@ -66,7 +66,7 @@ Pod spec:
 
 - Name `yaac-builder-<tag-hash8>-<rand>`, label `yaac.role: builder` plus
   install labels, in the yaac namespace. Image: the mirrored
-  `podman-stable` digest pin (same as the image-salvage writer).
+  `podman-stable` digest pin.
 - `runtimeClassName: gvisor` (plain chroot isolation needs no raw
   sockets), `NESTED_ENGINE_CAPS`, `automountServiceAccountToken: false`,
   seccomp RuntimeDefault, memory limit ~8Gi, `activeDeadlineSeconds`
@@ -136,11 +136,9 @@ store. Step cache cannot remove this leg; it is bounded instead:
   a pod.
 
 If parent-pull latency ever dominates real usage, the escalation is a
-node-local read-only `additionalimagestores` parent store seeded by
-salvage-style writer pods (as image-salvage already proves gofer-backed
-additional stores work). It is deliberately not built: it adds writer-pod
-seeding, store GC, and version pinning across host and pod to save the
-pull on a rare, prewarm-hidden path.
+per-node image cache seeded ahead of the pod. It is deliberately not
+built: it adds a node-local store, its GC, and version pinning across
+host and pod to save the pull on a rare, prewarm-hidden path.
 
 ## Server wiring
 

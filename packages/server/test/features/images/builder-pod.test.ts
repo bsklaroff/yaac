@@ -1,7 +1,8 @@
 /**
- * The two builder-pod entry points that are not reached through a chain
- * build: the cluster-wide role guard (applied at `yaac cluster setup`) and
- * the leaked-pod reaper (a reconcile step).
+ * The builder-pod entry points that are not reached through a chain build:
+ * the pinned-image mirror (also called by the e2e global setup), the
+ * cluster-wide role guard (applied at `yaac cluster setup`) and the
+ * leaked-pod reaper (a reconcile step).
  *
  * Everything else in this module — pod manifests, in-pod scripts, build
  * argv, context tar — is exercised through `ensureImage` in
@@ -9,6 +10,8 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as registryModule from '#platform/container/registry'
+import type * as runtimeModule from '#platform/container/runtime'
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
@@ -35,10 +38,29 @@ vi.mock('#features/cluster/cluster-cidrs', () => ({
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#features/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 
-import { ensureBuilderRoleGuard, reconcileBuilderPodGc } from '#features/images'
-// Reap policy constant and the sweep-throttle reset: setup values, not
-// units under test.
-import { BUILDER_REAP_AGE_MS, _resetBuilderReapForTests } from '#features/images/builder-pod'
+const mockImageExists = vi.hoisted(() => vi.fn())
+vi.mock('#platform/container/runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof runtimeModule>()),
+  imageExists: mockImageExists,
+}))
+
+const mockRegistryHasTag = vi.hoisted(() => vi.fn())
+vi.mock('#platform/container/registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof registryModule>()),
+  registryHasTag: mockRegistryHasTag,
+  registryRef: (tag: string) => `localhost:5001/${tag}`,
+  pushImageToRegistry: vi.fn(),
+}))
+
+import { ensureBuilderImage, ensureBuilderRoleGuard, reconcileBuilderPodGc } from '#features/images'
+// Reap policy constant, the upstream pin, and the sweep-throttle reset:
+// setup values, not units under test.
+import {
+  BUILDER_LOCAL_TAG,
+  BUILDER_REAP_AGE_MS,
+  BUILDER_UPSTREAM_IMAGE,
+  _resetBuilderReapForTests,
+} from '#features/images/builder-pod'
 
 const appliedKinds = (): string[] =>
   mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
@@ -56,6 +78,23 @@ beforeEach(() => {
   mockKubectlApply.mockResolvedValue(undefined)
   mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
   mockKubectlGetJson.mockResolvedValue(null)
+  mockRegistryHasTag.mockResolvedValue(true)
+  mockImageExists.mockResolvedValue(false)
+})
+
+describe('ensureBuilderImage', () => {
+  it('returns the registry ref without pulling when the tag is mirrored', async () => {
+    await expect(ensureBuilderImage(true)).resolves.toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
+  })
+
+  it('refuses to build under requirePrebuilt when the mirror is missing', async () => {
+    mockRegistryHasTag.mockResolvedValue(false)
+    await expect(ensureBuilderImage(true)).rejects.toThrow(/Restart the test run/)
+  })
+
+  it('is digest-pinned upstream (the digest IS the pin — no content hash)', () => {
+    expect(BUILDER_UPSTREAM_IMAGE).toMatch(/^quay\.io\/podman\/stable@sha256:[0-9a-f]{64}$/)
+  })
 })
 
 describe('ensureBuilderRoleGuard', () => {

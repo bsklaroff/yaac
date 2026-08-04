@@ -49,9 +49,8 @@ nested, its pod gains:
   data out of pod memory (reclaimable node page cache, not cgroup-pinned
   tmpfs pages). Root-owned, so no fsGroup/chown. The sentry's `size=` cap
   ENOSPCs oversized builds before kubelet eviction can fire.
-- **shared cross-session image store**: a node-local hostPath mounted rw
-  at `/var/lib/shared-images` as a podman `additionalimagestores` entry.
-  The rootful engine reads it and the promoter writes it, both as root.
+- **cross-session image cache**: no extra mount — the project's registry
+  is the cache (below), so a nested session can be scheduled on any node.
 
 The pod's postStart setup script (`session-bin/yaac-session-init`) starts
 the engine in the background with one sudo'd shell: `podman system
@@ -67,32 +66,121 @@ netns, and holds setcap file caps on the tmpfs graphroot. Nothing
 supervises the engine: if it dies mid-session, the session is degraded
 until recreated.
 
-### Image promoter (cross-session build cache)
+### Image cache (cross-session build cache)
 
-The promoter salvages a session's built/pulled images into the project's
-shared store, giving real `docker build` layer-cache hits across a
-project's sessions. Extracting layers file-by-file through the gVisor
-gofer is prohibitively slow (~2ms/file, so a 4GB node_modules-heavy chain
-takes 16+ minutes), so the pipeline splits at the sandbox boundary:
+A session's built and pulled images are salvaged into the **project's own
+registry**, and pulled back into the next session's engine, so `docker
+build` gets real layer-cache hits across a project's sessions. The registry
+is the only distribution mechanism: there is no node-local store, so
+nothing ties a session to the node its predecessor ran on. Every nested
+session therefore ensures the per-project registry, not just
+`virtualCluster` ones — an inner yaac is the exception (its vcluster
+denies the registry's node hostPath), and its sessions run uncached.
 
-1. **In-pod** (one sudo-gated exec): survey the engine's images, diff
-   against the store (visible in-pod through the read-only additional-store
-   mount), and `podman save` the missing ones as a single multi-image tar
-   into the store directory — a bulk sequential gofer write, not a per-file
-   storm.
-2. **Node-side**: a one-shot writer pod on a digest-pinned
-   `quay.io/podman/stable` image (hostPath-mounting the store) runs
-   `podman --root <store> load` to extract at native speed, restore tags,
-   and prune. It runs yaac-shipped commands on a pinned upstream image —
-   never the session's user-customizable image, which must not execute as
-   root outside the sandbox.
+The push runs **inside the sandbox**, and the constraint it respects is
+that no layer may be extracted file-by-file through the gVisor gofer
+(~2ms/file — a 4GB node_modules-heavy chain took 16+ minutes that way).
+Nothing in this path touches the gofer: the graphroot is a
+sentry-internal tmpfs, so `podman push` reads layers at native speed,
+compresses them in-sandbox, and streams them out over netstack as bulk
+blob uploads — the same shape the trust-split builder pods already push
+their products with.
 
-Serialization is a real host flock in the store directory (the writer is a
-node-side runc pod, so kernel locks work). The store GC retires to two
-tagged generations with a 2h dangling-prune floor (the floor keeps a
-mid-build salvage's temporarily-dangling chain safe). Salvage runs
-best-effort both **mid-session** (a periodic reconciler, so a project's
-large first salvage lands during the run) and at **session cleanup**.
+One salvage is two sudo-gated execs:
+
+1. **Survey** — list the engine's images with their parents, names, and
+   the pod's ledger of refs it has already pushed or pulled.
+2. **Push** — the server plans `id → destination` pairs from that survey
+   and hands them to a push script as validated argv. Each named image
+   goes under its own name (`<registry>/<repo>:<tag>`), and its ancestor
+   chain goes into the SAME repo under `yaac-cache-<tag>-<n>` tags: those
+   intermediates are what a step-by-step `docker build` matches, and
+   tagging them per named image keeps the tag set bounded — a rebuilt
+   `app:v1` overwrites its own chain tags instead of adding a generation.
+   Blobs are already in the repo by then, so the chain uploads manifests
+   only. Successful pushes append to the ledger, so the 10-minute
+   reconciler never re-compresses what it already sent.
+
+The pull side (`primeSessionImages`) runs once during session setup, right
+after the engine-ready gate: it walks the registry catalog, pulls each
+tag, restores each named image's original name, and untags the
+`yaac-cache-` entries so they sit in the store as dangling cache entries
+exactly like a local `--layers` build's. It stops early once the graphroot
+passes half full — pulled layers now live in the session's 8GiB sentry
+tmpfs, which the old hostPath store did not consume, so an oversized
+project cache degrades to a partial warm-up instead of ENOSPC'ing the
+engine.
+
+Both directions are best-effort and self-gating (no podman, no sudo, or no
+registry ⇒ a single cheap exec that does nothing); a cold cache only ever
+costs a rebuild. Salvage runs **mid-session** (a periodic reconciler, so a
+project's large first salvage lands during the run) and at **session
+cleanup**, before the Job is deleted.
+
+Destinations carry no content hash: they are name-for-name, and the chain
+tags are slots keyed by (repo, tag, depth). That is what bounds the tag
+set, and it makes concurrent sessions of one project last-salvage-wins on
+a shared name — the same semantics the node-local store's tag restore had.
+Nothing corrupts (layers are content-addressed and a manifest PUT is
+atomic), and a chain left interleaved between two sessions costs a wasted
+pull, never a wrong cache hit: buildah matches a cache candidate on layer
+parentage *and* history, so a foreign intermediate never matches.
+
+### Registry GC
+
+A salvage also retires chain slots a shorter rebuild no longer fills
+(`DELETE /manifests/<digest>`, bounded by contiguity), so a stranded tail
+cannot make every future prime pull dead intermediates.
+
+Because both flows reuse tags, every rebuild leaves the previous manifest
+referenced by no tag — so the reclaim is just `registry garbage-collect
+--delete-untagged`, run by the `registry-gc` reconcile step against the
+storage hostPath.
+
+That alone cannot bound a repo whose every build mints a NEW tag, though:
+yaac's own chain is content-hash tagged (`yaac-tools:<hash>`), so each
+source change adds a generation that stays tagged and therefore collectable
+by nothing. The collect runs a retention pass first, keeping the newest
+`REGISTRY_GENERATIONS_KEPT` — the same policy `image-gc.ts` applies to the
+host engine — and letting `--delete-untagged` reclaim the rest. It is the
+only thing here that drops a name someone could still pull, so it is
+doubly guarded: the repo must be yaac-built (mirroring image-gc's
+`YAAC_IMAGE_REPO`), and the tag must have the content-hash shape, so a
+session's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
+match. Everything else tagged is left alone: a tag in this registry is a
+promise to whoever pulls it.
+
+Retention is age-based, not liveness-based: a session pinned to a
+generation that has since been passed by `REGISTRY_GENERATIONS_KEPT` newer
+ones loses pullability, and its vcluster's synced pods would
+ImagePullBackOff on a restart. The budget is sized to make that rare — it
+is the width of the concurrently-live fleet, not a rebuild depth — but
+closing it properly would mean checking the tags live sessions actually
+reference before retiring.
+
+`garbage-collect` is only safe when nothing can be pushing — a push that
+has uploaded blobs but not yet its manifest is indistinguishable from
+garbage. Upstream's answer is "read-only mode, or not running at all", and
+not-running is unusable here: an active project's session count never
+reaches zero, so a collect gated on idleness would never run for the
+registries that actually grow. The collect therefore takes a **read-only
+maintenance window** — the Deployment is rolled with
+`REGISTRY_STORAGE_MAINTENANCE_READONLY` on, which keeps pulls and the
+catalog serving while pushes and deletes answer 405. A salvage push or
+retire that lands in the window fails best-effort and is retried next
+cycle (the ledger and the retired-shape memo only record what succeeded),
+while pulls — what a live session and its synced pods depend on — keep
+working. The cost is two `Recreate` rollouts, a few seconds of
+unavailability at each edge of the window.
+
+It holds the same per-project mutex `ensureProjectRegistry` takes, so a
+session create cannot start mid-collect; it is throttled per project, runs
+one project per pass, detaches (reconcile steps run sequentially), and the
+restore to serving mode is unconditional so a failed collect never strands
+a registry in maintenance mode.
+
+That env var is spelled as an inline YAML map: the `…_READONLY_ENABLED`
+form collapses the key to a scalar and registry 2.8 panics at boot.
 
 ## CA trust: the combined bundle
 
@@ -160,7 +248,7 @@ Still manual: Java/JVM (own `cacerts` keystore), rustls-based clients, and
 OS-store-only tools with no env knob (GnuTLS `wget`) honor neither the OS
 store nor any CA env var, and need their own per-tool import.
 
-## Per-project push registries (`virtualCluster` only)
+## Per-project push registries
 
 A plain `registry:2` per project serves as the push-and-serve image source
 for vcluster synced pods and yaac-in-yaac. It has no upstream egress —
@@ -169,6 +257,10 @@ nested `docker pull` goes through the MITM proxy, not this registry.
 - Plain HTTP on **:5000**, node-local hostPath storage, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
   and mirrored into the local registry.
+- Ensured for every **nested** session (it also carries their cross-session
+  image cache), not only `virtualCluster` ones — except inside an inner
+  yaac, whose vcluster denies the node hostPath the registry storage needs;
+  those sessions simply run without a cross-session cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
 - Three policies: a sessions→registry allow k8s NetworkPolicy (podSelector

@@ -139,30 +139,28 @@ RUN cat <<'EOF' > /etc/containers/registries.conf
 unqualified-search-registries = ["docker.io"]
 EOF
 
-# Rootful graphroot + cross-session shared image store. The graphroot lives
-# at podman's rootful default (/var/lib/containers/storage), backed by a
-# sentry-internal tmpfs the pod spec mounts at /var/lib/containers: gVisor's
-# gofer filesystem refuses WRITES to the security.* xattr namespace
-# (goferfs checkXattrPermissions → EOPNOTSUPP), so a `docker build` RUN
-# step doing `setcap` (apt/apk postinsts for ping, nginx, …) fails on a
-# gofer-backed graphroot — only a sentry tmpfs upper holds file caps
-# (verified on the dev cluster; the docker-in-gvisor tutorial's shape).
-# The tmpfs is disk-backed (runsc filestore in the emptyDir), so layer
-# data is reclaimable node page cache, not pod-pinned memory.
+# Rootful graphroot. It lives at podman's rootful default
+# (/var/lib/containers/storage), backed by a sentry-internal tmpfs the pod
+# spec mounts at /var/lib/containers: gVisor's gofer filesystem refuses
+# WRITES to the security.* xattr namespace (goferfs checkXattrPermissions
+# → EOPNOTSUPP), so a `docker build` RUN step doing `setcap` (apt/apk
+# postinsts for ping, nginx, …) fails on a gofer-backed graphroot — only
+# a sentry tmpfs upper holds file caps (verified on the dev cluster; the
+# docker-in-gvisor tutorial's shape). The tmpfs is disk-backed (runsc
+# filestore in the emptyDir), so layer data is reclaimable node page cache,
+# not pod-pinned memory.
 # graphroot/runroot are set EXPLICITLY because once a [storage] section
 # exists podman refuses to default them ("runroot must be set").
-# additionalimagestores is the cross-session layer cache (a gofer-backed
-# hostPath — reads fine; the promoter writes it); file caps drop through it,
-# an acceptable cache degradation (miss → rebuild), never a correctness break.
-RUN mkdir -p /var/lib/containers /var/lib/shared-images
+# There is NO additionalimagestores lower: the cross-session layer cache is
+# the project registry — the server pushes a session's images at salvage
+# and pulls them into a fresh session's store (image-promoter.ts) — so it
+# needs no node-local mount and survives landing on another node.
+RUN mkdir -p /var/lib/containers
 RUN cat <<'EOF' > /etc/containers/storage.conf
 [storage]
 driver = "overlay"
 runroot = "/run/containers/storage"
 graphroot = "/var/lib/containers/storage"
-
-[storage.options]
-additionalimagestores = ["/var/lib/shared-images"]
 EOF
 
 USER yaac

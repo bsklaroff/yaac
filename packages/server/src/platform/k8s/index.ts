@@ -50,14 +50,12 @@ export {
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
-  SHARED_IMAGE_STORE_DST_PATH,
-  SHARED_IMAGE_STORE_PATH,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
   buildSessionJobManifest,
   graphrootMountAnnotations,
 } from './pod-spec'
-export type { HostPathMount, NestedContainersParams } from './pod-spec'
+export type { HostPathMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
