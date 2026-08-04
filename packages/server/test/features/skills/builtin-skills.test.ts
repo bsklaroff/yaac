@@ -84,6 +84,22 @@ describe('yaac-watch-prs skill', () => {
   })
 })
 
+describe('spawn-pr-reviewers skill', () => {
+  it('is discoverable and drives both halves through the session-bin commands', async () => {
+    expectShipped('spawn-pr-reviewers')
+    const body = await bodyOf('spawn-pr-reviewers')
+    // The watch half scopes the generalized watcher to newly opened PRs, and
+    // the per-reviewer half re-scopes it to that one PR's activity.
+    expect(body).toContain('yaac-watch-prs --events opened')
+    expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
+    // The spawn half must name a tool and model, defaulting to Fable 5, and
+    // resolve the tool itself when the argument names only a model.
+    expect(body).toContain('yaac-spawn --tool <tool> --model <model>')
+    expect(body).toContain('yaac-spawn --models')
+    expect(body).toContain('claude-fable-5')
+  })
+})
+
 describe('yaac-autoconfig skill', () => {
   it('is discoverable with a non-empty description', () => {
     expectShipped('yaac-autoconfig')
