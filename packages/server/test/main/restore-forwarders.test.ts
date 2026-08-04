@@ -12,11 +12,11 @@ vi.mock('#features/projects/config', () => ({
   resolveProjectConfig: vi.fn(),
 }))
 
-vi.mock('#features/sessions/cleanup', () => ({
+vi.mock('#features/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn(),
 }))
 
-vi.mock('#features/sessions/forwarders/port-forwarders', () => ({
+vi.mock('#features/forwarders/port-forwarders', () => ({
   hasSessionForwarders: vi.fn(),
   provisionSessionForwarders: vi.fn(),
 }))
@@ -24,8 +24,8 @@ vi.mock('#features/sessions/forwarders/port-forwarders', () => ({
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { resolveProjectConfig } from '#features/projects/config'
-import { isTmuxSessionAlive } from '#features/sessions/cleanup'
-import { hasSessionForwarders, provisionSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
+import { isTmuxSessionAlive } from '#features/status/liveness'
+import { hasSessionForwarders, provisionSessionForwarders } from '#features/forwarders/port-forwarders'
 import { restoreAllSessionForwarders } from '#main/server-run'
 
 const mockListPods = vi.mocked(listSessionPods)

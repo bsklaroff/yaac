@@ -14,7 +14,7 @@
  * half-built session.
  */
 import { toErrorBody } from '#http'
-import { notifySessionListChanged } from '#features/sessions/notify'
+import { notifySessionListChanged } from './notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 

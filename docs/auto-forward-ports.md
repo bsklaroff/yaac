@@ -11,7 +11,7 @@ permanently for the project — without editing config or restarting.
 
 ```
 streamd `ports` stream (in-pod /proc/net poll → push on change)
-  → server detector map (features/sessions/forwarders/port-detector.ts)
+  → server detector map (features/forwarders/port-detector.ts)
   → snapshot `unforwardedPorts[]` → /events WS
   → UnforwardedPortsBadge (session toolbar popover)
   → POST /session/:id/forward-port {containerPort, persist}

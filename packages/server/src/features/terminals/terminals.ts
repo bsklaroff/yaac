@@ -1,5 +1,5 @@
 import { sessionExec } from '#platform/k8s'
-import { sessionControlStreamSend } from '#features/sessions/control-stream-registry'
+import { sessionControlStreamSend } from '#features/status'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { SessionTerminalEntry } from '@yaac/shared/types'
 

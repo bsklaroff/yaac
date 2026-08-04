@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('#features/sessions/agent-command', () => ({
+vi.mock('#features/agents/agent-command', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
 }))
 vi.mock('#features/sessions/spare-pool', () => ({
@@ -8,8 +8,10 @@ vi.mock('#features/sessions/spare-pool', () => ({
   rebranchSpare: vi.fn(),
 }))
 vi.mock('#features/sessions/cleanup', () => ({
-  isTmuxSessionAlive: vi.fn(),
   cleanupSessionDetached: vi.fn(),
+}))
+vi.mock('#features/status/liveness', () => ({
+  isTmuxSessionAlive: vi.fn(),
 }))
 // execFileAsync/kubectlApply are read at module-eval time by the cluster
 // registry service, which `#features/projects` now reaches transitively.
@@ -51,7 +53,8 @@ import {
 } from '#features/images/prewarm'
 import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
+import { cleanupSessionDetached } from '#features/sessions/cleanup'
+import { isTmuxSessionAlive } from '#features/status/liveness'
 import { kubectlWithRetry } from '#platform/k8s/kubectl'
 import { sessionExec, waitForStreamd } from '#platform/k8s/stream-relay'
 import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'

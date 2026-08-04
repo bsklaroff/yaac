@@ -3,9 +3,14 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureImage, primeSessionImages, pushImageShared } from '#features/images'
-import { proxyClient, resolveProxyImageTag } from '#features/sessions/egress/proxy-client'
-import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/egress/proxy-registration'
-import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
+import {
+  buildSessionRegistration,
+  hostMatchesPattern,
+  proxyClient,
+  resolveAllowedHosts,
+  resolveProxyImageTag,
+  syncProxySecrets,
+} from '#features/egress'
 import { ensureContainerRuntime, reserveAvailablePort, startPortForwarders } from '#platform/container'
 import {
   LABEL_DATA_DIR_HASH,
@@ -77,7 +82,6 @@ import {
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { writeKnownHostsFile } from '#platform/git'
 import { formatSshCommand, getGitUserConfig } from '@yaac/shared/git'
-import { hostMatchesPattern } from '#features/sessions/egress/default-allowed-hosts'
 import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
@@ -88,15 +92,24 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
-import { clearPanePointers } from '#features/sessions/agent-links'
-import { ensureClaudeHooks } from '#features/sessions/agents/claude-hooks'
-import { removeLegacyCodexHook } from '#features/sessions/agents/codex'
-import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode'
+import {
+  buildAgentCmd,
+  buildUpstreamExec,
+  buildWindowsExec,
+  buildWorktreeLinkExec,
+  clearPanePointers,
+  ensureClaudeHooks,
+  ensureOpencodeConfigJson,
+  removeLegacyCodexHook,
+  typeInitialPrompt,
+  validateInitWindows,
+  type InitWindow,
+} from '#features/agents'
 import {
   deleteWorktreeAgentSessions,
   recordAgentSessions,
   setActiveAgentSessions,
-} from '#features/sessions/agent-session-store'
+} from './agent-session-store'
 import {
   deleteWorktreeRow,
   getWorktreeRow,
@@ -106,31 +119,20 @@ import {
   restoreWorktreeStop,
   setWorktreeBaseBranch,
   type PriorStop,
-} from '#features/sessions/worktree-store'
-import {
-  buildAgentCmd,
-  typeInitialPrompt,
-  type InitWindow,
-} from '#features/sessions/agent-command'
-import {
-  buildUpstreamExec,
-  buildWindowsExec,
-  buildWorktreeLinkExec,
-  validateInitWindows,
-} from '#features/sessions/setup-commands'
-import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from '#features/sessions/seed'
+} from './worktree-store'
+import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
   SESSION_INIT_SCRIPT,
   sessionBinDir,
   sessionBinMounts,
   stageSessionBin,
-} from '#features/sessions/spawn-script'
+} from './spawn-script'
 import { ServerError } from '@yaac/shared/errors'
 import {
   buildStatusRight,
   registerSessionForwarders,
-} from '#features/sessions/forwarders/port-forwarders'
+} from '#features/forwarders'
 import type { AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,

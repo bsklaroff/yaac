@@ -1,11 +1,10 @@
 import { type TickSnapshot, listSessionPods } from '#platform/k8s'
-import { classifySessionPods } from '#features/sessions/classify'
-import { probeTmuxLiveness } from '#features/sessions/cleanup'
-import { getAgentSessionFirstMessage } from '#features/sessions/state'
+import { classifySessionPods, probeTmuxLiveness } from '#features/status'
+import { getAgentSessionFirstMessage } from '#features/agents'
 import {
   listAgentSessionsMissingPrompt,
   setAgentSessionCapture,
-} from '#features/sessions/agent-session-store'
+} from './agent-session-store'
 import { testEnv } from '@yaac/shared/env'
 
 /**

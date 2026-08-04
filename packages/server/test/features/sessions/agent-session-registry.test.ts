@@ -10,7 +10,7 @@ import { recordWorktreeCreated } from '#features/sessions/worktree-store'
 import {
   setLiveAgentPanes,
   _resetSessionStatusStoreForTests,
-} from '#features/sessions/status-store'
+} from '#features/status/status-store'
 
 /**
  * The registry is the join: the hook's link tree says which conversations a

@@ -1390,7 +1390,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     it('boots opencode and exposes its HTTP API on 127.0.0.1:4096 inside the container', async () => {
       // The yaac status + first-message helpers in
-      // packages/server/src/features/sessions/agents/opencode.ts depend on these endpoints being
+      // packages/server/src/features/agents/opencode.ts depend on these endpoints being
       // reachable via `kubectl exec curl` — without this test the entire
       // opencode status pipeline is unverified by CI.
       //
@@ -1450,7 +1450,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       // `/session` above is the load-bearing endpoint: it is what the
       // server's opencode first-message probe (runProbe in
-      // features/sessions/agents/opencode.ts) parses; busy/idle status
+      // features/agents/opencode.ts) parses; busy/idle status
       // comes from the tmux pane, not HTTP. `/session/status` is probed
       // only as a liveness signal — its SHAPE is version-dependent (the
       // pinned 1.0.142 returns an array; later releases an object), so

@@ -4,7 +4,7 @@
  *
  * WHAT IT VERIFIES
  *   The tmux-side status classification used by the opencode and pi session
- *   status watchers. packages/server/src/features/sessions/status-watcher.ts
+ *   status watchers. packages/server/src/features/status/status-watcher.ts
  *   builds a content-search format (`busyStatusFormat`) from the per-agent
  *   marker lists (OPENCODE_BUSY_MARKERS / PI_BUSY_MARKERS) and subscribes a
  *   no-output control-mode client to it, so tmux resolves running/waiting

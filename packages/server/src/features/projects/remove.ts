@@ -3,9 +3,11 @@ import path from 'node:path'
 import { type SessionPod, listSessionPods } from '#platform/k8s'
 import { removeProjectRegistry } from '#features/cluster'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
-import { cleanupSessionDetached } from '#features/sessions/cleanup'
-import { deleteProjectWorktrees } from '#features/sessions/worktree-store'
-import { deleteProjectAgentSessions } from '#features/sessions/agent-session-store'
+import {
+  cleanupSessionDetached,
+  deleteProjectAgentSessions,
+  deleteProjectWorktrees,
+} from '#features/sessions'
 import { ServerError } from '@yaac/shared/errors'
 
 /**

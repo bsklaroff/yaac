@@ -17,12 +17,21 @@ import {
   listSessionPods,
   setActiveClusterCache,
 } from '#platform/k8s'
-import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
-import { resolveSessionContainer } from '#features/sessions/resolve'
-import { StatusWatcherManager } from '#features/sessions/status-watcher'
-import { PortDetectorManager } from '#features/sessions/forwarders/port-detector'
+import {
+  coalesceCalls,
+  gcOrphanEphemeralModuleDirs,
+  notifySessionListChanged,
+  onSessionListChanged,
+  resolveSessionContainer,
+} from '#features/sessions'
+import { StatusWatcherManager, isTmuxSessionAlive, onSessionStatusChanged } from '#features/status'
+import {
+  PortDetectorManager,
+  hasSessionForwarders,
+  provisionSessionForwarders,
+  stopAllSessionForwarders,
+} from '#features/forwarders'
 import { refreshClaudeBundledSkills } from '#features/skills'
-import { onSessionStatusChanged } from '#features/sessions/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -34,15 +43,13 @@ import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { gcOrphanEphemeralModuleDirs, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { ensureNamespace, gcOrphanProjectRegistries, sweepLegacyImageStore } from '#features/cluster'
 import {
   ensureLocalRegistry,
   killTrackedPodmanProcs,
   reapOrphanedPodmanProcs,
 } from '#platform/container'
-import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
+import { proxyClient } from '#features/egress'
 import { resolveProjectConfig } from '#features/projects'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

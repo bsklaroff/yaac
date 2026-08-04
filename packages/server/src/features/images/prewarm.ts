@@ -38,21 +38,21 @@ import {
   sessionExec,
   waitForStreamd,
 } from '#platform/k8s'
-import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
+import {
+  cleanupSessionDetached,
+  deleteWorktreeRow,
+  rebranchSpare,
+  recordAgentSessions,
+  recordWorktreeCreated,
+  retoolSpare,
+  setActiveAgentSessions,
+  setWorktreeBaseBranch,
+  type SessionCreateResult,
+} from '#features/sessions'
+import { isTmuxSessionAlive } from '#features/status'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveCredentialForUrl, resolveProjectConfig } from '#features/projects'
-import { type SessionCreateResult } from '#features/sessions/create'
-import {
-  deleteWorktreeRow,
-  recordWorktreeCreated,
-  setWorktreeBaseBranch,
-} from '#features/sessions/worktree-store'
-import {
-  recordAgentSessions,
-  setActiveAgentSessions,
-} from '#features/sessions/agent-session-store'
-import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
-import { shellEscape } from '#features/sessions/agent-command'
+import { shellEscape } from '#platform/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'

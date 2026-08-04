@@ -15,7 +15,7 @@ import {
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { ProxyClient } from '@yaac/server/features/egress/proxy-client'
 import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/platform/k8s/pod-spec'

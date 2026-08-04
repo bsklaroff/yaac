@@ -1,22 +1,21 @@
 import simpleGit from 'simple-git'
 import { sessionExec } from '#platform/k8s'
-import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { buildSessionRegistration } from '#features/sessions/egress/proxy-registration'
+import { buildSessionRegistration, proxyClient } from '#features/egress'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   resolveProjectConfig,
   resolveEphemeralModulesPaths,
 } from '#features/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { shellEscape } from '#platform/shell'
 import {
-  shellEscape,
   resolveInitWindows,
   buildAgentCmd,
   verifyAgentWindowAlive,
   initWindowCommand,
   TMUX,
-} from '#features/sessions/agent-command'
-import { withUpstreamConfigLock } from '#features/sessions/create'
+} from '#features/agents'
+import { withUpstreamConfigLock } from './create'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 

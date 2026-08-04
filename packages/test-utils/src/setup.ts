@@ -18,7 +18,7 @@ import {
 } from '@yaac/server/platform/k8s/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
-import type { ProxyClientConfig } from '@yaac/server/features/sessions/egress/proxy-client'
+import type { ProxyClientConfig } from '@yaac/server/features/egress/proxy-client'
 import { e2eMkdtemp } from '#tmp'
 
 const execFileAsync = promisify(execFile)

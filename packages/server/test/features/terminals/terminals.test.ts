@@ -15,7 +15,7 @@ import { sessionExec } from '#platform/k8s/stream-relay'
 import {
   registerSessionControlStream,
   _clearControlStreamRegistryForTests,
-} from '#features/sessions/control-stream-registry'
+} from '#features/status/control-stream-registry'
 import { createShellWindow, killWindowTerminal, listSessionTerminals } from '#features/terminals'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({

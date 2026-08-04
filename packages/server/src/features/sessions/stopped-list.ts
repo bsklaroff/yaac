@@ -1,14 +1,17 @@
 import { listSessionPods } from '#platform/k8s'
-import { listWorktreeRows, type WorktreeRow } from '#features/sessions/worktree-store'
+import { listWorktreeRows, type WorktreeRow } from './worktree-store'
 import {
   getAgentSessionsFor,
   setAgentSessionCapture,
   toAgentSessionEntry,
   type AgentSessionLinkRow,
-} from '#features/sessions/agent-session-store'
-import { getAgentSessionFirstMessage } from '#features/sessions/state'
-import { sessionTranscriptPath, transcriptLastActiveMs } from '#features/sessions/transcripts'
-import { ensureProjectExists } from '#features/sessions/list'
+} from './agent-session-store'
+import {
+  getAgentSessionFirstMessage,
+  sessionTranscriptPath,
+  transcriptLastActiveMs,
+} from '#features/agents'
+import { ensureProjectExists } from './list'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
 
