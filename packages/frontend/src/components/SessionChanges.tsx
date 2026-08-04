@@ -143,10 +143,14 @@ export function SessionChanges(
       .catch(() => { /* stale-but-instant list stays */ })
   }, [pickerOpen, projectSlug, queryClient])
 
-  // Picking the session's own fork branch clears the override (sends no base →
-  // the server default); any other branch diffs against its origin/<branch>.
+  // Every pick is sent as an explicit base, including the session's own fork
+  // branch. Clearing it instead would fall back to the server's default base,
+  // which is read live from the worktree's git config — and an agent that
+  // pushes with `git push -u` rewrites that to its own remote branch, whose
+  // fork point is HEAD ("No changes"). An explicit base always diffs against
+  // origin/<branch>, which is what the label promises.
   const pickBase = (branch: string): void => {
-    setChangesBase(sessionId, branch === baseBranch ? undefined : branch)
+    setChangesBase(sessionId, branch)
     setPickerOpen(false)
     setPickerQuery('')
   }

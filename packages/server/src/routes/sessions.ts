@@ -22,7 +22,6 @@ import { resolveSessionContainer } from '#features/sessions/resolve'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals'
 import { getSessionChanges, sessionForkBranch } from '#features/sessions/changes'
-import { repoDir } from '@yaac/shared/project-paths'
 
 export const sessionApp = new Hono()
   .get(
@@ -209,13 +208,13 @@ export const sessionApp = new Hono()
       const { jobName, sessionId, projectSlug } = await resolveSessionContainer(
         c.req.param('id'), { requireRunning: true },
       )
-      // The branch the session forked from (its recorded upstream, e.g. main),
-      // read host-side from the shared repo config — same source as the sidebar
-      // base label. Passed as the DEFAULT diff base so committed work stays
-      // visible even after the agent renames and pushes its branch, which makes
-      // the current branch's own @{upstream} collapse the merge-base to HEAD.
-      // Cached, because this endpoint is polled.
-      const forkBranch = await sessionForkBranch(repoDir(projectSlug), sessionId)
+      // The branch the session forked from (its recorded base, e.g. main) —
+      // the same source as the sidebar base label. Passed as the DEFAULT diff
+      // base so committed work stays visible even after the agent renames and
+      // pushes its branch, which makes the current branch's own @{upstream}
+      // collapse the merge-base to HEAD. Cached, because this endpoint is
+      // polled.
+      const forkBranch = await sessionForkBranch(projectSlug, sessionId)
       return c.json(await getSessionChanges(jobName, c.req.valid('query').base, forkBranch ?? undefined))
     },
   )

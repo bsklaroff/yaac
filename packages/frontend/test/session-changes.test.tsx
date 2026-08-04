@@ -263,7 +263,12 @@ describe('SessionChanges', () => {
     await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'dev'))
   })
 
-  it('clears the override when the session’s own base branch is picked', async () => {
+  // Picking the session's own base branch must send it explicitly rather than
+  // fall back to the server default: that default is read from the worktree's
+  // git config, which the session's own `git push -u` repoints at the branch it
+  // just pushed — a base whose fork point is HEAD, so a session with a pushed
+  // PR renders as "No changes".
+  it('sends the session’s own base branch explicitly when it is picked', async () => {
     useUiStore.setState({ changesBase: { s1: 'dev' } })
     mock.mockResolvedValue(PAYLOAD)
     renderPane({ baseBranch: 'main' })
@@ -274,8 +279,9 @@ describe('SessionChanges', () => {
     await waitFor(() => expect(screen.getByRole('list')).toBeTruthy())
     fireEvent.click(within(screen.getByRole('list')).getByText('main'))
 
-    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
-    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', undefined))
+    expect(useUiStore.getState().changesBase.s1).toBe('main')
+    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'main'))
+    expect(mock).not.toHaveBeenCalledWith('s1', undefined)
   })
 
   it('filters the file list by a path substring, with a filtered count in the header', async () => {

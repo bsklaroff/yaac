@@ -24,6 +24,8 @@
 import { sessionExec } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { worktreeUpstreamBranch } from '#platform/git'
+import { getSessionRow } from '#features/sessions/store'
+import { repoDir } from '@yaac/shared/project-paths'
 import type { ChangeStatus, SessionChange, SessionChanges } from '@yaac/shared/types'
 
 /** Cap the returned diff body so a huge changeset can't blow up the response;
@@ -278,11 +280,11 @@ function sliceUtf8(s: string, maxBytes: number): string {
 }
 
 /**
- * How long a session's recorded fork branch is trusted without re-reading it.
- * Reading it spawns host git, and the pane polls every few seconds — but the
- * value is near-immutable (it is written at session start and rewritten only
- * by the claim-time re-branch prep), so a short window costs nothing and the
- * pane's own polling picks up a rewrite well within it.
+ * How long a session's fork branch is trusted without re-reading it. Reading it
+ * hits the DB (and, for a session with no row, host git), and the pane polls
+ * every few seconds — but the value is near-immutable (it is written at session
+ * start and rewritten only by the claim-time re-branch prep), so a short window
+ * costs nothing and the pane's own polling picks up a rewrite well within it.
  */
 const FORK_BRANCH_TTL_MS = 30_000
 
@@ -295,14 +297,23 @@ const FORK_BRANCH_CACHE_MAX = 256
 const forkBranchCache = new Map<string, { at: number; branch: string | null }>()
 
 /**
- * The branch a session forked from, cached per session. Returns null when no
- * upstream is recorded — the pod script then falls back on its own.
+ * The branch a session forked from, cached per session. Returns null when
+ * nothing records one — the pod script then falls back on its own.
+ *
+ * The session row is the authority, because it is OURS: it is stamped once
+ * when provisioning resolves the fork branch (and again by the claim-time
+ * re-branch prep) and nothing in the pod can touch it. The worktree's
+ * `branch.agent/<id>.merge` is only a fallback for a session with no row,
+ * since that key lives in the shared repo config the agent's own git writes
+ * to: one `git push -u origin HEAD:<pr-branch>` repoints it at the branch
+ * that was just pushed, whose fork point is HEAD — which would report a
+ * session with a pushed PR as having no changes at all.
  */
-export async function sessionForkBranch(repoPath: string, sessionId: string): Promise<string | null> {
-  const key = `${repoPath} ${sessionId}`
+export async function sessionForkBranch(projectSlug: string, sessionId: string): Promise<string | null> {
+  const key = `${projectSlug} ${sessionId}`
   const hit = forkBranchCache.get(key)
   if (hit && Date.now() - hit.at < FORK_BRANCH_TTL_MS) return hit.branch
-  const branch = await worktreeUpstreamBranch(repoPath, `agent/${sessionId}`).catch(() => null)
+  const branch = await recordedForkBranch(projectSlug, sessionId)
   // Re-insert on refresh too, so Map iteration order stays "oldest write first"
   // and the eviction below drops genuinely cold entries.
   forkBranchCache.delete(key)
@@ -312,6 +323,15 @@ export async function sessionForkBranch(repoPath: string, sessionId: string): Pr
   }
   forkBranchCache.set(key, { at: Date.now(), branch })
   return branch
+}
+
+/** The session row's recorded base branch, else the worktree branch's upstream
+ *  (see sessionForkBranch for why that order). Either read failing is not
+ *  fatal: the pod script has its own fallback. */
+async function recordedForkBranch(projectSlug: string, sessionId: string): Promise<string | null> {
+  const row = await getSessionRow(projectSlug, sessionId).catch(() => undefined)
+  if (row?.baseBranch) return row.baseBranch
+  return worktreeUpstreamBranch(repoDir(projectSlug), `agent/${sessionId}`).catch(() => null)
 }
 
 /**
