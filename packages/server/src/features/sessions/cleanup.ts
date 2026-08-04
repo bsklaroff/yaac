@@ -10,7 +10,7 @@ import {
   sessionExec,
   sessionJobName,
 } from '#platform/k8s'
-import { recordSessionDeleted } from '#features/sessions/store'
+import { recordWorktreeStopped } from '#features/sessions/worktree-store'
 import { markSessionTerminating } from '#features/sessions/state'
 import { evictSessionStatus, isSessionStreamHealthy } from '#features/sessions/status-store'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
@@ -266,7 +266,7 @@ export async function cleanupSession(params: {
   // so the deleted-session view can order by recency and say why the
   // session went away (best-effort; falls back to transcript mtime if
   // unwritten).
-  await recordSessionDeleted(projectSlug, sessionId, cause)
+  await recordWorktreeStopped(projectSlug, sessionId, cause)
 
   // Drop any cached tmux-alive entry and the watcher-fed status-store row
   // so a subsequent caller doesn't see a stale value from this session (or,
@@ -370,7 +370,7 @@ export async function cleanupSessionDetached(params: {
   // unwritten). Skipped when resuming a teardown yaac already recorded, so
   // the existing cause survives (see `preserveDeletedRecord`).
   if (!preserveDeletedRecord) {
-    await recordSessionDeleted(projectSlug, sessionId, cause)
+    await recordWorktreeStopped(projectSlug, sessionId, cause)
   }
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))

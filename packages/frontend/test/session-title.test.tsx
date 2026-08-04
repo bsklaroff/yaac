@@ -24,7 +24,7 @@ function openEditor(): HTMLInputElement {
 
 describe('SessionTitle', () => {
   it('shows the title as selectable text with a rename affordance', () => {
-    render(<SessionTitle sessionId="s1" title="My session" prompt="do a thing" />)
+    render(<SessionTitle worktreeId="s1" title="My session" prompt="do a thing" />)
     const label = screen.getByText('My session')
     // Selectable for copy/paste (opts out of the Electron drag region).
     expect(label.className).toContain('select-text')
@@ -34,12 +34,12 @@ describe('SessionTitle', () => {
   })
 
   it('falls back to the prompt when there is no title', () => {
-    render(<SessionTitle sessionId="s1" title="" prompt="my first prompt" />)
+    render(<SessionTitle worktreeId="s1" title="" prompt="my first prompt" />)
     expect(screen.getByText('my first prompt')).toBeTruthy()
   })
 
   it('opens the editor pre-filled with the existing title, cursor at the end', () => {
-    render(<SessionTitle sessionId="s1" title="Existing name" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Existing name" prompt="p" />)
     const input = openEditor()
     expect(input.value).toBe('Existing name')
     // Cursor at the end (not a full select-all, which would clear on the first
@@ -49,12 +49,12 @@ describe('SessionTitle', () => {
   })
 
   it('seeds the editor from the prompt when the session has no title', () => {
-    render(<SessionTitle sessionId="s1" title="" prompt="do the thing" />)
+    render(<SessionTitle worktreeId="s1" title="" prompt="do the thing" />)
     expect(openEditor().value).toBe('do the thing')
   })
 
   it('copies the title without the flex-item block boundary newlines', () => {
-    render(<SessionTitle sessionId="s1" title="My title" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="My title" prompt="p" />)
     const label = screen.getByText('My title')
     const getSelection = vi.spyOn(window, 'getSelection')
       .mockReturnValue({ toString: () => '\nMy title\n' } as unknown as Selection)
@@ -69,7 +69,7 @@ describe('SessionTitle', () => {
   })
 
   it('commits a rename on Enter', () => {
-    render(<SessionTitle sessionId="s1" title="Old" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Old" prompt="p" />)
     const input = openEditor()
     expect(input.value).toBe('Old')
     fireEvent.change(input, { target: { value: 'New name' } })
@@ -81,7 +81,7 @@ describe('SessionTitle', () => {
   })
 
   it('commits a rename on blur', () => {
-    render(<SessionTitle sessionId="s1" title="Old" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Old" prompt="p" />)
     const input = openEditor()
     fireEvent.change(input, { target: { value: 'Renamed' } })
     fireEvent.blur(input)
@@ -90,7 +90,7 @@ describe('SessionTitle', () => {
   })
 
   it('reverts on Escape without renaming', () => {
-    render(<SessionTitle sessionId="s1" title="Old" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Old" prompt="p" />)
     const input = openEditor()
     fireEvent.change(input, { target: { value: 'discard me' } })
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -100,7 +100,7 @@ describe('SessionTitle', () => {
   })
 
   it('does not rename when the value is unchanged', () => {
-    render(<SessionTitle sessionId="s1" title="Same" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Same" prompt="p" />)
     const input = openEditor()
     fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -111,7 +111,7 @@ describe('SessionTitle', () => {
     // The header shows the prompt while a model title is still pending; edit →
     // Enter with no change must not write a title row (which would permanently
     // block the auto-generated title).
-    render(<SessionTitle sessionId="s1" title="" prompt="my first message" />)
+    render(<SessionTitle worktreeId="s1" title="" prompt="my first message" />)
     const input = openEditor()
     expect(input.value).toBe('my first message')
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -120,7 +120,7 @@ describe('SessionTitle', () => {
   })
 
   it('collapses a multi-line prompt fallback to one line and treats it as unchanged', () => {
-    render(<SessionTitle sessionId="s1" title="" prompt={'do a\n   thing'} />)
+    render(<SessionTitle worktreeId="s1" title="" prompt={'do a\n   thing'} />)
     const input = openEditor()
     // Opens as a single, collapsed line (an <input> can't hold the newline)...
     expect(input.value).toBe('do a thing')
@@ -130,7 +130,7 @@ describe('SessionTitle', () => {
   })
 
   it('trims surrounding whitespace before comparing and committing', () => {
-    render(<SessionTitle sessionId="s1" title="Kept" prompt="p" />)
+    render(<SessionTitle worktreeId="s1" title="Kept" prompt="p" />)
     const input = openEditor()
     // Same title with padding — should be treated as a no-op.
     fireEvent.change(input, { target: { value: '  Kept  ' } })

@@ -57,7 +57,7 @@ describe('reconcilePrewarmPool', () => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
     mockDefaultTool.mockResolvedValue('claude')
-    mockCreate.mockResolvedValue({ sessionId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
+    mockCreate.mockResolvedValue({ worktreeId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
     mockCleanup.mockResolvedValue(undefined)
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
   })
@@ -218,7 +218,7 @@ describe('reconcilePrewarmPool', () => {
     let settleFirst = (): void => { /* replaced below */ }
     mockCreate
       .mockReturnValueOnce(new Promise((resolve) => {
-        settleFirst = () => resolve({ sessionId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
+        settleFirst = () => resolve({ worktreeId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
       }))
       .mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
 

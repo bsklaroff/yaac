@@ -44,7 +44,7 @@ function makeDeps(over: Parameters<typeof handleSpawnRequest>[1] = {}): {
   createSessionFn: ReturnType<typeof vi.fn<CreateSessionFn>>
 } {
   const createSessionFn = vi.fn<CreateSessionFn>().mockResolvedValue({
-    sessionId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude',
+    worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude',
   } as SessionCreateResult)
   return {
     deps: {
@@ -84,13 +84,13 @@ describe('handleSpawnRequest', () => {
       mintIdFn: () => 'minted-id',
       createSessionFn: vi.fn().mockImplementation((_slug, opts: SessionCreateOptions) => {
         opts.onProgress?.('Creating job...')
-        rowDuringCreate = listProvisioning().find((p) => p.sessionId === 'minted-id')
-        return Promise.resolve({ sessionId: 'minted-id', jobName: 'j', forwardedPorts: [], tool: 'codex' })
+        rowDuringCreate = listProvisioning().find((p) => p.worktreeId === 'minted-id')
+        return Promise.resolve({ worktreeId: 'minted-id', jobName: 'j', forwardedPorts: [], tool: 'codex' })
       }),
     })
     expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
     expect(rowDuringCreate).toMatchObject({
-      sessionId: 'minted-id',
+      worktreeId: 'minted-id',
       projectSlug: 'proj',
       tool: 'codex',
       kind: 'create',
@@ -108,7 +108,7 @@ describe('handleSpawnRequest', () => {
     expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
     await settle()
     expect(listProvisioning()[0]).toMatchObject({
-      sessionId: 'minted-id',
+      worktreeId: 'minted-id',
       error: 'image build exploded',
     })
   })
@@ -222,7 +222,7 @@ describe('handleSpawnRequest', () => {
       listSessionPodsFn: () => Promise.resolve([makePod({ sessionId })]),
       createSessionFn: vi.fn().mockImplementation(async () => {
         await gate
-        return { sessionId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude' }
+        return { worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude' }
       }),
     })
     for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {

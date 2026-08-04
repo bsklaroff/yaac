@@ -7,7 +7,7 @@ import type { AgentTool, ServerSnapshot } from '@yaac/shared/types'
  */
 
 export interface WaitingSession {
-  sessionId: string
+  worktreeId: string
   projectSlug: string
   tool: AgentTool
   /** Display label: title, else the prompt, else the id. */
@@ -17,13 +17,13 @@ export interface WaitingSession {
 
 /** The subset of a snapshot's sessions that are awaiting input. */
 export function selectWaiting(snapshot: ServerSnapshot): WaitingSession[] {
-  return snapshot.sessions
+  return snapshot.worktrees
     .filter((s) => s.status === 'waiting')
     .map((s) => ({
-      sessionId: s.sessionId,
+      worktreeId: s.worktreeId,
       projectSlug: s.projectSlug,
       tool: s.tool,
-      title: s.title ?? s.prompt ?? s.sessionId,
+      title: s.title ?? s.prompt ?? s.worktreeId,
       waitingSinceMs: s.waitingSinceMs,
     }))
 }
@@ -34,7 +34,7 @@ export function selectWaiting(snapshot: ServerSnapshot): WaitingSession[] {
  * an ongoing wait keeps its key so it doesn't.
  */
 export function waitingKey(s: WaitingSession): string {
-  return `${s.sessionId}#${s.waitingSinceMs ?? ''}`
+  return `${s.worktreeId}#${s.waitingSinceMs ?? ''}`
 }
 
 /** Which waiting sessions are new since `prevKeys`, plus the next key set. */

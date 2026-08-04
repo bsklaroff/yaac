@@ -4,7 +4,8 @@ import { type SessionPod, listSessionPods } from '#platform/k8s'
 import { removeProjectRegistry } from '#features/cluster'
 import { projectDir } from '@yaac/shared/project-paths'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
-import { deleteProjectSessions } from '#features/sessions/store'
+import { deleteProjectWorktrees } from '#features/sessions/worktree-store'
+import { deleteProjectAgentSessions } from '#features/sessions/agent-session-store'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -51,7 +52,8 @@ export async function removeProject(slug: string): Promise<void> {
   // now, and the worktrees and transcripts they point at go with the dir
   // below — leaving them would list sessions whose restart resolves into a
   // project that no longer exists.
-  await deleteProjectSessions(slug)
+  await deleteProjectWorktrees(slug)
+  await deleteProjectAgentSessions(slug)
 
   await fs.rm(dir, { recursive: true, force: true })
 }

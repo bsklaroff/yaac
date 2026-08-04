@@ -67,8 +67,8 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 // The session store writes through PGlite — stub it so cleanup tests never
 // open a DB, and so cause forwarding can be asserted.
-vi.mock('#features/sessions/store', () => ({
-  recordSessionDeleted: vi.fn().mockResolvedValue(undefined),
+vi.mock('#features/sessions/worktree-store', () => ({
+  recordWorktreeStopped: vi.fn().mockResolvedValue(undefined),
 }))
 
 import { salvageSessionImages } from '#features/images/image-promoter'
@@ -90,12 +90,12 @@ import {
 } from '#features/sessions/cleanup'
 import { isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { setSessionStreamHealth, _resetSessionStatusStoreForTests } from '#features/sessions/status-store'
-import { recordSessionDeleted } from '#features/sessions/store'
+import { recordWorktreeStopped } from '#features/sessions/worktree-store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockServerLog = vi.mocked(serverLog)
-const mockRecordDeleted = vi.mocked(recordSessionDeleted)
+const mockRecordDeleted = vi.mocked(recordWorktreeStopped)
 
 const sessionExecMock = vi.mocked(sessionExec)
 const mockListPods = vi.mocked(listSessionPods)

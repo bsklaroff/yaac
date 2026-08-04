@@ -17,8 +17,8 @@ vi.mock('@yaac/server/features/sessions/cleanup', async (importOriginal) => {
   }
 })
 
-import { sessionDelete } from '#commands/session-delete'
-import { deleteSession } from '@yaac/server/features/sessions/delete'
+import { worktreeStop } from '#commands/worktree-stop'
+import { stopWorktree } from '@yaac/server/features/sessions/stop'
 import { listSessionPods, listSessionJobs, type SessionPod } from '@yaac/server/platform/k8s/pods'
 import type * as podsModule from '@yaac/server/platform/k8s/pods'
 import { cleanupSessionDetached } from '@yaac/server/features/sessions/cleanup'
@@ -29,14 +29,14 @@ const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
 const cleanupSpy = vi.mocked(cleanupSessionDetached)
 
-describe('sessionDelete', () => {
+describe('worktreeStop', () => {
   it('is exported as a function', () => {
-    expect(typeof sessionDelete).toBe('function')
+    expect(typeof worktreeStop).toBe('function')
   })
 })
 
 /**
- * Unit coverage for `deleteSession`: the prefix-matching logic, the
+ * Unit coverage for `stopWorktree`: the prefix-matching logic, the
  * NOT_FOUND / RUNTIME_UNAVAILABLE error shapes, the pod-less-Job
  * fallback, and the handoff to `cleanupSessionDetached` with the matched
  * session's metadata. Uses mocked pod/Job listings so no cluster is
@@ -45,7 +45,7 @@ describe('sessionDelete', () => {
  * The actual reap-the-Job behaviour is exercised end-to-end by the
  * e2e session-delete tests.
  */
-describe('deleteSession', () => {
+describe('stopWorktree', () => {
   beforeEach(() => {
     setDataDir('/tmp/unit-session-delete')
     mockListPods.mockReset()
@@ -76,38 +76,42 @@ describe('deleteSession', () => {
 
   it('resolves by exact session-id and hands the match to cleanupSessionDetached', async () => {
     mockListPods.mockResolvedValueOnce([pod()])
-    const info = await deleteSession('abcd1234')
+    const info = await stopWorktree('abcd1234')
     expect(info).toEqual({
       jobName: 'yaac-demo-abcd1234',
-      sessionId: 'abcd1234',
+      worktreeId: 'abcd1234',
       projectSlug: 'demo',
     })
-    expect(cleanupSpy).toHaveBeenCalledWith(info)
+    // Cleanup is pod-scoped and still speaks sessionId; the returned info is
+    // worktree-scoped.
+    expect(cleanupSpy).toHaveBeenCalledWith({
+      jobName: info.jobName, projectSlug: info.projectSlug, sessionId: info.worktreeId,
+    })
   })
 
   it('resolves by session-id prefix', async () => {
     mockListPods.mockResolvedValueOnce([pod()])
-    const info = await deleteSession('abcd')
-    expect(info.sessionId).toBe('abcd1234')
+    const info = await stopWorktree('abcd')
+    expect(info.worktreeId).toBe('abcd1234')
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
   it('resolves by full job name', async () => {
     mockListPods.mockResolvedValueOnce([pod()])
-    const info = await deleteSession('yaac-demo-abcd1234')
+    const info = await stopWorktree('yaac-demo-abcd1234')
     expect(info.jobName).toBe('yaac-demo-abcd1234')
   })
 
   it('resolves by exact pod name', async () => {
     mockListPods.mockResolvedValueOnce([pod({ podName: 'deadbeef00000000' })])
-    const info = await deleteSession('deadbeef00000000')
-    expect(info.sessionId).toBe('abcd1234')
+    const info = await stopWorktree('deadbeef00000000')
+    expect(info.worktreeId).toBe('abcd1234')
   })
 
   it('schedules cleanup even for a non-running pod', async () => {
     mockListPods.mockResolvedValueOnce([pod({ running: false, phase: 'Failed' })])
-    const info = await deleteSession('abcd1234')
-    expect(info.sessionId).toBe('abcd1234')
+    const info = await stopWorktree('abcd1234')
+    expect(info.worktreeId).toBe('abcd1234')
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
@@ -119,18 +123,22 @@ describe('deleteSession', () => {
       projectSlug: 'demo',
       createdAtMs: 1_700_000_000_000,
     }])
-    const info = await deleteSession('podless')
+    const info = await stopWorktree('podless')
     expect(info).toEqual({
       jobName: 'yaac-demo-podless1',
-      sessionId: 'podless1',
+      worktreeId: 'podless1',
       projectSlug: 'demo',
     })
-    expect(cleanupSpy).toHaveBeenCalledWith(info)
+    // Cleanup is pod-scoped and still speaks sessionId; the returned info is
+    // worktree-scoped.
+    expect(cleanupSpy).toHaveBeenCalledWith({
+      jobName: info.jobName, projectSlug: info.projectSlug, sessionId: info.worktreeId,
+    })
   })
 
   it('throws NOT_FOUND when neither a pod nor a Job matches', async () => {
     mockListPods.mockResolvedValueOnce([])
-    await expect(deleteSession('missing')).rejects.toMatchObject({
+    await expect(stopWorktree('missing')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
     expect(cleanupSpy).not.toHaveBeenCalled()
@@ -138,7 +146,7 @@ describe('deleteSession', () => {
 
   it('throws RUNTIME_UNAVAILABLE when the pod list call fails', async () => {
     mockListPods.mockRejectedValueOnce(new Error('connection refused'))
-    await expect(deleteSession('abcd1234')).rejects.toMatchObject({
+    await expect(stopWorktree('abcd1234')).rejects.toMatchObject({
       code: 'RUNTIME_UNAVAILABLE',
     })
     expect(cleanupSpy).not.toHaveBeenCalled()
@@ -147,7 +155,7 @@ describe('deleteSession', () => {
   it('throws RUNTIME_UNAVAILABLE when the Job-list fallback fails', async () => {
     mockListPods.mockResolvedValueOnce([])
     mockListJobs.mockRejectedValueOnce(new Error('connection refused'))
-    await expect(deleteSession('abcd1234')).rejects.toMatchObject({
+    await expect(stopWorktree('abcd1234')).rejects.toMatchObject({
       code: 'RUNTIME_UNAVAILABLE',
     })
     expect(cleanupSpy).not.toHaveBeenCalled()

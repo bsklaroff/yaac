@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('#features/sessions/list', () => ({
-  listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [], gitAuthFailures: {} }),
+  listActiveSessions: vi.fn().mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} }),
 }))
 
 vi.mock('#features/projects/list', () => ({
@@ -24,7 +24,7 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
-    sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
+    worktrees: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage: null,
     codexPlanUsage: null,
     forwardBindHost: '127.0.0.1',
@@ -58,7 +58,7 @@ describe('serializeEvent', () => {
       data: ServerSnapshot
     }
     expect(parsed.type).toBe('snapshot')
-    expect(parsed.data.sessions).toEqual([])
+    expect(parsed.data.worktrees).toEqual([])
   })
 })
 
@@ -128,7 +128,7 @@ describe('EventHub', () => {
 describe('buildSnapshot', () => {
   it('returns all state slices', async () => {
     const snap = await buildSnapshot()
-    expect(Array.isArray(snap.sessions)).toBe(true)
+    expect(Array.isArray(snap.worktrees)).toBe(true)
     expect(Array.isArray(snap.stale)).toBe(true)
     expect(Array.isArray(snap.projects)).toBe(true)
     expect(Array.isArray(snap.provisioning)).toBe(true)
@@ -157,9 +157,9 @@ describe('buildSnapshot provisioning', () => {
   afterEach(() => { clearAllProvisioningForTests() })
 
   it('includes a provisioning entry that has no live session yet', async () => {
-    registerProvisioning({ sessionId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
-    expect(snap.provisioning.map((e) => e.sessionId)).toEqual(['prov-1'])
+    expect(snap.provisioning.map((e) => e.worktreeId)).toEqual(['prov-1'])
   })
 
   it('hides a listed session that is still provisioning, keeping the row', async () => {
@@ -167,33 +167,35 @@ describe('buildSnapshot provisioning', () => {
     // agent/init windows yet) — the provisioning row must win until the
     // create route removes it, or clients attach to a half-built session.
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
-      sessions: [{
-        sessionId: 'prov-2', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      worktrees: [{
+        worktreeId: 'prov-2', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ sessionId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
-    expect(snap.sessions).toEqual([])
-    expect(snap.provisioning.map((e) => e.sessionId)).toEqual(['prov-2'])
+    expect(snap.worktrees).toEqual([])
+    expect(snap.provisioning.map((e) => e.worktreeId)).toEqual(['prov-2'])
   })
 
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
     vi.mocked(listActiveSessions).mockResolvedValue({
-      sessions: [{
-        sessionId: 'prov-3', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      worktrees: [{
+        worktreeId: 'prov-3', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
     })
-    registerProvisioning({ sessionId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
     removeProvisioning('prov-3')
     const snap = await buildSnapshot()
-    expect(snap.sessions.map((s) => s.sessionId)).toEqual(['prov-3'])
+    expect(snap.worktrees.map((s) => s.worktreeId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
-    vi.mocked(listActiveSessions).mockResolvedValue({ sessions: [], stale: [], gitAuthFailures: {} })
+    vi.mocked(listActiveSessions).mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} })
   })
 })

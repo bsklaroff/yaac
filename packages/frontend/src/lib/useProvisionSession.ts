@@ -1,10 +1,10 @@
 import { useCallback } from 'react'
 import { useUiStore } from '#store'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentTool, ProvisioningSessionEntry } from '@yaac/shared/types'
+import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 /** A streaming provision op (create or restart) for a known id. */
-type ProvisionOp = (sessionId: string, onProgress: (message: string) => void) => Promise<{ sessionId: string }>
+type ProvisionOp = (worktreeId: string, onProgress: (message: string) => void) => Promise<{ worktreeId: string }>
 
 /**
  * Run a session provision (create, or restart-from-deleted) with the shared
@@ -16,8 +16,8 @@ type ProvisionOp = (sessionId: string, onProgress: (message: string) => void) =>
 export function useProvisionSession(): (
   projectSlug: string,
   tool: AgentTool,
-  kind: ProvisioningSessionEntry['kind'],
-  sessionId: string,
+  kind: ProvisioningWorktreeEntry['kind'],
+  worktreeId: string,
   op: ProvisionOp,
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
@@ -25,10 +25,10 @@ export function useProvisionSession(): (
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const openSession = useUiStore((s) => s.openSession)
 
-  return useCallback((projectSlug, tool, kind, sessionId, op) => {
-    addOptimisticProvisioning({ sessionId, projectSlug, tool, kind, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
-    openSession(projectSlug, sessionId) // auto-open the locally-initiated provision
-    void op(sessionId, (message) => updateOptimisticProvisioning(sessionId, { message }))
+  return useCallback((projectSlug, tool, kind, worktreeId, op) => {
+    addOptimisticProvisioning({ worktreeId, projectSlug, tool, kind, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
+    openSession(projectSlug, worktreeId) // auto-open the locally-initiated provision
+    void op(worktreeId, (message) => updateOptimisticProvisioning(worktreeId, { message }))
       .then((res) => {
         // A create that claimed a prewarmed spare returns the spare's own id,
         // not the one we generated (a running pod's id can't be re-keyed).
@@ -37,16 +37,16 @@ export function useProvisionSession(): (
         // lands an unprotected selection would be stolen back to an existing
         // session by App's auto-select. Carrying an optimistic row keeps the
         // pane on the new session until the snapshot takes over.
-        if (res.sessionId !== sessionId) {
+        if (res.worktreeId !== worktreeId) {
           addOptimisticProvisioning({
-            sessionId: res.sessionId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
+            worktreeId: res.worktreeId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
           })
-          removeOptimisticProvisioning(sessionId)
-          openSession(projectSlug, res.sessionId)
+          removeOptimisticProvisioning(worktreeId)
+          openSession(projectSlug, res.worktreeId)
         }
       })
       .catch((e: unknown) => {
-        updateOptimisticProvisioning(sessionId, { error: e instanceof Error ? e.message : 'failed' })
+        updateOptimisticProvisioning(worktreeId, { error: e instanceof Error ? e.message : 'failed' })
       })
   }, [addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning, openSession])
 }

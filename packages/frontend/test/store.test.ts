@@ -3,7 +3,7 @@ import {
   isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, resolveAttentionTarget,
   resolveNewSessionTool, unreadWaitingBySlug, useUiStore,
 } from '#store'
-import type { ProvisioningSessionEntry } from '@yaac/shared/types'
+import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 const initial = useUiStore.getState()
 
@@ -30,25 +30,25 @@ describe('pending-delete tracking', () => {
 })
 
 describe('optimistic deleted tracking', () => {
-  const entry = (sessionId: string) => ({
-    sessionId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
-    prompt: 'hi', seen: false,
+  const entry = (worktreeId: string) => ({
+    worktreeId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
+    prompt: 'hi', seen: false, agentSessions: [],
   })
 
-  it('addOptimisticDeleted prepends, with no duplicates', () => {
-    useUiStore.getState().addOptimisticDeleted(entry('a'))
-    useUiStore.getState().addOptimisticDeleted(entry('b'))
-    useUiStore.getState().addOptimisticDeleted(entry('a'))
-    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b', 'a'])
+  it('addOptimisticStopped prepends, with no duplicates', () => {
+    useUiStore.getState().addOptimisticStopped(entry('a'))
+    useUiStore.getState().addOptimisticStopped(entry('b'))
+    useUiStore.getState().addOptimisticStopped(entry('a'))
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b', 'a'])
   })
 
-  it('removeOptimisticDeleted drops a tracked id and no-ops otherwise', () => {
-    useUiStore.getState().addOptimisticDeleted(entry('a'))
-    useUiStore.getState().addOptimisticDeleted(entry('b'))
-    useUiStore.getState().removeOptimisticDeleted('a')
-    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
-    useUiStore.getState().removeOptimisticDeleted('missing')
-    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
+  it('removeOptimisticStopped drops a tracked id and no-ops otherwise', () => {
+    useUiStore.getState().addOptimisticStopped(entry('a'))
+    useUiStore.getState().addOptimisticStopped(entry('b'))
+    useUiStore.getState().removeOptimisticStopped('a')
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b'])
+    useUiStore.getState().removeOptimisticStopped('missing')
+    expect(useUiStore.getState().optimisticStopped.map((e) => e.worktreeId)).toEqual(['b'])
   })
 })
 
@@ -68,9 +68,9 @@ describe('read-waiting tracking', () => {
     // 'a' ran again (gone from the waiting set); 'b' is waiting anew with a
     // fresh spell; 'c' is unchanged; 'd' was never read — must not be added.
     useUiStore.getState().syncWaitingRead([
-      { sessionId: 'b', waitingSinceMs: 250 },
-      { sessionId: 'c', waitingSinceMs: 300 },
-      { sessionId: 'd', waitingSinceMs: 400 },
+      { worktreeId: 'b', waitingSinceMs: 250 },
+      { worktreeId: 'c', waitingSinceMs: 300 },
+      { worktreeId: 'd', waitingSinceMs: 400 },
     ])
     expect(useUiStore.getState().readWaiting).toEqual({ c: 300 })
   })
@@ -79,8 +79,8 @@ describe('read-waiting tracking', () => {
     useUiStore.getState().markWaitingRead('a', 100)
     const before = useUiStore.getState()
     useUiStore.getState().syncWaitingRead([
-      { sessionId: 'a', waitingSinceMs: 100 },
-      { sessionId: 'other', waitingSinceMs: 500 },
+      { worktreeId: 'a', waitingSinceMs: 100 },
+      { worktreeId: 'other', waitingSinceMs: 500 },
     ])
     expect(useUiStore.getState()).toBe(before)
   })
@@ -100,26 +100,26 @@ describe('isUnseenDeath', () => {
 
 describe('isUnreadWaiting', () => {
   it('flags a waiting session with no mark or a mark from an older spell', () => {
-    const s = { sessionId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
+    const s = { worktreeId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
     expect(isUnreadWaiting(s, {})).toBe(true)
     expect(isUnreadWaiting(s, { a: 100 })).toBe(true)
     expect(isUnreadWaiting(s, { a: 200 })).toBe(false)
   })
 
   it('never flags a running session', () => {
-    expect(isUnreadWaiting({ sessionId: 'a', status: 'running' }, {})).toBe(false)
+    expect(isUnreadWaiting({ worktreeId: 'a', status: 'running' }, {})).toBe(false)
   })
 
   it('normalizes a missing waitingSinceMs to 0', () => {
-    const s = { sessionId: 'a', status: 'waiting' as const }
+    const s = { worktreeId: 'a', status: 'waiting' as const }
     expect(isUnreadWaiting(s, {})).toBe(true)
     expect(isUnreadWaiting(s, { a: 0 })).toBe(false)
   })
 })
 
 describe('unreadWaitingBySlug', () => {
-  const s = (sessionId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
-    ({ sessionId, projectSlug, status, waitingSinceMs })
+  const s = (worktreeId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+    ({ worktreeId, projectSlug, status, waitingSinceMs })
 
   it('counts only unread waiting sessions, grouped by project', () => {
     const sessions = [
@@ -148,9 +148,9 @@ describe('unreadWaitingBySlug', () => {
     expect(unreadWaitingBySlug(sessions, {}, ['w1'])).toEqual({ p1: 1 })
   })
 
-  it('excludes server-marked terminating sessions', () => {
+  it('excludes server-marked stopping sessions', () => {
     const sessions = [
-      { sessionId: 'w1', projectSlug: 'p1', status: 'waiting' as const, terminating: true },
+      { worktreeId: 'w1', projectSlug: 'p1', status: 'waiting' as const, stopping: true },
       s('w2', 'p1', 'waiting', 200),
     ]
     expect(unreadWaitingBySlug(sessions, {})).toEqual({ p1: 1 })
@@ -158,8 +158,8 @@ describe('unreadWaitingBySlug', () => {
 })
 
 describe('resolveAttentionTarget', () => {
-  const s = (sessionId: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
-    ({ sessionId, status, waitingSinceMs })
+  const s = (worktreeId: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+    ({ worktreeId, status, waitingSinceMs })
 
   it('prefers the topmost unread-waiting session', () => {
     // r1 is topmost overall, w1 is waiting-but-read, w2 is unread waiting.
@@ -190,20 +190,20 @@ describe('resolveAttentionTarget', () => {
 describe('selection + project switching', () => {
   it('selectSession sets the selected id', () => {
     useUiStore.getState().selectSession('s1')
-    expect(useUiStore.getState().selectedSessionId).toBe('s1')
+    expect(useUiStore.getState().selectedWorktreeId).toBe('s1')
   })
 
   it('setActiveProject clears the open session', () => {
     useUiStore.getState().selectSession('s1')
     useUiStore.getState().setActiveProject('proj')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
-    expect(useUiStore.getState().selectedSessionId).toBeNull()
+    expect(useUiStore.getState().selectedWorktreeId).toBeNull()
   })
 
   it('openSession sets both project and session', () => {
     useUiStore.getState().openSession('proj', 's2')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
-    expect(useUiStore.getState().selectedSessionId).toBe('s2')
+    expect(useUiStore.getState().selectedWorktreeId).toBe('s2')
   })
 
   it('selectSession and openSession each bump focusNonce', () => {
@@ -236,8 +236,8 @@ describe('selection + project switching', () => {
 })
 
 describe('optimistic provisioning tracking', () => {
-  const entry = (sessionId: string, over: Partial<ProvisioningSessionEntry> = {}): ProvisioningSessionEntry => ({
-    sessionId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+  const entry = (worktreeId: string, over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
+    worktreeId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 
@@ -245,7 +245,7 @@ describe('optimistic provisioning tracking', () => {
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
     useUiStore.getState().addOptimisticProvisioning(entry('b'))
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['a', 'b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['a', 'b'])
   })
 
   it('updateOptimisticProvisioning patches message/error and no-ops for unknown ids', () => {
@@ -262,22 +262,22 @@ describe('optimistic provisioning tracking', () => {
     useUiStore.getState().addOptimisticProvisioning(entry('a'))
     useUiStore.getState().addOptimisticProvisioning(entry('b'))
     useUiStore.getState().removeOptimisticProvisioning('a')
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['b'])
     useUiStore.getState().removeOptimisticProvisioning('missing')
-    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['b'])
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.worktreeId)).toEqual(['b'])
   })
 })
 
 describe('mergeProvisioning', () => {
-  const e = (sessionId: string, over: Partial<ProvisioningSessionEntry> = {}): ProvisioningSessionEntry => ({
-    sessionId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
+  const e = (worktreeId: string, over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
+    worktreeId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 
   it('dedupes by id with the snapshot row winning', () => {
     const merged = mergeProvisioning([e('a', { message: 'live' })], [e('a', { message: 'optim' }), e('b')])
-    expect(merged.find((x) => x.sessionId === 'a')?.message).toBe('live')
-    expect(merged.map((x) => x.sessionId)).toEqual(['a', 'b'])
+    expect(merged.find((x) => x.worktreeId === 'a')?.message).toBe('live')
+    expect(merged.map((x) => x.worktreeId)).toEqual(['a', 'b'])
   })
 
   it('sorts by createdAt then id', () => {
@@ -285,7 +285,7 @@ describe('mergeProvisioning', () => {
       e('b', { createdAt: '2026-01-01 00:00:02' }),
       e('a', { createdAt: '2026-01-01 00:00:01' }),
     ])
-    expect(merged.map((x) => x.sessionId)).toEqual(['a', 'b'])
+    expect(merged.map((x) => x.worktreeId)).toEqual(['a', 'b'])
   })
 })
 
@@ -456,8 +456,8 @@ describe('settings modal state', () => {
 
 describe('resolveNewSessionTool', () => {
   const sessions = [
-    { sessionId: 's-claude', tool: 'claude' as const },
-    { sessionId: 's-codex', tool: 'codex' as const },
+    { worktreeId: 's-claude', tool: 'claude' as const },
+    { worktreeId: 's-codex', tool: 'codex' as const },
   ]
 
   it("uses the selected session's tool when its credentials are configured", () => {

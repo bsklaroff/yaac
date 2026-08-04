@@ -19,7 +19,7 @@ import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { removeProjectRegistry } from '#features/cluster/project-registry'
 import { removeProject } from '#features/projects'
-import { listSessionRows, recordSessionCreated } from '#features/sessions/store'
+import { listWorktreeRows, recordWorktreeCreated } from '#features/sessions/worktree-store'
 import { closeDb } from '#platform/db/client'
 import { projectDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
@@ -72,9 +72,9 @@ describe('removeProject', () => {
   it('tears down every live session, drops the registry and rows, then the dir', async () => {
     await writeProject('demo')
     await writeProject('keeper')
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'a', tool: 'claude' })
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'b', tool: 'codex' })
-    await recordSessionCreated({ projectSlug: 'keeper', sessionId: 'c', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'a' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'b' })
+    await recordWorktreeCreated({ projectSlug: 'keeper', worktreeId: 'c' })
     mockListPods.mockResolvedValue([pod('demo', 'a'), pod('demo', 'b')])
 
     await removeProject('demo')
@@ -88,7 +88,7 @@ describe('removeProject', () => {
 
     // Only this project's rows go: the deleted listing is row-driven, and
     // the worktrees they point at went with the dir.
-    expect((await listSessionRows()).map((r) => r.sessionId)).toEqual(['c'])
+    expect((await listWorktreeRows()).map((r) => r.worktreeId)).toEqual(['c'])
     await expect(fs.access(projectDir('demo'))).rejects.toThrow()
     await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
   })

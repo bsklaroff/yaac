@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { codexTranscriptFile } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from '#features/sessions/jsonl'
 
 // ---------------------------------------------------------------------------
@@ -56,14 +55,6 @@ export function classifyCodexTitle(title: string): 'running' | 'waiting' {
  */
 export async function getCodexFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
   return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as CodexEntry))
-}
-
-/**
- * Convenience wrapper that reads the transcript via the symlink at
- * .yaac-transcripts/{sessionId}.jsonl inside the codex dir.
- */
-export async function getSessionCodexFirstUserMessage(projectSlug: string, sessionId: string): Promise<string | undefined> {
-  return getCodexFirstUserMessage(codexTranscriptFile(projectSlug, sessionId))
 }
 
 // ---------------------------------------------------------------------------

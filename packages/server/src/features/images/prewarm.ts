@@ -43,10 +43,14 @@ import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBran
 import { resolveCredentialForUrl, resolveProjectConfig } from '#features/projects'
 import { type SessionCreateResult } from '#features/sessions/create'
 import {
-  deleteSessionRow,
-  recordSessionCreated,
-  setSessionBaseBranch,
-} from '#features/sessions/store'
+  deleteWorktreeRow,
+  recordWorktreeCreated,
+  setWorktreeBaseBranch,
+} from '#features/sessions/worktree-store'
+import {
+  recordAgentSessions,
+  setActiveAgentSessions,
+} from '#features/sessions/agent-session-store'
 import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { shellEscape } from '#features/sessions/agent-command'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -274,12 +278,20 @@ export async function tryClaimPrewarmed(
     // here aborts the claim before any mutation, so the spare stays a spare
     // and the caller falls back to a cold create.
     recordedRow = true
-    await recordSessionCreated({
+    await recordWorktreeCreated({
       projectSlug,
-      sessionId: chosen.sessionId,
-      tool,
+      worktreeId: chosen.sessionId,
       ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
     })
+    // The spare's agent is already running, pinned to its own id — record it
+    // as the worktree's first conversation, since that is where the
+    // worktree's tool is read from.
+    await recordAgentSessions(projectSlug, chosen.sessionId, [
+      { tool, agentSessionId: chosen.sessionId },
+    ])
+    await setActiveAgentSessions(projectSlug, chosen.sessionId, [
+      { tool, agentSessionId: chosen.sessionId },
+    ])
 
     if (rebranchTo !== null) {
       // The claim path is otherwise zero-network; a re-branch must fetch so
@@ -348,11 +360,11 @@ export async function tryClaimPrewarmed(
     // A claim that moved the spare to another branch records the branch it
     // ended on, not the one it was warmed from.
     if (rebranchTo !== null) {
-      await setSessionBaseBranch(projectSlug, chosen.sessionId, rebranchTo)
+      await setWorktreeBaseBranch(projectSlug, chosen.sessionId, rebranchTo)
     }
 
     emit('Using prewarmed session...')
-    return { sessionId: chosen.sessionId, jobName: chosen.jobName, tool, forwardedPorts: [] }
+    return { worktreeId: chosen.sessionId, jobName: chosen.jobName, tool, forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to
     // see — a cold create would fail identically, so don't degrade.
@@ -372,7 +384,7 @@ export async function tryClaimPrewarmed(
     // The claim never completed, so its row describes a session that never
     // existed — the caller is about to cold-create a different one.
     if (chosen && recordedRow) {
-      await deleteSessionRow(projectSlug, chosen.sessionId)
+      await deleteWorktreeRow(projectSlug, chosen.sessionId)
         .catch(() => { /* best-effort; the row has no pod to back it */ })
     }
     return undefined

@@ -77,13 +77,18 @@ describe('transcripts', () => {
   })
 
   describe('sessionTranscriptPath', () => {
-    it('resolves claude and codex by session id, once the file exists', async () => {
+    it('resolves claude by session id, once the file exists', async () => {
       expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBeUndefined()
       const claude = await write(claudeLog('sid'))
       expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBe(claude)
+    })
 
-      const codex = await write(path.join(codexTranscriptDir(slug), 'sid.jsonl'))
-      expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBe(codex)
+    it('has none for codex, whose rollout name follows from no id', async () => {
+      // Nothing derives a codex rollout filename from a conversation id, so
+      // only a recorded path finds one — even with a legacy index entry that
+      // happens to be named after the id sitting right there.
+      await write(path.join(codexTranscriptDir(slug), 'sid.jsonl'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBeUndefined()
     })
 
     it('picks pi\'s newest log, since pi names the file itself', async () => {

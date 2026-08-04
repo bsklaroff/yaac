@@ -25,7 +25,7 @@ afterEach(() => {
 describe('SessionPreview (browser build)', () => {
   it('shows a fallback link to the forwarded port when not in Electron', () => {
     setElectron(false)
-    render(<SessionPreview sessionId="s1" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
+    render(<SessionPreview worktreeId="s1" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     const link = screen.getByRole('link', { name: /localhost:15173/ })
     expect(link.getAttribute('href')).toBe('http://localhost:15173/')
   })
@@ -35,7 +35,7 @@ describe('SessionPreview (Electron)', () => {
   it('creates a partitioned webview and shows the address', () => {
     setElectron(true)
     const { container } = render(
-      <SessionPreview sessionId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
+      <SessionPreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )
     const wv = container.querySelector('webview')
     expect(wv).not.toBeNull()
@@ -47,7 +47,7 @@ describe('SessionPreview (Electron)', () => {
 
   it('shows a waiting state until the port is forwarded', () => {
     setElectron(true)
-    render(<SessionPreview sessionId="abc" ports={[]} currentPort={5173} onSwitchPort={() => {}} />)
+    render(<SessionPreview worktreeId="abc" ports={[]} currentPort={5173} onSwitchPort={() => {}} />)
     expect(screen.getByText(/Waiting for the dev server on port 5173/)).toBeTruthy()
   })
 
@@ -57,7 +57,7 @@ describe('SessionPreview (Electron)', () => {
     ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
       minimize() {}, toggleMaximize() {}, close() {}, openExternal,
     }
-    render(<SessionPreview sessionId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
+    render(<SessionPreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
     expect(openExternal).toHaveBeenCalledWith('http://localhost:15173/')
   })
@@ -67,7 +67,7 @@ describe('SessionPreview (Electron)', () => {
     const onSwitchPort = vi.fn()
     render(
       <SessionPreview
-        sessionId="abc"
+        worktreeId="abc"
         ports={[fwd(5173, 15173), fwd(8080, 18080)]}
         currentPort={5173}
         onSwitchPort={onSwitchPort}
@@ -81,14 +81,14 @@ describe('SessionPreview (Electron)', () => {
 
   it('shows no dropdown for a single port', () => {
     setElectron(true)
-    render(<SessionPreview sessionId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
+    render(<SessionPreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     expect(screen.queryByLabelText('Preview port')).toBeNull()
   })
 
   it('has an overflow menu whose actions drive the webview', async () => {
     setElectron(true)
     const { container } = render(
-      <SessionPreview sessionId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
+      <SessionPreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )
     const wv = container.querySelector('webview')
     const openDevTools = vi.fn()
@@ -107,7 +107,7 @@ describe('SessionPreview (Electron)', () => {
   it('constrains the webview to a device width, with a clearable pill', async () => {
     setElectron(true)
     const { container } = render(
-      <SessionPreview sessionId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
+      <SessionPreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )
     const host = container.querySelector('webview')?.parentElement as HTMLElement
     expect(host.style.width).toBe('100%')

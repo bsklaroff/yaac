@@ -1,23 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { sessionShell } from '#commands/session-shell'
+import { worktreeShell } from '#commands/worktree-shell'
 import { attachSessionPty } from '#commands/ws-terminal'
 
 vi.mock('#commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
-describe('sessionShell', () => {
+describe('worktreeShell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('opens a raw shell over the server PTY WebSocket', async () => {
-    await sessionShell('abc')
+    await worktreeShell('abc')
     expect(attachSessionPty).toHaveBeenCalledWith('abc', 'shell')
   })
 
   it('propagates transport failures', async () => {
     vi.mocked(attachSessionPty).mockRejectedValue(new Error('terminal connection failed: nope'))
-    await expect(sessionShell('abc')).rejects.toThrow(/terminal connection failed/)
+    await expect(worktreeShell('abc')).rejects.toThrow(/terminal connection failed/)
   })
 })

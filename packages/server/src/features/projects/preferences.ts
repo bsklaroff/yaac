@@ -34,6 +34,10 @@ export const DEFAULT_TOOL_KEY = 'default_tool'
  *  adopted into `agent_sessions` (see backfillSessions). */
 export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
 
+/** One-shot: rewrite recorded transcript paths that point at a yaac symlink
+ *  to the file it resolves to. See `resolveSymlinkedTranscripts`. */
+export const TRANSCRIPT_PATHS_RESOLVED_KEY = 'transcript_paths_resolved'
+
 /** Whether a one-shot migration step has already run. */
 export async function isFlagSet(key: string): Promise<boolean> {
   const db = await getDb()
@@ -46,6 +50,14 @@ export async function setFlag(key: string): Promise<void> {
   const db = await getDb()
   await db.insert(preferences).values({ key, value: '1' })
     .onConflictDoUpdate({ target: preferences.key, set: { value: '1' } })
+}
+
+/** Re-arm a one-shot step. Only tests use this: the flag is set at a data
+ *  dir's first boot, so a fixture seeded afterwards would otherwise never be
+ *  swept. Idempotent. */
+export async function clearFlag(key: string): Promise<void> {
+  const db = await getDb()
+  await db.delete(preferences).where(eq(preferences.key, key))
 }
 
 export async function getDefaultTool(): Promise<AgentTool | undefined> {

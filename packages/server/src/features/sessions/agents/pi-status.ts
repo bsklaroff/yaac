@@ -67,7 +67,7 @@ function getUserMessageText(entry: PiMessageEntry): string | undefined {
 }
 
 /**
- * First user message for a pi session, used by `yaac session list` to show a
+ * First user message for a pi session, used by `yaac worktree list` to show a
  * prompt preview. Reads the oldest session log's first `role:"user"` entry;
  * falls through to later logs if the first has none (e.g. an empty session).
  * Host files persist across teardown, so this serves live and deleted
@@ -79,8 +79,14 @@ export async function getSessionPiFirstUserMessage(
 ): Promise<string | undefined> {
   const files = await piSessionLogs(projectSlug, sessionId)
   for (const file of files) {
-    const msg = await scanJsonlForward(file, (entry) => getUserMessageText(entry as PiMessageEntry))
+    const msg = await getPiFirstUserMessage(file)
     if (msg !== undefined) return msg
   }
   return undefined
+}
+
+/** One pi log's first user message. Path-based, for a conversation the link
+ *  tree already resolved to a file. */
+export async function getPiFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
+  return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as PiMessageEntry))
 }

@@ -40,7 +40,7 @@ export function buildWorktreeLinkExec(sessionId: string): string {
   const admin = `/repo/.git/worktrees/${sessionId}`
   return `echo 'gitdir: ${admin}' > /workspace/.git`
     + ` && echo '/workspace/.git' > ${admin}/gitdir`
-    + ` && printf 'yaac session ${sessionId}' > ${admin}/locked`
+    + ` && printf 'yaac worktree ${sessionId}' > ${admin}/locked`
 }
 
 /**
@@ -81,18 +81,56 @@ export function validateInitWindows(config: YaacConfig): InitWindow[] {
 }
 
 /**
- * Create the init-command windows (parallel to the agent) and swap the
+ * The tmux window name for the nth agent of a worktree. The first keeps the
+ * bare tool name, so every existing `yaac:<tool>` target — the prompt paste,
+ * the CLI's `attach --agent`, the terminals listing — resolves exactly as
+ * before no matter how many agents a worktree ends up holding. Extras are
+ * `<tool>-2`, `<tool>-3`, … which is also what `isAgentWindow` matches.
+ */
+export function agentWindowName(tool: AgentTool, index: number): string {
+  return index === 0 ? tool : `${tool}-${index + 1}`
+}
+
+/**
+ * Create the init-command windows (parallel to the agents) and swap the
  * keepalive placeholder for the real agent — one exec. respawn-window -k
  * kills the `sleep infinity` the postStart hook opened the session with
- * and starts the agent in the same window, preserving the tmux options
- * configured there.
+ * and starts the first agent in the same window, preserving the tmux
+ * options configured there.
+ *
+ * `agentCmds` is one entry per agent session being started, in restore
+ * order: a fresh create passes one, and a restart passes whatever was live
+ * when the worktree stopped. Only the first can respawn the placeholder;
+ * the rest open their own windows.
+ *
+ * Each entry carries its own tool, because a worktree's conversations need
+ * not share one: a codex conversation resumed into a claude worktree must
+ * land in a `codex-2` window, not `claude-2` — the window name is what the
+ * status watcher reads to pick a tool's status grammar, so a misnamed window
+ * gets classified against a title format its agent never emits.
  */
+export interface AgentWindowSpec {
+  tool: AgentTool
+  cmd: string
+}
+
 export function buildWindowsExec(
   windows: InitWindow[],
   tool: AgentTool,
-  agentCmd: string,
+  agents: AgentWindowSpec[],
 ): string {
   const cmds = windows.map(initWindowCommand)
-  cmds.push(`${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
+  const [primary, ...extra] = agents
+  // The placeholder window carries the worktree's tool name, so the primary
+  // agent respawns into it whatever tool it runs. A primary whose tool
+  // differs is a case restart cannot currently produce (ordinal 0 is the
+  // worktree's own agent), and renaming the window would break every
+  // `yaac:<tool>` target.
+  cmds.push(`${TMUX} respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'`)
+  extra.forEach((spec, i) => {
+    // -d so the extra agents don't steal the active window from the primary,
+    // which is what the user attaches to.
+    cmds.push(`${TMUX} new-window -d -t yaac -n ${agentWindowName(spec.tool, i + 1)} '${spec.cmd}'`)
+  })
   return cmds.join(' && ')
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { truncatePrompt } from '#commands/session-list'
+import { truncatePrompt } from '#commands/worktree-list'
 
 describe('truncatePrompt', () => {
   it('returns empty string for undefined', () => {

@@ -32,7 +32,7 @@ function openPopover(): void {
 
 describe('BlockedHostsBadge', () => {
   it('shows the count and no hover tooltip on the trigger', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} sessionId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
 
     const trigger = screen.getByRole('button', { name: '2 blocked hosts' })
     expect(trigger.textContent).toBe('2 blocked hosts')
@@ -41,7 +41,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('lists the blocked hosts in a popover on click', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} sessionId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
 
     expect(screen.queryByText('registry.npmjs.org')).toBeNull()
 
@@ -52,7 +52,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('reveals the two allow actions only for the clicked host', () => {
-    render(<BlockedHostsBadge hosts={HOSTS} sessionId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
     openPopover()
 
     // Collapsed by default — no actions shown.
@@ -65,7 +65,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('allows a host for just this session (persist:false)', async () => {
-    render(<BlockedHostsBadge hosts={HOSTS} sessionId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
     openPopover()
     fireEvent.click(screen.getByText('registry.npmjs.org'))
     fireEvent.click(screen.getByText('Allow for this session'))
@@ -76,7 +76,7 @@ describe('BlockedHostsBadge', () => {
   })
 
   it('allows a host permanently for the project (persist:true)', async () => {
-    render(<BlockedHostsBadge hosts={HOSTS} sessionId="sess-1" iconSize={12} />)
+    render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
     openPopover()
     fireEvent.click(screen.getByText('evil.example.com'))
     fireEvent.click(screen.getByText('Allow permanently for this project'))

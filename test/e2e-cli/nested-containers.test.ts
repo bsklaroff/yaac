@@ -181,7 +181,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
 
   async function createSession(slug: string): Promise<SessionPod> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'session', 'create', slug, '--tool', 'claude',
+      serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -302,7 +302,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     // --- Delete session 1 ---
     // Detached cleanup order: image salvage (in-pod survey+save → node-side
     // writer load) → job delete. Job absence proves the whole pipeline ran.
-    const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session1.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.sessionId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
@@ -337,7 +337,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     ])
     expect(byName.trim()).toBe(imageId1)
 
-    await runYaac(serverEnv, 'session', 'delete', session2.sessionId)
+    await runYaac(serverEnv, 'worktree', 'stop', session2.sessionId)
   }, 900_000)
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {
@@ -462,7 +462,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(blockedFailed).toBe(true)
     expect(Date.now() - started).toBeLessThan(60_000)
 
-    await runYaac(serverEnv, 'session', 'delete', session.sessionId)
+    await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
   }, 900_000)
 
   it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {
@@ -555,6 +555,6 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
       + 'docker build --no-cache -t yaac-curl-trust:v1 .',
     ], { timeout: 180_000, maxAttempts: 1 })
 
-    await runYaac(serverEnv, 'session', 'delete', session.sessionId)
+    await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
   }, 900_000)
 })

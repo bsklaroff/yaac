@@ -13,13 +13,13 @@ import { allowBlockedHost } from '#lib/blockedHostsApi'
  */
 export function BlockedHostsBadge({
   hosts,
-  sessionId,
+  worktreeId,
   iconSize,
   className,
 }: {
   hosts: string[]
   /** The session these hosts were blocked for — the target of the allow action. */
-  sessionId: string
+  worktreeId: string
   iconSize: number
   /** Positioning and the context-appropriate hover highlight for the trigger. */
   className?: string
@@ -33,7 +33,7 @@ export function BlockedHostsBadge({
     setPending(host)
     setError(null)
     try {
-      await allowBlockedHost(sessionId, host, { persist })
+      await allowBlockedHost(worktreeId, host, { persist })
       // The server pushes a fresh snapshot that drops the now-allowed host, so
       // the row disappears on its own; just collapse it in the meantime.
       setExpanded(null)

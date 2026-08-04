@@ -1,35 +1,35 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { sessionMonitor } from '#commands/session-monitor'
-import { sessionList } from '#commands/session-list'
+import { worktreeMonitor } from '#commands/worktree-monitor'
+import { worktreeList } from '#commands/worktree-list'
 
-vi.mock('#commands/session-list', () => ({
-  sessionList: vi.fn().mockResolvedValue(undefined),
+vi.mock('#commands/worktree-list', () => ({
+  worktreeList: vi.fn().mockResolvedValue(undefined),
 }))
 
-describe('sessionMonitor', () => {
+describe('worktreeMonitor', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('clears screen and calls sessionList on each tick', async () => {
+  it('clears screen and calls worktreeList on each tick', async () => {
     const writeSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     // Abort after first iteration via a setTimeout rejection
     let iterations = 0
-    vi.mocked(sessionList).mockImplementation(() => {
+    vi.mocked(worktreeList).mockImplementation(() => {
       iterations++
       if (iterations >= 2) throw new Error('stop')
       return Promise.resolve()
     })
 
-    await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
+    await expect(worktreeMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
 
     expect(writeSpy).toHaveBeenCalledWith('\x1B[2J')
     expect(writeSpy).toHaveBeenCalledWith('\x1B[H')
     expect(writeSpy).toHaveBeenCalledWith('\x1B[J')
-    expect(sessionList).toHaveBeenCalledTimes(2)
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('yaac session monitor'))
+    expect(worktreeList).toHaveBeenCalledTimes(2)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('yaac worktree monitor'))
   })
 
   it('inserts erase-to-EOL before newlines to clear stale characters', async () => {
@@ -40,10 +40,10 @@ describe('sessionMonitor', () => {
     })
 
     let iterations = 0
-    vi.mocked(sessionList).mockImplementation(() => {
+    vi.mocked(worktreeList).mockImplementation(() => {
       iterations++
       if (iterations >= 2) throw new Error('stop')
-      // Simulate sessionList writing a line via console.log
+      // Simulate worktreeList writing a line via console.log
       console.log('session line')
       return Promise.resolve()
     })
@@ -55,7 +55,7 @@ describe('sessionMonitor', () => {
       process.stdout.write(msg)
     })
 
-    await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
+    await expect(worktreeMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
 
     // Every newline written during rendering should be preceded by \x1B[K (erase to EOL)
     const renderWrites = written.filter((s) => s.includes('\n'))
@@ -89,13 +89,13 @@ describe('sessionMonitor', () => {
     vi.spyOn(process.stdin, 'on').mockImplementation((...args: unknown[]) => onSpy(...args) as never)
 
     let iterations = 0
-    vi.mocked(sessionList).mockImplementation(() => {
+    vi.mocked(worktreeList).mockImplementation(() => {
       iterations++
       if (iterations >= 1) throw new Error('stop')
       return Promise.resolve()
     })
 
-    await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
+    await expect(worktreeMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
 
     expect(setRawModeSpy).toHaveBeenCalledWith(true)
     expect(resumeSpy).toHaveBeenCalled()
@@ -106,15 +106,15 @@ describe('sessionMonitor', () => {
     Object.defineProperty(process.stdin, 'setRawMode', { value: origSetRawMode, configurable: true })
   })
 
-  it('passes project filter to sessionList', async () => {
+  it('passes project filter to worktreeList', async () => {
     let iterations = 0
-    vi.mocked(sessionList).mockImplementation(() => {
+    vi.mocked(worktreeList).mockImplementation(() => {
       iterations++
       if (iterations >= 1) throw new Error('stop')
       return Promise.resolve()
     })
 
-    await expect(sessionMonitor('my-proj', { interval: '1' })).rejects.toThrow('stop')
-    expect(sessionList).toHaveBeenCalledWith('my-proj')
+    await expect(worktreeMonitor('my-proj', { interval: '1' })).rejects.toThrow('stop')
+    expect(worktreeList).toHaveBeenCalledWith('my-proj')
   })
 })

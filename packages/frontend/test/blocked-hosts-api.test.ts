@@ -21,7 +21,7 @@ describe('allowBlockedHost', () => {
     const fetchMock = stub()
     await allowBlockedHost('abc-123', 'evil.example.com', { persist: true })
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/session/abc-123/allow-host')
+    expect(url).toBe('/worktree/abc-123/allow-host')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ host: 'evil.example.com', persist: true })
   })

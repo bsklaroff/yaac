@@ -1,0 +1,11 @@
+import { attachSessionPty } from '#commands/ws-terminal'
+
+/**
+ * Attach the user's terminal to a worktree's tmux over the server's PTY
+ * WebSocket ('native' target: full tmux chrome, `C-b d` detaches). The
+ * server resolves the id and reports "not found / not running" over the
+ * socket, so no separate lookup round-trip is needed.
+ */
+export async function worktreeAttach(containerId: string): Promise<void> {
+  await attachSessionPty(containerId, 'native')
+}

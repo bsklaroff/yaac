@@ -8,12 +8,12 @@ import { api } from './api'
  * snapshot, so the blocked-hosts badge updates on its own.
  */
 export async function allowBlockedHost(
-  sessionId: string,
+  worktreeId: string,
   host: string,
   opts: { persist: boolean },
 ): Promise<void> {
-  await api.session[':id']['allow-host'].$post({
-    param: { id: sessionId },
+  await api.worktree[':id']['allow-host'].$post({
+    param: { id: worktreeId },
     json: { host, persist: opts.persist },
   })
 }

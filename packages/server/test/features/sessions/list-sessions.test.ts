@@ -16,7 +16,7 @@ import { listSessionPods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { markSessionTerminating, isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { closeDb } from '#platform/db/client'
-import { recordSessionCreated } from '#features/sessions/store'
+import { recordWorktreeCreated } from '#features/sessions/worktree-store'
 import {
   getProjectsDir,
   projectDir,
@@ -75,7 +75,7 @@ describe('listActiveSessions', () => {
     armDeferredClusterBoot(boot)
 
     const result = await listActiveSessions()
-    expect(result.sessions).toEqual([])
+    expect(result.worktrees).toEqual([])
     expect(result.stale).toEqual([])
     expect(mockListPods).not.toHaveBeenCalled()
 
@@ -85,7 +85,7 @@ describe('listActiveSessions', () => {
     expect(boot).toHaveBeenCalledTimes(1)
   })
 
-  it('renders a terminating pod as a non-interactive terminating row, not stale', async () => {
+  it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {
     mockListPods.mockResolvedValue([{
       jobName: 'yaac-demo-dying',
       podName: 'yaac-demo-dying-x1',
@@ -100,16 +100,16 @@ describe('listActiveSessions', () => {
     }])
     const result = await listActiveSessions()
     expect(result.stale).toEqual([])
-    expect(result.sessions).toHaveLength(1)
-    const row = result.sessions[0]
-    expect(row.sessionId).toBe('dying')
-    expect(row.terminating).toBe(true)
+    expect(result.worktrees).toHaveLength(1)
+    const row = result.worktrees[0]
+    expect(row.worktreeId).toBe('dying')
+    expect(row.stopping).toBe(true)
     // Forced 'running' with no waiting stamp, so no attention badge fires.
     expect(row.status).toBe('running')
     expect(row.waitingSinceMs).toBeUndefined()
   })
 
-  it('prunes a terminating mark once its pod is gone', async () => {
+  it('prunes a stopping mark once its pod is gone', async () => {
     markSessionTerminating('ghost')
     mockListPods.mockResolvedValue([]) // pod already torn down
     await listActiveSessions()
@@ -118,7 +118,7 @@ describe('listActiveSessions', () => {
 
   it('returns empty arrays with no session pods', async () => {
     const result = await listActiveSessions()
-    expect(result.sessions).toEqual([])
+    expect(result.worktrees).toEqual([])
     expect(result.stale).toEqual([])
   })
 
@@ -137,7 +137,7 @@ describe('listActiveSessions', () => {
     }])
     const result = await listActiveSessions()
     // Filtered out before classify, so it never reaches the status probes.
-    expect(result.sessions).toEqual([])
+    expect(result.worktrees).toEqual([])
     expect(result.stale).toEqual([])
   })
 
@@ -148,10 +148,10 @@ describe('listActiveSessions', () => {
 
   it('surfaces the base branch recorded at create time', async () => {
     await writeProject('demo')
-    await recordSessionCreated({
-      projectSlug: 'demo', sessionId: 'tracked', tool: 'claude', baseBranch: 'release/2.x',
+    await recordWorktreeCreated({
+      projectSlug: 'demo', worktreeId: 'tracked', baseBranch: 'release/2.x',
     })
-    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'norecord', tool: 'claude' })
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'norecord' })
 
     mockListPods.mockResolvedValue([
       {
@@ -180,7 +180,7 @@ describe('listActiveSessions', () => {
       },
     ])
     const result = await listActiveSessions('demo')
-    const bySession = new Map(result.sessions.map((s) => [s.sessionId, s]))
+    const bySession = new Map(result.worktrees.map((s) => [s.worktreeId, s]))
     expect(bySession.get('tracked')?.baseBranch).toBe('release/2.x')
     expect(bySession.get('norecord')?.baseBranch).toBeUndefined()
   })
@@ -215,7 +215,7 @@ describe('listActiveSessions', () => {
     registerSessionForwarders('withports', () => {}, [{ containerPort: 8787, hostPort: 9787 }])
     try {
       const result = await listActiveSessions()
-      const bySession = new Map(result.sessions.map((s) => [s.sessionId, s]))
+      const bySession = new Map(result.worktrees.map((s) => [s.worktreeId, s]))
       expect(bySession.get('withports')?.forwardedPorts).toEqual([
         { containerPort: 8787, hostPort: 9787 },
       ])
@@ -248,7 +248,7 @@ describe('listActiveSessions project filter', () => {
       JSON.stringify({ slug: 'valid', remoteUrl: 'x', addedAt: 'y' }),
     )
     const result = await listActiveSessions('valid')
-    expect(result.sessions).toEqual([])
+    expect(result.worktrees).toEqual([])
   })
 
   it('raises ServerError for unknown projects', async () => {

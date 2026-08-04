@@ -12,7 +12,7 @@ import {
 import {
   readSessionStatus,
   isSessionStreamHealthy,
-  setSessionStatus,
+  setPaneStatus,
   _resetSessionStatusStoreForTests,
 } from '#features/sessions/status-store'
 import {
@@ -89,11 +89,19 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
   return { watcher, children, revives }
 }
 
-/** Drive a watcher through banner + pane-id + status-format subscribe. */
-async function connectWatcher(child: FakeAttachChild, paneId = '%7'): Promise<void> {
+/**
+ * Drive a watcher through banner + pane enumeration + status-format subscribe.
+ * The watcher lists the yaac session's panes and subscribes each agent window
+ * it finds, so the reply here is a `list-panes` table, not a single pane id.
+ */
+async function connectWatcher(
+  child: FakeAttachChild,
+  paneId = '%7',
+  tool = 'claude',
+): Promise<void> {
   child.feedBanner()
-  await vi.waitFor(() => expect(child.commandCount).toBe(1)) // display-message pane-id
-  child.feedReply(paneId)
+  await vi.waitFor(() => expect(child.commandCount).toBe(1)) // list-panes
+  child.feedReply(`${paneId} ${tool}`)
   await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B
   child.feedReply('')
   await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
@@ -154,15 +162,17 @@ describe('classifyAgentObservation', () => {
 })
 
 describe('SessionStatusWatcher (title tools)', () => {
-  it('resolves the agent pane, subscribes to its title, and marks the stream healthy', async () => {
+  it('enumerates agent panes, subscribes to their titles, and marks the stream healthy', async () => {
     const { watcher, children } = makeWatcher('claude')
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
     const sent = child.writes.join('')
-    expect(sent).toContain("display-message -p -t yaac:claude.0 '#{pane_id}'")
-    expect(sent).toContain("refresh-client -B 'status:%7:#{pane_title}'")
+    expect(sent).toContain("list-panes -s -F '#{pane_id} #{window_name}' -t yaac")
+    // The subscription name carries the pane id: same-name subscriptions
+    // replace each other, so a shared name silences every pane but the last.
+    expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
     // No classification yet — absent entry reads as waiting.
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
@@ -198,10 +208,10 @@ describe('SessionStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
 
-    child.feed('%subscription-changed status $0 @0 0 %7 : ⠋ working\n')
+    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
 
-    child.feed('%subscription-changed status $0 @0 0 %7 : ✳ done\n')
+    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
 
@@ -212,7 +222,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
 
-    child.feed('%subscription-changed status $0 @0 0 %9 : ⠋ other pane\n')
+    child.feed('%subscription-changed status-9 $0 @0 0 %9 : ⠋ other pane\n')
     child.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
@@ -223,7 +233,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watcher.start()
     const child = children[0]
     await connectWatcher(child)
-    child.feed('%subscription-changed status $0 @0 0 %7 : ⠋ working\n')
+    child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
 
     child.emitExit()
@@ -234,7 +244,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     const second = children[1]
     second.feedBanner()
     await vi.waitFor(() => expect(second.commandCount).toBe(1))
-    second.feedReply('%7')
+    second.feedReply('%7 claude')
     await vi.waitFor(() => expect(second.commandCount).toBe(2))
     second.feedReply('')
     await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
@@ -324,12 +334,12 @@ describe('SessionStatusWatcher (pane tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectWatcher(child, '%2')
+    await connectWatcher(child, '%2', 'opencode')
     const sent = child.writes.join('')
-    expect(sent).toContain("display-message -p -t yaac:opencode.0 '#{pane_id}'")
+    expect(sent).toContain("list-panes -s -F '#{pane_id} #{window_name}' -t yaac")
     // The subscription carries a content-search format that resolves the
     // verdict inside tmux; the pane is never captured.
-    expect(sent).toContain("refresh-client -B 'status:%2:#{?#{||:#{C/ri:")
+    expect(sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:")
     expect(sent).not.toContain('capture-pane')
   })
 
@@ -338,12 +348,12 @@ describe('SessionStatusWatcher (pane tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectWatcher(child, '%2')
+    await connectWatcher(child, '%2', 'pi')
 
     // opencode/pi push an already-resolved word, not pane content.
-    child.feed('%subscription-changed status $0 @0 0 %2 : running\n')
+    child.feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
-    child.feed('%subscription-changed status $0 @0 0 %2 : waiting\n')
+    child.feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
 
@@ -352,7 +362,7 @@ describe('SessionStatusWatcher (pane tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectWatcher(child, '%2')
+    await connectWatcher(child, '%2', 'opencode')
     child.feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
     expect(child.commandCount).toBe(2) // no capture-pane issued
@@ -433,7 +443,7 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([pod({ sessionId: 's1' })])
-      setSessionStatus('demo', 's1', 'running')
+      setPaneStatus('demo', 's1', '%0', 'running')
       manager.sync([])
       expect(manager.size).toBe(0)
       expect(children[0].killed).toBe(true)

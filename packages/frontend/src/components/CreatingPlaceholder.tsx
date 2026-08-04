@@ -2,17 +2,17 @@ import type { JSX } from 'react'
 import { LoadingIcon, TOOL_LABEL } from '#lib/icons'
 import { dismissProvisioning } from '#lib/createSession'
 import { useUiStore } from '#store'
-import type { ProvisioningSessionEntry } from '@yaac/shared/types'
+import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 /** Shown in the main pane while a selected session provisions, in place of the
  *  terminal that will arrive. Streams progress; on failure offers dismiss. */
-export function CreatingPlaceholder({ creating }: { creating: ProvisioningSessionEntry }): JSX.Element {
+export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktreeEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectSession = useUiStore((s) => s.selectSession)
 
   const dismiss = (): void => {
-    void dismissProvisioning(creating.sessionId).catch(() => { /* best-effort */ })
-    removeOptimisticProvisioning(creating.sessionId)
+    void dismissProvisioning(creating.worktreeId).catch(() => { /* best-effort */ })
+    removeOptimisticProvisioning(creating.worktreeId)
     selectSession(null)
   }
 

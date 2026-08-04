@@ -43,7 +43,7 @@ describe('isAllowedPreviewUrl', () => {
 
 describe('appHostFromUrl', () => {
   it('extracts the hostname from the window url', () => {
-    expect(appHostFromUrl('https://mybox.tail1234.ts.net/session/x')).toBe('mybox.tail1234.ts.net')
+    expect(appHostFromUrl('https://mybox.tail1234.ts.net/worktree/x')).toBe('mybox.tail1234.ts.net')
     expect(appHostFromUrl('http://localhost:7433/')).toBe('localhost')
   })
 

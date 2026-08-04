@@ -1,33 +1,30 @@
 import { type TickSnapshot, listSessionPods } from '#platform/k8s'
 import { classifySessionPods } from '#features/sessions/classify'
 import { probeTmuxLiveness } from '#features/sessions/cleanup'
-import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
+import { getAgentSessionFirstMessage } from '#features/sessions/state'
 import {
-  listSessionsMissingCapture,
-  setSessionCapture,
-  type SessionCaptureNeed,
-} from '#features/sessions/store'
-import { sessionTranscriptPath } from '#features/sessions/transcripts'
+  listAgentSessionsMissingPrompt,
+  setAgentSessionCapture,
+} from '#features/sessions/agent-session-store'
 import { testEnv } from '@yaac/shared/env'
 
 /**
- * Fill in what a session row can only learn from the running container:
- * its first user message, and the path of the transcript the agent is
- * writing. Both happen once per session, which is what lets every display
- * path read the prompt from the DB instead of re-parsing a transcript (or
+ * Fill in each agent session's first user message, read from the transcript
+ * its link resolved. Once per conversation, which is what lets every display
+ * path read prompts from the DB instead of re-parsing a transcript (or
  * re-probing a container) on every list tick.
  *
- * Driven by the reconciler rather than by a client poll, so the record
- * exists for `session list -d` and restart even when nothing is watching.
- * A session that already has its prompt (created with one) is still
- * visited until its transcript path is stamped — the deleted listing stats
- * that path for last-activity, and without it a session reports its
- * creation time as last activity forever.
+ * There is no separate worktree-level capture: a worktree's founding ask *is*
+ * its first conversation's opening message, read through that link. That is
+ * also what makes it survive a `/clear` — the new conversation is a second
+ * row, so the first one's message stays the worktree's label.
+ *
+ * Driven by the reconciler rather than by a client poll, so the record exists
+ * for `worktree list -s` and restart even when nothing is watching. Runs
+ * after the agent-session registry on the same tick, so the conversations it
+ * captures for are the ones the registry has just discovered.
  */
 export async function captureSessionPrompts(snapshot?: TickSnapshot): Promise<void> {
-  const pending = await listSessionsMissingCapture().catch((): SessionCaptureNeed[] => [])
-  if (pending.length === 0) return
-
   let pods
   try {
     pods = await (snapshot ? snapshot.pods() : listSessionPods())
@@ -37,32 +34,26 @@ export async function captureSessionPrompts(snapshot?: TickSnapshot): Promise<vo
   const { running } = await classifySessionPods(
     pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
   )
-  const wanted = new Map(pending.map((r) => [`${r.projectSlug}/${r.sessionId}`, r]))
 
   await Promise.all(running.map(async (p) => {
     if (!p.sessionId || !p.projectSlug || !p.jobName) return
-    const need = wanted.get(`${p.projectSlug}/${p.sessionId}`)
-    if (!need) return
-    const tool = normalizeTool(p.tool)
+    const jobName = p.jobName
+    const projectSlug = p.projectSlug
+    const worktreeId = p.sessionId
     try {
-      // Only what's missing: a stored prompt is the ask the session was
-      // created with, and must not be replaced by whatever the transcript
-      // happens to start with now.
-      const [prompt, transcriptPath] = await Promise.all([
-        need.needsPrompt
-          ? getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName)
-          : undefined,
-        need.needsTranscriptPath
-          ? sessionTranscriptPath(p.projectSlug, p.sessionId, tool)
-          : undefined,
-      ])
-      // Nothing learned yet — the agent hasn't been prompted, so it has
-      // written no transcript either. Next tick retries.
-      if (prompt === undefined && transcriptPath === undefined) return
-      await setSessionCapture(p.projectSlug, p.sessionId, {
-        ...(prompt !== undefined ? { prompt } : {}),
-        ...(transcriptPath !== undefined ? { transcriptPath } : {}),
-      })
+      for (const link of await listAgentSessionsMissingPrompt(projectSlug, worktreeId)) {
+        const prompt = await getAgentSessionFirstMessage(
+          link.tool,
+          link.transcriptPath,
+          jobName,
+        )
+        // The agent hasn't been prompted yet — nothing to write; next tick
+        // retries.
+        if (prompt === undefined) continue
+        await setAgentSessionCapture(projectSlug, link.tool, link.agentSessionId, {
+          firstPrompt: prompt,
+        })
+      }
     } catch {
       // best-effort — next tick retries
     }

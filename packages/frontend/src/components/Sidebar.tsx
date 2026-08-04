@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
-import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
+import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { EmptyState } from '#components/ui/EmptyState'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
@@ -13,52 +13,52 @@ import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { dismissProvisioning, restartSession, setSessionBackground } from '#lib/createSession'
-import { getDeletedSessions } from '#lib/deletedApi'
-import { deleteSessionOptimistic } from '#lib/deleteSessionFlow'
+import { dismissProvisioning, restartSession, setWorktreeBackground } from '#lib/createSession'
+import { getStoppedWorktrees } from '#lib/stoppedApi'
+import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionSession } from '#lib/useProvisionSession'
 import { isUnreadWaiting, useUiStore } from '#store'
 import { describeSessionDeathReason } from '@yaac/shared/death-reason'
-import type { DeletedSessionEntry, GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
+import type { StoppedWorktreeEntry, GitAuthFailure, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 
 /** User-facing session groups keyed by status, in triage order (Waiting
- *  first). Background pins and terminating are orthogonal to status and get
+ *  first). Background pins and stopping are orthogonal to status and get
  *  their own sections rendered after these (see sidebarSections). */
-const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
+const GROUPS: { status: WorktreeListEntry['status']; label: string; defaultOpen: boolean }[] = [
   { status: 'waiting', label: 'Waiting', defaultOpen: true },
   { status: 'running', label: 'Running', defaultOpen: true },
 ]
 
-/** A session is terminating when the server has marked it (its pod has a
+/** A session is stopping when the server has marked it (its pod has a
  *  deletionTimestamp, or a delete was just issued) or a client-side optimistic
  *  delete is still in flight. Such rows get their own "Terminating" section and
- *  render as non-interactive, greyed placeholders (see SessionRow). */
+ *  render as non-interactive, greyed placeholders (see WorktreeRow). */
 function isTerminating(
-  session: Pick<SessionListEntry, 'sessionId' | 'terminating'>,
+  session: Pick<WorktreeListEntry, 'worktreeId' | 'stopping'>,
   pendingDeleteIds: string[],
 ): boolean {
-  return Boolean(session.terminating) || pendingDeleteIds.includes(session.sessionId)
+  return Boolean(session.stopping) || pendingDeleteIds.includes(session.worktreeId)
 }
 
 /**
  * The sidebar's selectable rows in display order — provisioning first, then
  * the session groups in triage order, then the Background pins, minus
- * terminating sessions. This is the list the Alt+↑/↓ session-switch shortcut
+ * stopping worktrees. This is the list the Alt+↑/↓ session-switch shortcut
  * steps through (Workspace owns the handler). Terminating rows (server-marked,
  * or a mid-flight optimistic delete) still render, greyed, but aren't
  * selectable — nor are deleted Background rows (nothing to open).
  */
 export function sidebarRowIds(
-  provisioning: Pick<ProvisioningSessionEntry, 'sessionId'>[],
-  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'terminating' | 'background'>[],
+  provisioning: Pick<ProvisioningWorktreeEntry, 'worktreeId'>[],
+  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'stopping' | 'background'>[],
   pendingDeleteIds: string[],
 ): string[] {
-  const shown = sessions.filter((s) => !isTerminating(s, pendingDeleteIds))
+  const shown = worktrees.filter((s) => !isTerminating(s, pendingDeleteIds))
   const foreground = shown.filter((s) => !s.background)
   return [
-    ...provisioning.map((p) => p.sessionId),
-    ...GROUPS.flatMap((g) => foreground.filter((s) => s.status === g.status).map((s) => s.sessionId)),
-    ...shown.filter((s) => s.background).map((s) => s.sessionId),
+    ...provisioning.map((p) => p.worktreeId),
+    ...GROUPS.flatMap((g) => foreground.filter((s) => s.status === g.status).map((s) => s.worktreeId)),
+    ...shown.filter((s) => s.background).map((s) => s.worktreeId),
   ]
 }
 
@@ -66,38 +66,38 @@ export function sidebarRowIds(
 export interface SidebarSection {
   label: string
   defaultOpen: boolean
-  sessions: SessionListEntry[]
+  worktrees: WorktreeListEntry[]
   /** Deleted-but-pinned rows (Background section only) — rendered after the
    *  active rows as non-selectable placeholders with a restart action. */
-  deleted?: DeletedSessionEntry[]
+  deleted?: StoppedWorktreeEntry[]
 }
 
 /**
  * Sidebar sections in render order: the status groups (Waiting, then Running)
- * holding live sessions, then Background holding every pinned session —
- * whatever its state: running, waiting, terminating, or deleted (the
+ * holding live worktrees, then Background holding every pinned session —
+ * whatever its state: running, waiting, stopping, or deleted (the
  * `deletedBackground` rows) — then a Terminating section for unpinned
- * sessions on their way out. Status is orthogonal to both pins and
- * termination, so a pinned or terminating session leaves its status group.
+ * worktrees on their way out. Status is orthogonal to both pins and
+ * termination, so a pinned or stopping session leaves its status group.
  * Empty sections are kept in the list; SessionGroup renders nothing for them.
  */
 export function sidebarSections(
-  sessions: SessionListEntry[],
+  worktrees: WorktreeListEntry[],
   pendingDeleteIds: string[],
-  deletedBackground: DeletedSessionEntry[] = [],
+  deletedBackground: StoppedWorktreeEntry[] = [],
 ): SidebarSection[] {
-  const foreground = sessions.filter((s) => !s.background)
-  const background = sessions.filter((s) => Boolean(s.background))
+  const foreground = worktrees.filter((s) => !s.background)
+  const background = worktrees.filter((s) => Boolean(s.background))
   const live = foreground.filter((s) => !isTerminating(s, pendingDeleteIds))
-  const terminating = foreground.filter((s) => isTerminating(s, pendingDeleteIds))
+  const stopping = foreground.filter((s) => isTerminating(s, pendingDeleteIds))
   return [
     ...GROUPS.map((g) => ({
       label: g.label,
       defaultOpen: g.defaultOpen,
-      sessions: live.filter((s) => s.status === g.status),
+      worktrees: live.filter((s) => s.status === g.status),
     })),
-    { label: 'Background', defaultOpen: true, sessions: background, deleted: deletedBackground },
-    { label: 'Terminating', defaultOpen: true, sessions: terminating },
+    { label: 'Background', defaultOpen: true, worktrees: background, deleted: deletedBackground },
+    { label: 'Terminating', defaultOpen: true, worktrees: stopping },
   ]
 }
 
@@ -117,7 +117,7 @@ function relativeAge(createdAt: string): string {
 export function Sidebar({
   projectSlug,
   projectRemoteUrl,
-  sessions,
+  worktrees,
   provisioning,
   connected,
   gitAuthFailures,
@@ -126,47 +126,47 @@ export function Sidebar({
   /** Active project's git remote ('' until the snapshot hydrates) — the
    *  remove-project dialog's type-to-confirm text. */
   projectRemoteUrl: string
-  sessions: SessionListEntry[]
-  provisioning: ProvisioningSessionEntry[]
+  worktrees: WorktreeListEntry[]
+  provisioning: ProvisioningWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
 }): JSX.Element {
-  // Sessions on their way out stay visible as greyed "terminating…" rows
-  // (SessionRow styles them) rather than vanishing, so the list doesn't jump.
+  // Sessions on their way out stay visible as greyed "stopping…" rows
+  // (WorktreeRow styles them) rather than vanishing, so the list doesn't jump.
   // They move to their own "Terminating" section instead of lingering under
   // Waiting/Running. The empty state keys off whether any section has rows,
-  // terminating included.
+  // stopping included.
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const optimisticDeleted = useUiStore((s) => s.optimisticDeleted)
+  const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   // Re-fetch the deleted list whenever the active set changes (a just-deleted
   // session appears, a restarted one drops).
-  const activeSignature = sessions.map((s) => s.sessionId).sort().join(',')
+  const activeSignature = worktrees.map((s) => s.worktreeId).sort().join(',')
 
-  // Deleted sessions feed the Background section's pinned-but-deleted rows.
-  // Same query key as DeletedSessionsButton, so the two share one fetch.
+  // Deleted worktrees feed the Background section's pinned-but-deleted rows.
+  // Same query key as StoppedWorktreesButton, so the two share one fetch.
   const { data: deletedList } = useQuery({
     queryKey: ['deleted', projectSlug, activeSignature],
-    queryFn: () => getDeletedSessions(projectSlug ?? '', 100),
+    queryFn: () => getStoppedWorktrees(projectSlug ?? '', 100),
     enabled: !!projectSlug,
     staleTime: 2000,
   })
   // Pinned deleted rows: optimistic just-deleted entries ahead of the fetched
   // list (de-duped), minus anything active again — a session mid-termination
-  // is still in the snapshot (its Background row renders the terminating
+  // is still in the snapshot (its Background row renders the stopping
   // placeholder), and one mid-restart has a provisioning row instead.
-  const activeIds = new Set(sessions.map((s) => s.sessionId))
-  const provisioningIds = new Set(provisioning.map((p) => p.sessionId))
-  const fetchedIds = new Set((deletedList ?? []).map((d) => d.sessionId))
+  const activeIds = new Set(worktrees.map((s) => s.worktreeId))
+  const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
+  const fetchedIds = new Set((deletedList ?? []).map((d) => d.worktreeId))
   const deletedBackground = [
-    ...optimisticDeleted.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.sessionId)),
+    ...optimisticStopped.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.worktreeId)),
     ...(deletedList ?? []),
-  ].filter((d) => d.background && !activeIds.has(d.sessionId) && !provisioningIds.has(d.sessionId))
+  ].filter((d) => d.background && !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
 
-  const sections = sidebarSections(sessions, pendingDeleteIds, deletedBackground)
+  const sections = sidebarSections(worktrees, pendingDeleteIds, deletedBackground)
   const visibleCount = sections.reduce(
-    (n, sec) => n + sec.sessions.length + (sec.deleted?.length ?? 0), 0,
+    (n, sec) => n + sec.worktrees.length + (sec.deleted?.length ?? 0), 0,
   )
 
   return (
@@ -201,7 +201,7 @@ export function Sidebar({
           <UsageBadge />
           <ImageBuildIndicator projectSlug={projectSlug} />
           {/* Project-wide: the stored credential is the project's, so the
-              flag lives on the project header, not on individual sessions. */}
+              flag lives on the project header, not on individual worktrees. */}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
               failures={gitAuthFailures}
@@ -225,21 +225,21 @@ export function Sidebar({
           <EmptyState
             compact
             className="py-10"
-            title="No sessions yet"
+            title="No worktrees yet"
             description="Start one with the + above."
           />
         )}
-        {provisioning.map((p) => <ProvisioningRow key={p.sessionId} entry={p} />)}
+        {provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
         {sections.map((section) => (
           <SessionGroup
             key={section.label}
             label={section.label}
             defaultOpen={section.defaultOpen}
-            sessions={section.sessions}
+            worktrees={section.worktrees}
             deleted={section.deleted}
           />
         ))}
-        {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
+        {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} activeSignature={activeSignature} />}
       </div>
     </aside>
   )
@@ -247,24 +247,24 @@ export function Sidebar({
 
 /** Selectable row for a session that's still provisioning. Clicking it opens
  *  the provisioning status in the main pane; a failed one offers a dismiss ×. */
-function ProvisioningRow({ entry }: { entry: ProvisioningSessionEntry }): JSX.Element {
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.Element {
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectSession = useUiStore((s) => s.selectSession)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
 
   const dismiss = (): void => {
-    void dismissProvisioning(entry.sessionId).catch(() => { /* best-effort */ })
-    removeOptimisticProvisioning(entry.sessionId)
-    if (selectedSessionId === entry.sessionId) selectSession(null)
+    void dismissProvisioning(entry.worktreeId).catch(() => { /* best-effort */ })
+    removeOptimisticProvisioning(entry.worktreeId)
+    if (selectedWorktreeId === entry.worktreeId) selectSession(null)
   }
 
   return (
     <div className="group relative mx-2">
       <button
-        onClick={() => selectSession(entry.sessionId)}
+        onClick={() => selectSession(entry.worktreeId)}
         className={clsx(
           'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
-          selectedSessionId === entry.sessionId && 'bg-surface-2 hover:bg-surface-2',
+          selectedWorktreeId === entry.worktreeId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
         <span className="flex items-center gap-2">
@@ -302,18 +302,18 @@ function ProvisioningRow({ entry }: { entry: ProvisioningSessionEntry }): JSX.El
 
 function SessionGroup({
   label,
-  sessions,
+  worktrees,
   deleted = [],
   defaultOpen,
 }: {
   label: string
-  sessions: SessionListEntry[]
+  worktrees: WorktreeListEntry[]
   /** Deleted-but-pinned rows, rendered after the active ones (Background). */
-  deleted?: DeletedSessionEntry[]
+  deleted?: StoppedWorktreeEntry[]
   defaultOpen: boolean
 }): JSX.Element | null {
   const [open, setOpen] = useState(defaultOpen)
-  if (sessions.length === 0 && deleted.length === 0) return null
+  if (worktrees.length === 0 && deleted.length === 0) return null
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
@@ -321,11 +321,11 @@ function SessionGroup({
         text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>{label}</span>
-        <span className="text-text-faint/70">{sessions.length + deleted.length}</span>
+        <span className="text-text-faint/70">{worktrees.length + deleted.length}</span>
       </Collapsible.Trigger>
       <Collapsible.Panel>
-        {sessions.map((s) => <SessionRow key={s.sessionId} session={s} />)}
-        {deleted.map((d) => <DeletedSessionRow key={d.sessionId} entry={d} />)}
+        {worktrees.map((s) => <WorktreeRow key={s.worktreeId} session={s} />)}
+        {deleted.map((d) => <DeletedSessionRow key={d.worktreeId} entry={d} />)}
       </Collapsible.Panel>
     </Collapsible.Root>
   )
@@ -369,8 +369,15 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
-function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+/** How many of a worktree's agent sessions are currently open. A worktree
+ *  from an older server (or one whose registry tick hasn't landed) reports
+ *  none, which reads as the ordinary single-agent case. */
+function openAgentCount(session: WorktreeListEntry): number {
+  return session.agentSessions.filter((a) => a.active).length
+}
+
+function WorktreeRow({ session }: { session: WorktreeListEntry }): JSX.Element {
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectSession = useUiStore((s) => s.selectSession)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -380,26 +387,26 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   // The container is being torn down — server-marked, or an optimistic delete
   // not yet reflected in the snapshot. Either way the row is on its way out
   // and the Sidebar has already routed it into the "Terminating" section.
-  const terminating = isTerminating(session, pendingDeleteIds)
+  const stopping = isTerminating(session, pendingDeleteIds)
 
-  // Close the dialog immediately; the shared flow marks the row terminating
+  // Close the dialog immediately; the shared flow marks the row stopping
   // optimistically and restores it if the delete fails.
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
-    deleteSessionOptimistic(session)
+    stopWorktreeOptimistic(session)
   }
 
   // Pin/unpin to the Background section. The server pushes a fresh snapshot,
   // so the row regroups without optimistic state.
   const toggleBackground = (): void => {
-    void setSessionBackground(session.projectSlug, session.sessionId, !session.background)
+    void setWorktreeBackground(session.projectSlug, session.worktreeId, !session.background)
       .catch((e: unknown) => console.error('background toggle failed', e))
   }
 
-  // A terminating row is a non-interactive, greyed placeholder: no pulse, no
-  // unread bubble, no delete × — just a spinner and a "terminating…" line. It
+  // A stopping row is a non-interactive, greyed placeholder: no pulse, no
+  // unread bubble, no delete × — just a spinner and a "stopping…" line. It
   // vanishes when the snapshot drops the session.
-  if (terminating) {
+  if (stopping) {
     return (
       <div className="mx-2">
         <div
@@ -413,7 +420,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
             </span>
           </span>
           <span className="flex items-center gap-2 text-xs text-text-faint">
-            <span className="truncate">terminating…</span>
+            <span className="truncate">stopping…</span>
             <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
           </span>
         </div>
@@ -428,10 +435,10 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
       onMouseLeave={() => setHovered(false)}
     >
       <button
-        onClick={() => selectSession(session.sessionId)}
+        onClick={() => selectSession(session.worktreeId)}
         className={clsx(
           'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
-          selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
+          selectedWorktreeId === session.worktreeId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
         {/* Title fills the row; only on hover does it inset to clear the pin
@@ -456,6 +463,17 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="shrink-0">{relativeAge(session.createdAt)}</span>
+          {/* Only when a worktree holds more than one live conversation —
+              one is the overwhelmingly common case and a column of "1
+              agent" would be pure noise. */}
+          {openAgentCount(session) > 1 && (
+            <span
+              className="shrink-0"
+              title={`${openAgentCount(session)} agent sessions open in this worktree`}
+            >
+              {openAgentCount(session)} agents
+            </span>
+          )}
           {/* The remote branch this session's worktree tracks. */}
           {session.baseBranch && (
             <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${session.baseBranch}`}>
@@ -478,7 +496,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
           <BlockedHostsBadge
             hosts={session.blockedHosts}
-            sessionId={session.sessionId}
+            worktreeId={session.worktreeId}
             iconSize={11}
             className="pointer-events-auto hover:bg-[#d65858]/25"
           />
@@ -522,22 +540,22 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
 
 /**
  * A pinned session whose container is gone — the Background section keeps its
- * row (deleted sessions still appear in the full "Deleted sessions" overlay
+ * row (deleted worktrees still appear in the full "Deleted worktrees" overlay
  * too). Non-selectable: there's nothing to open until it's restarted. Hover
  * offers the same pin toggle as live rows (unpinning drops the row) and a
  * restart, which reuses the deleted-overlay flow: a provisioning row replaces
  * this one while the container is recreated.
  */
-function DeletedSessionRow({ entry }: { entry: DeletedSessionEntry }): JSX.Element {
+function DeletedSessionRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Element {
   const provision = useProvisionSession()
   const queryClient = useQueryClient()
-  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
+  const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const [confirmRestart, setConfirmRestart] = useState(false)
 
   const onConfirmRestart = (): void => {
     setConfirmRestart(false)
-    removeOptimisticDeleted(entry.sessionId)
-    provision(entry.projectSlug, entry.tool, 'restart', entry.sessionId,
+    removeOptimisticStopped(entry.worktreeId)
+    provision(entry.projectSlug, entry.tool, 'restart', entry.worktreeId,
       (sid, onProgress) => restartSession(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }))
   }
 
@@ -545,19 +563,19 @@ function DeletedSessionRow({ entry }: { entry: DeletedSessionEntry }): JSX.Eleme
   // query (and any optimistic copy) for an instant regroup; the server write
   // makes it durable.
   const unpin = (): void => {
-    queryClient.setQueriesData<DeletedSessionEntry[]>(
+    queryClient.setQueriesData<StoppedWorktreeEntry[]>(
       { queryKey: ['deleted', entry.projectSlug] },
-      (old) => old?.map((e) => (e.sessionId === entry.sessionId ? { ...e, background: undefined } : e)),
+      (old) => old?.map((e) => (e.worktreeId === entry.worktreeId ? { ...e, background: undefined } : e)),
     )
-    removeOptimisticDeleted(entry.sessionId)
-    void setSessionBackground(entry.projectSlug, entry.sessionId, false)
+    removeOptimisticStopped(entry.worktreeId)
+    void setWorktreeBackground(entry.projectSlug, entry.worktreeId, false)
       .catch((e: unknown) => console.error('background toggle failed', e))
   }
 
   const deletedLine = entry.deathReason
-    ? `died${entry.deletedAt ? ` ${relativeAge(entry.deletedAt)}` : ''} — ${describeSessionDeathReason(entry.deathReason)}`
-    : entry.deletedAt
-      ? `deleted ${relativeAge(entry.deletedAt)}`
+    ? `died${entry.stoppedAt ? ` ${relativeAge(entry.stoppedAt)}` : ''} — ${describeSessionDeathReason(entry.deathReason)}`
+    : entry.stoppedAt
+      ? `deleted ${relativeAge(entry.stoppedAt)}`
       : 'deleted'
 
   return (

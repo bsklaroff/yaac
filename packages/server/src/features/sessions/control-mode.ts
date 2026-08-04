@@ -29,6 +29,9 @@
 export type ControlModeNotification =
   | { kind: 'subscription'; name: string; paneId: string; value: string }
   | { kind: 'output'; paneId: string }
+  /** A window was added or closed — the watcher's cue to re-enumerate agent
+   *  panes, since a new conversation arrives as a new window. */
+  | { kind: 'windows-changed' }
   | { kind: 'exit' }
 
 /**
@@ -53,6 +56,15 @@ export function parseControlModeNotification(line: string): ControlModeNotificat
     return { kind: 'output', paneId }
   }
   if (line === '%exit' || line.startsWith('%exit ')) return { kind: 'exit' }
+  // tmux emits one of these whenever the window list changes. `%window-close`
+  // is the plain close; `%unlinked-window-close` fires for a window that
+  // belonged to no session the client is attached to — both mean an agent
+  // window may have gone.
+  if (line.startsWith('%window-add')
+    || line.startsWith('%window-close')
+    || line.startsWith('%unlinked-window-close')) {
+    return { kind: 'windows-changed' }
+  }
   return null
 }
 

@@ -85,7 +85,7 @@ function stubSnapshot(
   codexPlanUsage: PlanUsageResult | null = null,
 ): void {
   vi.mocked(useSnapshot).mockReturnValue({
-    sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
+    worktrees: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage,
     codexPlanUsage,
     forwardBindHost: '127.0.0.1',

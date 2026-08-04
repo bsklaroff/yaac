@@ -117,6 +117,12 @@ vi.mock('@yaac/server/platform/k8s/pod-wait', () => ({
 }))
 
 vi.mock('@yaac/shared/project-paths', () => ({
+  // A constant, not a per-project path: sealing features/cluster put its
+  // setup module in this graph — session create reaches it through the
+  // #features/cluster barrel (→ delete.ts → setup.ts) — and it reads
+  // CALICO_DIR at module scope, so an undefined value throws before any test
+  // runs. Independent of how stream-relay is mocked.
+  CALICO_DIR: '/tmp/yaac-package/k8s/calico',
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
@@ -128,6 +134,10 @@ vi.mock('@yaac/shared/project-paths', () => ({
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
+  // The agent-session link tree lives under each tool's mounted home; create
+  // wipes the worktree's pane pointers before the pod starts.
+  worktreeLinksDir: vi.fn((slug: string, tool: string, worktreeId: string) =>
+    `/tmp/${slug}/${tool}/.yaac-links/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   sessionDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
@@ -137,10 +147,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
   PACKAGE_ROOT: '/tmp/yaac-package',
-  // Read at module-eval time by features/cluster/setup, which session
-  // create reaches through the #features/cluster barrel (→ delete.ts →
-  // setup.ts). Independent of how stream-relay is mocked.
-  CALICO_DIR: '/tmp/yaac-package/k8s/calico',
 }))
 
 vi.mock('@yaac/server/features/projects/config', () => ({
@@ -206,17 +212,23 @@ vi.mock('@yaac/server/features/sessions/forwarders/port-forwarders', () => ({
 } satisfies Partial<typeof portForwardersModule>))
 
 // The session row is a real DB write; this file mocks everything around
-// createSession, so it mocks the store too. `recordSessionCreated` throwing
+// createSession, so it mocks the store too. `recordWorktreeCreated` throwing
 // is a failed create (see the teardown case below), not a swallowed hiccup.
-vi.mock('@yaac/server/features/sessions/store', () => ({
-  recordSessionCreated: vi.fn(),
-  recordSessionDeleted: vi.fn(),
-  deleteSessionRow: vi.fn(),
-  setSessionBaseBranch: vi.fn(),
-  getSessionRow: vi.fn(),
-  priorDeletionOf: vi.fn(),
-  restoreSessionDeletion: vi.fn(),
+vi.mock('@yaac/server/features/sessions/worktree-store', () => ({
+  recordWorktreeCreated: vi.fn(),
+  recordWorktreeStopped: vi.fn(),
+  deleteWorktreeRow: vi.fn(),
+  setWorktreeBaseBranch: vi.fn(),
+  getWorktreeRow: vi.fn(),
+  priorStopOf: vi.fn(),
+  restoreWorktreeStop: vi.fn(),
 } satisfies Partial<typeof storeModule>))
+
+vi.mock('@yaac/server/features/sessions/agent-session-store', () => ({
+  recordAgentSessions: vi.fn(),
+  setActiveAgentSessions: vi.fn(),
+  deleteWorktreeAgentSessions: vi.fn().mockResolvedValue(undefined),
+} satisfies Partial<typeof agentStoreModule>))
 
 vi.mock('@yaac/server/features/sessions/cleanup', () => ({
   cleanupSessionDetached: vi.fn(),
@@ -226,17 +238,18 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createSession } from '@yaac/server/features/sessions/create'
 import {
-  deleteSessionRow,
-  getSessionRow,
-  priorDeletionOf,
-  recordSessionCreated,
-  recordSessionDeleted,
-  restoreSessionDeletion,
-  setSessionBaseBranch,
-} from '@yaac/server/features/sessions/store'
+  deleteWorktreeRow,
+  getWorktreeRow,
+  priorStopOf,
+  recordWorktreeCreated,
+  recordWorktreeStopped,
+  restoreWorktreeStop,
+  setWorktreeBaseBranch,
+} from '@yaac/server/features/sessions/worktree-store'
+import { recordAgentSessions } from '@yaac/server/features/sessions/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/sessions/agent-command'
 import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
-import { sessionCreate } from '#commands/session-create'
+import { worktreeCreate } from '#commands/worktree-create'
 import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
 import { ensureImage, pushImageShared } from '@yaac/server/features/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
@@ -325,7 +338,7 @@ describe('createSession', () => {
 
     // Async store reads must resolve, not return undefined: createSession
     // awaits and `.catch()`es them.
-    vi.mocked(getSessionRow).mockResolvedValue(undefined)
+    vi.mocked(getWorktreeRow).mockResolvedValue(undefined)
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
@@ -381,24 +394,29 @@ describe('createSession', () => {
     const result = await createSession('demo', { tool: 'claude', branch: 'dev' })
     expect(vi.mocked(addWorktree)).toHaveBeenCalledWith(
       '/tmp/demo/repo',
-      `/tmp/demo/worktrees/${result?.sessionId}`,
-      `agent/${result?.sessionId}`,
+      `/tmp/demo/worktrees/${result?.worktreeId}`,
+      `agent/${result?.worktreeId}`,
       'origin/dev',
     )
     const upstreamCall = mockSessionExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
     expect(upstreamCall?.[1]).toContain("'origin/dev'")
   })
 
-  it('records the session with its tool and initial prompt, before the Job', async () => {
+  it('records the worktree and its first conversation before the Job', async () => {
     const result = await createSession('demo', { tool: 'codex', branch: 'dev', initialPrompt: 'ship it' })
-    expect(vi.mocked(recordSessionCreated)).toHaveBeenCalledWith({
+    expect(vi.mocked(recordWorktreeCreated)).toHaveBeenCalledWith({
       projectSlug: 'demo',
-      sessionId: result?.sessionId,
-      tool: 'codex',
-      prompt: 'ship it',
+      worktreeId: result?.worktreeId,
     })
+    // The tool and the founding ask live on the conversation create launches,
+    // which is the only reason a worktree can name either.
+    expect(vi.mocked(recordAgentSessions)).toHaveBeenCalledWith(
+      'demo',
+      result?.worktreeId,
+      [{ tool: 'codex', agentSessionId: result?.worktreeId, firstPrompt: 'ship it' }],
+    )
     // Ordering is the point: no pod can exist without a row.
-    const recordOrder = vi.mocked(recordSessionCreated).mock.invocationCallOrder[0] ?? Infinity
+    const recordOrder = vi.mocked(recordWorktreeCreated).mock.invocationCallOrder[0] ?? Infinity
     const applyOrder = mockApply.mock.invocationCallOrder[0] ?? 0
     expect(recordOrder).toBeLessThan(applyOrder)
   })
@@ -406,7 +424,7 @@ describe('createSession', () => {
   it('fails the create before provisioning anything when the row cannot be written', async () => {
     // The row goes in before the Job, so a write failure costs nothing —
     // no image, no worktree checkout, no pod.
-    vi.mocked(recordSessionCreated).mockRejectedValueOnce(new Error('disk full'))
+    vi.mocked(recordWorktreeCreated).mockRejectedValueOnce(new Error('disk full'))
     await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow('disk full')
     expect(mockApply).not.toHaveBeenCalled()
   })
@@ -414,7 +432,7 @@ describe('createSession', () => {
   it('rolls the row back when a fresh create gives up', async () => {
     mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
     await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow()
-    expect(vi.mocked(deleteSessionRow)).toHaveBeenCalledWith('demo', expect.any(String))
+    expect(vi.mocked(deleteWorktreeRow)).toHaveBeenCalledWith('demo', expect.any(String))
   })
 
   it('re-marks a failed restart as deleted instead of erasing its history', async () => {
@@ -424,38 +442,38 @@ describe('createSession', () => {
     await expect(
       createSession('demo', { tool: 'claude', resume: true, sessionId: 'prior-session' }),
     ).rejects.toThrow()
-    expect(vi.mocked(deleteSessionRow)).not.toHaveBeenCalled()
-    expect(vi.mocked(recordSessionDeleted)).toHaveBeenCalledWith('demo', 'prior-session')
+    expect(vi.mocked(deleteWorktreeRow)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordWorktreeStopped)).toHaveBeenCalledWith('demo', 'prior-session')
   })
 
   it('restores the exact prior deletion when a restart of a died session fails', async () => {
     // Restarting an OOM-killed session and failing must not lose how it
     // died, nor re-raise a notification the user already dismissed.
     const prior = {
-      deletedAt: new Date('2026-07-30T00:00:00Z'),
+      stoppedAt: new Date('2026-07-30T00:00:00Z'),
       deathReason: 'oom' as const,
       deathDetail: 'exit code 137',
       deathSeen: true,
     }
-    vi.mocked(priorDeletionOf).mockReturnValueOnce(prior)
+    vi.mocked(priorStopOf).mockReturnValueOnce(prior)
     mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
 
     await expect(
       createSession('demo', { tool: 'claude', resume: true, sessionId: 'died-session' }),
     ).rejects.toThrow()
 
-    expect(vi.mocked(restoreSessionDeletion)).toHaveBeenCalledWith('demo', 'died-session', prior)
-    expect(vi.mocked(recordSessionDeleted)).not.toHaveBeenCalled()
+    expect(vi.mocked(restoreWorktreeStop)).toHaveBeenCalledWith('demo', 'died-session', prior)
+    expect(vi.mocked(recordWorktreeStopped)).not.toHaveBeenCalled()
   })
 
   it('stamps the resolved base branch after provisioning', async () => {
     const result = await createSession('demo', { tool: 'claude', branch: 'dev' })
-    expect(vi.mocked(setSessionBaseBranch)).toHaveBeenCalledWith('demo', result?.sessionId, 'dev')
+    expect(vi.mocked(setWorktreeBaseBranch)).toHaveBeenCalledWith('demo', result?.worktreeId, 'dev')
   })
 
   it('does not record a prewarmed spare — a spare is not a session until claimed', async () => {
     await createSession('demo', { tool: 'claude', prewarm: true })
-    expect(vi.mocked(recordSessionCreated)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordWorktreeCreated)).not.toHaveBeenCalled()
   })
 
   it('falls back to the configured referenceBranch, with an explicit branch winning', async () => {
@@ -501,8 +519,8 @@ describe('createSession', () => {
     const result = await createSession('demo', { tool: 'codex' })
 
     expect(result).toBeDefined()
-    expect(result?.sessionId).toEqual(expect.any(String))
-    expect(result?.jobName).toBe(`yaac-demo-${result?.sessionId}`)
+    expect(result?.worktreeId).toEqual(expect.any(String))
+    expect(result?.jobName).toBe(`yaac-demo-${result?.worktreeId}`)
     expect(result?.tool).toBe('codex')
     expect(result?.forwardedPorts).toEqual([])
     expect(mockApply).toHaveBeenCalledTimes(1)
@@ -1168,15 +1186,16 @@ import type * as projectConfigModule from '@yaac/server/features/projects/config
 import type * as credentialsModule from '@yaac/server/features/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
 import type * as portForwardersModule from '@yaac/server/features/sessions/forwarders/port-forwarders'
-import type * as storeModule from '@yaac/server/features/sessions/store'
+import type * as storeModule from '@yaac/server/features/sessions/worktree-store'
+import type * as agentStoreModule from '@yaac/server/features/sessions/agent-session-store'
 import type * as cleanupModule from '@yaac/server/features/sessions/cleanup'
 
-// sessionCreate posts to the streaming /session/create route via the `api`
+// worktreeCreate posts to the streaming /worktree/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only
 // unwraps JSON routes), which `consumeNdjsonStream` reads.
 const { mockPost } = vi.hoisted(() => ({ mockPost: vi.fn() }))
 vi.mock('#commands/api', () => ({
-  api: { session: { create: { $post: mockPost } } },
+  api: { worktree: { create: { $post: mockPost } } },
 }))
 
 import { getGitUserConfig as getGitUserConfigShared } from '@yaac/shared/git'
@@ -1194,7 +1213,7 @@ function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Ui
   }
 }
 
-describe('sessionCreate (CLI shim)', () => {
+describe('worktreeCreate (CLI shim)', () => {
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
   beforeEach(() => {
@@ -1213,7 +1232,7 @@ describe('sessionCreate (CLI shim)', () => {
       JSON.stringify({
         type: 'result',
         result: {
-          sessionId: 'sess-123',
+          worktreeId: 'sess-123',
           jobName: 'yaac-demo-sess-123',
           forwardedPorts: [],
           tool: 'claude',
@@ -1222,8 +1241,8 @@ describe('sessionCreate (CLI shim)', () => {
     ]))
   })
 
-  it('POSTs /session/create with pre-resolved gitUser and returns the sessionId', async () => {
-    const result = await sessionCreate('demo', {})
+  it('POSTs /worktree/create with pre-resolved gitUser and returns the sessionId', async () => {
+    const result = await worktreeCreate('demo', {})
     expect(result).toBe('sess-123')
     expect(mockPost).toHaveBeenCalledTimes(1)
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
@@ -1238,14 +1257,14 @@ describe('sessionCreate (CLI shim)', () => {
   })
 
   it('forwards an explicit --tool unchanged', async () => {
-    await sessionCreate('demo', { tool: 'codex' })
+    await worktreeCreate('demo', { tool: 'codex' })
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
       json: expect.objectContaining({ tool: 'codex' }) as unknown,
     }))
   })
 
   it('prints each progress message from the NDJSON stream', async () => {
-    await sessionCreate('demo', {})
+    await worktreeCreate('demo', {})
     const logged = logSpy.mock.calls.map((args) => args[0] as unknown).filter((v) => typeof v === 'string')
     expect(logged).toContain('Fetching latest from remote...')
     expect(logged).toContain('Creating session job yaac-demo-sess-123...')
@@ -1256,6 +1275,6 @@ describe('sessionCreate (CLI shim)', () => {
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
       JSON.stringify({ type: 'error', error: { code: 'VALIDATION', message: 'no github token' } }),
     ]))
-    await expect(sessionCreate('demo', {})).rejects.toThrow('no github token')
+    await expect(worktreeCreate('demo', {})).rejects.toThrow('no github token')
   })
 })

@@ -4,7 +4,7 @@
 // path, which is why they are unaffected by that rule.
 //
 // The handle and its lifecycle, the one-shot legacy-JSON sweep runServer
-// runs at startup, and the four tables the stores query. Callers get a `Db`
+// runs at startup, and the six tables the stores query. Callers get a `Db`
 // back from getDb() and build their own queries on those tables — the folder
 // owns opening, migrating and closing the database, not the queries.
 //
@@ -14,4 +14,11 @@
 
 export { closeDb, getDb } from './client'
 export { importLegacyJsonStores } from './legacy-import'
-export { agentSessions, preferences, shortcutOverrides, tokens } from './schema'
+export {
+  agentSessions,
+  preferences,
+  shortcutOverrides,
+  tokens,
+  worktreeAgentSessions,
+  worktrees,
+} from './schema'

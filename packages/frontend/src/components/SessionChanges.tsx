@@ -46,16 +46,16 @@ function PathLabel({ path, emphasis = 'text' }: { path: string; emphasis?: 'text
  * the server so it updates as work lands; read-only for now.
  */
 export function SessionChanges(
-  { sessionId, projectSlug, baseBranch }: { sessionId: string; projectSlug: string; baseBranch?: string },
+  { worktreeId, projectSlug, baseBranch }: { worktreeId: string; projectSlug: string; baseBranch?: string },
 ): JSX.Element {
   // The base branch this diff is compared against. Absent ⇒ the session's own
   // fork base (server default); a value ⇒ diff against origin/<value>'s fork
   // point. Lives in the store keyed by session id, so it survives a tab switch.
-  const base = useUiStore((s) => s.changesBase[sessionId])
+  const base = useUiStore((s) => s.changesBase[worktreeId])
   const setChangesBase = useUiStore((s) => s.setChangesBase)
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['changes', sessionId, base ?? null],
-    queryFn: () => getSessionChanges(sessionId, base),
+    queryKey: ['changes', worktreeId, base ?? null],
+    queryFn: () => getSessionChanges(worktreeId, base),
     refetchInterval: 3000,
     staleTime: 1500,
   })
@@ -69,7 +69,7 @@ export function SessionChanges(
   // raises changesFindPending after opening the pane; the mounted pane consumes
   // it — focus + select the input — so opening by the header button (no flag)
   // never grabs focus.
-  const find = useUiStore((s) => s.changesFind[sessionId]) ?? ''
+  const find = useUiStore((s) => s.changesFind[worktreeId]) ?? ''
   const setChangesFind = useUiStore((s) => s.setChangesFind)
   const findPending = useUiStore((s) => s.changesFindPending)
   const setChangesFindPending = useUiStore((s) => s.setChangesFindPending)
@@ -94,19 +94,19 @@ export function SessionChanges(
   // this session's changes yet: auto-open the first file so the pane isn't
   // empty on arrival, then leave it to the user — an existing entry (even an
   // empty one) is their choice and never gets re-seeded.
-  const expandedList = useUiStore((s) => s.changesExpanded[sessionId])
+  const expandedList = useUiStore((s) => s.changesExpanded[worktreeId])
   const setChangesExpanded = useUiStore((s) => s.setChangesExpanded)
   const expanded = useMemo(() => new Set(expandedList ?? []), [expandedList])
   useEffect(() => {
     if (expandedList === undefined && files.length > 0) {
-      setChangesExpanded(sessionId, [files[0].path])
+      setChangesExpanded(worktreeId, [files[0].path])
     }
-  }, [expandedList, files, sessionId, setChangesExpanded])
+  }, [expandedList, files, worktreeId, setChangesExpanded])
   const toggle = (path: string): void => {
     const next = new Set(expanded)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    setChangesExpanded(sessionId, [...next])
+    setChangesExpanded(worktreeId, [...next])
   }
 
   // Scroll offset also lives in the store, so returning to the pane lands where
@@ -122,8 +122,8 @@ export function SessionChanges(
     const el = listRef.current
     if (!el || restoredScroll.current) return
     restoredScroll.current = true
-    el.scrollTop = useUiStore.getState().changesScroll[sessionId] ?? 0
-  }, [sessionId, files.length])
+    el.scrollTop = useUiStore.getState().changesScroll[worktreeId] ?? 0
+  }, [worktreeId, files.length])
 
   // Base picker. It shares the sidebar's branch cache (projectBranchesKey), so a
   // refresh in either place is seen by both; opening it refreshes from the
@@ -150,7 +150,7 @@ export function SessionChanges(
   // fork point is HEAD ("No changes"). An explicit base always diffs against
   // origin/<branch>, which is what the label promises.
   const pickBase = (branch: string): void => {
-    setChangesBase(sessionId, branch)
+    setChangesBase(worktreeId, branch)
     setPickerOpen(false)
     setPickerQuery('')
   }
@@ -253,12 +253,12 @@ export function SessionChanges(
           <input
             ref={findRef}
             value={find}
-            onChange={(e) => setChangesFind(sessionId, e.target.value)}
+            onChange={(e) => setChangesFind(worktreeId, e.target.value)}
             onKeyDown={(e) => {
               if (e.key !== 'Escape') return
               // First Escape clears the filter, a second one leaves the box.
               e.stopPropagation()
-              if (find !== '') setChangesFind(sessionId, '')
+              if (find !== '') setChangesFind(worktreeId, '')
               else e.currentTarget.blur()
             }}
             placeholder="find"
@@ -298,7 +298,7 @@ export function SessionChanges(
       ) : (
         <div
           ref={listRef}
-          onScroll={(e) => setChangesScroll(sessionId, e.currentTarget.scrollTop)}
+          onScroll={(e) => setChangesScroll(worktreeId, e.currentTarget.scrollTop)}
           className="min-h-0 flex-1 overflow-y-auto"
         >
           {visible.map((f) => (

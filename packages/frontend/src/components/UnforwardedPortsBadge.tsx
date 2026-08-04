@@ -19,14 +19,14 @@ import { forwardDetectedPort, dismissDetectedPort } from '#lib/portsApi'
  */
 export function UnforwardedPortsBadge({
   ports,
-  sessionId,
+  worktreeId,
   exposeHost,
   iconSize,
   className,
 }: {
   ports: number[]
   /** The session the listeners were detected in — the target of the actions. */
-  sessionId: string
+  worktreeId: string
   /** The bind host forwards actually listen on (snapshot `forwardBindHost`). */
   exposeHost: string
   iconSize: number
@@ -110,15 +110,15 @@ export function UnforwardedPortsBadge({
                         {[
                           {
                             label: 'Forward for this session',
-                            action: () => forwardDetectedPort(sessionId, port, { persist: false }),
+                            action: () => forwardDetectedPort(worktreeId, port, { persist: false }),
                           },
                           {
                             label: 'Forward permanently for this project',
-                            action: () => forwardDetectedPort(sessionId, port, { persist: true }),
+                            action: () => forwardDetectedPort(worktreeId, port, { persist: true }),
                           },
                           {
                             label: 'Dismiss',
-                            action: () => dismissDetectedPort(sessionId, port),
+                            action: () => dismissDetectedPort(worktreeId, port),
                           },
                         ].map(({ label, action }) => (
                           <button

@@ -4,7 +4,7 @@ import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
-import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
+import type { AgentTool, StoppedWorktreeEntry, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v2'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
@@ -55,7 +55,7 @@ function persistViewMode(mode: ViewMode): void {
  *  reload, or a shared/bookmarked link, reopens the same view. */
 export interface PersistedSelection {
   projectSlug: string | null
-  sessionId: string | null
+  worktreeId: string | null
 }
 
 /**
@@ -69,7 +69,7 @@ export function loadSelection(): PersistedSelection {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const projectSlug = params.get('project')
-      if (projectSlug) return { projectSlug, sessionId: params.get('session') }
+      if (projectSlug) return { projectSlug, worktreeId: params.get('session') }
     }
   } catch { /* fall through to localStorage */ }
   try {
@@ -81,13 +81,13 @@ export function loadSelection(): PersistedSelection {
           const p = parsed as Record<string, unknown>
           return {
             projectSlug: typeof p.projectSlug === 'string' ? p.projectSlug : null,
-            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+            worktreeId: typeof p.worktreeId === 'string' ? p.worktreeId : null,
           }
         }
       }
     }
   } catch { /* fall through to the empty default */ }
-  return { projectSlug: null, sessionId: null }
+  return { projectSlug: null, worktreeId: null }
 }
 
 /**
@@ -97,10 +97,10 @@ export function loadSelection(): PersistedSelection {
  * query params (not a path) keep deep links working on a hard reload.
  * Best-effort. Exported for tests.
  */
-export function persistSelection(projectSlug: string | null, sessionId: string | null): void {
+export function persistSelection(projectSlug: string | null, worktreeId: string | null): void {
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectSlug, sessionId }))
+      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectSlug, worktreeId }))
     }
   } catch { /* quota/serialization failures are non-fatal */ }
   try {
@@ -108,7 +108,7 @@ export function persistSelection(projectSlug: string | null, sessionId: string |
       const url = new URL(window.location.href)
       if (projectSlug) url.searchParams.set('project', projectSlug)
       else url.searchParams.delete('project')
-      if (sessionId) url.searchParams.set('session', sessionId)
+      if (worktreeId) url.searchParams.set('session', worktreeId)
       else url.searchParams.delete('session')
       window.history.replaceState({}, '', url.pathname + url.search + url.hash)
     }
@@ -156,7 +156,7 @@ export function loadPersistedLayouts(): Record<string, Workspace | null> {
   }
 }
 
-/** Read persisted read-waiting marks (sessionId → waitingSinceMs of the spell
+/** Read persisted read-waiting marks (worktreeId → waitingSinceMs of the spell
  *  that was viewed), dropping anything that isn't a number (exported for
  *  tests). Stale marks are pruned against the first snapshot by
  *  syncWaitingRead. */
@@ -213,20 +213,20 @@ export function injectPreviewLeaf(base: Workspace | null): Workspace {
 
 /**
  * Merge server-snapshot provisioning rows with local optimistic ones, deduped
- * by sessionId (the snapshot wins — it carries the live message/error), sorted
+ * by worktreeId (the snapshot wins — it carries the live message/error), sorted
  * by createdAt then id for a stable sidebar order. The optimistic copy only
  * fills the gap between clicking create and the first snapshot frame; once the
  * snapshot knows the id, App prunes it.
  */
 export function mergeProvisioning(
-  snapshot: ProvisioningSessionEntry[],
-  optimistic: ProvisioningSessionEntry[],
-): ProvisioningSessionEntry[] {
-  const byId = new Map<string, ProvisioningSessionEntry>()
-  for (const e of optimistic) byId.set(e.sessionId, e)
-  for (const e of snapshot) byId.set(e.sessionId, e)
+  snapshot: ProvisioningWorktreeEntry[],
+  optimistic: ProvisioningWorktreeEntry[],
+): ProvisioningWorktreeEntry[] {
+  const byId = new Map<string, ProvisioningWorktreeEntry>()
+  for (const e of optimistic) byId.set(e.worktreeId, e)
+  for (const e of snapshot) byId.set(e.worktreeId, e)
   return [...byId.values()].sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.worktreeId.localeCompare(b.worktreeId),
   )
 }
 
@@ -242,10 +242,10 @@ export type TerminalTab = string
  * waitingSinceMs (server predating the field) is normalized to 0.
  */
 export function isUnreadWaiting(
-  session: Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>,
+  session: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>,
   readWaiting: Record<string, number>,
 ): boolean {
-  return session.status === 'waiting' && readWaiting[session.sessionId] !== (session.waitingSinceMs ?? 0)
+  return session.status === 'waiting' && readWaiting[session.worktreeId] !== (session.waitingSinceMs ?? 0)
 }
 
 /**
@@ -256,7 +256,7 @@ export function isUnreadWaiting(
  * a re-death re-flags without any client-side spell keying.
  */
 export function isUnseenDeath(
-  entry: Pick<DeletedSessionEntry, 'deathReason' | 'seen'>,
+  entry: Pick<StoppedWorktreeEntry, 'deathReason' | 'seen'>,
 ): boolean {
   return !!entry.deathReason && !entry.seen
 }
@@ -265,19 +265,19 @@ export function isUnseenDeath(
  * Per-project count of unread waiting sessions — waiting and not yet viewed
  * during the current waiting spell. Drives the rail attention badge, so a
  * waiting session the user has already looked at doesn't keep flagging.
- * Terminating sessions never count: the server marks them `terminating` (and
+ * Terminating sessions never count: the server marks them `stopping` (and
  * forces their status off 'waiting'), and a UI-initiated delete not yet
  * reflected in the snapshot is covered by `pendingDeleteIds` — either way a
  * session on its way out must not flash the badge.
  */
 export function unreadWaitingBySlug(
-  sessions: Pick<SessionListEntry, 'sessionId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'terminating'>[],
+  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping'>[],
   readWaiting: Record<string, number>,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of sessions) {
-    if (s.terminating || pendingDeleteIds.includes(s.sessionId)) continue
+    if (s.stopping || pendingDeleteIds.includes(s.worktreeId)) continue
     if (isUnreadWaiting(s, readWaiting)) {
       out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
     }
@@ -296,14 +296,14 @@ export function unreadWaitingBySlug(
  * Null when there's nothing to jump to.
  */
 export function resolveAttentionTarget(
-  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>[],
+  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>[],
   readWaiting: Record<string, number>,
 ): string | null {
   const unread = sessions.find((s) => isUnreadWaiting(s, readWaiting))
-  if (unread) return unread.sessionId
+  if (unread) return unread.worktreeId
   const waiting = sessions.find((s) => s.status === 'waiting')
-  if (waiting) return waiting.sessionId
-  return sessions.find((s) => s.status === 'running')?.sessionId ?? null
+  if (waiting) return waiting.worktreeId
+  return sessions.find((s) => s.status === 'running')?.worktreeId ?? null
 }
 
 /**
@@ -313,11 +313,11 @@ export function resolveAttentionTarget(
  * (which includes the moment before the auth list has loaded).
  */
 export function resolveNewSessionTool(
-  sessions: Pick<SessionListEntry, 'sessionId' | 'tool'>[],
-  selectedSessionId: string | null,
+  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'tool'>[],
+  selectedWorktreeId: string | null,
   configured: ReadonlySet<AgentTool>,
 ): AgentTool | null {
-  const tool = sessions.find((s) => s.sessionId === selectedSessionId)?.tool ?? 'claude'
+  const tool = sessions.find((s) => s.worktreeId === selectedWorktreeId)?.tool ?? 'claude'
   return configured.has(tool) ? tool : null
 }
 
@@ -330,7 +330,7 @@ interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */
   activeProjectSlug: string | null
   /** Session shown in the main pane. */
-  selectedSessionId: string | null
+  selectedWorktreeId: string | null
   /** Bumped every time a session is selected or opened. The view watches it
    *  to pull keyboard focus into that session's primary pane — a plain
    *  textarea focus, never a synthetic click (which would clobber any
@@ -347,12 +347,12 @@ interface UiState {
    *  Missing = show the first forwarded port. */
   previewPort: Record<string, number>
   /** Point the preview pane at another forwarded port (toolbar dropdown). */
-  setPreviewPort: (sessionId: string, containerPort: number) => void
+  setPreviewPort: (worktreeId: string, containerPort: number) => void
   /** Open/focus the preview pane (the header chip). Seeds the shown port
    *  when unset. */
-  openPreview: (sessionId: string, containerPort?: number) => void
+  openPreview: (worktreeId: string, containerPort?: number) => void
   /** Open/focus the changes (review-diff) pane for a session. */
-  openChanges: (sessionId: string) => void
+  openChanges: (worktreeId: string) => void
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
@@ -381,26 +381,26 @@ interface UiState {
    *  the user's own choice and no auto-open reapplies. */
   changesExpanded: Record<string, string[]>
   /** Replace a session's expanded-files set in the Changes pane. */
-  setChangesExpanded: (sessionId: string, paths: string[]) => void
+  setChangesExpanded: (worktreeId: string, paths: string[]) => void
   /** Per-session scroll offset of the Changes pane's file list, so returning
    *  to the pane lands where the user left off. In-memory like
    *  changesExpanded — it survives a tab/session switch, not a reload. */
   changesScroll: Record<string, number>
   /** Record a session's Changes-pane scroll offset. */
-  setChangesScroll: (sessionId: string, scrollTop: number) => void
+  setChangesScroll: (worktreeId: string, scrollTop: number) => void
   /** Per-session base branch the Changes pane diffs against. In-memory like
    *  changesExpanded — survives a tab/session switch, not a reload. Absent = the
    *  session's own fork base (@{upstream}), i.e. today's default. */
   changesBase: Record<string, string>
   /** Set (or, with undefined, clear back to the default) a session's Changes
    *  base branch. */
-  setChangesBase: (sessionId: string, branch: string | undefined) => void
+  setChangesBase: (worktreeId: string, branch: string | undefined) => void
   /** Per-session find query filtering the Changes pane's file list. In-memory
    *  like changesExpanded — survives a tab/session switch, not a reload.
    *  Absent = no filter. */
   changesFind: Record<string, string>
   /** Set (or, with '', clear) a session's Changes find query. */
-  setChangesFind: (sessionId: string, query: string) => void
+  setChangesFind: (worktreeId: string, query: string) => void
   /** One-shot "focus the Changes find box" request, raised by the find-changes
    *  shortcut alongside openChanges. The mounted SessionChanges pane consumes
    *  it (focuses its input, then clears the flag), so a pane mounted later —
@@ -411,15 +411,15 @@ interface UiState {
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
    *  then they're pruned. */
-  optimisticProvisioning: ProvisioningSessionEntry[]
-  /** Sessions whose delete was confirmed — rendered as "terminating…"
+  optimisticProvisioning: ProvisioningWorktreeEntry[]
+  /** Sessions whose delete was confirmed — rendered as "stopping…"
    *  optimistically (bridging the gap before the snapshot carries the
-   *  server's own `terminating` flag) until the snapshot drops them. */
+   *  server's own `stopping` flag) until the snapshot drops them. */
   pendingDeleteIds: string[]
   /** Just-deleted sessions (that had history) shown optimistically in the
    *  deleted-sessions view until the server's list-deleted catches up. */
-  optimisticDeleted: DeletedSessionEntry[]
-  /** Read marks for waiting sessions: sessionId → waitingSinceMs of the
+  optimisticStopped: StoppedWorktreeEntry[]
+  /** Read marks for waiting sessions: worktreeId → waitingSinceMs of the
    *  spell the user viewed. Keying by spell means a mark from an earlier
    *  wait never hides a new one, even across reloads or a page that was
    *  closed through the whole round trip. Persisted; syncWaitingRead GCs
@@ -456,62 +456,62 @@ interface UiState {
   setSettingsSection: (section: SettingsSection) => void
   /** Whether the full-screen deleted-sessions view is open. Opened from the
    *  sidebar header; scoped to the active project when rendered. */
-  deletedOverlayOpen: boolean
-  openDeletedOverlay: () => void
-  closeDeletedOverlay: () => void
+  stoppedOverlayOpen: boolean
+  openStoppedOverlay: () => void
+  closeStoppedOverlay: () => void
   /** Whether the full-screen skills view is open. Opened from the sidebar
    *  header; scoped to the active project when rendered. */
   skillsOverlayOpen: boolean
   openSkillsOverlay: () => void
   closeSkillsOverlay: () => void
   /** Add a locally-initiated provisioning row (dedup by id). */
-  addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
+  addOptimisticProvisioning: (entry: ProvisioningWorktreeEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
-  updateOptimisticProvisioning: (sessionId: string, patch: { message?: string; error?: string }) => void
+  updateOptimisticProvisioning: (worktreeId: string, patch: { message?: string; error?: string }) => void
   /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
-  removeOptimisticProvisioning: (sessionId: string) => void
+  removeOptimisticProvisioning: (worktreeId: string) => void
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
   /** Jump to a specific session, switching the active project to match. */
-  openSession: (projectSlug: string, sessionId: string) => void
-  reconnectTerminal: (sessionId: string) => void
+  openSession: (projectSlug: string, worktreeId: string) => void
+  reconnectTerminal: (worktreeId: string) => void
   /** Replace a session's workspace layout (built with the pure helpers in
    *  lib/layout). */
-  setSessionLayout: (sessionId: string, layout: Workspace | null) => void
+  setSessionLayout: (worktreeId: string, layout: Workspace | null) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
   /** Record a session's active terminal without moving keyboard focus —
    *  for focus changes the DOM already made (clicking into a pane). */
-  setActiveTab: (sessionId: string, target: string) => void
+  setActiveTab: (worktreeId: string, target: string) => void
   /** Make a terminal active AND pull keyboard focus into it — for tab
    *  clicks and the tab-switch shortcuts. */
-  focusTerminal: (sessionId: string, target: string) => void
+  focusTerminal: (worktreeId: string, target: string) => void
   /** Optimistically hide a session being deleted. */
-  beginDelete: (sessionId: string) => void
+  beginDelete: (worktreeId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
    *  confirms it's gone (prune). */
-  endDelete: (sessionId: string) => void
+  endDelete: (worktreeId: string) => void
   /** Optimistically show a just-deleted session in the Deleted group. */
-  addOptimisticDeleted: (entry: DeletedSessionEntry) => void
+  addOptimisticStopped: (entry: StoppedWorktreeEntry) => void
   /** Drop an optimistic deleted entry — once list-deleted includes it, or on
    *  restart. */
-  removeOptimisticDeleted: (sessionId: string) => void
+  removeOptimisticStopped: (worktreeId: string) => void
   /** Mark a session's current waiting spell as seen (it's open in the main
    *  pane). Pass the entry's waitingSinceMs (normalized: missing → 0). */
-  markWaitingRead: (sessionId: string, waitingSinceMs: number) => void
-  /** GC read marks against the currently-waiting (sessionId, waitingSinceMs)
+  markWaitingRead: (worktreeId: string, waitingSinceMs: number) => void
+  /** GC read marks against the currently-waiting (worktreeId, waitingSinceMs)
    *  pairs: a mark whose spell is over (session running, gone, or waiting
    *  anew) no longer matches anything and is dropped. Correctness doesn't
    *  depend on this — isUnreadWaiting compares spells — it only keeps the
    *  persisted map from growing. */
-  syncWaitingRead: (waiting: { sessionId: string; waitingSinceMs: number }[]) => void
+  syncWaitingRead: (waiting: { worktreeId: string; waitingSinceMs: number }[]) => void
 }
 
 const initialSelection = loadSelection()
 
 export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: initialSelection.projectSlug,
-  selectedSessionId: initialSelection.sessionId,
+  selectedWorktreeId: initialSelection.worktreeId,
   focusNonce: 0,
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
@@ -529,7 +529,7 @@ export const useUiStore = create<UiState>((set) => ({
   changesFindPending: false,
   optimisticProvisioning: [],
   pendingDeleteIds: [],
-  optimisticDeleted: [],
+  optimisticStopped: [],
   readWaiting: loadReadWaiting(),
   bindings: DEFAULT_BINDINGS,
   setBindings: (bindings) => set({ bindings }),
@@ -547,65 +547,65 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
-  deletedOverlayOpen: false,
-  openDeletedOverlay: () => set({ deletedOverlayOpen: true }),
-  closeDeletedOverlay: () => set({ deletedOverlayOpen: false }),
+  stoppedOverlayOpen: false,
+  openStoppedOverlay: () => set({ stoppedOverlayOpen: true }),
+  closeStoppedOverlay: () => set({ stoppedOverlayOpen: false }),
 
   skillsOverlayOpen: false,
   openSkillsOverlay: () => set({ skillsOverlayOpen: true }),
   closeSkillsOverlay: () => set({ skillsOverlayOpen: false }),
   addOptimisticProvisioning: (entry) => set((s) => (
-    s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
+    s.optimisticProvisioning.some((e) => e.worktreeId === entry.worktreeId)
       ? s
       : { optimisticProvisioning: [...s.optimisticProvisioning, entry] }
   )),
-  updateOptimisticProvisioning: (sessionId, patch) => set((s) => (
-    s.optimisticProvisioning.some((e) => e.sessionId === sessionId)
+  updateOptimisticProvisioning: (worktreeId, patch) => set((s) => (
+    s.optimisticProvisioning.some((e) => e.worktreeId === worktreeId)
       ? {
           optimisticProvisioning: s.optimisticProvisioning.map((e) =>
-            e.sessionId === sessionId ? { ...e, ...patch } : e),
+            e.worktreeId === worktreeId ? { ...e, ...patch } : e),
         }
       : s
   )),
-  removeOptimisticProvisioning: (sessionId) => set((s) => (
-    s.optimisticProvisioning.some((e) => e.sessionId === sessionId)
-      ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.sessionId !== sessionId) }
+  removeOptimisticProvisioning: (worktreeId) => set((s) => (
+    s.optimisticProvisioning.some((e) => e.worktreeId === worktreeId)
+      ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.worktreeId !== worktreeId) }
       : s
   )),
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
-  setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),
-  selectSession: (id) => set((s) => ({ selectedSessionId: id, focusNonce: s.focusNonce + 1 })),
-  openSession: (projectSlug, sessionId) =>
-    set((s) => ({ activeProjectSlug: projectSlug, selectedSessionId: sessionId, focusNonce: s.focusNonce + 1 })),
-  reconnectTerminal: (sessionId) => set((s) => ({
-    terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
+  setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorktreeId: null }),
+  selectSession: (id) => set((s) => ({ selectedWorktreeId: id, focusNonce: s.focusNonce + 1 })),
+  openSession: (projectSlug, worktreeId) =>
+    set((s) => ({ activeProjectSlug: projectSlug, selectedWorktreeId: worktreeId, focusNonce: s.focusNonce + 1 })),
+  reconnectTerminal: (worktreeId) => set((s) => ({
+    terminalNonces: { ...s.terminalNonces, [worktreeId]: (s.terminalNonces[worktreeId] ?? 0) + 1 },
   })),
-  setSessionLayout: (sessionId, layout) => set((s) => ({
-    layouts: { ...s.layouts, [sessionId]: layout },
+  setSessionLayout: (worktreeId, layout) => set((s) => ({
+    layouts: { ...s.layouts, [worktreeId]: layout },
   })),
-  setPreviewPort: (sessionId, containerPort) => set((s) => (
-    s.previewPort[sessionId] === containerPort
+  setPreviewPort: (worktreeId, containerPort) => set((s) => (
+    s.previewPort[worktreeId] === containerPort
       ? s
-      : { previewPort: { ...s.previewPort, [sessionId]: containerPort } }
+      : { previewPort: { ...s.previewPort, [worktreeId]: containerPort } }
   )),
-  openPreview: (sessionId, containerPort) => set((s) => {
-    const base = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
-    const previewPort = containerPort !== undefined && s.previewPort[sessionId] === undefined
-      ? { ...s.previewPort, [sessionId]: containerPort }
+  openPreview: (worktreeId, containerPort) => set((s) => {
+    const base = worktreeId in s.layouts ? s.layouts[worktreeId] : singleColumn('agent')
+    const previewPort = containerPort !== undefined && s.previewPort[worktreeId] === undefined
+      ? { ...s.previewPort, [worktreeId]: containerPort }
       : s.previewPort
     return {
-      layouts: { ...s.layouts, [sessionId]: injectPreviewLeaf(base) },
+      layouts: { ...s.layouts, [worktreeId]: injectPreviewLeaf(base) },
       previewPort,
-      activeTabs: { ...s.activeTabs, [sessionId]: PREVIEW_TARGET },
+      activeTabs: { ...s.activeTabs, [worktreeId]: PREVIEW_TARGET },
       focusNonce: s.focusNonce + 1,
     }
   }),
-  openChanges: (sessionId) => set((s) => {
-    const base = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
+  openChanges: (worktreeId) => set((s) => {
+    const base = worktreeId in s.layouts ? s.layouts[worktreeId] : singleColumn('agent')
     return {
-      layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, CHANGES_TARGET) },
-      activeTabs: { ...s.activeTabs, [sessionId]: CHANGES_TARGET },
+      layouts: { ...s.layouts, [worktreeId]: injectPaneLeaf(base, CHANGES_TARGET) },
+      activeTabs: { ...s.activeTabs, [worktreeId]: CHANGES_TARGET },
       focusNonce: s.focusNonce + 1,
     }
   }),
@@ -627,76 +627,76 @@ export const useUiStore = create<UiState>((set) => ({
     persistPinnedUsageMetric(key)
     set({ pinnedUsageMetric: key })
   },
-  setActiveTab: (sessionId, target) => set((s) => (
-    s.activeTabs[sessionId] === target
+  setActiveTab: (worktreeId, target) => set((s) => (
+    s.activeTabs[worktreeId] === target
       ? s
-      : { activeTabs: { ...s.activeTabs, [sessionId]: target } }
+      : { activeTabs: { ...s.activeTabs, [worktreeId]: target } }
   )),
-  setChangesExpanded: (sessionId, paths) => set((s) => ({
-    changesExpanded: { ...s.changesExpanded, [sessionId]: paths },
+  setChangesExpanded: (worktreeId, paths) => set((s) => ({
+    changesExpanded: { ...s.changesExpanded, [worktreeId]: paths },
   })),
-  setChangesScroll: (sessionId, scrollTop) => set((s) => (
-    s.changesScroll[sessionId] === scrollTop
+  setChangesScroll: (worktreeId, scrollTop) => set((s) => (
+    s.changesScroll[worktreeId] === scrollTop
       ? s
-      : { changesScroll: { ...s.changesScroll, [sessionId]: scrollTop } }
+      : { changesScroll: { ...s.changesScroll, [worktreeId]: scrollTop } }
   )),
-  setChangesBase: (sessionId, branch) => set((s) => {
+  setChangesBase: (worktreeId, branch) => set((s) => {
     const next = { ...s.changesBase }
-    if (branch) next[sessionId] = branch
-    else delete next[sessionId]
+    if (branch) next[worktreeId] = branch
+    else delete next[worktreeId]
     return { changesBase: next }
   }),
-  setChangesFind: (sessionId, query) => set((s) => {
+  setChangesFind: (worktreeId, query) => set((s) => {
     const next = { ...s.changesFind }
-    if (query) next[sessionId] = query
-    else delete next[sessionId]
+    if (query) next[worktreeId] = query
+    else delete next[worktreeId]
     return { changesFind: next }
   }),
   setChangesFindPending: (pending) => set((s) => (
     s.changesFindPending === pending ? s : { changesFindPending: pending }
   )),
-  focusTerminal: (sessionId, target) => set((s) => {
+  focusTerminal: (worktreeId, target) => set((s) => {
     // Also surface the target in its column: cycle shortcuts / preview / changes
     // may focus a pane that's currently a hidden tab, and it must become the
     // column's active (visible) tab. Missing key = the default agent column;
     // withActive is a no-op (same reference) when the target is already active
     // or absent — only then touch `layouts`, so a plain focus doesn't churn the
     // persisted workspace.
-    const cur = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
+    const cur = worktreeId in s.layouts ? s.layouts[worktreeId] : singleColumn('agent')
     const next = withActive(cur, target)
     return {
-      ...(next === cur ? {} : { layouts: { ...s.layouts, [sessionId]: next } }),
-      activeTabs: { ...s.activeTabs, [sessionId]: target },
+      ...(next === cur ? {} : { layouts: { ...s.layouts, [worktreeId]: next } }),
+      activeTabs: { ...s.activeTabs, [worktreeId]: target },
       focusNonce: s.focusNonce + 1,
     }
   }),
-  beginDelete: (sessionId) => set((s) => (
-    s.pendingDeleteIds.includes(sessionId)
+  beginDelete: (worktreeId) => set((s) => (
+    s.pendingDeleteIds.includes(worktreeId)
       ? s
-      : { pendingDeleteIds: [...s.pendingDeleteIds, sessionId] }
+      : { pendingDeleteIds: [...s.pendingDeleteIds, worktreeId] }
   )),
-  endDelete: (sessionId) => set((s) => (
-    s.pendingDeleteIds.includes(sessionId)
-      ? { pendingDeleteIds: s.pendingDeleteIds.filter((id) => id !== sessionId) }
+  endDelete: (worktreeId) => set((s) => (
+    s.pendingDeleteIds.includes(worktreeId)
+      ? { pendingDeleteIds: s.pendingDeleteIds.filter((id) => id !== worktreeId) }
       : s
   )),
-  addOptimisticDeleted: (entry) => set((s) => (
-    s.optimisticDeleted.some((e) => e.sessionId === entry.sessionId)
+  addOptimisticStopped: (entry) => set((s) => (
+    s.optimisticStopped.some((e) => e.worktreeId === entry.worktreeId)
       ? s
-      : { optimisticDeleted: [entry, ...s.optimisticDeleted] }
+      : { optimisticStopped: [entry, ...s.optimisticStopped] }
   )),
-  removeOptimisticDeleted: (sessionId) => set((s) => (
-    s.optimisticDeleted.some((e) => e.sessionId === sessionId)
-      ? { optimisticDeleted: s.optimisticDeleted.filter((e) => e.sessionId !== sessionId) }
+  removeOptimisticStopped: (worktreeId) => set((s) => (
+    s.optimisticStopped.some((e) => e.worktreeId === worktreeId)
+      ? { optimisticStopped: s.optimisticStopped.filter((e) => e.worktreeId !== worktreeId) }
       : s
   )),
-  markWaitingRead: (sessionId, waitingSinceMs) => set((s) => (
-    s.readWaiting[sessionId] === waitingSinceMs
+  markWaitingRead: (worktreeId, waitingSinceMs) => set((s) => (
+    s.readWaiting[worktreeId] === waitingSinceMs
       ? s
-      : { readWaiting: { ...s.readWaiting, [sessionId]: waitingSinceMs } }
+      : { readWaiting: { ...s.readWaiting, [worktreeId]: waitingSinceMs } }
   )),
   syncWaitingRead: (waiting) => set((s) => {
-    const current = new Map(waiting.map((w) => [w.sessionId, w.waitingSinceMs]))
+    const current = new Map(waiting.map((w) => [w.worktreeId, w.waitingSinceMs]))
     const kept: Record<string, number> = {}
     for (const [id, since] of Object.entries(s.readWaiting)) {
       if (current.get(id) === since) kept[id] = since
@@ -718,9 +718,9 @@ useUiStore.subscribe((state, prev) => {
 useUiStore.subscribe((state, prev) => {
   if (
     state.activeProjectSlug !== prev.activeProjectSlug
-    || state.selectedSessionId !== prev.selectedSessionId
+    || state.selectedWorktreeId !== prev.selectedWorktreeId
   ) {
-    persistSelection(state.activeProjectSlug, state.selectedSessionId)
+    persistSelection(state.activeProjectSlug, state.selectedWorktreeId)
   }
 })
 

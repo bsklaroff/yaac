@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { waitingKey, waitingSpellKeys, newlyWaitingSessions, shouldChime } from '#lib/attentionChime'
-import type { SessionListEntry } from '@yaac/shared/types'
+import type { WorktreeListEntry } from '@yaac/shared/types'
 
-type W = Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>
-const s = (sessionId: string, status: W['status'], waitingSinceMs?: number): W => ({ sessionId, status, waitingSinceMs })
+type W = Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>
+const s = (worktreeId: string, status: W['status'], waitingSinceMs?: number): W => ({ worktreeId, status, waitingSinceMs })
 
 describe('waitingKey', () => {
   it('combines id and spell start (0 when missing)', () => {
@@ -21,12 +21,12 @@ describe('waitingSpellKeys', () => {
 describe('newlyWaitingSessions', () => {
   it('returns waiting sessions whose spell key is new', () => {
     const fresh = newlyWaitingSessions(new Set(['a:100']), [s('a', 'waiting', 100), s('b', 'waiting', 50)])
-    expect(fresh.map((x) => x.sessionId)).toEqual(['b'])
+    expect(fresh.map((x) => x.worktreeId)).toEqual(['b'])
   })
 
   it('counts a re-waiting session (new spell start) as new', () => {
     const fresh = newlyWaitingSessions(new Set(['a:100']), [s('a', 'waiting', 250)])
-    expect(fresh.map((x) => x.sessionId)).toEqual(['a'])
+    expect(fresh.map((x) => x.worktreeId)).toEqual(['a'])
   })
 })
 

@@ -147,7 +147,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       const slug = 'yaac-in-yaac'
       await setupProject(slug)
       const { stdout, stderr, exitCode } = await runYaac(
-        serverEnv, 'session', 'create', slug, '--tool', 'claude',
+        serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
       )
       if (exitCode !== 0) {
         throw new Error(`session create failed\n${stdout}\n${stderr}`)
@@ -202,7 +202,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
 
       // (The vcluster-in-vcluster refusal is pinned by a unit test on
       // createSession — it is a pure env gate, no cluster needed.)
-      await runYaac(serverEnv, 'session', 'delete', session.sessionId)
+      await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
     }, 3_600_000)
   },
 )

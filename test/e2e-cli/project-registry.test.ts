@@ -90,7 +90,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real serv
 
   async function createSession(slug: string): Promise<SessionPod> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'session', 'create', slug, '--tool', 'claude',
+      serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -261,7 +261,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real serv
     }
 
     // --- Persists across session delete (per-project, not per-session) ---
-    const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
     expect(delExit).toBe(0)
     const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'deployment', regName, '-n', k8sNamespace(),

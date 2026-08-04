@@ -53,7 +53,7 @@ function renderPane({ baseBranch = 'main' }: { baseBranch?: string } = {}): Retu
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <SessionChanges sessionId="s1" projectSlug="proj" baseBranch={baseBranch} />
+      <SessionChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} />
     </QueryClientProvider>,
   )
 }

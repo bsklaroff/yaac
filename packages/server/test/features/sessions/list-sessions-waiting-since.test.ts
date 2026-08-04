@@ -22,7 +22,7 @@ import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import type * as stateModule from '#features/sessions/state'
 import {
-  setSessionStatus,
+  setPaneStatus,
   _resetSessionStatusStoreForTests,
 } from '#features/sessions/status-store'
 import { listActiveSessions, _clearListActiveInflightForTests } from '#features/sessions/list'
@@ -69,36 +69,36 @@ describe('listActiveSessions waitingSinceMs (store projection)', () => {
   it('projects the store spell into the entry, stable across listings', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    setSessionStatus('demo', 's1', 'waiting')
+    setPaneStatus('demo', 's1', '%0', 'waiting')
     const first = await listFresh()
-    expect(first.sessions[0].status).toBe('waiting')
-    expect(first.sessions[0].waitingSinceMs).toBe(1_000)
+    expect(first.worktrees[0].status).toBe('waiting')
+    expect(first.worktrees[0].waitingSinceMs).toBe(1_000)
 
     // Time moves on; the spell (and the projected stamp) does not.
     vi.setSystemTime(60_000)
     const second = await listFresh()
-    expect(second.sessions[0].waitingSinceMs).toBe(1_000)
+    expect(second.worktrees[0].waitingSinceMs).toBe(1_000)
   })
 
   it('running is unstamped; a fresh wait restamps', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    setSessionStatus('demo', 's1', 'waiting')
-    setSessionStatus('demo', 's1', 'running')
+    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setPaneStatus('demo', 's1', '%0', 'running')
     const running = await listFresh()
-    expect(running.sessions[0].status).toBe('running')
-    expect(running.sessions[0].waitingSinceMs).toBeUndefined()
+    expect(running.worktrees[0].status).toBe('running')
+    expect(running.worktrees[0].waitingSinceMs).toBeUndefined()
 
     vi.setSystemTime(2_000)
-    setSessionStatus('demo', 's1', 'waiting')
+    setPaneStatus('demo', 's1', '%0', 'waiting')
     const waiting = await listFresh()
-    expect(waiting.sessions[0].status).toBe('waiting')
-    expect(waiting.sessions[0].waitingSinceMs).toBe(2_000)
+    expect(waiting.worktrees[0].status).toBe('waiting')
+    expect(waiting.worktrees[0].waitingSinceMs).toBe(2_000)
   })
 
   it('a booting session (no store entry) lists as waiting with no stamp', async () => {
     const result = await listFresh()
-    expect(result.sessions[0].status).toBe('waiting')
-    expect(result.sessions[0].waitingSinceMs).toBeUndefined()
+    expect(result.worktrees[0].status).toBe('waiting')
+    expect(result.worktrees[0].waitingSinceMs).toBeUndefined()
   })
 })

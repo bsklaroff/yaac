@@ -40,7 +40,7 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
 
 function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
   vi.mocked(useSnapshot).mockReturnValue({
-    sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds,
+    worktrees: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds,
     planUsage: null,
     codexPlanUsage: null,
     forwardBindHost: '127.0.0.1',

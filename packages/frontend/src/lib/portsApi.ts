@@ -10,12 +10,12 @@ import { api } from './api'
  * so the badge updates on its own.
  */
 export async function forwardDetectedPort(
-  sessionId: string,
+  worktreeId: string,
   containerPort: number,
   opts: { persist: boolean },
 ): Promise<void> {
-  await api.session[':id']['forward-port'].$post({
-    param: { id: sessionId },
+  await api.worktree[':id']['forward-port'].$post({
+    param: { id: worktreeId },
     json: { containerPort, persist: opts.persist },
   })
 }
@@ -25,11 +25,11 @@ export async function forwardDetectedPort(
  * server restart). The pushed snapshot drops it from `unforwardedPorts`.
  */
 export async function dismissDetectedPort(
-  sessionId: string,
+  worktreeId: string,
   containerPort: number,
 ): Promise<void> {
-  await api.session[':id']['dismiss-port'].$post({
-    param: { id: sessionId },
+  await api.worktree[':id']['dismiss-port'].$post({
+    param: { id: worktreeId },
     json: { containerPort },
   })
 }
