@@ -164,8 +164,12 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
         accountId: 'acct-mock',
       },
     }) + '\n')
+    // `provider` is required: a stored opencode credential that names none is
+    // dropped at load (with a warning), which would leave the session with no
+    // provider env var at all.
     await fs.writeFile(path.join(credsDir, 'opencode.json'), JSON.stringify({
       kind: 'api-key',
+      provider: 'openrouter',
       savedAt: new Date().toISOString(),
       apiKey: 'sk-or-v1-fake-test-key',
     }) + '\n')
@@ -1495,10 +1499,10 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       ])
       expect(autoUpdOut.trim()).toBe('1')
 
-      // The seeded opencode credential has no `provider` field, so it
-      // defaults to OpenRouter — the container carries the
-      // OPENROUTER_API_KEY placeholder (the proxy swaps it for the real key
-      // on openrouter.ai) and not the NeuralWatt one.
+      // The seeded opencode credential names OpenRouter, so the container
+      // carries the OPENROUTER_API_KEY placeholder (the proxy swaps it for
+      // the real key on openrouter.ai) and not the NeuralWatt one — the env
+      // var is the credential's provider, never a fixed name.
       const { stdout: orKeyOut } = await execInJob(jobName, [
         'sh', '-c', 'printenv OPENROUTER_API_KEY',
       ])

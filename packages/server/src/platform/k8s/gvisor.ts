@@ -103,8 +103,9 @@ export function gvisorNodeArch(unameM: string): 'x86_64' | 'aarch64' {
  *    for kind nodes (privileged containers).
  *  - host-uds all: unix sockets created on gofer-backed (hostPath) mounts
  *    become real host sockets, so they rendezvous across sandboxes — the
- *    ssh-agent socket (proxy-bound, session-dialed) and the tmux socket both
- *    live on hostPath dirs.
+ *    tmux socket lives on a hostPath dir and is opened by host-side probes.
+ *    (ssh-agent forwarding no longer needs this: the agent is reached over
+ *    the proxy's ssh-agent port and re-exposed on a pod-local socket.)
  *  - allow-suid: honor the setuid bit inside the sandbox (gVisor drops it by
  *    default, google/gvisor#5299). The image's passwordless `sudo` is a
  *    feature; this is a euid transition INSIDE the sentry only — the

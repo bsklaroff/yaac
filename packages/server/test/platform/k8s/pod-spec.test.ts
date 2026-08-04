@@ -4,6 +4,8 @@ import {
   NESTED_GRAPHROOT_PATH,
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
+  SSH_AGENT_MOUNT,
+  SSH_AGENT_SOCKET_PATH,
   buildSessionJobManifest,
   graphrootMountAnnotations,
   type NestedContainersParams,
@@ -280,6 +282,23 @@ describe('buildSessionJobManifest', () => {
       mountPath: CA_MOUNT_DIR,
       readOnly: true,
     })
+  })
+
+  it('always mounts a pod-local emptyDir for the forwarded ssh-agent socket', () => {
+    // The socket is written in-pod by the agent forwarder and read by the
+    // session's own ssh client — never shared with another pod, which is
+    // what lets the proxy sit on a different node.
+    const m = build()
+    const { volumes, containers } = m.spec.template.spec
+    expect(volumes).toContainEqual({ name: 'ssh-agent', emptyDir: {} })
+    expect(containers[0].volumeMounts).toContainEqual({
+      name: 'ssh-agent',
+      mountPath: SSH_AGENT_MOUNT,
+    })
+    expect(SSH_AGENT_SOCKET_PATH.startsWith(`${SSH_AGENT_MOUNT}/`)).toBe(true)
+    // Nothing hostPath-shaped: a hostPath socket only meets on one node.
+    expect(volumes.filter((v) => v.name === 'ssh-agent')
+      .every((v) => !('hostPath' in v))).toBe(true)
   })
 
   describe('nestedContainers', () => {

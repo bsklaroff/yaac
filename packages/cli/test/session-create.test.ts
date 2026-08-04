@@ -71,8 +71,6 @@ vi.mock('#commands/ws-terminal', () => ({
 }))
 
 vi.mock('@yaac/server/features/sessions/egress/proxy-client', () => ({
-  SSH_AGENT_MOUNT: '/ssh-agent',
-  SSH_AGENT_SOCKET_PATH: '/ssh-agent/socket',
   proxyClient: {
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),

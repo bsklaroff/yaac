@@ -57,7 +57,6 @@ import {
   proxyDataHostDir,
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
-  sshAgentHostDir,
 } from '#features/cluster'
 import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
@@ -78,11 +77,12 @@ import {
   ROLE_INNER_PROXY,
   SESSION_EGRESS_NP_NAME,
   SESSION_INGRESS_LOCK_NP_NAME,
+  SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
 } from '#platform/k8s/proxy-constants'
-import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { imageExists } from '#platform/container/runtime'
 import { registryHasTag } from '#platform/container/registry'
@@ -170,12 +170,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await cleanupTempDir(tmpDir)
   vi.unstubAllEnvs()
-})
-
-describe('sshAgentHostDir', () => {
-  it('lives under <dataDir>/run', () => {
-    expect(sshAgentHostDir()).toBe(path.join(tmpDir, 'run', 'ssh-agent'))
-  })
 })
 
 describe('proxyDataHostDir', () => {
@@ -267,7 +261,6 @@ describe('ensureProxyResources', () => {
 
     // Host dirs exist (DirectoryOrCreate would have made them root-owned).
     await expect(fs.stat(credentialsDir())).resolves.toBeDefined()
-    await expect(fs.stat(sshAgentHostDir())).resolves.toBeDefined()
     await expect(fs.stat(proxyDataHostDir())).resolves.toBeDefined()
 
     expect(kinds()).toEqual([
@@ -349,7 +342,6 @@ describe('ensureProxyResources', () => {
     expect(pod.securityContext?.fsGroup).toBe(process.getgid?.())
     expect(pod.volumes).toEqual([
       { name: 'credentials', hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' } },
-      { name: 'ssh-agent', hostPath: { path: sshAgentHostDir(), type: 'DirectoryOrCreate' } },
       { name: 'proxy-data', hostPath: { path: proxyDataHostDir(), type: 'DirectoryOrCreate' } },
       { name: 'home', emptyDir: {} },
     ])
@@ -362,6 +354,7 @@ describe('ensureProxyResources', () => {
       { containerPort: TRANSPARENT_HTTP_PORT },
       { containerPort: TRANSPARENT_TUNNEL_PORT },
       { containerPort: RELAY_PORT },
+      { containerPort: SSH_AGENT_PORT },
       { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
     ])
     // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
@@ -379,7 +372,6 @@ describe('ensureProxyResources', () => {
     expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
     expect(c.volumeMounts).toEqual([
       { name: 'credentials', mountPath: '/yaac-credentials' },
-      { name: 'ssh-agent', mountPath: '/ssh-agent' },
       { name: 'proxy-data', mountPath: '/data' },
       { name: 'home', mountPath: '/home/proxy' },
     ])
@@ -423,6 +415,19 @@ describe('ensureProxyResources', () => {
     const transparent = proxyIngress.ingress.find((r) =>
       (r.ports ?? []).some((p) => p.port === TRANSPARENT_HTTPS_PORT))
     expect(JSON.stringify(transparent?.from)).toContain(NODE_IP)
+
+    // ssh-agent forwarding: session pods dial the proxy directly, and that
+    // pod-facing port is admitted for the SESSION selector only — never
+    // from the node CIDRs (which would let anything on the host in) and
+    // never from vcluster-synced pods (a nested install has its own agent).
+    const agentEgress = egress.egress.find((r) =>
+      (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
+    expect(JSON.stringify(agentEgress?.to)).toContain(PROXY_APP_NAME)
+    const agentIngress = proxyIngress.ingress.filter((r) =>
+      (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
+    expect(agentIngress).toHaveLength(1)
+    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_SESSION_ID)
+    expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
 
     // World default-deny over everything that is not the proxy, a session,
     // or a builder.

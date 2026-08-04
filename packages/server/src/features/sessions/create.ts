@@ -3,12 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureImage, pushImageShared, sharedImageStoreHostPath } from '#features/images'
-import {
-  proxyClient,
-  resolveProxyImageTag,
-  SSH_AGENT_MOUNT,
-  SSH_AGENT_SOCKET_PATH,
-} from '#features/sessions/egress/proxy-client'
+import { proxyClient, resolveProxyImageTag } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/egress/proxy-registration'
 import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
 import { ensureContainerRuntime, reserveAvailablePort, startPortForwarders } from '#platform/container'
@@ -18,6 +13,8 @@ import {
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
+  SSH_AGENT_PORT,
+  SSH_AGENT_SOCKET_PATH,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
   type HostPathMount,
@@ -48,7 +45,6 @@ import {
   projectRegistryHost,
   proxyServiceClusterIp,
   sleepVcluster,
-  sshAgentHostDir,
   vclusterName,
   waitForVclusterKubeconfig,
 } from '#features/cluster'
@@ -833,11 +829,18 @@ export async function createSession(
     await fs.mkdir(pi, { recursive: true })
     await fs.mkdir(cachedPackages, { recursive: true })
 
-    // SSH provisioning: when the project's remote is SSH, expose the proxy's
+    // SSH provisioning: when the project's remote is SSH, forward the proxy's
     // ssh-agent into the pod (no private key inside the container) and
     // configure git's SSH transport to (a) use the agent for identity, (b)
     // verify with our project-scoped known_hosts, (c) tunnel through the MITM
     // proxy via HTTP CONNECT so the allowlist still applies.
+    //
+    // The agent rendezvous is a TCP hop to the proxy's SSH_AGENT_PORT, not a
+    // shared host directory: yaac-session-init re-exposes it as the UNIX
+    // socket SSH_AUTH_SOCK names, so a pod scheduled on another node than the
+    // proxy still gets an agent (a hostPath socket only meets on one node).
+    // The upstream env is appended below, where the cluster leg's proxy
+    // ClusterIP is in scope.
     const sshMounts: HostPathMount[] = []
     const sshEnv: string[] = []
     if (parsedRemote.scheme === 'ssh') {
@@ -852,7 +855,6 @@ export async function createSession(
       await writeKnownHostsFile([knownHostsEntry], knownHostsFile)
       const containerKnownHosts = '/home/yaac/.ssh/yaac/known_hosts'
       sshMounts.push(
-        { hostPath: sshAgentHostDir(), mountPath: SSH_AGENT_MOUNT, type: 'DirectoryOrCreate' },
         { hostPath: knownHostsFile, mountPath: containerKnownHosts, readOnly: true, type: 'File' },
       )
       // ncat speaks CONNECT to a sentinel address that netd redirects
@@ -1025,8 +1027,13 @@ export async function createSession(
   env.push(`YAAC_STREAM_TOKEN=${cluster.streamToken}`)
 
   // SSH transport env (agent socket + GIT_SSH_COMMAND), prepared alongside
-  // the ssh mounts in the fs-prep leg.
+  // the ssh mounts in the fs-prep leg. Non-empty only for an SSH remote,
+  // which is also exactly when the in-pod agent forwarder is wanted — its
+  // upstream is the proxy ClusterIP resolved in the cluster leg.
   env.push(...sshEnv)
+  if (sshEnv.length > 0) {
+    env.push(`YAAC_SSH_AGENT_UPSTREAM=${cluster.proxyHost}:${SSH_AGENT_PORT}`)
+  }
 
   // Add placeholder values for proxied secrets so tools detect them
   if (config.envSecretProxy) {

@@ -109,6 +109,41 @@ false "reachable". Assert on a completed request (the proxy refuses a host
 no allowlist admits) and, for the NetworkPolicy layer, on a
 non-redirected port, where the default-deny is what answers.
 
+## The two direct pod→proxy dials
+
+Not everything a session sends the proxy is redirected traffic. Two flows
+address the proxy pod itself, admitted by name in the session policy
+(`podSelector: app=yaac-proxy`) rather than through the node's listener
+range:
+
+- **DNS**, udp/53: the pod's only resolver (`dnsPolicy: None`), answered by
+  the proxy's split-horizon stub.
+- **ssh-agent**, tcp/10261: the proxy speaks the ssh-agent protocol here,
+  spliced to the agent running in its own pod. A session pod whose project
+  has an SSH remote runs a socat forwarder (started by `yaac-session-init`)
+  that re-exposes it as the UNIX socket `SSH_AUTH_SOCK` names, so the ssh
+  client in the pod is unmodified. Private keys stay in the proxy's memory,
+  and each identity is loaded with `ssh-add -h <host>`, so it signs for one
+  destination. The client→agent direction is parsed rather than spliced and
+  admits two message types — list identities, and sign; add/remove/lock/
+  extension are answered with the agent's own `SSH_AGENT_FAILURE` and never
+  reach it, so one session cannot lock or empty the agent that every other
+  session shares.
+
+Neither reaches anything outside the cluster, and neither is a way around
+the allowlist — git-over-SSH still tunnels through the proxy's transparent
+tunnel listener like any other egress. The agent port is admitted from the
+session selector alone: not from the node CIDRs, and not from
+vcluster-synced pods, whose install forwards its own inner proxy's agent.
+The proxy re-checks each connection's source pod IP against its pod-watch
+and refuses one it cannot place, or one whose session registered a
+non-SSH remote — the same condition under which the server provisions
+`SSH_AUTH_SOCK` at all.
+
+The transport is TCP because a UNIX socket on a shared host directory only
+rendezvous between pods on one node; nothing here assumes the proxy and the
+session are co-scheduled.
+
 ## Egress target selection
 
 netd picks exactly **one** target per pod, recomputed on every relevant
