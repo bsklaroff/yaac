@@ -4,6 +4,28 @@ import tseslint from 'typescript-eslint'
 
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
+// The path layer (packages/shared/src/{paths,project-paths}.ts) hands out
+// one root per STORAGE TIER — shared / node-local / server-local — so that
+// every path declares who has to be able to see it before a multi-node
+// cluster gives the tiers different volumes. A path built on the raw
+// install root would declare nothing, so the root is off-limits in src.
+// The sanctioned exceptions carry an inline disable with a justification:
+// the path layer itself, and the two hashes that use the data dir as an
+// INSTALL IDENTITY rather than a place to put bytes. See paths.ts.
+// `paths` matching is by exact specifier, so every spelling that resolves
+// to the path layer has to be listed — including the re-export module and
+// the relative forms usable inside packages/shared/src itself. Wired into
+// EVERY src zone below: flat-config rule options replace rather than merge,
+// so a zone that re-declares no-restricted-imports without this drops it.
+const UNTIERED_DATA_DIR = [
+  '#paths', '#project-paths', './paths', './project-paths',
+  '@yaac/shared/paths', '@yaac/shared/project-paths',
+].map((name) => ({
+  name,
+  importNames: ['getDataDir'],
+  message: 'Build paths on a storage tier: sharedPath/sharedProjectPath, nodeLocalProjectPath, or serverLocalPath (see the tier legend in paths.ts).',
+}))
+
 // Sealed folders expose an index.ts barrel (mapped to the folder's own
 // specifier — `#features/<name>`, `#http`, `#platform/db` — in the package's
 // imports field); everything else in the directory is internal.
@@ -67,6 +89,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             {
@@ -87,6 +110,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
@@ -108,6 +132,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             {
@@ -128,6 +153,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             {
@@ -150,6 +176,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             {
@@ -169,6 +196,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             { group: ['@yaac/frontend', '@yaac/frontend/*'], message: '@yaac/cli must not import @yaac/frontend.' },
@@ -190,6 +218,7 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
+          paths: UNTIERED_DATA_DIR,
           patterns: [
             RELATIVE_PARENT,
             {

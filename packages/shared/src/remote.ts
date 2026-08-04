@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
-import { getDataDir } from '#paths'
+import { serverLocalPath, serverLocalRoot } from '#paths'
 
 /**
  * The configured remote servers (`~/.yaac/remote.json`, 0600). `url` /
@@ -22,8 +21,9 @@ export interface RemoteConfig {
   saved: SavedRemote[]
 }
 
+/** SERVER-LOCAL: client-side config for reaching a remote server. */
 export function remoteConfigPath(): string {
-  return path.join(getDataDir(), 'remote.json')
+  return serverLocalPath('remote.json')
 }
 
 /**
@@ -61,7 +61,7 @@ export async function readRemote(): Promise<RemoteConfig | null> {
 
 /** Persist atomically (tmp + rename) at 0600 — the token is a bearer. */
 export async function writeRemote(cfg: RemoteConfig): Promise<void> {
-  await fs.mkdir(getDataDir(), { recursive: true })
+  await fs.mkdir(serverLocalRoot(), { recursive: true })
   const p = remoteConfigPath()
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 })

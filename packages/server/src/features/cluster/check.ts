@@ -29,7 +29,7 @@ import { ensureNamespace } from './proxy-apply'
 import { vapAvailable } from './vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container'
 import { sessionUid } from '#features/images'
-import { getDataDir } from '@yaac/shared/paths'
+import { sharedRoot } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types (a wire type: GET /cluster/check
 // returns it and the frontend renders it), not here with its producer.
@@ -642,7 +642,9 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
  * config, node extraMounts).
  */
 async function runEndToEndProbe(): Promise<CheckResult> {
-  const dataDir = getDataDir()
+  // The SHARED root: the probe writes here and mounts the same directory
+  // into a pod, which is exactly the visibility contract that tier states.
+  const dataDir = sharedRoot()
   const nonce = crypto.randomUUID()
   const nonceFile = path.join(dataDir, '.cluster-check-nonce')
   const writeFile = path.join(dataDir, '.cluster-check-write')

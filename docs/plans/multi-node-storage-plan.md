@@ -237,11 +237,53 @@ hostPath + ext4 working while exercising real multi-node scheduling.
 
 Keep hot per-session dirs off the shared FS regardless of which one wins.
 
-- [ ] `project-paths.ts`: introduce a shared root (default `<dataDir>`) and a
-      node-local root; move `worktrees/<sid>`, `sessions/<sid>`, and
-      ephemeral modules to node-local; keep `claude/`, `claude.json`,
-      `codex/`, `pi/`, `opencode-config/`, `repo/.git`, cache-volumes on the
-      shared root.
+- [x] **The path layer is classified.** `paths.ts` hands out one root per
+      tier — `sharedRoot()` (server *and* pods, any node), `nodeLocalRoot()`
+      (one node's scratch), `serverLocalRoot()` (the server process only) —
+      plus the joiners every helper is built from (`sharedPath`,
+      `sharedProjectPath`, `nodeLocalProjectPath`, `serverLocalPath`). All
+      three resolve to `getDataDir()`, so the single-node backend is
+      byte-identical; the tier is a declared visibility requirement, not yet
+      a different volume. Every helper in `project-paths.ts` carries its tier
+      in its doc comment, and eslint blocks importing the untiered root in
+      every package's `src`, so a new helper cannot skip the declaration.
+
+      Where things landed: **`packages/shared/src/project-paths.ts` is the
+      single source** — each helper carries its tier in its doc comment, so
+      a per-directory table here would only drift. The shape: the
+      `projects/<slug>` tree is SHARED, with three carve-outs — the tmux
+      socket dir (a UNIX socket only rendezvous inside the kernel that
+      bound it), `opencode-data/<sid>` (SQLite, no WAL on a network FS), and
+      `.cached-packages` (the per-node pnpm store this plan recommends).
+      `.credentials/` and the proxy's `run/proxy-data` are server-owned but
+      SHARED, because the proxy pod mounts them; handing the proxy its
+      credentials over the API or a Secret would move them to SERVER-LOCAL,
+      where secrets belong. Everything else at the top level (`db/`, logs,
+      preferences, locks, `build/`, `models/`, caches) is SERVER-LOCAL.
+
+      Three tiers, not two: the plan already gives the server's own state a
+      different volume (RWO block storage, §1 of the stock-k8s plan), and
+      pglite must never sit on a network FS — folding it into "shared" would
+      encode the wrong requirement.
+
+      Sweeps that must see a whole session or project go through the
+      `sessionRoots` / `sessionsRoots` / `projectRoots` / `projectsRoots`
+      pairings the path layer exports (deduplicated, so one pass today):
+      session cleanup, the orphan GC — whose slug source is both
+      `projects/` trees, not just the shared one — and `project remove`.
+
+      Still to do, all of it in the volume-source work rather than the path
+      layer: `worktrees/<sid>` is shared *deliberately* (see below); the
+      server currently `mkdir`s node-local dirs (tmux, opencode-data,
+      `.cached-packages`) from its own filesystem, which needs an emptyDir
+      or an init container once the roots differ; the node-local sweeps
+      still have to RUN per node; and `ensureDataDir()` pre-creates only
+      the shared tree (server-local writers mkdir their own root).
+- [ ] tmux socket dir → emptyDir is **unblocked**: the only thing written
+      into it is the socket itself (`server`), no pane log — the "socket and
+      pane log" comments predate the podman→k8s move. The change belongs
+      with the `pod-spec.ts` volume-source work, since it is a volume-shape
+      change, not a path-vocabulary one.
 - [ ] pnpm store placement: recommended **per-node store** (node-local, fast,
       duplicate downloads per node) over store-on-shared-FS (every
       `link(2)`/stat becomes a remote round trip).

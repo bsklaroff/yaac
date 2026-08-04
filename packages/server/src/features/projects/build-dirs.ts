@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, projectConfigDir } from '@yaac/shared/project-paths'
+import { projectConfigDir, serverLocalPath } from '@yaac/shared/project-paths'
 
 /** Basename of the per-project Dockerfile inside its build dir. */
 export const PROJECT_DOCKERFILE = 'Dockerfile.yaac'
@@ -20,9 +20,11 @@ export function projectBuildDir(slug: string): string {
 /**
  * Global user image build dir (`~/.yaac/build/`): the build context for
  * Dockerfile.user, same containment rule as `projectBuildDir`.
+ * SERVER-LOCAL: a build context the server hands to the build engine; no
+ * pod ever mounts it.
  */
 export function userBuildDir(): string {
-  return path.join(getDataDir(), 'build')
+  return serverLocalPath('build')
 }
 
 /**
@@ -69,7 +71,7 @@ export async function resolveProjectBuildDir(slug: string): Promise<string> {
 export async function resolveUserBuildDir(): Promise<string> {
   const dir = userBuildDir()
   await migrateLegacyDockerfile(
-    path.join(getDataDir(), USER_DOCKERFILE),
+    serverLocalPath(USER_DOCKERFILE),
     path.join(dir, USER_DOCKERFILE),
   )
   return dir

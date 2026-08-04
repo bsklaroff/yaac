@@ -1,6 +1,5 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
@@ -13,7 +12,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s'
-import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
+import { credentialsDir, sharedPath } from '@yaac/shared/project-paths'
 import {
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
@@ -35,9 +34,13 @@ import { ensureNetd } from './netd'
  * Host directory backing the proxy's `/data` (CA key/cert, tor state).
  * Persisting it across pod replacements keeps the MITM CA stable, so
  * session pods' mounted CA stays valid through proxy image upgrades.
+ *
+ * SHARED tier: the proxy pod mounts it and the server reads what the proxy
+ * writes there (blocked-hosts, git-auth-failures), so both sides need the
+ * same bytes wherever the proxy is scheduled.
  */
 export function proxyDataHostDir(): string {
-  return path.join(getDataDir(), 'run', 'proxy-data')
+  return sharedPath('run', 'proxy-data')
 }
 
 export async function ensureNamespace(): Promise<void> {

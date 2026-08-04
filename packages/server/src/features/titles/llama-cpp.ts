@@ -14,7 +14,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileAsync } from '#platform/k8s'
-import { getDataDir } from '@yaac/shared/paths'
+import { serverLocalPath } from '@yaac/shared/paths'
 
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */
 export const LLAMA_CPP_TAG = 'b9940'
@@ -60,9 +60,10 @@ export async function ensureLlamaCpp(): Promise<string> {
 /**
  * Ensure a GGUF model is present under `<dataDir>/models`, downloading it
  * once (tmp + rename, so a torn download is never mistaken for a model).
+ * SERVER-LOCAL: the title model is loaded by the server's own llama.cpp.
  */
 export async function ensureGgufModel(url: string, filename: string): Promise<string> {
-  const modelsDir = path.join(getDataDir(), 'models')
+  const modelsDir = serverLocalPath('models')
   const target = path.join(modelsDir, filename)
   if (await fileExists(target)) return target
 

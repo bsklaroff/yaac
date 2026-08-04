@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { getDataDir } from '#paths'
+import { serverLocalPath, serverLocalRoot } from '#paths'
 import { resolveServerTarget, type ServerTarget } from '#server-api'
 
 /** Cold-boot budget shared by automatic connection and explicit startup. */
@@ -28,8 +27,9 @@ export interface AuthDaemonLock {
   startedAt: number
 }
 
+/** SERVER-LOCAL: the daemon runs beside the server, never in a pod. */
 export function authDaemonLockPath(): string {
-  return path.join(getDataDir(), '.auth-daemon.lock')
+  return serverLocalPath('.auth-daemon.lock')
 }
 
 export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {
@@ -50,7 +50,7 @@ export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {
 }
 
 export async function writeAuthDaemonLock(lock: AuthDaemonLock): Promise<void> {
-  await fs.mkdir(getDataDir(), { recursive: true })
+  await fs.mkdir(serverLocalRoot(), { recursive: true })
   const p = authDaemonLockPath()
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(lock), { mode: 0o600 })

@@ -113,7 +113,12 @@ the PV; no node automount units, no "mount before kubelet" ordering.
   (simplest — the server pod's `addWorktree` and the session pod then see
   the same object store with zero new machinery); tmux socket and
   per-session scratch demoted to emptyDir; opencode sqlite node-local with
-  resume node-affinity.
+  resume node-affinity. **The path layer already declares this split**
+  (`sharedRoot` / `nodeLocalRoot` / `serverLocalRoot` in
+  packages/shared/src/paths.ts, one tier per helper in project-paths.ts,
+  all three resolving to today's data dir) — see the storage plan's
+  "Split shared vs node-local roots" for the per-directory verdicts. What
+  is left here is pointing the roots at different volume sources.
 - **Unix-socket hostPath rendezvous is dead cross-node.** tmux is fine
   (every consumer already goes through exec/streamd, and the socket can be
   pod-local emptyDir once the pane log needn't outlive the pod). The
@@ -296,8 +301,8 @@ shaped.
    current backend first): buildkit builds behind a builder abstraction,
    registry in-cluster, salvage-via-registry, ~~ssh-agent off the hostPath
    socket~~ (done — over the proxy's agent port, not the stream relay),
-   tmux socket to emptyDir, shared/node-local root split in
-   `project-paths.ts`.
+   tmux socket to emptyDir, ~~shared/node-local root split in
+   `project-paths.ts`~~ (done — §2).
 3. **Server-in-cluster mode:** volume-source abstraction in `pod-spec.ts`
    (hostPath | PVC), server Deployment + PVCs, `yaac cluster attach`
    installer, provider-aware check.

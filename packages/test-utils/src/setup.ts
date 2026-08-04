@@ -4,6 +4,9 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
+// Test infrastructure: re-exported below so tests can ASSERT against the
+// install root. Not a storage path — tests that write pick a tier helper.
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/platform/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
