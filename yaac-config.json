@@ -10,7 +10,6 @@
     "yaac server start",
     "yaac auth fake claude-oauth",
     "yaac auth fake github",
-    "yaac project add https://github.com/bsklaroff/yaac.git",
-    "pnpm watch"
+    "yaac project add https://github.com/bsklaroff/yaac.git"
   ]
 }

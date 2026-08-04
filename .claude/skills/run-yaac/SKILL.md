@@ -27,29 +27,39 @@ single-node cluster. Confirm the cluster is healthy:
 yaac cluster check   # nested runs show several "skipped — nested yaac" lines; still ends "Cluster is ready"
 ```
 
-A `pnpm watch` dev loop is typically already running: it re-runs `pnpm build`
-then `yaac server start` on every source change, keeping `dist/` fresh and the
-server live on `127.0.0.1:8787`. Check the server is up:
+The session's init commands run `pnpm build` then `yaac server start` **once**;
+they do **not** start a `pnpm watch` loop. So a server is normally live on
+`127.0.0.1:8787`, but it serves whatever `dist/` held at session start — it does
+not pick up your source edits on its own. Check the server is up:
 
 ```bash
 curl -s http://127.0.0.1:8787/health   # -> {"ok":true,...,"ready":true}
 ```
 
+If you are testing your own changes by hand — driving the web app, hitting the
+API, creating sessions — make `dist/` current first, either a one-shot
+`pnpm build` (then `yaac server restart` if the buildId changed) or, better for
+an edit/check loop, start `pnpm watch` yourself in the background and leave it
+running: it re-runs `pnpm build` then `yaac server start` on every source
+change. Otherwise you are exercising the code as it was when the session began.
+
 If nothing is listening, start it: `yaac server start` (background) or
-`pnpm watch` (build + serve + rebuild-on-change). Lifecycle subcommands:
-`yaac server start|stop|restart|logs` (there is **no** `status` — use `/health`
-or `$YAAC_DATA_DIR/.server.lock`).
+`pnpm watch`. Lifecycle subcommands: `yaac server start|stop|restart|logs`
+(there is **no** `status` — use `/health` or `$YAAC_DATA_DIR/.server.lock`).
 
 ## Build
 
-`dist/` is kept built by the running `pnpm watch` loop. To build once by hand:
+Nothing rebuilds `dist/` for you unless you started `pnpm watch` yourself — the
+init commands build it once, at session start. Build by hand:
 
 ```bash
 pnpm build   # tsup CLI bundle + vite frontend + copies dockerfiles/k8s/drizzle; ~7s, deterministic buildId
 ```
 
 The server stays healthy across a rebuild (buildId is a content hash — an
-unchanged tree yields the same id, so the live server isn't bounced).
+unchanged tree yields the same id, so the live server isn't bounced), which also
+means a rebuilt `dist/` does not reach the live server by itself: restart it
+(`yaac server restart`) or run the `pnpm watch` loop, which does both.
 
 ## Run — web app (agent path)
 
@@ -129,6 +139,11 @@ package's `test/` dir; that's the direct-invocation path for internal changes.
   mints a new one-time token; state does not carry between runs. To reach an
   interior view *and* screenshot it, do it in one run with `--goto`/`--click` —
   you cannot `eval` in one run and `shot` in the next expecting shared state.
+- **The live server does not follow your edits.** No `pnpm watch` runs unless
+  you start one, so a change to server or frontend source is invisible to the
+  running server (and to the driver's screenshots) until `pnpm build` +
+  `yaac server restart`. If a fix "does nothing", check that first — compare
+  `/health`'s buildId before and after your rebuild.
 - **No `yaac server status`.** The subcommands are `run/start/stop/restart/logs`.
   Probe liveness with `curl .../health` or read `.server.lock`.
 - **`cluster check` "skipped" lines are normal nested.** Inside a nested yaac
