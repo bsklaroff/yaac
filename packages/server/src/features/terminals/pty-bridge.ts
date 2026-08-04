@@ -448,7 +448,17 @@ export function attachPty(
     detach: () => {
       resizer?.dispose()
       views.delete(viewName)
-      if (views.size === 0) liveViews.delete(jobName)
+      // Drop the registry entry only while it is still OURS. `views` is the
+      // set captured at attach time, and detach runs twice (again at the
+      // grace deadline, see bridge) — long enough for the last connection's
+      // close to have emptied the entry, a new connection to have installed
+      // a fresh set, and this stale closure to then delete that live set.
+      // The orphaned connection is invisible to the next attach's sweep,
+      // which reaps its view as a corpse; the client reconnects, wipes the
+      // registry the same way on close, and the two attaches proceed to kill
+      // each other's views on every retry — a permanent reconnect flicker in
+      // every terminal on the session.
+      if (views.size === 0 && liveViews.get(jobName) === views) liveViews.delete(jobName)
       void killViewSession(jobName, viewName)
     },
     resizeWindow: resizer?.resize,

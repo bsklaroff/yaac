@@ -259,6 +259,46 @@ describe('attachPty', () => {
     ])
   })
 
+  it('keeps a view live when the last connection detaches after it registered', async () => {
+    vi.useFakeTimers()
+    try {
+      let listing: string[] = []
+      execImpl = (cmd) => Promise.resolve({
+        stdout: cmd === LIST_SESSIONS ? `${listing.join('\n')}\n` : '',
+        stderr: '',
+      })
+
+      // The lone connection on this Job closes, emptying the registry entry.
+      const gone = attach(job(13), { target: 'agent' })
+      await flush()
+      gone.sock.emitClose()
+      await flush()
+
+      // A new connection registers inside the closing one's grace window —
+      // the shape of a page reload, or a second window opening as the first
+      // one goes away.
+      const live = attach(job(13), { target: 'agent' })
+      await flush()
+
+      // The closing connection's second detach must not evict the entry the
+      // new connection just installed.
+      vi.advanceTimersByTime(DETACH_GRACE_MS)
+      await flush()
+
+      // So the next attach's sweep still sees that view as owned. If the
+      // registry were wiped, this would kill a healthy attached client — its
+      // PTY exits, the webapp reconnects, and its own close wipes the entry
+      // again, leaving the two clients reaping each other indefinitely.
+      execCalls.length = 0
+      listing = ['yaac', live.view, 'view-aabbccdd']
+      attach(job(13), { target: 'agent' })
+      await flush()
+      expect(execCalls).toEqual([LIST_SESSIONS, `${TMUX} kill-session -t view-aabbccdd`])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('attaches anyway when the sweep cannot list or cannot kill', async () => {
     execImpl = () => Promise.reject(new Error('no pod'))
     const a = attach(job(7), { target: 'agent' })
