@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-test/
 .env
 .eslintcache
 packages/desktop/dist-app/

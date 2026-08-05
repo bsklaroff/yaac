@@ -14,24 +14,26 @@ import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
 import { ensureGvisorInstallerImage } from '@yaac/server/features/cluster/gvisor-installer'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/container/registry'
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
+import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
 
 const execFileAsync = promisify(execFile)
 
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 /**
- * Build the CLI bundle the suites spawn (`ENTRY` in
- * packages/test-utils/src/cli.ts). They run dist/cli.js rather than the
- * source under tsx because a fresh process pays tsx's transpile every time —
- * seconds per spawn, minutes per run — so the bundle has to exist and has to
- * be current before any worker starts. Building it here, unconditionally, is
- * what makes "the suite tests stale dist/" unrepresentable: an incremental
- * tsup pass is ~200ms and the asset copies a few seconds.
+ * Build the CLI the suites spawn, then hand them their own copy of it
+ * (TEST_CLI_DIR — see packages/test-utils/src/cli.ts). They run the built
+ * bundle rather than the source under tsx because a fresh process pays tsx's
+ * transpile every time — seconds per spawn, minutes per run — so it has to
+ * exist and be current before any worker starts. Building here,
+ * unconditionally, is what makes "the suite tested a stale bundle"
+ * unrepresentable: an incremental tsup pass is ~200ms, the asset copies a
+ * few seconds.
  *
  * Assets, not just cli.js: the bundle runs in bundled mode (tsup sets
- * YAAC_BUNDLED), where PACKAGE_ROOT is dist/ — so the migrations, k8s
- * manifests, builtin skills and session-bin scripts must be sitting beside
- * it or a spawned server dies on its first query.
+ * YAAC_BUNDLED), where PACKAGE_ROOT is the directory holding cli.js — so the
+ * migrations, k8s manifests, builtin skills and session-bin scripts must be
+ * sitting beside it or a spawned server dies on its first query.
  */
 async function buildCliBundle(): Promise<void> {
   // build:assets copies packages/frontend/dist rather than building it, so a
@@ -43,6 +45,14 @@ async function buildCliBundle(): Promise<void> {
   for (const script of ['build:cli', 'build:assets', 'build:id']) {
     await execFileAsync('pnpm', [script], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
   }
+
+  // Snapshot it out of dist/ before the workers start. `pnpm watch` builds
+  // into dist/ on every save with `clean: true`, so a save landing mid-run
+  // would delete the binary the suites are spawning; from here on they read
+  // only this copy. Replaced wholesale rather than merged so a rename or a
+  // deletion in dist/ can't leave a stale file behind to be spawned.
+  await fs.rm(TEST_CLI_DIR, { recursive: true, force: true })
+  await fs.cp(path.join(REPO_ROOT, 'dist'), TEST_CLI_DIR, { recursive: true })
 }
 
 async function fileExists(p: string): Promise<boolean> {
