@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 import {
+  GVISOR_NODE_LABEL,
   LABEL_SESSION_ID,
   LABEL_VCLUSTER_MANAGED_BY,
   NESTED_ENGINE_CAPS,
@@ -98,9 +99,11 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      pids-limit that `yaac cluster setup` applies — most live in node/VM
  *      state and vanish on restart — detect and point at
  *      `yaac cluster setup --repair`
- *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist AND a pod on
- *      the gvisor class is actually sentry-sandboxed (dmesg fingerprint) —
- *      session pods cannot run without it
+ *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist, at least one
+ *      node carries the label they schedule on (the installer DaemonSet
+ *      landed the runtime somewhere), AND a pod on the gvisor class is
+ *      actually sentry-sandboxed (dmesg fingerprint) — session pods cannot
+ *      run without all three
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
  *      from `localhost:5001/...` (on the default gvisor tier) that reads
  *      a nonce file from a hostPath mount of the data dir and writes a
@@ -431,11 +434,19 @@ async function ensureProbeImage(): Promise<string> {
 
 const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
 
-const GVISOR_FIX =
-  'Install the gVisor runtime with: yaac cluster setup --repair\n'
-  + '(copies pinned runsc + containerd-shim-runsc-v1 onto the kind node, '
-  + 'registers the runsc handlers in containerd, and applies the '
-  + 'gvisor/gvisor-nested RuntimeClasses)'
+/**
+ * The gVisor fix line. A function, not a const: it names the install
+ * namespace, which is per-install (and per-e2e-run) and must not be
+ * captured at import time.
+ */
+function gvisorFix(): string {
+  return 'Install the gVisor runtime with: yaac cluster setup --repair\n'
+    + '(applies the yaac-gvisor-install DaemonSet, which drops pinned runsc + '
+    + 'containerd-shim-runsc-v1 on every node, registers the runsc handlers in '
+    + 'its containerd and labels it, plus the gvisor/gvisor-nested '
+    + 'RuntimeClasses that schedule on that label)\n'
+    + `Inspect it with: kubectl -n ${k8sNamespace()} logs -l app=yaac-gvisor-install`
+}
 
 const PRIORITY_CLASS_FIX =
   'Install the yaac PriorityClasses with: yaac cluster setup --repair\n'
@@ -503,6 +514,17 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
  * exist, and a pod on the gvisor class is provably inside the sentry —
  * gVisor's dmesg prints its own boot messages ("Starting gVisor..."), while a
  * runc pod sees the node kernel's ring buffer.
+ *
+ * Between the two sits the node label the installer DaemonSet stamps, which
+ * is what the RuntimeClasses schedule on. It is checked separately because
+ * of what its absence looks like otherwise: the probe pod below would sit
+ * Pending until the timeout and report "runsc cannot run pods on this node",
+ * when the truth is that no node has the runtime yet and the scheduler is
+ * refusing to place it anywhere. On a cluster whose RuntimeClasses predate
+ * the selector, sandboxed pods do still schedule (the classes are only
+ * replaced together with the installer that satisfies them) — so this reads
+ * as "not converged yet", not "nothing can run". How MANY nodes carry it is
+ * a multi-node readiness question, not this gate's.
  */
 async function runGvisorRuntimeCheck(): Promise<CheckResult> {
   if (env.nested) {
@@ -522,7 +544,21 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
       return {
         name: 'gvisor', status: 'fail',
         detail: `missing RuntimeClass(es): ${missing.join(', ')}`,
-        fix: GVISOR_FIX,
+        fix: gvisorFix(),
+      }
+    }
+
+    const { stdout: labelled } = await execFileAsync('kubectl', [
+      'get', 'nodes', '-l', `${GVISOR_NODE_LABEL}=true`,
+      '-o', 'jsonpath={.items[*].metadata.name}',
+    ])
+    if (labelled.trim() === '') {
+      return {
+        name: 'gvisor', status: 'fail',
+        detail: `no node carries the ${GVISOR_NODE_LABEL} label — the installer `
+          + 'DaemonSet has not converged on any node (a cluster set up by an older '
+          + 'yaac reads this way until it is applied)',
+        fix: gvisorFix(),
       }
     }
 
@@ -555,14 +591,14 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
       return {
         name: 'gvisor', status: 'fail',
         detail: `gvisor probe pod ended in phase ${phase} — runsc cannot run pods on this node`,
-        fix: GVISOR_FIX,
+        fix: gvisorFix(),
       }
     }
     if (!logs.includes('GVISOR_SANDBOXED')) {
       return {
         name: 'gvisor', status: 'fail',
         detail: 'a pod on the gvisor RuntimeClass is not sentry-sandboxed — the handler is not actually runsc',
-        fix: GVISOR_FIX,
+        fix: gvisorFix(),
       }
     }
     return {
@@ -573,7 +609,7 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
     return {
       name: 'gvisor', status: 'fail',
       detail: `gvisor probe errored (${truncate(err)})`,
-      fix: GVISOR_FIX,
+      fix: gvisorFix(),
     }
   }
 }
@@ -706,7 +742,8 @@ async function runEndToEndProbe(): Promise<CheckResult> {
           + 'entry for your home directory to the kind config.\n'
           + 'If it never got past Pending or failed with a runsc/'
           + 'RuntimeClass error, the gvisor runtime is broken — run '
-          + '`yaac cluster setup --repair` (reinstalls pinned runsc).\n'
+          + '`yaac cluster setup --repair` (re-applies the runsc installer '
+          + 'DaemonSet).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
           + `${sessionUid()} cannot write hostPath mounts — see the `
           + 'virtiofs ownership notes in docs/cluster-setup.md '
@@ -1120,8 +1157,9 @@ async function runNestedMountProbe(): Promise<CheckResult> {
 const NESTED_MOUNT_FIX =
   'Only nestedContainers sessions are affected (docker build/run in-pod). '
   + 'The gvisor-nested runsc handler is broken or the sentry refuses the '
-  + 'mount — run `yaac cluster setup --repair` to reinstall runsc and rewrite '
-  + 'the handlers.'
+  + 'mount — run `yaac cluster setup --repair` to re-apply the runsc '
+  + 'installer DaemonSet, which reinstalls the binaries and rewrites the '
+  + 'handlers.'
 
 /**
  * Warn-only gate for virtualCluster sessions: the synced-pod guard is a

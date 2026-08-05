@@ -45,6 +45,7 @@ export {
 export { formatCheckResult, runClusterCheck } from './check'
 export { reconcileRedirectClaims } from './redirect-claim-reconcile'
 export { ClusterDeleteError, runClusterDelete } from './delete'
+export { ensureGvisorRuntime } from './gvisor-installer'
 export { buildEgressWorldDenyNpManifest } from './policy-manifests'
 export {
   ensureProjectRegistry,
