@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import net from 'node:net'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { reserveAvailablePort, startPortForwarders, type RelayFactory } from '#platform/container'
+import { reserveAvailablePort, startPortForwarders, type RelayFactory } from '#platform/port'
 
 describe('reserveAvailablePort', () => {
   const servers: net.Server[] = []

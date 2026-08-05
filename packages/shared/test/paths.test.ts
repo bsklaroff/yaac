@@ -30,6 +30,7 @@ import {
   sharedRoot,
   nodeLocalRoot,
   serverLocalRoot,
+  proxyDataHostDir,
   sharedPath,
   sharedProjectPath,
   nodeLocalProjectPath,
@@ -195,6 +196,7 @@ describe('storage tiers', () => {
   it('joins per tier', () => {
     setDataDir('/tmp/yaac-test')
     expect(sharedPath('.credentials')).toBe('/tmp/yaac-test/.credentials')
+    expect(proxyDataHostDir()).toBe('/tmp/yaac-test/run/proxy-data')
     expect(sharedProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
     expect(nodeLocalProjectPath('my-repo', 'opencode-data', 'abc123'))
       .toBe('/tmp/yaac-test/projects/my-repo/opencode-data/abc123')

@@ -14,10 +14,6 @@
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
  */
-import {
-  resolveImageChain,
-  type ImageLayer,
-} from './image-builder'
 import { imageExists } from '#platform/container'
 import {
   engineForLayer,
@@ -26,15 +22,17 @@ import {
 import { BuilderPodLease } from './builder-pod'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { serverLog } from '#log'
+import type { ImageLayerName } from '@yaac/shared/types'
 import {
   attachImageBuildProject,
   failImageBuild,
   finishImageBuild,
+  type ImageBuildReason,
+  type ImageLayer,
   ingestImageBuildLine,
   registerImageBuild,
-  type ImageBuildReason,
-} from './image-builds'
-import type { ImageLayerName } from '@yaac/shared/types'
+  resolveImageChain,
+} from '#features/image-engine'
 
 interface BuildContext {
   projectSlug: string

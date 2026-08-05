@@ -11,7 +11,7 @@ import {
 } from '#features/projects'
 // Bounds the cases below sit either side of. Not under test here.
 import { MAX_TEXT_FILE_BYTES, MAX_UPLOAD_FILE_BYTES } from '#features/projects/build-files'
-import { BUILDER_CONTEXT_MAX_BYTES } from '#features/images'
+import { BUILDER_CONTEXT_MAX_BYTES } from '#platform/build-context'
 
 let root: string
 beforeEach(async () => {

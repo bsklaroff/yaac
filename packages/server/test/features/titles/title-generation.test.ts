@@ -5,7 +5,7 @@ import path from 'node:path'
 
 vi.mock('#features/sessions/list', () => ({ listActiveSessions: vi.fn() }))
 vi.mock('#features/sessions/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
-vi.mock('#features/sessions/notify', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifySessionListChanged: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
@@ -21,7 +21,7 @@ import { LLAMA_CPP_TAG } from '#features/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveSessions } from '#features/sessions/list'
 import { setWorktreeTitle } from '#features/sessions/worktree-store'
-import { notifySessionListChanged } from '#features/sessions/notify'
+import { notifySessionListChanged } from '#notify'
 import { execFileAsync } from '#platform/k8s/kubectl'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'

@@ -1,6 +1,6 @@
 import { listActiveSessions, listProvisioning } from '#features/sessions'
 import { listProjects } from '#features/projects'
-import { listImageBuilds } from '#features/images'
+import { listImageBuilds } from '#features/image-engine'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

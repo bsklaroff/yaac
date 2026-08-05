@@ -17,7 +17,7 @@ import {
   kubectlApply,
   kubectlWithRetry,
 } from '#platform/k8s'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#features/images'
+import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#features/image-engine'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'

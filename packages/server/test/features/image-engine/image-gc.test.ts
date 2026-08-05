@@ -10,11 +10,11 @@ vi.mock('#platform/container/runtime', async (importOriginal) => ({
 const mockServerLog = vi.hoisted(() => vi.fn())
 vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
 
-import { reconcileHostImageGc } from '#features/images'
+import { reconcileHostImageGc } from '#features/image-engine'
 // Setup values, not units under test: the sweep is throttled and the prune
 // carries an age floor, so a test that drives the reconcile has to speak in
 // the same numbers the module does.
-import { HOST_IMAGE_GC_INTERVAL_MS, HOST_PRUNE_UNTIL } from '#features/images/image-gc'
+import { HOST_IMAGE_GC_INTERVAL_MS, HOST_PRUNE_UNTIL } from '#features/image-engine/image-gc'
 
 // Newest-first, as `podman image ls --sort created` emits. Four yaac-base
 // generations (2 stale at the default budget), one in-budget registry-staged

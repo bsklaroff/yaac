@@ -15,7 +15,7 @@
  * that backoff. A hard `MAX_ENTRIES` cap bounds memory; nothing ages out on a
  * timer.
  */
-import { notifySessionListChanged } from '#features/sessions'
+import { notifySessionListChanged } from '#notify'
 import { stripAnsi } from '@yaac/shared/ansi'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'

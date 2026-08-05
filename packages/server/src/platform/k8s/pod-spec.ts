@@ -402,3 +402,18 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
     },
   }
 }
+
+/**
+ * The uid session pods run as (`runAsUser`), and the uid baked into session
+ * images as the `yaac` user (YAAC_UID build arg) so the two agree. Under
+ * gVisor there is no userns and no idmap, so numeric uids pass through raw:
+ * a hostPath file owned by host uid N appears in-container as uid N.
+ * Server-created dirs (worktrees, cache volumes, config mounts) are owned by
+ * the server's uid — the in-container user must carry the same uid to write
+ * them. Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
+ * server runs as root (uid 0 is taken inside the image).
+ */
+export function sessionUid(): number {
+  const uid = process.getuid?.() ?? 1000
+  return uid > 0 ? uid : 1000
+}

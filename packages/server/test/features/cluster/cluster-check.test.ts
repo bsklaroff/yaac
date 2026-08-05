@@ -27,7 +27,7 @@ import {
   armDeferredClusterBoot,
   _resetDeferredClusterBootForTests,
 } from '#platform/k8s/deferred-boot'
-import { sessionUid } from '#features/images'
+import { sessionUid } from '#platform/k8s'
 import { buildPriorityClassManifests } from '#platform/k8s'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 

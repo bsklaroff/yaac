@@ -52,7 +52,7 @@ vi.mock('#platform/container/registry', async (importOriginal) => ({
   pushImageToRegistry: vi.fn(),
 }))
 
-import { ensureBuilderImage, ensureBuilderRoleGuard, reconcileBuilderPodGc } from '#features/images'
+import { ensureBuilderImage, reconcileBuilderPodGc } from '#features/images'
 // Reap policy constant, the upstream pin, and the sweep-throttle reset:
 // setup values, not units under test.
 import {
@@ -62,8 +62,6 @@ import {
   _resetBuilderReapForTests,
 } from '#features/images/builder-pod'
 
-const appliedKinds = (): string[] =>
-  mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
 
 const reaped = (): string[] =>
   mockKubectlWithRetry.mock.calls
@@ -94,19 +92,6 @@ describe('ensureBuilderImage', () => {
 
   it('is digest-pinned upstream (the digest IS the pin — no content hash)', () => {
     expect(BUILDER_UPSTREAM_IMAGE).toMatch(/^quay\.io\/podman\/stable@sha256:[0-9a-f]{64}$/)
-  })
-})
-
-describe('ensureBuilderRoleGuard', () => {
-  it('applies the cluster-wide guard policy and binding', async () => {
-    await ensureBuilderRoleGuard()
-    expect(appliedKinds()).toEqual(['ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding'])
-  })
-
-  it('throws with a setup pointer when the VAP API is missing', async () => {
-    mockVapAvailable.mockResolvedValue(false)
-    await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster setup/)
-    expect(mockKubectlApply).not.toHaveBeenCalled()
   })
 })
 

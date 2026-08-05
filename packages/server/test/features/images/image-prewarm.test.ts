@@ -2,18 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#features/projects/list', () => ({ listProjects: vi.fn() }))
 vi.mock('#features/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
-vi.mock('#features/images/image-builder', () => ({ resolveImageChain: vi.fn() }))
+vi.mock('#features/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
 vi.mock('#features/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
   pushImageShared: vi.fn(),
 }))
-// The retry path (folded in here) touches the proxy client, which pulls in
-// k8s. Stub it; the proxy method is hoisted to a standalone fn so tests
-// reference it directly (an `obj.method` reference would trip eslint's
-// unbound-method rule). image-builds itself is the real in-memory registry so
-// retry's forget/re-fire behavior is exercised end-to-end.
-const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn().mockResolvedValue(undefined) }))
-vi.mock('#features/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
+// image-builds itself is the real in-memory registry, so retry's
+// forget/re-fire behavior is exercised end-to-end.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
@@ -25,7 +20,7 @@ import {
 } from '#features/images/image-prewarm'
 import { listProjects } from '#features/projects/list'
 import { resolveProjectConfig } from '#features/projects/config'
-import { resolveImageChain } from '#features/images/image-builder'
+import { resolveImageChain } from '#features/image-engine/image-builder'
 import { ensureImage, pushImageShared } from '#features/images/build-coordinator'
 import {
   attachImageBuildProject,
@@ -34,8 +29,8 @@ import {
   getImageBuild,
   hasBlockingFailure,
   registerImageBuild,
-} from '#features/images/image-builds'
-import { _resetSessionListChangedForTests } from '#features/sessions/notify'
+} from '#features/image-engine/image-builds'
+import { _resetSessionListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
 const mockListProjects = vi.mocked(listProjects)
@@ -209,9 +204,6 @@ describe('retryImageBuild', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearAllImageBuildsForTests()
-    // The prewarm suite's resetAllMocks wipes the hoisted proxy stub's
-    // implementation — restore it so ensureRunning() returns a promise.
-    ensureRunning.mockResolvedValue(undefined)
     // retry fires prewarmProjectImage fire-and-forget; keep its leaves inert
     // so the background rebuild does no real work. The observable we assert on
     // is that prewarmProjectImage was kicked off for the right slug — its
@@ -233,14 +225,13 @@ describe('retryImageBuild', () => {
     failImageBuild(id, 'boom')
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(true)
 
-    expect(retryImageBuild(id)).toBe(true)
+    expect(retryImageBuild(id)).toEqual({ retried: true, infra: false })
     // The entry is forgotten, so it no longer backs off the prewarm sweep.
     expect(getImageBuild(id)).toBeUndefined()
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(false)
     // retry kicked off prewarmProjectImage('proj-a'); its synchronous first
     // step is the config probe.
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
-    expect(ensureRunning).not.toHaveBeenCalled()
   })
 
   it('re-triggers every owning project of a shared layer', () => {
@@ -250,31 +241,33 @@ describe('retryImageBuild', () => {
     attachImageBuildProject(id, 'proj-b')
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id)).toBe(true)
+    expect(retryImageBuild(id)).toEqual({ retried: true, infra: false })
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-b')
   })
 
-  it('rebuilds the proxy sidecar for an infra build with no owning project', () => {
+  // The sidecar rebuild itself lives in the route: it goes through
+  // #features/egress, which sits above this feature. All that is owed here is
+  // forgetting the entry and reporting that the caller must do it.
+  it('forgets an infra build with no owning project and reports it', () => {
     const id = registerImageBuild({
       tag: 'yaac-proxy:abc', layer: 'proxy', action: 'build', reason: 'session',
     })
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id)).toBe(true)
-    expect(ensureRunning).toHaveBeenCalledTimes(1)
+    expect(retryImageBuild(id)).toEqual({ retried: true, infra: true })
+    expect(getImageBuild(id)).toBeUndefined()
     expect(mockResolveConfig).not.toHaveBeenCalled()
   })
 
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {
-    expect(retryImageBuild('missing')).toBe(false)
+    expect(retryImageBuild('missing')).toEqual({ retried: false, infra: false })
 
     const running = registerImageBuild({
       tag: 'x:1', layer: 'base', action: 'build', projectSlug: 'p', reason: 'session',
     })
-    expect(retryImageBuild(running)).toBe(false)
+    expect(retryImageBuild(running)).toEqual({ retried: false, infra: false })
     expect(getImageBuild(running)?.status).toBe('running') // still tracked
     expect(mockResolveConfig).not.toHaveBeenCalled()
-    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { proxyDataHostDir } from '#features/cluster'
+import { proxyDataHostDir } from '@yaac/shared/project-paths'
 
 /**
  * Host path of the proxy's blocked-hosts write-through file. The proxy

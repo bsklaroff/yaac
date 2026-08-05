@@ -9,6 +9,7 @@
     "#features/cluster": "./src/features/cluster/index.js",
     "#features/egress": "./src/features/egress/index.js",
     "#features/forwarders": "./src/features/forwarders/index.js",
+    "#features/image-engine": "./src/features/image-engine/index.js",
     "#features/images": "./src/features/images/index.js",
     "#features/projects": "./src/features/projects/index.js",
     "#features/sessions": "./src/features/sessions/index.js",
@@ -20,6 +21,7 @@
     "#platform/container": "./src/platform/container/index.js",
     "#platform/db": "./src/platform/db/index.js",
     "#platform/k8s": "./src/platform/k8s/index.js",
+    "#test/*": "./test/*.js",
     "#*": "./src/*.js"
   },
   "scripts": {
@@ -31,6 +33,7 @@
     "./features/cluster": "./src/features/cluster/index.js",
     "./features/egress": "./src/features/egress/index.js",
     "./features/forwarders": "./src/features/forwarders/index.js",
+    "./features/image-engine": "./src/features/image-engine/index.js",
     "./features/images": "./src/features/images/index.js",
     "./features/projects": "./src/features/projects/index.js",
     "./features/sessions": "./src/features/sessions/index.js",

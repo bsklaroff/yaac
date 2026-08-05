@@ -38,17 +38,15 @@ import {
   sessionExec,
   waitForStreamd,
 } from '#platform/k8s'
+import { cleanupSessionDetached } from './cleanup'
+import { recordAgentSessions, setActiveAgentSessions } from './agent-session-store'
+import { rebranchSpare, retoolSpare } from './spare-pool'
 import {
-  cleanupSessionDetached,
   deleteWorktreeRow,
-  rebranchSpare,
-  recordAgentSessions,
   recordWorktreeCreated,
-  retoolSpare,
-  setActiveAgentSessions,
   setWorktreeBaseBranch,
-  type SessionCreateResult,
-} from '#features/sessions'
+} from './worktree-store'
+import type { SessionCreateResult } from './create'
 import { isTmuxSessionAlive } from '#features/status'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveCredentialForUrl, resolveProjectConfig } from '#features/projects'

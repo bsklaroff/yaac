@@ -10,7 +10,6 @@ import {
   listProjects,
   readProjectConfigRaw,
   readProjectDockerfile,
-  removeProject,
   removeProjectConfig,
   resolveProjectBuildDir,
   resolveProjectConfigWithSource,
@@ -18,6 +17,7 @@ import {
   writeProjectConfig,
   writeProjectDockerfile,
 } from '#features/projects'
+import { removeProject } from '#features/sessions'
 import { getProjectSkills, getSkillDetail } from '#features/skills'
 import { remoteBranchExists } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'

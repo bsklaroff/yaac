@@ -13,7 +13,7 @@ interface FakeChild extends EventEmitter {
 const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
 
 vi.mock('node:child_process', () => ({
-  // The tunnel reaches the container barrel for startPortForwarders and the
+  // The tunnel reaches #platform/port for startPortForwarders and the
   // kubectl module for the namespace; both promisify a runner at module
   // eval. Nothing here calls either — only spawn matters.
   execFile: vi.fn(),

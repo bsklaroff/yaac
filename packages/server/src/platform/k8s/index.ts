@@ -54,6 +54,7 @@ export {
   SSH_AGENT_SOCKET_PATH,
   buildSessionJobManifest,
   graphrootMountAnnotations,
+  sessionUid,
 } from './pod-spec'
 export type { HostPathMount } from './pod-spec'
 export {

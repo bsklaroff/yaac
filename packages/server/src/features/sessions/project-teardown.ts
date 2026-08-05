@@ -3,16 +3,21 @@ import path from 'node:path'
 import { type SessionPod, listSessionPods } from '#platform/k8s'
 import { removeProjectRegistry } from '#features/cluster'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
-import {
-  cleanupSessionDetached,
-  deleteProjectAgentSessions,
-  deleteProjectWorktrees,
-} from '#features/sessions'
+import { cleanupSessionDetached } from './cleanup'
+import { deleteProjectAgentSessions } from './agent-session-store'
+import { deleteProjectWorktrees } from './worktree-store'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
  * Tear down every live session for a project, then remove the project
  * directory entirely. Throws `NOT_FOUND` if the project does not exist.
+ *
+ * Lives here rather than in #features/projects because it is orchestration,
+ * not storage: it drives session cleanup and the cluster's per-project
+ * registry, both of which sit above the project store. Keeping it there made
+ * the store import the two features that depend on it. It reads project
+ * paths straight from @yaac/shared/project-paths and needs nothing from the
+ * projects feature itself.
  */
 export async function removeProject(slug: string): Promise<void> {
   const dir = projectDir(slug)

@@ -27,11 +27,11 @@
  * inseparable step of the build itself — the product only ever exists in
  * the registry.
  */
-import { buildImage, type ImageLayer } from './image-builder'
 import { imageExists, registryHasTag, removeImage } from '#platform/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
+import { buildImage, type ImageLayer } from '#features/image-engine'
 
 export type BuildEngineKind = 'host-podman' | 'cluster-pod'
 

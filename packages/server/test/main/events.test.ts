@@ -19,7 +19,7 @@ import { EventHub, buildSnapshot, serializeEvent } from '#main/events'
 import type { WsLike } from '#main/events'
 import { listActiveSessions } from '#features/sessions/list'
 import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
-import { registerImageBuild, clearAllImageBuildsForTests } from '#features/images/image-builds'
+import { registerImageBuild, clearAllImageBuildsForTests } from '#features/image-engine/image-builds'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {

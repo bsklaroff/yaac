@@ -1,10 +1,18 @@
 /**
- * A tiny in-process signal so route handlers can tell the events hub to
- * push a fresh snapshot the instant a session is created/restarted, instead
+ * A tiny in-process signal so anything that changes what the session list
+ * shows can tell the events hub to push a fresh snapshot immediately, instead
  * of waiting for the next periodic tick (up to ~5s). The server is a single
  * process (one EventHub), so a single module-level listener is enough.
  *
  * Wired in the server entrypoint: `onSessionListChanged(() => hub.publishSnapshot())`.
+ *
+ * Deliberately a zero-dependency module at the package root rather than part
+ * of #features/sessions. The notifiers are spread across features — image
+ * builds, plan usage, generated titles — and none of them otherwise depend on
+ * the sessions feature. Housing this in that barrel made all of them import
+ * it for a one-line side effect, which is most of what tied the feature layer
+ * into a cycle. It names the session list because that is what the snapshot
+ * contains, not because it belongs to that feature.
  */
 let listener: (() => void) | null = null
 

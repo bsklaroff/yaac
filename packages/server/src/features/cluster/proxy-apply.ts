@@ -5,15 +5,19 @@ import {
   CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
+  LABEL_ROLE,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  ROLE_BUILDER,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s'
-import { credentialsDir, sharedPath } from '@yaac/shared/project-paths'
+import { credentialsDir, proxyDataHostDir } from '@yaac/shared/project-paths'
 import {
+  buildBuilderRoleGuardBindingManifest,
+  buildBuilderRoleGuardPolicyManifest,
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
   buildProxyRoleBindingManifest,
@@ -28,20 +32,8 @@ import {
   buildSessionIngressLockNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
+import { vapAvailable } from './vcluster'
 import { ensureNetd } from './netd'
-
-/**
- * Host directory backing the proxy's `/data` (CA key/cert, tor state).
- * Persisting it across pod replacements keeps the MITM CA stable, so
- * session pods' mounted CA stays valid through proxy image upgrades.
- *
- * SHARED tier: the proxy pod mounts it and the server reads what the proxy
- * writes there (blocked-hosts, git-auth-failures), so both sides need the
- * same bytes wherever the proxy is scheduled.
- */
-export function proxyDataHostDir(): string {
-  return sharedPath('run', 'proxy-data')
-}
 
 export async function ensureNamespace(): Promise<void> {
   await kubectlApply({
@@ -193,4 +185,31 @@ export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Pro
     metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
     data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem },
   })
+}
+
+/**
+ * Cluster-wide admission guard reserving the `yaac.role=builder` label:
+ * no ServiceAccount (the only identity untrusted code can hold — e.g. a
+ * vcluster syncer materializing a session's pods) may create or update a
+ * pod carrying it, and carriers must run under the gvisor RuntimeClass.
+ * Fail-closed: the label excludes its pods from the world-deny egress
+ * policy, so builders must not run on a cluster that cannot enforce the
+ * reservation. Applied idempotently by `yaac cluster setup` and again by
+ * the builder pool before it leases a pod.
+ *
+ * Lives here, not with the builder pool it guards: it applies this
+ * feature's own manifests to this feature's cluster, and cluster setup
+ * calls it. Housing it in #features/images meant cluster setup imported
+ * the feature that sits above it.
+ */
+export async function ensureBuilderRoleGuard(): Promise<void> {
+  if (!await vapAvailable()) {
+    throw new Error(
+      'sandboxed image builds need the ValidatingAdmissionPolicy API to '
+      + `reserve the ${LABEL_ROLE}=${ROLE_BUILDER} pod label (kubernetes `
+      + '>= 1.30). Recreate the cluster with `yaac cluster setup`.',
+    )
+  }
+  await kubectlApply(buildBuilderRoleGuardPolicyManifest())
+  await kubectlApply(buildBuilderRoleGuardBindingManifest())
 }

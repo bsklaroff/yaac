@@ -18,12 +18,10 @@ import {
   setActiveClusterCache,
 } from '#platform/k8s'
 import {
-  coalesceCalls,
   gcOrphanEphemeralModuleDirs,
-  notifySessionListChanged,
-  onSessionListChanged,
   resolveSessionContainer,
 } from '#features/sessions'
+import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#notify'
 import { StatusWatcherManager, isTmuxSessionAlive, onSessionStatusChanged } from '#features/status'
 import {
   PortDetectorManager,

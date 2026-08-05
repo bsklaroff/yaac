@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   CA_CONFIGMAP_NAME,
   NESTED_GRAPHROOT_PATH,
@@ -6,6 +6,7 @@ import {
   SSH_AGENT_SOCKET_PATH,
   buildSessionJobManifest,
   graphrootMountAnnotations,
+  sessionUid,
 } from '#platform/k8s'
 // Internals, for fixtures and bounds only: the in-container cert dir, the
 // sentry tmpfs cap, and the params the builder takes.
@@ -438,5 +439,21 @@ describe('graphrootMountAnnotations', () => {
       'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
       'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${16 * 1024 ** 3}`,
     })
+  })
+})
+
+describe('sessionUid', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('mirrors the server process uid', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(501)
+    expect(sessionUid()).toBe(501)
+  })
+
+  it('falls back to 1000 when the server runs as root (uid 0 is taken in the image)', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(0)
+    expect(sessionUid()).toBe(1000)
   })
 })

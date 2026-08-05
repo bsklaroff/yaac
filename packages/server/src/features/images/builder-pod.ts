@@ -31,6 +31,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#platform/build-context'
 import { testEnv } from '@yaac/shared/env'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -52,22 +53,15 @@ import {
   kubectlWithRetry,
 } from '#platform/k8s'
 import {
-  buildBuilderRoleGuardBindingManifest,
-  buildBuilderRoleGuardPolicyManifest,
   buildEgressWorldDenyNpManifest,
+  ensureBuilderRoleGuard,
   ensureRegistryClusterService,
   registryClusterHost,
-  vapAvailable,
 } from '#features/cluster'
-import {
-  parseContainerIgnore,
-  collectContextFiles,
-  stringHash,
-  type ImageLayer,
-} from './image-builder'
 import { runStreamingProcess } from '#platform/streaming-proc'
 import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
+import { stringHash, type ImageLayer } from '#features/image-engine'
 
 /**
  * Digest-pinned upstream image the builder pods run — podman + coreutils,
@@ -143,14 +137,6 @@ export const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
 
 /** Hard cap on any one exec: the pod is gone by then, so kubectl is too. */
 const BUILDER_EXEC_TOTAL_TIMEOUT_MS = (BUILDER_ACTIVE_DEADLINE_SECONDS + 300) * 1000
-
-/**
- * Sanity cap on the streamed build context. Contexts are dedicated build
- * dirs (Dockerfile + user-managed support files); the build-files API
- * mirrors this cap at upload time so a folder that grows past it fails
- * there rather than at the next build.
- */
-export const BUILDER_CONTEXT_MAX_BYTES = 512 * 1024 ** 2
 
 /**
  * `--cache-ttl` bound on registry step-cache reads: entries older than
@@ -498,27 +484,6 @@ export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknow
       egress: [{}],
     },
   }
-}
-
-/**
- * Cluster-wide admission guard reserving the `yaac.role=builder` label:
- * no ServiceAccount (the only identity untrusted code can hold — e.g. a
- * vcluster syncer materializing a session's pods) may create or update a
- * pod carrying it, and carriers must run under the gvisor RuntimeClass.
- * Fail-closed: the label excludes its pods from the world-deny egress
- * policy, so builders must not run on a cluster that cannot enforce the
- * reservation. Applied idempotently here and by `yaac cluster setup`.
- */
-export async function ensureBuilderRoleGuard(): Promise<void> {
-  if (!await vapAvailable()) {
-    throw new Error(
-      'sandboxed image builds need the ValidatingAdmissionPolicy API to '
-      + `reserve the ${LABEL_ROLE}=${ROLE_BUILDER} pod label (kubernetes `
-      + '>= 1.30). Recreate the cluster with `yaac cluster setup`.',
-    )
-  }
-  await kubectlApply(buildBuilderRoleGuardPolicyManifest())
-  await kubectlApply(buildBuilderRoleGuardBindingManifest())
 }
 
 /**

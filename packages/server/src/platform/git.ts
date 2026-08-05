@@ -4,9 +4,19 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import type { ResolvedGitCredential } from '#features/projects'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
+
+/**
+ * Everything git needs to authenticate against a remote, in the two forms it
+ * accepts. Defined here rather than where credentials are looked up because
+ * this is what consumes it: the lookup in #features/projects resolves a
+ * configured entry down to this shape precisely so the git primitives never
+ * have to know about project config.
+ */
+export type ResolvedGitCredential =
+  | { kind: 'https'; token: string }
+  | { kind: 'ssh'; privateKeyPath: string; knownHostsEntry: string }
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)

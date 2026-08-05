@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import path from 'node:path'
 
 // Everything faked here is a process boundary or another feature's barrel:
 // kubectl, podman (execFileAsync / the container runtime), the local
@@ -9,6 +8,7 @@ import path from 'node:path'
 // real proxy manifests, the real policy set, the real cluster-CIDR probes,
 // and the real netd (which is internal to the folder and covered only here
 // and through cluster setup).
+const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -41,7 +41,10 @@ vi.mock('#platform/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(true),
 }))
 
-vi.mock('#features/images', () => ({
+vi.mock('#features/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
+// netd's image is produced by the host build engine — cluster setup builds it
+// before there is a cluster to build it in.
+vi.mock('#features/image-engine', () => ({
   contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
   buildImage: vi.fn().mockResolvedValue(undefined),
   registerImageBuild: vi.fn(() => 'build-1'),
@@ -50,14 +53,15 @@ vi.mock('#features/images', () => ({
 }))
 
 import {
+  ensureBuilderRoleGuard,
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  proxyDataHostDir,
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
 } from '#features/cluster'
+import { proxyDataHostDir } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
   DNS_STUB_PORT,
@@ -86,7 +90,7 @@ import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { imageExists } from '#platform/container/runtime'
 import { registryHasTag } from '#platform/container/registry'
-import { buildImage, failImageBuild, registerImageBuild } from '#features/images'
+import { buildImage, failImageBuild, registerImageBuild } from '#features/image-engine'
 import { CA_CERT_PATH } from '#platform/k8s/pod-spec'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -159,6 +163,7 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   vi.clearAllMocks()
   mockApply.mockResolvedValue(undefined)
+  mockVapAvailable.mockResolvedValue(true)
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
   mockImageExists.mockResolvedValue(true)
   mockHasTag.mockResolvedValue(true)
@@ -170,12 +175,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await cleanupTempDir(tmpDir)
   vi.unstubAllEnvs()
-})
-
-describe('proxyDataHostDir', () => {
-  it('lives under <dataDir>/run', () => {
-    expect(proxyDataHostDir()).toBe(path.join(tmpDir, 'run', 'proxy-data'))
-  })
 })
 
 describe('ensureNamespace', () => {
@@ -689,5 +688,19 @@ describe('ensureCaConfigMap', () => {
     })
     await ensureCaConfigMap('SAME', 'NEW-BUNDLE')
     expect(mockApply).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ensureBuilderRoleGuard', () => {
+  it('applies the cluster-wide guard policy and binding', async () => {
+    await ensureBuilderRoleGuard()
+    expect(applied().map((m) => m.kind))
+      .toEqual(['ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding'])
+  })
+
+  it('throws with a setup pointer when the VAP API is missing', async () => {
+    mockVapAvailable.mockResolvedValue(false)
+    await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster setup/)
+    expect(mockApply).not.toHaveBeenCalled()
   })
 })
