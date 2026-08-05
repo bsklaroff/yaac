@@ -15,7 +15,11 @@ export default defineConfig({
     YAAC_BUNDLED: 'true',
   },
   // Bundle the workspace packages (@yaac/cli, @yaac/server, @yaac/shared,
-  // @yaac/auth-daemon) into the single dist/cli.js; runtime npm deps stay
-  // external (they're in the published package's dependencies).
+  // @yaac/auth-daemon) into dist/; runtime npm deps stay external (they're in
+  // the published package's dependencies). The CLI's deliberate `import()`
+  // deferrals (see packages/cli/src/cli.ts) make esbuild emit sibling chunks
+  // next to the dist/cli.js entry, which is what keeps the server graph —
+  // and the 2.2s @kubernetes/client-node load — off `yaac --version`. The
+  // whole dist dir is published, so the chunks ship with the entry.
   noExternal: [/^@yaac\//],
 })

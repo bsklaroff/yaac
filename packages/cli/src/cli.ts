@@ -18,17 +18,24 @@ import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { toolGet } from '#commands/tool-get'
 import { toolSet } from '#commands/tool-set'
-import { clusterCheck } from '#commands/cluster-check'
-import { clusterDelete } from '#commands/cluster-delete'
-import { clusterSetup } from '#commands/cluster-setup'
+/* eslint-disable no-restricted-syntax -- Every `import()` below is a deliberate
+   deferral, not a hoisting oversight: the repo bans dynamic import to keep
+   import graphs static and readable, but this file is the one place where the
+   graph IS the cost. See the note below for what each deferral buys. */
+
+// `#commands/cluster-*`, `@yaac/server/main/*` and the k8s platform layer are
+// deliberately absent from this import list: they are loaded inside the
+// actions that need them. Reaching any of them pulls
+// `@kubernetes/client-node` — 967 ESM files behind one barrel, ~2.2s to
+// evaluate — and the CLI is an HTTP client that needs none of it to parse
+// `--version`, reject a bad flag, or run any of the commands that just talk
+// to a running server. Every static import here is on the critical path of
+// *every* invocation, so keep the expensive ones dynamic.
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { authFake } from '#commands/auth-fake'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
-import { runServer } from '@yaac/server/main/server-run'
-import { startServer, stopServer, restartServer, serverLogs } from '@yaac/server/main/lifecycle'
-import { openWebapp } from '@yaac/server/main/webapp'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
@@ -88,23 +95,33 @@ server
   .description('Run the server in the foreground (used internally by `start`)')
   .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_SERVER_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
   .action(async (options: { port?: number }) => {
+    const { runServer } = await import('@yaac/server/main/server-run')
     await runServer({ port: options.port })
   })
 
 server
   .command('start')
   .description('Start the server in the background')
-  .action(startServer)
+  .action(async () => {
+    const { startServer } = await import('@yaac/server/main/lifecycle')
+    await startServer()
+  })
 
 server
   .command('stop')
   .description('Stop the running server')
-  .action(stopServer)
+  .action(async () => {
+    const { stopServer } = await import('@yaac/server/main/lifecycle')
+    await stopServer()
+  })
 
 server
   .command('restart')
   .description('Restart the server (stop, then start)')
-  .action(restartServer)
+  .action(async () => {
+    const { restartServer } = await import('@yaac/server/main/lifecycle')
+    await restartServer()
+  })
 
 server
   .command('logs')
@@ -112,6 +129,7 @@ server
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
+    const { serverLogs } = await import('@yaac/server/main/lifecycle')
     await serverLogs(options)
   })
 
@@ -120,6 +138,7 @@ program
   .description('Open the webapp in your browser (starts the server if needed)')
   .option('--no-browser', 'Print the authenticated URL instead of launching a browser')
   .action(async (options: { browser?: boolean }) => {
+    const { openWebapp } = await import('@yaac/server/main/webapp')
     await openWebapp({ noBrowser: options.browser === false })
   })
 
@@ -131,13 +150,17 @@ const cluster = program
 cluster
   .command('check')
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
-  .action(clusterCheck)
+  .action(async () => {
+    const { clusterCheck } = await import('#commands/cluster-check')
+    await clusterCheck()
+  })
 
 cluster
   .command('setup')
   .description('Create the kind cluster, registry, and CNI wiring yaac needs (destructive: recreates the cluster)')
   .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
   .action(async (options: { repair?: boolean }) => {
+    const { clusterSetup } = await import('#commands/cluster-setup')
     await clusterSetup(options)
   })
 
@@ -146,6 +169,7 @@ cluster
   .description('Delete the kind cluster and local registry (keeps worktrees and their checkouts)')
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
+    const { clusterDelete } = await import('#commands/cluster-delete')
     await clusterDelete(options)
   })
 

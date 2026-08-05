@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { ensureKubernetes } from '#platform/k8s'
 
 export const execFileAsync = promisify(execFile)
 
@@ -24,6 +23,13 @@ export async function ensureContainerRuntime(): Promise<void> {
   } else {
     await ensurePodmanLinux()
   }
+  // Imported here, not at module scope: `@kubernetes/client-node` is 967 ESM
+  // files behind a single barrel, ~2.2s to load, and this module's other
+  // exports are what the CLI reaches for on every invocation — including
+  // `ensureRootfulPodmanHost`, two lines that set an env var. Only the
+  // runtime check needs a cluster, and it is already async.
+  // eslint-disable-next-line no-restricted-syntax -- deferring this import is the point; see above
+  const { ensureKubernetes } = await import('#platform/k8s')
   await ensureKubernetes()
   runtimeVerified = true
 }
