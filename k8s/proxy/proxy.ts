@@ -2945,37 +2945,70 @@ for (const [srv, portStr, label] of [
 // resolves the session's pod IP (pod-watch reverse index, labelSelector
 // list on a miss) and splices the rest of the stream to
 // `podIP:POD_STREAM_PORT` untouched — the streamd handshake, its reply,
-// and the payload are end-to-end server↔streamd. Per-stream refusals
-// (unknown session, pod dial failure) are ANSWERED with an error line
-// before closing: the server treats a silent close as a dead transport
-// and re-establishes its shared port-forward, so a stale session's probe
-// must not masquerade as one. Only a bad auth line closes silently (no
-// oracle for unauthenticated peers). An inner (vcluster) proxy runs this
+// and the payload are end-to-end server↔streamd. Per-stream failures
+// (unknown session, pod dial failure or timeout) are ANSWERED with an
+// error line before closing: the server treats a silent close as a dead
+// transport and re-establishes its shared port-forward, so a stale
+// session's probe must not masquerade as one — and nothing before the
+// splice may hang instead, which is what the pre-splice deadline below
+// enforces. Only a bad auth line closes silently (no oracle for
+// unauthenticated peers). An inner (vcluster) proxy runs this
 // same code against its own apiserver, whose synced pods carry host pod
 // IPs (syncer write-back), so nested streams need no extra branch.
 
 const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
-const RELAY_HANDSHAKE_TIMEOUT_MS = 10_000
+/**
+ * Budget for every phase before the splice — the auth line, the pod-IP
+ * resolve, then the pod dial (which re-arms it on the target socket, the
+ * only handle that can also reap a hung connect). No phase may hang
+ * instead of answering: a session pod whose ingress policy hasn't
+ * admitted this proxy yet DROPS the SYN, so an unbounded `net.connect`
+ * sits out the OS retry series (~130s) holding both sockets, with the
+ * server waiting out its own deadline and learning nothing about which
+ * of the two — this pod, or the shared transport — is the problem.
+ *
+ * Generous on purpose: an in-cluster pod dial is milliseconds, and the
+ * only slow leg is an apiserver list behind a pod-index miss, which
+ * should be allowed to finish rather than refused out from under a
+ * stream that would have worked. It stays under the server's 15s stream
+ * dial deadline so the refusal is what that caller sees.
+ */
+const RELAY_PRESPLICE_TIMEOUT_MS = 6_000
 
 function handleRelayConnection(socket: net.Socket, podStreamPort: number): void {
   socket.on('error', () => { /* per-connection; close tears down the splice */ })
   let buf = Buffer.alloc(0)
-  const timer = setTimeout(() => socket.destroy(), RELAY_HANDSHAKE_TIMEOUT_MS)
+  // Before the auth line there is nothing we may say (no oracle for
+  // unauthenticated peers), so expiry is a silent destroy until it lands.
+  let authed = false
+  // Answer refusals with a reply line (see the module comment): a silent
+  // close reads as a dead transport server-side. Idempotent — the deadline
+  // and a failed dial can both land on it. A declaration, not a const, so
+  // it and the deadline below can name each other.
+  function refuse(error: string): void {
+    clearTimeout(deadline)
+    if (socket.destroyed || socket.writableEnded) return
+    socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
+  }
+  const deadline = setTimeout(() => {
+    if (authed) refuse('timed out resolving the session pod')
+    else socket.destroy()
+  }, RELAY_PRESPLICE_TIMEOUT_MS)
 
   const onData = (chunk: Buffer): void => {
     buf = Buffer.concat([buf, chunk])
     const nl = buf.indexOf(0x0a)
     if (nl < 0) {
-      if (buf.length > RELAY_HANDSHAKE_MAX_BYTES) { clearTimeout(timer); socket.destroy() }
+      if (buf.length > RELAY_HANDSHAKE_MAX_BYTES) { clearTimeout(deadline); socket.destroy() }
       return
     }
     socket.removeListener('data', onData)
-    clearTimeout(timer)
 
     let params: { token?: unknown; sessionId?: unknown }
     try {
       params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
     } catch {
+      clearTimeout(deadline)
       socket.destroy()
       return
     }
@@ -2984,9 +3017,11 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)
     ) {
       console.log('[proxy] BLOCKED relay dial: bad auth line')
+      clearTimeout(deadline)
       socket.destroy()
       return
     }
+    authed = true
     const sessionId = params.sessionId
 
     // Keep buffering bytes (the pipelined streamd handshake) that arrive
@@ -2999,11 +3034,6 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     let leftover = buf.subarray(nl + 1)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
-    // Answer refusals with a reply line (see the module comment): a
-    // silent close reads as a dead transport server-side.
-    const refuse = (error: string): void => {
-      socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
-    }
     void (async () => {
       let ip = podIndex.resolveIp(sessionId)
       if (!ip) {
@@ -3013,7 +3043,11 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
           console.error(`[proxy] relay pod lookup failed for ${sessionId.slice(0, 8)}...:`, (err as Error).message)
         }
       }
-      if (socket.destroyed) return
+      // `writableEnded` as well as `destroyed`: a refusal (the deadline
+      // firing mid-resolve) only ends this socket, and stays undestroyed
+      // until the peer closes — a resolve landing in that window would
+      // otherwise dial the pod anyway and splice into an ended socket.
+      if (socket.destroyed || socket.writableEnded) return
       if (!ip) {
         console.log(`[proxy] BLOCKED relay dial: unknown session ${sessionId.slice(0, 8)}...`)
         refuse('unknown session')
@@ -3022,9 +3056,19 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       // allowHalfOpen so an EOF from either end passes through the splice
       // (pipe propagates the end()); the close handlers reap the pair.
       const target = net.connect({ port: podStreamPort, host: ip, allowHalfOpen: true })
+      // The dial leg's share of the deadline moves onto the target socket,
+      // which is the only handle that can also reap it: a dropped SYN would
+      // otherwise sit out the OS retry series holding both sockets open.
+      // Destroying it lands on the error handler below, so a hung dial
+      // refuses exactly like a failed one.
+      clearTimeout(deadline)
+      target.setTimeout(RELAY_PRESPLICE_TIMEOUT_MS, () => {
+        target.destroy(Object.assign(new Error('pod dial timeout'), { code: 'ETIMEDOUT' }))
+      })
       let spliced = false
       target.on('connect', () => {
         spliced = true
+        target.setTimeout(0) // an idle spliced stream must not trip it
         socket.removeListener('data', buffer)
         if (leftover.length > 0) target.write(leftover)
         socket.pipe(target)

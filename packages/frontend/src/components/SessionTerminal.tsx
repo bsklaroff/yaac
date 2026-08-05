@@ -13,7 +13,11 @@ import { createWebglController, type WebglController } from '#lib/webgl-renderer
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#store'
-import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
+import {
+  DISCONNECT_NOTICE_DELAY_MS,
+  INITIAL_RECONNECT_DELAY_MS,
+  nextReconnectDelay,
+} from '#lib/reconnect'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -174,6 +178,7 @@ export function SessionTerminal({
     // scrollback to be unpinned from (viewportY === baseY === 0 always).
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
     let closedByUs = false
     const encoder = new TextEncoder()
@@ -223,6 +228,10 @@ export function SessionTerminal({
 
       sock.onopen = (): void => {
         opened = true
+        // Back before the pending notice could fire: the drop healed, so it
+        // was never worth telling the user about.
+        clearTimeout(noticeTimer)
+        noticeTimer = undefined
         reconnectDelay = INITIAL_RECONNECT_DELAY_MS
         gate.onOpen()
         fit.fit()
@@ -236,14 +245,26 @@ export function SessionTerminal({
       sock.onclose = (): void => {
         // Ignore a stale socket we've already torn down or replaced.
         if (closedByUs || sock !== ws) return
-        gate.onClose()
+        // CAN (0x18) goes out now whether or not anything is ever announced:
+        // a stream that died mid-escape-sequence leaves the parser inside
+        // that sequence, where it would swallow the notice and the reattach
+        // redraw as garbage — CAN returns it to ground from any state.
+        if (opened) term.write('\x18')
         // Only announce a drop the user actually had — a connect that never
-        // opened (e.g. pod gone) shouldn't spam the screen on every retry.
-        // Lead with CAN (0x18): a stream that died mid-escape-sequence leaves
-        // the parser inside that sequence, where it would swallow the banner
-        // and the reattach redraw as garbage — CAN returns it to ground from
-        // any state.
-        if (opened) term.write('\x18\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
+        // opened (e.g. pod gone) shouldn't spam the screen on every retry —
+        // and only one that outlasts a reconnect. A recycled relay transport
+        // server-side drops every terminal at once and they all re-attach
+        // within a second onto a full tmux repaint, so announcing those made
+        // the whole workspace flicker over a blip nobody needed to see. The
+        // reveal rides along, so a first-attach drop can't unmask a
+        // half-drawn frame with no explanation on it.
+        if (opened && noticeTimer === undefined) {
+          noticeTimer = setTimeout(() => {
+            noticeTimer = undefined
+            gate.onClose()
+            term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
+          }, DISCONNECT_NOTICE_DELAY_MS)
+        }
         reconnectTimer = setTimeout(connect, reconnectDelay)
         reconnectDelay = nextReconnectDelay(reconnectDelay)
       }
@@ -300,6 +321,7 @@ export function SessionTerminal({
       gate.dispose()
       clearTimeout(connectTimer)
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      clearTimeout(noticeTimer)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('online', reconnectNow)
       observer.disconnect()
