@@ -3,7 +3,7 @@ import path from 'node:path'
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import type { PGlite } from '@electric-sql/pglite'
-import { env } from '@yaac/shared/env'
+import { env, testEnv } from '@yaac/shared/env'
 import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 
 /**
@@ -30,6 +30,58 @@ const MIGRATIONS_DIR = env.bundled
   : path.join(PACKAGE_ROOT, 'packages', 'server', 'drizzle')
 
 let cached: { dir: string; promise: Promise<Db> } | null = null
+
+/**
+ * Shared-instance mode (unit tests only — see `testEnv.sharedTestDb`). One
+ * in-memory PGlite serves every data dir the process visits; switching dirs
+ * truncates instead of opening a second instance, which is what a fresh dir
+ * gives a test anyway. Kept behind the flag because the on-disk handle is the
+ * real contract — its own tests (test/platform/db/client.test.ts) opt out and
+ * exercise the instance-per-dir path.
+ */
+let sharedDb: Promise<Db> | null = null
+let sharedDir: string | null = null
+
+async function openSharedDb(): Promise<Db> {
+  const db = drizzle({ connection: { dataDir: 'memory://' } })
+  await migrate(db, { migrationsFolder: MIGRATIONS_DIR })
+  return db
+}
+
+/**
+ * Empty every table the migrations created, so the next data dir starts as
+ * clean as a freshly-migrated one. Read out of the catalog rather than the
+ * schema module: this must cover whatever the checked-in migrations actually
+ * built, including tables a later migration adds and this file never names.
+ * `RESTART IDENTITY` so sequence-backed ids don't leak a previous test's
+ * count; `CASCADE` because TRUNCATE refuses a table another one references.
+ * drizzle's own bookkeeping lives in the `drizzle` schema, so filtering to
+ * `public` leaves the applied-migration list intact.
+ */
+async function wipeSharedDb(db: Db): Promise<void> {
+  const { rows } = await db.$client.query<{ tablename: string }>(
+    'SELECT tablename FROM pg_tables WHERE schemaname = \'public\'',
+  )
+  if (rows.length === 0) return
+  const list = rows.map((r) => `"${r.tablename}"`).join(', ')
+  await db.$client.exec(`TRUNCATE ${list} RESTART IDENTITY CASCADE`)
+}
+
+function getSharedDb(dir: string): Promise<Db> {
+  if (cached?.dir === dir) return cached.promise
+  const promise = (sharedDb ??= openSharedDb()).then(async (db) => {
+    // Only a *change* of dir wipes: closeDb() drops the cache without
+    // closing anything, and reopening the same dir after it must still see
+    // the data, exactly as the on-disk handle's checkpoint does.
+    if (sharedDir !== dir) {
+      await wipeSharedDb(db)
+      sharedDir = dir
+    }
+    return db
+  })
+  cached = { dir, promise }
+  return promise
+}
 
 /**
  * SERVER-LOCAL, hard requirement: pglite is an embedded single-writer
@@ -60,6 +112,7 @@ async function openDb(dir: string, prev: Promise<Db> | null): Promise<Db> {
  */
 export function getDb(): Promise<Db> {
   const dir = dbDir()
+  if (testEnv.sharedTestDb) return getSharedDb(dir)
   if (cached?.dir !== dir) {
     const promise = openDb(dir, cached?.promise ?? null)
     cached = { dir, promise }
@@ -70,11 +123,33 @@ export function getDb(): Promise<Db> {
   return cached.promise
 }
 
+/**
+ * Test-only: put the database back to freshly-migrated — no rows, no
+ * one-shot markers — while leaving the data dir's *files* alone. What a
+ * test means by "the user upgraded into a new database": deleting
+ * `<dataDir>/db` says that only to the on-disk handle, and says nothing at
+ * all to the shared in-memory one, so tests ask for the state instead of
+ * the mechanism and get it in either mode.
+ */
+export async function _freshDbForTests(): Promise<void> {
+  if (testEnv.sharedTestDb) {
+    cached = null
+    await wipeSharedDb(await (sharedDb ??= openSharedDb()))
+    return
+  }
+  await closeDb()
+  await fs.rm(dbDir(), { recursive: true, force: true })
+}
+
 /** Close the handle so PGlite checkpoints cleanly (dev-watch restarts, test
  *  teardown before temp-dir removal). Idempotent. */
 export async function closeDb(): Promise<void> {
   const prev = cached
   cached = null
+  // Shared-instance mode: the handle outlives every data dir that borrows
+  // it, so closing it here would strand the next test with a dead postgres.
+  // Dropping the cache is the whole job — the next dir wipes on arrival.
+  if (testEnv.sharedTestDb) return
   if (!prev) return
   try {
     const db = await prev.promise

@@ -12,7 +12,7 @@
 // layout, and the session backfill, all covered through the entry points
 // below in packages/server/test/platform/db/.
 
-export { closeDb, getDb } from './client'
+export { closeDb, getDb, _freshDbForTests } from './client'
 export { importLegacyJsonStores } from './legacy-import'
 export {
   agentSessions,

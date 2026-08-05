@@ -7,11 +7,19 @@
  * -handle close are covered by the dir switches these tests drive rather
  * than by tests of their own. `preferences` is the sample table.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb, preferences } from '#platform/db'
+
+// The rest of the unit suite borrows one shared in-memory PGlite (the unit
+// setup file sets YAAC_TEST_SHARED_DB) because booting one per test dominates
+// its runtime. This file is the exception: the on-disk instance-per-dir
+// handle is the behavior under test — the 0700 dir, the distinct handle after
+// a dir switch, the checkpoint that survives a reopen — none of which the
+// shared handle has. Opt out so these assertions describe the real thing.
+vi.stubEnv('YAAC_TEST_SHARED_DB', '')
 
 const dirs: string[] = []
 

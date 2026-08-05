@@ -271,6 +271,24 @@ export const testEnv = {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000
   },
 
+  /**
+   * `YAAC_TEST_SHARED_DB` — `1` makes `getDb()` hand every data dir one
+   * process-wide in-memory PGlite, wiped when the data dir changes, instead
+   * of opening a fresh on-disk instance per dir.
+   *
+   * Set only by the unit projects' setup file. A unit test's `beforeEach`
+   * creates a temp data dir, and the first `getDb()` against it costs ~2s to
+   * boot PGlite plus ~2s to replay the migrations — dwarfing the assertions
+   * and making the DB-backed files the whole suite's critical path. The
+   * per-dir wipe keeps the isolation those tests actually rely on.
+   *
+   * Never set for api/e2e (they run the real server against a real data dir)
+   * and never in production, where the on-disk WAL is the point.
+   */
+  get sharedTestDb(): boolean {
+    return process.env.YAAC_TEST_SHARED_DB === '1'
+  },
+
   /** `YAAC_E2E_NO_ATTACH` — `1` skips the post-provision `kubectl exec -it` attach. */
   get e2eNoAttach(): boolean {
     return process.env.YAAC_E2E_NO_ATTACH === '1'

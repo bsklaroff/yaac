@@ -14,7 +14,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { claudeDir, codexDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
 import { eq } from 'drizzle-orm'
-import { agentSessions, closeDb, getDb, importLegacyJsonStores } from '#platform/db'
+import { _freshDbForTests, agentSessions, closeDb, getDb, importLegacyJsonStores } from '#platform/db'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
 import {
   MAX_PROMPT_LENGTH,
@@ -131,9 +131,8 @@ describe('importLegacyJsonStores', () => {
     const workspaceDir = path.join(claudeDir('proj'), 'projects', '-workspace')
     await fs.mkdir(workspaceDir, { recursive: true })
     await fs.writeFile(path.join(workspaceDir, 'transcript-only.jsonl'), '{}\n')
-    await closeDb()
     // Clear the one-shot flag the way a fresh upgrade would: a new DB.
-    await fs.rm(path.join(getDataDir(), 'db'), { recursive: true, force: true })
+    await _freshDbForTests()
     await importLegacyJsonStores()
 
     expect((await getProjectWorktreeRows('proj')).get('transcript-only')).toBeDefined()
