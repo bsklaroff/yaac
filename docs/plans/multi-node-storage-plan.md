@@ -72,10 +72,11 @@ References:
 
 ### Cluster setup and manifests
 
-`yaac cluster setup` (full and `--repair`) installs pinned runsc +
-containerd-shim-runsc-v1 on every kind node (systrap platform — no
-`/dev/kvm`), patches the node containerd config with two handlers, and
-applies two RuntimeClasses:
+`yaac cluster setup` (full and `--repair`) applies the `yaac-gvisor-install`
+DaemonSet, which installs pinned runsc + containerd-shim-runsc-v1 on every
+node it lands on (systrap platform — no `/dev/kvm`), patches that node's
+containerd config with two handlers and labels it; setup then applies two
+RuntimeClasses, which schedule on that label:
 
 - `gvisor` — the default. Every session, the proxy, registries, and probe
   pods run on it.
@@ -88,8 +89,9 @@ and `allow-suid` (runsc drops the setuid bit by default,
 google/gvisor#5299 — the image's passwordless `sudo` is a feature, and the
 rootful engine bootstrap needs it). Every manifest builder stamps
 `runtimeClassName` explicitly (no webhooks); cluster check has a `gvisor`
-gate (RuntimeClasses present + a pod provably sentry-sandboxed via its dmesg
-fingerprint) and a `runtime-stamp` sweep.
+gate (RuntimeClasses present + a labelled node to schedule on + a pod
+provably sentry-sandboxed via its dmesg fingerprint) and a `runtime-stamp`
+sweep.
 
 ### Nested sessions: rootful engine in the sentry
 

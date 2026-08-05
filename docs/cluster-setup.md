@@ -166,14 +166,35 @@ only kind's provider breaks.
    per-container process stats readlink every open fd of every process each
    tick, and gVisor session sandboxes concentrate ~9k fds per sentry — kubelet
    alone burned 1.5–2 cores on a busy node before this.
-4. **The gVisor runtime** — a pinned `runsc` +
-   `containerd-shim-runsc-v1` copied into every node, two runsc handlers
-   registered in the node containerd config (`runsc` and `runsc-nested`,
-   each with its own `/etc/containerd/runsc*.toml` flag file — both set
-   `allow-suid` so the image's passwordless `sudo` works inside the sentry,
-   `runsc-nested` additionally allows raw/packet sockets for the in-pod
-   engine), and the `gvisor` and `gvisor-nested` RuntimeClasses applied to
-   the cluster. Every pod hosting untrusted code carries one explicitly:
+4. **The gVisor runtime**, via the `yaac-gvisor-install` DaemonSet — a
+   privileged pod on every node that drops a pinned `runsc` +
+   `containerd-shim-runsc-v1` there, registers two runsc handlers in that
+   node's containerd config (`runsc` and `runsc-nested`, each with its own
+   `/etc/containerd/runsc*.toml` flag file — both set `allow-suid` so the
+   image's passwordless `sudo` works inside the sentry, `runsc-nested`
+   additionally allows raw/packet sockets for the in-pod engine), restarts
+   containerd, and labels the node `yaac.gvisor=true`. Setup waits for that
+   rollout and then applies the `gvisor` and `gvisor-nested` RuntimeClasses,
+   whose `scheduling.nodeSelector` is that label — so a sandboxed pod can
+   only be scheduled where the shim actually exists.
+
+   A DaemonSet rather than a loop over `podman exec <node>` for two reasons:
+   it works on nodes yaac has no shell on (a managed pool, a remote control
+   plane), and a node that is restarted or *replaced* installs itself with
+   nothing to run — which is what makes the install survive node recycling.
+   It is idempotent: the binaries are fetched only when the node-local cache
+   does not already hold a copy matching the release's published sha512
+   (re-verified on every hit, not just after a download), the config files
+   are compared before writing, and containerd is restarted only when
+   something changed. Passes take a node-local lock, so a second install
+   sharing the node (an e2e run's) converges after the first rather than
+   interleaving with it — they must pin the same gVisor version.
+   The installer image is upstream `curlimages/curl`,
+   digest-pinned and mirrored into the local registry like Envoy and
+   registry:2. See `docs/plans/stock-k8s-multi-node.md` §3 for why the
+   privilege is accepted and where a dedicated sessions node pool fits.
+
+   Every pod hosting untrusted code carries a RuntimeClass explicitly:
    plain sessions run on `gvisor`, nested-containers sessions run the
    rootful in-pod engine on `gvisor-nested`, and vcluster-synced tenant
    pods are stamped `gvisor` by the syncer. Trusted yaac infra (the proxy,
@@ -223,6 +244,13 @@ yaac cluster setup --repair
 ```
 
 `yaac cluster check` detects when they're missing and points here.
+
+`--repair` owns exactly the state that has no node-side agent to re-apply
+it: the sysctls, `DefaultTasksMax`, the node container's pids ceiling and
+the registry wiring. The gVisor runtime is **not** in that set — its
+installer DaemonSet reinstalls on any node that appears — but `--repair`
+does re-apply the DaemonSet itself, which is how an existing cluster picks
+up a runsc version bump on a yaac upgrade.
 
 ## What a session reserves
 
@@ -281,7 +309,8 @@ does, or its writes to `/workspace` will fail with `Permission denied`.
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
 namespace, the PriorityClasses and the node fixups, asserts the
-RuntimeClasses exist and that a
+RuntimeClasses exist, that at least one node carries the `yaac.gvisor`
+label they schedule on, and that a
 `gvisor`-class pod really runs inside the sentry, then runs an end-to-end
 probe pod — on the gvisor tier, like session pods — that exercises all of
 the wiring above, including a hostPath **write** at the session uid. It

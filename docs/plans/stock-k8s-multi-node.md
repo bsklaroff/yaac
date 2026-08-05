@@ -138,17 +138,35 @@ the PV; no node automount units, no "mount before kubelet" ordering.
 
 The containment model (sentry for sessions, no userns) is non-negotiable
 and is also what makes NFS usable. No managed engine lets us install a
-runtime the clean way, so the node agent (§4) does it:
+runtime the clean way, so a privileged DaemonSet does it.
 
-- A privileged **installer DaemonSet** (the GPU-driver pattern): drops the
-  pinned `runsc` + `containerd-shim-runsc-v1` onto the node, patches
-  containerd config with the two handlers (`host-uds=all`, `allow-suid`,
-  systrap), restarts containerd, labels the node. RuntimeClasses gain a
-  `nodeSelector` on that label so pods only schedule where the shim exists.
+**The mechanism has shipped** on the current backend — `yaac-gvisor-install`
+(features/cluster/gvisor-installer.ts), the current-state reference is
+docs/cluster-setup.md §4:
+
+- The **installer DaemonSet** (the GPU-driver pattern) drops the pinned
+  `runsc` + `containerd-shim-runsc-v1` onto each node it lands on, patches
+  that node's containerd config with the two handlers (`host-uds=all`,
+  `allow-suid`, systrap), restarts containerd through PID 1's mount
+  namespace, and labels the node. The RuntimeClasses carry a
+  `scheduling.nodeSelector` on that label, so pods only schedule where the
+  shim exists. It is the ONE install mechanism: kind goes through it too,
+  being just a mutable-OS node with the same containerd config.
 - Node recycling (node-pool upgrades replace nodes) is handled for free —
-  the DaemonSet reapplies on every new node. This replaces `--repair`.
-- Prefer a dedicated **sessions node pool** for the installer's blast
-  radius; infra (proxy, registries, server) runs on a stock pool on runc.
+  the DaemonSet reapplies on every new node. This took the runtime out of
+  `--repair`, which now owns only the kind-node-container state that has no
+  node-side agent (sysctls, TasksMax, pids limit, registry wiring).
+- The binaries are fetched **from the node**, not pushed from the server:
+  the pinned release, verified against its published sha512 and cached
+  node-locally. A server-side cache cannot help a node yaac has no shell on.
+- The installer image is upstream digest-pinned `curlimages/curl`, not a
+  yaac-built one — the install needs a shell, curl, sha512sum and nsenter,
+  and must work before any yaac image or host podman exists.
+- Still to do here: a dedicated **sessions node pool** for the installer's
+  blast radius. The `nodeSelector` is plumbed through the DaemonSet builder
+  and defaults to every node; pointing it at a pool label is a config
+  change, and the RuntimeClasses need no edit because they select on what
+  the installer stamps, not on the pool.
 - **This is the binding portability constraint.** Mutating a managed node's
   containerd is vendor-*unsupported* but mechanically works on mutable-OS
   pools (DOKS; EKS AL2023/AL2, needs a node reboot + manual gVisor
@@ -159,8 +177,13 @@ runtime the clean way, so the node agent (§4) does it:
   AKS-Ubuntu — the same envelope the §4 networking needs, since both ride
   the same privileged node install (DOKS passes this bar but fails §4's:
   its Cilium CNI is not replaceable).
-- Spike: verify on a real target node — OS/containerd config include path,
-  survival across a node-pool upgrade, the cluster-check sentry/dmesg probe.
+- Spike (unchanged, and now a matter of pointing the shipped DaemonSet at
+  one): verify on a real target node — OS/containerd config include path
+  (the installer appends to `/etc/containerd/config.toml` and refuses a node
+  without one, rather than writing a fresh config that would lose the
+  node's defaults), whether `systemctl restart containerd` is the right
+  restart there (k3s embeds containerd), survival across a node-pool
+  upgrade, and the cluster-check sentry/dmesg probe.
 
 ### 4. Networking / egress: shipped, and multi-node-clean
 

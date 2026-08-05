@@ -88,6 +88,7 @@ function makeDeps(
     exposeRegistry: overrides.exposeRegistry
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
     ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
+    ensureGvisorRuntime: overrides.ensureGvisorRuntime ?? vi.fn().mockResolvedValue(undefined),
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
@@ -169,23 +170,19 @@ describe('runClusterSetup', () => {
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network' && a[1] === 'connect')).toBe(true)
 
-    // gVisor runtime: pinned binaries fetched (checksum-verified), copied
-    // into the node, containerd restarted, RuntimeClasses applied.
-    const shScripts = runCalls
-      .filter(([f, a]) => f === 'sh' && a[0] === '-c')
-      .map(([, a]) => a[1])
-    expect(shScripts.some((s) => s.includes('gvisor/releases/release') && s.includes('/runsc'))).toBe(true)
-    expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'cp'
-      && String(a[2]).includes('runsc'))).toBe(true)
-    expect(execCmds.some((c) => c.includes('restart containerd') || c.includes('runsc'))
-      || runCalls.some(([f, a]) => f === 'podman' && a.join(' ').includes('restart containerd'))).toBe(true)
-    // The RuntimeClass apply, not the Calico one above — both stream a
-    // manifest through `kubectl apply -f -`, so match on the payload.
-    const rcApply = deps.runStreaming.mock.calls.find(([f, a, o]) =>
-      f === 'kubectl' && a.includes('apply') && (o?.input ?? '').includes('RuntimeClass'))
-    expect(rcApply).toBeDefined()
-    expect(rcApply?.[1]).toEqual(['--context', 'kind-yaac', 'apply', '-f', '-'])
-    expect(rcApply?.[2]?.input).toContain('"gvisor-nested"')
+    // gVisor: an in-cluster installer DaemonSet, so setup itself never
+    // touches a node for it — no podman exec, no host-side download.
+    expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
+    expect(runCalls.some(([f]) => f === 'sh')).toBe(false)
+    expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'cp')).toBe(false)
+    expect(execCmds.some((c) => c.includes('runsc') || c.includes('restart containerd'))).toBe(false)
+    // ...and it lands after the node's registry wiring, since its image is
+    // pulled from the local registry the fixups just pointed the node at.
+    const gvisorOrder = vi.mocked(deps.ensureGvisorRuntime).mock.invocationCallOrder[0]
+    const connectOrder = runCalls
+      .map((c, i) => ({ c, order: deps.run.mock.invocationCallOrder[i] }))
+      .find(({ c }) => c[0] === 'podman' && c[1][0] === 'network' && c[1][1] === 'connect')!.order
+    expect(gvisorOrder).toBeGreaterThan(connectOrder)
 
     expect(deps.check).toHaveBeenCalledOnce()
   })
@@ -360,14 +357,17 @@ describe('runClusterSetup', () => {
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     expect(deps.exposeRegistry).toHaveBeenCalledOnce()
     // Re-applied on --repair too: that is how an existing cluster picks
-    // netd up on a yaac upgrade (same rationale as the gVisor install).
+    // netd, the PriorityClasses and a runsc version bump up on a yaac
+    // upgrade. The gVisor half no longer repairs node state — the installer
+    // DaemonSet does that on its own whenever a node appears — so what
+    // --repair still owns is the kind-node-container state with no agent to
+    // re-apply it (sysctls, TasksMax, pids limit, registry wiring).
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
-    // No delete/create/Calico — only the fixups (incl. the gVisor install,
-    // whose RuntimeClass apply is the one streaming call) and the check.
+    expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
+    // No delete/create/Calico — only the fixups and the check.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
-    expect(deps.runStreaming.mock.calls.every(([f]) => f === 'kubectl')).toBe(true)
-    expect(deps.runStreaming.mock.calls.some(([f, a]) => f === 'kubectl' && a.includes('apply'))).toBe(true)
+    expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
     expect(deps.check).toHaveBeenCalledOnce()
   })

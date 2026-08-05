@@ -9,6 +9,7 @@ import { ensureRegistryImage } from '@yaac/server/features/cluster/project-regis
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
 import { ensureBuilderImage } from '@yaac/server/features/images/builder-pod'
 import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
+import { ensureGvisorInstallerImage } from '@yaac/server/features/cluster/gvisor-installer'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/container/registry'
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
@@ -189,6 +190,11 @@ export async function setup(): Promise<void> {
     await ensureVclusterImages(false)
     await ensureBuilderImage(false)
     await ensureEnvoyImage(false)
+    // The gVisor installer's image (digest-pinned upstream curl). No e2e
+    // runs `cluster setup`, so nothing here needs it today — mirrored so a
+    // test that does exercise the installer fails on what it is testing
+    // rather than on a missing image.
+    await ensureGvisorInstallerImage(false)
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

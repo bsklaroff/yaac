@@ -27,9 +27,14 @@ export {
 export { containerExec } from './exec'
 export { ExecTunnel } from './exec-tunnel'
 export {
+  GVISOR_INSTALLER_READY_FILE,
+  GVISOR_NODE_LABEL,
+  GVISOR_NODE_VERSION_LABEL,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
-  ensureGvisorRuntime,
+  buildRuntimeClassManifests,
+  gvisorInstallScript,
+  gvisorInstallerHostMounts,
   runtimeClassSpec,
 } from './gvisor'
 export {

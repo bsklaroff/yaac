@@ -5,9 +5,10 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
-import { ensureGvisorRuntime, ensurePriorityClasses, execFileAsync } from '#platform/k8s'
+import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#platform/k8s'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { ensureRegistryClusterService } from './registry-service'
+import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { ensureNetd } from './netd'
 import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
@@ -37,9 +38,16 @@ import { env } from '@yaac/shared/env'
  * Full mode recreates the cluster from scratch (delete + create). `--repair`
  * re-applies only the node fixups that vanish on a node/VM restart
  * (DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
- * touching the cluster itself. Both modes also ensure the pinned gVisor
- * runtime (runsc install + RuntimeClasses — see #lib/k8s/gvisor): idempotent,
- * and the way an existing cluster picks gVisor up on a yaac upgrade.
+ * touching the cluster itself. Both modes also converge the in-cluster
+ * layers an upgrade can change — the gVisor runtime (installer DaemonSet +
+ * RuntimeClasses), the PriorityClasses, netd — which is how an existing
+ * cluster picks them up on a yaac upgrade.
+ *
+ * The gVisor install is NOT a node fixup any more: a DaemonSet reinstalls
+ * it on every node that appears, so a restarted (or replaced) node repairs
+ * itself with nothing to run. What `--repair` still owns is the state that
+ * lives in the kind node CONTAINER — sysctls, TasksMax, the pids limit, the
+ * registry wiring — which has no node-side agent to re-apply it.
  */
 
 /**
@@ -148,6 +156,9 @@ export interface ClusterSetupDeps {
   /** Builds/pushes the netd + Envoy images and applies the DaemonSet.
    *  Injectable for the same reason as exposeRegistry. */
   ensureNetd: () => Promise<void>
+  /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
+   *  Injectable for the same reason as the two above. */
+  ensureGvisorRuntime: () => Promise<void>
   /** Installs the infra/session PriorityClasses. Injectable for the same
    *  reason as the two above. */
   ensurePriorityClasses: () => Promise<void>
@@ -213,6 +224,7 @@ function defaultDeps(): ClusterSetupDeps {
       return host
     },
     ensureNetd,
+    ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
     check: () => runClusterCheck(),
     platform: process.platform,
@@ -286,10 +298,10 @@ export async function runClusterSetup(
     resetClusterCidrCache()
     await deps.ensureRegistry()
     for (const node of nodes) await applyNodeFixups(deps, node)
-    await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await installPriorityClasses(deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
+    await installGvisorRuntime(deps)
     await deployNetd(deps)
   } else {
     await deps.ensureRegistry()
@@ -303,10 +315,10 @@ export async function runClusterSetup(
     await installCalico(deps, cluster)
     const nodes = await kindNodes(deps, cluster)
     for (const node of nodes) await applyNodeFixups(deps, node)
-    await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await installPriorityClasses(deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
+    await installGvisorRuntime(deps)
     await deployNetd(deps)
   }
 
@@ -706,6 +718,33 @@ async function exposeRegistryInCluster(deps: ClusterSetupDeps): Promise<void> {
 async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
   await deps.ensurePriorityClasses()
+}
+
+/**
+ * Apply the gVisor installer DaemonSet and, once it has converged, the
+ * RuntimeClasses — so a freshly-set-up cluster can run sandboxed pods
+ * before any session exists, and so `check`'s gvisor gate has something to
+ * verify. Runs in `--repair` too: it is how a cluster created by an older
+ * yaac picks up a runsc version bump.
+ *
+ * Deliberately NOT fail-soft, unlike netd below. Nothing else installs the
+ * runtime (there is no lazy re-ensure on the session-create path), and
+ * every session pod names a RuntimeClass whose nodeSelector only matches an
+ * installed node — so finishing setup with this broken would trade a clear
+ * error here for every session sitting Pending later.
+ */
+async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
+  deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
+  try {
+    await deps.ensureGvisorRuntime()
+  } catch (err) {
+    throw new ClusterSetupError(
+      'Could not install the gVisor runtime '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}).\n`
+      + `Inspect the installer with: kubectl -n ${k8sNamespace()} logs -l app=${GVISOR_INSTALLER_APP_NAME}\n`
+      + 'Session pods cannot run until it lands runsc on a node and labels it.',
+    )
+  }
 }
 
 /**
