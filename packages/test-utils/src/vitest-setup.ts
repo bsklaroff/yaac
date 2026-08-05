@@ -18,7 +18,15 @@ delete process.env.GIT_WORK_TREE
 // here rather than in unit-setup because e2e/api servers inherit
 // `process.env` too, and the flags are wrong for them for the same reason.
 // Tests that exercise the flags stub them per-case.
-for (const key of ['YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS', 'YAAC_REQUIRE_AUTH'] as const) {
+//
+// YAAC_FORWARD_BIND rides along for the same reason: a remote-hosting host
+// exports the tailnet IP so forwarded dev servers are reachable from other
+// devices, and both suites assume the DEFAULT posture instead — the port
+// unit tests assert the listener lands on loopback, and the e2e forwarding
+// cases dial `127.0.0.1:<hostPort>`, which a tailnet-only listener refuses.
+for (const key of [
+  'YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS', 'YAAC_REQUIRE_AUTH', 'YAAC_FORWARD_BIND',
+] as const) {
   delete process.env[key]
 }
 

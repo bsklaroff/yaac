@@ -127,7 +127,7 @@ the PV; no node automount units, no "mount before kubelet" ordering.
   forwarder that re-exposes it at the unchanged `SSH_AUTH_SOCK` path, and
   the socket dir is a pod-local emptyDir (docs/session-egress.md, "The two
   direct pod→proxy dials").
-- e2e scratch (`e2eTmpBase`) hostPath fixtures become PVC-backed on the
+- e2e scratch (`testTmpBase`) hostPath fixtures become PVC-backed on the
   stock backend.
 
 ### 3. gVisor: `podman exec` install → privileged installer DaemonSet

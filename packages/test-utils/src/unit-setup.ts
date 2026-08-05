@@ -1,3 +1,5 @@
+import { setHermeticScratch } from '#tmp'
+
 // Unit tests are hermetic: they never touch podman or the cluster and
 // their assertions assume a clean host environment. When the suite runs
 // *inside* a yaac session (nested yaac), the session preset leaks
@@ -19,3 +21,9 @@
 for (const key of ['YAAC_NESTED', 'YAAC_DATA_DIR', 'YAAC_K8S_REGISTRY'] as const) {
   delete process.env[key]
 }
+
+// Same hermeticity, applied to scratch: a unit run creates no pod, so its
+// temp dirs need no node visibility and belong in the OS tmpdir (local,
+// fast, OS-reaped) rather than under the data dir that api/e2e need. See
+// testTmpBase().
+setHermeticScratch(true)

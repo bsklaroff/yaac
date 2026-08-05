@@ -41,6 +41,21 @@ export function expandTilde(p: string): string {
 let dataDir: string | null = null
 
 /**
+ * The data dir this install resolves to from the AMBIENT environment alone,
+ * ignoring any {@link setDataDir} override.
+ *
+ * Nothing in the product should want this — use {@link getDataDir}, which
+ * honors the override. It exists for callers that run BEFORE a data dir is
+ * chosen and whose job is to choose where one goes: the test harness picks
+ * its scratch base from here, then creates each test's data dir under it.
+ * Asking `getDataDir()` there would be circular.
+ */
+export function ambientDataDir(): string {
+  if (env.dataDirOverride) return env.dataDirOverride
+  return path.join(os.homedir(), '.yaac')
+}
+
+/**
  * The one physical directory this yaac install owns. It is the INSTALL
  * IDENTITY (1:1 with the server lock — hashed into the cluster label and
  * the web-session cookie name) and, today, the single filesystem every
@@ -52,8 +67,7 @@ let dataDir: string | null = null
  */
 export function getDataDir(): string {
   if (dataDir) return dataDir
-  if (env.dataDirOverride) return env.dataDirOverride
-  return path.join(os.homedir(), '.yaac')
+  return ambientDataDir()
 }
 
 export function setDataDir(dir: string): void {

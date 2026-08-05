@@ -151,11 +151,11 @@ export async function cleanupSessionJobs(): Promise<void> {
  * Creates a temporary data dir and sets it as the yaac data dir.
  * Returns the path for cleanup.
  *
- * NOTE: lives under e2eTmpBase() (os.tmpdir() on a host, the node-shared
- * data dir inside a nested yaac). Session pods hostPath-mount paths under
- * the data dir, so e2e runs against kind need the node to see the host's
- * temp dir (set TMPDIR to a home-dir path or add a kind extraMounts entry
- * for it). `yaac cluster check` verifies the data-dir mount wiring.
+ * NOTE: lives under testTmpBase(), which is the OS tmpdir for a hermetic
+ * unit run and `<ambient data dir>/e2e-tmp` for api/e2e. Session pods
+ * hostPath-mount paths under the data dir, so the api/e2e base has to be
+ * node-visible — that is why it hangs off the data dir, whose visibility
+ * `yaac cluster check` proves on every setup.
  */
 export async function createTempDataDir(): Promise<string> {
   const dir = await e2eMkdtemp('yaac-test-')
