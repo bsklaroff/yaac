@@ -8,7 +8,7 @@ import { setDataDir, findRepoRoot } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
-import { e2eMkdtemp } from '#tmp'
+import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
 const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
 const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli')
@@ -176,22 +176,22 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     } catch {
       // no auth server ran, or it's already gone
     }
-    // Retry the removal: `force` swallows a missing path but not ENOTEMPTY,
-    // and the scratch dir is still live when this runs. A session's worktree
-    // is hostPath-mounted into its pod as /workspace, so a container that has
-    // not finished terminating can create a file in a directory this walk
-    // just emptied; the detached teardown script (cleanupSessionDetached)
-    // outlives the server it was spawned from and is deleting under the same
-    // tree. Both settle in well under a second — a few spaced attempts turn a
-    // teardown race into a slightly slower teardown instead of a failed test.
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await fs.rm(scratchDir, { recursive: true, force: true })
-        return
-      } catch (err) {
-        if (attempt >= 9) throw err
-        await new Promise((r) => setTimeout(r, 200))
-      }
+    // removeScratchTree retries the teardown RACE — `force` swallows a
+    // missing path but not ENOTEMPTY, and the scratch dir is still live when
+    // this runs. A session's worktree is hostPath-mounted into its pod as
+    // /workspace, so a container that has not finished terminating can create
+    // a file in a directory the walk just emptied; the detached teardown
+    // script (cleanupSessionDetached) outlives the server it was spawned from
+    // and is deleting under the same tree. Both settle in well under a second.
+    //
+    // What it does NOT retry is a root-owned leftover, which no amount of
+    // waiting fixes — those come back as paths for us to report.
+    const stuck = await removeScratchTree(scratchDir)
+    if (stuck.length > 0) {
+      console.warn(
+        `[yaac-test] left ${stuck.length} root-owned path(s) behind under `
+        + `${scratchDir}; clearing them needs root:\n  ${stuck.join('\n  ')}`,
+      )
     }
   }
 

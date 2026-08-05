@@ -19,7 +19,7 @@ import {
 import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
 import type { ProxyClientConfig } from '@yaac/server/features/egress/proxy-client'
-import { e2eMkdtemp } from '#tmp'
+import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
 const execFileAsync = promisify(execFile)
 
@@ -168,7 +168,13 @@ export async function createTempDataDir(): Promise<string> {
  * Removes a temp data dir.
  */
 export async function cleanupTempDir(dir: string): Promise<void> {
-  await fs.rm(dir, { recursive: true, force: true })
+  const stuck = await removeScratchTree(dir)
+  if (stuck.length > 0) {
+    console.warn(
+      `[yaac-test] left ${stuck.length} root-owned path(s) behind under ${dir}; `
+      + `clearing them needs root:\n  ${stuck.join('\n  ')}`,
+    )
+  }
 }
 
 /**

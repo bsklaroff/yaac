@@ -62,3 +62,100 @@ export async function e2eMkdtemp(prefix: string): Promise<string> {
   await fs.mkdir(base, { recursive: true })
   return fs.mkdtemp(path.join(base, prefix))
 }
+
+function errnoOf(err: unknown): string | undefined {
+  return (err as NodeJS.ErrnoException | null)?.code
+}
+
+/** Codes that mean "this subtree is not ours to delete" — never retryable. */
+const UNREMOVABLE = new Set(['EACCES', 'EPERM'])
+
+/**
+ * Delete everything under `p` that this process is allowed to, and report
+ * back the paths it could not. Never throws for permission reasons.
+ */
+async function salvageRemove(p: string): Promise<string[]> {
+  let entries
+  try {
+    entries = await fs.readdir(p, { withFileTypes: true })
+  } catch (err) {
+    const code = errnoOf(err)
+    if (code === 'ENOENT') return []
+    if (code === 'ENOTDIR') {
+      try {
+        await fs.rm(p, { force: true })
+        return []
+      } catch {
+        return [p]
+      }
+    }
+    // Cannot even list it: the whole subtree stays.
+    if (UNREMOVABLE.has(code ?? '')) return [p]
+    throw err
+  }
+
+  const stuck: string[] = []
+  for (const entry of entries) {
+    const child = path.join(p, entry.name)
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      stuck.push(...await salvageRemove(child))
+    } else {
+      try {
+        await fs.rm(child, { force: true })
+      } catch (err) {
+        if (!UNREMOVABLE.has(errnoOf(err) ?? '')) throw err
+        stuck.push(child)
+      }
+    }
+  }
+
+  if (stuck.length === 0) {
+    try {
+      await fs.rmdir(p)
+    } catch (err) {
+      const code = errnoOf(err)
+      if (code === 'ENOENT') return []
+      if (!UNREMOVABLE.has(code ?? '')) throw err
+      return [p]
+    }
+  }
+  return stuck
+}
+
+/**
+ * Remove a scratch tree, tolerating subtrees this process cannot delete.
+ *
+ * e2e runs leave root-owned directories under their scratch dirs — observed
+ * as `libpod/` (mode 0700, uid 0, holding podman's `tmp/pause.pid`) in the
+ * worktree of assorted e2e sessions. Scratch is hostPath-mounted into pods,
+ * so anything a pod writes as uid 0 lands on the host owned by root, and
+ * emptying such a directory needs write+execute INSIDE it — which the test
+ * user does not have. A plain recursive remove dies on EACCES.
+ *
+ * (What creates them is not established. It is NOT ordinary session
+ * behavior: a developer's real data dir here holds hundreds of worktrees
+ * and none of them has a `libpod/`. So treat this as a property of the e2e
+ * harness, not a documented product behavior, until someone traces it.)
+ *
+ * Retrying cannot help, which is the distinction this draws: ENOTEMPTY IS a
+ * race worth retrying (a terminating pod, or the detached teardown script,
+ * still writing under a tree we just emptied), while EACCES/EPERM is a
+ * standing fact about ownership. So it retries the former, and for the
+ * latter deletes everything it can and RETURNS what it could not, rather
+ * than failing a test over litter it has no authority to remove.
+ *
+ * Callers should surface a non-empty result: the leftovers need root to
+ * clear, and a growing pile of them is the signal to go find the cause.
+ */
+export async function removeScratchTree(dir: string): Promise<string[]> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true })
+      return []
+    } catch (err) {
+      if (UNREMOVABLE.has(errnoOf(err) ?? '')) return salvageRemove(dir)
+      if (attempt >= 9) throw err
+      await new Promise((r) => setTimeout(r, 200))
+    }
+  }
+}
