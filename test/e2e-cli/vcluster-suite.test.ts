@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
@@ -9,13 +10,25 @@ import {
   listSessionPods,
   type SessionPod,
 } from '@yaac/server/platform/k8s/pods'
-import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
+import {
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '@yaac/server/platform/k8s/kubectl'
 import {
   removeSessionVcluster,
   vclusterName,
   vclusterNamespace,
 } from '@yaac/server/features/cluster/vcluster'
-import { removeProjectRegistry } from '@yaac/server/features/cluster/project-registry'
+import {
+  ensureProjectRegistry,
+  gcOrphanProjectRegistries,
+  projectRegistryHost,
+  projectRegistryHostname,
+  projectRegistryName,
+  removeProjectRegistry,
+} from '@yaac/server/features/cluster/project-registry'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -42,9 +55,29 @@ import {
 /** Mirrored by the global setup (k8s/vcluster/images.json) — runnable. */
 const INNER_IMAGE = 'localhost:5001/library/alpine:3.20'
 
-// createSession refuses virtualCluster inside a nested yaac (no
-// vcluster-in-vcluster), so these can't run from within a session.
+/**
+ * Everything a virtualCluster session is: the vcluster comes up, its
+ * synced pods inherit a fail-closed policy floor no tenant object can
+ * widen, the VAP guards hostPath and the gVisor tier, the project's
+ * registry serves the session, and session stop sweeps the vcluster
+ * while the (per-project, not per-session) registry survives to be GC'd
+ * separately.
+ *
+ * Two sessions, created ONCE in parallel, carry all of it. `PRIMARY` is
+ * the subject of every per-session assertion; `SIBLING` exists so the
+ * one-vcluster-per-namespace regression and the cross-session isolation
+ * gate have a second, genuinely concurrent vcluster to prove against.
+ * Provisioning a vcluster is the most expensive fixture in the suite, so
+ * the tests below share these two rather than creating their own — a
+ * test that needs a session torn down runs last.
+ *
+ * createSession refuses virtualCluster inside a nested yaac (no
+ * vcluster-in-vcluster), so none of this can run from within a session.
+ */
 describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server + real cluster)', () => {
+  const PRIMARY = 'vc-primary'
+  const SIBLING = 'vc-sibling'
+
   let testEnv: YaacTestEnv
   let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
@@ -53,10 +86,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
   const createdSlugs: string[] = []
   const createdVclusters: string[] = []
 
-  beforeAll(async () => {
-    await requirePodman()
-    await requireCluster()
-  })
+  let primary: SessionPod
+  let sibling: SessionPod
 
   async function seedCredentials(): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, '.credentials')
@@ -71,7 +102,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     }) + '\n')
   }
 
-  async function setupProject(slug: string, config: object): Promise<void> {
+  async function setupProject(slug: string): Promise<void> {
     await seedMockGitRepo(mockGit!, slug, {
       files: { 'README.md': '# demo\n' },
     })
@@ -88,7 +119,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     await fs.mkdir(configDir, { recursive: true })
     await fs.writeFile(
       path.join(configDir, 'yaac-config.json'),
-      JSON.stringify(config, null, 2) + '\n',
+      JSON.stringify({ virtualCluster: true }, null, 2) + '\n',
     )
     createdSlugs.push(slug)
   }
@@ -126,7 +157,10 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     throw new Error(`in-session ${cmd.join(' ')} never matched; last output:\n${last}`)
   }
 
-  beforeEach(async () => {
+  beforeAll(async () => {
+    await requirePodman()
+    await requireCluster()
+
     testEnv = await createYaacTestEnv()
     await seedCredentials()
     await fs.writeFile(
@@ -149,9 +183,18 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
-  })
 
-  afterEach(async () => {
+    for (const slug of [PRIMARY, SIBLING]) await setupProject(slug)
+    // Concurrent on purpose: the one-vcluster-per-namespace regression
+    // only reproduces when the second stack provisions against a live
+    // first one, and creating them together costs about what creating
+    // one costs.
+    const [a, b] = await Promise.all([createSession(PRIMARY), createSession(SIBLING)])
+    primary = a
+    sibling = b
+  }, 900_000)
+
+  afterAll(async () => {
     if (server) await server.stop()
     server = null
     await cleanupSessionJobs()
@@ -165,27 +208,62 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     mockLLM = null
     mockGit = null
     await testEnv.cleanup()
-  })
+  }, 300_000)
 
-  it('runs a vcluster: inner nodes/pods, policy inheritance, VAP guard, full teardown', async () => {
-    const slug = 'vc-session'
-    await setupProject(slug, { virtualCluster: true })
-    const session = await createSession(slug)
-    const name = session.jobName
-    const vcName = vclusterName(session.sessionId)
+  it('brings two concurrent vclusters up, each in its own host namespace', async () => {
+    // Regression for the one-vcluster-per-namespace constraint: each
+    // session's vcluster gets its own host namespace, so two can coexist.
+    expect(primary.sessionId).not.toBe(sibling.sessionId)
+
+    // Both control planes must reach Ready (a crash on the second is the
+    // failure mode this fixes). `kubectl get nodes` from each session only
+    // works once its own vcluster API serves — and the kubeconfig mount +
+    // KUBECONFIG env point at the API's service-DNS FQDN on 8443, resolved
+    // via the proxy's split-horizon DNS, so a Ready node also proves that
+    // whole path.
+    for (const s of [primary, sibling]) {
+      const out = await untilOutput(
+        s.jobName, ['kubectl', 'get', 'nodes', '--no-headers'],
+        (o) => o.includes('Ready'), 180_000,
+      )
+      expect(out, `vcluster for ${s.jobName} should serve`).toContain('Ready')
+    }
+
+    // The two vclusters live in distinct host namespaces, each Ready.
+    expect(vclusterNamespace(vclusterName(primary.sessionId)))
+      .not.toBe(vclusterNamespace(vclusterName(sibling.sessionId)))
+    for (const s of [primary, sibling]) {
+      const vcNs = vclusterNamespace(vclusterName(s.sessionId))
+      const dep = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
+        'get', 'deployment', vclusterName(s.sessionId), '-n', vcNs,
+      ])
+      expect(dep?.status?.readyReplicas ?? 0).toBeGreaterThanOrEqual(1)
+    }
+  }, 900_000)
+
+  it('denies a session dialing another session\'s vcluster API', async () => {
+    // Cross-session isolation (issue #17). With the blanket in-cluster 8443
+    // allowance gone from the session-egress policy, a session's only hole
+    // to a vcluster API is its own per-session NetworkPolicy — the primary
+    // dialing the sibling's API must be dropped (curl times out), even
+    // though the sibling's API demonstrably serves (above).
+    const bName = vclusterName(sibling.sessionId)
+    const bApiHost = `${bName}.${vclusterNamespace(bName)}.svc.cluster.local`
+    const { stdout: cross } = await execInJob(primary.jobName, [
+      'sh', '-c',
+      `curl -ksS --max-time 5 https://${bApiHost}:${VCLUSTER_API_PORT}/ >/dev/null 2>&1`
+      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
+    ], { timeout: 30_000 })
+    expect(cross).toContain('CROSS_BLOCKED')
+  }, 300_000)
+
+  it('syncs an inner pod under a policy floor no tenant NetworkPolicy widens', async () => {
+    const name = primary.jobName
+    const vcName = vclusterName(primary.sessionId)
     // Synced pods + the vcluster control plane live in the vcluster's own
     // host namespace (one vcluster per namespace); the session pod stays
     // in the install namespace.
     const vcNs = vclusterNamespace(vcName)
-
-    // The kubeconfig mount + KUBECONFIG env point at the API's service-DNS
-    // FQDN on 8443 (resolved via the proxy's split-horizon DNS) —
-    // `kubectl get nodes` from inside the session shows the synced host node.
-    const nodesOut = await untilOutput(
-      name, ['kubectl', 'get', 'nodes', '--no-headers'],
-      (out) => out.includes('Ready'), 120_000,
-    )
-    expect(nodesOut).toContain('Ready')
 
     // Run an inner pod from the mirrored image; the syncer lands it in
     // the host namespace under the VAP guard and the synced-pods policy.
@@ -291,6 +369,12 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
       'sh', '-c', 'nc -w 4 -z 10.96.0.1 443 && echo REACHED || echo BLOCKED',
     ], { timeout: 30_000 })
     expect(stillApiserver, 'allow-all tenant NP must not grant in-cluster lateral egress').toContain('BLOCKED')
+  }, 900_000)
+
+  it('denies a hostPath escape and admits cap grants only behind the gvisor tier', async () => {
+    const name = primary.jobName
+    const vcName = vclusterName(primary.sessionId)
+    const vcNs = vclusterNamespace(vcName)
 
     // VAP hostPath rejection: an inner pod mounting outside the session
     // nested data dir never reaches the host — the syncer surfaces the
@@ -353,12 +437,139 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
         }],
       },
     })).rejects.toThrow(/require the gvisor runtime tier/)
+  }, 900_000)
+
+  it('serves the project registry by svc name, isolated per project and pullable by the node', async () => {
+    const name = primary.jobName
+    const regName = projectRegistryName(PRIMARY)
+    const regHost = projectRegistryHost(PRIMARY)
+
+    // --- Appears, with an allocator-assigned (no longer pinned) ClusterIP ---
+    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+      'get', 'service', regName, '-n', k8sNamespace(),
+    ])
+    const regVip = svc?.spec?.clusterIP
+    expect(regVip).toBeTruthy()
+
+    // The proxy's split-horizon DNS forwards `*.svc` to cluster DNS, so the
+    // registry name resolves to its live ClusterIP from inside the session —
+    // no hostAliases, no pin.
+    const { stdout: hostsOut } = await execInJob(name, [
+      'getent', 'hosts', projectRegistryHostname(PRIMARY),
+    ])
+    expect(hostsOut).toContain(regVip)
+
+    // The per-project sessions NetworkPolicy is the SOLE hole through the
+    // session-egress policy's default-deny (no blanket in-cluster allowance
+    // anymore): plain-HTTP :5000 answers from inside the session.
+    const { stdout: ping } = await execInJob(name, [
+      'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/ >/dev/null && echo REG_OK`,
+    ], { timeout: 30_000 })
+    expect(ping).toContain('REG_OK')
+
+    // --- Cross-project isolation (issue #17) ---
+    // Stand up a SECOND project's registry (no session needed) and assert
+    // this project's session cannot reach it: nothing admits the flow —
+    // the session-egress policy has no in-cluster allowance, the other
+    // project's sessions NetworkPolicy does not select this pod, and the
+    // other registry's ingress policy does not admit it. curl must time out
+    // (policy drop), not answer.
+    const otherSlug = 'vc-registry-other'
+    createdSlugs.push(otherSlug)
+    await ensureProjectRegistry(otherSlug)
+    const { stdout: cross } = await execInJob(name, [
+      'sh', '-c',
+      `curl -sS --max-time 5 http://${projectRegistryHost(otherSlug)}/v2/ >/dev/null 2>&1`
+      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
+    ], { timeout: 30_000 })
+    expect(cross).toContain('CROSS_BLOCKED')
+
+    // The insecure drop-in scopes plain-HTTP trust to exactly this host.
+    // Written to /etc/containers (the ROOTFUL engine's config dir) by
+    // session-create via sudo — the per-user path is dead since the
+    // rootless engine was dropped.
+    const { stdout: conf } = await execInJob(name, [
+      'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
+    ])
+    expect(conf).toContain(`location = "${regHost}"`)
+    expect(conf).toContain('insecure = true')
+
+    // --- Push from the session by svc name ---
+    // The registry is already project-scoped, so the ref needs no
+    // per-project repo prefix — push straight to <host>/probe:v1.
+    await execInJob(name, [
+      'sh', '-c',
+      'mkdir -p /tmp/p && cd /tmp/p && '
+      + 'echo reg-probe > marker && '
+      + 'printf "FROM scratch\\nCOPY marker /marker\\n" > Dockerfile && '
+      + `docker build -t ${regHost}/probe:v1 . && `
+      + `docker push ${regHost}/probe:v1`,
+    ], { timeout: 240_000 })
+    const { stdout: tags } = await execInJob(name, [
+      'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/probe/tags/list`,
+    ], { timeout: 30_000 })
+    expect((JSON.parse(tags) as { tags: string[] }).tags).toContain('v1')
+
+    // --- Node containerd pulls the pushed ref via hosts.toml ---
+    // The image is FROM scratch (no entrypoint), so a SUCCESSFUL pull
+    // ends in a container-create error — what this asserts is that the
+    // pull itself never fails (ErrImagePull would mean the node could
+    // not resolve the svc host to the pinned-VIP URL).
+    const podName = `reg-pull-probe-${crypto.randomBytes(3).toString('hex')}`
+    await kubectlWithRetry([
+      'run', podName, `--image=${regHost}/probe:v1`,
+      '--restart=Never', '-n', k8sNamespace(),
+    ])
+    try {
+      interface PodStatus {
+        status?: {
+          containerStatuses?: Array<{
+            state?: {
+              waiting?: { reason?: string }
+              terminated?: object
+            }
+          }>
+        }
+      }
+      const deadline = Date.now() + 120_000
+      let verdict = ''
+      while (Date.now() < deadline && !verdict) {
+        const pod = await kubectlGetJson<PodStatus>([
+          'get', 'pod', podName, '-n', k8sNamespace(),
+        ])
+        const state = pod?.status?.containerStatuses?.[0]?.state
+        const waiting = state?.waiting?.reason ?? ''
+        if (waiting === 'ErrImagePull' || waiting === 'ImagePullBackOff') {
+          verdict = 'PULL_FAILED'
+        } else if (
+          state?.terminated
+          || ['CreateContainerError', 'RunContainerError', 'CrashLoopBackOff'].includes(waiting)
+        ) {
+          verdict = 'PULLED'
+        } else {
+          await new Promise((r) => setTimeout(r, 1000))
+        }
+      }
+      expect(verdict).toBe('PULLED')
+    } finally {
+      await kubectlWithRetry([
+        'delete', 'pod', podName, '-n', k8sNamespace(), '--ignore-not-found', '--grace-period=1',
+      ]).catch(() => { /* best-effort */ })
+    }
+  }, 900_000)
+
+  // Runs last on purpose: it stops PRIMARY, which every test above needs
+  // alive.
+  it('sweeps the vcluster on session stop, while the project registry persists and GCs separately', async () => {
+    const vcName = vclusterName(primary.sessionId)
+    const vcNs = vclusterNamespace(vcName)
+    const regName = projectRegistryName(PRIMARY)
 
     // Full teardown: session delete deletes the vcluster's whole
     // namespace (sweeping the control plane, synced pods, policies, and
     // kubeconfig secret) plus the cluster-scoped objects and the session
     // NetworkPolicy. The namespace disappearing is the definitive signal.
-    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', primary.sessionId)
     expect(delExit).toBe(0)
     const deadline = Date.now() + 300_000
     for (;;) {
@@ -373,50 +584,23 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
       }
       await new Promise((r) => setTimeout(r, 3000))
     }
-  }, 900_000)
 
-  it('runs two virtualCluster sessions in parallel — both vclusters come up', async () => {
-    // Regression for the one-vcluster-per-namespace constraint: each
-    // session's vcluster gets its own host namespace, so two can coexist.
-    const slugs = ['vc-par-a', 'vc-par-b']
-    for (const slug of slugs) await setupProject(slug, { virtualCluster: true })
-    const [a, b] = await Promise.all(slugs.map((s) => createSession(s)))
-    expect(a.sessionId).not.toBe(b.sessionId)
+    // --- The registry is per-PROJECT, so it outlives the session ---
+    const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
+      'get', 'deployment', regName, '-n', k8sNamespace(),
+    ])
+    expect(depAfterDelete?.metadata?.name).toBe(regName)
 
-    // Both control planes must reach Ready (a crash on the second is the
-    // failure mode this fixes). `kubectl get nodes` from each session only
-    // works once its own vcluster API serves.
-    for (const s of [a, b]) {
-      const out = await untilOutput(
-        s.jobName, ['kubectl', 'get', 'nodes', '--no-headers'],
-        (o) => o.includes('Ready'), 180_000,
-      )
-      expect(out, `vcluster for ${s.jobName} should serve`).toContain('Ready')
-    }
-
-    // The two vclusters live in distinct host namespaces, each Ready.
-    expect(vclusterNamespace(vclusterName(a.sessionId)))
-      .not.toBe(vclusterNamespace(vclusterName(b.sessionId)))
-    for (const s of [a, b]) {
-      const vcNs = vclusterNamespace(vclusterName(s.sessionId))
-      const dep = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
-        'get', 'deployment', vclusterName(s.sessionId), '-n', vcNs,
-      ])
-      expect(dep?.status?.readyReplicas ?? 0).toBeGreaterThanOrEqual(1)
-    }
-
-    // --- Cross-session isolation (issue #17) ---
-    // With the blanket in-cluster 8443 allowance gone from the session-egress
-    // policy, a session's only hole to a vcluster API is its own per-session
-    // NetworkPolicy — session A dialing session B's API must be dropped
-    // (curl times out), even though B's API demonstrably serves (above).
-    const bName = vclusterName(b.sessionId)
-    const bApiHost = `${bName}.${vclusterNamespace(bName)}.svc.cluster.local`
-    const { stdout: cross } = await execInJob(a.jobName, [
-      'sh', '-c',
-      `curl -ksS --max-time 5 https://${bApiHost}:${VCLUSTER_API_PORT}/ >/dev/null 2>&1`
-      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
-    ], { timeout: 30_000 })
-    expect(cross).toContain('CROSS_BLOCKED')
+    // --- GCs once the project dir is gone (server-start sweep) ---
+    await fs.rm(path.join(testEnv.dataDir, 'projects', PRIMARY), { recursive: true, force: true })
+    await gcOrphanProjectRegistries()
+    const svcAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([
+      'get', 'service', regName, '-n', k8sNamespace(),
+    ])
+    expect(svcAfterGc).toBeNull()
+    const depAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([
+      'get', 'deployment', regName, '-n', k8sNamespace(),
+    ])
+    expect(depAfterGc).toBeNull()
   }, 900_000)
 })

@@ -589,34 +589,33 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     expect(await egressWorks(podA)).toBe(true)
   }, 600_000)
 
-  it('re-asserts a PREROUTING jump deleted out from under it', async () => {
-    // A deleted jump is invisible in netd's rendering — the desired chain
-    // is byte-identical — so nothing but an unconditional re-assert every
-    // pass would ever notice it was gone.
+  it('re-asserts a deleted PREROUTING jump and refills a flushed chain, without restarting', async () => {
+    // Two independent self-heal paths, damaged together so one reconcile
+    // period covers both — the wait, not the damage, is what these cost,
+    // and netd's pass is unconditional so repairing both at once proves
+    // exactly what repairing them separately did:
+    //   - a deleted jump is invisible in netd's rendering (the desired
+    //     chain is byte-identical), so nothing but an unconditional
+    //     re-assert every pass would ever notice it was gone;
+    //   - the write-only-on-change memo describes what netd WROTE, not
+    //     what the kernel kept, so only the periodic pass discarding it
+    //     heals a flushed chain.
     const chain = await redirectChain()
     await netdExec(['iptables-legacy', '-t', 'nat', '-D', 'PREROUTING', '-j', chain])
-    expect((await preroutingJumps()).some((l) => l.endsWith(`-j ${chain}`))).toBe(false)
-
-    const deadline = Date.now() + 120_000
-    for (;;) {
-      if ((await preroutingJumps()).some((l) => l.endsWith(`-j ${chain}`))) break
-      if (Date.now() >= deadline) throw new Error('netd never re-asserted its PREROUTING jump')
-      await new Promise((r) => setTimeout(r, 2000))
-    }
-    expect(await egressWorks(podA)).toBe(true)
-  }, 600_000)
-
-  it('refills its chain after an external flush, without restarting', async () => {
-    // The write-only-on-change memo describes what netd WROTE, not what
-    // the kernel kept: only the periodic pass discarding it heals this.
-    const chain = await redirectChain()
     await netdExec(['iptables-legacy', '-t', 'nat', '-F', chain])
+    expect((await preroutingJumps()).some((l) => l.endsWith(`-j ${chain}`))).toBe(false)
     expect((await redirectChainRules()).filter((l) => l.includes('-j DNAT'))).toEqual([])
 
     const deadline = Date.now() + 120_000
     for (;;) {
-      if ((await redirectChainRules()).some((l) => l.includes('-j DNAT'))) break
-      if (Date.now() >= deadline) throw new Error('netd never refilled its flushed chain')
+      const jumpBack = (await preroutingJumps()).some((l) => l.endsWith(`-j ${chain}`))
+      const rulesBack = (await redirectChainRules()).some((l) => l.includes('-j DNAT'))
+      if (jumpBack && rulesBack) break
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `netd never healed its chain (jump re-asserted: ${jumpBack}, rules refilled: ${rulesBack})`,
+        )
+      }
       await new Promise((r) => setTimeout(r, 2000))
     }
     expect(await egressWorks(podA)).toBe(true)

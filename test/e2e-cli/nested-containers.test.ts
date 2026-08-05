@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -131,11 +131,16 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
   let mockGit: MockGit | null = null
   let mockRegistry: MockUpstreamRegistry | null = null
   let serverEnv: NodeJS.ProcessEnv
-
-  beforeAll(async () => {
-    await requirePodman()
-    await requireCluster()
-  })
+  /**
+   * One nested-containers session shared by the network-path and
+   * CA-bundle cases below. Neither mutates state the other reads, and
+   * provisioning a nested-containers session is expensive enough that
+   * one apiece was the bulk of this file's runtime. The layer-cache case
+   * still creates its own pair — it asserts on what survives a session
+   * DELETE, so it cannot borrow a live one.
+   */
+  let sharedJob = ''
+  let sharedSessionId = ''
 
   async function seedCredentials(): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, '.credentials')
@@ -202,7 +207,13 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     throw new Error(`job ${jobName} still exists after ${timeoutMs}ms`)
   }
 
-  beforeEach(async () => {
+  // One server, one mock set, one upstream registry for the whole file:
+  // every test here wants the same wiring, and standing it up per test
+  // cost three server spawns and nine mock-pod starts for three tests.
+  beforeAll(async () => {
+    await requirePodman()
+    await requireCluster()
+
     testEnv = await createYaacTestEnv()
     await seedCredentials()
     await fs.writeFile(
@@ -228,9 +239,17 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
-  })
 
-  afterEach(async () => {
+    await setupProject('nested-shared')
+    const shared = await createSession('nested-shared')
+    sharedJob = shared.jobName
+    sharedSessionId = shared.sessionId
+  }, 900_000)
+
+  afterAll(async () => {
+    if (sharedSessionId) {
+      await runYaac(serverEnv, 'worktree', 'stop', sharedSessionId).catch(() => { /* best-effort */ })
+    }
     if (server) await server.stop()
     server = null
     await cleanupSessionJobs()
@@ -239,7 +258,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     mockGit = null
     mockRegistry = null
     await testEnv.cleanup()
-  })
+  }, 300_000)
 
   it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
     const slug = 'nested-cache'
@@ -356,11 +375,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
   }, 900_000)
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {
-    const slug = 'nested-net'
-    await setupProject(slug)
-    const session = await createSession(slug)
-    const name = session.jobName
-
+    const name = sharedJob
     // Helper: poll an in-session curl until it succeeds (the container
     // takes a beat to bind after `docker run`/`compose up`).
     const curlUntil = async (url: string): Promise<string> => {
@@ -476,8 +491,6 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     }
     expect(blockedFailed).toBe(true)
     expect(Date.now() - started).toBeLessThan(60_000)
-
-    await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
   }, 900_000)
 
   it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {
@@ -491,10 +504,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     // nested containers AND `docker build` RUN steps — the exact place a
     // nested Dockerfile's `RUN curl ...` needs it. See
     // docs/nested-containers.md.
-    const slug = 'nested-curl'
-    await setupProject(slug)
-    const session = await createSession(slug)
-    const name = session.jobName
+    const name = sharedJob
 
     // (1) Functional: the session's own curl (OpenSSL-linked, honors
     // CURL_CA_BUNDLE) reaches a MITM'd host. github.com is allowlisted and
@@ -569,7 +579,5 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
       + `printf '${dockerfile}' > Dockerfile && `
       + 'docker build --no-cache -t yaac-curl-trust:v1 .',
     ], { timeout: 180_000, maxAttempts: 1 })
-
-    await runYaac(serverEnv, 'worktree', 'stop', session.sessionId)
   }, 900_000)
 })

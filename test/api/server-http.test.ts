@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -24,13 +24,17 @@ describe('yaac server HTTP surface (real server)', () => {
   let server: SpawnedServer
   let client: ReturnType<typeof makeServerApiClient>
 
-  beforeEach(async () => {
+  // One server for the file: every case below is a pure read of the
+  // HTTP surface (auth rejections, empty lists, NOT_FOUND paths) and
+  // none mutates server state, so a spawn apiece bought nothing but a
+  // ~2s tax per assertion.
+  beforeAll(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer(testEnv.env)
     client = makeServerApiClient(server)
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
     await server.stop()
     await testEnv.cleanup()
   })

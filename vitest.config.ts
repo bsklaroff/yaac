@@ -17,6 +17,10 @@ import { defineConfig } from 'vitest/config'
 // output-form (.js) targets in the package's exports map.
 const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
 const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
+// api/e2e only: drops each file's test namespace as it finishes, so a run
+// doesn't accumulate one netd DaemonSet per completed file on the single
+// node the remaining files still have to share.
+const CLUSTER_SETUP = [...SETUP, './packages/test-utils/src/cluster-setup.ts']
 
 /** Machine-readable record of the last run — see the `reporters` note below.
  *  `scripts/test-failures.ts` renders the failures out of it. */
@@ -91,7 +95,7 @@ export default defineConfig({
         test: {
           name: 'api',
           include: ['test/api/**/*.test.ts'],
-          setupFiles: SETUP,
+          setupFiles: CLUSTER_SETUP,
           // Image pre-builds live on the api/e2e projects, not the root:
           // `extends: true` would propagate a root globalSetup into every
           // unit project (each of which runs it through its own vite
@@ -108,7 +112,7 @@ export default defineConfig({
             'test/e2e/**/*.test.ts',
             'test/e2e-cli/**/*.test.ts',
           ],
-          setupFiles: SETUP,
+          setupFiles: CLUSTER_SETUP,
           globalSetup: ['test/global-setup.ts'],
           // Serialize e2e files: the cross-worker server mutex already
           // funnels server-backed work through one at a time, so worker
