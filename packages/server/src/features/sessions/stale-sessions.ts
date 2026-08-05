@@ -50,7 +50,26 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  const { running, stale, indeterminate, terminating } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
+  const { running, stale: staleAll, indeterminate, terminating } =
+    await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
+
+  // Sessions this process is still creating. A create owns its pod's whole
+  // lifecycle, so every sweep below exempts one regardless of age: the grace
+  // window alone bounds nothing on a host where the image pull or the
+  // hostPath mounts outlast it, and reaping mid-create deletes the staged
+  // session dir out from under the starting pod — after which its Job can
+  // never mount and create fails on every retry. A create that has already
+  // failed is not still running: its row lingers (no TTL) until the user
+  // dismisses it, and its own rollback has torn down whatever it left, so
+  // that row must not shield anything from the reaper.
+  const provisioningIds = new Set(
+    listProvisioning().filter((p) => p.error === undefined).map((p) => p.worktreeId),
+  )
+
+  // A pod that has not reached Running yet — pulling its image, mounting its
+  // hostPaths — reads as stopped to the classifier, which derives
+  // `pod-stopped` from the terminal state it does not have.
+  const stale = staleAll.filter((s) => !s.sessionId || !provisioningIds.has(s.sessionId))
 
   // Surface the near-miss: a running pod we deliberately did NOT reap
   // because its tmux probe was inconclusive (transient kubectl-exec
@@ -74,7 +93,6 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // this process is still running is exempt regardless of age — its pane
   // is legitimately the placeholder for as long as provisioning takes,
   // and the grace only bounds the crashed-create case.
-  const provisioningIds = new Set(listProvisioning().map((p) => p.worktreeId))
   const placeholderStale: StaleSessionInfo[] = []
   await Promise.all(running.map(async (p) => {
     if (!p.projectSlug || !p.sessionId) return
@@ -89,13 +107,16 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
 
   // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
   // invisible to the pod-based classifier, so cross-reference the Job
-  // list and reap any job past the grace window with no backing pod.
+  // list and reap any job past the grace window with no backing pod. A
+  // create in flight is exempt here too — between the Job apply and the
+  // kubelet admitting its pod, a slow create looks exactly like an orphan.
   const orphanTargets: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
   try {
     const jobs = await (snapshot ? snapshot.jobs() : listSessionJobs())
     const podSessionIds = new Set(pods.map((p) => p.sessionId))
     for (const j of jobs) {
       if (podSessionIds.has(j.sessionId)) continue
+      if (provisioningIds.has(j.sessionId)) continue
       if (nowMs - j.createdAtMs < graceMs) continue
       orphanTargets.push({ jobName: j.jobName, projectSlug: j.projectSlug, sessionId: j.sessionId })
     }
@@ -114,6 +135,11 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.sessionId) continue
     if (isSessionTerminating(p.sessionId)) continue
+    // create's retry loop deletes the half-started Job itself before the next
+    // attempt, which leaves exactly this shape: a terminating pod nothing is
+    // marking. Tearing it down here runs the full teardown — session dir
+    // included — against a create that is about to retry into it.
+    if (provisioningIds.has(p.sessionId)) continue
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
     stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId })

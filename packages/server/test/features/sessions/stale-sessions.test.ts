@@ -128,6 +128,52 @@ describe('reconcileStaleSessions', () => {
     expect(loggedLines()).toContain('pod stopped: oom (exit code 137)')
   })
 
+  it('keeps a not-yet-Running pod past grace while its create is still provisioning', async () => {
+    // A pod still pulling its image or mounting its hostPaths carries no
+    // terminal state, so the classifier reads it as `pod-stopped`. Reaping
+    // it deletes the session dir the starting pod is mounting.
+    mockListPods.mockResolvedValue([pod('starting-1', false)])
+    mockListJobs.mockResolvedValue([
+      { jobName: 'yaac-proj-starting-1', sessionId: 'starting-1', projectSlug: 'proj', createdAtMs: 1 },
+    ])
+    mockListProvisioning.mockReturnValue([
+      { worktreeId: 'starting-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
+    ])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('reaps a not-yet-Running pod once its create has failed', async () => {
+    // A failed row lingers until dismissed, so it must not shield the
+    // session the create already rolled back.
+    mockListPods.mockResolvedValue([pod('failed-1', false)])
+    mockListProvisioning.mockReturnValue([
+      { worktreeId: 'failed-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', error: 'pod never started', createdAt: '2026-08-01 00:00:00' },
+    ])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'failed-1', cause: { reason: 'pod-stopped' } }),
+    )
+  })
+
+  it('keeps an orphan Job whose pod has not been admitted yet while its create is in flight', async () => {
+    mockListPods.mockResolvedValue([])
+    mockListJobs.mockResolvedValue([
+      { jobName: 'yaac-proj-pending-1', sessionId: 'pending-1', projectSlug: 'proj', createdAtMs: 1 },
+    ])
+    mockListProvisioning.mockReturnValue([
+      { worktreeId: 'pending-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
+    ])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
   it('does NOT reap on an inconclusive probe, and logs the near-miss', async () => {
     mockListPods.mockResolvedValue([pod('blip-1')])
     mockProbe.mockResolvedValue('unknown' as TmuxLiveness)
@@ -166,6 +212,19 @@ describe('reconcileStaleSessions', () => {
       }),
     )
     expect(loggedLines()).toContain('terminating out-of-band past grace')
+  })
+
+  it('keeps a terminating pod past grace while its create is still provisioning', async () => {
+    // create's own retry loop deletes the Job between attempts; the pod it
+    // is about to recreate must not be torn down underneath it.
+    mockListPods.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
+    mockListProvisioning.mockReturnValue([
+      { worktreeId: 'retrying-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
+    ])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
