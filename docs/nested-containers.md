@@ -92,8 +92,12 @@ One salvage is two sudo-gated execs:
    the pod's ledger of refs it has already pushed or pulled.
 2. **Push** — the server plans `id → destination` pairs from that survey
    and hands them to a push script as validated argv. Each named image
-   goes under its own name (`<registry>/<repo>:<tag>`), and its ancestor
-   chain goes into the SAME repo under `yaac-cache-<tag>-<n>` tags: those
+   goes under its own name (`<registry>/<repo>:<tag>`), stripped of
+   podman's `localhost/` local-registry prefix so that one image is one
+   repo whichever side pushed it — the server's own pushes into this
+   registry use the bare tag, and the pull side's restore round-trips
+   back through the prefix. Its ancestor chain goes into the SAME repo
+   under `yaac-cache-<tag>-<n>` tags: those
    intermediates are what a step-by-step `docker build` matches, and
    tagging them per named image keeps the tag set bounded — a rebuilt
    `app:v1` overwrites its own chain tags instead of adding a generation.

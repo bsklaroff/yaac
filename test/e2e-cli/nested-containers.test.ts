@@ -319,10 +319,15 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const { stdout: catalog } = await execInJob(session2.jobName, [
       'sh', '-c', `curl -fsS --max-time 20 http://${registryHost}/v2/_catalog`,
     ], { timeout: 30_000 })
-    expect(catalog).toContain('localhost/yaac-cache-probe')
+    // Under its CANONICAL repo: podman reports the local name as
+    // `localhost/yaac-cache-probe:v1`, and pushing that prefix verbatim
+    // would give the image a second repo alongside the bare one every
+    // server-side push uses.
+    expect(catalog).toContain('"yaac-cache-probe"')
+    expect(catalog).not.toContain('localhost/yaac-cache-probe')
     const { stdout: tags } = await execInJob(session2.jobName, [
       'sh', '-c',
-      `curl -fsS --max-time 20 http://${registryHost}/v2/localhost/yaac-cache-probe/tags/list`,
+      `curl -fsS --max-time 20 http://${registryHost}/v2/yaac-cache-probe/tags/list`,
     ], { timeout: 30_000 })
     expect(tags).toContain('"v1"')
     expect(tags).toContain('"yaac-cache-v1-1"')
