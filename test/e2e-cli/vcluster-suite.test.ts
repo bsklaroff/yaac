@@ -185,13 +185,18 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     server = await spawnYaacServer(serverEnv)
 
     for (const slug of [PRIMARY, SIBLING]) await setupProject(slug)
-    // Concurrent on purpose: the one-vcluster-per-namespace regression
-    // only reproduces when the second stack provisions against a live
-    // first one, and creating them together costs about what creating
-    // one costs.
-    const [a, b] = await Promise.all([createSession(PRIMARY), createSession(SIBLING)])
-    primary = a
-    sibling = b
+    // Sequential, NOT Promise.all. The one-vcluster-per-namespace
+    // regression needs the second stack to provision against a live first
+    // one, which this gives; creating both at once additionally races them
+    // on the install-wide objects a first vcluster session brings up
+    // (`ensureActivator` kubectl-applies the yaac-vc-activator
+    // ServiceAccount), and in a cold namespace both creators decide to
+    // create it — the loser's `worktree create` exits 1 with
+    // AlreadyExists. A throwing beforeAll surfaces as "file failed, every
+    // test skipped" with no per-test error, which is near-undebuggable
+    // from a CI log.
+    primary = await createSession(PRIMARY)
+    sibling = await createSession(SIBLING)
   }, 900_000)
 
   afterAll(async () => {
@@ -249,11 +254,23 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     // though the sibling's API demonstrably serves (above).
     const bName = vclusterName(sibling.sessionId)
     const bApiHost = `${bName}.${vclusterNamespace(bName)}.svc.cluster.local`
-    const { stdout: cross } = await execInJob(primary.jobName, [
-      'sh', '-c',
-      `curl -ksS --max-time 5 https://${bApiHost}:${VCLUSTER_API_PORT}/ >/dev/null 2>&1`
-      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
-    ], { timeout: 30_000 })
+    // Polled, not sampled once. NetworkPolicy programming is eventually
+    // consistent, so a dial issued before the sibling's policy lands on
+    // the node reaches the API and reports CROSS_REACHED — a false
+    // failure this assertion hit intermittently when it depended on
+    // whatever incidental delay preceded it. Waiting for the deny to
+    // appear is the real claim ("nothing admits this flow"); it either
+    // converges closed or the test fails on the deadline.
+    const cross = await untilOutput(
+      primary.jobName,
+      [
+        'sh', '-c',
+        `curl -ksS --max-time 5 https://${bApiHost}:${VCLUSTER_API_PORT}/ >/dev/null 2>&1`
+        + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
+      ],
+      (out) => out.includes('CROSS_BLOCKED'),
+      120_000,
+    )
     expect(cross).toContain('CROSS_BLOCKED')
   }, 300_000)
 
