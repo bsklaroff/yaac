@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -14,6 +16,43 @@ import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/co
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
 const execFileAsync = promisify(execFile)
+
+const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+
+/**
+ * Build the CLI bundle the suites spawn (`ENTRY` in
+ * packages/test-utils/src/cli.ts). They run dist/cli.js rather than the
+ * source under tsx because a fresh process pays tsx's transpile every time —
+ * seconds per spawn, minutes per run — so the bundle has to exist and has to
+ * be current before any worker starts. Building it here, unconditionally, is
+ * what makes "the suite tests stale dist/" unrepresentable: an incremental
+ * tsup pass is ~200ms and the asset copies a few seconds.
+ *
+ * Assets, not just cli.js: the bundle runs in bundled mode (tsup sets
+ * YAAC_BUNDLED), where PACKAGE_ROOT is dist/ — so the migrations, k8s
+ * manifests, builtin skills and session-bin scripts must be sitting beside
+ * it or a spawned server dies on its first query.
+ */
+async function buildCliBundle(): Promise<void> {
+  // build:assets copies packages/frontend/dist rather than building it, so a
+  // tree that has never built the SPA needs that first. Only the frontend is
+  // conditional — it is the one slow step, and nothing but `yaac open` reads it.
+  if (!await fileExists(path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'index.html'))) {
+    await execFileAsync('pnpm', ['build:frontend'], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
+  }
+  for (const script of ['build:cli', 'build:assets', 'build:id']) {
+    await execFileAsync('pnpm', [script], { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024 })
+  }
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * Prune every podman container built from a `yaac-test-*` image. Sessions
@@ -119,6 +158,10 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
  * Test code computes the same hash to derive the expected tag.
  */
 export async function setup(): Promise<void> {
+  // Before anything else, and before the podman gate below: every suite that
+  // loads @yaac/test-utils/cli spawns dist/cli.js, podman or no podman.
+  await buildCliBundle()
+
   // Skip when podman is unavailable — tests that need it will fail on their own.
   // Build images on the same rootful engine the cluster pulls from — otherwise
   // they land in a rootless store the kind node can't see.

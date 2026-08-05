@@ -185,7 +185,14 @@ function runStreamingDefault(
       env: opts.env,
       stdio: [opts.input !== undefined ? 'pipe' : 'ignore', 'inherit', 'inherit'],
     })
-    if (opts.input !== undefined) child.stdin?.end(opts.input)
+    if (opts.input !== undefined) {
+      // Same reason as execFileWithInput in platform/k8s/kubectl.ts: an
+      // unhandled stdin 'error' (EPIPE, when the child is gone before it
+      // reads) is an uncaught exception, and the close/error handlers below
+      // already reject with something a caller can act on.
+      child.stdin?.on('error', () => { /* reported via the handlers below */ })
+      child.stdin?.end(opts.input)
+    }
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolve()

@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -11,8 +10,21 @@ import { TEST_NAMESPACE } from '#setup'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
 const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
-const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli')
-const ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'src', 'cli.ts')
+
+/**
+ * The published bundle, not `packages/cli/src/cli.ts` under tsx — every
+ * `runYaac`/`spawnYaacServer` here is a fresh process, and tsx re-transpiles
+ * the whole graph in each one: 1.3s for a CLI command, 16.4s for a server to
+ * report ready, against 0.36s and 5.4s from the bundle. Across the suite's
+ * ~160 CLI spawns and ~17 server spawns that is minutes per run.
+ *
+ * `buildCliBundle` (test/global-setup.ts) rebuilds it before any worker
+ * starts, so this can never test a stale dist. It also means these suites
+ * exercise the artifact users actually run — including its bundled-mode
+ * paths, where PACKAGE_ROOT is dist/ and the migrations, k8s manifests,
+ * builtin skills and session-bin scripts are read from the copies beside it.
+ */
+const ENTRY = path.join(REPO_ROOT, 'dist', 'cli.js')
 
 /**
  * Cross-worker mutex so only one `yaac server run` is live at a time
@@ -224,7 +236,7 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
     await releaseMutex()
   }
 
-  const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'server', 'run', '--port', '0'], {
+  const child = spawn(process.execPath, [ENTRY, 'server', 'run', '--port', '0'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
     // Make the server its own process-group leader (setsid) so `stop()`
@@ -398,7 +410,7 @@ export async function runYaac(
   const args = argsWithOpts as string[]
 
   const wantsStdin = opts.stdin !== undefined || opts.stdinOnPrompt !== undefined
-  const child = spawn(process.execPath, [TSX_CLI, ENTRY, ...args], {
+  const child = spawn(process.execPath, [ENTRY, ...args], {
     env,
     stdio: [wantsStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   })

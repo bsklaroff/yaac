@@ -151,6 +151,15 @@ function execFileWithInput(
         }
       },
     )
+    // A dead child's stdin raises 'error' (EPIPE), and an unhandled 'error'
+    // on a stream takes the whole process down — the server exiting by
+    // uncaught exception instead of running its shutdown handler, so the
+    // lock file it should have removed outlives it. The child dying before
+    // it reads is normal here rather than exceptional: a shutdown SIGTERMs
+    // the process group, killing these kubectl children while a call is
+    // still writing. The exec callback above already reports the failure
+    // through the promise, so this listener only has to stop the throw.
+    child.stdin?.on('error', () => { /* reported via the exec callback */ })
     child.stdin?.end(input)
   })
 }
