@@ -227,17 +227,25 @@ yaac cluster setup --repair
 ## What a session reserves
 
 Each session container requests **250m cpu, 1Gi memory, 2Gi
-ephemeral-storage**, and is limited to **8Gi memory and 16Gi
+ephemeral-storage**, and is limited to **8 cores, 8Gi memory and 16Gi
 ephemeral-storage** (plus the podman graphroot's own volume cap on a
 nested-containers session, which kubelet charges to the same limit). Requests
 are the scheduler's reservation and sit well under the limits: the node is
 deliberately overcommitted, the way many mostly-idle sessions want.
 
-There is no cpu **limit** — cpu is compressible, so a session bursts into
-whatever the node has spare and falls back to its 250m share only when
-contended; a limit would be a CFS quota that throttles the agent even on an
-idle node. Memory and disk are capped because they are not compressible: one
-session must not be able to take the node down with it.
+Memory and disk are capped because they are not compressible: one session
+must not be able to take the node down with it. The cpu ceiling is there for
+a second reason specific to gVisor. runsc sizes the sandbox's virtual cpu
+count from the container's cpu quota (`-cpu-num-from-quota`, on by default),
+and the systrap platform spawns one stub process per virtual cpu — so with no
+limit there is no quota, every sandbox falls back to the *host's* core count,
+and one session running syscall-heavy work (an e2e suite: image builds,
+container starts, every syscall trapping through the sentry) drives that many
+stubs at once and starves the node.
+
+The ceiling is set far above the request — 8 cores against 250m — so it
+bounds that burst without becoming a CFS quota that throttles an interactive
+agent on an idle node. Ordinary session work never approaches it.
 
 The practical effect is a ceiling on concurrent sessions, whichever of cpu or
 memory runs out first — roughly `cores × 4` and `GB ÷ 1` respectively (each

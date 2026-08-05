@@ -236,18 +236,36 @@ export interface SessionJobParams {
   /** Hard cgroup cap; exceeding it OOM-kills the container. */
   memoryLimitBytes: number
   /**
-   * CPU floor in millicores, and deliberately NO ceiling. Without a request
-   * a session pod is invisible to the scheduler's bin-packing — it costs a
-   * node nothing, which is survivable on one local node and wrong anywhere
-   * capacity is planned or autoscaled. A LIMIT is a different thing and the
-   * wrong default here: cpu is compressible, so contention already resolves
-   * by weight (the request IS the weight), while a limit is enforced as a
-   * CFS quota that throttles inside every 100ms period — an interactive
-   * agent session would stall on a node that is otherwise idle. Sessions
-   * therefore burst into whatever the node has spare and only fall back to
-   * their share when it is contended.
+   * CPU floor in millicores. Without a request a session pod is invisible to
+   * the scheduler's bin-packing — it costs a node nothing, which is
+   * survivable on one local node and wrong anywhere capacity is planned or
+   * autoscaled. Under contention this is also the weight: cpu is
+   * compressible, so equal requests share a busy node evenly.
    */
   cpuRequestMillis: number
+  /**
+   * CPU ceiling in millicores. On a runc pod a limit would be the wrong
+   * default — it lands as a CFS quota that throttles inside every 100ms
+   * period, stalling an interactive session on an otherwise idle node. Under
+   * gVisor it does double duty, and that second job is why it is set.
+   *
+   * runsc sizes the sandbox's virtual CPU count from the container's cpu
+   * quota (`-cpu-num-from-quota`, on by default, floor of 2). With no limit
+   * there is no quota, so it falls back to the HOST's core count and the
+   * systrap platform spawns one stub process per core — every sandbox
+   * carries as many stubs as the node has cores no matter how small its
+   * share. A session that then does syscall-heavy work (an e2e run: image
+   * builds, container starts) drives all of them at once and takes the whole
+   * node with it, since e2e traps every syscall through the sentry.
+   *
+   * So the ceiling bounds one session's blast radius rather than its
+   * ordinary latency. Keep it well ABOVE the request — the CFS-throttling
+   * concern is real for a limit near the request, but a ceiling set many
+   * multiples above it is never reached by interactive work (an agent
+   * between turns, a single-threaded command) and only binds on the parallel
+   * bursts it exists to bound.
+   */
+  cpuLimitMillis: number
   /**
    * Node-disk floor: the container's writable layer, its logs, and its
    * emptyDir volumes (hostPath and PVC mounts are not ephemeral storage, so
@@ -442,8 +460,10 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
                   memory: String(p.memoryRequestBytes),
                   'ephemeral-storage': String(p.ephemeralStorageRequestBytes),
                 },
-                // No cpu limit — see cpuRequestMillis.
                 limits: {
+                  // Also sets the sandbox's virtual cpu count, and with it
+                  // how many systrap stubs it spawns — see cpuLimitMillis.
+                  cpu: `${p.cpuLimitMillis}m`,
                   memory: String(p.memoryLimitBytes),
                   // kubelet charges a pod's emptyDir volumes to its
                   // ephemeral-storage limit, so a nested pod's limit must

@@ -308,9 +308,16 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     // memory-imposed one on ordinary developer hardware (8 cores/32 GB:
     // 32 sessions by cpu, 32 by memory) — honest for bin-packing without
     // becoming the reason a session stops scheduling. Real usage is far
-    // below it: an agent session is idle between turns and bursts freely,
-    // since nothing here sets a cpu limit.
+    // below it: an agent session is idle between turns.
     cpuRequestMillis: 250,
+    // 32x the request: high enough that interactive work never reaches it,
+    // low enough that one session's parallel burst leaves the node usable.
+    // The number that matters is the fraction of a node this is — half of a
+    // 16-core box — because it caps both the burst and (via
+    // -cpu-num-from-quota) the sandbox's systrap stub count. Sessions doing
+    // heavy parallel work (e2e: image builds, container starts) keep most of
+    // their headroom; what they lose is the ability to take the whole node.
+    cpuLimitMillis: 8000,
     // Sessions keep their repo, worktrees and caches on hostPath (later
     // PVC) mounts, which are not ephemeral storage — what lands here is the
     // writable layer, logs, and the pod-local emptyDirs (the tmux socket

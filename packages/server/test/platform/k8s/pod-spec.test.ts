@@ -33,6 +33,7 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
     cpuRequestMillis: 250,
+    cpuLimitMillis: 8000,
     ephemeralStorageRequestBytes: 2 * 1024 ** 3,
     ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     // The pinned proxy Service VIP — an IP, never a DNS name.
@@ -173,13 +174,17 @@ describe('buildSessionJobManifest', () => {
       memory: String(1 * 1024 ** 3),
       'ephemeral-storage': String(2 * 1024 ** 3),
     })
-    // Memory and disk are capped, cpu deliberately is not: a CFS quota
-    // throttles an interactive session even on an idle node.
+    // Every dimension is capped. The cpu ceiling sits far above the request
+    // on purpose: interactive work never reaches it, so the CFS quota only
+    // binds on a parallel burst — and under gVisor it is also what keeps a
+    // sandbox's systrap stub count off the host's core count.
     expect(c.resources.limits).toEqual({
+      cpu: '8000m',
       memory: String(8 * 1024 ** 3),
       'ephemeral-storage': String(16 * 1024 ** 3),
     })
-    expect(c.resources.limits).not.toHaveProperty('cpu')
+    expect(Number(c.resources.limits.cpu.replace('m', '')))
+      .toBeGreaterThan(Number(c.resources.requests.cpu.replace('m', '')))
   })
 
   it('puts host session pods on the low-priority tier and inner ones on none', () => {
@@ -379,6 +384,7 @@ describe('buildSessionJobManifest', () => {
           'ephemeral-storage': String(2 * 1024 ** 3),
         },
         limits: {
+          cpu: '8000m',
           memory: String(8 * 1024 ** 3),
           'ephemeral-storage': String(16 * 1024 ** 3),
         },
@@ -479,6 +485,9 @@ describe('buildSessionJobManifest', () => {
           'ephemeral-storage': String(2 * 1024 ** 3),
         },
         limits: {
+          // The nested graphroot moves the disk ceiling only — a nested
+          // session gets the same cpu ceiling as any other.
+          cpu: '8000m',
           memory: String(8 * 1024 ** 3),
           'ephemeral-storage': String(16 * 1024 ** 3 + NESTED_GRAPHROOT_SIZELIMIT_BYTES),
         },
