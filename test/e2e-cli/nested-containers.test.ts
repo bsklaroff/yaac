@@ -314,6 +314,15 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     }
     const imageId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Id')
     const parentId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Parent')
+    // The CONTENT identity, which is what has to survive the round trip.
+    // Not the image id: the salvage pushes --compression-format zstd, and
+    // a zstd push converts a docker-schema2 image to OCI, which rewrites
+    // the config — and the config digest IS the id. diff_ids are digests
+    // of the UNCOMPRESSED layers, so they are exactly the part the
+    // re-compression cannot touch, and they are what podman's build cache
+    // matches on.
+    const layers1 = await inspect(name1, 'yaac-cache-probe:v1', 'RootFS.Layers')
+    expect(layers1).toMatch(/sha256:[0-9a-f]{64}/)
     // Both real ids (the `sha256:` prefix is engine-dependent) — in
     // particular a NON-empty parent, since every "reused the intermediate"
     // assertion below would pass vacuously against two empty strings.
@@ -338,38 +347,69 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const { stdout: catalog } = await execInJob(session2.jobName, [
       'sh', '-c', `curl -fsS --max-time 20 http://${registryHost}/v2/_catalog`,
     ], { timeout: 30_000 })
-    // Under its CANONICAL repo: podman reports the local name as
-    // `localhost/yaac-cache-probe:v1`, and pushing that prefix verbatim
-    // would give the image a second repo alongside the bare one every
-    // server-side push uses.
-    expect(catalog).toContain('"yaac-cache-probe"')
-    expect(catalog).not.toContain('localhost/yaac-cache-probe')
+    // ONE repo, under the name the ENGINE knows the image by. The probe is
+    // built through the session's docker CLI, which resolves an unqualified
+    // `-t yaac-cache-probe:v1` the way `docker pull nginx` resolves — to
+    // docker.io (Dockerfile.nestable's unqualified-search-registries) — so
+    // the engine reports `docker.io/library/yaac-cache-probe:v1` where a
+    // native `podman build` would have said `localhost/...`. The salvage
+    // keeps a registry-qualified name whole (it is what a later prime pulls
+    // and re-tags by, which is how `yaac-cache-probe:v1` resolves again in
+    // session 2 below) and strips only the `localhost/` prefix.
+    //
+    // The claim worth guarding is the ONE-repo one: a single catalog entry
+    // for this image, never a second alias beside it — the copies would
+    // share no layer blobs, since the salvage compresses zstd where a host
+    // push writes gzip.
+    const probeRepos = (JSON.parse(catalog) as { repositories: string[] })
+      .repositories.filter((r) => r.endsWith('yaac-cache-probe'))
+    expect(probeRepos).toEqual(['docker.io/library/yaac-cache-probe'])
+    const probeRepo = probeRepos[0]
     const { stdout: tags } = await execInJob(session2.jobName, [
       'sh', '-c',
-      `curl -fsS --max-time 20 http://${registryHost}/v2/yaac-cache-probe/tags/list`,
+      `curl -fsS --max-time 20 http://${registryHost}/v2/${probeRepo}/tags/list`,
     ], { timeout: 30_000 })
     expect(tags).toContain('"v1"')
     expect(tags).toContain('"yaac-cache-v1-1"')
 
     // Prime (session setup) pulled them back, so session 1's image is
-    // reachable in session 2 by NAME, with the same id: the push/pull
-    // round trip preserves the config digest, which IS the image id.
-    expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')).toBe(imageId1)
+    // reachable in session 2 by NAME and is the SAME IMAGE CONTENT: every
+    // uncompressed layer digest matches. The id deliberately is not
+    // compared — see layers1 — and the ids below are all session-2
+    // internal for the same reason.
+    const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
+    const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
+    expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)
+    expect(s2Id).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
+    expect(s2Parent).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
+    // The pulled image really is the one session 1 built, not a rebuild
+    // that happens to share layers: a rebuild here would have had nothing
+    // to build FROM, since the probe's own steps are all this pod ever ran.
+    expect(s2Id).not.toBe(imageId1)
 
-    // Rebuilding the identical Dockerfile is a pure cache hit — identical
-    // image id, nothing rebuilt.
-    await execInJob(session2.jobName, ['sh', '-c', buildProbe('yaac-cache-probe:v2', 'marker2')], {
-      timeout: 120_000,
-    })
-    expect(await inspect(session2.jobName, 'yaac-cache-probe:v2', 'Id')).toBe(imageId1)
+    // Rebuilding the identical Dockerfile must REUSE the salvaged layers
+    // rather than re-run the steps — the entire point of carrying them
+    // through the registry.
+    //
+    // Asserted on the builder's own cache accounting, not on image ids.
+    // An id comparison cannot express this: the salvage pushes
+    // --compression-format zstd, which converts the image to OCI and
+    // rewrites the config, so a pulled image never shares an id with the
+    // one that produced it, and a re-run of a deterministic `COPY` lands
+    // the same diff_ids whether it hit cache or not. "Using cache" is the
+    // only signal that separates reuse from a cheap rebuild.
+    const { stdout: v2Out } = await execInJob(session2.jobName, ['sh', '-c',
+      buildProbe('yaac-cache-probe:v2', 'marker2') + ' 2>&1'], { timeout: 120_000 })
+    expect(v2Out, `identical rebuild re-ran its steps:\n${v2Out}`).toContain('Using cache')
 
     // And a build that DIVERGES at the last step still hits the cache for
-    // the shared prefix: its parent is session 1's intermediate image,
-    // which only the salvaged ancestor chain could have supplied.
-    await execInJob(session2.jobName, ['sh', '-c', buildProbe('yaac-cache-probe:v3', 'marker3')], {
-      timeout: 120_000,
-    })
-    expect(await inspect(session2.jobName, 'yaac-cache-probe:v3', 'Parent')).toBe(parentId1)
+    // the shared PREFIX: the first COPY comes from the salvaged ancestor
+    // chain (the `yaac-cache-v1-1` tag above), which this pod never built
+    // itself, and only the final step runs.
+    const { stdout: v3Out } = await execInJob(session2.jobName, ['sh', '-c',
+      buildProbe('yaac-cache-probe:v3', 'marker3') + ' 2>&1'], { timeout: 120_000 })
+    expect(v3Out, `divergent rebuild reused no prefix:\n${v3Out}`).toContain('Using cache')
+    expect(await inspect(session2.jobName, 'yaac-cache-probe:v3', 'Parent')).toBe(s2Parent)
 
     await runYaac(serverEnv, 'worktree', 'stop', session2.sessionId)
   }, 900_000)
