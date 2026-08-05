@@ -59,6 +59,28 @@ import { serverLog } from '#log'
 export const CACHE_TAG_PREFIX = 'yaac-cache-'
 
 /**
+ * What the pull side counts as a generation, in the two halves the
+ * registry's retention pass (buildRegistryRetentionScript) uses: a
+ * yaac-built repo, optionally under a push prefix, carrying a content-hash
+ * tag. Both must be mirrored — the repo glob is what keeps a session's own
+ * repo out of a policy only yaac's chain is subject to, and the tag shape
+ * is what tells a generation from a hand-written `v1` or `latest`.
+ *
+ * The prefixed globs are for repos a registry ALREADY holds: salvage
+ * canonicalizes new pushes onto the bare name (LOCAL_REGISTRY_PREFIX), so
+ * they only match until the GC drops the legacy subtree. Matching
+ * retention exactly is worth more than trimming them — one of the two
+ * ceases to be reachable here anyway, since the repo-charset gate in the
+ * walk already skips any repo carrying a `:`.
+ *
+ * Kept as sh fragments because that is where both passes use them; a
+ * generation is a shape, not a value, so there is nothing to share but
+ * these two strings.
+ */
+const GENERATION_REPO_GLOBS = 'yaac-*|localhost/yaac-*|localhost:*/yaac-*'
+const GENERATION_TAG_RE = '[0-9a-f]{16}'
+
+/**
  * Ledger of `<image id> <destination ref>` pairs this pod has already put
  * in the registry — written by both the push and the pull side, read by
  * the survey. Without it every 10-minute salvage would re-compress (and
@@ -81,11 +103,26 @@ export const MAX_CHAIN_DEPTH = 64
 
 /**
  * Graphroot fill level at which the pull side stops. Pulled images land in
- * the session's 8GiB sentry tmpfs, so a project registry holding more
- * cache than the session can carry degrades to a partial warm-up rather
- * than ENOSPC'ing the engine before the agent has built anything.
+ * the session's sentry tmpfs (NESTED_GRAPHROOT_TMPFS_BYTES), so a project
+ * registry holding more cache than the session can carry degrades to a
+ * partial warm-up rather than ENOSPC'ing the engine before the agent has
+ * built anything.
  */
 export const PRIME_MAX_GRAPHROOT_PERCENT = 50
+
+/**
+ * Content-hash generations the pull side takes per repo, newest first.
+ *
+ * The cap above bounds how much the prime spends; this bounds what it
+ * spends it ON. A repo carries up to REGISTRY_GENERATIONS_KEPT
+ * generations, and the catalog walk has no inherent reason to reach the
+ * current one first — so without this a session could fill its whole
+ * budget with generations no build will cache-hit, and then ENOSPC
+ * building the one it actually needs. Two, not one: a session on a branch
+ * that has since moved still wants its own generation, and the second slot
+ * is what keeps the newest push from evicting it.
+ */
+export const PRIME_GENERATIONS_KEPT = 2
 
 /**
  * Whether this install can host a project registry at all. An INNER yaac
@@ -372,20 +409,28 @@ export function buildRetireScript(registryHost: string): string {
  * not their names). Every ref pulled is recorded in the ledger, with its
  * id, so this session's own salvage does not push it straight back.
  *
- * Two budgets keep a fat registry from filling the 8GiB sentry tmpfs
- * before the agent has built anything: the store must stay under
+ * Two budgets keep a fat registry from filling the sentry tmpfs before the
+ * agent has built anything: the store must stay under
  * PRIME_MAX_GRAPHROOT_PERCENT, AND each image's own (compressed) manifest
  * size, scaled for decompression, must fit in what is actually free — a
  * pre-pull-only check would let one oversized image blow straight through
  * the cap. A skipped image is a cold entry, never a failure.
  *
- * Within a repo the named tag is pulled before its chain slots, so the
- * image a session actually refers to wins the budget over the
- * intermediates that only accelerate a rebuild.
+ * What the budget is spent on is narrowed twice over. A yaac-built repo's
+ * content-hash tags (GENERATION_REPO_GLOBS, GENERATION_TAG_RE) are ranked
+ * newest-first and all but PRIME_GENERATIONS_KEPT dropped, along with the
+ * chain slots of the generations dropped — an old generation's
+ * intermediates cache-hit nothing once its named image is gone. And within
+ * what survives, the named tag is pulled before its chain slots, so the
+ * image a session actually refers to wins over the intermediates that only
+ * accelerate a rebuild.
  *
  * Catalog/tag JSON is scraped with `tr`/`sed` rather than a JSON parser:
  * both documents are a single flat array, and every value is re-validated
- * against the ref charset before it reaches a podman command.
+ * against the ref charset before it reaches a podman command. The image
+ * config, which the generation ranking reads, is not flat — its `created`
+ * is scraped by taking the LATEST of every `created` in the document
+ * (config plus history entries), which needs no field ordering to hold.
  */
 export function buildPrimeScript(registryHost: string): string {
   const curl = 'curl -fsS --max-time 20'
@@ -404,13 +449,49 @@ export function buildPrimeScript(registryHost: string): string {
     'for repo in $repos; do',
     "  case \"$repo\" in ''|*[!a-z0-9./_-]*) continue;; esac",
     `  tags=$(${curl} "http://$REG/v2/$repo/tags/list" 2>/dev/null | ${arrayScrape})`,
+    // Keep only the newest PRIME_GENERATIONS_KEPT content-hash generations
+    // and their chain slots. Ranked by the image config's own build time,
+    // the same "creation order IS generation order" the registry's
+    // retention pass relies on — content-hash tags are write-once, so the
+    // two orders cannot diverge.
+    //
+    // Gated on BOTH halves of that pass's guard, repo shape and tag shape,
+    // so the two agree on what a generation is. Tag shape alone would rank
+    // a session's own `myapp:$(git rev-parse --short=16 HEAD)` as
+    // generations and leave its older tags cold — the prime deletes
+    // nothing, so that costs a warm-up, but it is a repo retention has no
+    // say over either.
+    `  gens=''`,
+    '  case "$repo" in',
+    `    ${GENERATION_REPO_GLOBS}) gens=$(printf '%s\\n' $tags | grep -Ex '${GENERATION_TAG_RE}');;`,
+    '  esac',
+    '  if [ -n "$gens" ]; then',
+    '    keep=$(for g in $gens; do',
+    `      cfg=$(${curl} -H "Accept: ${MANIFEST_ACCEPT}" "http://$REG/v2/$repo/manifests/$g" 2>/dev/null`
+    + ` | tr -d ' \\n' | sed -n 's/.*"config":{[^}]*"digest":"\\([^"]*\\)".*/\\1/p')`,
+    `      c=$(${curl} "http://$REG/v2/$repo/blobs/$cfg" 2>/dev/null`
+    + ` | grep -o '"created":"[^"]*"' | cut -d'"' -f4 | sort -r | head -1)`,
+    // A config that would not scrape sorts NEWEST, not oldest. Ranking is
+    // best-effort and one transient curl error must not cost the session
+    // the generation its next build would have cache-hit — which sorting
+    // the unrankable last does exactly, and silently. Erring the other way
+    // costs at worst a slot spent on a candidate whose pull then fails,
+    // which the walk already handles. `9` outranks any RFC3339 year.
+    '      echo "${c:-9} $g"',
+    `    done | sort -r | head -n ${PRIME_GENERATIONS_KEPT}`
+    + ` | awk '{print $2}' | tr '\\n' '|' | sed 's/|$//')`,
+    // Everything that is not generation-shaped, plus the generations kept
+    // and the chain slots belonging to them.
+    `    tags=$(printf '%s\\n' $tags | grep -Ev '^(${GENERATION_TAG_RE}|${CACHE_TAG_PREFIX}${GENERATION_TAG_RE}-[0-9]+)$'; `
+    + `printf '%s\\n' $tags | grep -E "^($keep)\\$|^${CACHE_TAG_PREFIX}($keep)-[0-9]+\\$")`,
+    '  fi',
     // Named tags first, then the chain slots that only speed up a rebuild.
     `  ordered=$(printf '%s\\n' $tags | grep -v "^${CACHE_TAG_PREFIX}"; `
     + `printf '%s\\n' $tags | grep "^${CACHE_TAG_PREFIX}")`,
     '  for tag in $ordered; do',
     "    case \"$tag\" in ''|*[!A-Za-z0-9._-]*) continue;; esac",
-    // Leave headroom for the session's own builds: the graphroot is the
-    // 8GiB sentry tmpfs, not a free node-local store.
+    // Leave headroom for the session's own builds: the graphroot is a
+    // capped sentry tmpfs, not a free node-local store.
     "    used=$(df -P /var/lib/containers 2>/dev/null | awk 'NR==2{print $5+0}')",
     `    [ "\${used:-0}" -lt ${PRIME_MAX_GRAPHROOT_PERCENT} ] || { echo "primed-full"; break 2; }`,
     // …and this one image has to fit in what is left, decompressed.
