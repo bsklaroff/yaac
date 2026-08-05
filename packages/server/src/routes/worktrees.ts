@@ -11,7 +11,6 @@ import {
   listActiveSessions,
   listStoppedWorktrees,
   listWorktreeAgentSessions,
-  notifySessionListChanged,
   recordAllDeathsSeen,
   recordDeathSeen,
   registerProvisioning,
@@ -24,10 +23,11 @@ import {
   setWorktreeTitle,
   stopWorktree,
   toAgentSessionEntry,
+  tryClaimPrewarmed,
   type SessionCreateOptions,
 } from '#features/sessions'
+import { notifySessionListChanged } from '#notify'
 import { typeInitialPrompt, MODEL_RE } from '#features/agents'
-import { tryClaimPrewarmed } from '#features/images'
 import { getDefaultTool } from '#features/projects'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'

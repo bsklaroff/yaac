@@ -3,10 +3,7 @@
 // stops src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// Four modules, one per job the host's container engine does. port.ts hands
-// out host TCP ports that stay bound from discovery to use and turns them into
-// forwarders that spawn a caller-supplied relay per connection — session port
-// forwards and the proxy control API are the two relays. runtime.ts is the
+// Three modules, one per job the host's container engine does. runtime.ts is the
 // host side of the split runtime: the once-per-process check that podman (the
 // image build engine) and kubernetes (the session runtime) are both usable,
 // the CONTAINER_HOST lever that points every podman call at the rootful
@@ -17,18 +14,21 @@
 // runs them, and it makes them die with the server rather than outliving it
 // into the next one, which is where duplicate builds come from.
 //
+// Host TCP port reservation and relay forwarding are NOT here: they touch no
+// container engine, and keeping them here made #platform/k8s (which forwards
+// through them) and this folder (which checks the cluster is up) mutually
+// dependent. They live in #platform/port.
+//
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/platform/container/. What is not re-exported — the
-// bind loop, the per-connection relay plumbing, the platform-specific podman
-// install instructions, the registry's readiness wait — is internal, and
-// covered through the entry points below.
+// platform-specific podman install instructions, the registry's readiness
+// wait — is internal, and covered through the entry points below.
 
 export {
   killTrackedPodmanProcs,
   reapOrphanedPodmanProcs,
   runTrackedPodman,
 } from './host-procs'
-export { reserveAvailablePort, startPortForwarders, type RelayFactory, type ReservedPort } from './port'
 export {
   ensureLocalRegistry,
   pushImageToRegistry,

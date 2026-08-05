@@ -14,9 +14,9 @@ import {
 import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/build-dirs'
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
 import { ensureImage } from '@yaac/server/features/images/build-coordinator'
-import { ensureBuilderRoleGuard } from '@yaac/server/features/images/builder-pod'
+import { ensureBuilderRoleGuard } from '@yaac/server/features/cluster/proxy-apply'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
-import { resolveImageChain } from '@yaac/server/features/images/image-builder'
+import { resolveImageChain } from '@yaac/server/features/image-engine/image-builder'
 import { imageExists } from '@yaac/server/platform/container/runtime'
 import { registryHasTag, registryRef } from '@yaac/server/platform/container/registry'
 import {
@@ -32,7 +32,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '@yaac/server/platform/k8s/kubectl'
-import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/images/image-builds'
+import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/image-engine/image-builds'
 
 /**
  * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):

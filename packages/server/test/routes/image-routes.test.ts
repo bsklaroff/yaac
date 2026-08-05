@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
 
-// The retry route only wires HTTP → retryImageBuild; its rebuild orchestration
-// (prewarm / proxy) is unit-tested in image-retry.test.ts. Mock it here so the
-// route test stays hermetic and doesn't pull in the proxy client.
+// The retry route wires HTTP → retryImageBuild and owns the sidecar rebuild
+// for an infra build. The feature's own forget/re-fire behavior is unit-tested
+// in features/images/image-prewarm.test.ts; mock both leaves here so the route
+// test stays hermetic and doesn't pull in the proxy client's k8s deps.
 vi.mock('#features/images/image-prewarm', () => ({ retryImageBuild: vi.fn() }))
+const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('#features/egress', () => ({ proxyClient: { ensureRunning } }))
+vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
@@ -14,7 +18,7 @@ import {
   failImageBuild,
   ingestImageBuildLine,
   registerImageBuild,
-} from '#features/images/image-builds'
+} from '#features/image-engine/image-builds'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 // The log route throws NOT_FOUND; only the root app's onError serializes it,
@@ -75,15 +79,28 @@ describe('image routes', () => {
   })
 
   it('POST /builds/:id/retry retries and returns 202', async () => {
-    vi.mocked(retryImageBuild).mockReturnValue(true)
+    ensureRunning.mockResolvedValue(undefined)
+    vi.mocked(retryImageBuild).mockReturnValue({ retried: true, infra: false })
     const res = await app.request('/builds/build-1/retry', { method: 'POST' })
     expect(res.status).toBe(202)
     expect(vi.mocked(retryImageBuild)).toHaveBeenCalledWith('build-1')
+    // A project build is re-fired by the feature; the route stays out of it.
+    expect(ensureRunning).not.toHaveBeenCalled()
+  })
+
+  it('POST /builds/:id/retry rebuilds the proxy sidecar for an infra build', async () => {
+    ensureRunning.mockResolvedValue(undefined)
+    vi.mocked(retryImageBuild).mockReturnValue({ retried: true, infra: true })
+    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
+    expect(res.status).toBe(202)
+    expect(ensureRunning).toHaveBeenCalledTimes(1)
   })
 
   it('POST /builds/:id/retry 404s when there is nothing to retry', async () => {
-    vi.mocked(retryImageBuild).mockReturnValue(false)
+    ensureRunning.mockResolvedValue(undefined)
+    vi.mocked(retryImageBuild).mockReturnValue({ retried: false, infra: false })
     const res = await app.request('/builds/nope/retry', { method: 'POST' })
     expect(res.status).toBe(404)
+    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })

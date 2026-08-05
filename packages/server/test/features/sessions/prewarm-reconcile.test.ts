@@ -18,10 +18,10 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { reconcilePrewarmPool } from '#features/images/prewarm-reconcile'
+import { reconcilePrewarmPool } from '#features/sessions/prewarm-reconcile'
 // `claiming` and `inFlight` are the module's shared state, read here to set
 // up a mid-claim / mid-spawn cluster and asserted on afterwards.
-import { claiming, inFlight, clearPrewarmStateForTests } from '#features/images/prewarm'
+import { claiming, inFlight, clearPrewarmStateForTests } from '#features/sessions/prewarm'
 import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { createSession } from '#features/sessions/create'

@@ -9,7 +9,7 @@ import {
 import {
   onSessionListChanged,
   _resetSessionListChangedForTests,
-} from '#features/sessions/notify'
+} from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 
 type Run = Parameters<typeof streamProvisioned>[2]

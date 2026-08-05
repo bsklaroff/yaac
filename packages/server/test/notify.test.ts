@@ -4,7 +4,7 @@ import {
   onSessionListChanged,
   notifySessionListChanged,
   _resetSessionListChangedForTests,
-} from '#features/sessions/notify'
+} from '#notify'
 
 afterEach(() => {
   _resetSessionListChangedForTests()

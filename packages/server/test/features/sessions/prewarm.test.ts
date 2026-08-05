@@ -50,7 +50,7 @@ import {
   claiming,
   inFlight,
   clearPrewarmStateForTests,
-} from '#features/images/prewarm'
+} from '#features/sessions/prewarm'
 import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'

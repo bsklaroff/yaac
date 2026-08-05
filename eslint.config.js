@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|images|projects|sessions|skills|status|terminals|titles)|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|sessions|skills|status|terminals|titles)|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 

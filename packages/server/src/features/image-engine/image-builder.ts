@@ -9,25 +9,13 @@ import {
   resolveUserBuildDir,
 } from '#features/projects'
 import { imageExists, runTrackedPodman } from '#platform/container'
+import { collectContextFiles, isLayered, parseContainerIgnore } from '#platform/build-context'
+import { sessionUid } from '#platform/k8s'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 export function stringHash(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
-}
-
-/**
- * The uid baked into session images as the `yaac` user (YAAC_UID build
- * arg). Under gVisor there is no userns and no idmap, so numeric uids pass
- * through raw: a hostPath file owned by host uid N appears in-container as
- * uid N. Server-created dirs (worktrees, cache volumes, config mounts) are
- * owned by the server's uid — the in-container user must carry the same uid
- * to write them. Falls back to 1000 when there is no uid to mirror
- * (non-POSIX) or the server runs as root (uid 0 is taken inside the image).
- */
-export function sessionUid(): number {
-  const uid = process.getuid?.() ?? 1000
-  return uid > 0 ? uid : 1000
 }
 
 export async function fileHash(filePath: string): Promise<string> {
@@ -69,53 +57,6 @@ export async function toolsContentHash(): Promise<string> {
     files.map((f) => fileHash(path.join(DOCKERFILES_DIR, f))),
   )
   return stringHash(hashes.join(':'))
-}
-
-/**
- * Parse a .containerignore into the set of context-relative paths to skip.
- * The hash must exclude exactly what `podman build` excludes, so instead of
- * replicating podman's full glob matcher we support only literal paths
- * (`node_modules`, `test`, `a/b.txt`) and fail loudly on anything fancier —
- * a silently-mismatched pattern would let the image tag and the built image
- * drift apart.
- */
-export function parseContainerIgnore(content: string): Set<string> {
-  const patterns = new Set<string>()
-  for (const raw of content.split('\n')) {
-    const line = raw.trim()
-    if (line === '' || line.startsWith('#')) continue
-    if (/[*?[\]!]/.test(line) || line.startsWith('/')) {
-      throw new Error(
-        `unsupported .containerignore pattern ${JSON.stringify(line)}: `
-        + 'only literal context-relative paths are supported (contextHash '
-        + "must match podman's exclusions exactly)",
-      )
-    }
-    patterns.add(line.replace(/\/+$/, ''))
-  }
-  return patterns
-}
-
-/**
- * Recursively collect a build context's regular files (context-relative
- * paths), skipping ignored entries. Symlinks and empty directories are
- * excluded — matching `contextHash`, which defines what the content-hash
- * tag covers. Shared with the builder-pod context streamer so the bytes
- * shipped to a sandboxed build are exactly the bytes the tag hashed.
- */
-export async function collectContextFiles(root: string, rel: string, ignore: Set<string>): Promise<string[]> {
-  const entries = await fs.readdir(path.join(root, rel), { withFileTypes: true })
-  const out: string[] = []
-  for (const entry of entries) {
-    const childRel = rel ? `${rel}/${entry.name}` : entry.name
-    if (ignore.has(childRel)) continue
-    if (entry.isDirectory()) {
-      out.push(...await collectContextFiles(root, childRel, ignore))
-    } else if (entry.isFile()) {
-      out.push(childRel)
-    }
-  }
-  return out
 }
 
 /**
@@ -219,16 +160,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-/**
- * Check whether a Dockerfile layers on top of the yaac base image.
- * A layered Dockerfile must declare `ARG BASE_IMAGE` and use `FROM ${BASE_IMAGE}`
- * so the parent image is always injected via --build-arg (no shared mutable tags).
- */
-export function isLayered(dockerfileContent: string): boolean {
-  return /^ARG\s+BASE_IMAGE\b/m.test(dockerfileContent)
-    && /^FROM\s+\$\{BASE_IMAGE\}/m.test(dockerfileContent)
 }
 
 export interface ImageLayer {

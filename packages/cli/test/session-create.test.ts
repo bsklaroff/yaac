@@ -35,8 +35,9 @@ vi.mock('@yaac/server/platform/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof runtimeModule>))
 
-vi.mock('@yaac/server/features/images/image-builder', () => ({
-  sessionUid: vi.fn(() => 1000),
+// Stubbed to keep podman off the import path; nothing on the create path
+// calls into it (sessionUid, the one name it used to supply, is in pod-spec).
+vi.mock('@yaac/server/features/image-engine/image-builder', () => ({
 } satisfies Partial<typeof imageBuilderModule>))
 
 vi.mock('@yaac/server/features/images/build-coordinator', () => ({
@@ -94,7 +95,7 @@ vi.mock('@yaac/server/features/egress/default-allowed-hosts', async (importOrigi
   }
 })
 
-vi.mock('@yaac/server/platform/container/port', () => ({
+vi.mock('@yaac/server/platform/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
 } satisfies Partial<typeof portModule>))
@@ -262,7 +263,7 @@ import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/serve
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { resolveAllowedHosts } from '@yaac/server/features/egress/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
-import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
+import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/port'
 import { relayTcpFactory, sessionExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
 import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
@@ -1177,11 +1178,11 @@ import type * as sharedGitModule from '@yaac/shared/git'
 import type * as codexAgentModule from '@yaac/server/features/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/features/agents/opencode'
 import type * as runtimeModule from '@yaac/server/platform/container/runtime'
-import type * as imageBuilderModule from '@yaac/server/features/images/image-builder'
+import type * as imageBuilderModule from '@yaac/server/features/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/features/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/platform/k8s/kubectl'
 import type * as execModule from '@yaac/server/platform/k8s/exec'
-import type * as portModule from '@yaac/server/platform/container/port'
+import type * as portModule from '@yaac/server/platform/port'
 import type * as projectConfigModule from '@yaac/server/features/projects/config'
 import type * as credentialsModule from '@yaac/server/features/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'

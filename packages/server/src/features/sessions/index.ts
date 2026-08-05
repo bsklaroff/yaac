@@ -43,12 +43,10 @@ export {
   type SessionDetail,
 } from './detail'
 export { ensureProjectExists, listActiveSessions } from './list'
-export {
-  coalesceCalls,
-  notifySessionListChanged,
-  onSessionListChanged,
-} from './notify'
+export { removeProject } from './project-teardown'
 export { captureSessionPrompts } from './prompt-capture'
+export { tryClaimPrewarmed } from './prewarm'
+export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {
   listProvisioning,
   registerProvisioning,

@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
 import { imageExists } from '#platform/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#features/images'
+import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#features/image-engine'
 import {
   ensureCaConfigMap,
   ensureNamespace,

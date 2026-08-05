@@ -12,7 +12,7 @@ import { PassThrough } from 'node:stream'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 // Type-only: the values come from the dynamic imports in `load`, which must
 // run after vi.resetModules() to pick up the mocks below.
-import type * as imageBuilder from '#features/images/image-builder'
+import type * as imageBuilder from '#features/image-engine/image-builder'
 import type * as buildCoordinator from '#features/images/build-coordinator'
 
 /** The 16-hex-char content hash every layer tag ends in. */
@@ -177,7 +177,7 @@ export function setupStackingHarness(): StackingHarness {
     const paths = await import('@yaac/shared/project-paths')
     paths.setDataDir(state.dataDir)
     // eslint-disable-next-line no-restricted-syntax
-    const builder = await import('#features/images/image-builder')
+    const builder = await import('#features/image-engine/image-builder')
     // eslint-disable-next-line no-restricted-syntax
     const coordinator = await import('#features/images/build-coordinator')
     return { ...builder, ...coordinator }

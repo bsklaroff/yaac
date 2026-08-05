@@ -10,8 +10,8 @@ import {
   ingestImageBuildLine,
   listImageBuilds,
   registerImageBuild,
-} from '#features/images/image-builds'
-import { onSessionListChanged, _resetSessionListChangedForTests } from '#features/sessions/notify'
+} from '#features/image-engine/image-builds'
+import { onSessionListChanged, _resetSessionListChangedForTests } from '#notify'
 
 function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> = {}): string {
   return registerImageBuild({

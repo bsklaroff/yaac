@@ -1,5 +1,6 @@
 import {
   captureSessionPrompts,
+  reconcilePrewarmPool,
   reconcileAgentSessions,
   reconcileImageSalvage,
   reconcileSpawnRequests,
@@ -11,13 +12,8 @@ import {
   reconcileRedirectClaims,
   reconcileVclusters,
 } from '#features/cluster'
-import {
-  reconcileBuildCacheGc,
-  reconcileBuilderPodGc,
-  reconcileHostImageGc,
-  reconcileImagePrewarm,
-  reconcilePrewarmPool,
-} from '#features/images'
+import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#features/images'
+import { reconcileHostImageGc } from '#features/image-engine'
 import { reconcileGeneratedTitles } from '#features/titles'
 import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
 import { serverLog } from '#log'

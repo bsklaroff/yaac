@@ -19,6 +19,7 @@ import {
   kubectlApply,
   runPodToCompletion,
   runtimeClassSpec,
+  sessionUid,
 } from '#platform/k8s'
 import {
   buildProxyIngressNpManifest,
@@ -28,7 +29,6 @@ import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNamespace } from './proxy-apply'
 import { vapAvailable } from './vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container'
-import { sessionUid } from '#features/images'
 import { sharedRoot } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so

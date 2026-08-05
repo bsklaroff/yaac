@@ -24,7 +24,7 @@ import {
 } from '#platform/k8s'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
-import { proxyDataHostDir } from './proxy-apply'
+import { proxyDataHostDir } from '@yaac/shared/project-paths'
 
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
  * dedicated dir (not the session CA mount) so it never collides with the

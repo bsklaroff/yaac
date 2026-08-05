@@ -17,7 +17,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
 import type * as kubectlModule from '#platform/k8s/kubectl'
-import type * as imageBuilderModule from '#features/images/image-builder'
+import type * as imageBuilderModule from '#features/image-engine/image-builder'
 import type * as registryServiceModule from '#features/cluster/registry-service'
 
 /**
@@ -111,7 +111,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 // Only chain resolution and the host build are faked; the rest of
 // image-builder (context collection, .containerignore) runs for real
 // because builder-pod's context planning goes through it.
-vi.mock('#features/images/image-builder', async (importOriginal) => ({
+vi.mock('#features/image-engine/image-builder', async (importOriginal) => ({
   ...(await importOriginal<typeof imageBuilderModule>()),
   buildImage: vi.fn(),
   resolveImageChain: vi.fn(),
@@ -162,16 +162,15 @@ vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 import { ensureImage, pushImageShared, rebuildProjectImage } from '#features/images'
 import { _clearBuildCoordinatorForTests } from '#features/images/build-coordinator'
-import { buildImage, resolveImageChain, type ImageLayer } from '#features/images/image-builder'
+import { buildImage, resolveImageChain, type ImageLayer } from '#features/image-engine/image-builder'
 import { imageExists, removeImage } from '#platform/container/runtime'
 import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
-import { clearAllImageBuildsForTests, listImageBuilds } from '#features/images/image-builds'
+import { clearAllImageBuildsForTests, listImageBuilds } from '#features/image-engine/image-builds'
 // Bounds and layout constants: expected values, not units under test.
 import {
   BUILDER_ACTIVE_DEADLINE_SECONDS,
   BUILDER_BUILD_IDLE_TIMEOUT_MS,
   BUILDER_CONTEXT_DIR,
-  BUILDER_CONTEXT_MAX_BYTES,
   BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
   BUILDER_GRAPHROOT_TMPFS_BYTES,
   BUILDER_CPU_REQUEST_MILLIS,
@@ -179,6 +178,7 @@ import {
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#features/images/builder-pod'
+import { BUILDER_CONTEXT_MAX_BYTES } from '#platform/build-context'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)

@@ -7,14 +7,14 @@ vi.mock('#platform/k8s/stream-relay', () => ({
   relayTcpFactory: vi.fn(),
 }))
 
-vi.mock('#platform/container/port', () => ({
+vi.mock('#platform/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn(),
 }))
 
 import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
-import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
-import type { ReservedPort } from '#platform/container/port'
+import { reserveAvailablePort, startPortForwarders } from '#platform/port'
+import type { ReservedPort } from '#platform/port'
 import {
   MAX_FORWARDS_PER_SESSION,
   addSessionForwarder,

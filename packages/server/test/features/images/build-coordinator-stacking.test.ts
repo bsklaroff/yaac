@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { HASH_RE, setupStackingHarness } from './stacking-harness'
+import { HASH_RE, setupStackingHarness } from '#test/features/image-engine/stacking-harness'
 
 describe('ensureImage', () => {
   const h = setupStackingHarness()

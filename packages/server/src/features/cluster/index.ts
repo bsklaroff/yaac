@@ -56,11 +56,11 @@ export {
   sweepLegacyImageStore,
 } from './project-registry'
 export {
+  ensureBuilderRoleGuard,
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  proxyDataHostDir,
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
 } from './proxy-apply'

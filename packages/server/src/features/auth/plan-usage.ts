@@ -7,7 +7,7 @@ import {
   loadCodexCredentialsFile,
   saveCodexOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { notifySessionListChanged } from '#features/sessions'
+import { notifySessionListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
 

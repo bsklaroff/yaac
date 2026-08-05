@@ -17,12 +17,15 @@
  * never race a build).
  */
 import { listProjects, resolveProjectConfig } from '#features/projects'
-import { resolveImageChain } from './image-builder'
 import { ensureImage, pushImageShared } from './build-coordinator'
-import { forgetImageBuild, getImageBuild, hasBlockingFailure } from './image-builds'
-import { proxyClient } from '#features/egress'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
+import {
+  forgetImageBuild,
+  getImageBuild,
+  hasBlockingFailure,
+  resolveImageChain,
+} from '#features/image-engine'
 
 /** How long a failed chain build blocks the sweep from retrying. Hitting
  *  retry in the webapp (which forgets the failed entry) or editing the
@@ -103,31 +106,36 @@ export function _resetImagePrewarmForTests(): void {
  *
  * It forgets the tracked entry — so its failure stops gating
  * `hasBlockingFailure` — then re-triggers the build the row stood for: the
- * owning project's chain (via `prewarmProjectImage`, which the coordinator
- * single-flights and de-dups against any in-flight build), or the shared
- * proxy sidecar for an infrastructure build with no owning project. The
- * rebuild registers its own fresh entry, so the "building" row reappears.
+ * owning project's chain, via `prewarmProjectImage`, which the coordinator
+ * single-flights and de-dups against any in-flight build. The rebuild
+ * registers its own fresh entry, so the "building" row reappears.
  *
- * Returns false when the id is unknown or still running (nothing to retry);
- * otherwise forgets the entry and fires the rebuild in the background,
- * returning true. Fire-and-forget: the rebuild owns its own registry entry
- * and error logging.
+ * An entry with no owning project is an infrastructure build — the shared
+ * proxy sidecar — and rebuilding it means going through #features/egress,
+ * which sits above this feature. Rather than reach up for it, the entry is
+ * forgotten here and `infra: true` hands the rebuild back to the caller.
+ *
+ * `retried: false` means the id is unknown or still running, so there was
+ * nothing to retry. Otherwise the project rebuild is already running in the
+ * background: fire-and-forget, since it owns its own registry entry and
+ * error logging.
  */
-export function retryImageBuild(id: string): boolean {
+export interface ImageRetry {
+  retried: boolean
+  /** The caller must rebuild the proxy sidecar; nothing was fired here. */
+  infra: boolean
+}
+
+export function retryImageBuild(id: string): ImageRetry {
   const entry = getImageBuild(id)
-  if (!entry || entry.status === 'running') return false
+  if (!entry || entry.status === 'running') return { retried: false, infra: false }
   forgetImageBuild(id)
 
-  if (entry.projectSlugs.length > 0) {
-    for (const slug of entry.projectSlugs) {
-      void prewarmProjectImage(slug).catch((err: unknown) =>
-        serverLog(`[image-retry] ${slug}: ${String(err)}`))
-    }
-  } else {
-    // No owning project: the shared proxy sidecar. Re-running ensureRunning
-    // rebuilds its image when the tag is missing (which a failed build left).
-    void proxyClient.ensureRunning().catch((err: unknown) =>
-      serverLog(`[image-retry] proxy: ${String(err)}`))
+  if (entry.projectSlugs.length === 0) return { retried: true, infra: true }
+
+  for (const slug of entry.projectSlugs) {
+    void prewarmProjectImage(slug).catch((err: unknown) =>
+      serverLog(`[image-retry] ${slug}: ${String(err)}`))
   }
-  return true
+  return { retried: true, infra: false }
 }

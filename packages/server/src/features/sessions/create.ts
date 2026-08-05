@@ -11,7 +11,8 @@ import {
   resolveProxyImageTag,
   syncProxySecrets,
 } from '#features/egress'
-import { ensureContainerRuntime, reserveAvailablePort, startPortForwarders } from '#platform/container'
+import { ensureContainerRuntime } from '#platform/container'
+import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
@@ -36,7 +37,7 @@ import {
   waitForJobPodReady,
   waitForStreamd,
 } from '#platform/k8s'
-import type { ReservedPort } from '#platform/container'
+import type { ReservedPort } from '#platform/port'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { env as yaacEnv, testEnv } from '@yaac/shared/env'

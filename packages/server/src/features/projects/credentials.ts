@@ -9,6 +9,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { parsePattern, validatePattern, matchPattern, isHostSegment } from '@yaac/shared/credentials'
 import { expandTilde } from '@yaac/shared/paths'
+import type { ResolvedGitCredential } from '#platform/git'
 import type {
   GitCredentialEntry,
   GitCredentialsFile,
@@ -185,10 +186,6 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   }
   throw new Error(`Unrecognized git remote URL: "${remoteUrl}"`)
 }
-
-export type ResolvedGitCredential =
-  | { kind: 'https'; token: string }
-  | { kind: 'ssh'; privateKeyPath: string; knownHostsEntry: string }
 
 /**
  * Resolve a credential for a remote URL by walking the credentials file and

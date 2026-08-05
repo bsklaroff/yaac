@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
-import { dismissImageBuild, getImageBuildLog, listImageBuilds, retryImageBuild } from '#features/images'
+import { retryImageBuild } from '#features/images'
+import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#features/image-engine'
+import { proxyClient } from '#features/egress'
+import { serverLog } from '#log'
 
 /**
  * Image-build registry reads and mutations. The snapshot pushed over `/events`
@@ -24,10 +27,20 @@ export const imageApp = new Hono()
     return c.body(null, 204)
   })
   // Retry forgets the entry and rebuilds now — the owning project's chain, or
-  // the proxy sidecar for an infra build with no project.
+  // the proxy sidecar for an infra build with no project. The feature fires
+  // the project rebuild itself; the sidecar is rebuilt from here, because
+  // #features/egress sits above #features/images and reaching for it from
+  // inside would put the two in a cycle.
   .post('/builds/:id/retry', (c) => {
-    if (!retryImageBuild(c.req.param('id'))) {
+    const { retried, infra } = retryImageBuild(c.req.param('id'))
+    if (!retried) {
       throw new ServerError('NOT_FOUND', 'no such build to retry')
+    }
+    if (infra) {
+      // Re-running ensureRunning rebuilds the sidecar image when its tag is
+      // missing, which is what a failed build left behind.
+      void proxyClient.ensureRunning().catch((err: unknown) =>
+        serverLog(`[image-retry] proxy: ${String(err)}`))
     }
     return c.body(null, 202)
   })

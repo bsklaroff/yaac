@@ -92,6 +92,19 @@ export function credentialsDir(): string {
   return sharedPath('.credentials')
 }
 
+/**
+ * Host directory backing the proxy's `/data` (CA key/cert, tor state).
+ * Persisting it across pod replacements keeps the MITM CA stable, so
+ * session pods' mounted CA stays valid through proxy image upgrades.
+ *
+ * SHARED tier: the proxy pod mounts it and the server reads what the proxy
+ * writes there (blocked-hosts, git-auth-failures), so both sides need the
+ * same bytes wherever the proxy is scheduled.
+ */
+export function proxyDataHostDir(): string {
+  return sharedPath('run', 'proxy-data')
+}
+
 /** SHARED — see {@link credentialsDir}. */
 export function githubCredentialsPath(): string {
   return path.join(credentialsDir(), 'github.json')

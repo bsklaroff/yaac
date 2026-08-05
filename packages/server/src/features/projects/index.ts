@@ -31,7 +31,6 @@ export {
   saveCredentials,
   writeProxySecrets,
 } from './credentials'
-export type { ResolvedGitCredential } from './credentials'
 export { assertProjectExists, getProjectDetail, resolveProjectConfigWithSource } from './detail'
 export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'
 export { seedFakeAuth } from './fake-auth'
@@ -61,4 +60,3 @@ export {
   setFlag,
   setShortcutOverride,
 } from './preferences'
-export { removeProject } from './remove'

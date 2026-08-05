@@ -5,9 +5,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
-vi.mock('#features/sessions/notify', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifySessionListChanged: vi.fn() }))
 
-import { notifySessionListChanged } from '#features/sessions/notify'
+import { notifySessionListChanged } from '#notify'
 import {
   planUsageForSnapshot,
   codexPlanUsageForSnapshot,

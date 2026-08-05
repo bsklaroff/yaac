@@ -17,7 +17,7 @@ import type * as sessionCreateModule from '@yaac/server/features/sessions/create
 import type * as projectAddModule from '@yaac/server/features/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/features/sessions/stop'
 import type * as sessionRestartModule from '@yaac/server/features/sessions/restart'
-import type * as projectRemoveModule from '@yaac/server/features/projects/remove'
+import type * as projectRemoveModule from '@yaac/server/features/sessions/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -47,7 +47,7 @@ vi.mock('@yaac/server/features/projects/add', async () => {
   }
 })
 
-vi.mock('@yaac/server/features/projects/remove', () => ({
+vi.mock('@yaac/server/features/sessions/project-teardown', () => ({
   removeProject: vi.fn(),
 } satisfies Partial<typeof projectRemoveModule>))
 
@@ -65,7 +65,7 @@ import { createSession } from '@yaac/server/features/sessions/create'
 import { stopWorktree } from '@yaac/server/features/sessions/stop'
 import { restartWorktree } from '@yaac/server/features/sessions/restart'
 import { addProject } from '@yaac/server/features/projects/add'
-import { removeProject } from '@yaac/server/features/projects/remove'
+import { removeProject } from '@yaac/server/features/sessions/project-teardown'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/sessions/provisioning'
 import { authAgentHub } from '@yaac/server/features/auth/agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'

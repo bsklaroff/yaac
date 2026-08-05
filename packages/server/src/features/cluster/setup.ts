@@ -8,8 +8,8 @@ import { parse as parseToml } from 'smol-toml'
 import { ensureGvisorRuntime, ensurePriorityClasses, execFileAsync } from '#platform/k8s'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { ensureRegistryClusterService } from './registry-service'
-import { ensureBuilderRoleGuard } from '#features/images'
 import { ensureNetd } from './netd'
+import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
 import {
   formatCheckResult,
