@@ -31,8 +31,8 @@ import { registryHost, registryReachable, pushImageToRegistry } from '#platform/
 import { sessionUid } from '#features/images'
 import { sharedRoot } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
-// CheckResult lives in @yaac/shared/types (a wire type: GET /cluster/check
-// returns it and the frontend renders it), not here with its producer.
+// CheckResult lives in @yaac/shared/types, not here with its producer, so
+// consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
 
 /** Render one result as the CLI line `yaac cluster check` prints. */

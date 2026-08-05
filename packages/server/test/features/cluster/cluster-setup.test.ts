@@ -10,9 +10,9 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-import { ClusterSetupError, runClusterSetup, streamingClusterSetupDeps } from '#features/cluster'
-// The deps shape is part of the public interface (streamingClusterSetupDeps
-// returns one); CALICO_VERSION is a pinned setup value for the assertions.
+import { ClusterSetupError, runClusterSetup } from '#features/cluster'
+// The deps shape is part of the public interface (runClusterSetup takes one);
+// CALICO_VERSION is a pinned setup value for the assertions.
 import { CALICO_VERSION, type ClusterSetupDeps } from '#features/cluster/setup'
 import { nodeIpBlocks, resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import { kubectlGetJson } from '#platform/k8s/kubectl'
@@ -316,9 +316,9 @@ describe('runClusterSetup', () => {
   })
 
   it('drops the CIDR caches so a long-lived server cannot render for the dead cluster', async () => {
-    // A server-driven setup (POST /cluster/setup) outlives the cluster it
-    // replaces. Reusing the old node `/32`s names a host that no longer
-    // exists (every policy fails closed), and reusing the old pod CIDRs
+    // A setup outlives the cluster it replaces. Reusing the old node `/32`s
+    // in the same process names a host that no longer exists (every policy
+    // fails closed), and reusing the old pod CIDRs
     // makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the proxy.
     resetClusterCidrCache()
     const stageNode = (ip: string): void => {
@@ -781,19 +781,5 @@ describe('runClusterSetup', () => {
       'quay.io/calico/node:v3.32.1',
     ])
     expect(pulled).not.toContain('not-a-ref')
-  })
-})
-
-describe('streamingClusterSetupDeps', () => {
-  it('forwards progress to the given log', () => {
-    const lines: string[] = []
-    const deps = streamingClusterSetupDeps((m) => lines.push(m))
-    deps.log('Creating cluster')
-    expect(lines).toEqual(['Creating cluster'])
-  })
-
-  it('auto-approves confirms (no TTY; the caller already consented)', async () => {
-    const deps = streamingClusterSetupDeps(() => { /* ignore */ })
-    expect(await deps.confirm('delete the existing cluster?')).toBe(true)
   })
 })

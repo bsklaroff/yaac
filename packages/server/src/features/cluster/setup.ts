@@ -238,17 +238,6 @@ function defaultDeps(): ClusterSetupDeps {
 }
 
 /**
- * Deps for a setup driven over HTTP (POST /cluster/setup) instead of a TTY:
- * progress lines go to the caller's stream, and the destructive-step gate
- * auto-approves — the caller consented by invoking setup, and there is no
- * terminal to prompt. Subprocess output (kind create, calico apply) still
- * inherits the server's stdio; only `log` lines reach the stream.
- */
-export function streamingClusterSetupDeps(log: (message: string) => void): ClusterSetupDeps {
-  return { ...defaultDeps(), log, confirm: () => Promise.resolve(true) }
-}
-
-/**
  * Environment for every `kind` invocation: yaac runs kind's nodes under
  * podman (KIND_EXPERIMENTAL_PROVIDER is kind's own knob for that) so the
  * nodes and the registry share one engine, one network, one lifecycle.
@@ -306,9 +295,9 @@ export async function runClusterSetup(
     await deps.ensureRegistry()
     await recreateKindCluster(deps, cluster)
     // The node `/32`s and pod CIDRs of the cluster that just went away say
-    // nothing about the one that replaced it. A long-lived server process
-    // (POST /cluster/setup) would otherwise render every policy below for the
-    // dead cluster — stale node addresses fail closed, and a stale pod-CIDR
+    // nothing about the one that replaced it. A process that outlives the
+    // recreate would otherwise render every policy below for the dead
+    // cluster — stale node addresses fail closed, and a stale pod-CIDR
     // list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod as world.
     resetClusterCidrCache()
     await installCalico(deps, cluster)

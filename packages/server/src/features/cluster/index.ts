@@ -76,7 +76,7 @@ export {
   validateVclusterClaims,
 } from './redirect-claims'
 export { ensureRegistryClusterService, registryClusterHost } from './registry-service'
-export { ClusterSetupError, runClusterSetup, streamingClusterSetupDeps } from './setup'
+export { ClusterSetupError, runClusterSetup } from './setup'
 export {
   VCLUSTER_ORPHAN_GRACE_MS,
   buildVclusterCleanupShellCommand,
