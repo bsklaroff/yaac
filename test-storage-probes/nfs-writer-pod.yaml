@@ -1,0 +1,36 @@
+# A genuinely independent NFS client, for the cross-node coherence arm.
+#
+# This pod mounts the export ITSELF, inside its own network namespace, so it
+# gets its own clientaddr and therefore its own NFSv4 client identity. That is
+# the only faithful way to model a second node on a one-node cluster: a second
+# mount on the host with -o nosharecache still shares one nfs_client with the
+# first, so the kernel trusts its own cache and external namespace changes may
+# never become visible -- which looks like a catastrophic coherence bug and is
+# purely an artifact of the test setup.
+#
+# __SERVER__ is substituted by run-all.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-nfs-writer
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: w
+      image: docker.io/library/debian:trixie
+      securityContext:
+        privileged: true          # needs CAP_SYS_ADMIN to mount(2)
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          apt-get update -qq >/dev/null 2>&1
+          apt-get install -y -qq nfs-common python3 >/dev/null 2>&1
+          mkdir -p /nfs
+          mount -t nfs4 -o vers=4.2,rw,hard,sec=sys __SERVER__:/ /nfs
+          echo MOUNTED
+          mount | grep ' /nfs '
+          sleep infinity

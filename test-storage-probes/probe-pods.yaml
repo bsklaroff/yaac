@@ -1,0 +1,81 @@
+# The three arms the probe chain compares, all mounting the same two paths:
+#   __SHARED__   the shared filesystem under test (NFS), via hostPath
+#   __BASELINE__ node-local ext4, the control
+#
+# probe-gvisor  sandboxed, the shape yaac actually runs sessions in
+# probe-gvisor-b a second sandbox, for cross-sandbox lock and coherence tests
+# probe-runc    unsandboxed control, to separate the gVisor tax from the FS tax
+#
+# __IMAGE__ / __SHARED__ / __BASELINE__ are substituted by run-all.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-gvisor
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: probe
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: baseline, mountPath: /baseline}
+  volumes:
+    - name: shared
+      hostPath: {path: __SHARED__, type: Directory}
+    - name: baseline
+      hostPath: {path: __BASELINE__, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-gvisor-b
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: probe
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: baseline, mountPath: /baseline}
+  volumes:
+    - name: shared
+      hostPath: {path: __SHARED__, type: Directory}
+    - name: baseline
+      hostPath: {path: __BASELINE__, type: DirectoryOrCreate}
+---
+# No runtimeClassName: this one runs on runc, so the difference between it and
+# probe-gvisor is exactly the sentry + gofer cost.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-runc
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: probe
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - {name: shared, mountPath: /shared}
+        - {name: baseline, mountPath: /baseline}
+  volumes:
+    - name: shared
+      hostPath: {path: __SHARED__, type: Directory}
+    - name: baseline
+      hostPath: {path: __BASELINE__, type: DirectoryOrCreate}

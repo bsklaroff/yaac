@@ -1,0 +1,116 @@
+# The RWX arm: a ReadWriteMany PVC provisioned by csi-driver-nfs against the
+# same export, mounted by two gVisor pods at once.
+#
+# Two StorageClasses on purpose. csi-driver-nfs provisions each volume's subdir
+# as 0755 root:root, so a pod running as the session uid gets EACCES unless
+# something widens it -- storage-probe-rwx sets mountPermissions, and
+# storage-probe-rwx-default deliberately does not, so the probe can show which
+# knobs are load-bearing. (fsGroup alone is also sufficient: the kubelet chgrps
+# the volume and adds group-write + setgid.)
+#
+# __SERVER__ / __IMAGE__ are substituted by run-all.sh.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: storage-probe-rwx}
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: __SERVER__
+  share: /
+  mountPermissions: "0777"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+mountOptions: [vers=4.2, hard, sec=sys]
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: storage-probe-rwx-default}
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: __SERVER__
+  share: /
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+mountOptions: [vers=4.2, hard, sec=sys]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: probe-rwx
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: storage-probe-rwx
+  resources: {requests: {storage: 5Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: probe-rwx-plain
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: storage-probe-rwx-default
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-rwx-a
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: p
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts: [{name: v, mountPath: /rwx}]
+  volumes:
+    - name: v
+      persistentVolumeClaim: {claimName: probe-rwx}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-rwx-b
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+  containers:
+    - name: p
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts: [{name: v, mountPath: /rwx}]
+  volumes:
+    - name: v
+      persistentVolumeClaim: {claimName: probe-rwx}
+---
+# No fsGroup and no mountPermissions: this pod exists to demonstrate the EACCES.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-rwx-plain
+  namespace: default
+  labels: {storage-probe: "yes"}
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  securityContext: {runAsUser: 1000, runAsGroup: 1000}
+  containers:
+    - name: p
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      volumeMounts: [{name: v, mountPath: /rwx}]
+  volumes:
+    - name: v
+      persistentVolumeClaim: {claimName: probe-rwx-plain}

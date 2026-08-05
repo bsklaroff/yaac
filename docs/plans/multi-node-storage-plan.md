@@ -205,33 +205,97 @@ hostPath + ext4 working while exercising real multi-node scheduling.
       cold cache on other nodes, warms slower).
 - [ ] Run the e2e suite against the multi-node cluster.
 
-### NFS spike (go/no-go)
+### NFS spike (go/no-go) — **go, conditional on the tier split**
 
-- [ ] Stand up an NFS export (server host initially): `sec=sys`, no
-      `all_squash`/uid remapping — numeric uids pass through raw under
-      gVisor, so the export must preserve the sessionUid alignment on every
-      host.
-- [ ] Automount the export at the same absolute path on the server host and
-      every node (the mount must exist before kubelet resolves hostPath
-      volumes into it).
-- [ ] Probe chain, cheapest first: (1) server-host git clone + `git worktree
-      add` + pnpm store ops on the NFS mount; (2) a gVisor pod with a
-      hostPath into the NFS automount — creation ownership, O_EXCL, atomic
-      rename, hardlinks, fcntl locks; (3) a full yaac session with `claude/`
-      + `repo/.git` on NFS.
-- [ ] Cache coherence: enumerate every dir with an **external writer**
-      (server seeds `claude/settings.json` + credentials, `addWorktree`
-      writes `repo/.git`, transcript readers tail from the host) and set
-      shared file-access on those mounts (runsc `--file-access-mounts=shared`
-      / per-mount `dev.gvisor.spec.mount.*` annotations). Two cache layers
-      stack: gofer cache over NFS attribute cache.
-- [ ] Locks: confirm sentry POSIX locks stay sandbox-local (they never reach
-      the NFS server) and audit that nothing on the shared root relies on
-      cross-host flock.
-- [ ] Benchmark `git status` / `git checkout` and transcript append/tail
-      through sentry→gofer→NFS vs the hostPath-on-ext4-under-gVisor baseline.
+Run on the single-node dev cluster with `test-storage-probes/` (which is the
+reusable harness: point `SHARED_MNT` at a CephFS mount and the same chain
+re-runs for the fallback). NFS is correct under gVisor and fast enough
+**provided worktrees and the pnpm store stay node-local** — putting everything
+on the shared FS costs up to 19x on git write paths, and the split brings it
+back to near parity. One mount option is load-bearing, and the spike turned up
+one bug that is not about NFS at all.
+
+- [x] Export: `sec=sys`, `no_root_squash`, `no_all_squash`. Numeric uids pass
+      through raw end to end — a uid-1000 pod's files land `1000:1000` on the
+      backing store, so the sessionUid alignment holds with no idmap anywhere.
+- [x] Mount at a fixed absolute path on the node before kubelet resolves
+      hostPath into it. **`actimeo=1` is required** (see coherence below); it
+      cost nothing measurable in the benchmarks.
+- [x] Semantics under gVisor: creation ownership, O_EXCL, atomic
+      rename-over-existing, `link(2)` with inode/nlink accounting, `fcntl`,
+      `flock`, fsync, `MAP_SHARED` write-back, O_APPEND, symlinks, `user.*`
+      xattrs — **11/11**, identical to the ext4 baseline, and 11/11 again
+      through a CSI RWX PVC. `git worktree add` works with the gitdir pointer
+      crossing the tier boundary, and cross-tier `link(2)` gives EXDEV as
+      predicted.
+- [x] Coherence. The gofer adds **no** staleness of its own — a gVisor reader
+      tracks an unsandboxed one on the same mount within noise, so the runsc
+      `--file-access` / `dev.gvisor.spec.mount.*` knobs are not the lever here
+      (volumes already mount `cache=remote_revalidating`, and the annotation is
+      a no-op). The NFS attribute cache is the whole story, and it is brutal by
+      default: a file created by another client takes **~30s** (`acdirmin`) to
+      appear. `actimeo=1` takes that to **25–57ms**, and every other shape
+      under ~150ms. A writer on the server host writing straight to its own
+      export is a separate case: `open()`-based reads are coherent in ~1–9ms,
+      but `stat()`-based polling (transcript size, deletion) lags ~3s on
+      `acregmin`.
+- [x] Locks are sandbox-local, confirmed for both `flock` and `fcntl`: an
+      unsandboxed control on the same file blocks correctly, so the server's
+      lock manager works, but a lock held inside a sandbox is invisible to the
+      node and to a second sandbox. This is a **sentry** property — it
+      reproduces on plain ext4 — that multi-node merely makes dangerous.
+- [x] Benchmarked — see the table below.
+- [x] RWX via csi-driver-nfs: two gVisor pods share one PVC, 11/11 semantics,
+      cross-pod atomic-rename visibility ~8ms, no lost writes across 2000
+      concurrent appends. **Trap:** the driver provisions each volume subdir
+      `0755 root:root`, so a pod running as the session uid gets EACCES —
+      needs `fsGroup` (sufficient alone; the kubelet chgrps and adds
+      group-write + setgid) or `mountPermissions` on the StorageClass.
+- [ ] Still to run: a full yaac session with `claude/` + `repo/.git` on NFS
+      (the constituent git/worktree operations are measured above, but the
+      session path end to end is not), and the server host mounting the export
+      at the same absolute path as the nodes — the spike ran the server-writes-
+      to-its-own-export case instead.
+- **The measurements are a floor.** The "second node" was a pod with its own
+  netns and NFS client identity on a one-node cluster, so nothing crossed a
+  real NIC. Real inter-node latency makes every NFS number worse.
 - No-go on NFS (but gVisor healthy) → try CephFS under gVisor (no idmap
-  needed either).
+  needed either); re-run `test-storage-probes/` against it unchanged.
+
+#### Where the time goes
+
+Milliseconds, 703-commit repo, single node; "split" = repo shared, worktree
+node-local. `gVisor+ext4` is what yaac runs today, so that column is the
+baseline any shared-FS number has to be judged against.
+
+| | runc+ext4 | runc+NFS | gVisor+ext4 | gVisor+NFS | split |
+|---|---|---|---|---|---|
+| clone | 157 | 13670 | 1367 | 25677 | — |
+| status (warm) | 96 | 52 | 171 | 109 | 180 |
+| checkout ±25 | 118/139 | 2980/3140 | 453/547 | 3852/4029 | 577/572 |
+| gc | 980 | 7142 | 3034 | 10695 | — |
+| worktree add | 142 | 5140 | 500 | 7638 | **749** |
+| link(2) ×200 | 366 | 704 | 2175 | 3437 | 2587 |
+| 300 appends | 30 | 594 | 71 | 767 | — |
+
+NFS dominates, and gVisor's *relative* overhead actually shrinks on NFS because
+the network latency swamps it. Warm reads are free either way. **The split is
+the whole ballgame**: `worktree add` 7638 → 749ms against a 500ms all-ext4
+baseline, checkout 4029 → 572ms against 547ms.
+
+#### Found on the way: concurrent O_APPEND is not atomic across sandboxes
+
+Two gVisor sandboxes appending to the **same file on a gofer-backed ext4
+hostPath** lose and interleave writes — ~5% of lines across repeated trials
+(107/2000 lost, 35 garbled). Unsandboxed processes on the same file are clean,
+and so is NFS, where gVisor stamps `disable_file_handle_sharing` on the mount;
+on ext4 each sentry appears to append at its own cached offset.
+
+This is a **current** single-node bug, not an NFS regression — it needs no
+multi-node cluster to hit. It has stayed invisible because yaac's append-heavy
+files (transcripts) are per-session, so two sandboxes rarely share one. Any
+project-scoped shared log would hit it immediately. `append-race.sh` in the
+harness is the reproducer.
 
 ### Split shared vs node-local roots
 
@@ -286,12 +350,18 @@ Keep hot per-session dirs off the shared FS regardless of which one wins.
       change, not a path-vocabulary one.
 - [ ] pnpm store placement: recommended **per-node store** (node-local, fast,
       duplicate downloads per node) over store-on-shared-FS (every
-      `link(2)`/stat becomes a remote round trip).
+      `link(2)`/stat becomes a remote round trip). `link(2)` itself is only
+      ~1.6x slower on NFS (704 vs 366ms per 200 links unsandboxed); it is the
+      stat storm around an install, not the link, that argues for node-local.
 - [ ] Worktree creation: the server runs `git worktree add` on its own host
       against `repo/.git`. With repo shared and worktrees node-local, the
-      worktree dir must be created on the session's node — keep worktrees on
-      the shared FS initially (simplest), or move creation into an init
-      container (later).
+      worktree dir must be created on the session's node — so **move creation
+      into an init container**. The spike removed the "keep worktrees on the
+      shared FS initially (simplest)" option: shared worktrees cost 7638ms per
+      `worktree add` and ~4s per checkout, against 749ms and 572ms for the
+      split. Git itself is happy either way — the gitdir pointer resolves
+      across the tier boundary and commits made in a node-local worktree land
+      in the shared repo.
 - [ ] PGlite server DB (`<dataDir>/db`): stays on server-local disk (embedded
       single-writer; never on a network FS). Carve out of the shared subtree.
 - [ ] opencode per-session SQLite: node-local (SQLite forbids WAL on network
@@ -305,13 +375,15 @@ Keep hot per-session dirs off the shared FS regardless of which one wins.
 ### Production shape
 
 - [ ] NFS automount units on the server host + every node (same absolute
-      path), ordered before kubelet; document node onboarding in
-      docs/cluster-setup.md.
+      path, `sec=sys`, no squash, **`actimeo=1`**), ordered before kubelet;
+      document node onboarding in docs/cluster-setup.md.
 - [ ] NFS server operations: exports, snapshot/backup, monitoring — it is the
       SPOF for shared project state.
 - [ ] Extend `yaac cluster check`: an NFS write-through probe (gVisor pod,
       hostPath into the shared root: create/ownership/rename/hardlink) and a
-      coherence probe (host write → pod read latency and back).
+      coherence probe (host write → pod read latency and back). Both exist as
+      one-shot scripts in `test-storage-probes/` (`fsprobe.py`,
+      `coherence.sh`); the work is turning them into a gate.
 - [ ] runsc upgrade cadence: it is the primary containment for every workload
       — pin, track releases/CVEs, and re-run the cluster-check probes on every
       bump.
@@ -322,7 +394,9 @@ If the shared filesystem specifically fails but gVisor is healthy:
 
 - **CephFS via Rook** — works under gVisor with no idmap requirement (same
   gofer argument as NFS). Cost: operating Ceph (operator + mons + MDS).
-  Re-run the NFS probe chain against it.
+  Re-run the probe chain against it: only `setup-nfs-export.sh` is
+  NFS-specific, so `SHARED_MNT=<cephfs mount> test-storage-probes/run-all.sh`
+  reproduces every arm.
 - **JuiceFS** (metadata engine + S3 chunks) — full POSIX, Apache-2.0. Under
   gVisor it needs no idmap patch (the gofer argument again); the FUSE-idmap
   research below only matters if the runtime itself is ever reverted to
@@ -357,17 +431,27 @@ contract holds; treat ACL support as incompatible with idmap until proven.
   catalog of casualties; a growing catalog is the signal to reconsider.
 - **Universal perf tax.** systrap overhead + the gofer hop apply to every
   session, and fork/exec-heavy work (git, package managers, builds) is
-  gVisor's weakest axis. The shared-vs-node-local split keeps
-  worktrees/modules node-local; the NFS spike measures the storage delta on
-  top. A hot-path before/after benchmark is still outstanding.
-- **Two caching layers on the pod path.** gofer caching will stack on NFS
-  attribute caching; every externally-written dir must be mounted with
-  shared file-access or staleness bugs will be intermittent and
-  node-dependent. The NFS-spike coherence probes are the guardrail.
-- **Sentry-local POSIX locks.** gVisor emulates fcntl/flock inside the
-  sentry; locks never reach the NFS server, so cross-node lock coordination
-  silently doesn't exist. Single-writer-per-session discipline must hold for
-  everything on the shared root (it does today).
+  gVisor's weakest axis. Measured: gVisor costs ~3–9x over runc on ext4 for
+  git write paths (clone 157 → 1367ms, `worktree add` 142 → 500ms), and the
+  storage delta on top is in the NFS-spike table. The split keeps
+  worktrees/modules node-local, which is what makes the total tolerable.
+- **Two caching layers on the pod path.** Measured, and the *gofer* layer
+  turned out to be innocent — a sandboxed reader tracks an unsandboxed one
+  within noise, and the `dev.gvisor.spec.mount.*` share annotation is a no-op
+  because volumes already mount `cache=remote_revalidating`. The NFS attribute
+  cache is the real hazard: ~30s to see another client's new file at default
+  `acdirmin`. **Mount the shared root `actimeo=1`**; it is nearly free at
+  single-node latency, but re-measure on a real network before trusting that.
+- **Sentry-local POSIX locks.** Confirmed for both `fcntl` and `flock`: locks
+  never reach the server, and a second sandbox does not see them either.
+  Cross-node lock coordination silently doesn't exist, so single-writer-per-
+  session discipline must hold for everything on the shared root (it does
+  today). Not NFS-specific — it reproduces on ext4.
+- **Concurrent O_APPEND is not atomic across sandboxes** on a gofer-backed
+  ext4 hostPath (~5% of lines lost or interleaved; clean unsandboxed, and
+  clean on NFS). This is live today, not a multi-node regression — see the
+  NFS-spike section. Nothing may assume append atomicity for a file two
+  sessions share.
 - **Uid passthrough discipline.** With no userns and no idmap, numeric uids
   flow raw across server host, nodes, and (eventually) the NFS export
   (`sec=sys`, no squash). The sessionUid = server uid = image yaac uid
