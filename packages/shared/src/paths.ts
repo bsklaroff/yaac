@@ -154,13 +154,14 @@ export function getNodeLocalProjectsDir(): string {
 }
 
 /**
- * Path inside the session container where the bind-mounted tmux server
- * socket lives. Pairs with `sessionTmuxDir()` on the host side. Every
- * in-container `tmux` invocation passes `-S ${CONTAINER_TMUX_SOCK}` so
- * the server lands on this shared dir. The socket file isn't
- * connectable from the host (virtio-fs/9p doesn't share UNIX socket
- * kernel state) so liveness and pane-content probes both go through
- * `podman exec`.
+ * Path inside the session container where the tmux server socket lives.
+ * Backed by a pod-local emptyDir (see the session Job's mount list): a UNIX
+ * socket only rendezvouses within the kernel that bound it, and every
+ * consumer — attach, the `tmux -C` status stream, the liveness and
+ * pane-content probes — reaches tmux through `kubectl exec` in the pod, so
+ * nothing off the pod ever opens this dir. Every in-container `tmux`
+ * invocation passes `-S ${CONTAINER_TMUX_SOCK}` so they all land on the
+ * same server.
  */
 export const CONTAINER_TMUX_DIR = '/tmp/yaac-tmux'
 export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`

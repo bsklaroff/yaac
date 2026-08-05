@@ -8,10 +8,11 @@ import {
 import type { AgentTool, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { shellEscape } from '#platform/shell'
 
-// Every in-container `tmux` invocation routes through this prefix so
-// the server socket lands on a host-mounted dir. Liveness and
-// pane-content probes still go through `kubectl exec` because UNIX
-// socket connect()s don't cross the hostPath boundary portably.
+// Every in-container `tmux` invocation routes through this prefix so they
+// all reach the same server socket, on the pod's own emptyDir. Nothing
+// host-side connects to it — a UNIX socket only rendezvouses within the
+// kernel that bound it — so liveness and pane-content probes reach tmux
+// through `kubectl exec` in the pod, like every other consumer.
 export const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
 
 export interface InitWindow {

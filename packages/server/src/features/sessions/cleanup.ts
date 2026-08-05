@@ -94,8 +94,8 @@ export async function cleanupSession(params: {
 
   // Delete the session Job; the pod's terminationGracePeriodSeconds (5s)
   // covers the graceful-stop window, so no separate stop step is needed.
-  // --wait so the modules/tmux dirs below aren't yanked out from under a
-  // still-terminating pod.
+  // --wait so the modules/session dirs below aren't yanked out from under
+  // a still-terminating pod.
   try {
     await kubectlWithRetry([
       'delete', 'job', jobName, '-n', k8sNamespace(),
@@ -126,8 +126,8 @@ export async function cleanupSession(params: {
     force: true,
   })
 
-  // Remove the per-session dirs (tmux socket dir, vcluster kubeconfig,
-  // nested-yaac data). The pod is gone; the hostPath-mount sources are
+  // Remove the per-session dirs (vcluster kubeconfig, nested-yaac data,
+  // staged skills / session bin). The pod is gone; the mount sources are
   // garbage now.
   for (const dir of sessionRoots(projectSlug, sessionId)) {
     await fs.rm(dir, { recursive: true, force: true })
@@ -270,8 +270,8 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
 
     // Per-session dirs live under `<slug>/sessions/<sid>` on both roots —
     // shared (vcluster kubeconfig, nested-yaac data, staged skills) and
-    // node-local (the tmux socket dir); `sessionsRoots` owns that pairing
-    // and collapses to one entry today. The `sessions/` dir is unique to
+    // node-local; `sessionsRoots` owns that pairing and collapses to one
+    // entry today. The `sessions/` dir is unique to
     // this feature, so a flat readdir gives the session id list directly.
     for (const sessionsRoot of sessionsRoots(slug)) {
       let sessionEntries: string[] = []

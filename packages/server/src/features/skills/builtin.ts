@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { type HostPathMount } from '#platform/k8s'
+import { type SessionMount } from '#platform/k8s'
 
 /**
  * In-pod personal skills root for each agent tool. yaac's bundled skills are
@@ -80,14 +80,20 @@ export async function stageBuiltinSkills(srcDir: string, destDir: string): Promi
   return names
 }
 
-/** Read-only hostPath mounts placing each staged skill at `<root>/<name>` in
- *  every tool's personal skills dir. The skill content rides in via the mount,
- *  so it is never written into the persisted per-project config dirs. */
-export function builtinSkillMounts(stagingDir: string, names: string[]): HostPathMount[] {
-  const mounts: HostPathMount[] = []
+/** Read-only mounts placing each staged skill at `<root>/<name>` in every
+ *  tool's personal skills dir. The skill content rides in via the mount, so it
+ *  is never written into the persisted per-project config dirs. The staging dir
+ *  is SHARED (under `sessionDir`) — server-written, pod-read — so it takes the
+ *  shared tier's source. */
+export function builtinSkillMounts(stagingDir: string, names: string[]): SessionMount[] {
+  const mounts: SessionMount[] = []
   for (const name of names) {
     for (const root of TOOL_SKILL_ROOTS) {
-      mounts.push({ hostPath: path.join(stagingDir, name), mountPath: `${root}/${name}`, readOnly: true })
+      mounts.push({
+        source: { kind: 'hostPath', path: path.join(stagingDir, name) },
+        mountPath: `${root}/${name}`,
+        readOnly: true,
+      })
     }
   }
   return mounts

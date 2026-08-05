@@ -23,7 +23,7 @@ import {
   SSH_AGENT_SOCKET_PATH,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
-  type HostPathMount,
+  type SessionMount,
   awaitDeferredClusterBoot,
   buildSessionJobManifest,
   dataDirHash,
@@ -68,7 +68,6 @@ import {
   sessionVclusterDir,
   worktreeDir,
   projectDir,
-  sessionTmuxDir,
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_TMUX_DIR,
@@ -222,7 +221,7 @@ interface SessionSetupParams {
   projectSlug: string
   sessionId: string
   env: string[]
-  hostPathMounts: HostPathMount[]
+  mounts: SessionMount[]
   /** Live proxy Service ClusterIP — the pod's resolver + egress redirect target. */
   proxyHost: string
   nested?: boolean
@@ -281,7 +280,7 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
 
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
-    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
+    imageRef, jobName, projectSlug, sessionId, env, mounts,
     proxyHost, nested, innerYaac, tool, launching, initWindows, piProvider,
     options, worktree,
   } = params
@@ -301,7 +300,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     },
     image: imageRef,
     env,
-    hostPathMounts,
+    mounts,
     memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
     // 250m per session pairs with the 1Gi memory request at 4 GB/core, so
@@ -312,9 +311,10 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     // below it: an agent session is idle between turns and bursts freely,
     // since nothing here sets a cpu limit.
     cpuRequestMillis: 250,
-    // Sessions keep their repo, worktrees and caches on hostPath mounts,
-    // which are not ephemeral storage — what lands here is the writable
-    // layer, logs, and (nested only) the podman graphroot emptyDir. 2Gi
+    // Sessions keep their repo, worktrees and caches on hostPath (later
+    // PVC) mounts, which are not ephemeral storage — what lands here is the
+    // writable layer, logs, and the pod-local emptyDirs (the tmux socket
+    // dir, the ssh-agent socket dir, and nested-only the graphroot). 2Gi
     // covers the steady state; the 16Gi ceiling is a blast-radius bound on
     // a session filling the node's disk, not a budget anyone should hit.
     ephemeralStorageRequestBytes: 2 * 1024 ** 3,
@@ -827,7 +827,7 @@ export async function createSession(
     // start has been running since the ensure above), write it under the
     // session dir, and dir-mount it at ~/.kube. Speaks to the pinned
     // VIP:8443 (IP SAN) — no DNS involved.
-    const vclusterMounts: HostPathMount[] = []
+    const vclusterMounts: SessionMount[] = []
     const vclusterEnv: string[] = []
     if (virtualCluster) {
       emit('Waiting for the virtual cluster API...', options)
@@ -835,7 +835,8 @@ export async function createSession(
       const vcDir = sessionVclusterDir(projectSlug, sessionId)
       await fs.mkdir(vcDir, { recursive: true })
       await fs.writeFile(path.join(vcDir, 'config'), kubeconfig, { mode: 0o600 })
-      vclusterMounts.push({ hostPath: vcDir, mountPath: '/home/yaac/.kube' })
+      // SHARED: the server writes (and heals) the kubeconfig, the pod reads it.
+      vclusterMounts.push({ source: { kind: 'hostPath', path: vcDir }, mountPath: '/home/yaac/.kube' })
       vclusterEnv.push('KUBECONFIG=/home/yaac/.kube/config')
 
       // Born-at-zero: with the kubeconfig captured, the freshly-booted
@@ -863,7 +864,9 @@ export async function createSession(
       // hosts.toml) — no repo-path prefix, that registry is already scoped.
       const nestedDataDir = nestedYaacDataDir(projectSlug, sessionId)
       await fs.mkdir(nestedDataDir, { recursive: true })
-      vclusterMounts.push({ hostPath: nestedDataDir, mountPath: nestedDataDir })
+      // SHARED, and a hostPath the NODE must resolve too: the inner yaac's
+      // synced pods carry hostPaths under this dir (see nestedYaacDataDir).
+      vclusterMounts.push({ source: { kind: 'hostPath', path: nestedDataDir }, mountPath: nestedDataDir })
       vclusterEnv.push(`YAAC_DATA_DIR=${nestedDataDir}`)
       vclusterEnv.push('YAAC_NESTED=1')
       vclusterEnv.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
@@ -919,7 +922,7 @@ export async function createSession(
     // proxy still gets an agent (a hostPath socket only meets on one node).
     // The upstream env is appended below, where the cluster leg's proxy
     // ClusterIP is in scope.
-    const sshMounts: HostPathMount[] = []
+    const sshMounts: SessionMount[] = []
     const sshEnv: string[] = []
     if (parsedRemote.scheme === 'ssh') {
       const knownHostsEntry = await loadKnownHostsEntryForHost(parsedRemote.host)
@@ -932,9 +935,12 @@ export async function createSession(
       const knownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
       await writeKnownHostsFile([knownHostsEntry], knownHostsFile)
       const containerKnownHosts = '/home/yaac/.ssh/yaac/known_hosts'
-      sshMounts.push(
-        { hostPath: knownHostsFile, mountPath: containerKnownHosts, readOnly: true, type: 'File' },
-      )
+      // SHARED: written under the project dir by the server, read in-pod.
+      sshMounts.push({
+        source: { kind: 'hostPath', path: knownHostsFile, type: 'File' },
+        mountPath: containerKnownHosts,
+        readOnly: true,
+      })
       // ncat speaks CONNECT to a sentinel address that netd redirects
       // through the node Envoy to the proxy's tunnel listener — the same path
       // as HTTP(S). CONNECT carries the real host:port (so the allowlist sees
@@ -1005,10 +1011,6 @@ export async function createSession(
       await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
     }
 
-    // Per-session host dir holding the tmux server socket and pane log.
-    const tmuxHostDir = sessionTmuxDir(projectSlug, sessionId)
-    await fs.mkdir(tmuxHostDir, { recursive: true })
-
     // Forget which agent session sat on which pane in the *previous* life:
     // tmux pane ids restart from %0, so a stale pointer would attribute this
     // life's pane to the conversation the last one ran there. The linked
@@ -1064,7 +1066,7 @@ export async function createSession(
       toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
       builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
       claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-      cachedPackages, tmuxHostDir,
+      cachedPackages,
     }
   })()
 
@@ -1073,7 +1075,7 @@ export async function createSession(
     toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
     builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
     claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-    cachedPackages, tmuxHostDir,
+    cachedPackages,
   } = prep
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1259,33 +1261,71 @@ export async function createSession(
   // gvisor-nested handler).
   const innerYaac = yaacEnv.nested
 
-  const hostPathMounts: HostPathMount[] = [
-    { hostPath: wtDir, mountPath: '/workspace' },
-    { hostPath: `${repo}/.git`, mountPath: '/repo/.git' },
-    { hostPath: claude, mountPath: '/home/yaac/.claude' },
-    { hostPath: claudeJson, mountPath: '/home/yaac/.claude.json', type: 'File' },
-    { hostPath: codex, mountPath: '/home/yaac/.codex' },
-    { hostPath: opencodeData, mountPath: '/home/yaac/.local/share/opencode' },
-    { hostPath: opencodeConfig, mountPath: '/home/yaac/.config/opencode' },
-    { hostPath: pi, mountPath: PI_CONTAINER_HOME },
-    { hostPath: cachedPackages, mountPath: '/home/yaac/.cached-packages' },
-    { hostPath: tmuxHostDir, mountPath: CONTAINER_TMUX_DIR },
-    ...cacheVolumeEntries.map(([key, containerPath]): HostPathMount => ({
-      hostPath: cacheVolumeDir(projectSlug, key),
+  // Every mount declares its SOURCE, not just a host path — the seam the
+  // stock-k8s backend needs (docs/plans/stock-k8s-multi-node.md §2). What
+  // drives each choice is the storage tier the path already declares in
+  // project-paths.ts, so this list invents no second classification:
+  //   SHARED     — the server and the session pod must see the same bytes.
+  //                hostPath here (one node, one filesystem); a subPath of
+  //                the RWX claim once the tiers become different volumes.
+  //   NODE-LOCAL — never has to leave the node it was written on. hostPath
+  //                here too; node disk on a multi-node cluster.
+  //   emptyDir   — the subset of NODE-LOCAL that nothing outside the pod
+  //                ever opens and nothing needs after it dies. Only the
+  //                tmux socket dir qualifies today.
+  // User bindMounts are outside every tier: they name paths on the user's
+  // own machine, so they are hostPath by definition.
+  const mounts: SessionMount[] = [
+    // SHARED.
+    { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
+    { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: '/repo/.git' },
+    { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
+    {
+      source: { kind: 'hostPath', path: claudeJson, type: 'File' },
+      mountPath: '/home/yaac/.claude.json',
+    },
+    { source: { kind: 'hostPath', path: codex }, mountPath: '/home/yaac/.codex' },
+    // NODE-LOCAL: opencode's sqlite DB — WAL is unusable on a network
+    // filesystem, and only this pod's node ever reads it.
+    {
+      source: { kind: 'hostPath', path: opencodeData },
+      mountPath: '/home/yaac/.local/share/opencode',
+    },
+    // SHARED.
+    { source: { kind: 'hostPath', path: opencodeConfig }, mountPath: '/home/yaac/.config/opencode' },
+    { source: { kind: 'hostPath', path: pi }, mountPath: PI_CONTAINER_HOME },
+    // NODE-LOCAL: the pnpm store hands out hardlinks, which can't cross a
+    // filesystem, and its link/stat traffic hates a network one.
+    {
+      source: { kind: 'hostPath', path: cachedPackages },
+      mountPath: '/home/yaac/.cached-packages',
+    },
+    // Pod-local: the tmux server socket. A UNIX socket only rendezvouses
+    // within the kernel that bound it, and every consumer (attach, the
+    // `tmux -C` status stream, the liveness probe) reaches tmux through
+    // `kubectl exec` inside this pod — so there is nothing to share and
+    // nothing to keep once the pod is gone.
+    { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
+    // SHARED: the point of a cache volume is that the NEXT session gets the
+    // warm cache, wherever it is scheduled.
+    ...cacheVolumeEntries.map(([key, containerPath]): SessionMount => ({
+      source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
       mountPath: containerPath,
     })),
     // User bindMounts may point at files or directories — omit `type` so
     // the kubelet mounts whatever exists.
-    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): HostPathMount => ({
-      hostPath,
+    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): SessionMount => ({
+      source: { kind: 'hostPath', path: hostPath, type: '' },
       mountPath: containerPath,
       readOnly: mode === 'ro',
-      type: '',
     })),
-    ...ephemeralMounts.map((m): HostPathMount => ({
-      hostPath: m.hostBacking,
+    // NODE-LOCAL: the ephemeral module dirs live under the pnpm store.
+    ...ephemeralMounts.map((m): SessionMount => ({
+      source: { kind: 'hostPath', path: m.hostBacking },
       mountPath: m.containerPath,
     })),
+    // SHARED: server-staged trees (skills, session bin) and the per-session
+    // vcluster / ssh files, all written host-side and read in-pod.
     ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
     ...sessionBinMounts(sessionBinStaging, sessionBinNames),
     ...cluster.vclusterMounts,
@@ -1297,7 +1337,7 @@ export async function createSession(
   // individual exec calls against a dead pod.
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
-    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts, launching,
+    imageRef, jobName, projectSlug, sessionId, env, mounts, launching,
     proxyHost: cluster.proxyHost, nested: nestedContainers, innerYaac, tool, initWindows,
     piProvider: toolAuthByTool.pi?.piProvider,
     options, worktree: worktreeTask,

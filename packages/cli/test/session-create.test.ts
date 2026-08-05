@@ -142,7 +142,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   sessionDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
-  sessionTmuxDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/tmux`),
   sessionVclusterDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/vcluster`),
   nestedYaacDataDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/nested-yaac`),
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
@@ -261,6 +260,7 @@ import { resolveProjectConfig } from '@yaac/server/features/projects/config'
 import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/features/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/features/egress/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/port'
@@ -321,6 +321,7 @@ interface JobManifest {
           name: string
           hostPath?: { path: string; type: string }
           configMap?: { name: string }
+          emptyDir?: { sizeLimit?: string }
         }>
       }
     }
@@ -692,7 +693,6 @@ describe('createSession', () => {
       '/tmp/demo/opencode-config',
       '/tmp/demo/pi',
       '/tmp/demo/.cached-packages',
-      '/tmp/demo/sessions/abcd1234/tmux',
     ]))
     // ~/.claude.json is a single file — hostPath type File.
     const claudeJsonVol = manifest.spec.template.spec.volumes
@@ -701,6 +701,24 @@ describe('createSession', () => {
 
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+  })
+
+  it('puts the tmux socket dir on a pod-local emptyDir, with no host dir behind it', async () => {
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const { volumes, containers } = appliedJobManifest().spec.template.spec
+    const mount = containers[0].volumeMounts.find((m) => m.mountPath === CONTAINER_TMUX_DIR)
+    expect(mount).toBeDefined()
+    const volume = volumes.find((v) => v.name === mount!.name)
+    // A UNIX socket only meets within one kernel and every consumer reaches
+    // tmux through exec in this pod, so there is nothing to share: no
+    // hostPath source, and nothing created host-side to back it.
+    expect(volume).toEqual({ name: mount!.name, emptyDir: {} })
+    expect(volumes.some((v) => v.hostPath?.path.endsWith('/tmux'))).toBe(false)
+    expect(mockMkdir).not.toHaveBeenCalledWith(
+      expect.stringContaining('/tmux'),
+      expect.anything(),
+    )
   })
 
   it('injects no per-pod egress sidecars and points the pod resolver at the proxy', async () => {

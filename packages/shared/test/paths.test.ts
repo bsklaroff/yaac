@@ -41,7 +41,6 @@ import {
   projectRoots,
   projectsRoots,
   sessionDir,
-  sessionTmuxDir,
   sessionVclusterDir,
   nestedYaacDataDir,
   opencodeDataDir,
@@ -212,7 +211,6 @@ describe('storage tiers', () => {
     expect(cachedPackagesDir('my-repo')).toBe(`${proj}/.cached-packages`)
     expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${proj}/opencode-data/abc123`)
     expect(nodeLocalSessionDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123`)
-    expect(sessionTmuxDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123/tmux`)
   })
 
   it('pairs both roots for whole-session, whole-project, and all-project sweeps', () => {

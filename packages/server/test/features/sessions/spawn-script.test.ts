@@ -72,10 +72,9 @@ describe('stageSessionBin', () => {
 describe('sessionBinMounts', () => {
   it('File-mounts each staged script read-only onto /usr/local/bin', () => {
     expect(sessionBinMounts('/staging', ['yaac-spawn'])).toEqual([{
-      hostPath: path.join('/staging', 'yaac-spawn'),
+      source: { kind: 'hostPath', path: path.join('/staging', 'yaac-spawn'), type: 'File' },
       mountPath: '/usr/local/bin/yaac-spawn',
       readOnly: true,
-      type: 'File',
     }])
     expect(sessionBinMounts('/staging', [])).toEqual([])
   })

@@ -81,7 +81,7 @@ describe('yaac-session-init script', () => {
     expect(st.mode & 0o111).not.toBe(0)
   })
 
-  it('drives tmux over the host-mounted socket (CONTAINER_TMUX_SOCK)', async () => {
+  it('drives tmux over the pod-local socket (CONTAINER_TMUX_SOCK)', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
     expect(body).toContain(`tmux -S ${CONTAINER_TMUX_SOCK}`)
   })
