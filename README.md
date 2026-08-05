@@ -84,6 +84,28 @@ host netfilter and routing access that rootless podman doesn't delegate, or the
 calico-node DaemonSet hangs (see
 [Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
+Give the host **swap** before `yaac cluster setup` if `swapon --show` is
+empty. Session pods run under gVisor, which holds the sandboxed workload's
+memory in a memfd — shmem, which the kernel cannot reclaim at all without
+swap, so a session under pressure is OOM-killed where it would otherwise
+have paged out. Create it first: the cluster's kubelet picks up
+`swapBehavior: LimitedSwap` (`k8s/kind-config.yaml`) only when kind creates
+the node, and no `--repair` adds it later.
+
+```sh
+# ext4. On btrfs: sudo btrfs filesystem mkswapfile --size 32G /swapfile
+# On ZFS use a zvol, not a swapfile.
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+A pod's share is `memoryRequest / nodeRAM × totalSwap`, so sizing swap at
+roughly node RAM gives a session about its memory request again. If you run
+swap deep, check that `systemd-oomd` (`SwapUsedLimit=90%` by default) won't
+kill the kind node container first.
+
 #### Both platforms
 
 Then build, link, and wire the cluster:
