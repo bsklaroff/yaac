@@ -7,6 +7,7 @@ type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 const stdinEndMock = vi.fn<(input?: string) => void>()
+const stdinOnMock = vi.fn<(event: string, listener: () => void) => void>()
 vi.mock('node:child_process', () => ({
   execFile: (
     file: string,
@@ -19,7 +20,10 @@ vi.mock('node:child_process', () => ({
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
-    return { stdin: { end: stdinEndMock } }
+    // `on` as well as `end`: the caller subscribes to stdin's 'error' so a
+    // child that died before reading can't take the process down with an
+    // unhandled event, and a stand-in for a stream has to carry that.
+    return { stdin: { end: stdinEndMock, on: stdinOnMock } }
   },
   exec: (command: string, opts: unknown, cb?: ExecCallback) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
@@ -90,6 +94,7 @@ describe('kubectlWithRetry', () => {
   beforeEach(() => {
     execFileMock.mockReset()
     stdinEndMock.mockReset()
+    stdinOnMock.mockReset()
   })
 
   it('returns stdout/stderr on first successful call', async () => {
@@ -132,6 +137,11 @@ describe('kubectlWithRetry', () => {
     await kubectlWithRetry(['apply', '-f', '-'], { input: '{"kind":"Job"}' })
     expect(execFileMock).toHaveBeenCalledWith('kubectl', ['apply', '-f', '-'])
     expect(stdinEndMock).toHaveBeenCalledWith('{"kind":"Job"}')
+    // Subscribed before the write: a shutdown SIGTERMs the process group, so
+    // the child can be gone before it reads and the EPIPE that follows would
+    // otherwise be an unhandled 'error' — i.e. the server exiting by uncaught
+    // exception instead of running its shutdown handler.
+    expect(stdinOnMock).toHaveBeenCalledWith('error', expect.any(Function))
   })
 })
 
@@ -164,6 +174,7 @@ describe('kubectlApply', () => {
   beforeEach(() => {
     execFileMock.mockReset()
     stdinEndMock.mockReset()
+    stdinOnMock.mockReset()
   })
 
   it('pipes the JSON-serialized manifest into kubectl apply -f -', async () => {

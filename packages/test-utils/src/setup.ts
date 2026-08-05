@@ -123,27 +123,59 @@ export async function removeSessionJob(jobName: string): Promise<void> {
 
 /**
  * Delete every session Job/pod this test's data dir created in the active
- * namespace. The data-dir-hash scoping matters within a file: sequential
- * tests share TEST_NAMESPACE, and `--wait=false` means a prior test's
- * pods may still be terminating when the next test starts — the label
- * keeps them out of each other's queries (listSessionPods, the server's
- * stale-session reconciler) and out of this delete. The k8s analog of the
- * podman-era `podman rm -f $(podman ps -a --filter
+ * namespace, and wait for them to actually go away. The data-dir-hash
+ * scoping matters within a file: sequential tests share TEST_NAMESPACE, so
+ * the label keeps them out of each other's queries (listSessionPods, the
+ * server's stale-session reconciler) and out of this delete. The k8s analog
+ * of the podman-era `podman rm -f $(podman ps -a --filter
  * label=yaac.data-dir=<dir>)`.
+ *
+ * The wait is the point. e2e files run one at a time, so returning while
+ * pods are still terminating just moves the teardown cost onto the next
+ * file's setup — and a session pod is not cheap to stop (a gVisor sandbox
+ * running podman-in-pod). That is how a file that takes ~80s on its own
+ * takes >300s straight after a session-heavy one and blows a hook budget
+ * that is plenty when it runs alone. Paying the drain here, where nothing
+ * is racing a timeout, turns a variable cost into a fixed one.
+ *
+ * Bounded rather than unbounded: a wedged pod (a stuck finalizer, a node
+ * that stopped reaping) must not hang the whole suite, and by the time the
+ * budget is gone the next file's own namespace scoping is the backstop.
  */
-export async function cleanupSessionJobs(): Promise<void> {
+export async function cleanupSessionJobs(timeoutMs = 120_000): Promise<void> {
+  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`
   try {
+    // Issue the deletes without waiting, then poll: `kubectl delete --wait`
+    // blocks per object, so a file with several sessions would serialize
+    // their terminations instead of overlapping them.
     await kubectlWithRetry([
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
       // The session-id term keeps this scoped to session Jobs/pods: the
       // test server's proxy pod carries the same data-dir-hash (install
       // identity) but is Deployment-managed, not ours to sweep.
-      '-l', `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`,
+      '-l', selector,
       '--ignore-not-found', '--wait=false',
     ])
   } catch {
-    // cluster unreachable — nothing to clean
+    return // cluster unreachable — nothing to clean, and nothing to wait for
+  }
+
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    let remaining: number
+    try {
+      const { stdout } = await kubectlWithRetry([
+        'get', 'pods', '-n', k8sNamespace(), '-l', selector,
+        '-o', 'name',
+      ])
+      remaining = stdout.split('\n').filter((line) => line.trim().length > 0).length
+    } catch {
+      return // cluster went away mid-drain; the pods are not our problem now
+    }
+    if (remaining === 0) return
+    if (Date.now() > deadline) return
+    await new Promise((r) => setTimeout(r, 1_000))
   }
 }
 

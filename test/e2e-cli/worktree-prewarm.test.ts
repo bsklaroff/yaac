@@ -153,31 +153,15 @@ describe('yaac prewarmed sessions', () => {
     const proj = (await listProjects()).find((p) => p.slug === 'repo-demo')
     expect(proj?.sessionCount).toBe(1)
 
-    // 4. Second create claims the spare instead of cold-provisioning.
-    const second = await runYaac(serverEnv, 'worktree', 'create', 'repo-demo', '--tool', 'claude')
-    if (second.exitCode !== 0) console.error(second.stdout, second.stderr)
-    expect(second.exitCode).toBe(0)
-    expect(second.stdout).toContain('Using prewarmed session...')
-
-    // The formerly-prewarmed pod is now a normal (claimed) session — same pod,
-    // label gone. Proves the claim reused the spare rather than minting a pod.
-    const claimedPod = (await listSessionPods('repo-demo')).find((p) => p.jobName === spareJob)
-    expect(claimedPod).toBeDefined()
-    expect(isPrewarmed(claimedPod!)).toBe(false)
-
-    // 5. A fresh spare is warmed to replace the claimed one. Wait for it to
-    //    be fully claimable (Running + live tmux) — the next step claims it.
-    const refilled = await waitFor(async () => {
-      const pods = await listSessionPods('repo-demo')
-      const s = pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
-      if (s && await isTmuxSessionAlive('repo-demo', s.sessionId)) return s
-      return undefined
-    }, 150_000)
-    expect(refilled.tool).toBe('claude')
-
-    // 6. Spares are tool- AND branch-agnostic: a create for a different tool
+    // 4. Spares are tool- AND branch-agnostic: a create for a different tool
     //    and a different reference branch claims the claude/main-warmed spare,
     //    re-branches its worktree, and retools it — no cold provisioning.
+    //
+    //    This is also the plain-claim case. A same-tool, same-branch create
+    //    asserts a strict subset of what this one does — the "Using
+    //    prewarmed session..." line and the reused pod — so running it first
+    //    only bought a second cold create and a second wait for the pool to
+    //    refill, on the suite's longest test.
     const third = await runYaac(
       serverEnv, 'worktree', 'create', 'repo-demo', '--tool', 'codex', '--branch', 'dev',
     )
@@ -187,8 +171,9 @@ describe('yaac prewarmed sessions', () => {
     expect(third.stdout).toContain('Switching prewarmed session to codex...')
     expect(third.stdout).toContain('Using prewarmed session...')
 
-    // Same pod as the refilled spare — label gone, tool label flipped.
-    const retooled = (await listSessionPods('repo-demo')).find((p) => p.jobName === refilled.jobName)
+    // Same pod as the spare — label gone, tool label flipped. Proves the
+    // claim reused the warmed pod rather than minting one.
+    const retooled = (await listSessionPods('repo-demo')).find((p) => p.jobName === spareJob)
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
     expect(retooled!.tool).toBe('codex')
@@ -205,5 +190,15 @@ describe('yaac prewarmed sessions', () => {
       path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'),
       `agent/${retooled!.sessionId}`,
     )).toBe('dev')
+
+    // 5. The claim leaves the pool short, so a fresh spare is warmed to
+    //    replace it — warmed for the project's tool, not the codex the claim
+    //    retooled into. Running is enough here: nothing claims this one, and
+    //    waiting on its tmux would just be waiting.
+    const refilled = await waitFor(async () => {
+      const pods = await listSessionPods('repo-demo')
+      return pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
+    }, 150_000)
+    expect(refilled.tool).toBe('claude')
   }, 420_000)
 })
