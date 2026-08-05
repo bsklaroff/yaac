@@ -46,6 +46,11 @@ export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
  * `dead` grows by at most the TTL, well inside the reaper's grace).
  */
 const TMUX_ALIVE_TTL_MS = 15_000
+/** How long the reaper is willing to wait on a probe. `sessionExec` floors
+ *  it at MIN_EXEC_TIMEOUT_MS, since the dial deadline derives from this and
+ *  a probe's impatience is not a verdict on the relay every session shares
+ *  — so the real ceiling is that floor, and an `unknown` verdict (which
+ *  never reaps) is all that is at stake in the difference. */
 const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =

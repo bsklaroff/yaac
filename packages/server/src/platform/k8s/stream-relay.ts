@@ -34,6 +34,17 @@ import { serverLog } from '#log'
 
 /** Dial + handshake deadline for a new stream. */
 const DIAL_TIMEOUT_MS = 15_000
+/**
+ * Floor on a `sessionExec` budget, and so on the dial deadline derived
+ * from it. A dial deadline is a statement about the TRANSPORT — which
+ * every session's streams share — not about how fast one caller wants an
+ * answer, and the two must not be the same number. The stale reaper's
+ * tmux probes ask for 2s (features/status/liveness.ts); a dial that
+ * crosses the apiserver, the proxy and a pod dial can legitimately take
+ * longer than that on a host busy building images, and a probe's
+ * impatience must never be read as a dead relay.
+ */
+const MIN_EXEC_TIMEOUT_MS = 5_000
 /** Reply-line cap (it is one small JSON object). */
 const REPLY_MAX_BYTES = 16 * 1024
 
@@ -53,6 +64,21 @@ export function invalidateRelayAddr(): void {
   cachedAddr = null
   portForwardChild?.kill()
   portForwardChild = null
+}
+
+/**
+ * Drop a cached address that has nothing shared standing behind it — the
+ * nested inner-proxy pod IP, whose re-resolution is one apiserver read and
+ * disturbs no live stream. That makes it safe on evidence too weak to
+ * justify `invalidateRelayAddr`, which is the point: a dial timeout is no
+ * verdict on a transport, but an inner proxy pod that got replaced leaves
+ * an IP that blackholes every dial, and nothing else mid-run would ever
+ * look again. A live port-forward child is left strictly alone — the whole
+ * reason timeouts stopped recycling is that respawning it drops every
+ * stream riding it.
+ */
+function invalidateResolvedPodAddr(): void {
+  if (portForwardChild === null) cachedAddr = null
 }
 
 /** Test-only: reset all module caches. */
@@ -228,23 +254,43 @@ export async function relayDial(
   return new Promise<net.Socket>((resolve, reject) => {
     const socket = net.connect(addr.port, addr.host)
     let settled = false
-    let gotReply = false
+    // Anything at all coming back, not just a whole line: a peer that spoke
+    // is a peer that is there, which is what the evidence rule below turns
+    // on. (An oversized reply is protocol corruption on a live transport.)
+    let sawReplyBytes = false
     let buf = Buffer.alloc(0)
 
-    const fail = (reason: string): void => {
+    /**
+     * `transportDead` decides whether this one stream's failure recycles
+     * the SHARED transport: `invalidateRelayAddr` kills the single
+     * `kubectl port-forward` that every other stream rides, so every
+     * terminal, status stream and forwarded port on the install dies with
+     * it. Only two signals qualify, both immediate and unambiguous — a
+     * connect error (nothing listening; the forward is gone) and a close
+     * before any reply byte (a dead forward accepts, then drops). A
+     * refusal, which arrives as a reply, proves the transport is fine.
+     *
+     * A TIMEOUT is deliberately none of the above. Waiting is what a
+     * slow-but-live relay looks like: a host busy building images, an
+     * apiserver list behind a pod-index miss, a pod whose ingress policy
+     * is still dropping the proxy's SYNs. Recycling on it made one
+     * stream's patience the whole install's problem — every terminal in
+     * every session dropping and reconnecting together.
+     */
+    const fail = (reason: string, transportDead = !sawReplyBytes): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       socket.destroy()
-      // Re-resolve the address only when the TRANSPORT looks dead (no
-      // reply line ever arrived — a dead port-forward accepts and then
-      // drops, a refused connect never answers). A stream that got a
-      // reply and was refused proves the transport is fine; killing the
-      // shared port-forward for it would drop every other live stream.
-      if (!gotReply) invalidateRelayAddr()
+      if (transportDead) invalidateRelayAddr()
       reject(new RelayDialError(`stream relay dial (${sessionId.slice(0, 8)}...): ${reason}`))
     }
-    const timer = setTimeout(() => fail(`timeout after ${timeoutMs}ms`), timeoutMs)
+    const timer = setTimeout(() => {
+      // Too weak to condemn the shared transport, strong enough to re-read
+      // an address that costs nothing to re-read (see the function).
+      invalidateResolvedPodAddr()
+      fail(`timeout after ${timeoutMs}ms`, false)
+    }, timeoutMs)
 
     socket.on('error', (err: Error) => fail(err.message))
     socket.on('close', () => fail('connection closed during handshake'))
@@ -255,13 +301,13 @@ export async function relayDial(
       )
     })
     const onData = (chunk: Buffer): void => {
+      sawReplyBytes = true
       buf = Buffer.concat([buf, chunk])
       const nl = buf.indexOf(0x0a)
       if (nl < 0) {
         if (buf.length > REPLY_MAX_BYTES) fail('oversized handshake reply')
         return
       }
-      gotReply = true
       let reply: { ok?: boolean; error?: string }
       try {
         reply = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof reply
@@ -333,7 +379,9 @@ export interface RelayExecOptions {
    * Overall deadline (dial + run). Default 30s. Widen it for a command
    * that legitimately runs long — the *dial* stays capped at
    * DIAL_TIMEOUT_MS regardless, so a long budget can't turn a hung
-   * transport into a multi-minute stall.
+   * transport into a multi-minute stall. Narrowing it past
+   * MIN_EXEC_TIMEOUT_MS has no effect: below that the number stops being
+   * a preference and starts being a verdict on the shared relay.
    */
   timeout?: number
   /** Dial-failure retries. Neither a clean nonzero exit nor a failure
@@ -359,7 +407,7 @@ export async function sessionExec(
   opts: RelayExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const sessionId = sessionIdFromJobName(jobName)
-  const timeoutMs = opts.timeout ?? 30_000
+  const timeoutMs = Math.max(MIN_EXEC_TIMEOUT_MS, opts.timeout ?? 30_000)
   const maxAttempts = opts.maxAttempts ?? 3
   let lastErr: Error = new RelayDialError('no attempts made')
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

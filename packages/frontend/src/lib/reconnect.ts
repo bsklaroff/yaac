@@ -7,6 +7,16 @@
 export const INITIAL_RECONNECT_DELAY_MS = 500
 export const MAX_RECONNECT_DELAY_MS = 10_000
 
+/**
+ * How long a terminal drop must persist before it is announced on screen
+ * (SessionTerminal). Most drops are a shared-transport recycle server-side:
+ * every terminal re-attaches within a second and tmux repaints the whole
+ * screen, so a notice for one of those is pure noise. Must outlast the
+ * first reconnect attempt — the initial delay plus an attach — or it would
+ * announce drops that have already healed.
+ */
+export const DISCONNECT_NOTICE_DELAY_MS = 1_500
+
 /** Next backoff delay: double the current one, capped at the ceiling. */
 export function nextReconnectDelay(current: number): number {
   return Math.min(current * 2, MAX_RECONNECT_DELAY_MS)

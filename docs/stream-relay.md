@@ -86,11 +86,18 @@ sessionId}`, timing-safe compare), resolve the session's pod IP from the
 pod-watch reverse index (labelSelector list on a miss), dial
 `podIP:10300`, splice. Everything after the auth line — the streamd
 handshake, its reply, the payload — flows through untouched, so the
-protocol stays end-to-end server↔streamd. Per-stream refusals (unknown
+protocol stays end-to-end server↔streamd. Per-stream failures (unknown
 session, pod dial failure) are answered with an `{ok:false}` line before
 closing — the server reads a silent close as a dead transport and
 re-establishes its shared port-forward, so a stale session's probe must
 not masquerade as one; only a bad auth line closes silently.
+
+Nor may anything before the splice hang instead of answering. A session
+pod whose ingress policy has not yet admitted the proxy *drops* the SYN,
+so an unbounded `net.connect` would sit out the OS retry series holding
+both sockets while the server learns nothing; a deadline over the whole
+pre-splice phase — auth line, IP resolve, pod dial — makes that an
+ordinary refusal instead.
 
 ### Server transport (`platform/k8s/stream-relay.ts`)
 
@@ -116,9 +123,26 @@ Address resolution, cached per run and re-resolved on transport failure:
    networking instead of the gVisor exec machinery — are unaffected by
    this hop. Port-forward works here because the proxy is a runc pod
    (CRI port-forward dials localhost in the pod netns, which a gVisor
-   pod's netstack would not answer). A stream refused after a reply
-   line leaves the shared forward alone; only a transport that never
-   answers is torn down and re-resolved.
+   pod's netstack would not answer).
+
+Recycling that shared forward drops every other stream with it, so one
+stream's failure tears it down only on evidence about the transport
+itself, and both qualifying signals are immediate: a connect error
+(nothing is listening) and a close before any reply byte (a dead forward
+accepts, then drops). A refusal proves the transport is fine. A timeout
+proves nothing either way — it is equally what a busy host, an apiserver
+list behind a pod-index miss, or an unreachable pod looks like — so it
+fails its own caller and leaves everyone else's streams alone. For the
+same reason a caller's command budget is floored before the dial
+deadline is derived from it: how fast one probe wants an answer is not a
+statement about the transport every session shares.
+
+A nested address is the exception, because nothing shared stands behind
+it: re-resolving the inner proxy's pod IP is one apiserver read and
+disturbs no live stream, so a timeout does drop that one. It has to — a
+replaced inner proxy pod leaves an IP that blackholes every dial, and
+that is a timeout, not an error. Wedging until the next server restart
+is the alternative.
 
 Adapters give each consumer the surface it already used, so the
 respawn/backoff, `bridge()`, forwarder-registry, and frontend WS logic

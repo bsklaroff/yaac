@@ -5,6 +5,7 @@
 // client: handshake pipelining, error surfacing, and each adapter facade.
 import net from 'node:net'
 import crypto from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // The relay's own boundary is the socket (a real listener below); its two
@@ -14,6 +15,7 @@ type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
+const spawnMock = vi.fn<(file: string, args: readonly string[]) => unknown>()
 vi.mock('node:child_process', () => ({
   execFile: (file: string, args: readonly string[], opts: unknown, cb?: ExecCallback) => {
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
@@ -30,7 +32,7 @@ vi.mock('node:child_process', () => ({
       (err: unknown) => actualCb(err),
     )
   },
-  spawn: vi.fn(),
+  spawn: (file: string, args: readonly string[]) => spawnMock(file, args),
 }))
 
 import {
@@ -68,6 +70,37 @@ function serveKubectl(): void {
       : podsPayload),
     stderr: '',
   }))
+}
+
+/** How many times the relay address has been resolved from the cluster —
+ *  the observable for "was the nested pod address re-read?". */
+const podLists = (): number =>
+  execFileMock.mock.calls.filter(([, args]) => args[1] === 'pods').length
+
+interface FakeChild {
+  stdout: EventEmitter
+  stderr: EventEmitter
+  on: (event: string, cb: (...args: unknown[]) => void) => void
+  kill: ReturnType<typeof vi.fn>
+}
+
+/**
+ * A stand-in for the top-level path's `kubectl port-forward` child: it
+ * announces its local port the way the real one does and then just sits
+ * there. `kill` is the observable that matters — killing this child is what
+ * drops every other stream on the install, so which failures reach it IS
+ * the behavior under test.
+ */
+function fakePortForward(port: number): FakeChild {
+  const stdout = new EventEmitter()
+  const events = new EventEmitter()
+  setTimeout(() => stdout.emit('data', Buffer.from(`Forwarding from 127.0.0.1:${port} -> 10260\n`)), 0)
+  return {
+    stdout,
+    stderr: new EventEmitter(),
+    on: (event, cb) => { events.on(event, cb) },
+    kill: vi.fn(),
+  }
 }
 
 interface Received {
@@ -119,6 +152,7 @@ beforeEach(() => {
   _resetRelayCacheForTests()
   execFileMock.mockReset()
   execMock.mockReset()
+  spawnMock.mockReset()
   podsPayload = { items: [] }
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   serveKubectl()
@@ -192,6 +226,68 @@ describe('relayDial', () => {
     await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 2_000 }))
       .rejects.toBeInstanceOf(RelayDialError)
   })
+
+  // Which failures recycle the SHARED transport is the load-bearing part:
+  // top-level that means killing the one port-forward every other stream
+  // rides, so a wrong verdict here drops every terminal on the install.
+  it('leaves the shared port-forward alive when a dial times out', async () => {
+    // No reply at all is exactly what a slow-but-live relay looks like, so
+    // it must condemn nothing: a host busy building images would otherwise
+    // take every session's terminals down with one impatient probe.
+    let dials = 0
+    relay = await startFakeRelay((r) => { if (++dials > 1) okThen(r) })
+    const child = fakePortForward(relay.port)
+    spawnMock.mockReturnValue(child)
+
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 200 }))
+      .rejects.toThrow(/timeout after 200ms/)
+    expect(child.kill).not.toHaveBeenCalled()
+
+    // Still the same forward, so the next dial rides it rather than paying
+    // for a respawn (and every live stream on it survived).
+    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves it alive for an oversized reply — bytes came back, so it is there', async () => {
+    relay = await startFakeRelay((r) => r.socket.write('x'.repeat(20 * 1024)))
+    const child = fakePortForward(relay.port)
+    spawnMock.mockReturnValue(child)
+
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
+      .rejects.toThrow(/oversized handshake reply/)
+    expect(child.kill).not.toHaveBeenCalled()
+  })
+
+  it('kills the shared port-forward when the relay closes before replying', async () => {
+    // Accept-then-drop with nothing said is what a dead forward does — the
+    // one signal that IS conclusive about the transport.
+    relay = await startFakeRelay((r) => r.socket.destroy())
+    const child = fakePortForward(relay.port)
+    spawnMock.mockReturnValue(child)
+
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
+      .rejects.toBeInstanceOf(RelayDialError)
+    expect(child.kill).toHaveBeenCalled()
+  })
+
+  it('re-resolves a nested pod address when a dial times out', async () => {
+    // Nested there is no shared child behind the address, just the inner
+    // proxy's pod IP — so the same timeout that must not touch a
+    // port-forward can still re-read this. An inner proxy pod that was
+    // replaced leaves an IP that blackholes every dial, and nothing else
+    // mid-run would ever look again.
+    vi.stubEnv('YAAC_NESTED', '1')
+    podsPayload = { items: [{ status: { phase: 'Running', podIP: '127.0.0.1' } }] }
+    let dials = 0
+    relay = await startFakeRelay((r) => { if (++dials > 1) okThen(r) }, RELAY_PORT)
+
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 200 }))
+      .rejects.toThrow(/timeout after 200ms/)
+    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
+
+    expect(podLists()).toBe(2)
+  })
 })
 
 describe('sessionExec', () => {
@@ -229,6 +325,20 @@ describe('sessionExec', () => {
     await expect(sessionExec(JOB, 'true', { maxAttempts: 3, timeout: 2_000 }))
       .rejects.toBeInstanceOf(RelayDialError)
     expect(dials).toBe(3)
+  })
+
+  it("floors a caller's budget so a tight probe can't time out a live relay", async () => {
+    // The stale reaper asks for 2s (features/status/liveness.ts). The dial
+    // deadline derives from that budget and is a verdict on the shared
+    // transport, so the budget is floored before it becomes one: a reply
+    // past the caller's ask still lands.
+    await withRelay((r) => {
+      setTimeout(() => r.socket.end(
+        '{"ok":true}\n' + JSON.stringify({ exitCode: 0, stdout: 'late', stderr: '' }) + '\n',
+      ), 600)
+    })
+    const result = await sessionExec(JOB, 'true', { timeout: 200, maxAttempts: 1 })
+    expect(result.stdout).toBe('late')
   })
 
   it('does not retry a transport failure past dispatch — the command may have run', async () => {
@@ -472,9 +582,6 @@ describe('bootStreamd', () => {
 })
 
 describe('invalidateRelayAddr', () => {
-  const podLists = (): number =>
-    execFileMock.mock.calls.filter(([, args]) => args[1] === 'pods').length
-
   it('drops the cached inner-proxy address so the next dial re-resolves it', async () => {
     // Nested: the relay is the inner proxy's pod IP on the fixed relay port,
     // read from the vcluster apiserver and cached until invalidated.
