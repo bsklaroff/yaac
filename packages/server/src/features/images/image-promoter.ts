@@ -25,7 +25,8 @@ import { serverLog } from '#log'
  *
  * What travels:
  *  - every NAMED image, under its own name (`<registry>/<repo>:<tag>`), so
- *    the pull side can restore the name a session referred to it by;
+ *    the pull side can restore the name a session referred to it by —
+ *    canonicalized first, see LOCAL_REGISTRY_PREFIX;
  *  - each named image's ANCESTOR chain, under `<repo>:yaac-cache-<tag>-<n>`
  *    in the SAME repo (so its blobs are already there and only manifests
  *    are uploaded). Those intermediates are what `docker build` matches
@@ -112,11 +113,50 @@ const IMAGE_REF =
 /** Bound on a whole ref, so nothing unreasonable reaches a command line. */
 const IMAGE_REF_MAX = 255
 
+/**
+ * Podman's local-registry prefix, stripped before a ref becomes a
+ * destination. Every name the engine holds that is not registry-qualified
+ * is stored under it — `podman tag x foo:v1` reads back as
+ * `localhost/foo:v1` — while everything the SERVER pushes into this same
+ * registry (`registryRef`, and inside a nested session that is this very
+ * registry) uses the bare tag. Same image, two repo paths, and the ledger
+ * keys on the destination string, so leaving the prefix on puts every
+ * image the two sides share in the catalog twice: `<repo>` and
+ * `localhost/<repo>`. That is not free — the copies share no LAYER blobs,
+ * since the salvage compresses zstd where the host push wrote gzip — and
+ * it costs every later prime a second pull, a second ledger line and a
+ * second graphroot budget check for bytes it already has.
+ *
+ * Stripping it round-trips losslessly: the pull side restores the bare
+ * name, podman puts the prefix straight back, and the next survey's ref
+ * canonicalizes onto the destination already in the ledger — which is what
+ * stops the image travelling again. Without that the prime→salvage cycle
+ * MANUFACTURES the alias on its own, with no second producer needed.
+ *
+ * Anchored on the slash, and applied exactly once. `localhost:5000/foo:v1`
+ * is a registry-qualified ref that keeps its host (and is dropped as a
+ * destination anyway, see planSalvagePushes), and `localhost-mirror/foo`
+ * is reported by podman as `localhost/localhost-mirror/foo` — one strip
+ * hands back the name its author gave. A ref still carrying the prefix
+ * after the strip was `localhost/localhost/…` in the engine; stripping
+ * again would rename it, so the planner drops it instead.
+ *
+ * Only this prefix: `docker.io/…`, `quay.io/…` and friends are real
+ * upstream refs whose host is part of the name a session pulls them by.
+ */
+const LOCAL_REGISTRY_PREFIX = 'localhost/'
+
+/** The one destination name a ref maps to (see LOCAL_REGISTRY_PREFIX). */
+function canonicalRef(ref: string): string {
+  return ref.startsWith(LOCAL_REGISTRY_PREFIX) ? ref.slice(LOCAL_REGISTRY_PREFIX.length) : ref
+}
+
 export interface EngineImage {
   id: string
   /** Parent image id, or null for a chain root. */
   parent: string | null
-  /** Every `repo:tag` the engine knows this image by (dangling: empty). */
+  /** Every `repo:tag` the engine knows this image by, canonicalized
+   *  (dangling: empty). */
   refs: string[]
 }
 
@@ -175,9 +215,10 @@ export function parseSurveyReport(stdout: string): SurveyReport {
     images.push({
       id,
       parent: IMAGE_ID.test(parent) ? parent : null,
-      // Sorted so a multi-named image's PRIMARY name — the one its chain
-      // slots hang off — is the same in every session that sees it.
-      refs: rawRefs.split(',').map((r) => r.trim()).filter(validRef).sort(),
+      // Canonicalized before the sort, so a multi-named image's PRIMARY
+      // name — the one its chain slots hang off — is the same in every
+      // session that sees it, whichever side put the image there.
+      refs: rawRefs.split(',').map((r) => r.trim()).filter(validRef).map(canonicalRef).sort(),
     })
   }
   return { images, have }
@@ -422,10 +463,22 @@ export function sudoExecCommand(script: string, argv: string[] = []): string {
  * named (it gets its own push, and the pull side restores the link), at
  * MAX_CHAIN_DEPTH, and at any id/dest pair already in the ledger.
  *
- * Two kinds of ref never become a destination: one already inside this
- * registry (the pull side's own images coming back around), and one whose
- * repo carries a `host:port` — a port cannot appear in a destination repo
- * path, so there is no name to push it under.
+ * Refs arrive already canonicalized (LOCAL_REGISTRY_PREFIX), which is what
+ * keeps one image to one repo no matter which side pushed it first. Three
+ * kinds never become a destination, all of them "there is no name to push
+ * this under": one already inside this registry (the pull side's own
+ * images coming back around); one whose repo carries a `host:port`, which
+ * a destination repo path cannot hold; and one still prefixed after
+ * canonicalization, i.e. an engine name of `localhost/localhost/…`, whose
+ * only canonical destination is a repo path the registry GC treats as a
+ * stale alias and deletes.
+ *
+ * Canonicalizing lands a session's local names on the same repos the
+ * server's own pushes use, so a session that locally tags a mirror's name
+ * can now overwrite that repo. Bounded to the project's own registry and
+ * already the documented semantic (last salvage wins on a shared name);
+ * a session could always push those repos directly, so this grants no
+ * authority it did not have.
  */
 export function planSalvagePushes(report: SurveyReport, registryHost: string): SalvagePlan {
   const byId = new Map(report.images.map((img) => [img.id, img]))
@@ -442,7 +495,9 @@ export function planSalvagePushes(report: SurveyReport, registryHost: string): S
 
   for (const img of report.images) {
     const refs = img.refs.filter((ref) =>
-      !ref.startsWith(`${registryHost}/`) && !ref.slice(0, ref.lastIndexOf(':')).includes(':'))
+      !ref.startsWith(`${registryHost}/`)
+      && !ref.startsWith(LOCAL_REGISTRY_PREFIX)
+      && !ref.slice(0, ref.lastIndexOf(':')).includes(':'))
     if (refs.length === 0) continue
     for (const ref of refs) add(img.id, `${registryHost}/${ref}`)
 

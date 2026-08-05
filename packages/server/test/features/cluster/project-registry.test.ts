@@ -558,15 +558,37 @@ describe('reconcileProjectRegistryGc', () => {
       spec: { containers: Array<{ command: string[] }> }
     }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
       .spec.containers[0].command[2]
-    // Repo guard mirrors image-gc's YAAC_IMAGE_REPO, so a session's own
-    // `myapp` repo is out of scope...
-    expect(script).toContain('yaac-*|localhost/yaac-*|localhost:*/yaac-*')
+    // Repo guard keeps a session's own `myapp` repo out of scope. Only the
+    // bare spelling: the alias drop above runs first, so a `localhost/`
+    // -prefixed repo can no longer be standing here...
+    expect(script).toContain('yaac-*) ;;')
     // ...and the tag guard is the content-hash shape, so `v1`, `latest`
     // and the cache's `yaac-cache-…` slots can never match.
     expect(script).toContain("grep -Ex '[0-9a-f]{16}'")
     // Newest-first, keeping current + one rollback (the host-side policy).
     expect(script).toContain('ls -1t')
     expect(script).toContain(`tail -n +${REGISTRY_GENERATIONS_KEPT + 1}`)
+  })
+
+  it('drops the legacy localhost/ alias repos before collecting', async () => {
+    registryOn('node-a')
+    await gcPass(1_000)
+    const script = (mockApply.mock.calls.map((c) => c[0] as {
+      kind: string; metadata: { name: string }
+      spec: { containers: Array<{ command: string[] }> }
+    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
+      .spec.containers[0].command[2]
+    // An older salvage pushed podman's `localhost/`-prefixed local names
+    // verbatim, so every image the server had also pushed under its bare
+    // tag has a second repo here holding a second, differently compressed
+    // copy of its layers. Removing the subtree un-references those
+    // manifests; the collect below is what reclaims the blobs (marking
+    // whatever a surviving repo still names), so the order matters as much
+    // as the removal.
+    expect(script).toContain(
+      'rm -rf /var/lib/registry/docker/registry/v2/repositories/localhost')
+    expect(script.indexOf('dropped-alias-repos'))
+      .toBeLessThan(script.indexOf('garbage-collect'))
   })
 
   it('sends valid POSIX shell into the collect pod', async () => {

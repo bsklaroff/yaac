@@ -101,47 +101,88 @@ describe('salvageSessionImages', () => {
     // them instead of growing a generation per session.
     const pairs = push.match(/'[0-9a-f]{64}' '[^']+'/g) ?? []
     expect(pairs).toEqual([
-      `'${HEX}' '${REG}/localhost/myapp:v1'`,
-      `'${HEX2}' '${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-1'`,
-      `'${HEX3}' '${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-2'`,
+      `'${HEX}' '${REG}/myapp:v1'`,
+      `'${HEX2}' '${REG}/myapp:${CACHE_TAG_PREFIX}v1-1'`,
+      `'${HEX3}' '${REG}/myapp:${CACHE_TAG_PREFIX}v1-2'`,
     ])
+  })
+
+  it('canonicalizes podman local names, so one image is never two repos', async () => {
+    // The engine reports every non-registry-qualified name under podman's
+    // `localhost/` prefix, while everything the server pushes into this
+    // same registry uses the bare tag. Pushing the prefix verbatim put
+    // each shared image in the catalog twice — and the copies share no
+    // LAYER blobs, since the salvage compresses zstd where the host wrote
+    // gzip.
+    await expect(salvageReporting(
+      `img sha256:${HEX}||localhost/myapp:v1,docker.io/library/alpine:3.20,\n`,
+    )).resolves.toBe(true)
+    const push = pushCommand()
+    expect(push).not.toContain('localhost/')
+    // A registry-qualified ref keeps its host: that IS the name a session
+    // pulls it by, and the prime side has to restore it intact.
+    expect(push).toContain(`'${HEX}' '${REG}/docker.io/library/alpine:3.20'`)
+    expect(push).toContain(`'${HEX}' '${REG}/myapp:v1'`)
+  })
+
+  it('leaves a port-qualified host alone and drops what stays prefixed', async () => {
+    // The prefix match is anchored on the SLASH. `localhost:5000/…` is a
+    // real registry — this install's own local one — and a predicate that
+    // matched the bare word would slice its host into a `000/foo`
+    // destination while every other test here stayed green.
+    // `localhost/localhost/foo` is what podman reports for an image tagged
+    // that way (it does not collapse the repeat); its canonical form still
+    // carries the prefix, and stripping twice would rename someone's
+    // image, so it is dropped like any other ref with no name to push it
+    // under.
+    await expect(salvageReporting(
+      `img sha256:${HEX}||localhost:5000/foo:v1,\n`
+      + `img sha256:${HEX2}||localhost/localhost/foo:v1,\n`
+      + `img sha256:${HEX3}||localhost/keeper:v1,\n`,
+    )).resolves.toBe(true)
+    const pairs = pushCommand().match(/'[0-9a-f]{64}' '[^']+'/g) ?? []
+    expect(pairs).toEqual([`'${HEX3}' '${REG}/keeper:v1'`])
   })
 
   it('skips what the pod already put in the registry — a prime never bounces back', async () => {
     // The ledger the prime side writes: its own pulls, plus this pod's
-    // earlier pushes. Only the untouched ancestor is left to push.
-    const have = `have ${HEX} ${REG}/localhost/myapp:v1\n`
-      + `have ${HEX2} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-1\n`
+    // earlier pushes. Only the untouched ancestor is left to push. The
+    // prime restores the bare name and podman re-adds `localhost/`, so
+    // this only lands on the ledger entry because the survey's ref
+    // canonicalizes back to the destination the pull recorded — without
+    // that the prime/salvage cycle mints the duplicate repo by itself.
+    const have = `have ${HEX} ${REG}/myapp:v1\n`
+      + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
     await expect(salvageReporting(have + CHAIN)).resolves.toBe(true)
     const pairs = pushCommand().match(/'[0-9a-f]{64}' '[^']+'/g) ?? []
-    expect(pairs).toEqual([`'${HEX3}' '${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-2'`])
+    expect(pairs).toEqual([`'${HEX3}' '${REG}/myapp:${CACHE_TAG_PREFIX}v1-2'`])
   })
 
   it('re-salvages a rebuilt tag — the ledger keys on the id, not the name', async () => {
     // Same destination, new image id: the exact case a dest-only ledger
     // would skip forever, losing every rebuild after the first.
-    const have = `have ${HEX} ${REG}/localhost/myapp:v1\n`
+    const have = `have ${HEX} ${REG}/myapp:v1\n`
     const rebuilt = `img sha256:${HEX3}||localhost/myapp:v1,\n`
     await expect(salvageReporting(have + rebuilt)).resolves.toBe(true)
-    expect(pushCommand()).toContain(`'${HEX3}' '${REG}/localhost/myapp:v1'`)
+    expect(pushCommand()).toContain(`'${HEX3}' '${REG}/myapp:v1'`)
   })
 
   it('retires stale slots even when there is nothing left to push', async () => {
     // A crash between the push and retire legs would otherwise strand the
     // tail forever: every later salvage finds the ledger complete and would
     // no-op before reaching retire.
-    const have = `have ${HEX} ${REG}/localhost/myapp:v1\n`
-      + `have ${HEX2} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-1\n`
-      + `have ${HEX3} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-2\n`
+    const have = `have ${HEX} ${REG}/myapp:v1\n`
+      + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
+      + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
     await expect(salvageReporting(have + CHAIN)).resolves.toBe(true)
     expect(mockContainerExec).toHaveBeenCalledTimes(2)
     expect(commands()[1]).toContain('retired')
   })
 
   it('retries the retire when a DELETE failed — a 405 must not mark it done', async () => {
-    const have = `have ${HEX} ${REG}/localhost/myapp:v1\n`
-      + `have ${HEX2} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-1\n`
-      + `have ${HEX3} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-2\n`
+    const have = `have ${HEX} ${REG}/myapp:v1\n`
+      + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
+      + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
     // The registry refuses DELETE for the whole of a blob collect's
     // read-only window, and a salvage runs detached in the pass that
     // starts one.
@@ -157,9 +198,9 @@ describe('salvageSessionImages', () => {
   })
 
   it('stops re-retiring once the chain shape is unchanged', async () => {
-    const have = `have ${HEX} ${REG}/localhost/myapp:v1\n`
-      + `have ${HEX2} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-1\n`
-      + `have ${HEX3} ${REG}/localhost/myapp:${CACHE_TAG_PREFIX}v1-2\n`
+    const have = `have ${HEX} ${REG}/myapp:v1\n`
+      + `have ${HEX2} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-1\n`
+      + `have ${HEX3} ${REG}/myapp:${CACHE_TAG_PREFIX}v1-2\n`
     await salvageReporting(have + CHAIN)
     mockContainerExec.mockClear()
     // Second cycle, same shape: back to the one-exec no-op the 10-minute
@@ -173,7 +214,7 @@ describe('salvageSessionImages', () => {
     // Third leg, after the push: repo/tag/depth argv, deleting upward from
     // depth+1 until a slot is already empty.
     const retire = commands()[2].replace(/'\\''/g, "'")
-    expect(retire).toContain(`'localhost/myapp' 'v1' '2'`)
+    expect(retire).toContain(`'myapp' 'v1' '2'`)
     expect(retire).toContain('-X DELETE "http://$REG/v2/$repo/manifests/$dg"')
     expect(retire).toContain('[ -n "$dg" ] || break')
     // Failures are counted, not swallowed — see the memo test below.

@@ -536,9 +536,10 @@ export const REGISTRY_GENERATIONS_KEPT = 8
  *
  * Two guards keep it off anything else, because a tag here is otherwise a
  * promise to whoever pulls it:
- *  - the repo must be yaac-built (`yaac-…`, optionally under a `localhost`
- *    push prefix) — mirroring image-gc's YAAC_IMAGE_REPO, so a session's
- *    own `myapp` repo is never touched;
+ *  - the repo must be yaac-built (`yaac-…`) — every push into this
+ *    registry names one, and the alias cleanup above has already dropped
+ *    the `localhost/`-prefixed spellings by the time this runs — so a
+ *    session's own `myapp` repo is never touched;
  *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
  *    and the cache's `yaac-cache-…` slots can never match.
  * Retiring a tag only unlinks the name; the manifest it pointed at and its
@@ -556,7 +557,7 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
     `for tagdir in $(find ${GC_REPOS_PATH} -type d -path '*/_manifests/tags' 2>/dev/null); do`,
     `  repo=\${tagdir#${GC_REPOS_PATH}/}; repo=\${repo%/_manifests/tags}`,
     '  case "$repo" in',
-    '    yaac-*|localhost/yaac-*|localhost:*/yaac-*) ;;',
+    '    yaac-*) ;;',
     '    *) continue;;',
     '  esac',
     // Newest first by tag-dir mtime, which for these tags is their
@@ -575,10 +576,45 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
 }
 
 /**
- * One-shot pod reclaiming a project's registry blobs: retire stale
- * content-hash generations, then `registry garbage-collect
- * --delete-untagged` against the storage hostPath with the registry's own
- * binary and stock config.
+ * Drop the `localhost/…` alias repos an older salvage left in the store.
+ *
+ * The image cache pushed podman's ref for a local name verbatim, and
+ * podman stores every non-registry-qualified name under its `localhost/`
+ * local-registry prefix — so an image the server had already pushed under
+ * its bare tag gained a second repo holding a second, zstd-recompressed
+ * copy of every layer. The salvage now canonicalizes the name away
+ * (LOCAL_REGISTRY_PREFIX in image-promoter), which stops new ones but
+ * leaves the existing subtree tagged, and therefore uncollectable, in
+ * every registry an older server wrote.
+ *
+ * Removing the repo directories un-references their manifests, so the
+ * `--delete-untagged` collect that follows reclaims the blobs in the same
+ * pass. Blobs a surviving repo still names are marked by the collect's own
+ * walk, so sharing between an alias and its canonical twin changes how
+ * much is reclaimed, never whether a live blob is. What is lost is at most
+ * a cache entry the canonical name does not cover: a rebuild, and the next
+ * salvage repushes it under the canonical repo.
+ *
+ * Scoped to exactly this prefix, and a no-op once the subtree is gone: no
+ * producer writes `localhost/…` any more — the salvage canonicalizes,
+ * host-side pushes use bare mirror tags, prime reads and retire only
+ * DELETEs. A session can still `docker push <registry>/localhost/…` by
+ * hand (the registry has no path ACLs), which this drops again on the next
+ * pass, costing that session the cache entry it minted.
+ */
+function buildAliasRepoCleanupScript(): string {
+  return [
+    `if [ -d ${GC_REPOS_PATH}/localhost ]; then`,
+    `  rm -rf ${GC_REPOS_PATH}/localhost && echo "dropped-alias-repos"`,
+    'fi',
+  ].join('\n')
+}
+
+/**
+ * One-shot pod reclaiming a project's registry blobs: drop the legacy
+ * alias repos, retire stale content-hash generations, then `registry
+ * garbage-collect --delete-untagged` against the storage hostPath with
+ * the registry's own binary and stock config.
  *
  * `--delete-untagged` is what makes this worth running at all. Both image
  * flows into this registry REUSE tags — the image cache pushes
@@ -601,7 +637,11 @@ export function buildRegistryGcPodManifest(
     `${projectRegistryName(projectSlug)}-gc-${runId}`,
     nodeName,
     imageRef,
-    `${buildRegistryRetentionScript()}\n`
+    // Alias cleanup first: the retention pass exits early on a store with
+    // no repositories dir at all, and neither must run after the collect
+    // that reclaims what they untag.
+    `${buildAliasRepoCleanupScript()}\n`
+    + `${buildRegistryRetentionScript()}\n`
     + `/bin/registry garbage-collect --delete-untagged=true ${GC_CONFIG_PATH}`,
     [{
       name: 'storage',
