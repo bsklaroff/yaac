@@ -363,7 +363,10 @@ describe('buildSessionJobManifest', () => {
     it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
       const m = build({ nested })
       const spec = m.spec.template.spec
-      const cap = 8 * 1024 ** 3
+      // The cap itself is a tuning knob; what this pins is the relationship
+      // between the three places it lands — the sentry's `size=`, the
+      // emptyDir sizeLimit above it, and the slack between them.
+      const cap = NESTED_GRAPHROOT_TMPFS_BYTES
       // Disk medium (no `medium: Memory`): runsc pages the sentry tmpfs
       // against a filestore file inside this emptyDir on the node's disk.
       // sizeLimit carries slack above the sentry's size= cap so kubelet

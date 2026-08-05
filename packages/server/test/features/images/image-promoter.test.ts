@@ -14,6 +14,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import type * as execModule from '#platform/k8s/exec'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 
@@ -36,7 +39,12 @@ import { primeSessionImages, salvageSessionImages } from '#features/images'
 // here (not stubbed), so a change to its host shape shows up as a broken
 // push destination rather than a passing test against a stale constant.
 import { projectRegistryHost } from '#features/cluster'
-import { CACHE_TAG_PREFIX, _resetSalvageMemoForTests } from '#features/images/image-promoter'
+import {
+  CACHE_TAG_PREFIX,
+  PRIME_GENERATIONS_KEPT,
+  PRIME_MAX_GRAPHROOT_PERCENT,
+  _resetSalvageMemoForTests,
+} from '#features/images/image-promoter'
 
 const execFileAsync = promisify(execFile)
 const SID = 'aaaabbbb-cccc-dddd-eeee-ffff00001111'
@@ -60,6 +68,134 @@ async function salvageReporting(stdout: string): Promise<boolean> {
       ? { stdout, stderr: '' }
       : { stdout: 'pushed 1 failed 0\n', stderr: '' }))
   return salvageSessionImages(PARAMS)
+}
+
+/**
+ * Three content-hash generations of one repo, named so LEXICAL order is the
+ * REVERSE of build order — a ranking that sorted tags instead of reading
+ * their build times would pick the opposite two and fail.
+ */
+const GENERATIONS = { old: 'f'.repeat(16), mid: 'a'.repeat(16), new: '0123456789abcdef' }
+
+/** tag -> the image config's `created`, or null for a tag with no
+ *  generation to it (a chain slot, a hand-written name). */
+type RepoFixture = Record<string, string | null>
+
+/**
+ * A stub project registry the real prime script can be pointed at, laid
+ * out as the files its `curl` calls would fetch. Repos are listed
+ * oldest-generation-first so catalog order cannot be what produces a
+ * correct answer either.
+ */
+const CATALOG: Record<string, RepoFixture> = {
+  'yaac-tools': {
+    [GENERATIONS.old]: '2026-01-01T00:00:00Z',
+    [GENERATIONS.mid]: '2026-02-01T00:00:00Z',
+    [GENERATIONS.new]: '2026-03-01T00:00:00Z',
+    [`${CACHE_TAG_PREFIX}${GENERATIONS.old}-1`]: null,
+    [`${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`]: null,
+  },
+  // The push-prefixed form of a yaac repo. Salvage no longer mints these
+  // (see LOCAL_REGISTRY_PREFIX), but a registry written before that still
+  // carries them until the GC sweeps the legacy subtree — and until then
+  // they are generations like any other.
+  'localhost/yaac-base': {
+    [GENERATIONS.old]: '2026-01-02T00:00:00Z',
+    [GENERATIONS.mid]: '2026-02-02T00:00:00Z',
+    [GENERATIONS.new]: '2026-03-02T00:00:00Z',
+  },
+  // Newest generation's config will not scrape (no blob written for it).
+  'yaac-flaky': {
+    [GENERATIONS.old]: '2026-01-03T00:00:00Z',
+    [GENERATIONS.mid]: '2026-02-03T00:00:00Z',
+    [GENERATIONS.new]: null,
+  },
+  // Three generations built in the same instant — nothing to rank by.
+  'yaac-tied': {
+    [GENERATIONS.old]: '2026-04-01T00:00:00Z',
+    [GENERATIONS.mid]: '2026-04-01T00:00:00Z',
+    [GENERATIONS.new]: '2026-04-01T00:00:00Z',
+  },
+  'podman-stable': { v5: null },
+  // A session's OWN repo that happens to tag by short commit sha — the
+  // content-hash shape without being yaac's chain.
+  myapp: {
+    [GENERATIONS.old]: '2026-05-01T00:00:00Z',
+    [GENERATIONS.mid]: '2026-05-02T00:00:00Z',
+    [GENERATIONS.new]: '2026-05-03T00:00:00Z',
+    v1: null,
+    [`${CACHE_TAG_PREFIX}v1-1`]: null,
+  },
+}
+
+/**
+ * Run the real (sudo-wrapped) prime command against CATALOG, and report
+ * every ref its engine was asked to pull, in order.
+ *
+ * The stub `podman pull` FAILS, which the script handles with `|| continue`
+ * — so the run exercises the whole catalog walk, the generation ranking and
+ * both budgets without ever reaching the ledger append, whose path is
+ * absolute and belongs to a real engine no unit test may write.
+ */
+async function runPrimeScript(cmd: string, catalog: Record<string, RepoFixture>): Promise<string[]> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-prime-test-'))
+  const fx = path.join(dir, 'fx')
+  const bin = path.join(dir, 'bin')
+  const pullLog = path.join(dir, 'pulls')
+  await fs.mkdir(fx)
+  await fs.mkdir(bin)
+  // The registry's own URL space, flattened to one file per path.
+  const put = (url: string, body: string) =>
+    fs.writeFile(path.join(fx, url.replace(/\?.*$/, '').replace(/\//g, '_')), body)
+  await put('v2/_catalog', JSON.stringify({ repositories: Object.keys(catalog) }))
+  let n = 0
+  for (const [repo, tags] of Object.entries(catalog)) {
+    await put(`v2/${repo}/tags/list`, JSON.stringify({ name: repo, tags: Object.keys(tags) }))
+    for (const [tag, created] of Object.entries(tags)) {
+      const cfg = `sha256:${String(++n).padStart(64, '0')}`
+      // Layer sizes are what the per-image budget reads; keep them small so
+      // this test is about the ranking and not about the size gate.
+      await put(`v2/${repo}/manifests/${tag}`, JSON.stringify({
+        schemaVersion: 2,
+        config: { mediaType: 'application/vnd.oci.image.config.v1+json', digest: cfg, size: 512 },
+        layers: [{ digest: `sha256:${'e'.repeat(64)}`, size: 1024 }],
+      }))
+      if (created === null) continue
+      // A real config carries `created` twice over — once at top level and
+      // once per history entry. The scrape must not depend on which.
+      await put(`v2/${repo}/blobs/${cfg}`, JSON.stringify({
+        created,
+        history: [{ created: '2020-01-01T00:00:00Z' }, { created }],
+      }))
+    }
+  }
+  const stub = async (name: string, body: string) => {
+    await fs.writeFile(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  }
+  // Passwordless sudo, minus the flags the wrapper passes it.
+  await stub('sudo', 'while [ $# -gt 0 ]; do case "$1" in -n|-H) shift;; *) break;; esac; done\nexec "$@"')
+  await stub('curl', [
+    'for a in "$@"; do case "$a" in http://*) url="$a";; esac; done',
+    `p=$(printf '%s' "\${url#http://*/}" | sed 's/?.*//' | tr '/' '_')`,
+    `[ -f "${fx}/$p" ] || exit 22`,
+    `cat "${fx}/$p"`,
+  ].join('\n'))
+  await stub('podman', [
+    'case "$1" in',
+    // Log the ref, then fail: a cold pull is a path the script handles.
+    `  pull) shift; for a in "$@"; do case "$a" in -*) ;; *) echo "$a" >> "${pullLog}";; esac; done; exit 1;;`,
+    'esac',
+    'exit 0',
+  ].join('\n'))
+  // A graphroot with room to spare, so neither budget is what gates this.
+  await stub('df', 'echo "Filesystem 1024-blocks Used Available Capacity Mounted"\n'
+    + 'echo "none 10485760 1048576 9437184 10% /var/lib/containers"')
+  try {
+    await execFileAsync('sh', ['-c', cmd], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    return (await fs.readFile(pullLog, 'utf8')).split('\n').filter(Boolean)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 }
 
 /** The sudo-wrapped commands handed to the session container, in order. */
@@ -285,10 +421,75 @@ describe('primeSessionImages', () => {
     mockContainerExec.mockResolvedValue({ stdout: 'primed-full\nprimed 2\n', stderr: '' })
     await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
     const cmd = commands()[0]
-    // Pulled layers land in the 8GiB sentry tmpfs, so a project registry
-    // holding more than the session can carry degrades to a partial warm-up.
+    // Pulled layers land in the session's sentry tmpfs, so a project
+    // registry holding more than the session can carry degrades to a
+    // partial warm-up.
     expect(cmd).toContain('df -P /var/lib/containers')
-    expect(cmd).toContain('-lt 50 ] || { echo "primed-full"; break 2; }')
+    expect(cmd).toContain(`-lt ${PRIME_MAX_GRAPHROOT_PERCENT} ] || { echo "primed-full"; break 2; }`)
+  })
+
+  it('spends the budget on the newest generations, not on whatever the catalog lists first', async () => {
+    mockContainerExec.mockResolvedValue({ stdout: 'primed 0\n', stderr: '' })
+    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    // The real script, run against a stub registry and a stub engine whose
+    // pull always fails: every ref it ASKS for is one the ranking chose,
+    // and a failing pull is a path the script already handles (`|| continue`),
+    // so it never reaches the ledger this unit test must not write.
+    const pulled = await runPrimeScript(commands()[0], CATALOG)
+    const gen = (repo: string, which: keyof typeof GENERATIONS) =>
+      `${REG}/${repo}:${GENERATIONS[which]}`
+    // Newest two of each yaac repo, and their chain slots with them.
+    expect(pulled).toContain(gen('yaac-tools', 'new'))
+    expect(pulled).toContain(gen('yaac-tools', 'mid'))
+    expect(pulled).toContain(`${REG}/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`)
+    // Same for the push-prefixed form of a yaac repo, which the guard has
+    // to recognize or a real registry's copies go unranked.
+    expect(pulled).toContain(gen('localhost/yaac-base', 'new'))
+    expect(pulled).toContain(gen('localhost/yaac-base', 'mid'))
+    // The retired generation is not pulled, and neither are the
+    // intermediates that only ever cache-hit against it.
+    expect(pulled).not.toContain(gen('yaac-tools', 'old'))
+    expect(pulled).not.toContain(gen('localhost/yaac-base', 'old'))
+    expect(pulled.some((r) => r.includes(`${CACHE_TAG_PREFIX}${GENERATIONS.old}`))).toBe(false)
+    // A hand-written tag is not a generation: the upstream mirror comes
+    // back whole, chain slots included.
+    expect(pulled).toContain(`${REG}/podman-stable:v5`)
+    expect(pulled).toContain(`${REG}/myapp:v1`)
+    expect(pulled).toContain(`${REG}/myapp:${CACHE_TAG_PREFIX}v1-1`)
+    // Nor is a content-hash-SHAPED tag on a repo that is not yaac's chain.
+    // Ranking mirrors the registry retention pass on both halves of its
+    // guard, so a session tagging `myapp` by short commit sha keeps every
+    // tag warmed — retention has no say over that repo either.
+    expect(pulled).toContain(gen('myapp', 'new'))
+    expect(pulled).toContain(gen('myapp', 'mid'))
+    expect(pulled).toContain(gen('myapp', 'old'))
+    // Named before chain, so the image a session refers to wins the budget
+    // over the intermediates that only accelerate a rebuild.
+    expect(pulled.indexOf(gen('yaac-tools', 'new')))
+      .toBeLessThan(pulled.indexOf(`${REG}/yaac-tools:${CACHE_TAG_PREFIX}${GENERATIONS.new}-1`))
+  })
+
+  it('ranks what it cannot read toward inclusion, and breaks a tie the same way twice', async () => {
+    mockContainerExec.mockResolvedValue({ stdout: 'primed 0\n', stderr: '' })
+    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    const cmd = commands()[0]
+    const pulled = await runPrimeScript(cmd, CATALOG)
+    const gen = (repo: string, which: keyof typeof GENERATIONS) =>
+      `${REG}/${repo}:${GENERATIONS[which]}`
+    // yaac-flaky's newest generation has no readable config. It is kept
+    // anyway, and the OLDEST readable one is what gives up the slot: one
+    // transient fetch failure must not cost the session the generation its
+    // next build would have cache-hit, which is what sorting the
+    // unrankable last would do — silently, and to the worst possible one.
+    expect(pulled).toContain(gen('yaac-flaky', 'new'))
+    expect(pulled).toContain(gen('yaac-flaky', 'mid'))
+    expect(pulled).not.toContain(gen('yaac-flaky', 'old'))
+    // yaac-tied's three generations carry the same timestamp, so there is
+    // nothing to rank by. Which two survive is arbitrary; that it is always
+    // the same two, and always two, is not.
+    const tied = (rs: string[]) => rs.filter((r) => r.startsWith(`${REG}/yaac-tied:`))
+    expect(tied(pulled)).toHaveLength(PRIME_GENERATIONS_KEPT)
+    expect(tied(await runPrimeScript(cmd, CATALOG))).toEqual(tied(pulled))
   })
 
   it('swallows failures — a cold cache only costs a rebuild', async () => {

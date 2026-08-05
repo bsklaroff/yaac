@@ -59,8 +59,20 @@ export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
  * filling the node's disk. Disk-backed (see NESTED_GRAPHROOT_ANNOTATIONS),
  * so this is an ephemeral-storage budget, not pod memory — independent of
  * memoryLimitBytes.
+ *
+ * Sized so a session can hold the yaac image chain (base, tools, nestable —
+ * layer-shared, but ~6.5GiB unique) plus the upstream mirrors its cluster
+ * pulls AND still build on top of them. At 8GiB that fit had no slack at
+ * all: a warm image cache left the e2e image builds ENOSPC'ing.
+ *
+ * Only the pod's ephemeral-storage LIMIT clears this; the request does
+ * not, so raising it does not cost scheduling density — but it does raise
+ * each nested session's unaccounted worst case by the same amount. At node
+ * disk saturation kubelet ranks eviction by usage-over-request, so the fat
+ * nested sessions go first, which is fatal to them (backoffLimit 0) and is
+ * the ordering the PriorityClass split already intends.
  */
-export const NESTED_GRAPHROOT_TMPFS_BYTES = 8 * 1024 ** 3
+export const NESTED_GRAPHROOT_TMPFS_BYTES = 10 * 1024 ** 3
 
 /**
  * emptyDir sizeLimit for the graphroot volume: the sentry's `size=` cap

@@ -110,10 +110,30 @@ after the engine-ready gate: it walks the registry catalog, pulls each
 tag, restores each named image's original name, and untags the
 `yaac-cache-` entries so they sit in the store as dangling cache entries
 exactly like a local `--layers` build's. It stops early once the graphroot
-passes half full — pulled layers now live in the session's 8GiB sentry
-tmpfs, which the old hostPath store did not consume, so an oversized
-project cache degrades to a partial warm-up instead of ENOSPC'ing the
-engine.
+passes half full — pulled layers live in the session's 10GiB sentry tmpfs,
+which the session's own builds have to share, so an oversized project
+cache degrades to a partial warm-up instead of ENOSPC'ing the engine.
+
+Stopping at half full bounds what the prime *spends*; a second rule bounds
+what it spends it *on*. A repo holds up to `REGISTRY_GENERATIONS_KEPT`
+content-hash generations and the catalog walk reaches them in no
+meaningful order, so the prime first ranks a repo's content-hash tags
+newest-first — by the build time in each image's own config, the same
+"content-hash tags are write-once, so creation order is generation order"
+the retention pass leans on — and keeps only the newest
+`PRIME_GENERATIONS_KEPT`, dropping the chain slots of the generations it
+drops with them. Without it a session can spend its whole budget on
+generations no build will cache-hit and then ENOSPC building the one it
+needs.
+
+What counts as a generation is the retention pass's guard, both halves:
+a yaac-built repo (optionally under a push prefix) carrying a content-hash
+tag. The upstream mirrors and a session's own repo are left alone even
+when their tags happen to have the content-hash shape — a repo retention
+has no say over is not one the prime narrows either. A generation whose
+config will not scrape ranks NEWEST rather than oldest: ranking is
+best-effort, and one transient fetch failure must not be what costs a
+session the generation its next build would have cache-hit.
 
 Both directions are best-effort and self-gating (no podman, no sudo, or no
 registry ⇒ a single cheap exec that does nothing); a cold cache only ever
