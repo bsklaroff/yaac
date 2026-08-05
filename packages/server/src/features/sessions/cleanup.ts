@@ -8,6 +8,7 @@ import {
   listSessionPods,
 } from '#platform/k8s'
 import { recordWorktreeStopped } from './worktree-store'
+import { listProvisioning } from './provisioning'
 import { evictSessionStatus, forgetLiveness, markSessionTerminating } from '#features/status'
 import { proxyClient } from '#features/egress'
 import { salvageSessionImages } from '#features/images'
@@ -222,11 +223,51 @@ export async function cleanupSessionDetached(params: {
 }
 
 /**
+ * How far before the sweep's own start a write still counts as "in use".
+ * The data dir can sit on a mount with second-granularity timestamps (the
+ * node-shared mount a nested session gets), so an mtime is a lower bound on
+ * when the write happened, not the moment. The slack costs a genuine orphan
+ * one extra sweep to collect; too little would cost a live session its dirs.
+ */
+const RECENT_WRITE_SLACK_MS = 10_000
+
+/**
+ * Is this session dir off-limits to the orphan sweep? Either the process is
+ * still provisioning that session — its Job may not be applied yet, so no
+ * cluster listing can vouch for it — or the directory has been written since
+ * the sweep took its listing, which is what a create staging into it looks
+ * like. Both mean "in use", and the sweep only ever wants genuine leftovers.
+ * Unreadable stat is treated as in-use: refusing to delete costs a stale dir
+ * the next sweep collects, deleting wrongly costs a live session.
+ */
+async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number): Promise<boolean> {
+  if (listProvisioning().some((p) => p.worktreeId === sid)) return true
+  try {
+    const st = await fs.stat(dir)
+    return st.mtimeMs >= sweepStartedAtMs - RECENT_WRITE_SLACK_MS
+  } catch {
+    return true
+  }
+}
+
+/**
  * Server-startup sweep: remove `.cached-packages/modules/<sid>`
  * directories whose session is no longer alive. Catches leftovers from
  * crashes, killed servers, and host reboots.
  */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
+  // Everything this sweep deletes belongs to a session that no longer
+  // exists — and "no longer exists" is read from a cluster listing taken
+  // here, seconds before the removals below. A create that stages its dirs
+  // inside that gap looks exactly like an orphan: its Job is not applied
+  // yet, so it is in no listing, and the sweep deletes the session dir and
+  // ephemeral-modules dir out from under the pod that is about to mount
+  // them. The pod then sits in ContainerCreating on FailedMount until the
+  // create gives up. This runs fire-and-forget at server startup, and a
+  // `worktree create` right after `server start` is the normal way to hit
+  // it. Two guards below: a session the process is provisioning is never
+  // swept, and neither is a directory touched since this listing was taken.
+  const sweepStartedAtMs = Date.now()
   let liveSessionIds: Set<string>
   try {
     // Union of pod and Job session ids: a Job mid-recreate (pod evicted,
@@ -260,6 +301,7 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     for (const sid of entries) {
       if (liveSessionIds.has(sid)) continue
       const dir = path.join(modulesRoot, sid)
+      if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
       try {
         await fs.rm(dir, { recursive: true, force: true })
         console.log(`Removed orphan ephemeral modules dir ${dir}`)
@@ -281,6 +323,7 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
       for (const sid of sessionEntries) {
         if (liveSessionIds.has(sid)) continue
         const dir = path.join(sessionsRoot, sid)
+        if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
         try {
           await fs.rm(dir, { recursive: true, force: true })
           console.log(`Removed orphan session dir ${dir}`)

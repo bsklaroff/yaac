@@ -64,6 +64,7 @@ vi.mock('node:child_process', async () => {
 // Audit logging is a vi.fn so the teardown line can be asserted without a
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
+vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
 // The session store writes through PGlite — stub it so cleanup tests never
 // open a DB, and so cause forwarding can be asserted.
@@ -82,6 +83,7 @@ import {
   gcOrphanEphemeralModuleDirs,
   sessionModulesDir,
 } from '#features/sessions/cleanup'
+import { listProvisioning } from '#features/sessions/provisioning'
 import { isSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/status/liveness'
 import { _resetSessionStatusStoreForTests } from '#features/status/status-store'
@@ -338,15 +340,23 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
+  // Backdated: what this sweep exists to collect is a leftover from a
+  // previous run, and it deliberately spares anything written around its own
+  // start (a create staging into it). A dir seeded microseconds before the
+  // call would be the latter, not the former.
+  const STALE = new Date(Date.now() - 3_600_000)
+
   async function seedModulesDir(slug: string, sid: string): Promise<string> {
     const dir = path.join(dataDir, 'projects', slug, '.cached-packages', 'modules', sid)
     await fs.mkdir(dir, { recursive: true })
+    await fs.utimes(dir, STALE, STALE)
     return dir
   }
 
   async function seedSessionsDir(slug: string, sid: string): Promise<string> {
     const dir = path.join(dataDir, 'projects', slug, 'sessions', sid)
     await fs.mkdir(dir, { recursive: true })
+    await fs.utimes(dir, STALE, STALE)
     return dir
   }
 
@@ -403,6 +413,37 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await fs.mkdir(path.join(dataDir, 'projects', 'proj-empty'), { recursive: true })
     mockListPods.mockResolvedValue([])
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
+  })
+
+  it('spares a session the process is still provisioning', async () => {
+    // The create registers its row before it stages anything, and its Job is
+    // not applied yet — so no pod/Job listing can vouch for it. Sweeping here
+    // deletes the dirs the starting pod is about to mount.
+    const staging = await seedSessionsDir('proj-a', 'creating-1')
+    const modules = await seedModulesDir('proj-a', 'creating-1')
+    mockListPods.mockResolvedValue([])
+    vi.mocked(listProvisioning).mockReturnValue([{
+      worktreeId: 'creating-1', projectSlug: 'proj-a', tool: 'claude',
+      kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00',
+    }])
+
+    await gcOrphanEphemeralModuleDirs()
+
+    await expect(fs.access(staging)).resolves.toBeUndefined()
+    await expect(fs.access(modules)).resolves.toBeUndefined()
+    vi.mocked(listProvisioning).mockReturnValue([])
+  })
+
+  it('spares a dir written since the sweep took its listing', async () => {
+    // The same race for a create with no provisioning row (a prewarmed
+    // spare): freshly written is the tell, so leave it for the next sweep.
+    const fresh = await seedSessionsDir('proj-a', 'staging-1')
+    await fs.utimes(fresh, new Date(), new Date())
+    mockListPods.mockResolvedValue([])
+
+    await gcOrphanEphemeralModuleDirs()
+
+    await expect(fs.access(fresh)).resolves.toBeUndefined()
   })
 
   it('returns quietly if pod listing fails', async () => {
