@@ -140,16 +140,79 @@ export const NESTED_ENGINE_CAPS = [
   'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
 ]
 
-export interface HostPathMount {
-  hostPath: string
+/**
+ * hostPath `type` check. Defaults to 'Directory'. Use 'File' for
+ * single-file binds, and `''` (kubernetes' "no check" type) for
+ * user-supplied paths that may be either.
+ */
+export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
+
+/**
+ * Where a session mount's bytes come from. The mount's container-side path
+ * is fixed by the mount itself, never by the source, so re-sourcing a mount
+ * is invisible inside the pod — which is the whole point: the storage tier
+ * a path declares (SHARED / NODE-LOCAL, see packages/shared/src/paths.ts)
+ * picks the source, and the pod spec is the only place that has to know.
+ *
+ *  - `hostPath` — what every tier renders as on the local backend, whose
+ *    single node and server process share one filesystem.
+ *  - `pvc` — a subPath of a claim: the RWX volume that carries the SHARED
+ *    tier on a multi-node cluster, where the server pod and the session pod
+ *    mount the same claim. Rendered here, but nothing selects it yet — the
+ *    claims and the in-cluster server that provisions them are
+ *    docs/plans/stock-k8s-multi-node.md §1–2.
+ *  - `emptyDir` — pod-local scratch: a NODE-LOCAL path that nothing outside
+ *    the pod ever opens needs no node identity at all, so it never has to
+ *    survive the pod or be found again. The tmux socket dir is the standing
+ *    example (see CONTAINER_TMUX_DIR).
+ *
+ * One bound worth knowing before moving a UNIX SOCKET onto an emptyDir:
+ * under gVisor's `host-uds=all` the gofer binds the socket at the volume's
+ * backing path on the node,
+ * `/var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~empty-dir/<name>/…`,
+ * against the kernel's 107-usable-byte `sun_path` limit. That prefix is 91
+ * bytes before the volume name, so the budget is the name plus the socket
+ * file — comfortable for the sockets here (tmux's `ed-<i>/server` lands at
+ * 102), but it shrinks by a byte each time a mount is prepended ahead of
+ * one and the index gains a digit.
+ */
+export type MountSource =
+  | { kind: 'hostPath'; path: string; type?: HostPathType }
+  | { kind: 'pvc'; claimName: string; subPath?: string }
+  | { kind: 'emptyDir'; sizeLimit?: number }
+
+/** One volume mounted into the session container, plus where it comes from. */
+export interface SessionMount {
+  source: MountSource
   mountPath: string
   readOnly?: boolean
-  /**
-   * Defaults to 'Directory'. Use 'File' for single-file binds, and `''`
-   * (kubernetes' "no check" type) for user-supplied paths that may be
-   * either.
-   */
-  type?: 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
+}
+
+/**
+ * Volume-name prefix per source kind. The index is the mount's position in
+ * the list, so a name is unique whatever the mix; keeping `hp-` for
+ * hostPath means the local backend's rendered manifest is unchanged.
+ */
+const VOLUME_NAME_PREFIX: Record<MountSource['kind'], string> = {
+  hostPath: 'hp',
+  pvc: 'pv',
+  emptyDir: 'ed',
+}
+
+/** The volume body (everything but `name`) for one mount source. */
+function volumeSourceSpec(source: MountSource): Record<string, unknown> {
+  switch (source.kind) {
+    case 'hostPath':
+      return { hostPath: { path: source.path, type: source.type ?? 'Directory' } }
+    case 'pvc':
+      // subPath rides on the volumeMount, not here: one claim backs many
+      // mounts, each addressing its own subtree of it.
+      return { persistentVolumeClaim: { claimName: source.claimName } }
+    case 'emptyDir':
+      return {
+        emptyDir: source.sizeLimit === undefined ? {} : { sizeLimit: String(source.sizeLimit) },
+      }
+  }
 }
 
 export interface SessionJobParams {
@@ -160,7 +223,8 @@ export interface SessionJobParams {
   image: string
   /** `NAME=VALUE` entries — same shape session-create builds today. */
   env: string[]
-  hostPathMounts: HostPathMount[]
+  /** Session mounts in render order, each declaring its own source. */
+  mounts: SessionMount[]
   /**
    * Scheduler reservation (the guaranteed floor). Kept well below
    * memoryLimitBytes so many idle sessions pack onto one node — memory is
@@ -186,8 +250,8 @@ export interface SessionJobParams {
   cpuRequestMillis: number
   /**
    * Node-disk floor: the container's writable layer, its logs, and its
-   * emptyDir volumes (hostPath mounts are not ephemeral storage, so the
-   * repo, worktrees and caches don't count). Same overcommit shape as
+   * emptyDir volumes (hostPath and PVC mounts are not ephemeral storage, so
+   * the repo, worktrees and caches don't count). Same overcommit shape as
    * memory — a request far below the limit, since most sessions never come
    * near it.
    */
@@ -248,7 +312,8 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
 /**
  * Build the Job manifest for one session: a single-pod Job
  * (`backoffLimit: 0`, `restartPolicy: Never`) whose pod carries the
- * session container plus all hostPath mounts and the proxy-CA ConfigMap.
+ * session container plus every caller-declared mount (each rendered from
+ * its own source) and the proxy-CA ConfigMap.
  *
  * Pure — no cluster access — so the full spec shape is unit-testable.
  */
@@ -256,15 +321,13 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   const volumes: Array<Record<string, unknown>> = []
   const volumeMounts: Array<Record<string, unknown>> = []
 
-  p.hostPathMounts.forEach((m, i) => {
-    const name = `hp-${i}`
-    volumes.push({
-      name,
-      hostPath: { path: m.hostPath, type: m.type ?? 'Directory' },
-    })
+  p.mounts.forEach((m, i) => {
+    const name = `${VOLUME_NAME_PREFIX[m.source.kind]}-${i}`
+    volumes.push({ name, ...volumeSourceSpec(m.source) })
     volumeMounts.push({
       name,
       mountPath: m.mountPath,
+      ...(m.source.kind === 'pvc' && m.source.subPath ? { subPath: m.source.subPath } : {}),
       ...(m.readOnly ? { readOnly: true } : {}),
     })
   })

@@ -56,7 +56,7 @@ export {
   graphrootMountAnnotations,
   sessionUid,
 } from './pod-spec'
-export type { HostPathMount } from './pod-spec'
+export type { HostPathType, MountSource, SessionMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,

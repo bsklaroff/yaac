@@ -346,8 +346,7 @@ export function worktreeDir(slug: string, sessionId: string): string {
  * not the worktree: the vcluster kubeconfig dir, the yaac-in-yaac data dir,
  * and the staged builtin-skills / session-bin copies. All of it is written
  * by the server and mounted into the session pod, so it has to be visible
- * from the pod's node. The one node-local exception is the tmux socket
- * dir — {@link nodeLocalSessionDir}.
+ * from the pod's node. Its node-local twin is {@link nodeLocalSessionDir}.
  *
  * Removed wholesale by session cleanup and the orphan-session GC, which
  * sweep both roots.
@@ -359,6 +358,12 @@ export function sessionDir(slug: string, sessionId: string): string {
 /**
  * NODE-LOCAL twin of {@link sessionDir}: per-session scratch that only the
  * session's own node ever touches. Same directory as `sessionDir` today.
+ *
+ * Nothing writes under it right now — its last resident, the tmux socket
+ * dir, is a pod-local emptyDir (see CONTAINER_TMUX_DIR). It stays because
+ * it is the tier declaration the sweeps below are built on: session scratch
+ * that has to survive the pod but not leave the node lands here, and
+ * {@link sessionRoots} already reaches it.
  */
 export function nodeLocalSessionDir(slug: string, sessionId: string): string {
   return nodeLocalProjectPath(slug, 'sessions', sessionId)
@@ -367,8 +372,8 @@ export function nodeLocalSessionDir(slug: string, sessionId: string): string {
 /**
  * Both roots a session's state can live under, deduplicated. Anything that
  * must see ALL of a session — cleanup, the orphan GC — iterates this
- * instead of re-stating the twin relationship, so a later reclassification
- * (tmux to an emptyDir, worktrees to node-local) is edited once, here.
+ * instead of re-stating the twin relationship, so a reclassification
+ * (worktrees to node-local, say) is edited once, here.
  *
  * One entry on the single-node backend, where the tiers coincide.
  */
@@ -400,19 +405,6 @@ export function projectRoots(slug: string): string[] {
  */
 export function projectsRoots(): string[] {
   return [...new Set([getProjectsDir(), getNodeLocalProjectsDir()])]
-}
-
-/**
- * NODE-LOCAL. Per-session directory bind-mounted into the container at
- * `CONTAINER_TMUX_DIR`, holding the tmux server socket. A UNIX socket only
- * rendezvous within the kernel that bound it, so it is node-local by
- * nature; nothing host-side connects to it either (every consumer —
- * attach, the status watcher's `tmux -C` stream, the liveness probe —
- * goes through `kubectl exec`). Nothing else is written here, so this can
- * become a pod-local emptyDir.
- */
-export function sessionTmuxDir(slug: string, sessionId: string): string {
-  return path.join(nodeLocalSessionDir(slug, sessionId), 'tmux')
 }
 
 /**

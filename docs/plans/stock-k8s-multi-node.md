@@ -104,9 +104,12 @@ coherence with external writers, perf) applies verbatim — run it against
 the CSI-mounted PV. Managed nodes actually simplify this: kubelet mounts
 the PV; no node automount units, no "mount before kubelet" ordering.
 
-- `pod-spec.ts` volume rendering becomes pluggable: each `HostPathMount`
-  gains a source — `hostPath` (local backends, unchanged) or
-  `pvc + subPath` (stock backend). Container-side paths are identical.
+- ~~`pod-spec.ts` volume rendering becomes pluggable~~ — **done**. A
+  session mount is `{source, mountPath, readOnly?}` where the source is
+  `hostPath` (what every tier renders as on the local backend),
+  `pvc + subPath` (rendered, selected by nothing yet — it waits on the
+  claims and the in-cluster server below), or `emptyDir`. Container-side
+  paths do not depend on the source.
 - The shared/node-local split from the storage plan carries over: `claude/`,
   `claude.json`, `codex/`, `pi/`, `opencode-config/`, `repo/.git`,
   cache-volumes on the RWX volume; `worktrees/<sid>` initially shared too
@@ -119,9 +122,10 @@ the PV; no node automount units, no "mount before kubelet" ordering.
   all three resolving to today's data dir) — see the storage plan's
   "Split shared vs node-local roots" for the per-directory verdicts. What
   is left here is pointing the roots at different volume sources.
-- **Unix-socket hostPath rendezvous is dead cross-node.** tmux is fine
-  (every consumer already goes through exec/streamd, and the socket can be
-  pod-local emptyDir once the pane log needn't outlive the pod). The
+- **Unix-socket hostPath rendezvous is dead cross-node.** tmux is **done**:
+  every consumer goes through exec/streamd, nothing was ever written into
+  the socket dir but the socket, so it is a pod-local emptyDir and
+  `sessionTmuxDir()` is gone. The
   **ssh-agent socket** was the real break, and is **done**: the proxy
   serves the agent protocol on its own port, session pods run a local
   forwarder that re-exposes it at the unchanged `SSH_AUTH_SOCK` path, and
@@ -301,11 +305,12 @@ shaped.
    current backend first): buildkit builds behind a builder abstraction,
    registry in-cluster, salvage-via-registry, ~~ssh-agent off the hostPath
    socket~~ (done — over the proxy's agent port, not the stream relay),
-   tmux socket to emptyDir, ~~shared/node-local root split in
+   ~~tmux socket to emptyDir~~ (done), ~~shared/node-local root split in
    `project-paths.ts`~~ (done — §2).
-3. **Server-in-cluster mode:** volume-source abstraction in `pod-spec.ts`
-   (hostPath | PVC), server Deployment + PVCs, `yaac cluster attach`
-   installer, provider-aware check.
+3. **Server-in-cluster mode:** ~~volume-source abstraction in `pod-spec.ts`
+   (hostPath | PVC)~~ (done — §2; the `pvc` source renders but nothing
+   selects it until the claims exist), server Deployment + PVCs, `yaac
+   cluster attach` installer, provider-aware check.
 4. **Multi-node rehearsal, then a real managed cluster:** multi-node kind
    with per-node extraMounts (from the storage plan) to shake out scheduling
    bugs cheaply, then a real EKS-AL/self-managed cluster behind the spikes.

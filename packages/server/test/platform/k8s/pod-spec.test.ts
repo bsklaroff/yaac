@@ -29,7 +29,7 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     },
     image: 'localhost:5000/yaac-tools:abc',
     env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],
-    hostPathMounts: [],
+    mounts: [],
     memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
     cpuRequestMillis: 250,
@@ -86,7 +86,12 @@ interface Manifest {
             allowPrivilegeEscalation?: boolean
           }
           lifecycle?: { postStart?: { exec?: { command: string[] } } }
-          volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
+          volumeMounts: Array<{
+            name: string
+            mountPath: string
+            subPath?: string
+            readOnly?: boolean
+          }>
           resources: { requests: Record<string, string>; limits: Record<string, string> }
         }>
         volumes: Array<{
@@ -94,6 +99,7 @@ interface Manifest {
           hostPath?: { path: string; type: string }
           configMap?: { name: string }
           emptyDir?: { medium?: string; sizeLimit?: string }
+          persistentVolumeClaim?: { claimName: string }
         }>
       }
     }
@@ -202,13 +208,18 @@ describe('buildSessionJobManifest', () => {
 
   it('renders hostPath mounts with the Directory default, File, and "" types', () => {
     const m = build({
-      hostPathMounts: [
-        { hostPath: '/host/dir', mountPath: '/workspace' },
-        { hostPath: '/host/file.json', mountPath: '/home/yaac/.claude.json', type: 'File' },
-        { hostPath: '/host/any', mountPath: '/mnt/any', type: '' },
+      mounts: [
+        { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
+        {
+          source: { kind: 'hostPath', path: '/host/file.json', type: 'File' },
+          mountPath: '/home/yaac/.claude.json',
+        },
+        { source: { kind: 'hostPath', path: '/host/any', type: '' }, mountPath: '/mnt/any' },
       ],
     })
     const { volumes, containers } = m.spec.template.spec
+    // `hp-<i>` naming is load-bearing, not cosmetic: it is what makes the
+    // local backend's manifest identical to the pre-seam one.
     expect(volumes[0]).toEqual({ name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } })
     expect(volumes[1]).toEqual({ name: 'hp-1', hostPath: { path: '/host/file.json', type: 'File' } })
     expect(volumes[2]).toEqual({ name: 'hp-2', hostPath: { path: '/host/any', type: '' } })
@@ -219,16 +230,64 @@ describe('buildSessionJobManifest', () => {
     ])
   })
 
-  it('marks readOnly mounts and omits the key otherwise', () => {
+  it('renders every mount source, leaving the container-side paths identical', () => {
+    // The seam docs/plans/stock-k8s-multi-node.md §2 needs: the source is
+    // the only thing that varies, so the same in-pod layout can be served
+    // from node disk, an RWX claim, or pod-local scratch. Nothing selects
+    // `pvc` yet — it is rendered here and nowhere else.
     const m = build({
-      hostPathMounts: [
-        { hostPath: '/ro', mountPath: '/mnt/ro', readOnly: true },
-        { hostPath: '/rw', mountPath: '/mnt/rw' },
+      mounts: [
+        { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
+        {
+          source: { kind: 'pvc', claimName: 'yaac-shared', subPath: 'projects/demo/claude' },
+          mountPath: '/home/yaac/.claude',
+        },
+        { source: { kind: 'pvc', claimName: 'yaac-shared' }, mountPath: '/mnt/whole-claim' },
+        { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
+        { source: { kind: 'emptyDir', sizeLimit: 2 * 1024 ** 3 }, mountPath: '/mnt/scratch' },
+      ],
+    })
+    const { volumes, containers } = m.spec.template.spec
+    // Volume names carry the source kind AND the mount's position, so one
+    // list can mix sources without a collision — and a hostPath entry keeps
+    // the name it had when every entry was one.
+    expect(volumes.slice(0, 5)).toEqual([
+      { name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } },
+      // One claim, many mounts: the subtree is addressed by the mount's
+      // subPath, so the claim appears once per mount and unchanged.
+      { name: 'pv-1', persistentVolumeClaim: { claimName: 'yaac-shared' } },
+      { name: 'pv-2', persistentVolumeClaim: { claimName: 'yaac-shared' } },
+      { name: 'ed-3', emptyDir: {} },
+      { name: 'ed-4', emptyDir: { sizeLimit: String(2 * 1024 ** 3) } },
+    ])
+    expect(containers[0].volumeMounts.slice(0, 5)).toEqual([
+      { name: 'hp-0', mountPath: '/workspace' },
+      { name: 'pv-1', mountPath: '/home/yaac/.claude', subPath: 'projects/demo/claude' },
+      // No subPath key at all when the whole claim is mounted.
+      { name: 'pv-2', mountPath: '/mnt/whole-claim' },
+      { name: 'ed-3', mountPath: '/tmp/yaac-tmux' },
+      { name: 'ed-4', mountPath: '/mnt/scratch' },
+    ])
+  })
+
+  it('marks readOnly mounts on any source and omits the key otherwise', () => {
+    const m = build({
+      mounts: [
+        { source: { kind: 'hostPath', path: '/ro' }, mountPath: '/mnt/ro', readOnly: true },
+        { source: { kind: 'hostPath', path: '/rw' }, mountPath: '/mnt/rw' },
+        {
+          source: { kind: 'pvc', claimName: 'yaac-shared', subPath: 'skills' },
+          mountPath: '/mnt/skills',
+          readOnly: true,
+        },
       ],
     })
     const mounts = m.spec.template.spec.containers[0].volumeMounts
     expect(mounts[0]).toEqual({ name: 'hp-0', mountPath: '/mnt/ro', readOnly: true })
     expect(mounts[1]).toEqual({ name: 'hp-1', mountPath: '/mnt/rw' })
+    expect(mounts[2]).toEqual({
+      name: 'pv-2', mountPath: '/mnt/skills', subPath: 'skills', readOnly: true,
+    })
   })
 
   it('wires postStartExec as the session container postStart hook', () => {

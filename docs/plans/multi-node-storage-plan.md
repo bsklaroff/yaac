@@ -83,7 +83,7 @@ applies two RuntimeClasses:
   in-sandbox container engine.
 
 Both handlers set `host-uds=all` (the tmux socket lives on a gofer-backed
-hostPath mount and must rendezvous across sandboxes as a real host socket)
+volume and must rendezvous across sandboxes as a real host socket)
 and `allow-suid` (runsc drops the setuid bit by default,
 google/gvisor#5299 — the image's passwordless `sudo` is a feature, and the
 rootful engine bootstrap needs it). Every manifest builder stamps
@@ -182,8 +182,9 @@ Invariants any shared-FS design must keep:
    runs.
 3. **pnpm hardlink affinity**: ephemeral module dirs live under
    `.cached-packages` so `link(2)` from the pnpm store doesn't hit EXDEV.
-4. **tmux socket** in `sessions/<sid>/tmux` — unix sockets rendezvous only
-   within the kernel that bound them (node-local by nature).
+4. ~~**tmux socket**~~ — unix sockets rendezvous only within the kernel
+   that bound them, so it was never shareable; it is a pod-local emptyDir
+   now and no longer constrains the shared root.
 
 **Primary path: plain NFS as the shared root** — a stock kernel NFS mount at
 the same absolute path on the server host and every node. It is the most
@@ -274,16 +275,16 @@ Keep hot per-session dirs off the shared FS regardless of which one wins.
 
       Still to do, all of it in the volume-source work rather than the path
       layer: `worktrees/<sid>` is shared *deliberately* (see below); the
-      server currently `mkdir`s node-local dirs (tmux, opencode-data,
+      server currently `mkdir`s node-local dirs (opencode-data,
       `.cached-packages`) from its own filesystem, which needs an emptyDir
       or an init container once the roots differ; the node-local sweeps
       still have to RUN per node; and `ensureDataDir()` pre-creates only
       the shared tree (server-local writers mkdir their own root).
-- [ ] tmux socket dir → emptyDir is **unblocked**: the only thing written
-      into it is the socket itself (`server`), no pane log — the "socket and
-      pane log" comments predate the podman→k8s move. The change belongs
-      with the `pod-spec.ts` volume-source work, since it is a volume-shape
-      change, not a path-vocabulary one.
+- [x] tmux socket dir → emptyDir: **done**, alongside the `pod-spec.ts`
+      volume-source seam (it was a volume-shape change, not a
+      path-vocabulary one). The only thing ever written into the dir is the
+      socket itself (`server`), nothing off the pod opens it, and
+      `sessionTmuxDir()` is gone with the host dir it named.
 - [ ] pnpm store placement: recommended **per-node store** (node-local, fast,
       duplicate downloads per node) over store-on-shared-FS (every
       `link(2)`/stat becomes a remote round trip).

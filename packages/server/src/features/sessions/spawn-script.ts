@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { type HostPathMount } from '#platform/k8s'
+import { type SessionMount } from '#platform/k8s'
 
 /**
  * The one session-bin script session pods cannot function without: the
@@ -68,12 +68,13 @@ export async function stageSessionBin(srcDir: string, destDir: string): Promise<
   return names.sort()
 }
 
-/** Read-only File mounts placing each staged script at `/usr/local/bin/<name>`. */
-export function sessionBinMounts(stagingDir: string, names: string[]): HostPathMount[] {
+/** Read-only File mounts placing each staged script at `/usr/local/bin/<name>`.
+ *  The staging dir is SHARED (under `sessionDir`) — the server writes it and
+ *  the pod reads it — so it takes the shared tier's source. */
+export function sessionBinMounts(stagingDir: string, names: string[]): SessionMount[] {
   return names.map((name) => ({
-    hostPath: path.join(stagingDir, name),
+    source: { kind: 'hostPath', path: path.join(stagingDir, name), type: 'File' },
     mountPath: `/usr/local/bin/${name}`,
     readOnly: true,
-    type: 'File' as const,
   }))
 }

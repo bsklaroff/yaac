@@ -86,12 +86,12 @@ describe('builtinSkillMounts', () => {
     expect(mounts).toHaveLength(2 * TOOL_SKILL_ROOTS.length)
     expect(mounts.every((m) => m.readOnly === true)).toBe(true)
     expect(mounts).toContainEqual({
-      hostPath: '/stage/welcome',
+      source: { kind: 'hostPath', path: '/stage/welcome' },
       mountPath: '/home/yaac/.claude/skills/welcome',
       readOnly: true,
     })
     expect(mounts).toContainEqual({
-      hostPath: '/stage/lint',
+      source: { kind: 'hostPath', path: '/stage/lint' },
       mountPath: '/home/yaac/.pi/agent/skills/lint',
       readOnly: true,
     })
