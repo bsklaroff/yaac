@@ -118,7 +118,8 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   2. cluster API server reachable
  *   3. node inventory: how many nodes, how many of them can schedule a
  *      session, and are they all Ready
- *   4. podman present (the image build engine)
+ *   4. podman present (the kind node's container runtime — images build in
+ *      the cluster, so it is the substrate here, not the build engine)
  *   5. the in-cluster registry answering (through this process's route to
  *      it — a kubectl port-forward, or the outer project registry nested)
  *   6. yaac namespace exists / can be created
@@ -239,14 +240,17 @@ export async function runClusterCheck(
     add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
   }
 
-  // 4. podman (build engine)
+  // 4. podman — the LOCAL backend's node runtime. Images no longer build on
+  // it (docs/image-builds.md); kind runs its nodes as podman containers,
+  // which is why this stays a hard requirement here and would not be one on
+  // a cluster yaac did not create.
   try {
     await execFileAsync('podman', ['--version'])
-    add({ name: 'podman', status: 'pass', detail: 'installed (image build engine)' })
+    add({ name: 'podman', status: 'pass', detail: 'installed (runs the kind node)' })
   } catch {
     add({
       name: 'podman', status: 'fail', detail: 'not found on PATH',
-      fix: 'Install podman — yaac builds session images with it.',
+      fix: 'Install podman — the local cluster\'s nodes run as podman containers.',
     })
   }
 
