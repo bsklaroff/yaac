@@ -105,12 +105,19 @@ let shippedCtxDir: string | null = null
  *  egress, so its `FROM` needs nothing mirrored. */
 const PROBE_BASE_IMAGE = 'docker.io/library/busybox:1.36'
 
-/** Cache tags currently in the shipped step-cache repo; empty when the repo
- *  does not exist yet (the registry 404s an unknown repository). */
+/**
+ * Cache tags currently in the shipped step-cache repo. Only a 404 counts as
+ * empty — that is the repo not existing yet on a clean install. Any other
+ * error is raised rather than folded in: a transient failure on the BEFORE
+ * call would otherwise make every pre-existing tag look newly added, which
+ * is exactly the vacuous assertion the snapshot exists to prevent.
+ */
 async function shippedCacheTags(): Promise<Set<string>> {
   const endpoint = await registryEndpoint()
-  const res = await fetch(`http://${endpoint}/v2/${SHIPPED_BUILD_CACHE_REPO}/tags/list`)
-  if (!res.ok) return new Set()
+  const url = `http://${endpoint}/v2/${SHIPPED_BUILD_CACHE_REPO}/tags/list`
+  const res = await fetch(url)
+  if (res.status === 404) return new Set()
+  if (!res.ok) throw new Error(`GET ${url} answered ${res.status} ${res.statusText}`)
   const body = await res.json() as { tags?: string[] }
   return new Set(body.tags ?? [])
 }
