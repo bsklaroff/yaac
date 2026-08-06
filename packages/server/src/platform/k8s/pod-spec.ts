@@ -72,7 +72,7 @@ export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
  * nested sessions go first, which is fatal to them (backoffLimit 0) and is
  * the ordering the PriorityClass split already intends.
  */
-export const NESTED_GRAPHROOT_TMPFS_BYTES = 10 * 1024 ** 3
+export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
 
 /**
  * emptyDir sizeLimit for the graphroot volume: the sentry's `size=` cap

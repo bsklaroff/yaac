@@ -126,7 +126,7 @@ after the engine-ready gate: it walks the registry catalog, pulls each
 tag, restores each named image's original name, and untags the
 `yaac-cache-` entries so they sit in the store as dangling cache entries
 exactly like a local `--layers` build's. It stops early once the graphroot
-passes half full — pulled layers live in the session's 10GiB sentry tmpfs,
+passes half full — pulled layers live in the session's 12GiB sentry tmpfs,
 which the session's own builds have to share, so an oversized project
 cache degrades to a partial warm-up instead of ENOSPC'ing the engine.
 
