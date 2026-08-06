@@ -150,10 +150,17 @@ carry these five steps, whatever the PR:
    - plus one top-level summary: `gh pr comment <n> --body "…"`
    - cite `file:line`; never quote credential values; **do not push commits or modify the PR branch** — it is reviewing, not fixing
    - default to a `--comment` review, not a formal approve/request-changes
-4. **Keep watching its own PR** — arm a persistent Monitor on
-   `yaac-watch-prs --pr <n> --events commit,comment`. Spell out that it must be
-   a **persistent background monitor, not a blocking foreground command and not
-   `--once`**: the event lines are what wake the agent from idle.
+4. **Keep watching its own PR** — have it arm a watch on
+   `yaac-watch-prs --pr <n> --events commit,comment` that will **wake it**.
+   Spell out the mechanism: "run it in the background" is how this silently
+   fails, since a backgrounded command logs to a file nobody reads and notifies
+   only on exit, which this watcher never does. Give it whichever option fits
+   the tool you spawned — a persistent `Monitor` on Claude Code, otherwise the
+   detached tmux paste loop from [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md)
+   ("Option B"), copied in with `<n>` substituted rather than left for the
+   reviewer to reconstruct. Tell it to **confirm the watch armed** before
+   going idle — one that didn't looks identical to a PR with no activity —
+   and that an event line is not a message from the user, so no reply is due.
 5. **Re-review on activity** — on `[commit]`, re-read the updated diff
    (`git fetch origin <branch> && git diff origin/<base>...origin/<branch>`),
    check whether earlier findings were addressed, and post a follow-up saying
