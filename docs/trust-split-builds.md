@@ -189,8 +189,8 @@ collected out from under its users.
 
 What the sweep does not take is that collect's read-only maintenance
 window, which is how the per-project one makes a live collect safe. Nothing
-prevents it — this registry is a Deployment over node-local storage too, so
-rolling it with the read-only env costs a restart and no images — but
+prevents it — this registry is a Deployment over a PVC too, so rolling it
+with the read-only env costs a restart and no images — but
 adopting it is a behaviour change of its own (every push and delete inside
 the window answers 405), so it is a follow-up. Until then the two hazards of
 collecting a live registry are handled directly:

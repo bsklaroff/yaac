@@ -157,9 +157,20 @@ only kind's provider breaks.
    cluster-DNS client, matches that host against a containerd `hosts.toml`
    holding the live ClusterIP, written by a one-shot pod per node. The
    server pushes and queries through a `kubectl port-forward`, so nothing in
-   the image path depends on host↔cluster networking. Blobs live on a node
-   hostPath (`/var/lib/yaac/main-registry/<install-hash>`), so they die with
-   the cluster and cost only re-pushes.
+   the image path depends on host↔cluster networking. Blobs live on an RWO
+   PVC (`yaac-registry-storage-<install-hash>`, install-keyed so coexisting
+   installs never share a store), which binds through the cluster's *default*
+   StorageClass — a cluster with none leaves the registry pod Pending. They
+   die with the cluster and cost only re-pushes.
+
+   An install upgrading from the older node-hostPath store converts on its
+   next server start and comes up on a **fresh, empty claim**: nothing
+   migrates blobs, so the first session create afterwards pays one round of
+   re-pushes and rebuilds. That is the same self-healing a cluster recreate
+   has always relied on. The old hostPath data stays on the nodes until the
+   legacy-store sweep reclaims it, and the sweep will not run until both
+   registries are demonstrably serving from their claims — so that window is
+   also the window in which the old store is still recoverable by hand.
 2. **Home-directory extraMount** — session pods mount worktrees, caches, and
    credentials via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
@@ -274,13 +285,19 @@ Everything else already reached every node and stays that way, by one of
 two mechanisms. Host-side loops over the node list: the node fixups and the
 containerd registry `hosts.toml` (both `podman exec`), and the per-project
 registries' `hosts.toml` writer pods. DaemonSets, which need no list and
-also cover nodes added later: the gVisor installer, Calico, and netd. What
-is genuinely node-*local* is the per-project registry's blob
-storage (`/var/lib/yaac/registry/<hash>`), which backs the cross-session
-image cache: it lives on whichever node the registry pod runs, so a pod
-that moves nodes starts with a cold cache. That costs rebuild time, never
-correctness — the cache prime treats a missing image as a miss, and session
-images themselves come from the host-side registry every node can pull.
+also cover nodes added later: the gVisor installer, Calico, and netd.
+
+Both registries' blob stores are RWO PVCs, so the store belongs to the
+claim rather than to whatever node the pod last landed on. Under kind's
+default `standard` class (rancher local-path, `WaitForFirstConsumer`) the
+underlying directory is still node-local — but it is now *sticky*: the
+bound volume carries node affinity, the scheduler honours it, and a
+reschedule therefore comes back to the same store rather than to an empty
+one while stranding the store it left. On a cluster whose default class is
+network-attached, the store follows the pod outright. Either way the
+Deployments stay unpinned: placement is the scheduler's job, constrained by
+the volume, and a `nodeSelector` would only trade a self-healing degradation
+for a single point of failure.
 
 `yaac cluster check` reports per-node readiness on a multi-node cluster
 (`runsc-nodes`, `registry-nodes`, `volume-nodes` — see "Verifying").

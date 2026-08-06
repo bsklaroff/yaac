@@ -45,7 +45,7 @@ import {
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
-  sweepLegacyImageStore,
+  sweepLegacyNodeStores,
 } from '#features/cluster'
 import {
   killTrackedPodmanProcs,
@@ -528,11 +528,14 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     void gcOrphanProjectRegistries()
       .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 
-    // Reclaim the retired node-local image store (the cross-session cache
-    // is the project registry now). Multi-GB on a machine that ran an
-    // older yaac, and nothing mounts it any more.
-    void sweepLegacyImageStore()
-      .catch((err) => serverLog(`[server] legacy image-store sweep failed: ${String(err)}`))
+    // Reclaim the retired node-local stores: the old image store (the
+    // cross-session cache is the project registry now) and both registries'
+    // blob stores (their storage is a PVC now). Multi-GB on a machine that
+    // ran an older yaac, and nothing mounts any of them any more. Ordered
+    // after the awaited `ensureMainRegistry` above, which is what converts
+    // the main registry off the hostPath this then deletes.
+    void sweepLegacyNodeStores()
+      .catch((err) => serverLog(`[server] legacy node-store sweep failed: ${String(err)}`))
   }
 
   // A NESTED server's cluster is its session's born-at-zero vcluster

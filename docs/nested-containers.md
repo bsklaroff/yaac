@@ -74,8 +74,9 @@ build` gets real layer-cache hits across a project's sessions. The registry
 is the only distribution mechanism: there is no node-local store, so
 nothing ties a session to the node its predecessor ran on. Every nested
 session therefore ensures the per-project registry, not just
-`virtualCluster` ones — an inner yaac is the exception (its vcluster
-denies the registry's node hostPath), and its sessions run uncached.
+`virtualCluster` ones — an inner yaac is the exception (its vcluster denies
+the node hostPath the registry's `hosts.toml` writer pods need), and its
+sessions run uncached.
 
 The push runs **inside the sandbox**, and the constraint it respects is
 that no layer may be extracted file-by-file through the gVisor gofer
@@ -293,13 +294,14 @@ A plain `registry:2` per project serves as the push-and-serve image source
 for vcluster synced pods and yaac-in-yaac. It has no upstream egress —
 nested `docker pull` goes through the MITM proxy, not this registry.
 
-- Plain HTTP on **:5000**, node-local hostPath storage, plain root
+- Plain HTTP on **:5000**, blobs on a per-project RWO PVC, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
   and mirrored into the yaac registry.
 - Ensured for every **nested** session (it also carries their cross-session
   image cache), not only `virtualCluster` ones — except inside an inner
-  yaac, whose vcluster denies the node hostPath the registry storage needs;
-  those sessions simply run without a cross-session cache.
+  yaac, whose vcluster pod guard denies the node hostPath the `hosts.toml`
+  writer pods mount, so the ensure could not finish; those sessions simply
+  run without a cross-session cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
 - Three policies: a sessions→registry allow k8s NetworkPolicy (podSelector

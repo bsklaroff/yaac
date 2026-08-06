@@ -767,8 +767,10 @@ export async function createSession(
     // split-horizon DNS (`*.svc` → cluster CoreDNS), so no pinned VIP or
     // hostAliases is needed; the per-project NetworkPolicies this ensure
     // applies admit the flow, scoped to the session's own registry.
-    // Never inside an INNER yaac: its vcluster's synced-pod policy denies
-    // the node hostPath the registry storage needs, so those sessions run
+    // Never inside an INNER yaac: the ensure's node-write pods hostPath-mount
+    // the node's containerd `certs.d` to publish the registry's hosts.toml,
+    // and its vcluster's pod guard denies any hostPath outside the session's
+    // own data dir — so the ensure could not finish. Those sessions run
     // without a cross-session image cache (image-promoter self-gates too).
     if (projectRegistry) {
       emit('Ensuring project registry...', options)
