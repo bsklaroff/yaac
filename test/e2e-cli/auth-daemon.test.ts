@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import WebSocket from 'ws'
@@ -17,21 +17,33 @@ import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
  * machine, the stubbed vendor CLI completing a "browser" login, and the
  * captured bundle landing back on the main server over RPC. Plus the
  * `yaac auth server` lifecycle commands and the raw /agent/auth wire.
+ *
+ * ONE main server for the file — spawning one waits on the cross-worker
+ * server mutex and dominated the wall-clock of these four tests. What
+ * each test actually needs isolated is the AUTH server, not the main one:
+ * the afterEach below stops it, so every case starts with no agent
+ * connected (which is exactly what the 503-guidance case asserts). The
+ * shared data dir carries only the credential the first test saves, and
+ * nothing later reads it.
  */
 describe('yaac auth server (real CLI + real servers)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer(testEnv.env)
   })
 
   afterEach(async () => {
-    // Stop any auth server before the main server so its reconnect loop
-    // doesn't spam the logs; testEnv.cleanup() reaps stragglers by pid.
+    // Stop any auth server this test started, so its reconnect loop
+    // doesn't spam the logs and the next test starts agent-free.
     await runYaac(testEnv.env, 'auth', 'server', 'stop')
+  })
+
+  afterAll(async () => {
     await server.stop()
+    // Reaps any auth-server straggler by pid.
     await testEnv.cleanup()
   })
 

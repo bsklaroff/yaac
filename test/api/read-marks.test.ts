@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
@@ -9,43 +9,51 @@ import {
   listWorktreeRows,
 } from '@yaac/server/features/sessions/worktree-store'
 
+/**
+ * One data dir for the file, not one per test: a fresh dir costs a PGlite
+ * boot plus a migration replay, which dwarfed these five route assertions.
+ * Isolation comes from the project slug instead — each case owns its own,
+ * so a shared dir carries no state between them.
+ */
 describe('worktree death read-marks', () => {
   let tmpDir: string
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = await createTempDataDir()
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  const seen = async (sessionId: string): Promise<boolean | undefined> =>
-    (await listWorktreeRows('proj')).find((r) => r.worktreeId === sessionId)?.deathSeen
+  const seen = async (
+    projectSlug: string, sessionId: string,
+  ): Promise<boolean | undefined> =>
+    (await listWorktreeRows(projectSlug)).find((r) => r.worktreeId === sessionId)?.deathSeen
 
   it('marks a recorded death seen on its session row', async () => {
     // Seed an abnormal death (unseen by default).
-    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sid-1' })
-    await recordWorktreeStopped('proj', 'sid-1', { reason: 'oom' })
-    expect(await seen('sid-1')).toBe(false)
+    await recordWorktreeCreated({ projectSlug: 'one', worktreeId: 'sid-1' })
+    await recordWorktreeStopped('one', 'sid-1', { reason: 'oom' })
+    expect(await seen('one', 'sid-1')).toBe(false)
 
     const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
-      json: { projectSlug: 'proj', worktreeId: 'sid-1' },
+      json: { projectSlug: 'one', worktreeId: 'sid-1' },
     })
     expect(res.status).toBe(204)
 
-    expect(await seen('sid-1')).toBe(true)
+    expect(await seen('one', 'sid-1')).toBe(true)
   })
 
   it('is a 204 no-op for a session with no row (best-effort)', async () => {
     const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
-      json: { projectSlug: 'proj', worktreeId: 'ghost' },
+      json: { projectSlug: 'empty', worktreeId: 'ghost' },
     })
     expect(res.status).toBe(204)
-    expect(await listWorktreeRows('proj')).toEqual([])
+    expect(await listWorktreeRows('empty')).toEqual([])
   })
 
   it('rejects a malformed body', async () => {
@@ -60,27 +68,25 @@ describe('worktree death read-marks', () => {
   it('marks every death in the project seen at once, scoped to that project', async () => {
     // Two deaths and a plain delete here, plus a death in another project that
     // must be left alone.
-    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sid-1' })
-    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sid-2' })
-    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sid-3' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-1' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-2' })
+    await recordWorktreeCreated({ projectSlug: 'bulk', worktreeId: 'sid-3' })
     await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'sid-4' })
-    await recordWorktreeStopped('proj', 'sid-1', { reason: 'oom' })
-    await recordWorktreeStopped('proj', 'sid-2', { reason: 'evicted' })
-    await recordWorktreeStopped('proj', 'sid-3') // user-initiated: never a death
+    await recordWorktreeStopped('bulk', 'sid-1', { reason: 'oom' })
+    await recordWorktreeStopped('bulk', 'sid-2', { reason: 'evicted' })
+    await recordWorktreeStopped('bulk', 'sid-3') // user-initiated: never a death
     await recordWorktreeStopped('other', 'sid-4', { reason: 'crashed' })
 
     const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-    const res = await client.worktree['mark-all-deaths-seen'].$post({ json: { projectSlug: 'proj' } })
+    const res = await client.worktree['mark-all-deaths-seen'].$post({ json: { projectSlug: 'bulk' } })
     expect(res.status).toBe(204)
 
-    expect(await seen('sid-1')).toBe(true)
-    expect(await seen('sid-2')).toBe(true)
+    expect(await seen('bulk', 'sid-1')).toBe(true)
+    expect(await seen('bulk', 'sid-2')).toBe(true)
     // A plain delete has no death to acknowledge, and the other project's death
     // keeps flagging.
-    expect(await seen('sid-3')).toBe(false)
-    expect(
-      (await listWorktreeRows('other')).find((r) => r.worktreeId === 'sid-4')?.deathSeen,
-    ).toBe(false)
+    expect(await seen('bulk', 'sid-3')).toBe(false)
+    expect(await seen('other', 'sid-4')).toBe(false)
   })
 
   it('rejects a mark-all with no project', async () => {

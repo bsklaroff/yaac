@@ -38,7 +38,10 @@ export const TEST_CLI_DIR = path.join(REPO_ROOT, 'dist-test')
  * and session-bin scripts are read from the copies beside it. That is why
  * the snapshot is the whole of dist/ and not just cli.js.
  */
-const ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
+export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
+
+/** Local alias — every spawn below runs `node TEST_CLI_ENTRY <args>`. */
+const ENTRY = TEST_CLI_ENTRY
 
 /**
  * Cross-worker mutex so only one `yaac server run` is live at a time

@@ -5,6 +5,7 @@ import {
   spawnYaacServer,
   runYaac,
   acquireServerMutex,
+  TEST_CLI_ENTRY,
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
@@ -74,15 +75,15 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     // it ignored, the server would land on the lower env port. Auto-increment
     // only nudges it higher, so the bound port stays in [wanted, wanted+probes).
     const wanted = testEnv.serverPort + 1
+    // The built bundle, like every other spawn in the suite (see
+    // TEST_CLI_ENTRY) — the source under tsx re-transpiles the whole
+    // dependency graph before it can even bind.
     const child = spawn(process.execPath, [
-      path.resolve('node_modules/tsx/dist/cli.mjs'),
-      path.resolve('packages/cli/src/cli.ts'),
-      'server', 'run', '--port', String(wanted),
+      TEST_CLI_ENTRY, 'server', 'run', '--port', String(wanted),
     ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
     try {
-      // A cold `server run` takes ~7s just to bind and write the lock (tsx
-      // transpiles the dependency tree first), so the budget has to clear
-      // that by a wide margin under a loaded parallel run — at 5s this
+      // Generous budget: a cold `server run` binds and writes its lock in a
+      // few seconds, and a loaded parallel run stretches that — at 5s this
       // timed out and read `port` off an undefined lock. Only the lock is
       // awaited, not `/health` readiness: the port is stamped at bind time,
       // well before the DB init that `ready` gates on.
@@ -243,16 +244,14 @@ describe('yaac server logs (real CLI)', () => {
     await fs.writeFile(serverLogPath(), 'initial\n')
 
     const child = spawn(process.execPath, [
-      path.resolve('node_modules/tsx/dist/cli.mjs'),
-      path.resolve('packages/cli/src/cli.ts'),
-      'server', 'logs', '-f',
+      TEST_CLI_ENTRY, 'server', 'logs', '-f',
     ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
     try {
       let stdout = ''
       child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
 
-      // Generous budgets: the first wait absorbs the CLI's tsx cold start,
-      // which can exceed 3s on a loaded or virtualized host.
+      // Generous budgets: the first wait absorbs the CLI's cold start,
+      // which can still take a second or two on a loaded host.
       await waitFor(() => stdout.includes('initial\n'), 15000)
       await fs.appendFile(serverLogPath(), 'appended\n')
       await waitFor(() => stdout.includes('appended\n'), 5000)

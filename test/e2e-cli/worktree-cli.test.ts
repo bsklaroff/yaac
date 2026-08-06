@@ -9,6 +9,7 @@ import {
   createYaacTestEnv,
   spawnYaacServer,
   runYaac,
+  TEST_CLI_ENTRY,
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
@@ -133,12 +134,13 @@ function openWs(url: string, headers: Record<string, string>): {
  * Spawn `yaac worktree monitor <args>` as a long-running child (it
  * re-renders forever), mirroring the `server logs -f` e2e pattern:
  * wait for the first render, assert on it, then kill the child.
+ *
+ * The built bundle, not the source under tsx — same reason `runYaac` uses
+ * it (see TEST_CLI_ENTRY): a fresh process re-transpiles the whole graph.
  */
 async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
   const child: ChildProcess = spawn(process.execPath, [
-    path.resolve('node_modules/tsx/dist/cli.mjs'),
-    path.resolve('packages/cli/src/cli.ts'),
-    'worktree', 'monitor', ...args,
+    TEST_CLI_ENTRY, 'worktree', 'monitor', ...args,
   ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
 
   let stdout = ''

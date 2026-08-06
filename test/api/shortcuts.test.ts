@@ -1,18 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
 
+/**
+ * One data dir for the file, not one per test: a fresh dir costs a PGlite
+ * boot plus a migration replay, which dwarfed these four route assertions.
+ * Order is load-bearing in exchange — the pristine-state case is declared
+ * first, and the reset case (which is also the only other writer) last, so
+ * nothing inherits an override it didn't write.
+ */
 describe('shortcuts route', () => {
   let tmpDir: string
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = await createTempDataDir()
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
     await cleanupTempDir(tmpDir)
   })
 

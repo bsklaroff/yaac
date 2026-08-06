@@ -1267,8 +1267,10 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Codex-specific paths: the ChatGPT-shaped `auth.json` placeholder,
       // the `Authorization: Bearer` swap on `chatgpt.com`, and the
       // Responses-API SSE shape.
-      await sleep(5000) // wait for codex-cli to render its main prompt
-
+      //
+      // No warm-up sleep before the dispatch loop below: it already polls
+      // the pane for whichever state codex is in — including "nothing
+      // rendered yet" — so a blind wait only ever cost time.
       const send = async (...keys: string[]): Promise<void> => {
         for (const k of keys) {
           await execInJob(jobName, [
@@ -1525,9 +1527,24 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
   })
 
-  describe('initial prompt (--prompt)', () => {
-    it('types the prompt into the agent pane and submits it, no attach needed', async () => {
-      const projectPath = await setupProject('prompted')
+  /**
+   * --prompt, --model and the configured referenceBranch on ONE session.
+   * The three are orthogonal create-time knobs whose assertions read
+   * different surfaces of the same pod (the agent pane, the window's
+   * start command, the worktree's upstream), so a session apiece bought
+   * nothing but two more pod bring-ups.
+   */
+  describe('create-time overrides (--prompt, --model, referenceBranch)', () => {
+    const SLUG = 'overridden'
+    let jobName = ''
+    let createStdout = ''
+    const marker = 'summarize the pinned issues'
+
+    beforeAll(async () => {
+      const projectPath = await setupProject(SLUG, {
+        yaacConfig: { referenceBranch: 'dev' },
+        extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
+      })
       // Pre-seed claude's onboarding state (same as the kitchen-sink
       // session) so the TUI lands directly on its chat prompt — a
       // headless create has no user to click through wizards.
@@ -1545,11 +1562,14 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         skipDangerousModePermissionPrompt: true,
       }) + '\n')
 
-      const marker = 'summarize the pinned issues'
-      const { jobName } = await createSession(
-        'prompted', '--tool', 'claude', '--prompt', marker,
+      const created = await createSession(
+        SLUG, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
       )
+      jobName = created.jobName
+      createStdout = created.stdout
+    }, 240_000)
 
+    it('types the prompt into the agent pane and submits it, no attach needed', async () => {
       // The prompt is pasted + submitted server-side (buildPromptPasteCmd)
       // with nobody attached; claude sends it to the (mock) LLM, whose
       // reply rendering in the pane proves the full type-and-submit path.
@@ -1567,15 +1587,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       if (!ok) console.error('final pane:\n' + pane)
       expect(ok).toBe(true)
     }, 240_000)
-  })
 
-  describe('model override (--model)', () => {
     it('launches claude with the requested --model', async () => {
-      await setupProject('modeled')
-      const { jobName } = await createSession(
-        'modeled', '--tool', 'claude', '--model', 'claude-opus-4-8',
-      )
-
       // The agent window's launch command carries the override — the flag
       // claude was actually started with, whatever the TUI renders.
       const { stdout: startCmd } = await execInJob(jobName, [
@@ -1583,20 +1596,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
       ])
       expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
-    }, 240_000)
-  })
+    }, 60_000)
 
-  describe('reference branch', () => {
-    // The --branch override's happy path (on a prewarmed claim) lives in
-    // worktree-prewarm.test.ts; here: the config-default path on a cold
-    // create, and the validation failure (which never creates a pod).
-    it('a bare create lands on the configured referenceBranch and tracks it', async () => {
-      await setupProject('branchy', {
-        yaacConfig: { referenceBranch: 'dev' },
-        extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
-      })
-      const { jobName, stdout } = await createSession('branchy')
-      expect(stdout).toContain('Creating worktree from dev...')
+    it('lands on the configured referenceBranch and tracks it', async () => {
+      // The --branch override's happy path (on a prewarmed claim) lives in
+      // worktree-prewarm.test.ts; this is the config-default path on a
+      // cold create.
+      expect(createStdout).toContain('Creating worktree from dev...')
 
       const { stdout: upstream } = await execInJob(jobName, [
         'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
@@ -1604,14 +1610,14 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(upstream.trim()).toBe('origin/dev')
       const { stdout: devFile } = await execInJob(jobName, ['cat', '/workspace/dev-only.txt'])
       expect(devFile).toBe('dev content\n')
-    }, 240_000)
+    }, 60_000)
 
     it('--branch rejects a branch missing from origin without creating a pod', async () => {
-      const podsBefore = (await listSessionPods('branchy')).length
-      const bad = await runYaac(serverEnv, 'worktree', 'create', 'branchy', '--branch', 'ghost')
+      const podsBefore = (await listSessionPods(SLUG)).length
+      const bad = await runYaac(serverEnv, 'worktree', 'create', SLUG, '--branch', 'ghost')
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
-      expect((await listSessionPods('branchy')).length).toBe(podsBefore)
+      expect((await listSessionPods(SLUG)).length).toBe(podsBefore)
     }, 60_000)
   })
 })

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -14,17 +14,23 @@ import {
  * the token instead of the secret, revoke, and observe the token die
  * while the lock secret keeps working. Also pins persistence: the server
  * DB directory lands in the data dir at 0700 (tokens are plaintext inside).
+ *
+ * ONE server for the file: spawning one waits on the cross-worker server
+ * mutex and is by far the slowest step here. The shared data dir makes
+ * order load-bearing — the lifecycle case below counts the durable tokens
+ * on the server, so it is declared before the case that mints more, and
+ * each case uses its own token name.
  */
 describe('durable token auth flow (real server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer(testEnv.env)
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
     await server.stop()
     await testEnv.cleanup()
   })

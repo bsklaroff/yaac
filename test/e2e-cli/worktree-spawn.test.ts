@@ -150,15 +150,20 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(rw).not.toContain('EXIT:0')
   })
 
-  it('spawns a sibling session with the prompt delivered to its agent', async () => {
+  it('spawns a sibling session with the prompt and --model delivered to its agent', async () => {
     // Watch the webapp snapshot stream: a spawned session must provision in
     // the sidebar exactly like a user-initiated create (row while building,
     // then the ready session in its place).
+    //
+    // --model rides along on this spawn rather than getting a session of its
+    // own: the two are orthogonal flags read off different surfaces of the
+    // same pod (the agent pane vs. the window's start command), and a
+    // sibling bring-up is the most expensive thing in this file.
     const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
     await sub.opened
 
     const PROMPT = 'hello from spawn e2e'
-    const { exitCode, output } = await runSpawn(`"${PROMPT}"`)
+    const { exitCode, output } = await runSpawn(`--model claude-opus-4-8 "${PROMPT}"`)
     expect(exitCode).toBe(0)
     const newSessionId = output.trim()
     expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
@@ -221,24 +226,9 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     }
     if (!found) console.error('final spawned pane:\n' + pane)
     expect(found).toBe(true)
-  }, 420_000)
 
-  it('spawns a sibling whose claude launches with the requested --model', async () => {
-    const { exitCode, output } = await runSpawn('--model claude-opus-4-8 "review something"')
-    expect(exitCode).toBe(0)
-    const newSessionId = output.trim()
-    expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-
-    let spawned: SessionPod | undefined
-    for (let i = 0; i < 120 && !spawned?.running; i++) {
-      const pods = await listSessionPods(SLUG)
-      spawned = pods.find((p) => p.sessionId === newSessionId)
-      if (!spawned?.running) await sleep(1000)
-    }
-    expect(spawned?.running).toBe(true)
-
-    // The agent window's launch command carries the override — poll while
-    // the agent window may still be respawning from its placeholder.
+    // The agent window's launch command carries the --model override — the
+    // flag claude was actually started with, whatever the TUI renders.
     let startCmd = ''
     for (let i = 0; i < 60; i++) {
       try {
@@ -254,7 +244,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
       await sleep(1000)
     }
     expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
-  }, 300_000)
+  }, 420_000)
 
   it('surfaces the proxy rejection for a model value outside the safe charset', async () => {
     // `;` passes shell/URL handling in yaac-spawn but fails the proxy's
