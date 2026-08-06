@@ -225,12 +225,16 @@ describe('salvageSessionImages', () => {
   it('pushes named images under their own name, ancestors as bounded cache tags', async () => {
     await expect(salvageReporting(CHAIN)).resolves.toBe(true)
     const push = pushCommand()
-    // zstd:1 and a nice'd push: this compression runs inside the session
-    // sandbox, so total CPU is the budget (measured on a 576MB layer of
-    // real binaries: 20.6s -> 16.3s CPU pushing, and the prime-side pull
-    // 15.2s -> 9.5s), and background work must lose to the agent.
+    // gzip, and a nice'd push. The FORMAT is load-bearing: zstd has no
+    // docker-schema2 layer media type, so a zstd push silently rewrites a
+    // schema2 image as OCI — and buildah only matches a cache candidate
+    // whose manifest type equals the format the build emits, which for the
+    // session's Docker CLI against podman's compat API is schema2. gzip
+    // exists in both schemas and leaves either in place. Level 1 because
+    // the compression runs inside the session sandbox, where total CPU is
+    // the budget and background work must lose to the agent.
     expect(push).toContain('nice -n 19 podman push --tls-verify=false '
-      + '--compression-format zstd --compression-level 1 "$1" "$2"')
+      + '--compression-format gzip --compression-level 1 "$1" "$2"')
     // argv is `id dest` pairs: the named image first (its blobs land in the
     // repo the chain entries then reuse), then the ancestor chain under
     // tags derived from the named tag — so a rebuilt myapp:v1 overwrites
@@ -248,8 +252,8 @@ describe('salvageSessionImages', () => {
     // `localhost/` prefix, while everything the server pushes into this
     // same registry uses the bare tag. Pushing the prefix verbatim put
     // each shared image in the catalog twice — and the copies share no
-    // LAYER blobs, since the salvage compresses zstd where the host wrote
-    // gzip.
+    // LAYER blobs, since the salvage compresses at level 1 where the host
+    // wrote gzip's default level.
     await expect(salvageReporting(
       `img sha256:${HEX}||localhost/myapp:v1,docker.io/library/alpine:3.20,\n`,
     )).resolves.toBe(true)

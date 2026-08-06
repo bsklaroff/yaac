@@ -669,8 +669,9 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
  * The image cache pushed podman's ref for a local name verbatim, and
  * podman stores every non-registry-qualified name under its `localhost/`
  * local-registry prefix — so an image the server had already pushed under
- * its bare tag gained a second repo holding a second, zstd-recompressed
- * copy of every layer. The salvage now canonicalizes the name away
+ * its bare tag gained a second repo holding a second, independently
+ * compressed copy of every layer. The salvage now canonicalizes the name
+ * away
  * (LOCAL_REGISTRY_PREFIX in image-promoter), which stops new ones but
  * leaves the existing subtree tagged, and therefore uncollectable, in
  * every registry an older server wrote.

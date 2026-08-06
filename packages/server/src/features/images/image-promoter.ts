@@ -160,9 +160,10 @@ const IMAGE_REF_MAX = 255
  * keys on the destination string, so leaving the prefix on puts every
  * image the two sides share in the catalog twice: `<repo>` and
  * `localhost/<repo>`. That is not free — the copies share no LAYER blobs,
- * since the salvage compresses zstd where the host push wrote gzip — and
- * it costs every later prime a second pull, a second ledger line and a
- * second graphroot budget check for bytes it already has.
+ * since the salvage compresses at level 1 where the host push writes
+ * gzip's default level (SALVAGE_COMPRESSION_LEVEL) — and it costs every
+ * later prime a second pull, a second ledger line and a second graphroot
+ * budget check for bytes it already has.
  *
  * Stripping it round-trips losslessly: the pull side restores the bare
  * name, podman puts the prefix straight back, and the next survey's ref
@@ -281,28 +282,41 @@ export function buildSurveyScript(): string {
 }
 
 /**
- * Compression for salvage pushes. CPU is the scarce resource on this path,
- * not disk: the compression runs INSIDE the session sandbox, competing
- * with the agent's own work under the sentry, whereas the bytes land in a
- * node-local registry.
+ * Compression for salvage pushes. The format is not a tuning knob — it is
+ * what decides whether this whole cache ever hits.
  *
- * Measured in a session pod on a 576MB layer of real binaries, against
- * podman's default gzip: pushing costs 16.3s of CPU instead of 20.6s, the
- * prime-side pull drops from 15.2s to 9.5s wall (32.1s to 25.6s CPU), and
- * the stored bytes are a wash (220.5MB vs 224.2MB). gzip's higher wall
- * speed comes from pgzip spreading over cores, which is the wrong thing to
- * want here — total CPU is the budget, and background work using fewer
- * cores is a feature. (On a deliberately incompressible payload zstd loses
- * on both counts, which is a property of that payload, not of images.)
+ * A push MUST NOT change an image's MANIFEST TYPE. buildah only considers
+ * a cache candidate whose manifest type equals the format the running
+ * build emits, so an image that changed type on the way through the
+ * registry is invisible to the build it was salvaged for. The session's
+ * `docker` is the real Docker CLI against podman's Docker-compatible API,
+ * which emits docker-schema2, while a bare `podman build` emits OCI — the
+ * store holds both, and each has to come back as what it was.
  *
- * Both consumers handle it: podman 5.x is what the prime side runs, and
- * node containerd zstd pulls are already validated live by the
- * trusted-parent pushes (TRUSTED_PARENT_COMPRESSION).
+ * zstd forces exactly that conversion: schema2 has no zstd layer media
+ * type, so a zstd push rewrites a schema2 image as OCI (silently — the
+ * push succeeds and the layers are intact), and every `docker build` in
+ * the next session then skips the entire primed cache. gzip has media types
+ * in both schemas, so it preserves either one in place, and the image id
+ * survives the round trip unchanged with it.
+ *
+ * Level 1 within gzip: CPU is the scarce resource here, not disk. The
+ * compression runs INSIDE the session sandbox, competing with the agent's
+ * own work under the sentry, whereas the bytes land in a node-local
+ * registry — so the cheapest gzip is the right one. (For scale, measured
+ * in a session pod on a 576MB layer of real binaries, default-level gzip
+ * costs 20.6s of CPU to push and 15.2s wall to pull back.)
+ *
+ * The consequence to know: a level-1 blob does not dedupe against the
+ * default-level blob a host-side push of the same layer writes. That
+ * costs registry bytes when both producers push one image, never a wrong
+ * hit — and the ledger already keeps a primed image from being pushed
+ * back, which is where the two sides would otherwise meet.
  *
  * Deliberately not `--disable-compression`, which would trade the disk
  * this registry is short of for the CPU it is trying to save.
  */
-export const SALVAGE_COMPRESSION = 'zstd'
+export const SALVAGE_COMPRESSION = 'gzip'
 export const SALVAGE_COMPRESSION_LEVEL = 1
 
 /**

@@ -260,12 +260,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     await testEnv.cleanup()
   }, 300_000)
 
-  // KNOWN BROKEN — skipped, not fixed: the cross-session layer cache does
-  // not survive into session 2. `docker build` does not read pulled layers
-  // during a build, so the images the prime pulls out of the project
-  // registry never reach the builder. The fix is to restore the
-  // additionalimagestores lower Dockerfile.nestable dropped.
-  it.skip('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
+  it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
     const slug = 'nested-cache'
     await setupProject(slug)
 
@@ -319,13 +314,9 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     }
     const imageId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Id')
     const parentId1 = await inspect(name1, 'yaac-cache-probe:v1', 'Parent')
-    // The CONTENT identity, which is what has to survive the round trip.
-    // Not the image id: the salvage pushes --compression-format zstd, and
-    // a zstd push converts a docker-schema2 image to OCI, which rewrites
-    // the config — and the config digest IS the id. diff_ids are digests
-    // of the UNCOMPRESSED layers, so they are exactly the part the
-    // re-compression cannot touch, and they are what podman's build cache
-    // matches on.
+    // The CONTENT identity: diff_ids are digests of the UNCOMPRESSED
+    // layers, so they are the part a re-compression cannot touch, and they
+    // are what podman's build cache matches on.
     const layers1 = await inspect(name1, 'yaac-cache-probe:v1', 'RootFS.Layers')
     expect(layers1).toMatch(/sha256:[0-9a-f]{64}/)
     // Both real ids (the `sha256:` prefix is engine-dependent) — in
@@ -364,8 +355,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     //
     // The claim worth guarding is the ONE-repo one: a single catalog entry
     // for this image, never a second alias beside it — the copies would
-    // share no layer blobs, since the salvage compresses zstd where a host
-    // push writes gzip.
+    // share no layer blobs, since the salvage compresses at level 1 where
+    // a host push writes gzip's default level.
     const probeRepos = (JSON.parse(catalog) as { repositories: string[] })
       .repositories.filter((r) => r.endsWith('yaac-cache-probe'))
     expect(probeRepos).toEqual(['docker.io/library/yaac-cache-probe'])
@@ -379,30 +370,31 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
 
     // Prime (session setup) pulled them back, so session 1's image is
     // reachable in session 2 by NAME and is the SAME IMAGE CONTENT: every
-    // uncompressed layer digest matches. The id deliberately is not
-    // compared — see layers1 — and the ids below are all session-2
-    // internal for the same reason.
+    // uncompressed layer digest matches.
     const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
     const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)
-    expect(s2Id).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
-    expect(s2Parent).toMatch(/^(sha256:)?[0-9a-f]{64}$/)
-    // The pulled image really is the one session 1 built, not a rebuild
-    // that happens to share layers: a rebuild here would have had nothing
-    // to build FROM, since the probe's own steps are all this pod ever ran.
-    expect(s2Id).not.toBe(imageId1)
+    // Byte-identical IDENTITY, both for the image and the intermediate it
+    // hangs off. An image id is its config digest, so this is the assertion
+    // that guards the round trip's one hard requirement: the salvage must
+    // not rewrite an image on the way through the registry. It would if the
+    // push forced a compression the source manifest schema has no media
+    // type for (zstd on docker-schema2 — SALVAGE_COMPRESSION), and the
+    // rewritten image then carries the wrong manifest type for the build
+    // that wants it: buildah only matches a cache candidate whose type
+    // equals the format the build emits, so every "Using cache" below would
+    // go quiet while every content assertion above stayed green.
+    expect(s2Id).toBe(imageId1)
+    expect(s2Parent).toBe(parentId1)
 
     // Rebuilding the identical Dockerfile must REUSE the salvaged layers
     // rather than re-run the steps — the entire point of carrying them
     // through the registry.
     //
-    // Asserted on the builder's own cache accounting, not on image ids.
-    // An id comparison cannot express this: the salvage pushes
-    // --compression-format zstd, which converts the image to OCI and
-    // rewrites the config, so a pulled image never shares an id with the
-    // one that produced it, and a re-run of a deterministic `COPY` lands
-    // the same diff_ids whether it hit cache or not. "Using cache" is the
-    // only signal that separates reuse from a cheap rebuild.
+    // Asserted on the builder's own cache accounting, not on image ids: a
+    // re-run of a deterministic `COPY` lands the same diff_ids whether it
+    // hit cache or not, so "Using cache" is the only signal that separates
+    // reuse from a cheap rebuild.
     const { stdout: v2Out } = await execInJob(session2.jobName, ['sh', '-c',
       buildProbe('yaac-cache-probe:v2', 'marker2') + ' 2>&1'], { timeout: 120_000 })
     expect(v2Out, `identical rebuild re-ran its steps:\n${v2Out}`).toContain('Using cache')

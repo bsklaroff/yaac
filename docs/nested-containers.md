@@ -86,6 +86,21 @@ compresses them in-sandbox, and streams them out over netstack as bulk
 blob uploads — the same shape the trust-split builder pods already push
 their products with.
 
+The push compresses with **gzip**, and that is a correctness constraint
+rather than a tuning choice. buildah only considers a cache candidate
+whose manifest type equals the format the running build emits, and the
+store holds both types: the session's `docker` is the real Docker CLI
+against podman's Docker-compatible API, so `docker build` emits
+docker-schema2, while a bare `podman build` emits OCI. A push must
+therefore hand each image back as what it was, and the compression format
+decides that — schema2 has no zstd layer media type, so a zstd push
+silently rewrites a schema2 image as OCI and every later `docker build`
+skips the whole primed cache. gzip has media types in both schemas, so it
+leaves either in place and the image id survives the round trip
+unchanged. Level 1 within gzip, because this compression runs inside the
+session sandbox where CPU is the scarce resource and the bytes land in a
+node-local registry.
+
 One salvage is two sudo-gated execs:
 
 1. **Survey** — list the engine's images with their parents, names, and

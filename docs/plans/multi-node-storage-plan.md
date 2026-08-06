@@ -129,12 +129,14 @@ uid_map failed`), verified on the dev cluster. Decisions:
   service exports `SSL_CERT_FILE=<combined bundle>` inside its own shell to
   trust the MITM proxy CA on registry pulls. Nested containers and build RUN
   steps get their CA trust from the mounted containers.conf.
-- **Shared image store** (`additionalimagestores`) over a gofer-served
-  hostPath works for read-back; it is populated NODE-side by the salvage
-  writer pod (image-promoter.ts) from a tar the session exports — the
-  in-sentry skopeo copy was 10x+ slower (per-file gofer RPCs) and dropped
-  file caps, which native writes preserve. The store is root-owned — no
-  chown-init.
+- **Cross-session image cache needs no node-local mount.** It rides the
+  project's own in-cluster registry: the session pushes its images out over
+  netstack and a later session pulls them back in (image-promoter.ts, and
+  docs/nested-containers.md for the manifest-type constraint the push
+  respects). Nothing about it pins a session to the node its predecessor
+  ran on, and the gofer is not in the path — the graphroot is a sentry
+  tmpfs, so pushes read layers at native speed instead of extracting them
+  file-by-file.
 
 ### vcluster
 
@@ -159,7 +161,7 @@ gVisor pod.**
 Cluster check all-green (sentry probe, hostPath write at the session uid,
 egress default-deny + forgery lock); transparent-egress 8/8 with proxy AND
 session pods sandboxed; nested-containers 3/3 (rootful in-pod build + pull
-through the MITM proxy + shared-store cache reuse); session-create-vcluster
+through the MITM proxy + cross-session cache reuse); session-create-vcluster
 and yaac-in-yaac green; full server unit suite green.
 
 ## Remaining: shared filesystem across nodes
