@@ -105,6 +105,16 @@ let shippedCtxDir: string | null = null
  *  egress, so its `FROM` needs nothing mirrored. */
 const PROBE_BASE_IMAGE = 'docker.io/library/busybox:1.36'
 
+/** Cache tags currently in the shipped step-cache repo; empty when the repo
+ *  does not exist yet (the registry 404s an unknown repository). */
+async function shippedCacheTags(): Promise<Set<string>> {
+  const endpoint = await registryEndpoint()
+  const res = await fetch(`http://${endpoint}/v2/${SHIPPED_BUILD_CACHE_REPO}/tags/list`)
+  if (!res.ok) return new Set()
+  const body = await res.json() as { tags?: string[] }
+  return new Set(body.tags ?? [])
+}
+
 async function writeProjectDockerfile(content: string): Promise<void> {
   const dir = projectBuildDir(PROJECT_SLUG)
   await fs.mkdir(dir, { recursive: true })
@@ -248,6 +258,12 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     // Parentless and over a tiny upstream base on purpose: the parent-pull
     // leg and the delta push are covered by the chain build below, and
     // pulling the multi-GB tools image a second time would buy nothing.
+
+    // Snapshotted rather than counted: the shipped cache repo is
+    // install-wide and long-lived, so "it has tags" would pass on any
+    // developer machine without this build having written a thing.
+    const before = await shippedCacheTags()
+
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-e2e-'))
     shippedCtxDir = dir
     await fs.writeFile(
@@ -270,13 +286,11 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     expect(await registryHasTag(tag)).toBe(true)
     expect(await imageExists(tag)).toBe(false)
 
-    // And its step cache landed in the install-wide shipped repo, which is
-    // the whole of what the trust tier still governs.
-    const endpoint = await registryEndpoint()
-    const res = await fetch(`http://${endpoint}/v2/${SHIPPED_BUILD_CACHE_REPO}/tags/list`)
-    expect(res.ok).toBe(true)
-    const listed = await res.json() as { tags?: string[] }
-    expect(listed.tags?.length ?? 0).toBeGreaterThan(0)
+    // And THIS build's step cache landed in the install-wide shipped repo,
+    // which is the whole of what the trust tier still governs. The RUN step
+    // carries the per-run nonce, so its cache key is new every run.
+    const added = [...await shippedCacheTags()].filter((t) => !before.has(t))
+    expect(added.length).toBeGreaterThan(0)
   }, 300_000)
 
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {

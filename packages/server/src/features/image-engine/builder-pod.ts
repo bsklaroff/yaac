@@ -597,7 +597,12 @@ export class BuilderPodLease {
     }
     if (!this.acquiring) {
       this.acquiring = this.provision(seedTag).catch((err: unknown) => {
-        this.acquiring = null // a later layer may retry provisioning
+        // A later layer may retry provisioning — and must retry with a
+        // clean taint, since the flag below was set for a build that never
+        // ran. Leaving it set would make the next shipped acquire discard a
+        // pod that had done nothing.
+        this.acquiring = null
+        this.tainted = false
         throw err
       })
     }
