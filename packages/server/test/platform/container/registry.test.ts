@@ -6,12 +6,21 @@ type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 
 interface FakeChild extends EventEmitter {
-  stdout: EventEmitter
-  stderr: EventEmitter
+  stdout: EventEmitter & { unref?: () => void }
+  stderr: EventEmitter & { unref?: () => void }
+  unref: () => void
+  kill: () => void
 }
 const spawnedChildren: Array<{ file: string; args: string[]; child: FakeChild }> = []
 let spawnCloseCode = 0
+/** Local port the fake `kubectl port-forward` reports listening on. */
+const FORWARD_PORT = 41234
+/** Set to fail the port-forward the way a missing Deployment does. */
+let forwardFails = false
 
+// The process boundary in both directions: `spawn` covers the kubectl
+// port-forward child AND the tracked podman push, so the port-forward
+// module underneath runs for real rather than being stubbed out.
 vi.mock('node:child_process', () => ({
   // The barrel pulls in runtime.ts, which reaches kubectl.ts; both promisify
   // a child_process binding at module eval. Only the two below are called.
@@ -30,10 +39,24 @@ vi.mock('node:child_process', () => ({
   },
   spawn: (file: string, args: string[]) => {
     const child = new EventEmitter() as FakeChild
-    child.stdout = new EventEmitter()
-    child.stderr = new EventEmitter()
+    child.stdout = Object.assign(new EventEmitter(), { unref: vi.fn() })
+    child.stderr = Object.assign(new EventEmitter(), { unref: vi.fn() })
+    child.unref = vi.fn()
+    child.kill = vi.fn()
     spawnedChildren.push({ file, args, child })
-    process.nextTick(() => child.emit('close', spawnCloseCode))
+    if (args[0] === 'port-forward') {
+      // A live port-forward announces its listener and then stays up.
+      process.nextTick(() => {
+        if (forwardFails) child.emit('exit', 1)
+        else {
+          child.stdout.emit('data', Buffer.from(
+            `Forwarding from 127.0.0.1:${FORWARD_PORT} -> 5000\n`,
+          ))
+        }
+      })
+    } else {
+      process.nextTick(() => child.emit('close', spawnCloseCode))
+    }
     return child
   },
 }))
@@ -48,26 +71,46 @@ vi.mock('#log', () => ({
 import { pipeToServerLog } from '#log'
 
 import {
-  ensureLocalRegistry,
+  invalidateRegistryEndpoint,
   pushImageToRegistry,
+  registryEndpoint,
   registryHasTag,
   registryHost,
   registryReachable,
   registryRef,
-  removeLocalRegistry,
 } from '#platform/container'
+// State-reset hook for the shared port-forward registry (module state that
+// would otherwise leak a live child between cases), not a unit under test.
+import { _resetPortForwardsForTests } from '#platform/k8s/port-forward'
 
 const fetchMock = vi.fn<typeof fetch>()
+
+/** The install's registry ref prefix with no YAAC_K8S_REGISTRY override. */
+const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
+/** Where this process reaches it: the fake port-forward's local end. */
+const ENDPOINT = `127.0.0.1:${FORWARD_PORT}`
+
+/** Only the podman children (the port-forward child is not a push). */
+function podmanPushes(): Array<{ file: string; args: string[] }> {
+  return spawnedChildren.filter((c) => c.file === 'podman')
+}
+
+function forwardArgs(): string[][] {
+  return spawnedChildren.filter((c) => c.args[0] === 'port-forward').map((c) => c.args)
+}
 
 beforeEach(() => {
   execFileMock.mockReset()
   fetchMock.mockReset()
   spawnedChildren.length = 0
   spawnCloseCode = 0
+  forwardFails = false
+  _resetPortForwardsForTests()
   vi.stubGlobal('fetch', fetchMock)
 })
 
 afterEach(() => {
+  _resetPortForwardsForTests()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
 })
@@ -77,33 +120,71 @@ function fetchResponse(init: { ok: boolean; status?: number }): Response {
 }
 
 describe('registryHost', () => {
-  it('defaults to localhost:5001', () => {
-    expect(registryHost()).toBe('localhost:5001')
+  it('is the registry Service FQDN in the default namespace', () => {
+    // Pinned to the DEFAULT namespace, not k8sNamespace(): per-run e2e
+    // namespaces must keep sharing one image store.
+    vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
+    expect(registryHost()).toBe(CLUSTER_HOST)
   })
 
-  it('honors the YAAC_K8S_REGISTRY override', () => {
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'localhost:5999')
-    expect(registryHost()).toBe('localhost:5999')
+  it('honors the YAAC_K8S_REGISTRY override (a nested install)', () => {
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
+    expect(registryHost()).toBe('yaac-reg-proj.yaac.svc.cluster.local:5000')
   })
 })
 
 describe('registryRef', () => {
-  it('qualifies a tag with the registry host', () => {
-    expect(registryRef('yaac-tools:abc')).toBe('localhost:5001/yaac-tools:abc')
+  it('qualifies a tag with the cluster host, never the local endpoint', () => {
+    expect(registryRef('yaac-tools:abc')).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
   })
 
   it('follows the YAAC_K8S_REGISTRY override', () => {
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'localhost:5999')
-    expect(registryRef('a:b')).toBe('localhost:5999/a:b')
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'reg.local:5000')
+    expect(registryRef('a:b')).toBe('reg.local:5000/a:b')
+  })
+})
+
+describe('registryEndpoint', () => {
+  it('port-forwards into the registry Deployment and reuses one child', async () => {
+    await expect(registryEndpoint()).resolves.toBe(ENDPOINT)
+    await expect(registryEndpoint()).resolves.toBe(ENDPOINT)
+
+    // One long-lived child per server run, into the Deployment in the
+    // registry's own (default) namespace, on an ephemeral local port.
+    expect(forwardArgs()).toEqual([[
+      'port-forward', '-n', 'yaac', 'deploy/yaac-registry', '0:5000',
+    ]])
+  })
+
+  it('dials an externally managed registry directly, with no forward at all', async () => {
+    // A nested yaac IS a pod: it reaches the outer project registry over
+    // cluster DNS, and must never spawn a port-forward for it.
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
+    await expect(registryEndpoint()).resolves.toBe('yaac-reg-proj.yaac.svc.cluster.local:5000')
+    expect(forwardArgs()).toHaveLength(0)
+  })
+
+  it('rejects when the forward cannot be established', async () => {
+    forwardFails = true
+    await expect(registryEndpoint()).rejects.toThrow(/port-forward/)
+  })
+})
+
+describe('invalidateRegistryEndpoint', () => {
+  it('drops the child so the next call re-establishes the forward', async () => {
+    await registryEndpoint()
+    invalidateRegistryEndpoint()
+    await registryEndpoint()
+    expect(forwardArgs()).toHaveLength(2)
   })
 })
 
 describe('registryReachable', () => {
-  it('returns true when the OCI ping answers 200', async () => {
+  it('pings /v2/ through the forwarded endpoint', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
     await expect(registryReachable()).resolves.toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:5001/v2/',
+      `http://${ENDPOINT}/v2/`,
       expect.objectContaining({ signal: expect.any(AbortSignal) as AbortSignal }),
     )
   })
@@ -113,11 +194,25 @@ describe('registryReachable', () => {
     await expect(registryReachable()).resolves.toBe(true)
   })
 
-  it('returns false on other statuses and network errors', async () => {
+  it('is false — without throwing — when there is no route to the registry', async () => {
+    forwardFails = true
+    await expect(registryReachable()).resolves.toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('returns false on other statuses, and re-forwards after a dead transport', async () => {
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 500 }))
     await expect(registryReachable()).resolves.toBe(false)
+    // A 500 is the registry answering, so the forward is fine and kept.
+    expect(forwardArgs()).toHaveLength(1)
+
+    // A transport error is not: the cached child is dropped so the next
+    // call cannot spend the whole server run talking to a dead forward.
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     await expect(registryReachable()).resolves.toBe(false)
+    fetchMock.mockResolvedValueOnce(fetchResponse({ ok: true }))
+    await expect(registryReachable()).resolves.toBe(true)
+    expect(forwardArgs()).toHaveLength(2)
   })
 })
 
@@ -131,59 +226,21 @@ describe('registryHasTag', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
     await expect(registryHasTag('yaac-tools:abc123')).resolves.toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:5001/v2/yaac-tools/manifests/abc123',
+      `http://${ENDPOINT}/v2/yaac-tools/manifests/abc123`,
       expect.objectContaining({ method: 'HEAD' }),
     )
   })
 
-  it('returns false when the manifest is absent or the registry is down', async () => {
+  it('returns false when the manifest is absent, the registry is down, or unroutable', async () => {
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: false, status: 404 }))
     await expect(registryHasTag('yaac-tools:missing')).resolves.toBe(false)
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
-  })
-})
-
-describe('ensureLocalRegistry', () => {
-  it('reuses any registry already answering on the address', async () => {
-    fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
-    await ensureLocalRegistry()
-    expect(execFileMock).not.toHaveBeenCalled()
-  })
-
-  it('starts registry:2 under podman and waits for it to answer', async () => {
-    // First ping fails (nothing listening), every later ping succeeds.
-    fetchMock
-      .mockResolvedValueOnce(fetchResponse({ ok: false, status: 500 }))
-      .mockResolvedValue(fetchResponse({ ok: true }))
-    execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
-
-    await ensureLocalRegistry()
-
-    expect(execFileMock).toHaveBeenCalledWith(
-      'podman', ['rm', '-f', '--ignore', 'yaac-registry'],
-    )
-    expect(execFileMock).toHaveBeenCalledWith('podman', [
-      'run', '-d', '--name', 'yaac-registry',
-      '-p', '127.0.0.1:5001:5000',
-      'docker.io/library/registry:2',
-    ])
-  })
-
-  it('throws a pointed error when the registry container fails to start', async () => {
-    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 500 }))
-    execFileMock.mockRejectedValue(new Error('podman missing'))
-    await expect(ensureLocalRegistry()).rejects.toThrow('Failed to start local registry container')
-  })
-})
-
-describe('removeLocalRegistry', () => {
-  it('force-removes the managed registry container, ignoring a missing one', async () => {
-    execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
-    await removeLocalRegistry()
-    expect(execFileMock).toHaveBeenCalledWith(
-      'podman', ['rm', '-f', '--ignore', 'yaac-registry'],
-    )
+    // No route at all reads as "absent" too, so the caller pushes and
+    // fails loudly there rather than skipping a push that never happened.
+    forwardFails = true
+    invalidateRegistryEndpoint()
+    await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
   })
 })
 
@@ -191,18 +248,20 @@ describe('pushImageToRegistry', () => {
   it('skips the push when the immutable tag already exists', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
     const ref = await pushImageToRegistry('yaac-tools:abc')
-    expect(ref).toBe('localhost:5001/yaac-tools:abc')
-    expect(spawnedChildren).toHaveLength(0)
+    expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
+    expect(podmanPushes()).toHaveLength(0)
   })
 
-  it('pushes via podman with --tls-verify=false and returns the in-cluster ref', async () => {
+  it('pushes to the local endpoint and returns the CLUSTER ref', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const ref = await pushImageToRegistry('yaac-tools:abc')
-    expect(ref).toBe('localhost:5001/yaac-tools:abc')
-    expect(spawnedChildren).toHaveLength(1)
-    expect(spawnedChildren[0].file).toBe('podman')
-    expect(spawnedChildren[0].args).toEqual([
-      'push', '--tls-verify=false', 'yaac-tools:abc', 'localhost:5001/yaac-tools:abc',
+    // The two addresses of one registry: podman uploads through the
+    // forwarded loopback port, while the ref a pod pulls is the svc FQDN.
+    // Blob storage is keyed by repository path, so they name the same bytes.
+    expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
+    expect(podmanPushes()).toHaveLength(1)
+    expect(podmanPushes()[0].args).toEqual([
+      'push', '--tls-verify=false', 'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
     ])
   })
 
@@ -217,17 +276,17 @@ describe('pushImageToRegistry', () => {
   it('passes --compression-format through (trust-split zstd parent pushes)', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     await pushImageToRegistry('yaac-tools:abc', { compressionFormat: 'zstd' })
-    expect(spawnedChildren[0].args).toEqual([
+    expect(podmanPushes()[0].args).toEqual([
       'push', '--tls-verify=false', '--compression-format', 'zstd',
-      'yaac-tools:abc', 'localhost:5001/yaac-tools:abc',
+      'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
     ])
   })
 
   it('force-pushes even when the tag is already present (rebuild path)', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
     const ref = await pushImageToRegistry('yaac-tools:abc', { force: true })
-    expect(ref).toBe('localhost:5001/yaac-tools:abc')
-    expect(spawnedChildren).toHaveLength(1)
+    expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
+    expect(podmanPushes()).toHaveLength(1)
     // The has-tag check is skipped entirely, not just overridden.
     expect(fetchMock).not.toHaveBeenCalled()
   })

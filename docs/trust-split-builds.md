@@ -124,9 +124,33 @@ from the pod's own status (`builderPodBlockReason`).
 
 ## The registry is the only image bus
 
-Builder pods pull parents from the local registry and push products back;
-session pods pull final images from it unchanged. It holds two things per
-untrusted build:
+The registry is an in-cluster `registry:2` Deployment behind a normal
+ClusterIP Service, mirroring the per-project registries' topology (blobs on
+a node hostPath, a containerd `hosts.toml` per node holding the live
+ClusterIP so the node can resolve a name cluster DNS never serves it). It
+sits in the *default* install namespace rather than the per-run one, so
+concurrent e2e namespaces share one image store.
+
+Its ingress is locked to its two caller classes: the node (an `ipBlock` —
+containerd pulls, the kubelet probe, and the server's port-forward all
+arrive from the host netns, which plain NetworkPolicy cannot name any other
+way) and `yaac.role=builder` pods in any namespace. See the open risk below
+for what that lock does and does not buy.
+
+Every party addresses it the same way — by its Service FQDN
+(`yaac-registry.<default-ns>.svc.cluster.local:5000`), which is the prefix
+every yaac image ref carries. Builder pods pull parents from it and push
+products back; session pods pull final images from it unchanged. The one
+exception is the yaac SERVER, which is a host process with no route into
+the pod network: it reaches the registry over a long-lived `kubectl
+port-forward` (the same mechanism the stream relay uses) and pushes through
+that loopback port. Blob storage is keyed by repository path, so the bytes a
+push puts there are exactly what a node later pulls by the cluster ref. The
+existing `registryHasTag()` HEAD, over the same forward, stays the
+server-side skip check, so the common path (tag already present) never
+creates a pod.
+
+The registry holds two things per untrusted build:
 
 - **Final images** — pushed delta-only via cross-repo blob mounts.
 - **Per-step cache images** — `--cache-from`/`--cache-to` on every builder
@@ -135,7 +159,9 @@ untrusted build:
   steps, in any fresh pod. Cache repos are **per project**
   (`yaac-buildcache-<slug>`): cache entries are consumed by key with no
   provenance check, so per-project scoping confines a poisoned entry to
-  the project whose image the attacker already controls. `--cache-ttl`
+  the project whose image the attacker already controls — but only against
+  a build that stays in its own cache repo, not against one that writes
+  another project's directly (see the open risk below). `--cache-ttl`
   bounds reads.
 
 ### Collecting the step cache
@@ -161,12 +187,13 @@ single-arch children under tags of their own. A digest-only push, or a
 manifest list whose children the mark phase never walks, would be
 collected out from under its users.
 
-What the sweep cannot borrow is that collect's read-only maintenance
-window: the window is an env change rolled through a Deployment, while the
-shared registry is a plain podman container whose storage lives in its own
-writable layer, so recreating it to set the same env would drop every
-pushed image. The two hazards of collecting a live registry are handled
-directly instead:
+What the sweep does not take is that collect's read-only maintenance
+window, which is how the per-project one makes a live collect safe. Nothing
+prevents it — this registry is a Deployment over node-local storage too, so
+rolling it with the read-only env costs a restart and no images — but
+adopting it is a behaviour change of its own (every push and delete inside
+the window answers 405), so it is a follow-up. Until then the two hazards of
+collecting a live registry are handled directly:
 
 - A push racing the collect can lose blobs between upload and manifest
   `PUT`, leaving an image that pulls broken forever — the `registryHasTag`
@@ -184,23 +211,17 @@ directly instead:
   re-pushed digest writes a link with no blob behind it and the tag 404s
   permanently. The restart that clears them runs in an unconditional
   `finally` — a collect that failed part-way through deleting is when it
-  matters most — followed by re-ensuring the cluster Service, since the
-  restart can move the registry's address. A marker file in the
-  registry's storage records that a collect began, so a restart lost to a
-  failed `podman restart` or to the server dying mid-collect is redone by
+  matters most. Restarting is a Deployment rollout, which the Service's
+  stable ClusterIP survives, so no node rewiring is owed; only the server's
+  own port-forward, bound to the pod that went away, is dropped. A marker
+  file in the registry's storage records that a collect began, so a restart
+  lost to a failed rollout or to the server dying mid-collect is redone by
   the next sweep; nothing else would, since the tags that pass retired are
   already gone and a later sweep finds nothing to retire.
 
 The pass detaches and never overlaps itself, like the per-project collect
 and for the same reason: reconcile passes are serialized, and a collecting
 pass is minutes of exec plus a restart.
-
-The `yaac-registry` container lives on the podman `kind` network, not in
-cluster DNS, so it is exposed to pods via a selectorless Service +
-EndpointSlice pointing at its kind-network IP, written by cluster
-setup/repair and re-ensured before each untrusted build. The existing
-`registryHasTag()` HEAD stays the server-side skip check, so the common
-path (tag already present) never creates a pod.
 
 ## Parent pull
 
@@ -268,6 +289,33 @@ reattach to, and the next prewarm sweep re-derives what is missing.
   touching `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to
   `yaac cluster check` when it isn't. Trusted-layer builds (including the
   tools `--no-cache` refresh) stay host-only.
+
+## Open risk: builder-origin writes to the shared registry
+
+Builder pods are the untrusted principal here, and they must be able to
+push — so **an attacker-authored `RUN` step can write any `repo:tag` in the
+shared registry**. It is unauthenticated `registry:2` with mutable tags and
+no path ACLs, and the builder's egress is necessarily allow-all (builds
+fetch upstream packages). Nothing network-level closes this: the ingress
+lock above pins *which pods* may be callers, not *what a legitimate caller
+may write*. The reachable blast radius is the whole store — the
+yaac-shipped `base`/`tools`/`nestable` content-hash tags, other projects'
+final images, and any project's `yaac-buildcache-<slug>` repo.
+
+Two consequences worth stating plainly:
+
+- The per-project scoping of cache repos confines a poisoned entry only
+  against a build that stays inside its own cache. It is **not** a boundary
+  against a builder that writes another project's cache repo directly,
+  which it can.
+- An overwritten tag is consumed: a builder pod pulls its parent fresh on
+  every build (no local store to shield it), and node containerd re-pulls
+  once kubelet image GC has evicted a tag.
+
+Closing this needs authentication or path scoping — a push-side proxy that
+mints per-build, repo-scoped credentials is the obvious shape. Until then
+the containment that does hold is the sentry around the `RUN` step itself
+and the trust split that keeps yaac-shipped layers off that path.
 
 ## Security hardening
 

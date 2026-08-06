@@ -5,8 +5,8 @@
 //
 // This feature owns the *substrate*: the local kind/podman cluster and the
 // datapath the server hangs off it — the shared egress proxy, netd's
-// redirect layer, per-project registries, and the per-session vclusters with
-// their sleep activators. Three kinds of consumer enter here: `yaac cluster
+// redirect layer, the main and per-project registries, and the per-session
+// vclusters with their sleep activators. Three kinds of consumer enter here: `yaac cluster
 // check/setup/delete` (before any server exists), session create and its
 // reconcilers (which stand a session's slice of that datapath up and tear it
 // down), and the image builders (which need the builder pod's admission
@@ -25,10 +25,11 @@
 //  - The datapath's *names and ports* are a zero-import constant vocabulary
 //    the stream relay, the pod spec, and the image builders read, so they
 //    live in `#platform/k8s`.
-//  - The *local OCI registry* is a podman container and an HTTP endpoint
-//    with no Kubernetes object in it, which the image builders, the proxy
-//    client, and server start all push to, so it lives in
-//    `#platform/container` beside the container runtime.
+//  - The main registry's *client* — its cluster ref, the endpoint this
+//    process pushes and HEADs through, and the push itself — is what the
+//    image builders, the proxy client and server start use, and it needs
+//    none of this feature's machinery, so it lives in `#platform/container`
+//    beside the container runtime. Only the registry WORKLOAD is here.
 //  - The vcluster *object layer* — the shapes a vcluster namespace
 //    publishes, their mappers, and the one-shot lists — is what the informer
 //    registry and the reconcile snapshot read, and it is the same job
@@ -76,7 +77,11 @@ export {
   renderNamespaceClaims,
   validateVclusterClaims,
 } from './redirect-claims'
-export { ensureRegistryClusterService, registryClusterHost } from './registry-service'
+export {
+  ensureMainRegistry,
+  mainRegistryExec,
+  restartMainRegistry,
+} from './main-registry'
 export { ClusterSetupError, runClusterSetup } from './setup'
 export {
   VCLUSTER_ORPHAN_GRACE_MS,

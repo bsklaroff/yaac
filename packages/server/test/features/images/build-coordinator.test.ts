@@ -18,7 +18,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 import type * as imageBuilderModule from '#features/image-engine/image-builder'
-import type * as registryServiceModule from '#features/cluster/registry-service'
+import type * as mainRegistryModule from '#features/cluster/main-registry'
 
 /**
  * spawn fake: records invocations and returns an inert child that closes
@@ -125,7 +125,8 @@ vi.mock('#platform/container/runtime', () => ({
 vi.mock('#platform/container/registry', () => ({
   pushImageToRegistry: vi.fn(),
   registryHasTag: vi.fn().mockResolvedValue(false),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
+  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
+  registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
 }))
 
 const mockKubectlApply = vi.hoisted(() => vi.fn())
@@ -151,11 +152,10 @@ vi.mock('#features/cluster/cluster-cidrs', () => ({
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#features/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 
-const mockEnsureRegistryClusterService = vi.hoisted(() => vi.fn())
-vi.mock('#features/cluster/registry-service', async (importOriginal) => ({
-  ...(await importOriginal<typeof registryServiceModule>()),
-  ensureRegistryClusterService: mockEnsureRegistryClusterService,
-  registryClusterHost: () => 'yaac-registry.test-ns.svc.cluster.local:5000',
+const mockEnsureMainRegistry = vi.hoisted(() => vi.fn())
+vi.mock('#features/cluster/main-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof mainRegistryModule>()),
+  ensureMainRegistry: mockEnsureMainRegistry,
 }))
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
@@ -188,7 +188,7 @@ const mockRemoveImage = vi.mocked(removeImage)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockHasTag = vi.mocked(registryHasTag)
 
-const CLUSTER_HOST = 'yaac-registry.test-ns.svc.cluster.local:5000'
+const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
 /** A host-built (trusted) layer; buildImage is mocked, so paths can be fake. */
@@ -326,7 +326,7 @@ beforeEach(() => {
   mockRemoveImage.mockResolvedValue(undefined)
   mockVapAvailable.mockResolvedValue(true)
   mockEnsureKubernetes.mockResolvedValue(undefined)
-  mockEnsureRegistryClusterService.mockResolvedValue(CLUSTER_HOST)
+  mockEnsureMainRegistry.mockResolvedValue(undefined)
   mockKubectlApply.mockResolvedValue(undefined)
   mockKubectlWithRetry.mockResolvedValue({ stdout: '', stderr: '' })
   mockKubectlGetJson.mockResolvedValue(null)
@@ -454,7 +454,7 @@ describe('ensureImage', () => {
     })
     chain([tools, project])
     mockImageExists.mockResolvedValue(true) // tools already on host
-    mockPush.mockResolvedValue(`localhost:5001/${tools.tag}`)
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/${tools.tag}`)
 
     await ensureImage('proj')
 
@@ -468,7 +468,7 @@ describe('ensureImage', () => {
 
     // Infra ensured, then the role guard, egress policy and pod applied.
     expect(mockEnsureKubernetes).toHaveBeenCalled()
-    expect(mockEnsureRegistryClusterService).toHaveBeenCalled()
+    expect(mockEnsureMainRegistry).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
       'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'Pod',
     ]))
@@ -502,7 +502,7 @@ describe('ensureImage', () => {
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
     // The pinned podman-stable mirror, resolved by the module's own image
     // ensure — never the session's user-customizable image.
-    expect(pod.spec.containers[0].image).toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
+    expect(pod.spec.containers[0].image).toBe(`${CLUSTER_HOST}/${BUILDER_LOCAL_TAG}`)
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
     // Graphroot on a sentry tmpfs emptyDir.
@@ -757,7 +757,7 @@ describe('pushImageShared', () => {
   it('returns the ref without pushing or registering when the tag is present', async () => {
     mockHasTag.mockResolvedValue(true)
     const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'prewarm' })
-    expect(ref).toBe('localhost:5001/t:1')
+    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockPush).not.toHaveBeenCalled()
     expect(listImageBuilds()).toEqual([])
   })
@@ -765,7 +765,7 @@ describe('pushImageShared', () => {
   it('pushes even a present tag when forced (host holds the fresh bytes)', async () => {
     mockHasTag.mockResolvedValue(true)
     mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue('localhost:5001/t:1')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
     await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
     expect(mockPush).toHaveBeenCalledTimes(1)
     expect(mockPush.mock.calls[0][1]).toMatchObject({ force: true })
@@ -777,7 +777,7 @@ describe('pushImageShared', () => {
     mockHasTag.mockResolvedValue(true)
     mockImageExists.mockResolvedValue(false)
     const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
-    expect(ref).toBe('localhost:5001/t:1')
+    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockPush).not.toHaveBeenCalled()
   })
 
@@ -787,13 +787,13 @@ describe('pushImageShared', () => {
     mockHasTag.mockClear()
 
     const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    expect(ref).toBe('localhost:5001/t:1')
+    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockHasTag).not.toHaveBeenCalled()
   })
 
   it('caches a completed push the same way', async () => {
     mockHasTag.mockResolvedValue(false)
-    mockPush.mockResolvedValue('localhost:5001/t:1')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
     await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
     mockHasTag.mockClear()
     mockPush.mockClear()
@@ -806,7 +806,7 @@ describe('pushImageShared', () => {
   it('a forced push bypasses the cache (rebuilds change bytes under the tag)', async () => {
     mockHasTag.mockResolvedValue(true)
     mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue('localhost:5001/t:1')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
     await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
 
     await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
@@ -814,21 +814,21 @@ describe('pushImageShared', () => {
   })
 
   it('passes the compression format through to the push', async () => {
-    mockPush.mockResolvedValue('localhost:5001/t:1')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
     await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }, { compressionFormat: 'zstd' })
     expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
   })
 
   it('coalesces concurrent pushes of the same tag', async () => {
     const d = deferred()
-    mockPush.mockImplementation(() => d.promise.then(() => 'localhost:5001/t:1'))
+    mockPush.mockImplementation(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
     const a = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
     const b = pushImageShared('t:1', { projectSlug: 'b', reason: 'session' })
     await flush()
     expect(mockPush).toHaveBeenCalledTimes(1)
     d.resolve()
-    expect(await a).toBe('localhost:5001/t:1')
-    expect(await b).toBe('localhost:5001/t:1')
+    expect(await a).toBe(`${CLUSTER_HOST}/t:1`)
+    expect(await b).toBe(`${CLUSTER_HOST}/t:1`)
     expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'succeeded' })
   })
 
@@ -845,7 +845,7 @@ describe('rebuildProjectImage', () => {
     const user = await podLayer({ tag: 'yaac-user-p:3', name: 'user', buildArgs: { BASE_IMAGE: 'yaac-tools:2' } })
     chain([layer('yaac-base:1'), layer('yaac-tools:2', 'tools'), user])
     mockBuildImage.mockResolvedValue(undefined)
-    mockPush.mockResolvedValue('localhost:5001/yaac-tools:2')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:2`)
 
     expect(await rebuildProjectImage('p')).toBe('yaac-user-p:3')
 
@@ -866,7 +866,7 @@ describe('rebuildProjectImage', () => {
     const project = await podLayer({ buildArgs: { BASE_IMAGE: 'yaac-tools:t1' } })
     chain([layer('yaac-tools:t1', 'tools'), project])
     mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue('localhost:5001/yaac-tools:t1')
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:t1`)
     mockBuildImage.mockResolvedValue(undefined)
 
     await rebuildProjectImage('proj')

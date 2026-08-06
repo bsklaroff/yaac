@@ -14,16 +14,22 @@ import {
 import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/build-dirs'
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
 import { ensureImage } from '@yaac/server/features/images/build-coordinator'
-import { ensureBuilderRoleGuard } from '@yaac/server/features/cluster/proxy-apply'
+import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/features/cluster/proxy-apply'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
 import { resolveImageChain } from '@yaac/server/features/image-engine/image-builder'
 import { imageExists } from '@yaac/server/platform/container/runtime'
-import { registryHasTag, registryRef } from '@yaac/server/platform/container/registry'
 import {
+  REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
-  discoverRegistryKindIp,
-  ensureRegistryClusterService,
-} from '@yaac/server/features/cluster/registry-service'
+  registryHasTag,
+  registryHost,
+  registryReachable,
+  registryRef,
+} from '@yaac/server/platform/container/registry'
+import {
+  MAIN_REGISTRY_APP_LABEL,
+  ensureMainRegistry,
+} from '@yaac/server/features/cluster/main-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/platform/k8s/gvisor'
 import { runPodToCompletion } from '@yaac/server/platform/k8s/pods'
 import {
@@ -38,7 +44,7 @@ import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/image-e
  * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):
  * untrusted Dockerfile.yaac / Dockerfile.user layers build inside ephemeral
  * runsc builder pods that pull their parent from the shared registry
- * (exposed in-cluster via a selectorless Service + EndpointSlice), stream
+ * (an in-cluster Deployment behind a ClusterIP Service), stream
  * build logs back through the build-tracking registry, delta-push their
  * product, and step-cache every unchanged instruction across genuinely
  * distinct pods via --cache-from/--cache-to registry cache images. The
@@ -106,6 +112,12 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     await requirePodman()
     await requireCluster()
     restoreNamespace = useTestNamespace()
+    // `useTestNamespace` only points YAAC_K8S_NAMESPACE at this run's
+    // namespace; something still has to create it, and every object below
+    // (the builder-role guard, the builder pods) lands in it. The server's
+    // bootstrap is what does this in production — in here it is the
+    // fixture's job.
+    await ensureNamespace()
     tempDataDir = await createTempDataDir()
   })
 
@@ -120,22 +132,29 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     tempDataDir = null
   })
 
-  it('exposes the registry to pods via a selectorless Service + EndpointSlice', async () => {
-    const host = await ensureRegistryClusterService()
-    expect(host).toBe(`${REGISTRY_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:5000`)
+  it('serves the registry in-cluster behind a selector-backed Service', async () => {
+    await ensureMainRegistry()
 
-    const svc = await kubectlGetJson<{ spec: { selector?: unknown } }>([
-      'get', 'service', REGISTRY_SERVICE_NAME, '-n', k8sNamespace(),
-    ])
-    expect(svc).toBeTruthy()
-    expect(svc?.spec.selector).toBeUndefined()
+    // The ref every pod pulls by: the registry's own Service FQDN, in the
+    // DEFAULT namespace rather than this run's isolated one — every run
+    // shares one image store.
+    expect(registryHost())
+      .toBe(`${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:5000`)
 
-    const ip = await discoverRegistryKindIp()
-    const slice = await kubectlGetJson<{ endpoints: Array<{ addresses: string[] }> }>([
-      'get', 'endpointslice', `${REGISTRY_SERVICE_NAME}-1`, '-n', k8sNamespace(),
+    const svc = await kubectlGetJson<{ spec: { selector?: Record<string, string>; clusterIP?: string } }>([
+      'get', 'service', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
     ])
-    expect(slice?.endpoints[0]?.addresses).toEqual([ip])
-  }, 60_000)
+    expect(svc?.spec.selector).toEqual({ app: MAIN_REGISTRY_APP_LABEL })
+    expect(svc?.spec.clusterIP).toBeTruthy()
+
+    // Rolled out, and reachable from the server through its port-forward —
+    // no host networking assumption anywhere in the path.
+    const deploy = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
+      'get', 'deployment', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
+    ])
+    expect(deploy?.status?.readyReplicas).toBeGreaterThan(0)
+    await expect(registryReachable()).resolves.toBe(true)
+  }, 120_000)
 
   it('reserves yaac.role=builder — a pod-creating ServiceAccount cannot fake it', async () => {
     await ensureBuilderRoleGuard()
@@ -170,7 +189,7 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
       spec: {
         restartPolicy: 'Never',
         ...(gvisor ? { runtimeClassName: RUNTIME_CLASS_GVISOR } : {}),
-        containers: [{ name: 'c', image: 'localhost:5001/podman-stable:v5.5', command: ['true'] }],
+        containers: [{ name: 'c', image: registryRef('podman-stable:v5.5'), command: ['true'] }],
       },
     })
     const applyAs = (manifest: object, as?: string): Promise<{ stdout: string }> =>

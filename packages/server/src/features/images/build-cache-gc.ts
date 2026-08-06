@@ -18,8 +18,9 @@
  * storage, and blobs are reclaimed by the registry binary's
  * `garbage-collect --delete-untagged` — the same storage-layout moves the
  * per-project registries' collect makes (`reconcileProjectRegistryGc`),
- * for the same reason: the delete API answers 405 unless the container is
- * recreated with `REGISTRY_STORAGE_DELETE_ENABLED`.
+ * for the same reason: the delete API answers 405 unless the Deployment is
+ * rolled with `REGISTRY_STORAGE_DELETE_ENABLED`. Both run through
+ * `mainRegistryExec`, a `kubectl exec` into the registry Deployment's pod.
  *
  * `--delete-untagged` is global, not scoped to the repos swept here, which
  * makes one property of this registry load-bearing: everything in it lives
@@ -30,12 +31,13 @@
  * list, whose children the mark phase does not walk) would be collected
  * out from under its users.
  *
- * What this canNOT borrow from the sibling collect is its read-only
- * maintenance window, which is how it makes a live collect safe. That
- * window is an env change rolled through a Deployment; the shared registry
- * is a plain podman container holding its storage in its own writable
- * layer, so recreating it to set the same env would drop every pushed
- * image. Two hazards therefore have to be handled directly here:
+ * What this does NOT take is the sibling collect's read-only maintenance
+ * window, which is how that one makes a live collect safe. Nothing stops it
+ * any more — the shared registry is a Deployment over node-local storage
+ * now, so rolling it with the read-only env costs a restart and no images —
+ * but adopting it is a behaviour change of its own (every push and delete
+ * in the window answers 405) and is left as a follow-up. Until then the two
+ * hazards are handled directly here:
  *
  * - A push racing the collect can have its blobs deleted between upload
  *   and manifest PUT, leaving an image that pulls broken forever (the
@@ -55,13 +57,12 @@
  *   descriptors therefore runs in a `finally` — a collect that throws
  *   half-way through deleting is exactly when it is most needed — and a
  *   marker file in the registry's storage records that a collect was
- *   started, so a restart lost to a failing `podman restart` or to the
+ *   started, so a restart lost to a failing rollout or to the
  *   server dying mid-collect is retried by the next sweep. Nothing else
  *   would retry it: the tags this pass retired are already gone, so a
  *   later sweep finds nothing to retire and would never reach the restart.
  */
-import { execFileAsync, REGISTRY_CONTAINER_NAME } from '#platform/container'
-import { ensureRegistryClusterService } from '#features/cluster'
+import { mainRegistryExec, restartMainRegistry } from '#features/cluster'
 import { env, testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
@@ -118,14 +119,13 @@ const COLLECT_MARKER = `${REGISTRY_STORAGE_DIR}/.yaac-collect-started`
 const PROBE_TIMEOUT_MS = 60_000
 const SWEEP_TIMEOUT_MS = 60_000
 const COLLECT_TIMEOUT_MS = 10 * 60_000
-const RESTART_TIMEOUT_MS = 60_000
 const MARKER_TIMEOUT_MS = 30_000
 
 /**
  * In-container deadline for the collect, just under the exec's. Without it
- * `execFileAsync`'s timeout would kill the `podman exec` client and leave
- * `garbage-collect` deleting blobs inside the container, unwatched, while
- * the restart runs under it.
+ * the exec's own timeout would kill the `kubectl exec` client and leave
+ * `garbage-collect` deleting blobs inside the pod, unwatched, while the
+ * restart runs under it.
  */
 const COLLECT_KILL_SECONDS = Math.floor(COLLECT_TIMEOUT_MS / 1000) - 30
 
@@ -194,23 +194,25 @@ export interface BuildCacheGcResult {
    * registry is serving stale blob descriptors and the marker is waiting
    * for the next sweep — a pass in that state has not succeeded, whatever
    * it managed to reclaim.
+   *
+   * Read it as "the rollout succeeded", NOT as "the store this pass
+   * collected is the one now being served". Registry storage is a node
+   * hostPath under an unpinned Deployment, and `Recreate` deletes the old
+   * pod before scheduling its replacement — so on a multi-node cluster the
+   * restart can bring the registry up on a different node, against that
+   * node's own (stale, or empty) store. The reclaim then applies to a
+   * store nobody is serving and the catalog changes wholesale, with this
+   * field still true. Scheduler-dependent, so it is an occasional coin
+   * flip rather than a reproducible failure. The PVC conversion in
+   * docs/plans/stock-k8s-multi-node.md §5 is what makes the field mean
+   * the stronger thing.
    */
   restored: boolean
 }
 
-/** Run one argv inside the registry container. */
-async function registryExec(argv: string[], timeout: number): Promise<string> {
-  const { stdout } = await execFileAsync(
-    'podman',
-    ['exec', REGISTRY_CONTAINER_NAME, ...argv],
-    { timeout },
-  )
-  return stdout
-}
-
 /** True when the registry is serving a push right now, or just was. */
 async function registryBusy(): Promise<boolean> {
-  const stdout = await registryExec(
+  const stdout = await mainRegistryExec(
     ['sh', '-c', registryQuietProbeScript()],
     PROBE_TIMEOUT_MS,
   )
@@ -218,23 +220,19 @@ async function registryBusy(): Promise<boolean> {
 }
 
 /**
- * Bounce the registry and re-point the cluster at it, then drop the
- * collect marker. The marker is cleared LAST and only on success, so a
- * restart that fails leaves the next sweep to redo it.
+ * Bounce the registry, then drop the collect marker. The marker is cleared
+ * LAST and only on success, so a restart that fails leaves the next sweep
+ * to redo it. `restartMainRegistry` rolls the Deployment and drops this
+ * process's port-forward, which was bound to the pod that just went away.
  */
 async function restartRegistry(): Promise<void> {
-  await execFileAsync('podman', ['restart', REGISTRY_CONTAINER_NAME], {
-    timeout: RESTART_TIMEOUT_MS,
-  })
-  // The restart can hand the container a new address on the kind network,
-  // which is what the builder pods' EndpointSlice points at.
-  await ensureRegistryClusterService()
-  await registryExec(['rm', '-f', COLLECT_MARKER], MARKER_TIMEOUT_MS)
+  await restartMainRegistry()
+  await mainRegistryExec(['rm', '-f', COLLECT_MARKER], MARKER_TIMEOUT_MS)
 }
 
 /** Did a previous pass start a collect that no restart has followed? */
 async function collectMarkerPresent(): Promise<boolean> {
-  const stdout = await registryExec(
+  const stdout = await mainRegistryExec(
     ['sh', '-c', `[ -f ${COLLECT_MARKER} ] && echo MARKED || true`],
     MARKER_TIMEOUT_MS,
   )
@@ -262,7 +260,7 @@ export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
     return { retired: [], busy: true, collected: false, restored: true }
   }
 
-  const stdout = await registryExec(
+  const stdout = await mainRegistryExec(
     ['sh', '-c', buildCacheSweepScript()],
     SWEEP_TIMEOUT_MS,
   )
@@ -280,10 +278,10 @@ export async function gcRegistryBuildCache(): Promise<BuildCacheGcResult> {
     return { retired, busy: true, collected: false, restored: true }
   }
 
-  await registryExec(['touch', COLLECT_MARKER], MARKER_TIMEOUT_MS)
+  await mainRegistryExec(['touch', COLLECT_MARKER], MARKER_TIMEOUT_MS)
   let restored = false
   try {
-    await registryExec(
+    await mainRegistryExec(
       [
         'timeout', String(COLLECT_KILL_SECONDS),
         REGISTRY_BINARY, 'garbage-collect', '--delete-untagged', REGISTRY_CONFIG,
@@ -323,11 +321,12 @@ export function _buildCacheGcSettledForTests(): Promise<void> {
 
 /**
  * Gated to the default install like the host image GC — e2e servers share
- * this registry, and one collecting mid-run could pull a blob out from
- * under another run's push. Nested installs push to the OUTER install's
- * per-project registry, which is not theirs to collect (and has no
- * container here to exec into). Never two passes at once: a pass ends by
- * restarting the registry.
+ * this registry (it lives in the default namespace precisely so they do),
+ * and one collecting mid-run could pull a blob out from under another
+ * run's push. Nested installs push to the OUTER install's per-project
+ * registry, which is not theirs to collect (and has no Deployment here to
+ * exec into). Never two passes at once: a pass ends by restarting the
+ * registry.
  */
 function sweepDue(nowMs: number): boolean {
   if (testEnv.k8sNamespace !== 'yaac' || env.nested) return false
@@ -353,8 +352,8 @@ export function reconcileBuildCacheGc(nowMs: number = Date.now()): Promise<void>
       }
     })
     .catch((err: unknown) => {
-      // Not always a bug: an install whose registry someone else runs (a
-      // hand-made kind local-registry) has no container of ours to exec
+      // Not always a bug: an install whose cluster is down, or whose
+      // registry Deployment has not been stood up yet, has nothing to exec
       // into. Log and let the next sweep try again.
       serverLog(`[build-cache-gc] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
     })

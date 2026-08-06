@@ -6,8 +6,8 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#platform/k8s'
-import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#platform/container'
-import { ensureRegistryClusterService } from './registry-service'
+import { registryHost } from '#platform/container'
+import { ensureMainRegistry } from './main-registry'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { ensureNetd } from './netd'
 import { ensureBuilderRoleGuard } from './proxy-apply'
@@ -33,8 +33,8 @@ import { env } from '@yaac/shared/env'
  * `yaac cluster setup` — the port of the retired scripts/setup-kind-cluster.sh
  * plus the macOS podman-machine bootstrap the README used to describe by
  * hand. Brew (or any package manager) can only install binaries; everything
- * per-user and stateful — the rootful libkrun machine, the registry
- * container, the kind cluster, Calico, the node fixups — happens here,
+ * per-user and stateful — the rootful libkrun machine, the kind cluster,
+ * Calico, the node fixups, the in-cluster registry — happens here,
  * idempotently and with actionable error messages.
  *
  * Full mode recreates the cluster from scratch (delete + create), with
@@ -173,13 +173,15 @@ export interface ClusterSetupDeps {
   log: (message: string) => void
   /** Interactive yes/no gate for destructive steps; false when not a TTY. */
   confirm: (question: string) => Promise<boolean>
-  ensureRegistry: () => Promise<void>
-  /** Writes the in-cluster registry Service + EndpointSlice for builder
-   *  pods plus the builder-role admission guard; injectable so unit tests
-   *  never touch podman or the cluster. */
-  exposeRegistry: () => Promise<string>
+  /** Stands the in-cluster registry up (Deployment + Service + the node
+   *  containerd hosts.toml) and returns its cluster host; injectable so
+   *  unit tests never touch the cluster. */
+  ensureRegistry: () => Promise<string>
+  /** Applies the builder-role admission guard, which gates the sandboxed
+   *  builder pods. Injectable for the same reason as ensureRegistry. */
+  ensureBuilderGuard: () => Promise<void>
   /** Builds/pushes the netd + Envoy images and applies the DaemonSet.
-   *  Injectable for the same reason as exposeRegistry. */
+   *  Injectable for the same reason as ensureRegistry. */
   ensureNetd: () => Promise<void>
   /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
    *  Injectable for the same reason as the two above. */
@@ -249,12 +251,14 @@ function defaultDeps(): ClusterSetupDeps {
     runStreaming: runStreamingDefault,
     log: (m) => { console.log(m) },
     confirm: confirmDefault,
-    ensureRegistry: ensureLocalRegistry,
-    exposeRegistry: async () => {
-      const host = await ensureRegistryClusterService()
-      await ensureBuilderRoleGuard()
-      return host
+    ensureRegistry: async () => {
+      // Forced: `--repair` exists to re-write wiring a node or VM restart
+      // may have dropped, and a full setup runs against a cluster that has
+      // just been recreated under it.
+      await ensureMainRegistry({ force: true })
+      return registryHost()
     },
+    ensureBuilderGuard: ensureBuilderRoleGuard,
     ensureNetd,
     ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
@@ -330,15 +334,13 @@ export async function runClusterSetup(
     // (a podman machine restart is the usual cause), so anything this process
     // cached about "the node" is exactly what must not be reused below.
     resetClusterCidrCache()
-    await deps.ensureRegistry()
     for (const node of nodes) await applyNodeFixups(deps, node)
     await installPriorityClasses(deps)
-    await connectRegistryToKindNetwork(deps)
-    await exposeRegistryInCluster(deps)
+    await installRegistry(deps)
+    await installBuilderGuard(deps)
     await installGvisorRuntime(deps)
     await deployNetd(deps)
   } else {
-    await deps.ensureRegistry()
     await recreateKindCluster(deps, cluster, nodeCount)
     // The node `/32`s and pod CIDRs of the cluster that just went away say
     // nothing about the one that replaced it. A process that outlives the
@@ -350,8 +352,8 @@ export async function runClusterSetup(
     const nodes = await kindNodes(deps, cluster)
     for (const node of nodes) await applyNodeFixups(deps, node)
     await installPriorityClasses(deps)
-    await connectRegistryToKindNetwork(deps)
-    await exposeRegistryInCluster(deps)
+    await installRegistry(deps)
+    await installBuilderGuard(deps)
     await installGvisorRuntime(deps)
     await deployNetd(deps)
   }
@@ -732,22 +734,21 @@ async function sideloadCalicoImages(
 }
 
 /**
- * The per-node fixups: containerd registry hosts.toml, DefaultTasksMax + VM
- * memory sysctls (subagent fan-out and virtiofs allocations die without
- * them), the kubelet housekeeping interval (see
- * NODE_KUBELET_HOUSEKEEPING_INTERVAL — default-interval cAdvisor stats
- * burned whole cores against gVisor sandboxes), and the node container's
- * own PID ceiling. Most of these live in node/VM state that resets on
- * restart — `yaac cluster setup --repair` re-applies them, and `yaac
- * cluster check` warns when they are missing.
+ * The per-node fixups: DefaultTasksMax + VM memory sysctls (subagent
+ * fan-out and virtiofs allocations die without them), the kubelet
+ * housekeeping interval (see NODE_KUBELET_HOUSEKEEPING_INTERVAL —
+ * default-interval cAdvisor stats burned whole cores against gVisor
+ * sandboxes), and the node container's own PID ceiling. Most of these live
+ * in node/VM state that resets on restart — `yaac cluster setup --repair`
+ * re-applies them, and `yaac cluster check` warns when they are missing.
+ *
+ * No registry wiring here: both the main and the per-project registries are
+ * in-cluster workloads whose containerd `hosts.toml` is written by one-shot
+ * pods that hostPath-mount the node's `certs.d` directory, so nothing about
+ * the image path assumes the node is a container on this host's engine.
  */
 async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<void> {
   deps.log(`Applying node fixups to ${node}...`)
-  const port = registryHost().split(':')[1] ?? '5001'
-  const registryDir = `/etc/containerd/certs.d/localhost:${port}`
-  await deps.run('podman', ['exec', node, 'sh', '-c',
-    `mkdir -p '${registryDir}' && printf '[host."http://${REGISTRY_CONTAINER_NAME}:5000"]\\n' > '${registryDir}/hosts.toml'`,
-  ])
   await deps.run('podman', ['exec', node, 'sh', '-c',
     'mkdir -p /etc/systemd/system.conf.d\n'
     + `printf '[Manager]\\nDefaultTasksMax=infinity\\n' > ${NODE_TASKSMAX_CONF}\n`
@@ -778,40 +779,34 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
 }
 
 /**
- * Put the registry container on the kind network so nodes reach it by
- * name. Fails soft (a log line): "already connected" is the common case on
- * re-runs, and a registry hosted by another engine cannot be connected at
- * all — recreate it under podman in that case.
+ * Stand the in-cluster registry up. Runs AFTER the cluster exists and the
+ * PriorityClasses are installed — it is a Deployment now, not a host
+ * container, and its pod names the infra class.
+ *
+ * Deliberately NOT fail-soft: the registry is the only image bus, so
+ * without it no session image can be pushed, no node can pull one, and no
+ * builder pod can fetch a parent. Finishing setup without it would trade a
+ * clear error here for an opaque ImagePullBackOff at the first session
+ * create.
  */
-async function connectRegistryToKindNetwork(deps: ClusterSetupDeps): Promise<void> {
-  try {
-    await deps.run('podman', ['network', 'connect', 'kind', REGISTRY_CONTAINER_NAME])
-  } catch (err) {
-    const stderr = ((err as { stderr?: string })?.stderr ?? '').toLowerCase()
-    if (!stderr.includes('already')) {
-      deps.log(
-        `note: could not connect ${REGISTRY_CONTAINER_NAME} to the kind network `
-        + '— if the registry runs under another engine, recreate it under podman '
-        + 'and re-run `yaac cluster setup --repair`.',
-      )
-    }
-  }
+async function installRegistry(deps: ClusterSetupDeps): Promise<void> {
+  deps.log('Deploying the in-cluster image registry...')
+  const host = await deps.ensureRegistry()
+  deps.log(`Registry serving as ${host}.`)
 }
 
 /**
- * Write the in-cluster registry Service + EndpointSlice (used by builder
- * pods to pull parents / push products) and the builder-role admission
- * guard. Fails soft like the network connect above: the builder engine
- * re-ensures both lazily before every untrusted build and throws loudly
- * there.
+ * Apply the builder-role admission guard, which reserves the
+ * `yaac.role=builder` label the sandboxed builders carry. Fails soft: the
+ * builder engine re-ensures it lazily before every untrusted build and
+ * throws loudly there.
  */
-async function exposeRegistryInCluster(deps: ClusterSetupDeps): Promise<void> {
+async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
   try {
-    const host = await deps.exposeRegistry()
-    deps.log(`Registry exposed to builder pods as ${host}.`)
+    await deps.ensureBuilderGuard()
   } catch (err) {
     deps.log(
-      'note: could not write the in-cluster registry Service '
+      'note: could not apply the builder-role admission guard '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
       + 'trust-split image builds will retry this on first use.',
     )

@@ -960,11 +960,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // The stream relay's measurable claim: in steady state — status
       // watcher stream live, forward listeners registered, terminals just
       // exercised — the server holds NO kubectl exec into any session pod.
-      // The relay's single `kubectl port-forward` and the control API's
-      // socat execs into the PROXY deployment are expected and excluded by
-      // the job/ filter. (Skipped nested: the inner server dials the inner
-      // proxy's pod IP — no port-forward child — and the base image has no
-      // ps.)
+      // The long-lived `kubectl port-forward` children and the control
+      // API's socat execs into the PROXY deployment are expected and
+      // excluded by the job/ filter. (Skipped nested: the inner server dials
+      // the inner proxy's pod IP — no port-forward child — and the base
+      // image has no ps.)
       const { stdout } = await execFileAsync('ps', ['-A', '-o', 'ppid=,command='])
       const serverPid = String(server!.lock.pid)
       const children = stdout.split('\n')
@@ -974,8 +974,18 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         (l) => /kubectl\s+exec\b/.test(l) && l.includes('job/'),
       )
       expect(sessionPodExecs).toEqual([])
-      const relayForwards = children.filter((l) => /kubectl\s+port-forward\b/.test(l))
-      expect(relayForwards).toHaveLength(1)
+      // Two forwards, one per purpose — #platform/k8s's port-forward keeps
+      // exactly one child per key, single-flighted: the relay's into the
+      // proxy, and the image registry's into its Deployment (the server's
+      // only route to it, spawned on the first push of this run). Matching
+      // the TARGETS rather than counting is what makes this catch a leak: a
+      // second child for either purpose is the failure worth naming, and a
+      // bare count would also fail for a forward that legitimately does not
+      // exist yet.
+      const forwards = children.filter((l) => /kubectl\s+port-forward\b/.test(l))
+      expect(forwards.filter((l) => /deploy\/yaac-proxy\b/.test(l))).toHaveLength(1)
+      expect(forwards.filter((l) => /deploy\/yaac-registry\b/.test(l))).toHaveLength(1)
+      expect(forwards).toHaveLength(2)
     })
 
     it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock policy)', async () => {

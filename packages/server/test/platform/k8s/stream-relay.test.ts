@@ -78,9 +78,10 @@ const podLists = (): number =>
   execFileMock.mock.calls.filter(([, args]) => args[1] === 'pods').length
 
 interface FakeChild {
-  stdout: EventEmitter
-  stderr: EventEmitter
+  stdout: EventEmitter & { unref: ReturnType<typeof vi.fn> }
+  stderr: EventEmitter & { unref: ReturnType<typeof vi.fn> }
   on: (event: string, cb: (...args: unknown[]) => void) => void
+  unref: ReturnType<typeof vi.fn>
   kill: ReturnType<typeof vi.fn>
 }
 
@@ -92,13 +93,16 @@ interface FakeChild {
  * the behavior under test.
  */
 function fakePortForward(port: number): FakeChild {
-  const stdout = new EventEmitter()
+  const stdout = Object.assign(new EventEmitter(), { unref: vi.fn() })
   const events = new EventEmitter()
   setTimeout(() => stdout.emit('data', Buffer.from(`Forwarding from 127.0.0.1:${port} -> 10260\n`)), 0)
   return {
     stdout,
-    stderr: new EventEmitter(),
+    stderr: Object.assign(new EventEmitter(), { unref: vi.fn() }),
     on: (event, cb) => { events.on(event, cb) },
+    // The shared port-forward registry unrefs the child and its pipes so a
+    // short-lived process that touched one can still exit.
+    unref: vi.fn(),
     kill: vi.fn(),
   }
 }

@@ -29,6 +29,7 @@ import {
   projectRegistryName,
   removeProjectRegistry,
 } from '@yaac/server/features/cluster/project-registry'
+import { registryRef } from '@yaac/server/platform/container/registry'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -52,8 +53,10 @@ import {
   type MockGit,
 } from '@yaac/test-utils/mock-remotes'
 
-/** Mirrored by the global setup (k8s/vcluster/images.json) — runnable. */
-const INNER_IMAGE = 'localhost:5001/library/alpine:3.20'
+/** Mirrored by the global setup (k8s/vcluster/images.json) — runnable.
+ *  Qualified through registryRef so it names the registry's live cluster
+ *  host: nothing maps `localhost:5001` on the node any more. */
+const INNER_IMAGE = registryRef('library/alpine:3.20')
 
 /**
  * Everything a virtualCluster session is: the vcluster comes up, its

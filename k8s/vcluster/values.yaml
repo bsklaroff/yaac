@@ -40,7 +40,7 @@ controlPlane:
   advanced:
     # defaultImageRegistry is supplied via --set (registryHost(), runtime
     # value). It rewrites every image registry (ghcr.io, mirror.gcr.io,
-    # ...) to the local registry, so neither the node nor the vcluster
+    # ...) to the yaac registry, so neither the node nor the vcluster
     # ever pulls upstream — ensureVclusterImages mirrors the pinned set
     # (k8s/vcluster/images.json) ahead of time.
     konnectivity:

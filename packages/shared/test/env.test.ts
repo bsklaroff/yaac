@@ -83,9 +83,16 @@ describe('env (configuration)', () => {
   })
 
   describe('k8sRegistry', () => {
-    it('defaults to localhost:5001 when unset', () => {
+    it('is undefined when unset — the server names its own in-cluster registry', () => {
       vi.stubEnv('YAAC_K8S_REGISTRY', undefined)
-      expect(env.k8sRegistry).toBe('localhost:5001')
+      expect(env.k8sRegistry).toBeUndefined()
+    })
+
+    it('treats an empty value as unset', () => {
+      // The unit-test setup strips this var by deleting it; an empty
+      // string must not read as "an externally managed registry at ''".
+      vi.stubEnv('YAAC_K8S_REGISTRY', '   ')
+      expect(env.k8sRegistry).toBeUndefined()
     })
 
     it('returns the override when set', () => {

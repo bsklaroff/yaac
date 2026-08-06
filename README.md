@@ -218,9 +218,9 @@ Commands:
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
-  setup [--repair]  Create the kind cluster, registry, and CNI wiring
+  setup [--repair]  Create the kind cluster, CNI wiring, and in-cluster registry
                     (--repair re-applies the node fixups without recreating)
-  delete [-y]       Delete the kind cluster and local registry, keeping
+  delete [-y]       Delete the kind cluster (registry included), keeping
                     on-disk worktrees and their checkouts (-y skips confirmation)
 
 yaac project <command>
@@ -456,7 +456,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
 | `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
-| `YAAC_K8S_REGISTRY` | `localhost:5001` | `host:port` of the local OCI registry the cluster pulls session images from. |
+| `YAAC_K8S_REGISTRY` | the in-cluster registry Service | `host:port` of an externally managed OCI registry to use instead of the one this install runs in its cluster. Set for nested sessions (the outer project registry). |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
 | `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) session — not something you set yourself. |

@@ -1,15 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as runtimeModule from '#platform/container/runtime'
 
-const mockExecFileAsync = vi.hoisted(() => vi.fn())
-vi.mock('#platform/container/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof runtimeModule>()),
-  execFileAsync: mockExecFileAsync,
-}))
-
-const mockEnsureRegistryService = vi.hoisted(() => vi.fn())
+// The registry is an in-cluster Deployment: every step of a pass is either
+// a `kubectl exec` into its pod or a rollout of it, and `#features/cluster`
+// is where both live.
+const mockRegistryExec = vi.hoisted(() => vi.fn())
+const mockRestartRegistry = vi.hoisted(() => vi.fn())
 vi.mock('#features/cluster', () => ({
-  ensureRegistryClusterService: mockEnsureRegistryService,
+  mainRegistryExec: mockRegistryExec,
+  restartMainRegistry: mockRestartRegistry,
 }))
 
 const mockServerLog = vi.hoisted(() => vi.fn())
@@ -33,24 +31,21 @@ const RETIRED_OUTPUT = [
   '',
 ].join('\n')
 
-type Call = [string, string[]]
-const argvs = (): string[][] => (mockExecFileAsync.mock.calls as Call[]).map(([, args]) => args)
-/** The argv the pass ran INSIDE the registry container (podman exec …). */
-const inRegistry = (): string[][] => argvs()
-  .filter((a) => a[0] === 'exec')
-  .map((a) => a.slice(2))
+type Call = [string[], number]
+/** The argv the pass ran INSIDE the registry pod. */
+const inRegistry = (): string[][] => (mockRegistryExec.mock.calls as Call[]).map(([argv]) => argv)
 const shellScripts = (): string[] => inRegistry().filter((a) => a[0] === 'sh').map((a) => a[2])
 const sweepScript = (): string => shellScripts().find((s) => s.includes('yaac-buildcache-*')) ?? ''
 const probeScripts = (): string[] => shellScripts().filter((s) => s.includes('_uploads'))
 const ran = (word: string): boolean => inRegistry().some((a) => a.includes(word))
-const restarted = (): boolean => argvs().some((a) => a[0] === 'restart')
+const restarted = (): boolean => mockRestartRegistry.mock.calls.length > 0
 const logged = (needle: string): boolean =>
   mockServerLog.mock.calls.some((call) => String(call[0]).includes(needle))
 
 /**
- * Serve the registry container's exec calls. `sweep` is what the untag
- * script prints; `probe` is what the quiet probe prints ('' = quiet, and
- * an array walks a probe-per-call so a pass can be quiet then busy).
+ * Serve the registry pod's exec calls. `sweep` is what the untag script
+ * prints; `probe` is what the quiet probe prints ('' = quiet, and an array
+ * walks a probe-per-call so a pass can be quiet then busy).
  */
 function servingPass(opts: {
   sweep?: string
@@ -59,15 +54,15 @@ function servingPass(opts: {
   fail?: (argv: string[]) => Error | undefined
 } = {}): void {
   const probes = Array.isArray(opts.probe) ? [...opts.probe] : null
-  mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
-    const failure = opts.fail?.(args)
+  mockRegistryExec.mockImplementation((argv: string[]) => {
+    const failure = opts.fail?.(argv)
     if (failure) return Promise.reject(failure)
-    const script = args[0] === 'exec' && args[2] === 'sh' ? args[4] : undefined
+    const script = argv[0] === 'sh' ? argv[2] : undefined
     let stdout = ''
     if (script?.includes('yaac-buildcache-*')) stdout = opts.sweep ?? ''
     else if (script?.includes('_uploads')) stdout = probes?.shift() ?? (opts.probe as string ?? '')
     else if (script?.includes('collect-started')) stdout = opts.marked ? 'MARKED\n' : ''
-    return Promise.resolve({ stdout, stderr: '' })
+    return Promise.resolve(stdout)
   })
 }
 
@@ -78,8 +73,8 @@ async function runPass(nowMs?: number): Promise<void> {
 }
 
 beforeEach(() => {
-  mockExecFileAsync.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  mockEnsureRegistryService.mockReset().mockResolvedValue(undefined)
+  mockRegistryExec.mockReset().mockResolvedValue('')
+  mockRestartRegistry.mockReset().mockResolvedValue(undefined)
   mockServerLog.mockReset()
   _resetBuildCacheGcForTests()
   // The shared test setup isolates YAAC_K8S_NAMESPACE; the reconcile is
@@ -106,10 +101,9 @@ describe('reconcileBuildCacheGc', () => {
     // descriptors that would otherwise make a re-push of a collected digest
     // write a link with no blob behind it.
     expect(ran('garbage-collect')).toBe(true)
+    // The restart rolls the Deployment (and drops this process's stale
+    // port-forward) — nothing about the cluster's route to it changes.
     expect(restarted()).toBe(true)
-    // The restart can move the container on the kind network, and the
-    // builder pods reach it through an EndpointSlice holding that address.
-    expect(mockEnsureRegistryService).toHaveBeenCalledOnce()
     // The collect is bounded inside the container too — killing the exec
     // client would leave it deleting blobs under the restart.
     expect(inRegistry().find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
@@ -128,7 +122,6 @@ describe('reconcileBuildCacheGc', () => {
     // case the restart matters most for — and nothing else would retry it,
     // since the tags it retired are gone and a later sweep finds none.
     expect(restarted()).toBe(true)
-    expect(mockEnsureRegistryService).toHaveBeenCalledOnce()
     expect(logged('collect timed out')).toBe(true)
     expect(logged('collected their blobs')).toBe(false)
   })
@@ -136,8 +129,8 @@ describe('reconcileBuildCacheGc', () => {
   it('leaves the collect marker for the next sweep when the restart fails', async () => {
     servingPass({
       sweep: RETIRED_OUTPUT,
-      fail: (argv) => argv[0] === 'restart' ? new Error('podman restart failed') : undefined,
     })
+    mockRestartRegistry.mockRejectedValue(new Error('rollout failed'))
 
     await runPass()
 
@@ -202,7 +195,6 @@ describe('reconcileBuildCacheGc', () => {
     // that found no work must never bounce the registry.
     expect(ran('garbage-collect')).toBe(false)
     expect(restarted()).toBe(false)
-    expect(mockEnsureRegistryService).not.toHaveBeenCalled()
     expect(mockServerLog).not.toHaveBeenCalled()
   })
 
@@ -220,24 +212,27 @@ describe('reconcileBuildCacheGc', () => {
 
   it('detaches the pass so a collect cannot stall the reconcile tick', async () => {
     let release = (): void => {}
+    let collectStarted = (): void => {}
     const collecting = new Promise<void>((resolve) => { release = resolve })
+    const reachedCollect = new Promise<void>((resolve) => { collectStarted = resolve })
     servingPass({ sweep: RETIRED_OUTPUT })
-    mockExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args.includes('garbage-collect')) return collecting.then(() => ({ stdout: '', stderr: '' }))
-      const script = args[0] === 'exec' && args[2] === 'sh' ? args[4] : undefined
-      return Promise.resolve({
-        stdout: script?.includes('yaac-buildcache-*') ? RETIRED_OUTPUT : '',
-        stderr: '',
-      })
+    mockRegistryExec.mockImplementation((argv: string[]) => {
+      if (argv.includes('garbage-collect')) {
+        collectStarted()
+        return collecting.then(() => '')
+      }
+      const script = argv[0] === 'sh' ? argv[2] : undefined
+      return Promise.resolve(script?.includes('yaac-buildcache-*') ? RETIRED_OUTPUT : '')
     })
 
     // Reconcile passes are serialized, so this must return while the
     // collect is still running — and a tick arriving meanwhile must not
     // start a second collect.
     await reconcileBuildCacheGc()
-    const before = argvs().length
+    await reachedCollect
+    const before = inRegistry().length
     await reconcileBuildCacheGc(BUILD_CACHE_GC_INTERVAL_MS * 200)
-    expect(argvs()).toHaveLength(before)
+    expect(inRegistry()).toHaveLength(before)
 
     release()
     await _buildCacheGcSettledForTests()
@@ -247,22 +242,22 @@ describe('reconcileBuildCacheGc', () => {
   it('is a no-op on test-isolated installs and inside a nested yaac', async () => {
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
     await runPass()
-    expect(mockExecFileAsync).not.toHaveBeenCalled()
+    expect(mockRegistryExec).not.toHaveBeenCalled()
 
     // Nested installs push to the OUTER install's per-project registry:
-    // not theirs to collect, and no container of theirs to exec into.
+    // not theirs to collect, and no Deployment of theirs to exec into.
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac')
     vi.stubEnv('YAAC_NESTED', '1')
     _resetBuildCacheGcForTests()
     await runPass()
-    expect(mockExecFileAsync).not.toHaveBeenCalled()
+    expect(mockRegistryExec).not.toHaveBeenCalled()
   })
 
-  it('logs and moves on when there is no registry container to sweep', async () => {
-    mockExecFileAsync.mockRejectedValue(new Error('no such container yaac-registry'))
+  it('logs and moves on when there is no registry to sweep', async () => {
+    mockRegistryExec.mockRejectedValue(new Error('deployments.apps "yaac-registry" not found'))
 
     await expect(runPass()).resolves.toBeUndefined()
 
-    expect(logged('no such container')).toBe(true)
+    expect(logged('not found')).toBe(true)
   })
 })

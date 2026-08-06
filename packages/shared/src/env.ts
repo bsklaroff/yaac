@@ -71,9 +71,19 @@ export const env = {
     return port
   },
 
-  /** `YAAC_K8S_REGISTRY` — host:port of the local OCI registry. */
-  get k8sRegistry(): string {
-    return process.env.YAAC_K8S_REGISTRY ?? 'localhost:5001'
+  /**
+   * `YAAC_K8S_REGISTRY` — `host:port` of an EXTERNALLY managed OCI registry
+   * to use instead of the one this install runs in its own cluster. Unset
+   * (the normal case) → the server's in-cluster registry Service, whose
+   * name it resolves itself.
+   *
+   * The one production setter is a nested (vcluster) session: its registry
+   * is the OUTER install's per-project registry, which the inner server
+   * dials directly by cluster DNS and must never try to stand up.
+   */
+  get k8sRegistry(): string | undefined {
+    const raw = process.env.YAAC_K8S_REGISTRY
+    return raw && raw.trim() !== '' ? raw.trim() : undefined
   },
 
   /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster setup` manages. */

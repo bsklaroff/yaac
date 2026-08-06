@@ -1,16 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// The three boundaries a delete crosses: the kind/podman subprocess, the
-// local registry container, and the TTY prompt. Nothing inside
-// features/cluster is mocked — the confirmation gate runs for real behind
-// the readline fake.
+// The two boundaries a delete crosses: the kind/podman subprocess and the
+// TTY prompt. Nothing inside features/cluster is mocked — the confirmation
+// gate runs for real behind the readline fake.
 vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn(),
-}))
-
-vi.mock('#platform/container/registry', () => ({
-  removeLocalRegistry: vi.fn().mockResolvedValue(undefined),
-  REGISTRY_CONTAINER_NAME: 'yaac-registry',
 }))
 
 const mockQuestion = vi.fn<(q: string) => Promise<string>>()
@@ -25,10 +19,8 @@ vi.mock('node:readline/promises', () => ({
 
 import { ClusterDeleteError, runClusterDelete } from '#features/cluster'
 import { execFileAsync } from '#platform/k8s/kubectl'
-import { removeLocalRegistry } from '#platform/container/registry'
 
 const mockRun = vi.mocked(execFileAsync)
-const mockRemoveRegistry = vi.mocked(removeLocalRegistry)
 const logs: string[] = []
 
 /** A host whose only kind cluster is the default "yaac". */
@@ -51,7 +43,6 @@ const logged = (): string => logs.join('\n')
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockRemoveRegistry.mockResolvedValue(undefined)
   stageClusters('yaac\n')
   logs.length = 0
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
@@ -76,17 +67,15 @@ describe('runClusterDelete', () => {
     await expect(runClusterDelete({ yes: true })).rejects.toThrow(/nested yaac session/)
     // Nothing touched before the guard.
     expect(mockRun).not.toHaveBeenCalled()
-    expect(mockRemoveRegistry).not.toHaveBeenCalled()
   })
 
-  it('deletes the cluster and removes the registry on the --yes happy path', async () => {
+  it('deletes the cluster on the --yes happy path', async () => {
     await runClusterDelete({ yes: true })
 
     expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
     // Runs kind under the podman provider, like setup.
     expect((deleteCall()?.[2] as { env?: NodeJS.ProcessEnv })?.env?.KIND_EXPERIMENTAL_PROVIDER)
       .toBe('podman')
-    expect(mockRemoveRegistry).toHaveBeenCalledOnce()
     // --yes skips the prompt entirely.
     expect(mockQuestion).not.toHaveBeenCalled()
   })
@@ -98,12 +87,11 @@ describe('runClusterDelete', () => {
     expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac-alt'])
   })
 
-  it('skips the cluster delete but still removes the registry when the cluster is absent', async () => {
+  it('reports that there is nothing to delete when the cluster is absent', async () => {
     stageClusters('some-other-cluster\n')
     await runClusterDelete({ yes: true })
 
     expect(deleteCall()).toBeUndefined()
-    expect(mockRemoveRegistry).toHaveBeenCalledOnce()
     expect(logged()).toMatch(/No kind cluster "yaac" to delete/)
   })
 
@@ -112,7 +100,6 @@ describe('runClusterDelete', () => {
     stageClusters('No kind clusters found.\n')
     await runClusterDelete({ yes: true })
     expect(deleteCall()).toBeUndefined()
-    expect(mockRemoveRegistry).toHaveBeenCalledOnce()
   })
 
   it('prompts and aborts without deleting anything when not confirmed', async () => {
@@ -121,7 +108,6 @@ describe('runClusterDelete', () => {
 
     expect(mockQuestion).toHaveBeenCalledOnce()
     expect(deleteCall()).toBeUndefined()
-    expect(mockRemoveRegistry).not.toHaveBeenCalled()
     expect(logged()).toMatch(/Aborted/)
   })
 
@@ -133,9 +119,10 @@ describe('runClusterDelete', () => {
     // The prompt names both resources it will remove.
     const prompt = String(mockQuestion.mock.calls[0]?.[0])
     expect(prompt).toMatch(/kind cluster "yaac"/)
-    expect(prompt).toMatch(/yaac-registry/)
+    // The registry now dies with the cluster, so the prompt says so rather
+    // than naming a separate container.
+    expect(prompt).toMatch(/in-cluster image registry/)
     expect(deleteCall()?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
-    expect(mockRemoveRegistry).toHaveBeenCalledOnce()
   })
 
   it('aborts when there is no TTY to prompt on', async () => {
@@ -143,7 +130,6 @@ describe('runClusterDelete', () => {
     await runClusterDelete({})
     expect(mockQuestion).not.toHaveBeenCalled()
     expect(deleteCall()).toBeUndefined()
-    expect(mockRemoveRegistry).not.toHaveBeenCalled()
   })
 
   it('throws a pointed ClusterDeleteError when kind cannot be queried', async () => {
@@ -153,7 +139,6 @@ describe('runClusterDelete', () => {
     // The subprocess stderr is the useful half of the message.
     await expect(runClusterDelete({ yes: true }))
       .rejects.toThrow(/Could not list kind clusters[\s\S]*Cannot connect to podman/)
-    expect(mockRemoveRegistry).not.toHaveBeenCalled()
   })
 
   it('falls back to the error message when the failure carries no stderr', async () => {

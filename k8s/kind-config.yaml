@@ -1,9 +1,11 @@
 # kind cluster config for yaac.
 #
 # Two pieces of wiring yaac needs and cannot add to a running cluster:
-#   1. containerd `config_path` so `localhost:5001` image refs resolve to
-#      the local registry container (see "Cluster setup" in the README for
-#      the hosts.toml + network-connect steps that pair with this).
+#   1. containerd `config_path`, so the node reads per-registry `hosts.toml`
+#      files out of /etc/containerd/certs.d. Both yaac registries — the main
+#      one and the per-project ones — are in-cluster Services, which the node
+#      cannot resolve by cluster DNS; one-shot pods hostPath-mount that
+#      directory and write each registry's live ClusterIP into it.
 #   2. extraMounts making your home directory visible to the node at the
 #      same path — yaac session pods mount worktrees, caches, and
 #      credentials via hostPath, which resolves on the NODE, not the host.
