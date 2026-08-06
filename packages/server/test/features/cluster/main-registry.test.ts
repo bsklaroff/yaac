@@ -170,11 +170,17 @@ describe('ensureMainRegistry', () => {
     const writer = appliedOfKind('Pod')
     const podSpec = writer.spec as {
       nodeName: string
+      tolerations: Array<{ operator: string }>
       containers: Array<{ image: string; command: string[] }>
       volumes: Array<{ hostPath: { path: string } }>
     }
     expect(writer.metadata.labels?.[LABEL_MAIN_REGISTRY_NODE_WRITE]).toBe('hosts')
     expect(podSpec.nodeName).toBe('yaac-control-plane')
+    // Tolerates everything: nodeName bypasses the scheduler, but kubelet
+    // still admits and the taint manager still evicts, so a NoExecute taint
+    // (a dedicated sessions pool's) would deny this write to the very nodes
+    // that need it — leaving them unable to pull.
+    expect(podSpec.tolerations).toEqual([{ operator: 'Exists' }])
     expect(podSpec.containers[0].image).toBe(REGISTRY_UPSTREAM_IMAGE)
     expect(podSpec.containers[0].command[2])
       .toContain(`[host."http://${CLUSTER_IP}:5000"]`)

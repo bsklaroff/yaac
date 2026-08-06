@@ -207,12 +207,46 @@ describe('ensureGvisorRuntime', () => {
     expect(spec()).not.toHaveProperty('nodeSelector')
 
     // The blast-radius knob: a cluster with a sessions-only pool installs
-    // (and restarts containerd) there only. The RuntimeClasses need no
-    // change — they follow the label the installer stamps.
+    // (and restarts containerd) there only. The RuntimeClasses' SELECTOR
+    // needs no change — it follows the label the installer stamps.
     vi.clearAllMocks()
     mockHasTag.mockResolvedValue(true)
     await ensureGvisorRuntime({ nodeSelector: { 'yaac.node-pool': 'sessions' } })
     expect(spec().nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
+  })
+
+  it('declares a tainted pool\'s toleration on the RuntimeClasses, not on the DaemonSet', async () => {
+    const tolerations = [
+      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
+      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
+    ]
+    await ensureGvisorRuntime({
+      nodeSelector: { 'yaac.node-pool': 'sessions' },
+      tolerations,
+    })
+
+    // The RuntimeClasses are where a pool toleration has to land: admission
+    // merges scheduling.tolerations into every pod naming the class, which
+    // is how session pods, builder pods, synced pods and cluster check's
+    // pinned probes all reach a tainted pool without any of them knowing it
+    // exists. Cluster check reads the same field back to decide which nodes
+    // can take a session.
+    const classes = ofKind('RuntimeClass') as unknown as Array<{
+      scheduling: { nodeSelector: Record<string, string>; tolerations?: unknown }
+    }>
+    expect(classes).toHaveLength(2)
+    for (const c of classes) {
+      expect(c.scheduling.tolerations).toEqual(tolerations)
+      expect(c.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
+    }
+
+    // The DaemonSet is untouched by it — it already tolerates everything,
+    // the way node infrastructure must, so a pool taint costs it nothing.
+    const pod = (ofKind('DaemonSet')[0].spec as {
+      template: { spec: { tolerations: unknown; nodeSelector: Record<string, string> } }
+    }).template.spec
+    expect(pod.tolerations).toEqual([{ operator: 'Exists' }])
+    expect(pod.nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
   })
 
   it('mirrors the pinned upstream installer image, pulling only when it is absent', async () => {

@@ -8,6 +8,7 @@ import {
   kubectlApply,
   kubectlWithRetry,
 } from '#platform/k8s'
+import type { PodToleration } from '#platform/k8s'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { testEnv } from '@yaac/shared/env'
 import { assertMirrorArch } from './netd'
@@ -196,7 +197,10 @@ export interface GvisorInstallerOptions {
  *   is involved.
  * - Blanket toleration, `system-node-critical`, like netd: this is node
  *   infrastructure, and a node the installer was evicted from is a node
- *   whose sandboxed pods stop being schedulable.
+ *   whose sandboxed pods stop being schedulable. It is also why a tainted
+ *   sessions pool costs this DaemonSet nothing — `Exists` already covers the
+ *   pool taint; only the *workload's* toleration has to be declared, and
+ *   that goes on the RuntimeClasses.
  * - `maxUnavailable: 1` on the rolling update. A version bump changes the
  *   template (the script carries the pin), and rolling it restarts
  *   containerd on each node it touches; doing that fleet-wide at once would
@@ -267,6 +271,15 @@ export function buildGvisorInstallerDaemonSetManifest(
  * The whole gVisor runtime setup for a cluster: the installer DaemonSet on
  * every (selected) node, then the RuntimeClasses.
  *
+ * The two pool knobs are deliberately asymmetric, because they answer
+ * different questions. `nodeSelector` bounds where the runtime is INSTALLED
+ * (and where a containerd restart is spent), so it lands on the DaemonSet;
+ * the DaemonSet needs no toleration plumbing at all, since it already
+ * tolerates everything the way node infrastructure must. `tolerations`
+ * bounds nothing — it is what lets sandboxed pods onto a tainted sessions
+ * pool — so it lands on the RuntimeClasses, whose admission merge is what
+ * puts it on every pod that names them (see buildRuntimeClassManifests).
+ *
  * Order matters and the rollout gate is not decoration. The RuntimeClasses
  * carry a nodeSelector on the label the installer stamps, so applying them
  * first on a cluster with no installed node would leave every sandboxed pod
@@ -279,16 +292,20 @@ export function buildGvisorInstallerDaemonSetManifest(
  * actually changed something on it.
  */
 export async function ensureGvisorRuntime(
-  opts: { nodeSelector?: Record<string, string> } = {},
+  opts: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] } = {},
 ): Promise<void> {
   const image = await ensureGvisorInstallerImage()
   await kubectlApply(buildGvisorInstallerServiceAccountManifest())
   await kubectlApply(buildGvisorInstallerClusterRoleManifest())
   await kubectlApply(buildGvisorInstallerClusterRoleBindingManifest())
-  await kubectlApply(buildGvisorInstallerDaemonSetManifest({ image, ...opts }))
+  await kubectlApply(buildGvisorInstallerDaemonSetManifest({
+    image, nodeSelector: opts.nodeSelector,
+  }))
   await kubectlWithRetry([
     'rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
-  for (const manifest of buildRuntimeClassManifests()) await kubectlApply(manifest)
+  for (const manifest of buildRuntimeClassManifests({ tolerations: opts.tolerations })) {
+    await kubectlApply(manifest)
+  }
 }
