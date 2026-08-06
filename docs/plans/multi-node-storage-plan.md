@@ -213,12 +213,10 @@ hostPath + ext4 working while exercising real multi-node scheduling.
       cluster check`'s `registry-nodes` gate now proves it per node by
       pulling `Always` from a pod pinned to each.
 - [x] Audit node-local paths — `/var/lib/yaac/imagecache/<hash>` is dead
-      (the cross-session cache moved into the project registry); only the
-      one-shot sweep pods touch it, and they already run on every node.
-      `/var/lib/yaac/registry/<hash>` is live and per-node, and stays
-      acceptable: a registry pod that lands on a different node starts cold,
-      the prime side treats a missing image as a miss, and session images
-      themselves come from the host-side registry.
+      (the cross-session cache moved into the project registry), and so are
+      both registries' `/var/lib/yaac/{registry,main-registry}/<hash>`
+      stores now that their storage is a PVC. Only the one-shot sweep pods
+      touch any of them, and they already run on every node.
 - [ ] Run the e2e suite against the multi-node cluster.
 
 ### NFS spike (go/no-go)

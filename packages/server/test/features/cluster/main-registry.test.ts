@@ -34,7 +34,8 @@ import { ensureMainRegistry, mainRegistryExec, restartMainRegistry } from '#feat
 import {
   LABEL_MAIN_REGISTRY_NODE_WRITE,
   MAIN_REGISTRY_APP_LABEL,
-  mainRegistryStorageHostPath,
+  MAIN_REGISTRY_STORAGE_SIZE,
+  mainRegistryPvcName,
 } from '#features/cluster/main-registry'
 import { ROLE_BUILDER } from '#platform/k8s/proxy-constants'
 import { REGISTRY_UPSTREAM_IMAGE } from '#features/cluster/project-registry'
@@ -76,13 +77,35 @@ function retryArgs(): string[][] {
 }
 
 /**
- * Serve the cluster reads an ensure makes: the Service's ClusterIP, the
- * node list the writer pods are pinned to, and the writer pod's own status
- * (which `runPodToCompletion` polls to a terminal phase).
+ * Serve the cluster reads an ensure makes: the live Deployment's storage
+ * volume (which the cheap path checks has been converted to the claim), the
+ * Service's ClusterIP, the node list the writer pods are pinned to, and the
+ * writer pod's own status (which `runPodToCompletion` polls to a terminal
+ * phase).
+ *
+ * `storage` selects which shape the live Deployment has: `'pvc'` is a
+ * converged install, `'hostPath'` one upgrading from the node-local store,
+ * and `'absent'` a cluster with no registry Deployment at all.
  */
-function serveCluster(opts: { clusterIp?: string | null; nodes?: string[]; podPhase?: string } = {}): void {
+function serveCluster(opts: {
+  clusterIp?: string | null
+  nodes?: string[]
+  podPhase?: string
+  storage?: 'pvc' | 'hostPath' | 'absent'
+} = {}): void {
   const nodes = opts.nodes ?? ['yaac-control-plane']
   mockGetJson.mockImplementation((args: string[]) => {
+    if (args[1] === 'deployment') {
+      const storage = opts.storage ?? 'pvc'
+      if (storage === 'absent') return Promise.resolve(null)
+      return Promise.resolve({
+        spec: { template: { spec: { volumes: [
+          storage === 'pvc'
+            ? { name: 'storage', persistentVolumeClaim: { claimName: 'yaac-registry-storage-ddh16' } }
+            : { name: 'storage', hostPath: { path: '/var/lib/yaac/main-registry/ddh16' } },
+        ] } } },
+      })
+    }
     if (args[1] === 'service') {
       const ip = opts.clusterIp === undefined ? CLUSTER_IP : opts.clusterIp
       return Promise.resolve(ip === null ? { spec: {} } : { spec: { clusterIP: ip } })
@@ -104,21 +127,50 @@ beforeEach(() => {
 })
 
 describe('ensureMainRegistry', () => {
-  it('is a no-op when the registry already answers', async () => {
+  it('is a no-op when the registry already answers from its claim', async () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry()
-    // The boot ensure must cost one ping on a healthy install, not a
-    // rollout wait and a node-write pod per node.
+    // The boot ensure must cost one ping and one read on a healthy install,
+    // not a rollout wait and a node-write pod per node.
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
   })
 
-  it('applies namespace, Deployment and Service, then wires every node up', async () => {
+  it('converts an install still serving from the node hostPath', async () => {
+    // The upgrade is invisible to a reachability check — the OLD registry
+    // answers perfectly well — so the cheap path reads the live Deployment's
+    // storage volume too. Without this the install would stay on its
+    // hostPath forever AND `sweepLegacyNodeStores` would reclaim that
+    // hostPath out from under it a few steps later in the same server start.
+    mockReachable.mockResolvedValue(true)
+    serveCluster({ storage: 'hostPath' })
+    await ensureMainRegistry()
+
+    const deploy = appliedOfKind('Deployment')
+    const volumes = (deploy.spec as {
+      template: { spec: { volumes: Array<{ persistentVolumeClaim?: { claimName: string } }> } }
+    }).template.spec.volumes
+    expect(volumes[0].persistentVolumeClaim).toEqual({ claimName: mainRegistryPvcName() })
+  })
+
+  it('stands the registry up when there is no Deployment to read', async () => {
+    // The check fails SAFE: an absent or unreadable Deployment answers "not
+    // converged", which costs a redundant apply rather than a skipped one.
+    mockReachable.mockResolvedValue(true)
+    serveCluster({ storage: 'absent' })
+    await ensureMainRegistry()
+    expect(applied().map((m) => m.kind)).toContain('PersistentVolumeClaim')
+  })
+
+  it('applies namespace, PVC, Deployment and Service, then wires every node up', async () => {
     mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
     await ensureMainRegistry()
 
+    // The claim precedes the Deployment that mounts it, so the rollout wait
+    // never spends its budget on a pod Pending for a volume that does not
+    // exist yet.
     expect(applied().map((m) => m.kind)).toEqual([
-      'Namespace', 'Deployment', 'Service', 'NetworkPolicy', 'Pod',
+      'Namespace', 'PersistentVolumeClaim', 'Deployment', 'Service', 'NetworkPolicy', 'Pod',
     ])
 
     // Everything lands in the DEFAULT namespace, not k8sNamespace() (mocked
@@ -133,11 +185,14 @@ describe('ensureMainRegistry', () => {
           runtimeClassName?: string
           priorityClassName: string
           containers: Array<{ image: string; imagePullPolicy: string; readinessProbe: unknown }>
-          volumes: Array<{ hostPath: { path: string } }>
+          volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
+          affinity?: unknown
+          nodeSelector?: unknown
         }
       }
     }
-    // Recreate: two pods would race over the node-local storage hostPath.
+    // Recreate: a rolling overlap would put two pods on one store, and on a
+    // backend enforcing RWO across nodes it would deadlock on the volume.
     expect(spec.strategy.type).toBe('Recreate')
     // The registry cannot be the source of its OWN image, so this one pod
     // names the digest-pinned upstream rather than the local mirror tag.
@@ -146,7 +201,32 @@ describe('ensureMainRegistry', () => {
     // Trusted infra: runs on runc, above sessions.
     expect(spec.template.spec.runtimeClassName).toBeUndefined()
     expect(spec.template.spec.priorityClassName).toBe('yaac-infra')
-    expect(spec.template.spec.volumes[0].hostPath.path).toBe(mainRegistryStorageHostPath())
+
+    // The store belongs to the CLAIM, not to a node — which is what makes
+    // the unpinned Deployment safe: a reschedule takes the volume with it,
+    // so nothing is stranded and nothing swaps underneath a collect. The
+    // absent pin is half the fix, so it is asserted, not assumed.
+    expect(spec.template.spec.volumes[0].persistentVolumeClaim)
+      .toEqual({ claimName: mainRegistryPvcName() })
+    expect(spec.template.spec.affinity).toBeUndefined()
+    expect(spec.template.spec.nodeSelector).toBeUndefined()
+
+    const pvc = appliedOfKind('PersistentVolumeClaim')
+    expect(pvc.metadata).toMatchObject({ name: mainRegistryPvcName(), namespace: 'yaac' })
+    // Install-keyed, exactly as the retired hostPath was: coexisting
+    // installs must never end up sharing one blob store.
+    expect(pvc.metadata.name).toContain('ddh16')
+    expect(pvc.spec).toEqual({
+      // RWO, not RWX: one mounter at a time is guaranteed by replicas 1 +
+      // Recreate, and RWX needs a file class most backends do not ship.
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: MAIN_REGISTRY_STORAGE_SIZE } },
+    })
+    // No storageClassName: it must bind through whatever the cluster's
+    // default class is (kind's `standard`, a provider's block class, the
+    // host default a vcluster's synced claim sees). Naming one would break
+    // every cluster that does not ship it.
+    expect(pvc.spec).not.toHaveProperty('storageClassName')
 
     // A NORMAL selector-backed Service — no hand-written EndpointSlice, no
     // host-side address discovery.
@@ -258,9 +338,12 @@ describe('ensureMainRegistry', () => {
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
     ))
-    // Pending vs ImagePullBackOff is the whole diagnosis, and kubectl's
-    // timeout text says neither.
-    await expect(ensureMainRegistry()).rejects.toThrow(/kubectl -n yaac get pods/)
+    // Pending vs ImagePullBackOff vs an unbindable claim is the whole
+    // diagnosis, and kubectl's timeout text says none of them. The claim
+    // matters most on a cluster with no DEFAULT StorageClass, where it
+    // presents as a Pending pod with no scheduling reason of its own.
+    await expect(ensureMainRegistry()).rejects.toThrow(/kubectl -n yaac get pods,pvc/)
+    await expect(ensureMainRegistry()).rejects.toThrow(/no default StorageClass/)
   })
 
   it('writes one hosts.toml pod per node, reaping strays first', async () => {
@@ -286,6 +369,25 @@ describe('ensureMainRegistry', () => {
     // restart may have dropped, so it must not short-circuit.
     expect(applied().map((m) => m.kind)).toContain('Deployment')
     expect(applied().map((m) => m.kind)).toContain('Pod')
+  })
+
+  it('is a no-op when an EXTERNAL registry answers, whatever the local cluster holds', async () => {
+    // The claim gate reads `deployment/yaac-registry` in the LOCAL cluster,
+    // which for an external registry is someone else's storage and, in a
+    // nested yaac, a vcluster that has no such object at all. Asking would
+    // answer "not converted" forever and drop a healthy install into the
+    // throw below, whose "not answering" message would be flatly untrue —
+    // noise on every nested boot, and fatal to builder-pod provisioning on a
+    // non-nested install pointed at an external registry.
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'outer-registry:5000')
+    mockReachable.mockResolvedValue(true)
+    serveCluster({ storage: 'absent' })
+    try {
+      await expect(ensureMainRegistry()).resolves.toBeUndefined()
+      expect(mockApply).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('refuses to create anything when the registry is externally managed', async () => {

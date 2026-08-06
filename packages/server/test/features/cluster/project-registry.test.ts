@@ -33,7 +33,7 @@ import {
   projectRegistryHost,
   reconcileProjectRegistryGc,
   removeProjectRegistry,
-  sweepLegacyImageStore,
+  sweepLegacyNodeStores,
 } from '#features/cluster'
 // Setup values: label keys, the pinned upstream digest, and the name/path
 // derivations the assertions below compare against.
@@ -41,6 +41,7 @@ import {
   LABEL_NODE_WRITE,
   LABEL_REGISTRY_DATA_DIR_HASH,
   PROJECT_REGISTRY_PORT,
+  PROJECT_REGISTRY_STORAGE_SIZE,
   REGISTRY_APP_LABEL,
   REGISTRY_IMAGE_DIGEST,
   REGISTRY_MIRROR_TAG,
@@ -50,7 +51,7 @@ import {
   _registryGcSettledForTests,
   _resetRegistryGcForTests,
   projectRegistryName,
-  projectRegistryStorageHostPath,
+  projectRegistryPvcName,
 } from '#features/cluster/project-registry'
 import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
@@ -170,12 +171,15 @@ describe('ensureProjectRegistry', () => {
     stageLiveCluster()
   })
 
-  it('applies Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
+  it('applies PVC, Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
     await ensureProjectRegistry('demo')
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+    // The claim first: the Deployment's pod must not spend the rollout wait
+    // Pending on a volume that does not exist yet.
     expect(kinds).toEqual([
-      'Deployment', 'Service', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'Pod',
+      'PersistentVolumeClaim', 'Deployment', 'Service',
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'Pod',
     ])
     expect(mockRetry).toHaveBeenCalledWith(
       [
@@ -221,88 +225,68 @@ describe('ensureProjectRegistry', () => {
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
   })
 
-  it('pins the registry to the node holding its blobs, and keeps it there', async () => {
-    // The store is a node-local hostPath, so pod and data are one unit: a
-    // rollout that lands on another node serves an EMPTY catalog and every
-    // cross-session layer hit silently becomes a rebuild. Single-node
-    // clusters never showed this — a Recreate had nowhere else to land.
-    const deployOf = (): { metadata: { annotations?: Record<string, string> }
-      spec: { template: { spec: { affinity?: Record<string, unknown> } } } } =>
-      mockApply.mock.calls
-        .map((c) => c[0] as { kind: string })
-        .filter((m) => m.kind === 'Deployment')
-        .at(-1) as never
-
+  it('leaves placement to the bound volume rather than pinning the Deployment', async () => {
+    // The store belongs to the CLAIM, so the registry follows its blobs
+    // wherever it is scheduled: nothing here names a node, and nothing has
+    // to. A bound volume carries its own node affinity, which the scheduler
+    // enforces — a hand-written pin would only add a way to contradict it,
+    // and would trade a self-healing degradation for a single point of
+    // failure on exactly the store a node replacement destroys.
     await ensureProjectRegistry('demo')
-    expect(deployOf().metadata.annotations)
-      .toMatchObject({ 'yaac.dev/registry-node': 'yaac-control-plane' })
-    expect(deployOf().spec.template.spec.affinity).toEqual({
-      nodeAffinity: {
-        requiredDuringSchedulingIgnoredDuringExecution: {
-          nodeSelectorTerms: [{
-            matchExpressions: [{
-              key: 'kubernetes.io/hostname', operator: 'In', values: ['yaac-control-plane'],
-            }],
-          }],
-        },
-      },
-    })
 
-    // An existing pin outranks anything else: re-ensuring against a
-    // cluster whose only schedulable node is now a DIFFERENT one must not
-    // walk the registry away from the blobs it already has.
-    mockApply.mockClear()
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      if (args[1] === 'deployment') {
-        return Promise.resolve({ metadata: { annotations: { 'yaac.dev/registry-node': 'worker-7' } } })
-      }
-      return cidrRead(args) ?? Promise.resolve(null)
-    })
-
-    await ensureProjectRegistry('demo')
-    expect(deployOf().metadata.annotations)
-      .toMatchObject({ 'yaac.dev/registry-node': 'worker-7' })
-  })
-
-  it('leaves the Deployment unpinned when no node can be resolved', async () => {
-    // Better an unpinned registry (which still serves) than one pinned to
-    // a guess that may never schedule.
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      // One node cordoned, one a tainted sessions pool: neither is a
-      // legitimate landing spot. The pool taint excludes this registry even
-      // on a cluster where the gvisor RuntimeClass tolerates it — a project
-      // registry is trusted infra, names no RuntimeClass, and so inherits no
-      // toleration, which is exactly what keeps infra off the pool.
-      if (args[1] === 'nodes') {
-        return Promise.resolve({
-          items: [
-            { ...NODE_LIST.items[0], spec: { unschedulable: true } },
-            {
-              metadata: { name: 'yaac-pool-1' },
-              spec: {
-                taints: [
-                  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' },
-                  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoExecute' },
-                ],
-              },
-              status: { conditions: [{ type: 'Ready', status: 'True' }] },
-            },
-          ],
-        })
-      }
-      return Promise.resolve(null)
-    })
-    await ensureProjectRegistry('demo')
     const deploy = mockApply.mock.calls
-      .map((c) => c[0] as { kind: string; metadata: { annotations?: unknown }
-        spec: { template: { spec: { affinity?: unknown } } } })
+      .map((c) => c[0] as {
+        kind: string
+        metadata: { annotations?: unknown }
+        spec: { template: { spec: {
+          affinity?: unknown
+          nodeName?: unknown
+          nodeSelector?: unknown
+          tolerations?: unknown
+          volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
+        } } }
+      })
       .find((m) => m.kind === 'Deployment')!
     expect(deploy.metadata.annotations).toBeUndefined()
     expect(deploy.spec.template.spec.affinity).toBeUndefined()
+    expect(deploy.spec.template.spec.nodeName).toBeUndefined()
+    expect(deploy.spec.template.spec.nodeSelector).toBeUndefined()
+    expect(deploy.spec.template.spec.volumes[0].persistentVolumeClaim)
+      .toEqual({ claimName: projectRegistryPvcName('demo') })
+
+    // Declaring NO tolerations is what keeps a project registry off a
+    // tainted sessions pool, and it is now the only thing that does: the
+    // node-resolver this replaced used to hand-compute the same exclusion by
+    // matching each node's taints against an empty toleration set. The
+    // scheduler does that matching natively for an unpinned pod, and the
+    // pool's toleration lives on the gvisor RuntimeClass, which this
+    // trusted-infra pod deliberately does not name. Under
+    // WaitForFirstConsumer the volume then follows that choice, so the
+    // exclusion holds for the store's life, not just its first placement.
+    expect(deploy.spec.template.spec.tolerations).toBeUndefined()
+
+    const pvc = appliedKind('PersistentVolumeClaim') as {
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
+      spec: Record<string, unknown>
+    }
+    expect(pvc.metadata.name).toBe(projectRegistryPvcName('demo'))
+    expect(pvc.metadata.namespace).toBe('test-ns')
+    // Carries the registry labels, which is what puts it inside
+    // removeProjectRegistry's by-selector delete — the PVC IS the storage
+    // reclaim now, so a claim outside that selector would leak the blobs.
+    expect(pvc.metadata.labels).toMatchObject({
+      app: REGISTRY_APP_LABEL, 'yaac.project': 'demo',
+    })
+    expect(pvc.spec).toEqual({
+      // RWO, not RWX: replicas 1 + Recreate gives one mounter at a time by
+      // construction, and RWO still admits the collect pod beside the
+      // registry on the same node.
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: PROJECT_REGISTRY_STORAGE_SIZE } },
+    })
+    // Binds through the cluster's DEFAULT class — naming one would break
+    // every cluster that does not ship it.
+    expect(pvc.spec).not.toHaveProperty('storageClassName')
   })
 
   it('serializes concurrent ensures for one project', async () => {
@@ -320,13 +304,13 @@ describe('ensureProjectRegistry', () => {
     const second = ensureProjectRegistry('demo')
     await new Promise((r) => setTimeout(r, 10))
     // The second ensure has not started while the first waits on its
-    // rollout: only the first's five object applies have happened (its
+    // rollout: only the first's six object applies have happened (its
     // writer pod comes after the rollout).
-    expect(mockApply).toHaveBeenCalledTimes(5)
+    expect(mockApply).toHaveBeenCalledTimes(6)
 
     releaseRollout()
     await Promise.all([first, second])
-    expect(mockApply).toHaveBeenCalledTimes(12)
+    expect(mockApply).toHaveBeenCalledTimes(14)
   })
 
   it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {
@@ -345,7 +329,7 @@ describe('ensureProjectRegistry', () => {
       .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
   })
 
-  it('runs the registry as untrusted-free infra off a node-local hostPath', async () => {
+  it('runs the registry as untrusted-free infra off its own claim', async () => {
     await ensureProjectRegistry('demo')
 
     const dep = appliedKind('Deployment') as {
@@ -374,7 +358,8 @@ describe('ensureProjectRegistry', () => {
     expect(dep.metadata.name).toBe(projectRegistryName('demo'))
     expect(dep.metadata.namespace).toBe('test-ns')
     expect(dep.spec.replicas).toBe(1)
-    // Recreate, not RollingUpdate: two replicas would race on one hostPath.
+    // Recreate, not RollingUpdate: two replicas would race on one store,
+    // and on a backend enforcing RWO across nodes would deadlock outright.
     expect(dep.spec.strategy).toEqual({ type: 'Recreate' })
     expect(dep.spec.selector.matchLabels)
       .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
@@ -391,10 +376,12 @@ describe('ensureProjectRegistry', () => {
     expect(pod.securityContext).toBeUndefined()
     expect(pod.containers[0].image).toMatch(/^localhost:5001\/yaac-registry2:/)
     expect(pod.containers[0].ports).toEqual([{ containerPort: PROJECT_REGISTRY_PORT }])
-    // Storage is node-local and scoped by install hash + slug, like the
-    // shared image store.
-    expect(JSON.stringify(pod.volumes))
-      .toContain(projectRegistryStorageHostPath('demo'))
+    // Storage is the project's own claim, scoped by the same install hash +
+    // slug derivation the Deployment name uses.
+    expect(pod.volumes).toEqual([{
+      name: 'storage',
+      persistentVolumeClaim: { claimName: projectRegistryPvcName('demo') },
+    }])
 
     const svc = appliedKind('Service') as {
       spec: { ports: Array<{ port: number; targetPort: number }> }
@@ -467,6 +454,19 @@ describe('ensureProjectRegistry', () => {
     expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
   })
 
+  it('names the PVC when the rollout times out', async () => {
+    // Session create is where a storage misconfiguration surfaces first, and
+    // an unbindable claim presents as a Pending pod with no scheduling
+    // reason of its own — kubectl's bare timeout text names neither.
+    mockRetry.mockImplementation((args: string[]) => (
+      args[0] === 'rollout' && args[1] === 'status'
+        ? Promise.reject(new Error('timed out waiting for the condition'))
+        : Promise.resolve({ stdout: '', stderr: '' })
+    ))
+    await expect(ensureProjectRegistry('demo'))
+      .rejects.toThrow(/get pods,pvc .* no default StorageClass/s)
+  })
+
   it('fails fast instead of pulling when prebuilt images are required', async () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     mockHasTag.mockResolvedValue(false)
@@ -494,19 +494,30 @@ describe('removeProjectRegistry', () => {
   it('deletes by label selector scoped to this install and cleans the node via a pod', async () => {
     mockClusterWithPodPhase('Succeeded')
     await removeProjectRegistry('demo')
-    // `pod` in the kinds reaps stray writer/cleanup pods from crashed runs.
+    // `persistentvolumeclaim` in the kinds is what reclaims the blobs — the
+    // storage is no longer a directory a cleanup pod could rm. `pod` reaps
+    // stray writer/cleanup pods from crashed runs.
     expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,pod',
+      'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
       '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
     const pod = mockApply.mock.calls
-      .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
+      .map((c) => c[0] as {
+        kind: string
+        spec: {
+          nodeName: string
+          containers: Array<{ command: string[]; volumeMounts: unknown[] }>
+        }
+      })
       .find((m) => m.kind === 'Pod')!
     expect(pod.spec.nodeName).toBe('yaac-control-plane')
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`/host-certs/${projectRegistryHost('demo')}`)
-    expect(script).toContain('/host-storage/demo')
+    // The hosts.toml dir is now the ONLY thing this project wrote outside
+    // the API server, so the cleanup pod carries no storage mount at all.
+    expect(script).not.toContain('/host-storage')
+    expect(pod.spec.containers[0].volumeMounts).toHaveLength(1)
     expect(mockExec).not.toHaveBeenCalled()
   })
 
@@ -520,7 +531,7 @@ describe('removeProjectRegistry', () => {
     await removeProjectRegistry('demo')
     // The by-selector delete still runs (reaps stray pods from crashes)...
     expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,pod',
+      'delete', 'deployment,service,networkpolicy,persistentvolumeclaim,pod',
       '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
@@ -568,7 +579,8 @@ describe('gcOrphanProjectRegistries', () => {
     // lifecycle (pre-delete + delete-after) also issues `delete pod` calls.
     const deletes = mockRetry.mock.calls
       .map((c) => c[0])
-      .filter((args) => args[0] === 'delete' && args[1] === 'deployment,service,networkpolicy,pod')
+      .filter((args) => args[0] === 'delete'
+        && args[1] === 'deployment,service,networkpolicy,persistentvolumeclaim,pod')
     expect(deletes).toHaveLength(1)
     expect(deletes[0][3]).toContain('yaac.project=gone')
   })
@@ -580,16 +592,13 @@ describe('gcOrphanProjectRegistries', () => {
 })
 
 describe('reconcileProjectRegistryGc', () => {
-  /** One registry serving from `node`, plus the poll a collect pod needs. */
-  function registryOn(node: string | undefined): void {
+  /** One registry to collect, plus the poll a collect pod needs. */
+  function oneRegistry(): void {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       const cidr = cidrRead(args)
       if (cidr) return cidr
       if (args[1] === 'services') {
         return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
-      }
-      if (args[1] === 'pods') {
-        return Promise.resolve({ items: node ? [{ spec: { nodeName: node } }] : [] })
       }
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
@@ -615,7 +624,7 @@ describe('reconcileProjectRegistryGc', () => {
   }
 
   it('collects behind a read-only window, then restores serving mode', async () => {
-    registryOn('node-a')
+    oneRegistry()
     await gcPass(1_000)
 
     // Read-only in, serving out. Not scale-to-zero: an active project's
@@ -626,14 +635,44 @@ describe('reconcileProjectRegistryGc', () => {
       kind: string
       metadata: { name: string; labels: Record<string, string> }
       spec: {
-        nodeName: string
+        nodeName?: string
+        affinity?: Record<string, unknown>
         containers: Array<{ image: string; command: string[] }>
-        volumes: Array<{ hostPath: { path: string } }>
+        volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
       }
     }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!
-    // Pinned to the node holding the store — the storage is node-local.
-    expect(pod.spec.nodeName).toBe('node-a')
-    expect(pod.spec.volumes[0].hostPath.path).toBe(projectRegistryStorageHostPath('demo'))
+    // It collects the SAME claim the registry is serving from, not a copy.
+    expect(pod.spec.volumes[0].persistentVolumeClaim)
+      .toEqual({ claimName: projectRegistryPvcName('demo') })
+    // RWO is node-scoped, so co-location with the registry pod is a
+    // correctness requirement — stated as a REQUIRED podAffinity rather than
+    // left to the bound volume to imply. On a network-attached CSI backend
+    // the PV carries no node affinity and the scheduler does not enforce RWO
+    // co-location, so the conflict would only surface at attach as a
+    // Multi-Attach error, burning the collect's full deadline. `nodeName`
+    // cannot express it either — it bypasses the scheduler entirely.
+    expect(pod.spec.nodeName).toBeUndefined()
+    expect(pod.spec.affinity).toEqual({
+      podAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: [{
+          labelSelector: {
+            // Install-scoped, not just app+project: two installs sharing a
+            // namespace can hold the same slug, and matching without the
+            // data-dir hash would let one install's collect become affine to
+            // the other's registry pod — a node its own volume is not on.
+            matchLabels: {
+              app: REGISTRY_APP_LABEL,
+              'yaac.project': 'demo',
+              [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
+            },
+            // Without this the term would also be satisfied by a sibling
+            // one-shot pod, which implies nothing about where the volume is.
+            matchExpressions: [{ key: LABEL_NODE_WRITE, operator: 'DoesNotExist' }],
+          },
+          topologyKey: 'kubernetes.io/hostname',
+        }],
+      },
+    })
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(
       '/bin/registry garbage-collect --delete-untagged=true /etc/docker/registry/config.yml')
@@ -646,7 +685,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('retires only yaac content-hash generations, never a name someone could pull', async () => {
-    registryOn('node-a')
+    oneRegistry()
     await gcPass(1_000)
     const script = (mockApply.mock.calls.map((c) => c[0] as {
       kind: string; metadata: { name: string }
@@ -666,7 +705,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('drops the legacy localhost/ alias repos before collecting', async () => {
-    registryOn('node-a')
+    oneRegistry()
     await gcPass(1_000)
     const script = (mockApply.mock.calls.map((c) => c[0] as {
       kind: string; metadata: { name: string }
@@ -687,7 +726,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('sends valid POSIX shell into the collect pod', async () => {
-    registryOn('node-a')
+    oneRegistry()
     await gcPass(1_000)
     const script = (mockApply.mock.calls.map((c) => c[0] as {
       kind: string; metadata: { name: string }
@@ -698,7 +737,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('collects a project whose sessions are live — idleness is not required', async () => {
-    registryOn('node-a')
+    oneRegistry()
     // Nothing about the pass consults session pods: read-only is what
     // makes a concurrent push safe, and a push that 405s is retried.
     await gcPass(1_000)
@@ -706,7 +745,7 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('throttles to one collect per project per interval', async () => {
-    registryOn('node-a')
+    oneRegistry()
     await gcPass(1_000)
     mockApply.mockClear()
     await gcPass(1_000 + REGISTRY_GC_INTERVAL_MS - 1)
@@ -716,14 +755,13 @@ describe('reconcileProjectRegistryGc', () => {
   })
 
   it('restores serving mode when the collect fails', async () => {
-    registryOn('node-a')
+    oneRegistry()
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       const cidr = cidrRead(args)
       if (cidr) return cidr
       if (args[1] === 'services') {
         return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
       }
-      if (args[1] === 'pods') return Promise.resolve({ items: [{ spec: { nodeName: 'node-a' } }] })
       // The collect pod never reaches Succeeded.
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
       return Promise.resolve(null)
@@ -733,16 +771,8 @@ describe('reconcileProjectRegistryGc', () => {
     expect(rollouts()).toEqual([true, false])
   })
 
-  it('runs no collect pod for a registry that has never served', async () => {
-    registryOn(undefined)
-    await gcPass(1_000)
-    expect(rollouts()).toEqual([true, false])
-    expect(mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind))
-      .not.toContain('Pod')
-  })
-
   it('returns without waiting on the collect it starts', async () => {
-    registryOn('node-a')
+    oneRegistry()
     // Reconcile steps run sequentially, so a step that awaited a collect
     // (two rollouts + a pod run) would stall every later step and every
     // later tick behind it. Hold the first rollout open and check the step
@@ -767,16 +797,64 @@ describe('reconcileProjectRegistryGc', () => {
   })
 })
 
-describe('sweepLegacyImageStore', () => {
-  it('removes this install\'s retired image-store dir on every node', async () => {
-    mockHasTag.mockResolvedValue(true)
+describe('sweepLegacyNodeStores', () => {
+  const claimVolume = (name: string): unknown =>
+    ({ name: 'storage', persistentVolumeClaim: { claimName: name } })
+  const hostPathVolume = (path: string): unknown =>
+    ({ name: 'storage', hostPath: { path } })
+
+  /**
+   * Stage the two conversion reads the sweep gates on: the main registry
+   * Deployment (`get deployment`, spec + rollout status) and this install's
+   * project-registry Deployments across all namespaces (`get deployments`).
+   *
+   * Defaults are the fully-converged install; each option turns one gate
+   * off. `mainReady: false` is the applied-but-rollout-failed shape — spec
+   * says PVC while the hostPath store is still the only copy of the data.
+   */
+  function stageSweepCluster(opts: {
+    mainConverted?: boolean
+    mainReady?: boolean
+    projectsConverted?: boolean
+    projectsReadable?: boolean
+  } = {}): void {
+    const mainConverted = opts.mainConverted ?? true
+    const mainReady = opts.mainReady ?? true
+    const projectsConverted = opts.projectsConverted ?? true
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'deployment') {
+        return Promise.resolve({
+          spec: { template: { spec: { volumes: [
+            mainConverted
+              ? claimVolume('yaac-registry-storage-ddh16')
+              : hostPathVolume('/var/lib/yaac/main-registry/ddh16'),
+          ] } } },
+          status: { readyReplicas: mainReady ? 1 : 0 },
+        })
+      }
+      if (args[1] === 'deployments') {
+        if (opts.projectsReadable === false) return Promise.reject(new Error('connection refused'))
+        return Promise.resolve({
+          items: [{
+            spec: { template: { spec: { volumes: [
+              projectsConverted
+                ? claimVolume('yaac-reg-demo-1234abcd-storage')
+                : hostPathVolume('/var/lib/yaac/registry/ddh16/demo'),
+            ] } } },
+          }],
+        })
+      }
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
     })
+  }
 
-    await sweepLegacyImageStore()
+  it('removes this install\'s retired store dirs on every node', async () => {
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster()
+
+    await sweepLegacyNodeStores()
 
     const pods = mockApply.mock.calls.map((c) => c[0] as {
       spec: {
@@ -786,16 +864,84 @@ describe('sweepLegacyImageStore', () => {
       }
     })
     expect(pods).toHaveLength(NODE_LIST.items.length)
-    // Scoped to this install's subdirectory, mounting the parent so the
-    // directory itself goes too.
-    expect(pods[0].spec.volumes[0].hostPath.path).toBe('/var/lib/yaac/imagecache')
-    expect(pods[0].spec.containers[0].command[2]).toBe("rm -rf '/host-imagecache/ddh16'")
+    // All three retired roots: the old node-local image store, and both
+    // registries' node-local blob stores now that their storage is a PVC.
+    // This sweep is the ONLY thing that can reclaim them — a store on a node
+    // the registry has since moved off is reachable by no `kubectl exec`.
+    expect(pods[0].spec.volumes.map((v) => v.hostPath.path)).toEqual([
+      '/var/lib/yaac/imagecache',
+      '/var/lib/yaac/registry',
+      '/var/lib/yaac/main-registry',
+    ])
+    // Scoped to this install's subdirectory of each, mounting the parents so
+    // the directories themselves go too.
+    expect(pods[0].spec.containers[0].command[2]).toBe(
+      "rm -rf '/host-store-0/ddh16' '/host-store-1/ddh16' '/host-store-2/ddh16'")
     expect(pods.map((p) => p.spec.nodeName)).toEqual(NODE_LIST.items.map((n) => n.metadata.name))
   })
 
   it('waits for the mirror image rather than failing the boot path', async () => {
     mockHasTag.mockResolvedValue(false)
-    await expect(sweepLegacyImageStore()).resolves.toBeUndefined()
+    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
     expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('deletes nothing while the main registry still serves from its hostPath', async () => {
+    // The boot ensure that converts it logs its failures rather than
+    // throwing (a cluster with no default StorageClass is the case that
+    // matters), so "the ensure ran" is not "the conversion happened" — and
+    // sweeping here would delete the store a live registry is serving.
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster({ mainConverted: false })
+    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('deletes nothing when the converted main registry has no ready replica', async () => {
+    // Applied-but-not-rolled-out: the spec names the claim while the
+    // hostPath store is still the only copy of the data. `Recreate` has
+    // already deleted the pod that was serving it, so nothing else in this
+    // path would notice — the readiness half of the gate is the whole
+    // protection here.
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster({ mainReady: false })
+    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('deletes nothing while ANY project registry is still on its hostPath', async () => {
+    // The sweep removes /var/lib/yaac/registry/<hash>, the shared parent of
+    // every project's store, but project registries convert lazily — on
+    // their next session create or 6h collect. A restart in between must not
+    // take out a project whose registry is live and serving from it: that
+    // store holds a user's own `docker push`es, not just a rebuildable
+    // layer cache. The main registry's conversion says nothing about this.
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster({ projectsConverted: false })
+    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('deletes nothing when the project-registry list cannot be read', async () => {
+    // Fails safe: an unreadable list is indistinguishable from one holding
+    // an unconverted registry, and only one of those two guesses is
+    // recoverable.
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster({ projectsReadable: false })
+    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('scopes the project-registry probe to this install, across all namespaces', async () => {
+    // The hostPath root is per-INSTALL, not per namespace: an e2e run's
+    // registry in its own namespace stores under the same directory. A
+    // namespace-scoped probe would miss it and sweep anyway.
+    mockHasTag.mockResolvedValue(true)
+    stageSweepCluster()
+    await sweepLegacyNodeStores()
+    expect(mockGetJson).toHaveBeenCalledWith([
+      'get', 'deployments', '--all-namespaces',
+      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
+    ])
   })
 })

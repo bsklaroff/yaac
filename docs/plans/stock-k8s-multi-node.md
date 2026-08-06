@@ -251,43 +251,24 @@ instead of assuming them.
   the podman container, the `kind` network join, and the `localhost:5001`
   node `hosts.toml` fixup are all gone. The server reaches it over a
   `kubectl port-forward`; content-hash tags + `IfNotPresent` are unchanged.
-  What is left is the storage question below, plus TLS/auth if the registry
-  ever has to be addressable from outside the cluster (DOCR remains the
-  alternative there — TLS, DOKS-integrated pull secrets, zero node config,
-  at the cost of a DO dependency and egress).
-- **Registry storage** is the open half for BOTH registries: the main one
-  stores under `/var/lib/yaac/main-registry/<install-hash>` and the
-  per-project ones under `/var/lib/yaac/registry/<hash>`, node hostPaths in
-  each case, which have to become PVCs. Their `hosts.toml` loop over all
-  nodes via privileged node-write pods still works on managed nodes
-  (privileged pods are allowed).
-
-  A node-local store under an unpinned Deployment costs more than the
-  re-pushes it looks like it costs, and both halves are observable on a
-  three-node kind cluster today:
-
-  - **Every reschedule strands a store.** The pod lands on a node whose
-    hostPath is empty, `registryHasTag` misses, and the pushers refill it —
-    correct, and invisible to the user. What stays behind is a full copy of
-    the image store on the node it left, which nothing reclaims: the build
-    cache GC only ever prunes the store of the pod it can `kubectl exec`
-    into. Several GB per reschedule, growing.
-  - **The GC's own restart can swap the store.** A collect ends in
-    `restartMainRegistry`, and with `Recreate` the old pod is deleted before
-    the replacement is scheduled — so the registry can come back on a
-    different node, serving a *different* store, while the pass reports
-    `restored: true` (which only ever meant "the rollout succeeded"). The
-    collect's reclaim then applies to a store that is no longer served, and
-    the served catalog changes wholesale. Scheduler-dependent rather than
-    guaranteed, which makes it a periodic coin flip rather than a bug that
-    shows up once and gets fixed.
-
-  A `nodeSelector` pinning the registry to its store's node would close
-  both and is still the wrong trade — it converts a self-healing
-  degradation into a single point of failure, and the store it pins to is
-  exactly the one a node replacement destroys. A PVC (RWO is enough; both
-  registries are single-replica by construction) is what actually makes the
-  store outlive the pod's placement.
+  What is left is TLS/auth, if the registry ever has to be addressable from
+  outside the cluster (DOCR remains the alternative there — TLS,
+  DOKS-integrated pull secrets, zero node config, at the cost of a DO
+  dependency and egress).
+- **Registry storage**: **done** — both registries store on an RWO PVC
+  bound through the cluster's *default* StorageClass, so the store belongs
+  to the claim rather than to whatever node the pod last landed on. That is
+  what let the per-project registries' node pin go: placement is the
+  scheduler's, constrained by the bound volume's own affinity, so a
+  reschedule can neither strand a multi-GB store nothing reclaims nor bring
+  the registry back serving a *different* store than the collect just
+  pruned. RWO is enough — both are `replicas: 1` + `Recreate` — and it still
+  admits the collect pod beside the serving registry on one node. Their
+  `hosts.toml` loop over all nodes via privileged node-write pods still
+  works on managed nodes (privileged pods are allowed). On kind the default
+  class is rancher local-path, so the directory behind the claim is still
+  node-local; what the PVC buys there is stickiness, not mobility. See
+  docs/cluster-setup.md.
 - ~~**Image salvage / shared image store**~~ — **done**. The cross-session
   image cache for nested sessions travels through the project's in-cluster
   registry: the session pushes what its in-pod engine built or pulled, a
@@ -388,7 +369,8 @@ shaped.
    - buildkitd-in-cluster + push/pull against DOCR or in-cluster registry.
 2. **Host-decoupling that pays off on single-node too** (land on the
    current backend first): buildkit builds behind a builder abstraction,
-   registry storage on PVCs (§5), ~~registry in-cluster~~ (done — §5),
+   ~~registry storage on PVCs~~ (done — §5),
+   ~~registry in-cluster~~ (done — §5),
    ~~salvage-via-registry~~ (done — §5),
    ~~ssh-agent off the hostPath socket~~ (done — over the proxy's agent
    port, not the stream relay),

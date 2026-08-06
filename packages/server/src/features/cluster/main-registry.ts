@@ -8,7 +8,7 @@
  * through it. It is deliberately the SAME topology as the per-project
  * registries (project-registry.ts) rather than a second pattern:
  * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
- * ClusterIP Service, node-local hostPath storage, and a per-node containerd
+ * ClusterIP Service, an RWO PVC for the blobs, and a per-node containerd
  * `hosts.toml` written by one-shot pods that hostPath-mount the node's
  * `certs.d` directory.
  *
@@ -44,25 +44,36 @@
  * networking assumption — see `#platform/container`'s registry module for
  * the cluster-ref vs process-endpoint split.
  *
- * Storage is a node hostPath, exactly as the per-project registries store
- * theirs; converting both to a PVC is the stock-multi-node follow-up
- * (docs/plans/stock-k8s-multi-node.md §5). Until then the store is
- * node-local while the Deployment is unpinned, and on a multi-node cluster
- * that costs three things rather than the one it looks like:
+ * Storage is an RWO PVC, exactly as the per-project registries store
+ * theirs. The store therefore belongs to the CLAIM rather than to whatever
+ * node the pod last landed on, which is what makes an unpinned Deployment
+ * safe: a reschedule takes the volume with it, so nothing is stranded and
+ * nothing silently swaps underneath a running collect. A `nodeSelector`
+ * would close the same two holes and is the wrong trade — it turns a
+ * self-healing degradation into a single point of failure, on exactly the
+ * store a node replacement destroys.
  *
- *  - A reschedule lands the registry on an EMPTY store, so every pushed
- *    image has to be re-pushed. Self-healing (`registryHasTag` misses and
- *    the pushers retry) but surprising.
- *  - The store it LEFT is stranded: a full copy of the images, on a node
- *    nothing will prune, since `build-cache-gc` only ever reaches the
- *    store of the pod it can `kubectl exec` into. Several GB per move.
- *  - `restartMainRegistry` is itself a reschedule opportunity, so the
- *    build-cache collect that ends in one can come back serving a
- *    DIFFERENT store — see the note on `BuildCacheGcResult.restored`.
+ * RWO is enough because `replicas: 1` + `Recreate` means one mounter at a
+ * time by construction, and it is the access mode every backend has (RWX
+ * needs a file storage class that most do not ship). Two consumers on the
+ * SAME node are still fine under RWO — which is what lets the build-cache
+ * collect's sibling in project-registry.ts mount the volume beside a
+ * serving registry.
  *
- * All three want the same fix, and it is not a `nodeSelector`: pinning
- * trades a self-healing degradation for a single point of failure, on
- * exactly the store a node replacement destroys.
+ * An install upgrading from the hostPath store comes up on a FRESH, EMPTY
+ * claim: nothing migrates blobs, because nothing here has ever needed to —
+ * `registryHasTag` misses and the pushers refill, the same self-healing the
+ * store has always relied on for a cluster recreate. The cost is one round
+ * of re-pushes and rebuilds on the first session create after the upgrade.
+ * The old hostPath data stays on the nodes until `sweepLegacyNodeStores`
+ * reclaims it, which it will not do until this registry is demonstrably
+ * serving from the claim, so the window is also the recovery window.
+ *
+ * The upgrade is not free of failure modes: `Recreate` deletes the pod
+ * serving the hostPath before anyone can discover the claim will not bind,
+ * so on a cluster with NO default StorageClass the conversion takes a
+ * working registry down until an operator supplies one. `cluster setup`
+ * reports that precisely; the boot ensure only logs it.
  */
 import crypto from 'node:crypto'
 import {
@@ -100,17 +111,6 @@ export const MAIN_REGISTRY_APP_LABEL = 'yaac-main-registry'
 export const LABEL_MAIN_REGISTRY_NODE_WRITE = 'yaac.main-registry-node-write'
 
 /**
- * Node-local hostPath backing the registry's blobs, keyed by install so
- * coexisting installs never share a store. Node-local (not under the data
- * dir) for the same reason the project registries are: registry blob
- * layouts are hostile to virtiofs, and losing them on a cluster recreate
- * only costs re-pushes.
- */
-export function mainRegistryStorageHostPath(): string {
-  return `/var/lib/yaac/main-registry/${dataDirHash()}`
-}
-
-/**
  * Install-scoping labels. The hash carries the registry-scoped key rather
  * than the session one, for the same reason project-registry.ts uses it:
  * these objects must stay invisible to the session reaper and list paths.
@@ -123,11 +123,64 @@ function mainRegistryLabels(): Record<string, string> {
 }
 
 /**
+ * PVC backing the registry's blobs, keyed by install so coexisting installs
+ * never share a store — the scoping the retired node hostPath got from
+ * having `dataDirHash()` in its path.
+ */
+export function mainRegistryPvcName(): string {
+  return `${REGISTRY_SERVICE_NAME}-storage-${dataDirHash()}`
+}
+
+/**
+ * Requested capacity. It is a request, not a cap that anything here
+ * enforces: kind's local-path provisioner ignores the number entirely (the
+ * volume is a directory on the node's filesystem), so on the local backend
+ * the real bound is the build-cache GC. It is sized for the backends where
+ * it does bind — this store holds every session image of the install plus
+ * every trust-split step-cache layer, and running it out of space fails
+ * builds rather than degrading them.
+ *
+ * Raising it is safe; LOWERING it is not — see the note on
+ * PROJECT_REGISTRY_STORAGE_SIZE, which this shares.
+ */
+export const MAIN_REGISTRY_STORAGE_SIZE = '100Gi'
+
+/**
+ * The blob store's claim. Deliberately names NO `storageClassName`, so it
+ * binds through whatever the cluster's default class is: kind's
+ * `standard` (rancher local-path) locally, the provider's default block
+ * class on a stock cluster, and — inside a vcluster, where storage classes
+ * are not synced in from the host — the host default the syncer's PVC
+ * binds against. Naming a class here would break every cluster that does
+ * not happen to ship it.
+ *
+ * Never deleted: it outlives Deployment rollouts by design, and the store
+ * is only meant to die with the cluster (where it costs re-pushes, which is
+ * why nothing backs it up).
+ */
+export function buildMainRegistryPvcManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'PersistentVolumeClaim',
+    metadata: {
+      name: mainRegistryPvcName(),
+      namespace: REGISTRY_NAMESPACE,
+      labels: mainRegistryLabels(),
+    },
+    spec: {
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: MAIN_REGISTRY_STORAGE_SIZE } },
+    },
+  }
+}
+
+/**
  * The registry Deployment. Trusted infra like the proxy and the project
  * registries, so no `runtimeClassName` — it runs on runc; the sentry buys
  * no containment for a yaac-pinned upstream and its CPU cost starves the
- * node. `Recreate`, because two pods would race over the node-local
- * storage hostPath during a rolling overlap.
+ * node. `Recreate`, because a rolling overlap would put two pods on one
+ * store — and on a backend that enforces RWO across nodes it would simply
+ * deadlock, the new pod waiting for a volume the old pod still holds.
  *
  * The image is the digest-pinned UPSTREAM ref rather than the local mirror
  * tag every other yaac pod uses: this registry cannot pull its own image
@@ -172,7 +225,7 @@ export function buildMainRegistryDeploymentManifest(): Record<string, unknown> {
           ],
           volumes: [{
             name: 'storage',
-            hostPath: { path: mainRegistryStorageHostPath(), type: 'DirectoryOrCreate' },
+            persistentVolumeClaim: { claimName: mainRegistryPvcName() },
           }],
         },
       },
@@ -384,12 +437,74 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
  *  one-time upstream pull of the pinned registry:2. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
+/** The slice of a registry Deployment the conversion gates read. */
+export interface RawRegistryDeploy {
+  spec?: { template?: { spec?: { volumes?: Array<Record<string, unknown>> } } }
+  status?: { readyReplicas?: number }
+}
+
+/** True when a Deployment's `storage` volume is a PVC rather than a hostPath. */
+export function specsClaimStorage(deploy: RawRegistryDeploy | null): boolean {
+  const volumes = deploy?.spec?.template?.spec?.volumes
+  if (!volumes) return false
+  return volumes.some((v) => v.name === 'storage' && 'persistentVolumeClaim' in v)
+}
+
+async function readMainRegistryDeploy(): Promise<RawRegistryDeploy | null> {
+  return kubectlGetJson<RawRegistryDeploy>([
+    'get', 'deployment', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
+  ]).catch(() => null)
+}
+
+/**
+ * Whether the Deployment's applied SPEC already stores on the PVC — false on
+ * an install upgrading from the node-hostPath store, and false when there is
+ * no Deployment to read at all (in which case the ensure below is what
+ * creates one).
+ *
+ * The cheap reachable-and-done path consults this because the upgrade is
+ * otherwise invisible to it: the OLD registry answers perfectly well, so a
+ * reachability check alone would leave it on its hostPath forever.
+ *
+ * Spec, deliberately, and only sound for that caller: it reaches here having
+ * already established the registry ANSWERS, so a spec that names the claim
+ * is a claim something is serving from. It is NOT the question the sweep
+ * asks — see `mainRegistryServingFromClaim`, which is the same read plus the
+ * rollout status, because "the manifest was applied" and "the conversion
+ * happened" come apart exactly when the claim cannot bind.
+ *
+ * One `kubectl get`, and it fails SAFE: an unreadable or absent Deployment
+ * answers false, which costs a redundant apply.
+ */
+export async function mainRegistryStorageIsClaim(): Promise<boolean> {
+  return specsClaimStorage(await readMainRegistryDeploy())
+}
+
+/**
+ * Whether the main registry is not merely CONFIGURED for its claim but
+ * actually serving from it — spec plus a ready replica.
+ *
+ * This is what `sweepLegacyNodeStores` needs, and the readiness half is the
+ * whole point: the conversion is a `Recreate` rollout, so between deleting
+ * the hostPath pod and a replacement that can mount the claim there is a
+ * window where the spec says PVC and the hostPath store is the only copy of
+ * the data. A cluster with no default StorageClass parks there indefinitely.
+ * A ready replica is proof the claim bound and something is serving out of
+ * it, which is precisely when the hostPath store becomes garbage.
+ *
+ * Fails SAFE on an unreadable or absent Deployment: no sweep.
+ */
+export async function mainRegistryServingFromClaim(): Promise<boolean> {
+  const deploy = await readMainRegistryDeploy()
+  return specsClaimStorage(deploy) && (deploy?.status?.readyReplicas ?? 0) > 0
+}
+
 export interface EnsureMainRegistryOptions {
   /**
-   * Apply everything even when the registry already answers. `yaac cluster
-   * setup` (both modes) passes this — `--repair` exists precisely to
-   * re-write wiring that a node or VM restart may have dropped — while the
-   * server's boot ensure takes the cheap reachable-and-done path.
+   * Apply everything even when the registry already answers from its claim.
+   * `yaac cluster setup` (both modes) passes this — `--repair` exists
+   * precisely to re-write wiring that a node or VM restart may have dropped
+   * — while the server's boot ensure takes the cheap path.
    */
   force?: boolean
 }
@@ -461,8 +576,8 @@ async function removeLegacyRegistryContainer(): Promise<void> {
 }
 
 /**
- * Idempotently stand the registry up (Deployment + Service + ingress lock +
- * node hosts.toml) and wait until this process can reach it.
+ * Idempotently stand the registry up (PVC + Deployment + Service + ingress
+ * lock + node hosts.toml) and wait until this process can reach it.
  *
  * Refuses to create anything when the registry is EXTERNALLY managed —
  * `YAAC_K8S_REGISTRY` set, of which a nested yaac (pointed at the outer
@@ -475,9 +590,16 @@ async function removeLegacyRegistryContainer(): Promise<void> {
  * else's registry.
  */
 export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): Promise<void> {
-  if (!opts.force && await registryReachable()) return
-
   const external = env.k8sRegistry
+  if (!opts.force && await registryReachable()) {
+    // An EXTERNAL registry's storage is not this install's to convert, and
+    // the Deployment the claim check reads lives in a cluster that has no
+    // such object — a nested yaac's own vcluster. Asking would answer "not
+    // converted" forever and drop a healthy install into the throw below,
+    // whose message ("not answering") would be flatly untrue.
+    if (external || await mainRegistryStorageIsClaim()) return
+  }
+
   if (external) {
     throw new Error(
       `Registry ${external} is not answering. It is externally managed `
@@ -500,6 +622,11 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   ]).catch((err: unknown) => {
     serverLog(`[registry] could not drop the legacy EndpointSlice: ${String(err)}`)
   })
+  // Before the Deployment that mounts it. Applying it second would still
+  // converge (the pod just stays Pending until the claim exists), but the
+  // rollout wait below would spend that time looking like a scheduling
+  // failure.
+  await kubectlApply(buildMainRegistryPvcManifest())
   await kubectlApply(buildMainRegistryDeploymentManifest())
   await kubectlApply(buildMainRegistryServiceManifest())
   await kubectlApply(buildMainRegistryIngressNetworkPolicyManifest(await nodeIpBlocks()))
@@ -509,15 +636,18 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
       `--timeout=${Math.floor(ROLLOUT_TIMEOUT_MS / 1000)}s`,
     ], { timeout: ROLLOUT_TIMEOUT_MS + 10_000, maxAttempts: 2 })
   } catch (err) {
-    // kubectl reports only that it timed out, and the two diagnoses that
-    // matter (Pending vs ImagePullBackOff on the upstream registry:2 pull)
-    // are both one command away.
+    // kubectl reports only that it timed out, and the diagnoses that matter
+    // are all one command away. The PVC is named alongside the pods because
+    // a cluster with no DEFAULT StorageClass leaves the claim Pending
+    // forever, which shows up as a Pending pod with no scheduling reason of
+    // its own.
     throw new Error(
       `${err instanceof Error ? err.message : String(err)}\n`
-      + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods `
+      + `Inspect with \`kubectl -n ${REGISTRY_NAMESPACE} get pods,pvc `
       + `-l app=${MAIN_REGISTRY_APP_LABEL}\` — Pending means the node had no `
       + 'room, ImagePullBackOff means it could not fetch the pinned '
-      + 'registry:2 from upstream.',
+      + 'registry:2 from upstream, and a Pending PVC means the cluster has '
+      + 'no default StorageClass to bind it.',
     )
   }
   await writeNodeMainRegistryHostsToml()
@@ -558,6 +688,11 @@ export async function mainRegistryExec(argv: string[], timeoutMs: number): Promi
  * The Service's ClusterIP survives, so no hosts.toml rewrite is owed — but
  * this process's port-forward was bound to the pod that just went away, so
  * it is dropped and re-established on next use.
+ *
+ * `Recreate` means the old pod is gone before the replacement is scheduled,
+ * so the replacement may well land on a different node. That is now
+ * uneventful: the blobs are on the PVC, which the new pod mounts, so the
+ * catalog the collect just pruned is the catalog that comes back.
  */
 export async function restartMainRegistry(): Promise<void> {
   await kubectlWithRetry([

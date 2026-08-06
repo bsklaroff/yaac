@@ -33,8 +33,8 @@
  *
  * What this does NOT take is the sibling collect's read-only maintenance
  * window, which is how that one makes a live collect safe. Nothing stops it
- * any more — the shared registry is a Deployment over node-local storage
- * now, so rolling it with the read-only env costs a restart and no images —
+ * any more — the shared registry is a Deployment over a PVC now, so rolling
+ * it with the read-only env costs a restart and no images —
  * but adopting it is a behaviour change of its own (every push and delete
  * in the window answers 405) and is left as a follow-up. Until then the two
  * hazards are handled directly here:
@@ -195,17 +195,12 @@ export interface BuildCacheGcResult {
    * for the next sweep — a pass in that state has not succeeded, whatever
    * it managed to reclaim.
    *
-   * Read it as "the rollout succeeded", NOT as "the store this pass
-   * collected is the one now being served". Registry storage is a node
-   * hostPath under an unpinned Deployment, and `Recreate` deletes the old
-   * pod before scheduling its replacement — so on a multi-node cluster the
-   * restart can bring the registry up on a different node, against that
-   * node's own (stale, or empty) store. The reclaim then applies to a
-   * store nobody is serving and the catalog changes wholesale, with this
-   * field still true. Scheduler-dependent, so it is an occasional coin
-   * flip rather than a reproducible failure. The PVC conversion in
-   * docs/plans/stock-k8s-multi-node.md §5 is what makes the field mean
-   * the stronger thing.
+   * It means "the rollout succeeded" AND "the store this pass collected is
+   * the one now being served" — the second half because the blobs are on a
+   * PVC the replacement pod remounts. `Recreate` still deletes the old pod
+   * before scheduling its replacement, so the registry may well come back
+   * on a different node; that is now uneventful rather than a periodic
+   * coin flip over which store the catalog reflects.
    */
   restored: boolean
 }
