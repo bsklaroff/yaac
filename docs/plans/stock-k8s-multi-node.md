@@ -298,7 +298,34 @@ instead of assuming them.
   the hostPath-write-at-session-uid probe becomes an RWX-PV write probe;
   the "single node assumed" warning inverts into a multi-node readiness
   check (RuntimeClass node coverage, registry reachability per node,
-  shared-volume visibility per node).
+  shared-volume visibility per node) — **that inversion has shipped** on the
+  local backend (docs/cluster-setup.md, "Verifying"), and its probes are
+  pod-based, so they carry over to any backend.
+- **The readiness sweep's eligibility model needs tolerations before the
+  dedicated sessions pool lands.** It currently answers "can a session land
+  on this node?" with "the node is Ready, uncordoned, carries no
+  NoSchedule/NoExecute taint at all, and matches the gvisor RuntimeClass's
+  `nodeSelector`". The taint clause is not general — it is what falls out
+  when the pod tolerates nothing, which is true of every yaac pod today
+  except netd. A sessions pool built the conventional way (§3: taint the
+  pool so other workloads stay off it, tolerate it from the workload that
+  belongs there) therefore reads as *zero* eligible nodes, and the check
+  warns "none able to schedule a session" with a fix suggesting the taint be
+  removed — dismantling the isolation the pool exists for.
+  The fix rides on the same object the sweep already reads:
+  `RuntimeClass.scheduling` carries `tolerations` beside the `nodeSelector`,
+  and the RuntimeClass admission controller merges both into every pod
+  naming the class — so the pool's toleration is declared once on `gvisor`
+  and inherited by session pods, builder pods, synced pods, and the sweep's
+  own pinned probes (which bypass the scheduler but are still admitted by
+  kubelet, and would be evicted by a `NoExecute` taint). Eligibility then
+  becomes real per-taint matching against those tolerations instead of a
+  blanket rejection. Deliberately not built on the local backend: no yaac
+  pod carries a toleration there, so there is nothing to test it against but
+  an invented fixture. While in there, name the nodes the sweep excluded and
+  why — a narrowed sweep currently reports "all N session-eligible nodes"
+  with no sign that a transiently-tainted node (memory/disk/pid pressure, a
+  joining node's `uninitialized` taint) was skipped.
 
 ## What survives unchanged
 
@@ -334,9 +361,12 @@ shaped.
    (hostPath | PVC)~~ (done — §2; the `pvc` source renders but nothing
    selects it until the claims exist), server Deployment + PVCs, `yaac
    cluster attach` installer, provider-aware check.
-4. **Multi-node rehearsal, then a real managed cluster:** multi-node kind
-   with per-node extraMounts (from the storage plan) to shake out scheduling
-   bugs cheaply, then a real EKS-AL/self-managed cluster behind the spikes.
+4. **Multi-node rehearsal, then a real managed cluster:** ~~multi-node kind
+   with per-node extraMounts (from the storage plan)~~ — `yaac cluster setup
+   --nodes N` builds it and `cluster check` gates per-node readiness
+   (runsc / registry pull / shared volume), which is §7's "single node
+   assumed" warning inverted; what is left is running the e2e suite against
+   one. Then a real EKS-AL/self-managed cluster behind the spikes.
 
 ## Open questions
 

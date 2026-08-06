@@ -72,7 +72,12 @@ async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<voi
   while (Date.now() < deadline) {
     const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
     phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === 'Running') return
+    if (phase === 'Running') {
+      // The pod that just came up is the one the following assertions are
+      // about, so its node is the one whose netd they must read.
+      await focusNetdOnPod(name)
+      return
+    }
     if (phase === 'Failed' || phase === 'Succeeded') {
       throw new Error(`pod ${name} reached terminal phase ${phase}`)
     }
@@ -117,7 +122,31 @@ async function startSessionPod(
 }
 
 /**
- * A LIVE netd pod for this install.
+ * The node whose netd the probes below should read.
+ *
+ * netd is a DaemonSet and each instance programs ONLY the pods on its own
+ * node — a pod elsewhere is deliberately "emit nothing". So "the netd" is
+ * meaningless once the cluster has more than one node: reading an
+ * arbitrary instance yields an empty chain and reports as netd having
+ * failed to render. Every probe therefore has to name the node it means,
+ * which is the node hosting the pod under test.
+ *
+ * Null until a pod is up (netd's own startup/restart gates ask about the
+ * DaemonSet, not about any pod), and single-node clusters never notice
+ * either way because there is only one instance to resolve.
+ */
+let netdTargetNode: string | null = null
+
+/** Point the netd probes at the node hosting `pod`. */
+async function focusNetdOnPod(name: string, namespace = k8sNamespace()): Promise<void> {
+  interface RawPod { spec?: { nodeName?: string } }
+  const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
+    .catch(() => null)
+  netdTargetNode = pod?.spec?.nodeName ?? netdTargetNode
+}
+
+/**
+ * A LIVE netd pod for this install, on the node the probes are focused on.
  *
  * Deliberately not `ds/yaac-netd`: kubectl resolves a DaemonSet to
  * whichever of its pods it lists first, and a terminating pod is still
@@ -131,6 +160,7 @@ async function netdPodName(timeoutMs = 120_000): Promise<string> {
   interface RawPodList {
     items?: Array<{
       metadata?: { name?: string; deletionTimestamp?: string }
+      spec?: { nodeName?: string }
       status?: { conditions?: Array<{ type?: string; status?: string }> }
     }>
   }
@@ -142,6 +172,7 @@ async function netdPodName(timeoutMs = 120_000): Promise<string> {
     ])
     const name = (list?.items ?? []).find((pod) =>
       !pod.metadata?.deletionTimestamp
+      && (netdTargetNode === null || pod.spec?.nodeName === netdTargetNode)
       // READY, not merely Running: netd's readiness marker is written only
       // after a reconcile reaches the dataplane, so a Ready pod is one whose
       // chain is programmed and whose startup line is logged. A pod can be
@@ -151,7 +182,10 @@ async function netdPodName(timeoutMs = 120_000): Promise<string> {
         .some((c) => c.type === 'Ready' && c.status === 'True'),
     )?.metadata?.name
     if (name) return name
-    if (Date.now() >= deadline) throw new Error('no ready netd pod within timeout')
+    if (Date.now() >= deadline) {
+      throw new Error('no ready netd pod within timeout'
+        + (netdTargetNode ? ` on node ${netdTargetNode}` : ''))
+    }
     await new Promise((r) => setTimeout(r, 1000))
   }
 }
@@ -286,7 +320,10 @@ async function startSyncedPod(name: string, namespace: string, vcName: string): 
   const deadline = Date.now() + 120_000
   for (;;) {
     const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
-    if (pod?.status?.phase === 'Running' && pod.status.podIP) return pod.status.podIP
+    if (pod?.status?.phase === 'Running' && pod.status.podIP) {
+      await focusNetdOnPod(name, namespace)
+      return pod.status.podIP
+    }
     if (Date.now() >= deadline) throw new Error(`synced pod ${name} never ran`)
     await new Promise((r) => setTimeout(r, 1000))
   }
@@ -421,16 +458,30 @@ async function setNetdScheduled(scheduled: boolean): Promise<void> {
   ])
 }
 
-async function waitForNetdReady(want: number, timeoutMs = 180_000): Promise<void> {
-  interface RawDs { status?: { numberReady?: number } }
+/**
+ * Wait for the netd DaemonSet to be fully out of service (`0`) or fully
+ * back (`'all'`).
+ *
+ * `'all'` rather than a literal count: a DaemonSet's ready count is one
+ * per eligible node, so any fixed number is a bet on the cluster's size.
+ * Comparing against `desiredNumberScheduled` asks the question the tests
+ * actually mean — "is every instance that should exist back?" — and reads
+ * the same on one node as on five.
+ */
+async function waitForNetdReady(want: 0 | 'all', timeoutMs = 180_000): Promise<void> {
+  interface RawDs { status?: { numberReady?: number; desiredNumberScheduled?: number } }
   const deadline = Date.now() + timeoutMs
+  let last = ''
   for (;;) {
     const ds = await kubectlGetJson<RawDs>([
       'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
     ])
-    if ((ds?.status?.numberReady ?? 0) === want) return
+    const ready = ds?.status?.numberReady ?? 0
+    const desired = ds?.status?.desiredNumberScheduled ?? 0
+    last = `ready=${ready} desired=${desired}`
+    if (want === 0 ? ready === 0 : desired > 0 && ready === desired) return
     if (Date.now() >= deadline) {
-      throw new Error(`netd numberReady never reached ${want}`)
+      throw new Error(`netd never reached ${want === 0 ? '0 ready' : 'all ready'} (${last})`)
     }
     await new Promise((r) => setTimeout(r, 2000))
   }
@@ -472,7 +523,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     // Always restore netd — a leaked nodeSelector would strand every
     // later test in the run with no session egress.
     await setNetdScheduled(true).catch(() => { /* ok */ })
-    await waitForNetdReady(1).catch(() => { /* ok */ })
+    await waitForNetdReady('all').catch(() => { /* ok */ })
     await Promise.all([deleteTestPod(podA), deleteTestPod(podLate), deleteTestPod(podRaw)])
     try { await client.removeSession(sessionA) } catch { /* ok */ }
     try { await client.removeSession(sessionLate) } catch { /* ok */ }
@@ -569,7 +620,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     expect(direct.exit).not.toBe(0)
 
     await setNetdScheduled(true)
-    await waitForNetdReady(1)
+    await waitForNetdReady('all')
     expect(await egressWorks(podLate)).toBe(true)
   }, 900_000)
 
@@ -581,7 +632,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     await kubectlWithRetry([
       'delete', 'pod', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '--wait=false',
     ])
-    await waitForNetdReady(1)
+    await waitForNetdReady('all')
 
     // Rebuilt from cluster state, not from anything netd persisted: the
     // reconcile is a pure function of pods + Services + node routes.
@@ -832,6 +883,11 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
       await waitForRunning(ownPod, ownNs)
       await waitForRunning(foreignPod, foreignNs)
 
+      // Each pod is judged by the netd on ITS OWN node: these two can land
+      // on different nodes, and netd only ever programs local pods, so a
+      // single instance would show one of them missing for the mundane
+      // reason that it is somewhere else.
+      await focusNetdOnPod(ownPod, ownNs)
       const deadline = Date.now() + 90_000
       let ours: string[] = []
       while (Date.now() < deadline) {
@@ -840,6 +896,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
         await new Promise((r) => setTimeout(r, 2000))
       }
       expect(ours, 'our own vcluster\'s synced pod must still be redirected').toHaveLength(3)
+      await focusNetdOnPod(foreignPod, foreignNs)
       expect(
         await rulesMentioning(`yaac:${foreignNs}/${foreignPod}`),
         'netd claimed a sibling install\'s synced pod',

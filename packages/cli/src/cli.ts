@@ -159,7 +159,8 @@ cluster
   .command('setup')
   .description('Create the kind cluster, registry, and CNI wiring yaac needs (destructive: recreates the cluster)')
   .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
-  .action(async (options: { repair?: boolean }) => {
+  .option('--nodes <count>', 'Number of kind nodes to create (default 1; sessions run on the workers, so 3 is the smallest real multi-node rehearsal)')
+  .action(async (options: { repair?: boolean; nodes?: string }) => {
     const { clusterSetup } = await import('#commands/cluster-setup')
     await clusterSetup(options)
   })

@@ -78,7 +78,12 @@ const NODE_IP = '10.89.0.7'
 const NODE_LIST = {
   items: [{
     metadata: { name: 'yaac-control-plane' },
-    status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
+    status: {
+      addresses: [{ type: 'InternalIP', address: NODE_IP }],
+      // Ready, so it is a candidate for the registry's node pin as well as
+      // a source of the ingress policy's ipBlocks.
+      conditions: [{ type: 'Ready', status: 'True' }],
+    },
   }],
 }
 
@@ -208,6 +213,77 @@ describe('ensureProjectRegistry', () => {
     }
     // The ClusterIP is allocator-assigned and never deleted — no migration.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+  })
+
+  it('pins the registry to the node holding its blobs, and keeps it there', async () => {
+    // The store is a node-local hostPath, so pod and data are one unit: a
+    // rollout that lands on another node serves an EMPTY catalog and every
+    // cross-session layer hit silently becomes a rebuild. Single-node
+    // clusters never showed this — a Recreate had nowhere else to land.
+    const deployOf = (): { metadata: { annotations?: Record<string, string> }
+      spec: { template: { spec: { affinity?: Record<string, unknown> } } } } =>
+      mockApply.mock.calls
+        .map((c) => c[0] as { kind: string })
+        .filter((m) => m.kind === 'Deployment')
+        .at(-1) as never
+
+    await ensureProjectRegistry('demo')
+    expect(deployOf().metadata.annotations)
+      .toMatchObject({ 'yaac.dev/registry-node': 'yaac-control-plane' })
+    expect(deployOf().spec.template.spec.affinity).toEqual({
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: {
+          nodeSelectorTerms: [{
+            matchExpressions: [{
+              key: 'kubernetes.io/hostname', operator: 'In', values: ['yaac-control-plane'],
+            }],
+          }],
+        },
+      },
+    })
+
+    // An existing pin outranks anything else: re-ensuring against a
+    // cluster whose only schedulable node is now a DIFFERENT one must not
+    // walk the registry away from the blobs it already has.
+    mockApply.mockClear()
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+      if (args[1] === 'deployment') {
+        return Promise.resolve({ metadata: { annotations: { 'yaac.dev/registry-node': 'worker-7' } } })
+      }
+      return cidrRead(args) ?? Promise.resolve(null)
+    })
+
+    await ensureProjectRegistry('demo')
+    expect(deployOf().metadata.annotations)
+      .toMatchObject({ 'yaac.dev/registry-node': 'worker-7' })
+  })
+
+  it('leaves the Deployment unpinned when no node can be resolved', async () => {
+    // Better an unpinned registry (which still serves) than one pinned to
+    // a guess that may never schedule.
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
+      // Every node cordoned: nothing is a legitimate landing spot.
+      if (args[1] === 'nodes') {
+        return Promise.resolve({
+          items: [{
+            ...NODE_LIST.items[0],
+            spec: { unschedulable: true },
+          }],
+        })
+      }
+      return Promise.resolve(null)
+    })
+    await ensureProjectRegistry('demo')
+    const deploy = mockApply.mock.calls
+      .map((c) => c[0] as { kind: string; metadata: { annotations?: unknown }
+        spec: { template: { spec: { affinity?: unknown } } } })
+      .find((m) => m.kind === 'Deployment')!
+    expect(deploy.metadata.annotations).toBeUndefined()
+    expect(deploy.spec.template.spec.affinity).toBeUndefined()
   })
 
   it('serializes concurrent ensures for one project', async () => {

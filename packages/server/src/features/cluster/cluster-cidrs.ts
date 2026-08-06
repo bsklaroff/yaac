@@ -19,8 +19,23 @@ import { kubectlGetJson } from '#platform/k8s'
  */
 
 interface RawNodeList {
-  items?: Array<{ status?: { addresses?: Array<{ type?: string; address?: string }> } }>
+  items?: Array<{
+    metadata?: { annotations?: Record<string, string> }
+    status?: { addresses?: Array<{ type?: string; address?: string }> }
+  }>
 }
+
+/**
+ * Calico publishes each node's overlay tunnel address as a node
+ * annotation. Host-originated traffic to a pod on ANOTHER node leaves
+ * through the tunnel and is sourced from that address, not the node's
+ * InternalIP — so a policy naming only InternalIPs denies it.
+ */
+const CALICO_TUNNEL_ANNOTATIONS = [
+  'projectcalico.org/IPv4IPIPTunnelAddr',
+  'projectcalico.org/IPv4VXLANTunnelAddr',
+  'projectcalico.org/IPv4WireguardInterfaceAddr',
+] as const
 
 interface RawEndpoints {
   subsets?: Array<{ addresses?: Array<{ ip?: string }> }>
@@ -58,11 +73,21 @@ export function resetClusterCidrCache(): void {
 export async function nodeIpBlocks(): Promise<string[]> {
   if (nodeCidrCache) return nodeCidrCache
   const list = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
-  const cidrs = (list?.items ?? [])
+  const items = list?.items ?? []
+  const cidrs = items
     .flatMap((n) => n.status?.addresses ?? [])
     .filter((a) => a.type === 'InternalIP' && a.address)
     .map((a) => `${a.address!}/32`)
-  const unique = [...new Set(cidrs)].sort()
+  // Plus each node's overlay tunnel address: on a multi-node cluster the
+  // host netns reaches a pod on another node through the tunnel, and the
+  // packet arrives sourced from there. Same-node delivery keeps working
+  // off the InternalIP above, which is why this only shows up multi-node.
+  const tunnels = items.flatMap((n) =>
+    CALICO_TUNNEL_ANNOTATIONS
+      .map((key) => n.metadata?.annotations?.[key])
+      .filter((addr): addr is string => !!addr)
+      .map((addr) => `${addr}/32`))
+  const unique = [...new Set([...cidrs, ...tunnels])].sort()
   if (unique.length === 0) {
     throw new Error(
       'could not resolve any node InternalIP — the egress policies need it '

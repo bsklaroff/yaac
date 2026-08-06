@@ -61,13 +61,33 @@ const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
   .update(FAKE_CALICO_MANIFEST, 'utf8').digest('hex')
 
 /**
+ * Stand-in kind config with the shape the renderer requires: cluster-scoped
+ * wiring first (kind applies it to every node), then a `nodes:` list as the
+ * last section holding exactly one control-plane entry with the $HOME
+ * extraMount — the entry `--nodes` copies into workers.
+ */
+const FAKE_KIND_CONFIG = [
+  'kind: Cluster',
+  'containerdConfigPatches:',
+  '- |-',
+  '  [plugins."io.containerd.grpc.v1.cri".registry]',
+  '    config_path = "/etc/containerd/certs.d"',
+  'nodes:',
+  '- role: control-plane',
+  '  extraMounts:',
+  '  - hostPath: $HOME',
+  '    containerPath: $HOME',
+  '',
+].join('\n')
+
+/**
  * readTextFile over the three files setup reads: the Calico checksum pin,
  * the cached Calico manifest, and the kind config.
  */
 function fakeCalicoReadTextFile(p: string): Promise<string | null> {
   if (p.endsWith('.sha256')) return Promise.resolve(`${FAKE_CALICO_SHA256}  calico.yaml\n`)
   if (p.includes('calico')) return Promise.resolve(FAKE_CALICO_MANIFEST)
-  return Promise.resolve('extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n')
+  return Promise.resolve(FAKE_KIND_CONFIG)
 }
 
 function makeDeps(
@@ -113,7 +133,7 @@ function calicoReads(rest: (p: string) => string | null) {
       ? `${FAKE_CALICO_SHA256}  calico.yaml\n`
       : p.includes('calico')
         ? rest(p)
-        : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
+        : FAKE_KIND_CONFIG,
   ))
 }
 
@@ -216,6 +236,78 @@ describe('runClusterSetup', () => {
     const kindCalls = deps.run.mock.calls.filter(([f]) => f === 'kind')
     expect(kindCalls.some(([, a]) => a.join(' ') === 'delete cluster --name yaac-alt')).toBe(true)
     expect(kindCalls.some(([, a]) => a.join(' ') === 'get nodes --name yaac-alt')).toBe(true)
+  })
+
+  it('renders one worker per extra --nodes, each carrying the home extraMount', async () => {
+    const deps = makeDeps()
+    await runClusterSetup({ nodes: 3 }, deps)
+
+    const input = deps.runStreaming.mock.calls
+      .find(([f, a]) => f === 'kind' && a[0] === 'create')?.[2]?.input ?? ''
+    // One control plane, two workers — the workers are copies of the
+    // control-plane entry, so every node gets the $HOME bind that keeps
+    // hostPath resolving to the same bytes wherever a session lands.
+    expect(input.match(/^- role: control-plane$/gm)).toHaveLength(1)
+    expect(input.match(/^- role: worker$/gm)).toHaveLength(2)
+    expect(input.match(/hostPath: \/home\/tester$/gm)).toHaveLength(3)
+    expect(input).not.toContain('$HOME')
+    // Cluster-scoped wiring is NOT duplicated: kind applies it to every node.
+    expect(input.match(/config_path/g)).toHaveLength(1)
+  })
+
+  it('applies the container-side node fixups to every node of a multi-node cluster', async () => {
+    const run = vi.fn((file: string, args: string[]) => {
+      if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
+        return Promise.resolve({
+          stdout: 'yaac-control-plane\nyaac-worker\nyaac-worker2\n', stderr: '',
+        })
+      }
+      return happyRun(file, args)
+    }) as RunMock
+    const deps = makeDeps({ run })
+    await runClusterSetup({ nodes: 3 }, deps)
+
+    const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
+    // The registry hosts.toml (containerd's `localhost:5001` mapping) is
+    // per-node state: a node without it cannot pull a session image.
+    const hostsWrites = run.mock.calls
+      .filter(([f, a]) => f === 'podman' && a[0] === 'exec'
+        && String(a[a.length - 1]).includes('hosts.toml'))
+      .map(([, a]) => a[1])
+    expect(hostsWrites).toEqual(allNodes)
+    // Same for the pids ceiling on the node container...
+    expect(run.mock.calls
+      .filter(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))
+      .map(([, a]) => a[a.length - 1])).toEqual(allNodes)
+    // The runsc install is deliberately NOT in this loop: it is a DaemonSet
+    // that lands on every node itself (including nodes added later, which a
+    // host-side loop over today's node list would never reach), so setup
+    // applies it once. `cluster check`'s runsc-nodes gate is what verifies
+    // it converged everywhere.
+    expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
+    expect(run.mock.calls.some(([f, a]) =>
+      f === 'podman' && a[0] === 'cp' && String(a[2]).includes('/runsc'))).toBe(false)
+  })
+
+  it('rejects a --nodes value it cannot honor before touching the host', async () => {
+    // The node count is decided at create time, so --repair has no way to
+    // act on it.
+    const repairDeps = makeDeps()
+    await expect(runClusterSetup({ repair: true, nodes: 3 }, repairDeps))
+      .rejects.toThrow(/cannot be combined with --repair/)
+    expect(repairDeps.run).not.toHaveBeenCalled()
+
+    // Out of range, non-integer, and non-numeric — the CLI hands the raw
+    // text through, so the message quotes what was typed, not "NaN".
+    for (const nodes of [0, 99, 2.5, 'three']) {
+      const deps = makeDeps()
+      const err = await runClusterSetup({ nodes }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect((err as Error).message).toContain('between 1 and 5')
+      expect((err as Error).message).toContain(`"${nodes}"`)
+      expect(deps.run).not.toHaveBeenCalled()
+      expect(deps.ensureRegistry).not.toHaveBeenCalled()
+    }
   })
 
   it('reports every missing binary at once', async () => {
@@ -332,6 +424,36 @@ describe('runClusterSetup', () => {
     // still answer with the dead one.
     stageNode('10.89.0.9')
     expect(await nodeIpBlocks()).toEqual(['10.89.0.9/32'])
+  })
+
+  it('admits every node by tunnel address as well as InternalIP', async () => {
+    // Calico sources host-originated traffic to a pod on ANOTHER node from
+    // the sending node's overlay tunnel address, not its InternalIP. A
+    // policy naming only InternalIPs therefore drops netd's Envoy on every
+    // cross-node hop to the proxy, which presents as "sessions on some
+    // nodes have no egress at all" — and never reproduces on one node,
+    // where Calico exempts local host-to-pod traffic from workload policy.
+    resetClusterCidrCache()
+    vi.mocked(kubectlGetJson).mockResolvedValue({
+      items: [
+        {
+          metadata: { annotations: { 'projectcalico.org/IPv4IPIPTunnelAddr': '10.244.93.192' } },
+          status: { addresses: [{ type: 'InternalIP', address: '10.89.0.21' }] },
+        },
+        {
+          metadata: { annotations: { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' } },
+          status: { addresses: [{ type: 'InternalIP', address: '10.89.0.20' }] },
+        },
+        // A node the overlay has not annotated yet still contributes its
+        // InternalIP rather than dropping out of the policy entirely.
+        { status: { addresses: [{ type: 'InternalIP', address: '10.89.0.19' }] } },
+      ],
+    })
+
+    expect(await nodeIpBlocks()).toEqual([
+      '10.244.86.128/32', '10.244.93.192/32',
+      '10.89.0.19/32', '10.89.0.20/32', '10.89.0.21/32',
+    ])
   })
 
   it('--repair drops the CIDR caches too — the node address is why you repair', async () => {

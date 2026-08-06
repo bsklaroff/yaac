@@ -28,7 +28,7 @@ import {
   _resetDeferredClusterBootForTests,
 } from '#platform/k8s/deferred-boot'
 import { sessionUid } from '#platform/k8s'
-import { buildPriorityClassManifests } from '#platform/k8s'
+import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#platform/k8s'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -78,6 +78,62 @@ function livePriorityClasses(): LivePriorityClass[] {
 }
 
 /**
+ * A node object shaped like the apiserver's, with the fields the readiness
+ * gates read: Ready condition, cordon/taint (what makes a node unable to
+ * take a session), and the kubelet's runtime-handler report.
+ */
+function nodeItem(
+  name: string,
+  opts: {
+    ready?: boolean
+    cordoned?: boolean
+    tainted?: boolean
+    handlers?: string[]
+    /** Omit the label the installer DaemonSet stamps — i.e. a node the
+     *  runtime has not converged on, which the RuntimeClass will not
+     *  schedule a sandboxed pod onto. */
+    gvisorLabel?: boolean
+    labels?: Record<string, string>
+  } = {},
+): Record<string, unknown> {
+  return {
+    metadata: {
+      name,
+      labels: {
+        'kubernetes.io/hostname': name,
+        ...(opts.gvisorLabel === false ? {} : { [GVISOR_NODE_LABEL]: 'true' }),
+        ...opts.labels,
+      },
+    },
+    spec: {
+      ...(opts.cordoned ? { unschedulable: true } : {}),
+      ...(opts.tainted
+        ? { taints: [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }] }
+        : {}),
+    },
+    status: {
+      conditions: [{ type: 'Ready', status: opts.ready === false ? 'False' : 'True' }],
+      runtimeHandlers: (opts.handlers ?? ['runc', 'runsc', 'runsc-nested'])
+        .map((h) => ({ name: h })),
+    },
+  }
+}
+
+/**
+ * The cluster topology the fake `kubectl get nodes` serves. Reset to a
+ * single control-plane node before each test; the multi-node cases
+ * reassign it.
+ */
+let clusterNodes: Array<Record<string, unknown>> = []
+/** Pod name → terminal phase, for probe pods a test wants to fail. */
+let podPhases: Record<string, string> = {}
+/** Per-node probe indices whose pod "ran" without its write reaching the host. */
+let nodeMarkerFails: Set<string> = new Set()
+/** Pod name → the kubelet Warning event the check reads to attribute a
+ *  probe pod that never ran, as `<reason>|<message>`. */
+let podEvents: Record<string, string> = {}
+
+/**
  * deps.run implementation covering every probe the all-pass path makes.
  * `kubectl logs` echoes back the nonce file runClusterCheck wrote so the
  * end-to-end probe's freshness assertion passes, and drops the probe
@@ -89,13 +145,55 @@ async function happyResponses(
 ): Promise<{ stdout: string; stderr: string }> {
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes'
     && args.includes('jsonpath={.items[*].metadata.name}')) {
-    return { stdout: 'yaac-control-plane', stderr: '' }
+    // Honors `-l` so the gvisor gate's "does any node carry the installer
+    // label" read means something on a partly-converged fixture.
+    const selector = args[args.indexOf('-l') + 1]
+    const [key, value] = args.includes('-l') ? selector.split('=') : []
+    return {
+      stdout: clusterNodes
+        .filter((n) => key === undefined
+          || (n.metadata as { labels?: Record<string, string> }).labels?.[key] === value)
+        .map((n) => (n.metadata as { name: string }).name)
+        .join(' '),
+      stderr: '',
+    }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
-    return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
+    return { stdout: JSON.stringify({ items: clusterNodes }), stderr: '' }
+  }
+  // The multi-node sweep reads the gvisor RuntimeClass object for its
+  // handler name and its scheduling nodeSelector — served from the same
+  // builder the installer applies, so the check cannot drift from it.
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass'
+    && args[2] === 'gvisor') {
+    const gvisor = (buildRuntimeClassManifests() as Array<{ metadata: { name: string } }>)
+      .find((rc) => rc.metadata.name === 'gvisor')
+    return { stdout: JSON.stringify(gvisor), stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass') {
     return { stdout: 'gvisor gvisor-nested runc', stderr: '' }
+  }
+  // Events for a probe pod that never ran — what the sweep attributes the
+  // failure from (a Pending pod has no container statuses to read).
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'events') {
+    const pod = (args.find((a) => a.startsWith('involvedObject.name=')) ?? '').split('=')[1]
+    const [reason, message] = (podEvents[pod] ?? '').split('|')
+    return {
+      stdout: JSON.stringify({
+        items: reason ? [{ type: 'Warning', reason, message }] : [],
+      }),
+      stderr: '',
+    }
+  }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1].startsWith('yaac-cluster-check-node-')) {
+    const index = args[1].slice('yaac-cluster-check-node-'.length)
+    const nonce = await fs.readFile(
+      path.join(getDataDir(), '.cluster-check-nodes-nonce'), 'utf8',
+    )
+    if (!nodeMarkerFails.has(index)) {
+      await fs.writeFile(path.join(getDataDir(), `.cluster-check-node-${index}`), 'ok\n')
+    }
+    return { stdout: `GVISOR_SANDBOXED\n${nonce}\n`, stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
     return { stdout: JSON.stringify({ items: livePriorityClasses() }), stderr: '' }
@@ -125,7 +223,11 @@ async function happyResponses(
     }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'tasksmax=ok\nminfree=262144\nhk=ok\n', stderr: '' }
+    return {
+      stdout: 'tasksmax=ok\nminfree=262144\n'
+        + 'inotifyinst=1024\ninotifywatch=524288\nhk=ok\n',
+      stderr: '',
+    }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -158,7 +260,8 @@ function happyRun(): RunMock {
   return vi.fn(happyResponses)
 }
 
-/** Pod-phase responses: every probe pod completes successfully. */
+/** Pod-phase responses: every probe pod completes successfully unless a
+ *  test staged a different phase for it in `podPhases`. */
 function happyGetJson(args: string[]): unknown {
   // The node/apiserver reads the real cluster-cidrs probe makes for the
   // policies the egress check exercises.
@@ -166,6 +269,7 @@ function happyGetJson(args: string[]): unknown {
     return { items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.7' }] } }] }
   }
   if (args[1] === 'endpoints') return { subsets: [{ addresses: [{ ip: '10.89.0.7' }] }] }
+  if (args[1] === 'pod') return { status: { phase: podPhases[args[2]] ?? 'Succeeded' } }
   return { status: { phase: 'Succeeded' } }
 }
 
@@ -204,6 +308,10 @@ describe('runClusterCheck', () => {
     tmpDir = await createTempDataDir()
     mockGetJson.mockReset()
     resetClusterCidrCache()
+    clusterNodes = [nodeItem('yaac-control-plane')]
+    podPhases = {}
+    nodeMarkerFails = new Set()
+    podEvents = {}
     // Probe pods complete successfully unless a test overrides.
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(happyGetJson(args)))
     // vapAvailable()'s kubectl probe answers unless a test overrides.
@@ -249,6 +357,11 @@ describe('runClusterCheck', () => {
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['datapath', 'pass'],
+      // Per-node readiness is a multi-node question: on one node the
+      // gvisor/probe/egress gates above already covered it.
+      ['runsc-nodes', 'skip'],
+      ['registry-nodes', 'skip'],
+      ['volume-nodes', 'skip'],
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
       ['runtime-stamp', 'pass'],
@@ -432,20 +545,233 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'cluster')?.detail).toContain('API server unreachable')
   })
 
-  it('warns (without failing) on multi-node clusters and still runs the probe', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
-        return { stdout: JSON.stringify({ items: [{}, {}] }), stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    stage({ run })
+  it('probes every session-eligible node of a multi-node cluster for runsc, registry pulls and the shared volume', async () => {
+    // The topology `--nodes 3` actually produces: kind keeps the
+    // control-plane's NoSchedule taint once a cluster has workers, and
+    // session pods tolerate nothing — so sessions run on the workers.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-worker'),
+      nodeItem('yaac-worker2'),
+    ]
+    const deps = stage()
     const { ok, results } = await runClusterCheck()
 
-    expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
-    expect(byName(results, 'probe')).toMatchObject({ status: 'pass' })
     expect(ok).toBe(true)
+    // Multi-node is a supported topology, not a warning — and the two
+    // counts are reported separately, because they differ here.
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'nodes')?.detail).toBe('3 nodes, 2 able to schedule sessions')
+    expect(byName(results, 'runsc-nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'runsc-nodes')?.detail).toContain('all 2 session-capable nodes')
+    // The sentry fingerprint is a bonus the probe prints when it can read
+    // dmesg at the session uid.
+    expect(byName(results, 'runsc-nodes')?.detail).toContain('2 sentry-verified')
+    expect(byName(results, 'registry-nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'volume-nodes')).toMatchObject({ status: 'pass' })
+
+    // One pod per eligible node, pinned by nodeName (the scheduler would
+    // answer a different question), on the session tier, pulling for real.
+    // The tainted control plane is not probed: no session can land there.
+    const nodePods = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as {
+        kind: string
+        metadata?: { name?: string }
+        spec?: {
+          nodeName?: string
+          runtimeClassName?: string
+          containers: Array<{
+            imagePullPolicy?: string
+            securityContext?: { runAsUser?: number }
+          }>
+          volumes: Array<{ hostPath?: { path?: string } }>
+        }
+      })
+      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+    expect(nodePods.map((p) => p.spec?.nodeName).sort())
+      .toEqual(['yaac-worker', 'yaac-worker2'])
+    for (const pod of nodePods) {
+      expect(pod.spec?.runtimeClassName).toBe('gvisor')
+      // Always, so a layer already on the node cannot mask an unreachable
+      // registry.
+      expect(pod.spec?.containers[0].imagePullPolicy).toBe('Always')
+      expect(pod.spec?.containers[0].securityContext?.runAsUser).toBe(sessionUid())
+      expect(pod.spec?.volumes[0].hostPath?.path).toBe(getDataDir())
+    }
+
+    // Nonce and per-node markers are cleaned up.
+    await expect(
+      fs.access(path.join(getDataDir(), '.cluster-check-nodes-nonce')),
+    ).rejects.toThrow()
+    await expect(
+      fs.access(path.join(getDataDir(), '.cluster-check-node-0')),
+    ).rejects.toThrow()
+  })
+
+  it('attributes a probe pod that never ran to the gate that can fix it', async () => {
+    // Three different broken nodes, all of which present as "the pod did
+    // not run" from the phase alone:
+    //   worker  — containerd never registered the runsc handler (and its
+    //             kubelet publishes the handler list, which says so).
+    //   worker2 — no $HOME extraMount, so the hostPath volume cannot mount.
+    //             kubelet sets volumes up BEFORE it pulls, so this node
+    //             never touched the registry.
+    //   worker3 — the pod ran, but its write at the session uid never
+    //             reached the host.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-worker', { handlers: ['runc'] }),
+      nodeItem('yaac-worker2'),
+      nodeItem('yaac-worker3'),
+    ]
+    // The phase itself carries no diagnosis (a real mount failure sits in
+    // Pending to the timeout) — the kubelet event below is what the sweep
+    // attributes from, which is the point of these two cases.
+    podPhases = {
+      'yaac-cluster-check-node-0': 'Failed',
+      'yaac-cluster-check-node-1': 'Failed',
+    }
+    podEvents = {
+      'yaac-cluster-check-node-0': 'FailedCreatePodSandBox|no runtime for "runsc" is configured',
+      'yaac-cluster-check-node-1':
+        'FailedMount|MountVolume.SetUp failed: hostPath type check failed: /home/x is not a directory',
+    }
+    nodeMarkerFails = new Set(['2'])
+    stage()
+    const { ok, results } = await runClusterCheck()
+
+    // Every readiness gate is advisory: a single-node-sized install still
+    // works, so these never fail the run.
+    expect(ok).toBe(true)
+
+    const runsc = byName(results, 'runsc-nodes')
+    expect(runsc).toMatchObject({ status: 'warn' })
+    expect(runsc?.detail).toContain('yaac-worker')
+    expect(runsc?.fix).toContain('--repair')
+
+    // The mount failure is NOT reported as a registry problem — that would
+    // hand the user a hosts.toml repair that cannot add an extraMount.
+    const registry = byName(results, 'registry-nodes')
+    expect(registry).toMatchObject({ status: 'warn' })
+    expect(registry?.detail).not.toContain('could not pull')
+    expect(registry?.detail).toContain('unverified on yaac-worker, yaac-worker2')
+    expect(registry?.fix).toBeUndefined()
+
+    // ...it lands here, with the extraMount fix, alongside the node whose
+    // write did not reach the host. Crucially this does not PASS just
+    // because the two nodes that did run were fine.
+    const volume = byName(results, 'volume-nodes')
+    expect(volume).toMatchObject({ status: 'warn' })
+    expect(volume?.detail).toContain('yaac-worker2 (FailedMount')
+    expect(volume?.detail).toContain('yaac-worker3')
+    expect(volume?.detail).toContain('unverified on yaac-worker')
+    expect(volume?.fix).toContain('extraMount')
+  })
+
+  it('claims no gate for a probe failure it cannot attribute', async () => {
+    // A CNI-broken node fails with FailedCreatePodSandBox too, so blaming
+    // the runsc gate on the reason alone would send the user to reinstall a
+    // runtime that is fine. Unrecognized stays unverified everywhere.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-worker', { handlers: [] }),
+      nodeItem('yaac-worker2', { handlers: [] }),
+    ]
+    podPhases = { 'yaac-cluster-check-node-0': 'Failed' }
+    podEvents = {
+      'yaac-cluster-check-node-0':
+        'FailedCreatePodSandBox|failed to setup network for sandbox: plugin type="calico" failed',
+    }
+    stage()
+    const { results } = await runClusterCheck()
+
+    for (const name of ['runsc-nodes', 'registry-nodes', 'volume-nodes']) {
+      const gate = byName(results, name)
+      expect(gate, name).toMatchObject({ status: 'warn' })
+      expect(gate?.detail).toContain('unverified on yaac-worker')
+      // No gate claims it, so no gate offers its repair for it.
+      expect(gate?.fix, name).toBeUndefined()
+    }
+  })
+
+  it('reports a node the gVisor installer has not reached instead of dropping it', async () => {
+    // The RuntimeClasses schedule on the label the installer DaemonSet
+    // stamps, so an unlabelled node cannot be probed at all. It must not
+    // fall out of the sweep for that reason — "the runtime has not landed
+    // here" is the finding, not a reason to stop looking.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-worker'),
+      nodeItem('yaac-worker2', { gvisorLabel: false }),
+    ]
+    const deps = stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(true)
+    const runsc = byName(results, 'runsc-nodes')
+    expect(runsc).toMatchObject({ status: 'warn' })
+    expect(runsc?.detail).toContain(`yaac-worker2 (no ${GVISOR_NODE_LABEL} label)`)
+    // The installer DaemonSet is the repair, not `--repair`'s podman work.
+    expect(runsc?.fix).toContain('yaac-gvisor-install')
+
+    // Unprobeable, so the other two gates say so rather than passing on a
+    // node they never reached.
+    expect(byName(results, 'registry-nodes')?.detail).toContain('unverified on yaac-worker2')
+    expect(byName(results, 'volume-nodes')?.detail).toContain('unverified on yaac-worker2')
+
+    // Only the labelled worker was probed.
+    const probed = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
+      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .map((m) => m.spec?.nodeName)
+    expect(probed).toEqual(['yaac-worker'])
+  })
+
+  it('judges runsc per node when only some kubelets publish their runtime handlers', async () => {
+    // Mixed kubelet versions: worker publishes its handler list and lacks
+    // runsc; worker2 publishes nothing, so its own probe pod — which
+    // succeeded — is the authority. Judging worker2 by the field the
+    // cluster's other node happens to publish would flag it as broken.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-worker', { handlers: ['runc'] }),
+      nodeItem('yaac-worker2', { handlers: [] }),
+    ]
+    podPhases = { 'yaac-cluster-check-node-0': 'Failed' }
+    podEvents = {
+      'yaac-cluster-check-node-0': 'FailedCreatePodSandBox|no runtime for "runsc" is configured',
+    }
+    stage()
+    const { results } = await runClusterCheck()
+
+    const runsc = byName(results, 'runsc-nodes')
+    expect(runsc).toMatchObject({ status: 'warn' })
+    expect(runsc?.detail).toContain('yaac-worker')
+    expect(runsc?.detail).not.toContain('yaac-worker2')
+  })
+
+  it('leaves NotReady and cordoned nodes out of the readiness sweep', async () => {
+    clusterNodes = [
+      nodeItem('yaac-control-plane'),
+      nodeItem('yaac-worker', { ready: false }),
+      nodeItem('yaac-worker2', { cordoned: true }),
+    ]
+    const deps = stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(true)
+    // A node that runs nothing is what the inventory flags — not the count.
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'nodes')?.detail).toContain('NotReady: yaac-worker')
+    // Only the node a session could actually land on is probed, and the
+    // gates pass on it.
+    const probed = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
+      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .map((m) => m.spec?.nodeName)
+    expect(probed).toEqual(['yaac-control-plane'])
+    expect(byName(results, 'runsc-nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'volume-nodes')?.detail).toContain('all 1 session-eligible nodes')
   })
 
   it('skips the end-to-end probe when an earlier check failed', async () => {
@@ -483,7 +809,13 @@ describe('runClusterCheck', () => {
         // Node restarted: the TasksMax conf is gone and the sysctl is back
         // at its tiny default; a pre-fixup node also lacks the kubelet
         // housekeeping flag.
-        return { stdout: 'tasksmax=missing\nminfree=67584\nhk=missing\n', stderr: '' }
+        // The inotify ceilings are the stock kernel defaults, which is
+        // what a multi-node cluster starves netd's Envoy against.
+        return {
+          stdout: 'tasksmax=missing\nminfree=67584\n'
+            + 'inotifyinst=128\ninotifywatch=8192\nhk=missing\n',
+          stderr: '',
+        }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -498,6 +830,8 @@ describe('runClusterCheck', () => {
     expect(fixups?.detail).toContain('vm.min_free_kbytes')
     expect(fixups?.detail).toContain('kubelet housekeeping-interval')
     expect(fixups?.detail).toContain('pids-limit')
+    expect(fixups?.detail).toContain('fs.inotify.max_user_instances')
+    expect(fixups?.detail).toContain('fs.inotify.max_user_watches')
     expect(fixups?.fix).toContain('yaac cluster setup --repair')
     expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start
   })
