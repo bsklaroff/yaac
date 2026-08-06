@@ -1,18 +1,20 @@
-// The public interface of the host image engine. Everything outside this
+// The public interface of the image engine. Everything outside this
 // directory imports `#features/image-engine`; the SEALED_FOLDERS lint rule
 // stops src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// This is the half of image handling that needs no cluster: `podman build` on
-// the host, the content-hash tags that decide whether a build is needed at
-// all, the in-memory registry of build rows the webapp shows, and the host
-// image GC. #features/images is the other half — builder pods, the in-cluster
-// registry promoter, the prewarm sweep — and it sits above #features/cluster
-// because it needs one.
+// This is the whole of "realize an image": the content-hash tags that decide
+// whether a build is needed at all, the builder seam and its two backends
+// (in-cluster builder pods, host podman), the ephemeral builder pods
+// themselves, the in-memory registry of build rows the webapp shows, and the
+// host image GC. #features/images is the layer above — the single-flight
+// coordinator over a project's chain, the in-cluster registry promoter, the
+// prewarm sweep, the build-cache GC.
 //
-// The split exists because cluster setup builds an image: netd's own image is
-// produced by a plain host build before there is any cluster to build it in.
-// With one images folder, that made the two features mutually dependent.
+// This folder sits BELOW #features/cluster, which is the constraint that
+// shapes it: cluster setup builds netd's image, so anything here that needs
+// the cluster stood up first takes it as an argument (`EnsureBuilderHost`)
+// rather than importing that feature and putting the two in a cycle.
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/image-engine/. Modules not re-exported are
@@ -22,7 +24,6 @@
 
 export {
   baseImageHash,
-  buildImage,
   contextHash,
   ensureImageByTag,
   fileHash,
@@ -31,6 +32,24 @@ export {
   toolsContentHash,
   type ImageLayer,
 } from './image-builder'
+export {
+  ensureImageBuildRuntime,
+  ensureMirroredImage,
+  imageBuilder,
+  imageBuilderKind,
+  withImageBuilder,
+  type ImageBuilder,
+  type ImageBuilderKind,
+  type MirrorSpec,
+} from './builder'
+export {
+  buildBuilderEgressNetworkPolicyManifest,
+  cacheRepoForLayer,
+  reconcileBuilderPodGc,
+  BUILD_CACHE_TTL,
+  SHIPPED_BUILD_CACHE_REPO,
+  type EnsureBuilderHost,
+} from './builder-pod'
 export {
   attachImageBuildProject,
   dismissImageBuild,

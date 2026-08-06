@@ -9,9 +9,16 @@ import { sessionUid } from '@yaac/server/platform/k8s/pod-spec'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
-import { ensureBuilderImage } from '@yaac/server/features/images/builder-pod'
 import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
-import { ensureGvisorInstallerImage } from '@yaac/server/features/cluster/gvisor-installer'
+import {
+  GVISOR_INSTALLER_MIRROR_TAG,
+  GVISOR_INSTALLER_UPSTREAM_IMAGE,
+} from '@yaac/server/features/cluster/gvisor-installer'
+import {
+  BUILDER_LOCAL_TAG,
+  BUILDER_UPSTREAM_IMAGE,
+} from '@yaac/server/features/image-engine/builder-pod'
+import { ensureMirroredImage, hostPodmanBuilder } from '@yaac/server/features/image-engine/builder'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/container/registry'
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
@@ -166,6 +173,21 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
  * (e.g. yaac-test-base:<hash>). This means the tag itself encodes
  * whether the image is up to date — no label inspection needed.
  * Test code computes the same hash to derive the expected tag.
+ *
+ * THE HOST ENGINE BUILDS THESE, deliberately, while the servers the suites
+ * spawn build in cluster pods like production does (docs/image-builds.md).
+ * This is not the server: it runs on a developer machine that has podman by
+ * definition — it also builds the CLI bundle and prunes leftover
+ * containers — and prebuilding the whole chain through the sandbox would
+ * put its ~3x cold-build tax on the critical path of every suite run, paid
+ * again on every Dockerfile edit. The products are the same bytes either
+ * way (the same podman CLI, the same OCI manifests), which is what makes
+ * the choice a scheduling one rather than a semantic one, and it keeps the
+ * host backend exercised.
+ *
+ * The selection is passed explicitly rather than through
+ * `YAAC_IMAGE_BUILDER`: the spawned servers inherit this process's
+ * environment, and they are what the suite exists to test.
  */
 export async function setup(): Promise<void> {
   // Before anything else, and before the podman gate below: every suite that
@@ -236,18 +258,29 @@ export async function setup(): Promise<void> {
     for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
-    // Per-project registry image (registry:2, digest-pinned mirror),
-    // the vcluster image set, and the sandboxed builder pods' podman
-    // image — pull-or-skip, then push, same as above.
-    await ensureRegistryImage(false)
-    await ensureVclusterImages(false)
-    await ensureBuilderImage(false)
-    await ensureEnvoyImage(false)
-    // The gVisor installer's image (digest-pinned upstream curl). No e2e
-    // runs `cluster setup`, so nothing here needs it today — mirrored so a
-    // test that does exercise the installer fails on what it is testing
-    // rather than on a missing image.
-    await ensureGvisorInstallerImage(false)
+    // The digest-pinned upstream mirrors, made here on the host engine for
+    // the same reason the builds are, and with one extra payoff: mirroring
+    // the builder pods' own podman image is what keeps every builder pod
+    // the suite creates off quay.io (`builderPodImageRef` falls back to the
+    // upstream ref when no mirror exists, which is what makes the whole
+    // path bootstrappable — see docs/image-builds.md).
+    const host = hostPodmanBuilder()
+    for (const spec of [
+      { upstream: BUILDER_UPSTREAM_IMAGE, tag: BUILDER_LOCAL_TAG, label: 'builder image' },
+      // No e2e runs `cluster setup`, so nothing needs the gVisor installer's
+      // image today — mirrored so a test that does exercise the installer
+      // fails on what it is testing rather than on a missing image.
+      {
+        upstream: GVISOR_INSTALLER_UPSTREAM_IMAGE,
+        tag: GVISOR_INSTALLER_MIRROR_TAG,
+        label: 'gVisor installer image',
+      },
+    ]) {
+      await ensureMirroredImage({ ...spec, requirePrebuilt: false }, host)
+    }
+    await ensureRegistryImage(false, host)
+    await ensureVclusterImages(false, host)
+    await ensureEnvoyImage(false, host)
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

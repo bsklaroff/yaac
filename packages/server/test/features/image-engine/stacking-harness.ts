@@ -64,14 +64,21 @@ export function setupStackingHarness(): StackingHarness {
     killedGroups.clear()
     state.hold = false
     state.dataDir = await createTempDataDir()
+    // What stacks here is the CHAIN — which layers exist, in what order,
+    // with which BASE_IMAGE — and that is the same whichever backend
+    // realizes it. The machine backend is the one whose builds this
+    // harness can record, since each is a `podman build` argv landing in
+    // the spawn fake below; the cluster backend's own flow is covered in
+    // test/features/images/build-coordinator.test.ts.
+    vi.stubEnv('YAAC_IMAGE_BUILDER', 'host-podman')
   })
 
   afterEach(async () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
     vi.doUnmock('node:child_process')
     vi.doUnmock('#platform/container/registry')
-    vi.doUnmock('#features/images/builder-pod')
     await cleanupTempDir(state.dataDir)
   })
 
@@ -143,31 +150,12 @@ export function setupStackingHarness(): StackingHarness {
       }),
     }))
 
-    // Untrusted layers route to the builder-pod engine (trust-split is
-    // always on). Mock it to record the same `build <tag> [args]` rows the
-    // spawn fake records for host builds; registry mocked so the
-    // untrusted-layer exists-check (registryHasTag) never touches the network.
+    // The registry is mocked so the coordinator's push path never touches
+    // the network; nothing here asserts on it.
     vi.doMock('#platform/container/registry', () => ({
       registryHasTag: vi.fn().mockResolvedValue(false),
       registryRef: (tag: string) => `localhost:5001/${tag}`,
       pushImageToRegistry: vi.fn().mockResolvedValue('pushed'),
-    }))
-    vi.doMock('#features/images/builder-pod', () => ({
-      BuilderPodLease: class {
-        acquire(): Promise<string> { return Promise.resolve('builder-pod') }
-        release(): Promise<void> { return Promise.resolve() }
-      },
-      buildLayerInPod: vi.fn(
-        (
-          layer: { tag: string; buildArgs?: Record<string, string> },
-          ctx: { noCache: boolean },
-        ) => {
-          const pairs = Object.entries(layer.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`)
-          const suffix = pairs.length ? ` [${pairs.join(',')}]` : ''
-          operations.push(`build ${layer.tag}${suffix}${ctx.noCache ? ' --no-cache' : ''}`)
-          return Promise.resolve()
-        },
-      ),
     }))
 
     // Dynamic imports are required: vi.resetModules() above invalidates the

@@ -132,6 +132,19 @@ export const env = {
   },
 
   /**
+   * `YAAC_IMAGE_BUILDER` — which engine realizes image builds:
+   * `cluster-pod` (in-cluster builder pods) or `host-podman` (a podman
+   * engine on this machine). Unset resolves per install — see
+   * `imageBuilderKind()` in `#features/image-engine`. An unrecognized
+   * value is ignored rather than fatal: this is an escape hatch, and a
+   * typo must not stop a server from booting.
+   */
+  get imageBuilder(): 'cluster-pod' | 'host-podman' | undefined {
+    const raw = process.env.YAAC_IMAGE_BUILDER?.trim()
+    return raw === 'cluster-pod' || raw === 'host-podman' ? raw : undefined
+  },
+
+  /**
    * `YAAC_RELAY_ADDR` — explicit `host:port` override for the proxy relay
    * (stream-relay.ts skips its address resolution entirely). Deployment
    * escape hatch for hosts with a direct TCP route to the proxy pod

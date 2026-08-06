@@ -808,7 +808,7 @@ async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
     deps.log(
       'note: could not apply the builder-role admission guard '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
-      + 'trust-split image builds will retry this on first use.',
+      + 'image builds will retry this on first use.',
     )
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Registry GC for the trust-split step-cache repos (docs/trust-split-builds.md).
+ * Registry GC for the builder pods' step-cache repos (docs/image-builds.md).
  *
  * Every builder-pod build pushes one cache image per Dockerfile step into
  * `yaac-buildcache-<slug>`, tagged by cache key. An edited Dockerfile mints
@@ -65,7 +65,7 @@
 import { mainRegistryExec, restartMainRegistry } from '#features/cluster'
 import { env, testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import { BUILD_CACHE_TTL } from './builder-pod'
+import { BUILD_CACHE_TTL } from '#features/image-engine'
 import { imageWorkInFlight } from './build-coordinator'
 
 /** Min interval between sweeps — hygiene work, like the host image GC. */
@@ -75,8 +75,8 @@ export const BUILD_CACHE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
  * Retention in whole days, derived from the read-side `--cache-ttl` so the
  * two can't drift: a tag older than the TTL is already a miss. `find
  * -mtime` is the only age filter busybox offers, hence days. Read on call
- * rather than at import — the stacking tests mock this folder's builder-pod
- * module down to the two names they drive.
+ * rather than at import — the stacking tests mock the builder-pod module
+ * down to the names they drive.
  */
 export function buildCacheRetainDays(): number {
   return Math.max(1, Math.floor(Number.parseInt(BUILD_CACHE_TTL, 10) / 24))

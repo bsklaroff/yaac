@@ -130,7 +130,7 @@ export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
 /**
  * Role of the ephemeral runsc builder pods that execute untrusted image
- * layers (docs/trust-split-builds.md). Referenced by the world-deny
+ * layers (docs/image-builds.md). Referenced by the world-deny
  * exclusion and by the builder-pod reap sweep; defined here (not in
  * builder-pod.ts) so the policy builder needs no import from features/images.
  */

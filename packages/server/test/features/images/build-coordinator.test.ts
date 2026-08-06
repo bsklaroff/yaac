@@ -2,19 +2,23 @@
  * The image build coordinator — `ensureImage`, `rebuildProjectImage`,
  * `pushImageShared`.
  *
- * Nothing under features/images is mocked here: the trust-split routing in
- * build-engine and the whole builder-pod flow (manifests, in-pod scripts,
- * build argv, context tar) run for real, and the fakes start at kubectl,
- * spawn, podman and the registry. A chain build is therefore covered end to
- * end by the entry point that production actually calls, and the internal
- * generators are covered by the argument sets these tests drive rather than
- * by tests of their own.
+ * Nothing under features/images or features/image-engine is mocked here:
+ * builder selection and the whole builder-pod flow (manifests, in-pod
+ * scripts, build argv, context tar) run for real, and the fakes start at
+ * kubectl, spawn, podman and the registry. A chain build is therefore
+ * covered end to end by the entry point that production actually calls, and
+ * the internal generators are covered by the argument sets these tests
+ * drive rather than by tests of their own.
+ *
+ * Every layer builds in a pod unless a test says otherwise, because that is
+ * what an install does; the host engine is reached the two ways production
+ * reaches it, `YAAC_NESTED` and an explicit `YAAC_IMAGE_BUILDER`.
  */
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 import type * as imageBuilderModule from '#features/image-engine/image-builder'
@@ -44,9 +48,14 @@ interface FakeChild extends EventEmitter {
   exitCode: number | null
   signalCode: string | null
 }
-/** A held child: its output tap and the signals its process group got. */
+/**
+ * A held child: its argv (so a test can find the one building a given tag),
+ * its output tap, a clean finish, and the signals its process group got.
+ */
 interface HeldChild {
+  args: string[]
   log: (line: string) => void
+  close: (code: number) => void
   signals: string[]
 }
 /** Fictional pids: the process.kill spy never lets one reach the OS. */
@@ -97,7 +106,12 @@ vi.mock('node:child_process', async (importOriginal) => {
           child.emit('exit', null, signal)
           child.emit('close', null, signal)
         })
-        held.push({ signals, log: (line) => child.stdout.emit('data', `${line}\n`) })
+        held.push({
+          args,
+          signals,
+          log: (line) => child.stdout.emit('data', `${line}\n`),
+          close: (code) => child.emit('close', code),
+        })
         spawnState.onHold?.()
       } else {
         const code = spawnState.codeFor?.(file, args) ?? spawnState.closeCode
@@ -120,6 +134,7 @@ vi.mock('#features/image-engine/image-builder', async (importOriginal) => ({
 vi.mock('#platform/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
   removeImage: vi.fn().mockResolvedValue(undefined),
+  ensureHostPodman: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('#platform/container/registry', () => ({
@@ -158,7 +173,21 @@ vi.mock('#features/cluster/main-registry', async (importOriginal) => ({
   ensureMainRegistry: mockEnsureMainRegistry,
 }))
 
-vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
+// pipeToServerLog is the one #log name with behaviour the build path
+// depends on: it is what turns a child's stdout into the lines the
+// build-tracking registry ingests. Faked to split lines, not stubbed out.
+vi.mock('#log', () => ({
+  serverLog: vi.fn(),
+  pipeToServerLog: (
+    stream: { on: (ev: string, fn: (chunk: unknown) => void) => void },
+    _prefix: string,
+    onLine?: (line: string) => void,
+  ) => {
+    stream.on('data', (chunk) => {
+      for (const line of String(chunk).split('\n')) if (line) onLine?.(line)
+    })
+  },
+}))
 
 import { ensureImage, pushImageShared, rebuildProjectImage } from '#features/images'
 import { _clearBuildCoordinatorForTests } from '#features/images/build-coordinator'
@@ -177,7 +206,9 @@ import {
   BUILDER_LOCAL_TAG,
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
-} from '#features/images/builder-pod'
+  BUILDER_UPSTREAM_IMAGE,
+  SHIPPED_BUILD_CACHE_REPO,
+} from '#features/image-engine/builder-pod'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#platform/build-context'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -191,15 +222,37 @@ const mockHasTag = vi.mocked(registryHasTag)
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
-/** A host-built (trusted) layer; buildImage is mocked, so paths can be fake. */
-function layer(tag: string, name: ImageLayerName = 'base'): ImageLayer {
-  return { tag, name, dockerfile: '/df', context: '/ctx', contentHash: 'h' }
+/**
+ * A context every layer whose own files are beside the point can share.
+ * Real, not fake: a pod build streams its context in, so the coordinator's
+ * every path now stats and tars actual files.
+ */
+let SHARED_CTX = ''
+beforeAll(async () => {
+  // Untracked: the per-test cleanup wipes what it made, and this outlives it.
+  SHARED_CTX = await makeContext({ Dockerfile: LAYERED_DOCKERFILE }, false)
+})
+
+/** A layer over the shared context — for tests about chains, not contexts. */
+function layer(
+  tag: string,
+  name: ImageLayerName = 'base',
+  over: Partial<ImageLayer> = {},
+): ImageLayer {
+  return {
+    tag,
+    name,
+    dockerfile: path.join(SHARED_CTX, 'Dockerfile'),
+    context: SHARED_CTX,
+    contentHash: 'h',
+    ...over,
+  }
 }
 
 const tmpDirs: string[] = []
-async function makeContext(files: Record<string, string>): Promise<string> {
+async function makeContext(files: Record<string, string>, track = true): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-coord-test-'))
-  tmpDirs.push(dir)
+  if (track) tmpDirs.push(dir)
   for (const [rel, content] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true })
     await fs.writeFile(path.join(dir, rel), content)
@@ -283,16 +336,28 @@ function deferred(): Deferred {
   return { promise, resolve, reject }
 }
 
-/** buildImage mock that parks each tag on its own deferred. */
-function deferBuilds(): Map<string, Deferred> {
-  const byTag = new Map<string, Deferred>()
-  mockBuildImage.mockImplementation((tag: string) => {
-    const d = deferred()
-    byTag.set(tag, d)
-    return d.promise
-  })
-  return byTag
+/**
+ * Park every in-pod `podman build` so a test owns when each layer finishes.
+ * The steps around it (storage bootstrap, parent pull, context tar, push)
+ * still complete on their own.
+ */
+function holdPodBuilds(): void {
+  spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
 }
+
+/** The parked in-pod build of `tag`, once it exists. */
+async function parkedBuild(tag: string): Promise<HeldChild> {
+  await vi.waitFor(() => {
+    expect(held.some((h) => h.args.includes(tag)), `no parked build of ${tag}`).toBe(true)
+  })
+  return held.find((h) => h.args.includes(tag))!
+}
+
+/** Tags whose in-pod `podman build` ran, in order. */
+const builtTags = (): string[] =>
+  remoteCommands()
+    .filter((argv) => argv[0] === 'podman' && argv[1] === 'build')
+    .map((argv) => argv[argv.indexOf('-t') + 1])
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve()
@@ -350,25 +415,26 @@ describe('ensureImage', () => {
       layers: [base, layer(`yaac-tools-${slug}:x`, 'tools')],
       finalTag: `yaac-tools-${slug}:x`,
     }))
-    const builds = deferBuilds()
+    holdPodBuilds()
 
     const a = ensureImage('proj-a', undefined, false, false, { reason: 'prewarm' })
     const b = ensureImage('proj-b', undefined, false, false, { reason: 'prewarm' })
 
     // Both chains wait on ONE base build, and both projects attach to its
-    // single registry entry.
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(1) })
-    expect(mockBuildImage.mock.calls[0][0]).toBe('yaac-base:shared')
+    // single registry entry — even though each owns its own builder pod.
+    const sharedBase = await parkedBuild('yaac-base:shared')
+    await flush()
+    expect(builtTags()).toEqual(['yaac-base:shared'])
     expect(listImageBuilds()[0]).toMatchObject({ projectSlugs: ['proj-a', 'proj-b'], status: 'running' })
 
     // Base resolves → both downstream layers build in parallel.
-    builds.get('yaac-base:shared')!.resolve()
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(3) })
-    expect(mockBuildImage.mock.calls.slice(1).map((c) => c[0]).sort())
+    sharedBase.close(0)
+    await vi.waitFor(() => { expect(builtTags()).toHaveLength(3) })
+    expect(builtTags().slice(1).sort())
       .toEqual(['yaac-tools-proj-a:x', 'yaac-tools-proj-b:x'])
 
-    builds.get('yaac-tools-proj-a:x')!.resolve()
-    builds.get('yaac-tools-proj-b:x')!.resolve()
+    ;(await parkedBuild('yaac-tools-proj-a:x')).close(0)
+    ;(await parkedBuild('yaac-tools-proj-b:x')).close(0)
     expect(await a).toBe('yaac-tools-proj-a:x')
     expect(await b).toBe('yaac-tools-proj-b:x')
     expect(listImageBuilds().every((e) => e.status === 'succeeded')).toBe(true)
@@ -376,57 +442,65 @@ describe('ensureImage', () => {
 
   it('propagates a build failure to every waiter and marks the entry failed', async () => {
     chain([layer('yaac-base:x')])
-    const builds = deferBuilds()
+    holdPodBuilds()
     const a = ensureImage('proj-a')
     const b = ensureImage('proj-b')
 
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(1) })
-    builds.get('yaac-base:x')!.reject(new Error('podman build exited with code 1'))
+    ;(await parkedBuild('yaac-base:x')).close(1)
     await expect(a).rejects.toThrow('exited with code 1')
     await expect(b).rejects.toThrow('exited with code 1')
 
     expect(listImageBuilds()[0]).toMatchObject({ status: 'failed' })
     expect(listImageBuilds()[0].error).toContain('exited with code 1')
-    // A failed tag is not memoized as realized — the next ensure retries.
-    const retry = deferBuilds()
+    // A failed tag is not memoized as realized — the next ensure retries,
+    // and the pod that failed under it was deleted rather than leaked. One
+    // pod, not two: the joiner shares the winner's build and never leases
+    // a builder of its own.
+    expect(deleteCalls()).toHaveLength(1)
+    held.length = 0
     const again = ensureImage('proj-a')
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(2) })
-    retry.get('yaac-base:x')!.resolve()
+    ;(await parkedBuild('yaac-base:x')).close(0)
     await again
   })
 
   it('fans build output into the registry log', async () => {
     chain([layer('t:1')])
-    mockBuildImage.mockImplementation((_tag, _df, _ctx, _args, opts) => {
-      opts?.onLog?.('STEP 1/2: FROM ubuntu')
-      return Promise.resolve()
+    holdPodBuilds()
+    const build = ensureImage('proj')
+    const held0 = await parkedBuild('t:1')
+    held0.log('STEP 1/2: FROM ubuntu')
+    await vi.waitFor(() => {
+      expect(listImageBuilds()[0]).toMatchObject({ stepCurrent: 1, stepTotal: 2 })
     })
-    await ensureImage('proj')
-    expect(listImageBuilds()[0]).toMatchObject({ stepCurrent: 1, stepTotal: 2 })
+    held0.close(0)
+    await build
   })
 
   it('skips present tags and memoizes the verification for the rest of the run', async () => {
     chain([layer('t:1'), layer('t:2', 'tools')])
-    mockImageExists.mockImplementation((tag) => Promise.resolve(tag === 't:1'))
-    mockBuildImage.mockResolvedValue(undefined)
+    // The registry is what a pod-built tag is verified against — the host
+    // store never holds one.
+    mockHasTag.mockImplementation((tag: string) =>
+      Promise.resolve(tag === 't:1' || tag === BUILDER_LOCAL_TAG))
 
     await ensureImage('proj')
-    // Only the absent layer built; both tags were probed once.
-    expect(mockBuildImage.mock.calls.map((c) => c[0])).toEqual(['t:2'])
-    expect(mockImageExists).toHaveBeenCalledTimes(2)
+    expect(builtTags()).toEqual(['t:2'])
+    expect(mockHasTag.mock.calls.map((c) => c[0])).toEqual(expect.arrayContaining(['t:1', 't:2']))
 
     // Content-hash tags are immutable: neither the probed nor the freshly
     // built tag is re-checked on the next ensure.
-    mockImageExists.mockClear()
-    mockBuildImage.mockClear()
+    mockHasTag.mockClear()
+    mockKubectlApply.mockClear()
+    spawned.length = 0
     await ensureImage('proj')
-    expect(mockImageExists).not.toHaveBeenCalled()
-    expect(mockBuildImage).not.toHaveBeenCalled()
+    expect(mockHasTag.mock.calls.map((c) => c[0])).not.toContain('t:1')
+    expect(builtTags()).toEqual([])
+    // Nothing to build means no pod at all.
+    expect(appliedKinds()).not.toContain('Pod')
   })
 
   it('reports layer starts with 1-based chain positions', async () => {
     chain([layer('t:1'), layer('t:2', 'tools')])
-    mockBuildImage.mockResolvedValue(undefined)
     const starts: string[] = []
     await ensureImage('proj', undefined, false, false, {
       onLayerStart: (i, total, name) => starts.push(`${i}/${total} ${name}`),
@@ -437,14 +511,14 @@ describe('ensureImage', () => {
   it('throws under requirePrebuilt without building or registering', async () => {
     chain([layer('t:1')])
     await expect(ensureImage('proj', undefined, true)).rejects.toThrow('missing or stale')
-    expect(mockBuildImage).not.toHaveBeenCalled()
+    expect(builtTags()).toEqual([])
     expect(listImageBuilds()).toEqual([])
   })
 
-  it('builds an untrusted layer in a gvisor builder pod and pushes the product', async () => {
-    // The whole cluster-pod path in one pass: parent push, pod manifest,
-    // storage bootstrap, parent pull, context tar, cached build, delta
-    // push, pod teardown.
+  it('builds a layer in a gvisor builder pod and pushes the product', async () => {
+    // The whole cluster-pod path in one pass: pod manifest, storage
+    // bootstrap, parent pull, context tar, cached build, delta push, pod
+    // teardown.
     const tools = layer('yaac-tools:t1', 'tools')
     const project = await podLayer({}, {
       'Dockerfile.yaac': LAYERED_DOCKERFILE,
@@ -453,18 +527,16 @@ describe('ensureImage', () => {
       '.containerignore': 'skipped\n',
     })
     chain([tools, project])
-    mockImageExists.mockResolvedValue(true) // tools already on host
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/${tools.tag}`)
+    // The parent is already in the registry, so only the project layer builds.
+    mockHasTag.mockImplementation((tag: string) =>
+      Promise.resolve(tag === tools.tag || tag === BUILDER_LOCAL_TAG))
 
     await ensureImage('proj')
 
-    // Trusted layer skipped host-side; nothing host-built.
+    // Nothing host-side: no build, and no push either — the pod's own push
+    // is what makes the product exist at all.
     expect(mockBuildImage).not.toHaveBeenCalled()
-    // The pod pulls its parent from the registry, so it is pushed first —
-    // zstd, which materially cuts the empty-graphroot parent pull.
-    expect(mockPush).toHaveBeenCalledTimes(1)
-    expect(mockPush.mock.calls[0][0]).toBe(tools.tag)
-    expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
+    expect(mockPush).not.toHaveBeenCalled()
 
     // Infra ensured, then the role guard, egress policy and pod applied.
     expect(mockEnsureKubernetes).toHaveBeenCalled()
@@ -500,8 +572,8 @@ describe('ensureImage', () => {
     })
     expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
-    // The pinned podman-stable mirror, resolved by the module's own image
-    // ensure — never the session's user-customizable image.
+    // The pinned podman-stable mirror — never the session's user-customizable
+    // image.
     expect(pod.spec.containers[0].image).toBe(`${CLUSTER_HOST}/${BUILDER_LOCAL_TAG}`)
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
@@ -540,7 +612,7 @@ describe('ensureImage', () => {
     // Build: chroot isolation, per-project registry step cache.
     expect(remote[3].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
     expect(remote[3]).toContain(project.tag)
-    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-proj`
+    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-project-proj`
     expect(remote[3].join(' '))
       .toContain(`--cache-from ${cacheRef} --cache-to ${cacheRef} --cache-ttl 168h`)
     expect(remote[3].join(' ')).toContain(`-f ${BUILDER_CONTEXT_DIR}/Dockerfile.yaac`)
@@ -553,9 +625,70 @@ describe('ensureImage', () => {
     expect(tarLists[0]).toEqual(expect.arrayContaining(['keep.txt', '.containerignore', 'Dockerfile.yaac']))
     expect(tarLists[0].some((f) => f.startsWith('skipped/'))).toBe(false)
 
-    // ensureImage owns the lease, so the pod dies with the chain.
+    // ensureImage owns the builder, so the pod dies with the chain.
     expect(deleteCalls()).toHaveLength(1)
     expect(deleteCalls()[0]).toContain(pod.metadata.name)
+  })
+
+  it('builds a whole cold chain in one pod, each parent already local', async () => {
+    // The shipped layers used to build on the host and be pushed so a pod
+    // could pull them back. In one pod they are simply there: only the
+    // first layer has no parent to resolve, and no layer pulls one.
+    const base = layer('yaac-base:c1')
+    const tools = layer('yaac-tools:c2', 'tools', { buildArgs: { BASE_IMAGE: base.tag } })
+    const project = await podLayer({ tag: 'yaac-base:c3', buildArgs: { BASE_IMAGE: tools.tag } })
+    chain([base, tools, project])
+
+    await ensureImage('proj')
+
+    expect(builtTags()).toEqual([base.tag, tools.tag, project.tag])
+    // One pod for the chain, deleted once.
+    expect(mockKubectlApply.mock.calls
+      .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
+    expect(deleteCalls()).toHaveLength(1)
+    // Every layer pushes its own product: the graphroot dies with the pod,
+    // so an unpushed layer would be lost.
+    const pushes = remoteCommands().filter((argv) => argv[1] === 'push')
+    expect(pushes.map((argv) => argv.at(-1))).toEqual([
+      `${CLUSTER_HOST}/${base.tag}`,
+      `${CLUSTER_HOST}/${tools.tag}`,
+      `${CLUSTER_HOST}/${project.tag}`,
+    ])
+    // No parent is fetched: every pull is the guarded form, which exits
+    // before pulling because the pod just built the tag.
+    for (const argv of remoteCommands().filter((a) => a.join(' ').includes('podman pull'))) {
+      expect(argv[2]).toMatch(/^if podman image exists \S+; then exit 0; fi$/m)
+    }
+  })
+
+  it('caches the shipped layers apart from a project\'s own', async () => {
+    // The shipped layers are identical across projects, so they share one
+    // cache repo; the project's own layers must not read or write it.
+    const tools = layer('yaac-tools:t1', 'tools')
+    const project = await podLayer({ buildArgs: { BASE_IMAGE: tools.tag } })
+    chain([tools, project])
+
+    await ensureImage('proj')
+
+    const cacheRepos = remoteCommands()
+      .filter((argv) => argv[1] === 'build')
+      .map((argv) => argv[argv.indexOf('--cache-to') + 1])
+    expect(cacheRepos).toEqual([
+      `${CLUSTER_HOST}/${SHIPPED_BUILD_CACHE_REPO}`,
+      `${CLUSTER_HOST}/yaac-buildcache-project-proj`,
+    ])
+    // No project slug can be sanitized into the shipped repo's name.
+    expect(SHIPPED_BUILD_CACHE_REPO).not.toMatch(/^yaac-buildcache-project-/)
+  })
+
+  it('falls back to the upstream builder image when no mirror exists', async () => {
+    // The bootstrap floor: a builder pod cannot be the source of its own
+    // image, so an install with an empty registry still gets one.
+    mockHasTag.mockResolvedValue(false)
+    chain([layer('t:1')])
+    await ensureImage('proj')
+    expect(appliedOfKind<PodManifest>('Pod').spec.containers[0].image)
+      .toBe(BUILDER_UPSTREAM_IMAGE)
   })
 
   it('ships a parentless layer without a pull, and its dockerfile even when ignored', async () => {
@@ -569,8 +702,6 @@ describe('ensureImage', () => {
     const scripts = remoteCommands().map((argv) => argv.join(' '))
     expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
     expect(scripts.some((s) => s.includes('--build-arg YAAC_UID=1000'))).toBe(true)
-    // No parent tag means nothing to push ahead of the build.
-    expect(mockPush).not.toHaveBeenCalled()
     // The dockerfile always ships, ignore file or not.
     expect(tarLists[0]).toContain('Dockerfile.yaac')
   })
@@ -578,53 +709,45 @@ describe('ensureImage', () => {
   it('sanitizes the project slug into a valid OCI cache repo', async () => {
     chain([await podLayer({ buildArgs: undefined })])
     await ensureImage('My Project!')
-    expect(remoteCommands()[2].join(' ')).toContain(`${CLUSTER_HOST}/yaac-buildcache-my-project-`)
+    expect(remoteCommands()[2].join(' ')).toContain(`${CLUSTER_HOST}/yaac-buildcache-project-my-project-`)
   })
 
-  it('reuses one builder pod across adjacent untrusted layers and deletes it once', async () => {
-    const first = await podLayer({ buildArgs: undefined })
-    const second = await podLayer({
-      tag: 'yaac-user-proj:u1', name: 'user', buildArgs: { BASE_IMAGE: first.tag },
-    })
-    chain([first, second])
-
-    await ensureImage('proj')
-
-    expect(mockKubectlApply.mock.calls
-      .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
-    expect(deleteCalls()).toHaveLength(1)
-  })
-
-  it('consults the registry for untrusted tags, never the host store', async () => {
+  it('consults the registry for realized tags, never the host store', async () => {
     const tools = layer('yaac-tools:t1', 'tools')
     const project = await podLayer()
     chain([tools, project])
-    mockImageExists.mockResolvedValue(true)
-    mockHasTag.mockResolvedValue(true) // project tag already in the registry
+    mockImageExists.mockResolvedValue(true) // a stale host store must not count
+    mockHasTag.mockResolvedValue(true)
 
     await ensureImage('proj')
     expect(mockHasTag).toHaveBeenCalledWith(project.tag)
+    expect(mockImageExists).not.toHaveBeenCalled()
     expect(appliedKinds()).not.toContain('Pod')
-    expect(mockPush).not.toHaveBeenCalled()
   })
 
-  it('sandboxes any non-whitelisted layer name, but not in a nested install', async () => {
-    // Whitelist semantics: an unknown name must not fall through to host podman.
-    chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
-    await ensureImage('proj')
-    expect(appliedKinds()).toContain('Pod')
-    expect(mockBuildImage).not.toHaveBeenCalled()
-
+  it('builds on the in-pod engine in a nested install, and on request', async () => {
     // A nested install's engine IS the outer sandbox; an inner builder pod
     // would be an unvalidated vcluster pod and strictly worse.
-    _clearBuildCoordinatorForTests()
-    mockKubectlApply.mockClear()
     vi.stubEnv('YAAC_NESTED', '1')
-    chain([layer('yaac-base:n1', 'project'), layer('yaac-user:n2', 'user')])
+    chain([layer('yaac-base:n1'), layer('yaac-user:n2', 'user')])
     mockBuildImage.mockResolvedValue(undefined)
     await ensureImage('proj')
     expect(appliedKinds()).not.toContain('Pod')
-    expect(mockBuildImage).toHaveBeenCalledTimes(2)
+    expect(mockBuildImage.mock.calls.map((c) => c[0])).toEqual(['yaac-base:n1', 'yaac-user:n2'])
+    // The host store is the authority there, and its products still have to
+    // be pushed before a session pod can pull them.
+    expect(mockImageExists).toHaveBeenCalled()
+
+    // The same backend is reachable by request on a machine that would
+    // rather pay its own podman than the sandbox tax.
+    _clearBuildCoordinatorForTests()
+    vi.unstubAllEnvs()
+    vi.stubEnv('YAAC_IMAGE_BUILDER', 'host-podman')
+    mockBuildImage.mockClear()
+    chain([layer('yaac-base:h1')])
+    await ensureImage('proj')
+    expect(appliedKinds()).not.toContain('Pod')
+    expect(mockBuildImage.mock.calls.map((c) => c[0])).toEqual(['yaac-base:h1'])
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
@@ -754,174 +877,190 @@ describe('ensureImage', () => {
 })
 
 describe('pushImageShared', () => {
-  it('returns the ref without pushing or registering when the tag is present', async () => {
-    mockHasTag.mockResolvedValue(true)
-    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'prewarm' })
+  it('is satisfied by the build itself on the cluster backend', async () => {
+    // A pod build ENDS in the registry, so there is nothing to push and
+    // nowhere to push it from — not even for a forced rebuild, whose fresh
+    // bytes the pod already wrote over the tag. Inventing a push row here
+    // would report work that never happens.
+    mockHasTag.mockResolvedValue(false)
+    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
     expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
     expect(mockPush).not.toHaveBeenCalled()
     expect(listImageBuilds()).toEqual([])
   })
 
-  it('pushes even a present tag when forced (host holds the fresh bytes)', async () => {
-    mockHasTag.mockResolvedValue(true)
-    mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
-    expect(mockPush).toHaveBeenCalledTimes(1)
-    expect(mockPush.mock.calls[0][1]).toMatchObject({ force: true })
-  })
+  describe('on the host backend', () => {
+    // The push only exists where a build lands in a local store first: a
+    // nested install, or a machine that asked for its own podman.
+    beforeEach(() => { vi.stubEnv('YAAC_IMAGE_BUILDER', 'host-podman') })
 
-  it('treats a forced push of a registry-only tag as already satisfied', async () => {
-    // A cluster-pod-built layer: never in the host store, force-pushed to
-    // the registry by its own builder pod. Nothing local to push.
-    mockHasTag.mockResolvedValue(true)
-    mockImageExists.mockResolvedValue(false)
-    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
-    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(mockPush).not.toHaveBeenCalled()
-  })
+    it('returns the ref without pushing or registering when the tag is present', async () => {
+      mockHasTag.mockResolvedValue(true)
+      const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'prewarm' })
+      expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
+      expect(mockPush).not.toHaveBeenCalled()
+      expect(listImageBuilds()).toEqual([])
+    })
 
-  it('caches a verified registry tag — the second push skips even the HEAD', async () => {
-    mockHasTag.mockResolvedValue(true)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    mockHasTag.mockClear()
+    it('pushes even a present tag when forced (the store holds fresh bytes)', async () => {
+      mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(true)
+      mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+      expect(mockPush).toHaveBeenCalledTimes(1)
+      expect(mockPush.mock.calls[0][1]).toMatchObject({ force: true })
+    })
 
-    const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(mockHasTag).not.toHaveBeenCalled()
-  })
+    it('treats a forced push of a registry-only tag as already satisfied', async () => {
+      // Nothing local to push: whoever put it in the registry pushed it.
+      mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(false)
+      const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+      expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
+      expect(mockPush).not.toHaveBeenCalled()
+    })
 
-  it('caches a completed push the same way', async () => {
-    mockHasTag.mockResolvedValue(false)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    mockHasTag.mockClear()
-    mockPush.mockClear()
+    it('caches a verified registry tag — the second push skips even the HEAD', async () => {
+      mockHasTag.mockResolvedValue(true)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      mockHasTag.mockClear()
 
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    expect(mockHasTag).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
-  })
+      const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      expect(ref).toBe(`${CLUSTER_HOST}/t:1`)
+      expect(mockHasTag).not.toHaveBeenCalled()
+    })
 
-  it('a forced push bypasses the cache (rebuilds change bytes under the tag)', async () => {
-    mockHasTag.mockResolvedValue(true)
-    mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    it('caches a completed push the same way', async () => {
+      mockHasTag.mockResolvedValue(false)
+      mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      mockHasTag.mockClear()
+      mockPush.mockClear()
 
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
-    expect(mockPush).toHaveBeenCalledTimes(1)
-  })
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      expect(mockHasTag).not.toHaveBeenCalled()
+      expect(mockPush).not.toHaveBeenCalled()
+    })
 
-  it('passes the compression format through to the push', async () => {
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
-    await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }, { compressionFormat: 'zstd' })
-    expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
-  })
+    it('a forced push bypasses the cache (rebuilds change bytes under the tag)', async () => {
+      mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(true)
+      mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
 
-  it('coalesces concurrent pushes of the same tag', async () => {
-    const d = deferred()
-    mockPush.mockImplementation(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
-    const a = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
-    const b = pushImageShared('t:1', { projectSlug: 'b', reason: 'session' })
-    await flush()
-    expect(mockPush).toHaveBeenCalledTimes(1)
-    d.resolve()
-    expect(await a).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(await b).toBe(`${CLUSTER_HOST}/t:1`)
-    expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'succeeded' })
-  })
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+      expect(mockPush).toHaveBeenCalledTimes(1)
+    })
 
-  it('marks the entry failed and rejects when the push fails', async () => {
-    mockPush.mockRejectedValue(new Error('registry down'))
-    await expect(pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }))
-      .rejects.toThrow('registry down')
-    expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'failed' })
+    it('passes the compression format through to the push', async () => {
+      mockPush.mockResolvedValue(`${CLUSTER_HOST}/t:1`)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }, { compressionFormat: 'zstd' })
+      expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
+    })
+
+    it('coalesces concurrent pushes of the same tag', async () => {
+      const d = deferred()
+      mockPush.mockImplementation(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
+      const a = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      const b = pushImageShared('t:1', { projectSlug: 'b', reason: 'session' })
+      await flush()
+      expect(mockPush).toHaveBeenCalledTimes(1)
+      d.resolve()
+      expect(await a).toBe(`${CLUSTER_HOST}/t:1`)
+      expect(await b).toBe(`${CLUSTER_HOST}/t:1`)
+      expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'succeeded' })
+    })
+
+    it('marks the entry failed and rejects when the push fails', async () => {
+      mockPush.mockRejectedValue(new Error('registry down'))
+      await expect(pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }))
+        .rejects.toThrow('registry down')
+      expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'failed' })
+    })
   })
 })
 
 describe('rebuildProjectImage', () => {
   it('rebuilds tools with --no-cache and downstream layers with the cache', async () => {
-    const user = await podLayer({ tag: 'yaac-user-p:3', name: 'user', buildArgs: { BASE_IMAGE: 'yaac-tools:2' } })
-    chain([layer('yaac-base:1'), layer('yaac-tools:2', 'tools'), user])
-    mockBuildImage.mockResolvedValue(undefined)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:2`)
+    const tools = layer('yaac-tools:2', 'tools')
+    const user = await podLayer({
+      tag: 'yaac-user-p:3', name: 'user', buildArgs: { BASE_IMAGE: tools.tag },
+    })
+    chain([layer('yaac-base:1'), tools, user])
 
     expect(await rebuildProjectImage('p')).toBe('yaac-user-p:3')
 
-    // Base untouched; tools removed and rebuilt no-cache on the host.
-    expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:2'])
-    expect(mockBuildImage.mock.calls.map((c) => [c[0], (c[4] as { noCache?: boolean }).noCache]))
-      .toEqual([['yaac-tools:2', true]])
-    // The user layer is untrusted: rebuilt in a pod, no host removal, and
-    // its own step cache is still reused (only tools is forced).
-    expect(appliedKinds()).toContain('Pod')
-    const build = remoteCommands().find((argv) => argv[1] === 'build')!
-    expect(build).not.toContain('--no-cache')
-    expect(build.join(' ')).toContain('--cache-from')
+    // Base untouched; tools and everything downstream rebuilt, in one pod.
+    expect(builtTags()).toEqual(['yaac-tools:2', 'yaac-user-p:3'])
+    const builds = remoteCommands().filter((argv) => argv[1] === 'build')
+    // A forced rebuild drops the step cache entirely — reusing it is
+    // exactly what the command exists to defeat.
+    expect(builds[0]).toContain('--no-cache')
+    expect(builds[0].join(' ')).not.toContain('--cache-from')
+    // Downstream layers keep theirs: only tools is forced.
+    expect(builds[1]).not.toContain('--no-cache')
+    expect(builds[1].join(' ')).toContain('--cache-from')
+    // Nothing to remove first: the tag's bytes live in the registry and the
+    // rebuild's own push overwrites them.
+    expect(mockRemoveImage).not.toHaveBeenCalled()
     expect(listImageBuilds().every((e) => e.reason === 'rebuild')).toBe(true)
   })
 
-  it('force-pushes the rebuilt host parent before the pod rebuild', async () => {
-    const project = await podLayer({ buildArgs: { BASE_IMAGE: 'yaac-tools:t1' } })
-    chain([layer('yaac-tools:t1', 'tools'), project])
-    mockImageExists.mockResolvedValue(true)
-    mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:t1`)
-    mockBuildImage.mockResolvedValue(undefined)
-
-    await rebuildProjectImage('proj')
-
-    // A rebuild changes bytes under an unchanged content-hash tag, so a
-    // plain push would HEAD-skip and hand the pod stale bytes.
-    expect(mockPush).toHaveBeenCalledTimes(1)
-    expect(mockPush.mock.calls[0][0]).toBe('yaac-tools:t1')
-    expect(mockPush.mock.calls[0][1]).toMatchObject({ force: true, compressionFormat: 'zstd' })
-    // Host remove ran only for the host layer; the cluster-pod remove no-ops.
-    expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:t1'])
-  })
-
-  it('waits out an in-flight build, then removes and rebuilds inside the slot', async () => {
+  it('waits out an in-flight build, then rebuilds inside the slot', async () => {
     chain([layer('yaac-tools:1', 'tools')])
-    const builds = deferBuilds()
+    holdPodBuilds()
     const inflight = ensureImage('p')
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(1) })
+    const first = await parkedBuild('yaac-tools:1')
 
     const rebuild = rebuildProjectImage('p')
     await flush()
-    // Still waiting on the in-flight build — no removal yet.
-    expect(mockRemoveImage).not.toHaveBeenCalled()
+    // Still waiting on the in-flight build — no second build yet.
+    expect(builtTags()).toEqual(['yaac-tools:1'])
 
-    builds.get('yaac-tools:1')!.resolve()
+    first.close(0)
     await inflight
-    await vi.waitFor(() => { expect(mockRemoveImage).toHaveBeenCalledWith('yaac-tools:1') })
-    await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(2) })
-    expect(mockBuildImage.mock.calls[1][4]).toMatchObject({ noCache: true })
-    builds.get('yaac-tools:1')!.resolve()
+    await vi.waitFor(() => { expect(builtTags()).toHaveLength(2) })
+    const second = held.filter((h) => h.args.includes('yaac-tools:1')).at(-1)!
+    expect(second.args).toContain('--no-cache')
+    second.close(0)
     await rebuild
   })
 
-  it('lets a concurrent ensure join the no-cache rebuild instead of racing the removal', async () => {
+  it('lets a concurrent ensure join the no-cache rebuild instead of racing it', async () => {
     chain([layer('yaac-tools:1', 'tools')])
-    const builds = deferBuilds()
+    holdPodBuilds()
     const rebuild = rebuildProjectImage('a')
-    await vi.waitFor(() => { expect(mockRemoveImage).toHaveBeenCalledTimes(1) })
+    const parked = await parkedBuild('yaac-tools:1')
 
     const join = ensureImage('b')
     await flush()
-    expect(mockBuildImage).toHaveBeenCalledTimes(1)
+    expect(builtTags()).toEqual(['yaac-tools:1'])
 
-    builds.get('yaac-tools:1')!.resolve()
+    parked.close(0)
     await Promise.all([rebuild, join])
     expect(listImageBuilds()[0].projectSlugs).toEqual(['a', 'b'])
+  })
+
+  it('removes the stale host image first on the host backend', async () => {
+    // Where the build lands in a local store, the stale tag has to go
+    // before the rebuild — inside the single-flight slot, so the removal
+    // never races a concurrent build of the tag.
+    vi.stubEnv('YAAC_IMAGE_BUILDER', 'host-podman')
+    chain([layer('yaac-tools:1', 'tools')])
+    mockBuildImage.mockResolvedValue(undefined)
+    await rebuildProjectImage('p')
+    expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:1'])
+    expect(mockBuildImage.mock.calls[0][4]).toMatchObject({ noCache: true })
   })
 
   it('rejects a standalone Dockerfile.yaac chain (no tools layer)', async () => {
     chain([layer('yaac-base:custom', 'project')])
     await expect(rebuildProjectImage('p')).rejects.toThrow(/standalone Dockerfile\.yaac/)
-    expect(mockRemoveImage).not.toHaveBeenCalled()
+    expect(builtTags()).toEqual([])
   })
 
   it('invalidates the verified push cache for a rebuilt tag', async () => {
+    vi.stubEnv('YAAC_IMAGE_BUILDER', 'host-podman')
     mockHasTag.mockResolvedValue(true)
     await pushImageShared('yaac-tools:1', { projectSlug: 'a', reason: 'session' })
     chain([layer('yaac-tools:1', 'tools')])

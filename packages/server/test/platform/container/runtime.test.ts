@@ -24,25 +24,21 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(() => ({ unref: () => {}, on: () => {} })),
 }))
 
-// The session-runtime half of ensureContainerRuntime, and the only call it
-// makes outside this folder. ensureKubernetes has its own test in
-// test/platform/k8s/kubectl.test.ts.
+// This folder's registry module reaches `#platform/k8s` for its
+// port-forward, which pulls kubectl's own promisified child_process in.
+// Stubbed so the mock above (which has no `exec`) is not asked to serve it.
 vi.mock('#platform/k8s/kubectl', () => ({
   ensureKubernetes: vi.fn().mockResolvedValue(undefined),
 }))
 
 import {
-  ensureContainerRuntime,
+  ensureHostPodman,
   ensureRootfulPodmanHost,
   execFileAsync,
   imageExists,
   removeImage,
   ROOTFUL_PODMAN_SOCKET,
 } from '#platform/container'
-// A state-reset hook, not a unit under test: the runtime check is verified
-// once per process, so a test that drives it twice has to forget the verdict.
-import { _resetContainerRuntimeForTests } from '#platform/container/runtime'
-import { ensureKubernetes } from '#platform/k8s/kubectl'
 
 const realPlatform = process.platform
 const realHost = process.env.CONTAINER_HOST
@@ -77,24 +73,21 @@ describe('execFileAsync', () => {
   })
 })
 
-describe('ensureContainerRuntime', () => {
+describe('ensureHostPodman', () => {
   beforeEach(() => {
     execFileMock.mockReset()
-    vi.mocked(ensureKubernetes).mockClear()
-    _resetContainerRuntimeForTests()
     delete process.env.CONTAINER_HOST
   })
 
-  it('checks the rootful podman engine, then kubernetes, on linux', async () => {
+  it('checks the rootful podman engine on linux', async () => {
     setPlatform('linux')
     execFileMock.mockResolvedValue({ stdout: '{}', stderr: '' })
 
-    await ensureContainerRuntime()
+    await ensureHostPodman()
 
     expect(execFileMock).toHaveBeenCalledWith('podman', ['info', '--format', 'json'])
     // The engine check runs against the rootful socket it just pointed at.
     expect(process.env.CONTAINER_HOST).toBe(`unix://${ROOTFUL_PODMAN_SOCKET}`)
-    expect(ensureKubernetes).toHaveBeenCalledTimes(1)
   })
 
   it('prints install instructions and exits when linux podman is unreachable', async () => {
@@ -105,23 +98,21 @@ describe('ensureContainerRuntime', () => {
       throw new Error('process.exit')
     }) as never)
 
-    await expect(ensureContainerRuntime()).rejects.toThrow('process.exit')
+    await expect(ensureHostPodman()).rejects.toThrow('process.exit')
 
     expect(exit).toHaveBeenCalledWith(1)
     expect(err.mock.calls[0]?.[0]).toContain(`setfacl -m u:$USER:rw ${ROOTFUL_PODMAN_SOCKET}`)
-    expect(ensureKubernetes).not.toHaveBeenCalled()
   })
 
   it('checks the podman machine on darwin', async () => {
     setPlatform('darwin')
     execFileMock.mockResolvedValue({ stdout: '[{"Running": false}, {"Running": true}]', stderr: '' })
 
-    await ensureContainerRuntime()
+    await ensureHostPodman()
 
     expect(execFileMock).toHaveBeenCalledWith('podman', ['machine', 'list', '--format', 'json'])
     // macOS drives the machine, so nothing points CONTAINER_HOST anywhere.
     expect(process.env.CONTAINER_HOST).toBeUndefined()
-    expect(ensureKubernetes).toHaveBeenCalledTimes(1)
   })
 
   it('exits when darwin has podman but no running machine', async () => {
@@ -132,7 +123,7 @@ describe('ensureContainerRuntime', () => {
       throw new Error('process.exit')
     }) as never)
 
-    await expect(ensureContainerRuntime()).rejects.toThrow('process.exit')
+    await expect(ensureHostPodman()).rejects.toThrow('process.exit')
 
     expect(exit).toHaveBeenCalledWith(1)
     expect(err.mock.calls[0]?.[0]).toContain('podman machine start')
@@ -146,41 +137,9 @@ describe('ensureContainerRuntime', () => {
       throw new Error('process.exit')
     }) as never)
 
-    await expect(ensureContainerRuntime()).rejects.toThrow('process.exit')
+    await expect(ensureHostPodman()).rejects.toThrow('process.exit')
 
     expect(err.mock.calls[0]?.[0]).toContain('brew install podman')
-  })
-
-  it('propagates kubernetes failures after the podman check passes', async () => {
-    setPlatform('linux')
-    execFileMock.mockResolvedValue({ stdout: '{}', stderr: '' })
-    vi.mocked(ensureKubernetes).mockRejectedValueOnce(
-      new Error('Kubernetes cluster is not reachable.'),
-    )
-    await expect(ensureContainerRuntime()).rejects.toThrow('not reachable')
-  })
-
-  it('verifies once per process — the second call spawns nothing', async () => {
-    setPlatform('linux')
-    execFileMock.mockResolvedValue({ stdout: '{}', stderr: '' })
-    await ensureContainerRuntime()
-    execFileMock.mockClear()
-    vi.mocked(ensureKubernetes).mockClear()
-
-    await ensureContainerRuntime()
-
-    expect(execFileMock).not.toHaveBeenCalled()
-    expect(ensureKubernetes).not.toHaveBeenCalled()
-  })
-
-  it('does not cache a failed verification', async () => {
-    setPlatform('linux')
-    execFileMock.mockResolvedValue({ stdout: '{}', stderr: '' })
-    vi.mocked(ensureKubernetes).mockRejectedValueOnce(new Error('down'))
-    await expect(ensureContainerRuntime()).rejects.toThrow('down')
-
-    await ensureContainerRuntime()
-    expect(ensureKubernetes).toHaveBeenCalledTimes(2)
   })
 })
 

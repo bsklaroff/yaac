@@ -1,11 +1,11 @@
 /**
  * The builder-pod entry points that are not reached through a chain build:
- * the pinned-image mirror (also called by the e2e global setup), the
- * cluster-wide role guard (applied at `yaac cluster setup`) and the
- * leaked-pod reaper (a reconcile step).
+ * the builder pods' egress policy (applied by the cluster feature before it
+ * leases one) and the leaked-pod reaper (a reconcile step).
  *
  * Everything else in this module — pod manifests, in-pod scripts, build
- * argv, context tar — is exercised through `ensureImage` in
+ * argv, context tar, the upstream-image fallback that makes a builder
+ * bootstrappable — is exercised through `ensureImage` in
  * build-coordinator.test.ts, where it is actually wired up.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -52,15 +52,17 @@ vi.mock('#platform/container/registry', async (importOriginal) => ({
   pushImageToRegistry: vi.fn(),
 }))
 
-import { ensureBuilderImage, reconcileBuilderPodGc } from '#features/images'
+import {
+  buildBuilderEgressNetworkPolicyManifest,
+  reconcileBuilderPodGc,
+} from '#features/image-engine'
 // Reap policy constant, the upstream pin, and the sweep-throttle reset:
 // setup values, not units under test.
 import {
-  BUILDER_LOCAL_TAG,
   BUILDER_REAP_AGE_MS,
   BUILDER_UPSTREAM_IMAGE,
   _resetBuilderReapForTests,
-} from '#features/images/builder-pod'
+} from '#features/image-engine/builder-pod'
 
 
 const reaped = (): string[] =>
@@ -80,17 +82,26 @@ beforeEach(() => {
   mockImageExists.mockResolvedValue(false)
 })
 
-describe('ensureBuilderImage', () => {
-  it('returns the registry ref without pulling when the tag is mirrored', async () => {
-    await expect(ensureBuilderImage(true)).resolves.toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
+describe('buildBuilderEgressNetworkPolicyManifest', () => {
+  it('opens egress for builder-labeled pods only', () => {
+    const np = buildBuilderEgressNetworkPolicyManifest() as {
+      metadata: { namespace: string }
+      spec: {
+        podSelector: { matchLabels: Record<string, string> }
+        policyTypes: string[]
+        egress: unknown[]
+      }
+    }
+    expect(np.metadata.namespace).toBe('test-ns')
+    expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
+    expect(np.spec.policyTypes).toEqual(['Egress'])
+    // Allow-all: a builder pulls upstream bases and pushes products.
+    expect(np.spec.egress).toEqual([{}])
   })
 
-  it('refuses to build under requirePrebuilt when the mirror is missing', async () => {
-    mockRegistryHasTag.mockResolvedValue(false)
-    await expect(ensureBuilderImage(true)).rejects.toThrow(/Restart the test run/)
-  })
-
-  it('is digest-pinned upstream (the digest IS the pin — no content hash)', () => {
+  it('rides on a digest-pinned upstream image (the digest IS the pin)', () => {
+    // Not a manifest assertion but the same bootstrap fact: nothing yaac
+    // builds is needed to stand a builder up.
     expect(BUILDER_UPSTREAM_IMAGE).toMatch(/^quay\.io\/podman\/stable@sha256:[0-9a-f]{64}$/)
   })
 })

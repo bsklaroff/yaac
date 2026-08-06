@@ -88,6 +88,9 @@ export async function contextHash(dir: string): Promise<string> {
 //   2. The compat endpoint defaults to layers=false, discarding intermediate
 //      layers — so even back-to-back dockerode builds rebuild from scratch.
 // Staying on the CLI keeps one shared OCI cache chain across all builders.
+// It is also why the in-cluster builder runs the podman CLI in a pod rather
+// than a second build engine: the same manifest split would reappear at the
+// seam between the two, and with it two incompatible caches.
 export interface BuildOptions {
   noCache?: boolean
   onLog?: (line: string) => void
@@ -144,8 +147,12 @@ export async function buildImage(
 }
 
 /**
- * Build an image if a tagged version does not already exist.
- * Used by test global setup to pre-build images with content-hash tags.
+ * Build an image on the HOST engine if a tagged version does not already
+ * exist there. The test global setup's prebuild path, and deliberately not
+ * routed through `imageBuilder()`: the global setup runs on a developer
+ * machine before any server exists, and prebuilding the e2e chain through
+ * builder pods would put the sandbox tax (~3x on a cold chain) on the
+ * critical path of every suite run. See docs/image-builds.md.
  */
 export async function ensureImageByTag(tag: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   if (await imageExists(tag)) return

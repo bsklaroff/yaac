@@ -19,8 +19,10 @@ fixups to every node, and deploys the in-cluster image registry.
 
 yaac splits the container runtime in two:
 
-- **Podman** builds session images (`podman build` / `podman push`) and
-  hosts the kind node container.
+- **Podman** hosts the kind node container. It no longer builds session
+  images: those build in in-cluster builder pods (docs/image-builds.md), so
+  on the local backend podman is the cluster's substrate rather than yaac's
+  build engine.
 - **Kubernetes** runs the sessions — one Job (single-pod) per session, plus
   a shared proxy Deployment. yaac targets a **local kind cluster** of one or
   more nodes (see "Multi-node" below). Session pods run under gVisor (runsc): the gofer
@@ -79,12 +81,12 @@ Even on kernels new enough to permit that mount in a user namespace (>= 6.9),
 loading the datapath's BPF programs still needs CAP_BPF in the initial user
 namespace — rootful is required either way.
 
-yaac points both halves of the split runtime at the rootful engine by setting
+yaac points podman at the rootful engine by setting
 `CONTAINER_HOST=unix:///run/podman/podman.sock` at startup
-(`ensureRootfulPodmanHost` in `src/lib/container/runtime.ts`): kind inherits it
-(so its podman provider uses rootful) and every `podman build`/`push` call
-targets the same store the cluster pulls from. A `CONTAINER_HOST` you set
-yourself is left untouched.
+(`ensureRootfulPodmanHost` in `platform/container/runtime.ts`): kind inherits
+it, so its podman provider uses rootful, and so does any host-engine image
+work (the e2e prebuild, a `YAAC_IMAGE_BUILDER=host-podman` install). A
+`CONTAINER_HOST` you set yourself is left untouched.
 
 The rootful socket is root-owned and systemd-activated, so yaac (unprivileged)
 can't start it — enable it once and grant your user access:

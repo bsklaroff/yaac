@@ -9,9 +9,9 @@
  * build of the same tag — two podman processes fighting over the shared
  * layer cache and the image-store lock, for the slowest layers we have.
  *
- * The builder-pod half of a trust-split build is already covered:
- * `reconcileBuilderPodGc` deletes any builder pod created before this
- * process started. This is the host-side equivalent, and it needs a durable
+ * A builder pod is already covered: `reconcileBuilderPodGc` deletes any
+ * created before this process started. This is the equivalent for an
+ * install that still builds on a machine engine, and it needs a durable
  * record because a host pid carries no label to select on. Every tracked
  * spawn is written to `<data dir>/host-podman.json` before it can be
  * orphaned; `reapOrphanedPodmanProcs` reads that file once at boot — under

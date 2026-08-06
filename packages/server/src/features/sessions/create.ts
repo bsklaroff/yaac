@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureImage, primeSessionImages, pushImageShared } from '#features/images'
+import { ensureImageBuildRuntime } from '#features/image-engine'
 import {
   buildSessionRegistration,
   hostMatchesPattern,
@@ -11,7 +12,6 @@ import {
   resolveProxyImageTag,
   syncProxySecrets,
 } from '#features/egress'
-import { ensureContainerRuntime } from '#platform/container'
 import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import {
   LABEL_DATA_DIR_HASH,
@@ -528,7 +528,7 @@ export async function createSession(
 
   const tool: AgentTool = options.tool ?? 'claude'
 
-  await ensureContainerRuntime()
+  await ensureImageBuildRuntime()
 
   // Git identity is resolved by the CLI before the call; fall back to the
   // global git config for non-interactive callers (stream picker).

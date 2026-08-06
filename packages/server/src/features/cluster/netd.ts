@@ -1,6 +1,4 @@
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import {
   DNS_STUB_PORT,
   NETD_APP_NAME,
@@ -17,8 +15,17 @@ import {
   kubectlApply,
   kubectlWithRetry,
 } from '#platform/k8s'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#features/image-engine'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import {
+  contextHash,
+  ensureMirroredImage,
+  failImageBuild,
+  finishImageBuild,
+  registerImageBuild,
+  SHIPPED_BUILD_CACHE_REPO,
+  type ImageBuilder,
+} from '#features/image-engine'
+import { registryHasTag, registryRef } from '#platform/container'
+import { withClusterImageBuilder } from './builder-host'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
@@ -27,8 +34,6 @@ import {
   INNER_CLAIM_CM_NAME,
   buildInnerClaimConfigMapManifest,
 } from './redirect-claims'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * `yaac-netd` — the per-node DaemonSet that steers session egress into the
@@ -79,86 +84,68 @@ export const ENVOY_UPSTREAM_IMAGE = `docker.io/envoyproxy/envoy@${ENVOY_PIN}`
 export const ENVOY_MIRROR_TAG =
   `envoyproxy/envoy:${ENVOY_VERSION}-${ENVOY_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** podman's GOARCH name for this host — the node shares it (kind's node is a
- *  container here), so it is also the arch every mirrored image must be. */
-export function hostImageArch(arch: string = process.arch): string {
-  return arch === 'x64' ? 'amd64' : arch
-}
-
-/**
- * Throw when a mirrored upstream image is built for the wrong architecture,
- * naming the likely cause (a pin that points at a child manifest rather than
- * the index). An empty/unknown `actual` is accepted — the check must never be
- * the reason a mirror fails.
- */
-export function assertMirrorArch(
-  image: string,
-  actual: string,
-  expected: string = hostImageArch(),
-): void {
-  if (!actual.trim() || actual.trim() === expected) return
-  throw new Error(
-    `${image} is a ${actual.trim()} image but this host is ${expected}. `
-    + 'Pin the multi-arch index digest, not one platform\'s child manifest.',
-  )
-}
-
 /** Content-hash tag of the netd image (the k8s/netd build context). */
 export async function resolveNetdImageTag(image = 'yaac-netd'): Promise<string> {
   return `${image}:${await contextHash(NETD_DIR)}`
 }
 
 /**
- * Build-or-skip the netd image and return its in-cluster ref. Same shape
- * as the proxy's: the content-hash tag means an unchanged source tree is
- * a registry lookup and nothing more.
+ * Build-or-skip the netd image and return its in-cluster ref. The
+ * content-hash tag means an unchanged source tree is a registry lookup and
+ * nothing more — which is what keeps this off the builder-pod path on every
+ * `ensureNetd` but the first after a netd source change.
+ *
+ * This is the build cluster setup runs BEFORE netd exists, and it is the
+ * one that used to make the host's podman non-negotiable. It builds in a
+ * pod like everything else: a builder needs the registry, the role guard
+ * and the gVisor runtime, all of which setup installs from digest-pinned
+ * upstream images before it gets here, and none of which needs netd — a
+ * builder pod's egress is direct, not redirected.
  */
 export async function ensureNetdImage(
   requirePrebuilt = testEnv.requirePrebuiltImages,
 ): Promise<string> {
   const localTag = await resolveNetdImageTag(testEnv.netdImage)
   if (await registryHasTag(localTag)) return registryRef(localTag)
+  if (requirePrebuilt) {
+    throw new Error(
+      `netd image ${localTag} is missing or stale. `
+      + 'Restart the test run so the global setup can rebuild it.',
+    )
+  }
 
-  if (!await imageExists(localTag)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `netd image ${localTag} is missing or stale. `
-        + 'Restart the test run so the global setup can rebuild it.',
-      )
-    }
-    const id = registerImageBuild({ tag: localTag, layer: 'netd', action: 'build', reason: 'session' })
-    serverLog(`[build] starting ${localTag} (netd)`)
+  const id = registerImageBuild({ tag: localTag, layer: 'netd', action: 'build', reason: 'session' })
+  serverLog(`[build] starting ${localTag} (netd)`)
+  return withClusterImageBuilder(async (builder) => {
     try {
-      await buildImage(localTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
+      await builder.build({
+        tag: localTag,
+        dockerfile: path.join(NETD_DIR, 'Dockerfile'),
+        context: NETD_DIR,
+        noCache: false,
+        cacheRepo: SHIPPED_BUILD_CACHE_REPO,
+      })
       finishImageBuild(id)
     } catch (err) {
       failImageBuild(id, err instanceof Error ? err.message : String(err))
       throw err
     }
-  }
-  return pushImageToRegistry(localTag)
+    // A no-op on the cluster backend, whose build already pushed it.
+    return builder.publish(localTag)
+  })
 }
 
 /** Mirror the pinned Envoy image into the local registry. */
 export async function ensureEnvoyImage(
   requirePrebuilt = testEnv.requirePrebuiltImages,
+  via?: ImageBuilder,
 ): Promise<string> {
-  if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
-  if (!await imageExists(ENVOY_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `Envoy image ${ENVOY_MIRROR_TAG} is missing. `
-        + 'Restart the test run so the global setup can mirror it.',
-      )
-    }
-    await execFileAsync('podman', ['pull', ENVOY_UPSTREAM_IMAGE], { timeout: 600_000 })
-    const { stdout: arch } = await execFileAsync('podman', [
-      'image', 'inspect', '--format', '{{.Architecture}}', ENVOY_UPSTREAM_IMAGE,
-    ]).catch(() => ({ stdout: '' }))
-    assertMirrorArch(ENVOY_UPSTREAM_IMAGE, arch)
-    await execFileAsync('podman', ['tag', ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG])
-  }
-  return pushImageToRegistry(ENVOY_MIRROR_TAG)
+  return withClusterImageBuilder((builder) => ensureMirroredImage({
+    upstream: ENVOY_UPSTREAM_IMAGE,
+    tag: ENVOY_MIRROR_TAG,
+    label: 'Envoy image',
+    requirePrebuilt,
+  }, builder), via)
 }
 
 export function buildNetdServiceAccountManifest(): Record<string, unknown> {

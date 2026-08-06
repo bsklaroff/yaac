@@ -6,7 +6,6 @@ import {
   LABEL_SESSION_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
-  execFileAsync,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
@@ -14,7 +13,7 @@ import {
   runPodToCompletion,
 } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { registryHasTag, registryRef } from '#platform/container'
 import { nodeIpBlocks } from './cluster-cidrs'
 // Sibling in this sealed folder; main-registry.ts reads two constants back
 // out of this module, which is fine — neither import is used at module
@@ -24,7 +23,8 @@ import {
   specsClaimStorage,
   type RawRegistryDeploy,
 } from './main-registry'
-import { imageExists } from '#platform/container'
+import { ensureMirroredImage, type ImageBuilder } from '#features/image-engine'
+import { withClusterImageBuilder } from './builder-host'
 import { projectDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
@@ -790,20 +790,14 @@ export function buildRegistryGcPodManifest(
  */
 export async function ensureRegistryImage(
   requirePrebuilt = testEnv.requirePrebuiltImages,
+  via?: ImageBuilder,
 ): Promise<string> {
-  if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
-
-  if (!await imageExists(REGISTRY_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `Registry image ${REGISTRY_MIRROR_TAG} is missing. ` +
-        'Restart the test run so the global setup can mirror it.',
-      )
-    }
-    await execFileAsync('podman', ['pull', REGISTRY_UPSTREAM_IMAGE], { timeout: 300_000 })
-    await execFileAsync('podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG])
-  }
-  return pushImageToRegistry(REGISTRY_MIRROR_TAG)
+  return withClusterImageBuilder((builder) => ensureMirroredImage({
+    upstream: REGISTRY_UPSTREAM_IMAGE,
+    tag: REGISTRY_MIRROR_TAG,
+    label: 'Registry image',
+    requirePrebuilt,
+  }, builder), via)
 }
 
 interface RawNodeList {

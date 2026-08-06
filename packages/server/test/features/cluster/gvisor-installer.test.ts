@@ -15,10 +15,6 @@ vi.mock('#platform/container/registry', () => ({
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(false),
-}))
-
 import { ensureGvisorRuntime } from '#features/cluster'
 // Setup values: the object names and the image pin the assertions compare
 // against.
@@ -34,14 +30,12 @@ import {
   RUNTIME_CLASS_GVISOR_NESTED,
 } from '#platform/k8s'
 import { execFileAsync, kubectlApply, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { imageExists } from '#platform/container/runtime'
 import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockRetry = vi.mocked(kubectlWithRetry)
 const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
-const mockImageExists = vi.mocked(imageExists)
 const mockPush = vi.mocked(pushImageToRegistry)
 
 interface Applied {
@@ -59,10 +53,17 @@ function ofKind(kind: string): Applied[] {
   return applied().filter((m) => m.kind === kind)
 }
 
+/** The image the installer DaemonSet's container runs. */
+function installerImage(): string {
+  const ds = ofKind('DaemonSet')[0] as unknown as {
+    spec: { template: { spec: { containers: Array<{ image: string }> } } }
+  }
+  return ds.spec.template.spec.containers[0].image
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockHasTag.mockResolvedValue(true)
-  mockImageExists.mockResolvedValue(false)
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
 })
 
@@ -249,44 +250,27 @@ describe('ensureGvisorRuntime', () => {
     expect(pod.nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
   })
 
-  it('mirrors the pinned upstream installer image, pulling only when it is absent', async () => {
-    // Already in the local registry — no podman at all.
+  it('runs on the pinned upstream image, mirrored or not', async () => {
+    // The installer is the one image that is never mirrored on demand:
+    // every other mirror is made BY a builder pod, a builder pod is a
+    // gVisor pod, and gVisor is what this installs. So it takes the same
+    // exemption the registry's own Deployment takes — it cannot be a
+    // consumer of the thing it brings up.
+    mockHasTag.mockResolvedValue(false)
     await ensureGvisorRuntime()
+    expect(GVISOR_INSTALLER_UPSTREAM_IMAGE)
+      .toMatch(/^docker\.io\/curlimages\/curl@sha256:[0-9a-f]{64}$/)
+    expect(installerImage()).toBe(GVISOR_INSTALLER_UPSTREAM_IMAGE)
+    // Nothing was pulled, tagged or pushed to get there.
     expect(mockExec).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
 
-    // Present in podman but not pushed — push without pulling.
+    // A mirror made elsewhere (the e2e global setup makes one host-side) is
+    // preferred, which keeps repeat installs off docker.io.
     vi.clearAllMocks()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(true)
+    mockHasTag.mockResolvedValue(true)
     await ensureGvisorRuntime()
+    expect(installerImage()).toBe(`localhost:5001/${GVISOR_INSTALLER_MIRROR_TAG}`)
     expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).toHaveBeenCalledWith(GVISOR_INSTALLER_MIRROR_TAG)
-
-    // Absent everywhere — pull by the multi-arch INDEX digest (a child
-    // manifest would mirror one platform's bytes onto every node), verify the
-    // mirrored architecture, tag, push.
-    vi.clearAllMocks()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
-    mockExec.mockResolvedValue({ stdout: process.arch === 'x64' ? 'amd64' : process.arch, stderr: '' })
-    await ensureGvisorRuntime()
-    expect(GVISOR_INSTALLER_UPSTREAM_IMAGE).toMatch(/^docker\.io\/curlimages\/curl@sha256:[0-9a-f]{64}$/)
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['pull', GVISOR_INSTALLER_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
-    )
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['tag', GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG],
-    )
-    expect(mockPush).toHaveBeenCalledWith(GVISOR_INSTALLER_MIRROR_TAG)
-  })
-
-  it('fails fast instead of pulling when prebuilt images are required', async () => {
-    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
-    await expect(ensureGvisorRuntime()).rejects.toThrow(/missing/)
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockApply).not.toHaveBeenCalled()
   })
 })

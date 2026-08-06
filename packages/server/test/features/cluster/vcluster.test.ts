@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import YAML from 'yaml'
+import type * as imageEngineModule from '#features/image-engine'
 
 interface K8sObj {
   kind: string
@@ -24,9 +25,32 @@ vi.mock('#platform/container/registry', () => ({
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(false),
-}))
+
+/**
+ * The image builder is the seam the vcluster image set is mirrored through
+ * — the pod that runs `podman pull`/`push` is not this file's subject.
+ * Only the builder is replaced; `ensureMirroredImage`'s registry skip and
+ * requirePrebuilt gate stay real.
+ */
+const mockMirror = vi.hoisted(() => vi.fn(
+  (req: { tag: string }) => Promise.resolve(`localhost:5001/${req.tag}`),
+))
+vi.mock('#features/image-engine', async (importOriginal) => {
+  const fake = {
+    kind: 'cluster-pod' as const,
+    build: vi.fn().mockResolvedValue(undefined),
+    mirror: mockMirror,
+    imageExists: () => Promise.resolve(false),
+    remove: () => Promise.resolve(),
+    publish: (tag: string) => Promise.resolve(`localhost:5001/${tag}`),
+    close: () => Promise.resolve(),
+  }
+  return {
+    ...(await importOriginal<typeof imageEngineModule>()),
+    imageBuilder: () => fake,
+    withImageBuilder: <T>(_h: unknown, fn: (b: typeof fake) => Promise<T>) => fn(fake),
+  }
+})
 
 import {
   buildVclusterCleanupShellCommand,
@@ -57,7 +81,6 @@ import {
   kubectlWithRetry,
 } from '#platform/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
-import { imageExists } from '#platform/container/runtime'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -65,7 +88,6 @@ const mockRetry = vi.mocked(kubectlWithRetry)
 const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
-const mockImageExists = vi.mocked(imageExists)
 
 const NODE_IP = '10.89.0.7'
 
@@ -103,8 +125,7 @@ beforeEach(() => {
   mockHasTag.mockResolvedValue(true)
   mockPush.mockReset()
   mockPush.mockImplementation((tag: string) => Promise.resolve(`localhost:5001/${tag}`))
-  mockImageExists.mockReset()
-  mockImageExists.mockResolvedValue(false)
+  mockMirror.mockClear()
   resetClusterCidrCache()
 })
 
@@ -166,28 +187,27 @@ describe('vapAvailable', () => {
 describe('ensureVclusterImages', () => {
   it('skips images the registry already holds', async () => {
     await ensureVclusterImages(false)
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockMirror).not.toHaveBeenCalled()
   })
 
-  it('pulls by pinned digest, tags, and pushes missing images', async () => {
+  it('copies every missing image in by its pinned digest', async () => {
     mockHasTag.mockResolvedValue(false)
     await ensureVclusterImages(false)
-    const pulls = mockExec.mock.calls.filter((c) => (c[1] as string[])[0] === 'pull')
-    expect(pulls.length).toBeGreaterThanOrEqual(4)
-    for (const c of pulls) {
-      expect((c[1] as string[])[1]).toMatch(/@sha256:[0-9a-f]{64}$/)
-    }
-    expect(mockPush).toHaveBeenCalledWith('loft-sh/vcluster-oss:0.34.3')
-    expect(mockPush).toHaveBeenCalledWith('loft-sh/kubernetes:v1.35.0')
-    expect(mockPush).toHaveBeenCalledWith('coredns/coredns:1.12.1')
-    expect(mockPush).toHaveBeenCalledWith('library/alpine:3.20')
+    const mirrored = mockMirror.mock.calls.map((c) => c[0] as { upstream: string; tag: string })
+    expect(mirrored.length).toBeGreaterThanOrEqual(4)
+    for (const { upstream } of mirrored) expect(upstream).toMatch(/@sha256:[0-9a-f]{64}$/)
+    expect(mirrored.map((m) => m.tag)).toEqual(expect.arrayContaining([
+      'loft-sh/vcluster-oss:0.34.3',
+      'loft-sh/kubernetes:v1.35.0',
+      'coredns/coredns:1.12.1',
+      'library/alpine:3.20',
+    ]))
   })
 
-  it('fails fast under requirePrebuilt instead of pulling', async () => {
+  it('fails fast under requirePrebuilt instead of mirroring', async () => {
     mockHasTag.mockResolvedValue(false)
     await expect(ensureVclusterImages(true)).rejects.toThrow(/missing/)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockMirror).not.toHaveBeenCalled()
   })
 })
 

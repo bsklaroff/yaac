@@ -1,9 +1,8 @@
-// The public interface of the images feature: the half of image handling that
-// needs a cluster — sandboxed builder pods, the in-cluster registry promoter,
-// the prewarm sweep and the build-cache GC. The host-side half (podman build,
-// content-hash tags, the build-row registry, host GC) is #features/image-engine
-// and sits BELOW #features/cluster, which builds netd's image before there is
-// a cluster to build it in.
+// The public interface of the images feature: everything about a PROJECT's
+// image chain — the single-flight coordinator over its layers, the in-cluster
+// registry promoter, the prewarm sweep and the build-cache GC. How any one
+// image is actually realized is #features/image-engine, which sits BELOW
+// #features/cluster because cluster setup builds netd's image.
 //
 // Everything outside this directory imports `#features/images`; the
 // SEALED_FOLDERS lint rule stops src from reaching past this file. Modules in
@@ -18,6 +17,5 @@
 
 export { reconcileBuildCacheGc } from './build-cache-gc'
 export { ensureImage, pushImageShared, rebuildProjectImage } from './build-coordinator'
-export { ensureBuilderImage, reconcileBuilderPodGc } from './builder-pod'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
 export { primeSessionImages, salvageSessionImages } from './image-promoter'

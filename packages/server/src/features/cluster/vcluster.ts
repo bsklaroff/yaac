@@ -34,7 +34,9 @@ import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
 } from './activator'
-import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#platform/container'
+import { registryHost } from '#platform/container'
+import { ensureMirroredImage, type ImageBuilder } from '#features/image-engine'
+import { withClusterImageBuilder } from './builder-host'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 
@@ -240,23 +242,22 @@ interface VclusterImageEntry {
  */
 export async function ensureVclusterImages(
   requirePrebuilt = testEnv.requirePrebuiltImages,
+  via?: ImageBuilder,
 ): Promise<void> {
   const raw = await fs.readFile(path.join(VCLUSTER_DIR, 'images.json'), 'utf8')
   const { images } = JSON.parse(raw) as { images: VclusterImageEntry[] }
-  for (const { upstream, localTag } of images) {
-    if (await registryHasTag(localTag)) continue
-    if (!await imageExists(localTag)) {
-      if (requirePrebuilt) {
-        throw new Error(
-          `vcluster image ${localTag} is missing. ` +
-          'Restart the test run so the global setup can mirror it.',
-        )
-      }
-      await execFileAsync('podman', ['pull', upstream], { timeout: 600_000 })
-      await execFileAsync('podman', ['tag', upstream, localTag])
+  // One builder for the whole set: a cold mirror of five images is five
+  // execs in one pod, not five pods.
+  await withClusterImageBuilder(async (builder) => {
+    for (const { upstream, localTag } of images) {
+      await ensureMirroredImage({
+        upstream,
+        tag: localTag,
+        label: 'vcluster image',
+        requirePrebuilt,
+      }, builder)
     }
-    await pushImageToRegistry(localTag)
-  }
+  }, via)
 }
 
 /** Ownership labels stamped on every object a vcluster owns (GC keys). */

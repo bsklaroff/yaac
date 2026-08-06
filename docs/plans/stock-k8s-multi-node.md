@@ -49,8 +49,8 @@ This is the third track alongside two existing plans, and it subsumes parts
 of both:
 
 - `moving-off-kind.md` — replace the node-in-a-container backend; still
-  single-node, still local. Its buildkitd-in-cluster spike is a
-  prerequisite here (its main-registry-in-cluster section has shipped).
+  single-node, still local. Its in-cluster-builds and
+  main-registry-in-cluster sections have both shipped (§5).
 - `multi-node-storage-plan.md` — shared project state across nodes. Its
   gVisor-enables-NFS analysis, shared-vs-node-local dir split, and NFS spike
   apply here unchanged; only the mount mechanism differs (CSI PV instead of
@@ -242,10 +242,28 @@ instead of assuming them.
 
 ### 5. Images: host podman + localhost registry → in-cluster builds + real registry
 
-- **Builds**: `podman build` on the server host is replaced by
-  buildkitd-in-cluster + `buildctl` (spike 2 of `moving-off-kind.md`,
-  now mandatory). Trust-split untrusted layers already build in in-cluster
-  runsc builder pods and only need registry reachability.
+- ~~**Builds**~~ — **done**. `podman build` on the server host is gone:
+  every image yaac builds — the session chain, netd, the proxy, and the
+  upstream mirrors — is realized by an ephemeral runsc builder pod running
+  the podman CLI, behind an `ImageBuilder` seam whose other backend is the
+  old host engine (docs/image-builds.md). Generalizing the trust-split
+  builder pods onto the trusted half was a far smaller change than adopting
+  a second engine, and it keeps ONE cache format: the OCI-vs-Docker-v2
+  manifest split that makes yaac shell out to the podman CLI would
+  otherwise reappear at the seam between two builders. What buildkit
+  actually offers — no global image-store lock, so concurrent builds do not
+  queue — is bought here by one pod per build request instead; the seam is
+  what keeps the engine swappable if many-projects-one-builder ever becomes
+  the shape.
+  Bootstrap is not a cycle: everything a builder needs (the registry, the
+  gVisor installer, the builder pod's own image) comes from digest-pinned
+  UPSTREAM refs that node containerd pulls directly, so `cluster setup`
+  installs those first and only then builds netd's image in a pod. Build
+  contexts stream into the pod as a tar over `kubectl exec -i` rather than
+  being mounted off the (post-§2) PVC — portable, and assumes only an
+  apiserver. The host backend survives for nested installs, for
+  `YAAC_IMAGE_BUILDER=host-podman`, and for the e2e global setup, which
+  prebuilds on a developer machine that has podman by definition.
 - **Main registry**: **done** — it is an in-cluster `registry:2`
   Deployment + ClusterIP Service on the per-project registries' pattern, so
   the podman container, the `kind` network join, and the `localhost:5001`
@@ -347,13 +365,13 @@ instead of assuming them.
 
 The parts already built against the API server rather than the host:
 stream relay (streamd, proxy relay, `ExecTunnel`), tmux status/attach via
-exec, content-hash image tagging, trust-split builder pods, per-project
-registry topology, the `ValidatingAdmissionPolicy` guards (builder-role and
-vcluster synced-pod — stock k8s, unaffected), vcluster sessions, the remote
-client/auth-broker model, and the DB layer (pglite on a private volume). The
-egress plane (§4) carries over as-is: plain NetworkPolicy enforced by the
-cluster's Calico, plus netd's per-node redirect, both already multi-node
-shaped.
+exec, content-hash image tagging, the builder pods every image now builds in,
+per-project registry topology, the `ValidatingAdmissionPolicy` guards
+(builder-role and vcluster synced-pod — stock k8s, unaffected), vcluster
+sessions, the remote client/auth-broker model, and the DB layer (pglite on a
+private volume). The egress plane (§4) carries over as-is: plain
+NetworkPolicy enforced by the cluster's Calico, plus netd's per-node
+redirect, both already multi-node shaped.
 
 ## Phasing
 
@@ -366,9 +384,13 @@ shaped.
      survive a node-pool upgrade.
    - RWX (NFS-CSI) under gVisor: the storage plan's probe chain + perf
      numbers.
-   - buildkitd-in-cluster + push/pull against DOCR or in-cluster registry.
+   - ~~buildkitd-in-cluster~~ — **not taken**: in-cluster builds ship as
+     podman builder pods behind a builder seam (§5), so the remaining
+     question is only push/pull against DOCR rather than the in-cluster
+     registry.
 2. **Host-decoupling that pays off on single-node too** (land on the
-   current backend first): buildkit builds behind a builder abstraction,
+   current backend first): ~~builds behind a builder abstraction~~ (done —
+   §5, in-cluster podman builder pods rather than buildkit),
    ~~registry storage on PVCs~~ (done — §5),
    ~~registry in-cluster~~ (done — §5),
    ~~salvage-via-registry~~ (done — §5),

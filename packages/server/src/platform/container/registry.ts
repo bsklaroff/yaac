@@ -4,9 +4,9 @@ import { invalidatePortForward, resolvePortForward } from '#platform/k8s'
 import { runTrackedPodman } from './host-procs'
 
 /**
- * The CLIENT half of the main OCI registry — the one image bus between
- * host-side `podman build`, the sandboxed builder pods, and every node
- * pulling a session image. The registry itself is an in-cluster
+ * The CLIENT half of the main OCI registry — the one image bus between the
+ * sandboxed builder pods, an install that still builds on a machine engine,
+ * and every node pulling a session image. The registry itself is an in-cluster
  * Deployment + Service stood up by `#features/cluster` (main-registry.ts);
  * nothing here creates or owns it.
  *
@@ -172,11 +172,11 @@ export async function registryHasTag(tag: string): Promise<boolean> {
  * push puts at `127.0.0.1:<fwd>/yaac-tools:abc` are exactly what a node
  * pulls as `yaac-registry.yaac.svc.cluster.local:5000/yaac-tools:abc`.
  *
- * `compressionFormat: 'zstd'` is used for trusted-layer pushes feeding
- * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
- * pull from 65.6s to 40.4s (measured, docs/trust-split-builds.md) at
- * no meaningful host-side push cost. Node containerd pulls of zstd blobs
- * (the session-pod path) are validated — see the plan doc.
+ * `compressionFormat: 'zstd'` cut a builder pod's empty-graphroot parent
+ * pull from 65.6s to 40.4s (measured, docs/image-builds.md) at no
+ * meaningful push cost, and node containerd pulls of zstd blobs (the
+ * session-pod path) are validated. It applies only to what a machine
+ * engine pushes; the same flag on the in-pod push is an open item.
  */
 export async function pushImageToRegistry(
   localTag: string,

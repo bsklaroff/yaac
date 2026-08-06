@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import type * as imageEngineModule from '#features/image-engine'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -22,9 +23,32 @@ vi.mock('#platform/container/registry', () => ({
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(false),
-}))
+
+/**
+ * The image builder is the seam a mirror goes through — the pod that runs
+ * `podman pull`/`push` is not this file's subject. Only the builder is
+ * replaced; `ensureMirroredImage`'s registry skip and requirePrebuilt gate
+ * stay real, since they decide whether a mirror happens at all.
+ */
+const mockMirror = vi.hoisted(() => vi.fn(
+  (req: { tag: string }) => Promise.resolve(`localhost:5001/${req.tag}`),
+))
+vi.mock('#features/image-engine', async (importOriginal) => {
+  const fake = {
+    kind: 'cluster-pod' as const,
+    build: vi.fn().mockResolvedValue(undefined),
+    mirror: mockMirror,
+    imageExists: () => Promise.resolve(false),
+    remove: () => Promise.resolve(),
+    publish: (tag: string) => Promise.resolve(`localhost:5001/${tag}`),
+    close: () => Promise.resolve(),
+  }
+  return {
+    ...(await importOriginal<typeof imageEngineModule>()),
+    imageBuilder: () => fake,
+    withImageBuilder: <T>(_h: unknown, fn: (b: typeof fake) => Promise<T>) => fn(fake),
+  }
+})
 
 import {
   ensureProjectRegistry,
@@ -61,7 +85,6 @@ import {
   kubectlWithRetry,
 } from '#platform/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
-import { imageExists } from '#platform/container/runtime'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const mockApply = vi.mocked(kubectlApply)
@@ -70,7 +93,6 @@ const mockRetry = vi.mocked(kubectlWithRetry)
 const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockPush = vi.mocked(pushImageToRegistry)
-const mockImageExists = vi.mocked(imageExists)
 
 const NODE_IP = '10.89.0.7'
 // Carries both what project-registry reads (the node name, to pin the writer
@@ -100,8 +122,7 @@ beforeEach(() => {
   mockHasTag.mockResolvedValue(false)
   mockPush.mockReset()
   mockPush.mockImplementation((tag: string) => Promise.resolve(`localhost:5001/${tag}`))
-  mockImageExists.mockReset()
-  mockImageExists.mockResolvedValue(false)
+  mockMirror.mockClear()
 })
 
 const appliedAllKind = (kind: string): unknown[] =>
@@ -422,36 +443,22 @@ describe('ensureProjectRegistry', () => {
     expect(egress.spec.egress).toEqual([])
   })
 
-  it('mirrors the pinned upstream registry image, pulling only when it is absent', async () => {
-    // Already in the local registry — no podman at all.
+  it('mirrors the pinned upstream registry image, only when it is absent', async () => {
+    // Already in the local registry — nothing to copy.
     mockHasTag.mockResolvedValue(true)
     await ensureProjectRegistry('demo')
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockMirror).not.toHaveBeenCalled()
 
-    // Present in podman but not pushed — push without pulling.
+    // Absent — copied in by the multi-arch index digest, which IS the pin.
     vi.clearAllMocks()
     stageLiveCluster()
     mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(true)
-    await ensureProjectRegistry('demo')
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
-
-    // Absent everywhere — pull by the multi-arch index digest, tag, push.
-    vi.clearAllMocks()
-    stageLiveCluster()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
     await ensureProjectRegistry('demo')
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['pull', REGISTRY_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
-    )
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG],
-    )
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
+    expect(mockMirror).toHaveBeenCalledWith({
+      upstream: REGISTRY_UPSTREAM_IMAGE,
+      tag: REGISTRY_MIRROR_TAG,
+    })
   })
 
   it('names the PVC when the rollout times out', async () => {
@@ -467,12 +474,11 @@ describe('ensureProjectRegistry', () => {
       .rejects.toThrow(/get pods,pvc .* no default StorageClass/s)
   })
 
-  it('fails fast instead of pulling when prebuilt images are required', async () => {
+  it('fails fast instead of mirroring when prebuilt images are required', async () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
     await expect(ensureProjectRegistry('demo')).rejects.toThrow(/missing/)
-    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockMirror).not.toHaveBeenCalled()
     vi.unstubAllEnvs()
   })
 })

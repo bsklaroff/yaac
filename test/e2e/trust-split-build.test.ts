@@ -41,7 +41,7 @@ import {
 import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/image-engine/image-builds'
 
 /**
- * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):
+ * End-to-end coverage of trust-split builds (docs/image-builds.md):
  * untrusted Dockerfile.yaac / Dockerfile.user layers build inside ephemeral
  * runsc builder pods that pull their parent from the shared registry
  * (an in-cluster Deployment behind a ClusterIP Service), stream

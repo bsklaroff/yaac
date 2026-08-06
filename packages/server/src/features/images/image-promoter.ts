@@ -20,7 +20,7 @@ import { serverLog } from '#log'
  * tmpfs (NESTED_GRAPHROOT_ANNOTATIONS), so `podman push` reads layers at
  * native speed, compresses them in-sandbox, and streams them out over
  * netstack as bulk blob uploads. Same shape the trust-split builder pods
- * already push their products with (docs/trust-split-builds.md), which is
+ * already push their products with (docs/image-builds.md), which is
  * why the salvage needs no node-side writer at all.
  *
  * What travels:

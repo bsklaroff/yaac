@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
+import type * as imageEngineModule from '#features/image-engine'
 
 // Everything faked here is a process boundary or another feature's barrel:
-// kubectl, podman (execFileAsync / the container runtime), the local
-// registry's HTTP calls, and the image feature's build pipeline. Nothing
-// inside features/cluster is mocked — so `ensureProxyResources` drives the
-// real proxy manifests, the real policy set, the real cluster-CIDR probes,
-// and the real netd (which is internal to the folder and covered only here
-// and through cluster setup).
+// kubectl, the local registry's HTTP calls, and the image builder that
+// realizes netd's image. Nothing inside features/cluster is mocked — so
+// `ensureProxyResources` drives the real proxy manifests, the real policy
+// set, the real cluster-CIDR probes, and the real netd (which is internal
+// to the folder and covered only here and through cluster setup).
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
@@ -18,39 +18,45 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-// netd promisifies node:child_process itself, so podman is faked at that
-// boundary rather than through kubectl's execFileAsync.
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((...allArgs: unknown[]) => {
-    const args = allArgs[1] as string[]
-    const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-    // `podman image inspect --format {{.Architecture}}` — answer with the
-    // host arch so the mirror's arch guard passes.
-    const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-    cb(null, { stdout: isArchProbe ? hostArch() : '', stderr: '' })
-  }),
-}))
-
 vi.mock('#platform/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(true),
-}))
-
 vi.mock('#features/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
-// netd's image is produced by the host build engine — cluster setup builds it
-// before there is a cluster to build it in.
-vi.mock('#features/image-engine', () => ({
-  contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
-  buildImage: vi.fn().mockResolvedValue(undefined),
-  registerImageBuild: vi.fn(() => 'build-1'),
-  finishImageBuild: vi.fn(),
-  failImageBuild: vi.fn(),
-}))
+
+/**
+ * The image builder is the seam netd's image goes through — the pod that
+ * runs `podman build` is what this file has no business standing up. Only
+ * the builder itself is replaced: `ensureMirroredImage`'s registry skip and
+ * its requirePrebuilt gate stay real, since they are what decides whether
+ * an image is produced at all.
+ */
+const mockBuild = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const mockMirror = vi.hoisted(() => vi.fn(
+  (req: { tag: string }) => Promise.resolve(`localhost:5001/${req.tag}`),
+))
+vi.mock('#features/image-engine', async (importOriginal) => {
+  const fake = {
+    kind: 'cluster-pod' as const,
+    build: mockBuild,
+    mirror: mockMirror,
+    imageExists: () => Promise.resolve(false),
+    remove: () => Promise.resolve(),
+    publish: (tag: string) => Promise.resolve(`localhost:5001/${tag}`),
+    close: () => Promise.resolve(),
+  }
+  return {
+    ...(await importOriginal<typeof imageEngineModule>()),
+    contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
+    registerImageBuild: vi.fn(() => 'build-1'),
+    finishImageBuild: vi.fn(),
+    failImageBuild: vi.fn(),
+    imageBuilder: () => fake,
+    withImageBuilder: <T>(_h: unknown, fn: (b: typeof fake) => Promise<T>) => fn(fake),
+  }
+})
 
 import {
   ensureBuilderRoleGuard,
@@ -88,26 +94,19 @@ import {
 } from '#platform/k8s/proxy-constants'
 import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { imageExists } from '#platform/container/runtime'
 import { registryHasTag } from '#platform/container/registry'
-import { buildImage, failImageBuild, registerImageBuild } from '#features/image-engine'
+import {
+  failImageBuild,
+  registerImageBuild,
+  SHIPPED_BUILD_CACHE_REPO,
+} from '#features/image-engine'
 import { CA_CERT_PATH } from '#platform/k8s/pod-spec'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { execFile } from 'node:child_process'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
-const mockPodman = vi.mocked(execFile)
-/** podman's arch string for this host, as assertMirrorArch expects it. */
-function hostArch(): string {
-  return process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch
-}
-/** The argv of every podman invocation recorded by the child_process fake. */
-const podmanArgs = (): string[][] =>
-  mockPodman.mock.calls.map((c) => c[1] as string[])
-const mockImageExists = vi.mocked(imageExists)
 const mockHasTag = vi.mocked(registryHasTag)
 
 const NODE_IP = '10.89.0.7'
@@ -165,7 +164,7 @@ beforeEach(async () => {
   mockApply.mockResolvedValue(undefined)
   mockVapAvailable.mockResolvedValue(true)
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockImageExists.mockResolvedValue(true)
+  mockBuild.mockResolvedValue(undefined)
   mockHasTag.mockResolvedValue(true)
   resetClusterCidrCache()
   resetProxyClusterIpCache()
@@ -462,33 +461,33 @@ describe('ensureProxyResources', () => {
     for (const c of pod.containers) expect(c.image).toMatch(/^localhost:5001\//)
   })
 
-  it('builds the netd image when neither the registry nor podman has it', async () => {
+  it('builds the netd image in a builder pod when the registry lacks it', async () => {
     stageClusterReads()
     mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
 
     await ensureProxyResources('img')
 
     expect(vi.mocked(registerImageBuild)).toHaveBeenCalledWith(
       expect.objectContaining({ layer: 'netd', action: 'build' }),
     )
-    expect(vi.mocked(buildImage)).toHaveBeenCalledWith(
-      expect.stringMatching(/^yaac-netd:/),
-      expect.stringContaining('Dockerfile'),
-      expect.any(String),
-    )
-    // Envoy is mirrored rather than built: pull the digest-pinned upstream,
-    // verify the arch, retag into the local mirror tag.
-    const argvs = podmanArgs()
-    expect(argvs).toContainEqual(['pull', expect.stringContaining('envoyproxy/envoy@')])
-    expect(argvs.some((a) => a[0] === 'tag')).toBe(true)
+    // The build cluster setup runs before netd exists — a yaac-shipped
+    // Dockerfile, so it caches in the shipped repo rather than a project's.
+    expect(mockBuild).toHaveBeenCalledWith(expect.objectContaining({
+      tag: expect.stringMatching(/^yaac-netd:/) as unknown,
+      dockerfile: expect.stringContaining('Dockerfile') as unknown,
+      noCache: false,
+      cacheRepo: SHIPPED_BUILD_CACHE_REPO,
+    }))
+    // Envoy is mirrored rather than built.
+    expect(mockMirror).toHaveBeenCalledWith(expect.objectContaining({
+      upstream: expect.stringContaining('envoyproxy/envoy@') as unknown,
+    }))
   })
 
   it('marks the netd build failed and rethrows when the image build dies', async () => {
     stageClusterReads()
     mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
-    vi.mocked(buildImage).mockRejectedValueOnce(new Error('podman exploded'))
+    mockBuild.mockRejectedValueOnce(new Error('podman exploded'))
 
     await expect(ensureProxyResources('img')).rejects.toThrow('podman exploded')
     expect(vi.mocked(failImageBuild)).toHaveBeenCalledWith('build-1', 'podman exploded')
@@ -497,7 +496,6 @@ describe('ensureProxyResources', () => {
   it('fails fast on a missing netd or Envoy image when prebuilt images are required', async () => {
     stageClusterReads()
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    mockImageExists.mockResolvedValue(false)
 
     // Envoy mirrored, netd not: the missing build is the one named.
     mockHasTag.mockImplementation((tag: string) =>
@@ -508,39 +506,9 @@ describe('ensureProxyResources', () => {
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(tag.startsWith('yaac-netd:')))
     await expect(ensureProxyResources('img')).rejects.toThrow(/Envoy image .* is missing/)
-    // Nothing was pulled — that is the point of the gate.
-    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
-  })
-
-  it('refuses an Envoy mirror built for another architecture', async () => {
-    stageClusterReads()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockImplementation((tag: string) =>
-      Promise.resolve(tag.startsWith('yaac-netd:')))
-    const realArch = process.arch
-    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true })
-    try {
-      // podman reports amd64, which is what x64 means — the mirror is fine.
-      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
-        const args = allArgs[1] as string[]
-        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-        cb(null, { stdout: isArchProbe ? 'amd64' : '', stderr: '' })
-      }) as never)
-      await expect(ensureProxyResources('img')).resolves.toBeUndefined()
-
-      // A child manifest for the wrong platform must not be mirrored.
-      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
-        const args = allArgs[1] as string[]
-        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-        cb(null, { stdout: isArchProbe ? 'arm64' : '', stderr: '' })
-      }) as never)
-      await expect(ensureProxyResources('img'))
-        .rejects.toThrow(/is a arm64 image but this host is amd64/)
-    } finally {
-      Object.defineProperty(process, 'arch', { value: realArch, configurable: true })
-    }
+    // Nothing was built or mirrored — that is the point of the gate.
+    expect(mockBuild).not.toHaveBeenCalled()
+    expect(mockMirror).not.toHaveBeenCalled()
   })
 
   it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {
@@ -572,7 +540,6 @@ describe('ensureProxyResources', () => {
     mockApply.mockResolvedValue(undefined)
     mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
     mockHasTag.mockResolvedValue(true)
-    mockImageExists.mockResolvedValue(true)
     mockGetJson.mockImplementation((args: string[]) => {
       if (args[1] === 'nodes') {
         return Promise.resolve({
@@ -652,7 +619,7 @@ describe('ensureProxyResources', () => {
     expect(claimCm).toBeDefined()
     expect(kinds()).toContain('DaemonSet')
     expect(kinds()).not.toContain('ClusterRole')
-    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
+    expect(mockMirror).not.toHaveBeenCalled()
     readSpy.mockRestore()
   })
 })

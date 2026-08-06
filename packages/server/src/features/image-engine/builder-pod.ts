@@ -1,29 +1,38 @@
 /**
- * Ephemeral runsc builder pods — the `cluster-pod` build engine
- * (docs/trust-split-builds.md).
+ * Ephemeral runsc builder pods — the mechanics behind the `cluster-pod`
+ * image builder (docs/image-builds.md).
  *
- * Untrusted Dockerfiles (`Dockerfile.yaac` / `Dockerfile.user` — user- and
- * agent-editable) never execute on the host podman engine. Each build
- * request gets a throwaway gVisor pod running the pinned podman-stable
- * image; adjacent untrusted layers in one chain reuse the pod via a
- * BuilderPodLease. Per layer the flow is:
+ * Every image yaac builds is realized here: the yaac-shipped session layers
+ * (`base`/`tools`/`nestable`), the user- and agent-editable ones
+ * (`Dockerfile.yaac` / `Dockerfile.user`), the netd and proxy images, and
+ * the digest-pinned upstream mirrors. Each build request gets a throwaway
+ * gVisor pod running the pinned podman-stable image; every layer of one
+ * chain reuses that pod via a BuilderPodLease. Per layer the flow is:
  *
  *   1. bootstrap /etc/containers/storage.conf (native overlay on the
  *      sentry tmpfs graphroot — the stock image forces fuse-overlayfs,
  *      which is broken under runsc),
  *   2. materialize the parent: pull `<registry-host>/P` + retag to the bare
- *      tag so `--build-arg BASE_IMAGE=P` matches host builds,
+ *      tag so `--build-arg BASE_IMAGE=P` resolves locally (skipped when the
+ *      pod just built P itself, which is the common case in a chain),
  *   3. stream the build context in as a tar over `kubectl exec -i`,
  *      honoring `.containerignore` exactly like `contextHash()`,
  *   4. `podman build --isolation chroot` with registry step cache
- *      (`--cache-from`/`--cache-to`, per-project repo),
+ *      (`--cache-from`/`--cache-to`),
  *   5. delta push the product (parent blobs cross-repo-mount, never
  *      re-upload),
  *   6. delete the pod (the reap sweep catches leaks).
  *
- * The registry is the only image bus: parents come from it, products and
- * per-step cache images go back to it, and the host store never sees these
- * tags.
+ * The registry is the only image bus and the products' only home: the pod's
+ * graphroot dies with it, so step 5 is not an optimization but the reason
+ * the build is not lost.
+ *
+ * This module sits BELOW `#features/cluster` on purpose — cluster setup
+ * builds netd's image, so a builder that imported the cluster feature would
+ * put the two back in a cycle. The cluster-side preconditions a builder pod
+ * needs (registry up, builder-role guard, egress policies) are therefore
+ * INJECTED: the lease takes an `ensureHost` callback, and every caller
+ * passes `ensureClusterBuilderHost` from `#features/cluster`.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -31,16 +40,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import {
-  imageExists,
-  pushImageToRegistry,
   registryHasTag,
   registryHost,
   registryRef,
 } from '#platform/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#platform/build-context'
-import { testEnv } from '@yaac/shared/env'
 import {
-  EGRESS_WORLD_DENY_NAME,
   LABEL_DATA_DIR_HASH,
   LABEL_ROLE,
   NESTED_ENGINE_CAPS,
@@ -51,30 +56,24 @@ import {
   RUNTIME_CLASS_GVISOR,
   dataDirHash,
   ensureKubernetes,
-  execFileAsync,
   graphrootMountAnnotations,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s'
-import {
-  buildEgressWorldDenyNpManifest,
-  ensureBuilderRoleGuard,
-  ensureMainRegistry,
-} from '#features/cluster'
 import { runStreamingProcess } from '#platform/streaming-proc'
-import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
-import { stringHash, type ImageLayer } from '#features/image-engine'
+import { stringHash } from './image-builder'
+import type { BuildRequest, MirrorRequest } from './builder'
+import type { ImageLayerName } from '@yaac/shared/types'
 
 /**
- * Digest-pinned upstream image the builder pods run — podman + coreutils,
- * mirrored into the local registry like the vcluster image set (the digest
- * IS the pin; no content-hash tag). Pinned near the session engines'
- * podman major so store metadata stays compatible. Never the session's own
- * image: its binaries are user-customizable and must not run yaac-driven
- * builds.
+ * Digest-pinned upstream image the builder pods run — podman + coreutils
+ * (the digest IS the pin; no content-hash tag). Pinned near the session
+ * engines' podman major so store metadata stays compatible. Never the
+ * session's own image: its binaries are user-customizable and must not run
+ * yaac-driven builds.
  */
 export const BUILDER_UPSTREAM_IMAGE =
   'quay.io/podman/stable@sha256:25d49cf990843962043942db172c7ef5c6f85012384aada7976aec65906ae209'
@@ -154,43 +153,74 @@ export const BUILD_CACHE_TTL = '168h'
 export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
 
 /**
+ * Registry repo holding the `--cache-from`/`--cache-to` step-cache images
+ * of the yaac-SHIPPED layers (`base`/`tools`/`nestable`, the netd and
+ * proxy images) — one repo for the whole install, because those layers are
+ * identical across projects and a per-project copy would rebuild the same
+ * apt steps once per project.
+ *
+ * Kept apart from the per-project repos so a project build can neither read
+ * nor write the shipped layers' cache by ordinary operation. The name
+ * cannot be produced by `buildCacheRepo` for any project slug, so a project
+ * called `shipped` lands in `yaac-buildcache-project-shipped` and not here.
+ */
+export const SHIPPED_BUILD_CACHE_REPO = 'yaac-buildcache-shipped'
+
+/**
  * Per-project registry repo for `--cache-from`/`--cache-to` step-cache
- * images. Per PROJECT on purpose: cache entries are consumed by key with
- * no provenance check, so a hostile build can poison future cache hits —
- * a per-project repo confines that to the project whose image the
- * attacker already controls. `Dockerfile.user` layers cache into the repo
- * of the project being built.
+ * images of the user- and agent-editable layers. Per PROJECT on purpose:
+ * cache entries are consumed by key with no provenance check, so a hostile
+ * build can poison future cache hits — a per-project repo confines that to
+ * the project whose image the attacker already controls. `Dockerfile.user`
+ * layers cache into the repo of the project being built.
  *
  * The confinement is over WHERE THIS BUILD READS AND WRITES, not a
  * boundary: the registry is unauthenticated with no path ACLs, so a
- * hostile RUN step can push to another project's cache repo by hand. See
- * the open risk in docs/trust-split-builds.md.
+ * hostile RUN step can push to another project's cache repo — or to the
+ * shipped repo above — by hand. See the open risk in docs/image-builds.md.
  */
 export function buildCacheRepo(projectSlug: string): string {
   const slug = projectSlug.toLowerCase().replace(/[^a-z0-9._-]/g, '-')
-  return `yaac-buildcache-${slug}`
+  return `yaac-buildcache-project-${slug}`
 }
 
-/** Ensure the pinned builder image is present in the local registry,
- *  mirroring it from upstream on first use (same convention as
- *  ensureVclusterImages — the digest is the pin). */
-export async function ensureBuilderImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
-  if (!await registryHasTag(BUILDER_LOCAL_TAG)) {
-    if (!await imageExists(BUILDER_LOCAL_TAG)) {
-      if (requirePrebuilt) {
-        throw new Error(
-          `builder image ${BUILDER_LOCAL_TAG} is missing. `
-          + 'Restart the test run so the global setup can mirror it.',
-        )
-      }
-      await execFileAsync('podman', ['pull', BUILDER_UPSTREAM_IMAGE], { timeout: 600_000 })
-      await execFileAsync('podman', ['tag', BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG])
-    }
-    await pushImageToRegistry(BUILDER_LOCAL_TAG)
-  }
-  return registryRef(BUILDER_LOCAL_TAG)
+/**
+ * Which step-cache repo a layer builds against — the one thing the trust
+ * split still decides now that every layer builds in a sandbox.
+ *
+ * The whitelist is the same one that used to route layers to the host
+ * engine, and cannot be faked: `resolveImageChain` is the only producer of
+ * `ImageLayerName` and assigns `base`/`tools`/`nestable` exclusively to the
+ * yaac-shipped Dockerfiles, whatever a project's own file contains. A
+ * future layer name therefore lands in the project repo by default rather
+ * than sharing the shipped layers' cache.
+ */
+export function cacheRepoForLayer(name: ImageLayerName, projectSlug: string): string {
+  return SHIPPED_LAYERS.has(name) ? SHIPPED_BUILD_CACHE_REPO : buildCacheRepo(projectSlug)
+}
+
+const SHIPPED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'nestable'])
+
+/**
+ * The image a builder pod runs: the local mirror when the registry already
+ * holds it, else the upstream digest ref for node containerd to pull.
+ *
+ * This is the BOOTSTRAP FLOOR of the whole image path, and the fallback is
+ * what closes it: the builder cannot be the source of its own image, for
+ * exactly the reason the main registry Deployment names the upstream
+ * `registry:2` digest rather than its own mirror tag. With the fallback,
+ * standing up a builder needs no yaac-built image and no host podman —
+ * only a cluster whose nodes can pull a digest-pinned upstream ref, which
+ * is already true of the registry and the gVisor installer.
+ *
+ * The mirror is still preferred where it exists (`mirrorBuilderImage`, run
+ * by the test global setup and by host-podman installs): it keeps repeat
+ * pod creates and offline runs off the upstream registry.
+ */
+export async function builderPodImageRef(): Promise<string> {
+  return await registryHasTag(BUILDER_LOCAL_TAG)
+    ? registryRef(BUILDER_LOCAL_TAG)
+    : BUILDER_UPSTREAM_IMAGE
 }
 
 /** Builder pod name: hash of the first layer tag + entropy, so concurrent
@@ -307,37 +337,43 @@ export function builderParentPullScript(parentTag: string, clusterHost: string):
 /**
  * `podman build` argv for the in-pod build (everything after `podman`).
  *
- * There is no --no-cache variant: the only forced rebuild is `yaac project
- * rebuild`, which forces exactly the tools layer, and tools is always
- * host-built. An in-pod layer therefore always keeps its step cache. If a
- * forced in-pod rebuild is ever wanted, add the flag here and thread it
- * from rebuildProjectImage — the absence is deliberate, not an oversight.
+ * `noCache` (the `yaac project rebuild` path, which re-runs the tools
+ * layer's upstream installers under an unchanged content-hash tag) drops
+ * the registry step cache entirely rather than only its read side: the
+ * point of that rebuild is that nothing about the layer may be reused, and
+ * a `--cache-to` beside `--no-cache` would only re-upload steps the build
+ * just ran uncached anyway.
  */
 export function builderBuildArgs(
-  layer: ImageLayer,
+  req: BuildRequest,
   opts: {
     dockerfileRel: string
     clusterHost: string
-    cacheRepo: string
   },
 ): string[] {
-  // Registry step cache: an edited Dockerfile re-runs only its changed
-  // steps in any fresh pod (validated: all-hit rebuild ~1.3s in a wiped
-  // store). Reads bounded by BUILD_CACHE_TTL.
-  const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
   const args = [
     'build',
     // chroot isolation: RUN steps execute in a chroot inside the sandbox
     // instead of a nested OCI runtime — the spike-validated mode.
     '--isolation', 'chroot',
     '--tls-verify=false',
-    '-t', layer.tag,
+    '-t', req.tag,
     '-f', `${BUILDER_CONTEXT_DIR}/${opts.dockerfileRel}`,
-    '--cache-from', cacheRef,
-    '--cache-to', cacheRef,
-    '--cache-ttl', BUILD_CACHE_TTL,
   ]
-  for (const [key, value] of Object.entries(layer.buildArgs ?? {})) {
+  if (req.noCache) {
+    args.push('--no-cache')
+  } else {
+    // Registry step cache: an edited Dockerfile re-runs only its changed
+    // steps in any fresh pod (validated: all-hit rebuild ~1.3s in a wiped
+    // store). Reads bounded by BUILD_CACHE_TTL.
+    const cacheRef = `${opts.clusterHost}/${req.cacheRepo}`
+    args.push(
+      '--cache-from', cacheRef,
+      '--cache-to', cacheRef,
+      '--cache-ttl', BUILD_CACHE_TTL,
+    )
+  }
+  for (const [key, value] of Object.entries(req.buildArgs ?? {})) {
     args.push('--build-arg', `${key}=${value}`)
   }
   args.push(BUILDER_CONTEXT_DIR)
@@ -374,8 +410,8 @@ export async function planBuildContext(
 
   const dockerfileRel = path.relative(contextDir, dockerfilePath)
   if (dockerfileRel.startsWith('..') || path.isAbsolute(dockerfileRel)) {
-    // Never true for the untrusted layers resolveImageChain emits (their
-    // dockerfile always lives in the context dir); guard against misuse.
+    // Never true for the layers resolveImageChain emits (their dockerfile
+    // always lives in the context dir); guard against misuse.
     throw new Error(
       `dockerfile ${dockerfilePath} is outside its build context ${contextDir}`,
     )
@@ -476,10 +512,12 @@ async function streamContextToPod(
   }
 }
 
-/** Builder egress: explicit allow-all for role=builder pods. The real
- *  gate is the world-deny policy's builder exclusion; this keeps the intent
- *  declared even if a future default-deny NetworkPolicy lands in the
- *  namespace. */
+/** Builder egress: explicit allow-all for role=builder pods — they pull
+ *  upstream bases and push products. The real gate is the world-deny
+ *  policy's builder exclusion; this keeps the intent declared even if a
+ *  future default-deny NetworkPolicy lands in the namespace. Applied by
+ *  `#features/cluster`'s builder-host preparation, which is what a lease
+ *  runs before it creates a pod. */
 export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
@@ -497,32 +535,36 @@ export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknow
 }
 
 /**
- * Apply the builder-role admission guard and egress policy, and refresh
- * the world-deny policy when it already exists in this namespace — an
- * older server may have written it without the builder exclusion, which
- * would leave builder pods selected by a default-deny they need to be
- * outside of. Only refreshed (never introduced): namespaces without it
- * keep their existing posture.
+ * Everything the cluster must be holding up before a builder pod can run:
+ * the registry it pulls parents from and pushes products to, the
+ * builder-role admission guard, and the builder egress policies.
+ * `#features/cluster` implements it (`ensureClusterBuilderHost`) and every
+ * lease is handed one — this module cannot import that feature without
+ * putting it back in a cycle with cluster setup, which builds netd's image
+ * through a lease of its own.
  */
-async function ensureBuilderNetworkPolicies(): Promise<void> {
-  await ensureBuilderRoleGuard()
-  await kubectlApply(buildBuilderEgressNetworkPolicyManifest())
-  const existing = await kubectlGetJson<Record<string, unknown>>([
-    'get', 'networkpolicy', EGRESS_WORLD_DENY_NAME, '-n', k8sNamespace(),
-  ]).catch(() => null)
-  if (existing) await kubectlApply(buildEgressWorldDenyNpManifest())
-}
+export type EnsureBuilderHost = () => Promise<void>
 
 /**
- * One builder pod, lazily created and shared by the untrusted layers of a
- * single build request. `acquire` is idempotent (first caller creates the
- * pod, later callers reuse it); `release` deletes it. The creator
- * (ensureImage / rebuildProjectImage) owns release; a coordinator joiner
- * shares only the build promise, never the lease.
+ * One builder pod, lazily created and shared by every layer of a single
+ * build request. `acquire` is idempotent (first caller creates the pod,
+ * later callers reuse it); `release` deletes it. The creator
+ * (ensureImage / rebuildProjectImage / a cluster image build) owns release;
+ * a coordinator joiner shares only the build promise, never the lease.
+ *
+ * Sharing one pod across a whole chain is what makes a cold chain cheap:
+ * layer N+1's `FROM ${BASE_IMAGE}` resolves against the product layer N
+ * just built, with no registry round-trip in between. It is also why the
+ * chain's layers must stay in dependency order — a pod that has executed
+ * an untrusted `RUN` step must never be reused to build one of the
+ * yaac-shipped layers, and `resolveImageChain` emits those first, each one
+ * pushed before the next layer starts.
  */
 export class BuilderPodLease {
   private podName: string | null = null
   private acquiring: Promise<string> | null = null
+
+  constructor(private readonly ensureHost: EnsureBuilderHost) {}
 
   async acquire(seedTag: string): Promise<string> {
     if (!this.acquiring) {
@@ -540,17 +582,14 @@ export class BuilderPodLease {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       throw new Error(
-        'Dockerfile.yaac / Dockerfile.user layers build in sandboxed cluster '
-        + 'pods, which needs a healthy cluster. '
-        + `Run \`yaac cluster check\`.\n${detail}`,
+        'Images build in sandboxed cluster pods, which needs a healthy '
+        + `cluster. Run \`yaac cluster check\`.\n${detail}`,
       )
     }
-    // The registry is what a builder pod pulls its parent from and pushes
-    // its product to, so an install whose registry never came up must fail
+    // An install whose registry, guard or policies never came up must fail
     // here rather than inside the pod.
-    await ensureMainRegistry()
-    const imageRef = await ensureBuilderImage()
-    await ensureBuilderNetworkPolicies()
+    await this.ensureHost()
+    const imageRef = await builderPodImageRef()
 
     const name = builderPodName(seedTag)
     serverLog(`[builder] creating builder pod ${name}`)
@@ -646,70 +685,106 @@ async function deleteBuilderPod(name: string): Promise<void> {
 }
 
 /**
- * The cluster-pod engine's build: acquire the lease's pod (creating it on
+ * The cluster-pod builder's build: acquire the lease's pod (creating it on
  * first use), materialize the parent, stream the context, build with the
  * registry step cache, and push the product.
  */
-export async function buildLayerInPod(
-  layer: ImageLayer,
-  ctx: EngineBuildContext,
-): Promise<void> {
-  // The lease belongs to the ensureImage/rebuildProjectImage call that
-  // created it — adjacent untrusted layers share one pod, and that caller's
-  // `finally` releases it. Nothing here owns the pod's lifetime.
-  const pod = await ctx.lease.acquire(layer.tag)
-  const clusterHost = registryHost()
-  const logPrefix = `[build ${layer.tag}] `
-  const execOpts = { onLog: ctx.onLog, logPrefix }
+export async function buildInPod(req: BuildRequest, lease: BuilderPodLease): Promise<void> {
+  // The lease belongs to the call that created it — every layer of one
+  // chain shares its pod, and that caller's `finally` releases it. Nothing
+  // here owns the pod's lifetime.
+  const pod = await lease.acquire(req.tag)
+  const logPrefix = `[build ${req.tag}] `
+  await inBuilderPod(pod, async () => {
+    const clusterHost = registryHost()
+    const execOpts = { onLog: req.onLog, logPrefix }
+    const parentTag = req.buildArgs?.BASE_IMAGE
+    if (parentTag) {
+      await execInBuilderPod(
+        pod,
+        ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
+        { ...execOpts, idleTimeoutMs: BUILDER_PULL_IDLE_TIMEOUT_MS },
+      )
+    }
+
+    const plan = await planBuildContext(req.context, req.dockerfile)
+    await streamContextToPod(pod, req.context, plan.files, execOpts)
+
+    await execInBuilderPod(
+      pod,
+      ['podman', ...builderBuildArgs(req, { dockerfileRel: plan.dockerfileRel, clusterHost })],
+      { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
+    )
+
+    // Delta push: parent blobs were just pulled from this registry, so
+    // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
+    // Always pushes (no HEAD skip) — a --no-cache rebuild must overwrite
+    // the unchanged content-hash tag with fresh bytes. This is also the
+    // only place the product is durable: the pod's graphroot is scratch.
+    await execInBuilderPod(
+      pod,
+      ['podman', 'push', '--tls-verify=false', req.tag, `${clusterHost}/${req.tag}`],
+      { ...execOpts, idleTimeoutMs: BUILDER_PUSH_IDLE_TIMEOUT_MS },
+    )
+  })
+}
+
+/**
+ * Copy a digest-pinned upstream image into the registry under `tag`, from
+ * inside a builder pod — the cluster-pod builder's answer to the mirrors
+ * the host engine used to make with `podman pull` + `tag` + `push`.
+ *
+ * The architecture check happens in the pod against the pod's own arch,
+ * which is the NODE's: that is the arch a mirrored image has to match, and
+ * it is what the host-side check was approximating. A pin that names one
+ * platform's child manifest instead of the multi-arch index fails here
+ * rather than as an `exec format error` in whatever pod pulls it later.
+ */
+export async function mirrorInPod(req: MirrorRequest, lease: BuilderPodLease): Promise<void> {
+  const pod = await lease.acquire(req.tag)
+  const logPrefix = `[mirror ${req.tag}] `
+  await inBuilderPod(pod, async () => {
+    await execInBuilderPod(
+      pod,
+      ['sh', '-c', builderMirrorScript(req.upstream, req.tag, registryHost())],
+      { onLog: req.onLog, logPrefix, idleTimeoutMs: BUILDER_PULL_IDLE_TIMEOUT_MS },
+    )
+  })
+}
+
+/**
+ * Run pod work, translating a dead pod into why it died. A failed exec may
+ * be the pod going away under it (the whole-pod deadline above all), which
+ * kubectl can only report as a signal — so ask the pod itself.
+ */
+async function inBuilderPod(pod: string, work: () => Promise<void>): Promise<void> {
   try {
-    await runLayerBuild(pod, layer, ctx, clusterHost, execOpts)
+    await work()
   } catch (err) {
-    // A failed exec may be the pod dying under it (the deadline above all),
-    // which kubectl can only report as a signal — ask the pod itself.
     const blocked = await builderPodBlockDetail(pod)
     if (!blocked) throw err
     throw new Error(`${err instanceof Error ? err.message : String(err)}\n${blocked}`)
   }
 }
 
-async function runLayerBuild(
-  pod: string,
-  layer: ImageLayer,
-  ctx: EngineBuildContext,
-  clusterHost: string,
-  execOpts: { onLog?: (line: string) => void; logPrefix: string },
-): Promise<void> {
-  const parentTag = layer.buildArgs?.BASE_IMAGE
-  if (parentTag) {
-    await execInBuilderPod(
-      pod,
-      ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
-      { ...execOpts, idleTimeoutMs: BUILDER_PULL_IDLE_TIMEOUT_MS },
-    )
-  }
-
-  const plan = await planBuildContext(layer.context, layer.dockerfile)
-  await streamContextToPod(pod, layer.context, plan.files, execOpts)
-
-  await execInBuilderPod(
-    pod,
-    ['podman', ...builderBuildArgs(layer, {
-      dockerfileRel: plan.dockerfileRel,
-      clusterHost,
-      cacheRepo: buildCacheRepo(ctx.projectSlug),
-    })],
-    { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
-  )
-
-  // Delta push: parent blobs were just pulled from this registry, so
-  // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
-  // Always pushes (no HEAD skip) — a --no-cache rebuild must overwrite
-  // the unchanged content-hash tag with fresh bytes.
-  await execInBuilderPod(
-    pod,
-    ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],
-    { ...execOpts, idleTimeoutMs: BUILDER_PUSH_IDLE_TIMEOUT_MS },
-  )
+/**
+ * Pull an upstream ref, verify its architecture is the one this node runs,
+ * and push it into the registry under `tag`.
+ */
+export function builderMirrorScript(upstream: string, tag: string, clusterHost: string): string {
+  return [
+    'set -eu',
+    `podman pull ${upstream}`,
+    "want=$(podman info --format '{{.Host.Arch}}')",
+    `got=$(podman image inspect --format '{{.Architecture}}' ${upstream})`,
+    'if [ -n "$got" ] && [ "$got" != "$want" ]; then',
+    `  echo "${upstream} is a $got image but this node is $want. Pin the`
+    + ' multi-arch index digest, not one platform\'s child manifest." >&2',
+    '  exit 1',
+    'fi',
+    `podman tag ${upstream} ${tag}`,
+    `podman push --tls-verify=false ${tag} ${clusterHost}/${tag}`,
+  ].join('\n')
 }
 
 /** Age past which a builder pod is unconditionally a leak: comfortably

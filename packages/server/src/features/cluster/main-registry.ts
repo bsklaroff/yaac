@@ -1,11 +1,11 @@
 /**
  * The install's main OCI registry, as an in-cluster workload.
  *
- * This is the one image bus (docs/trust-split-builds.md): host-side
- * `podman build` pushes trusted layers into it, sandboxed builder pods pull
- * their parents from it and push their products back, node containerd pulls
- * every session image from it, and the vcluster chart's images are named
- * through it. It is deliberately the SAME topology as the per-project
+ * This is the one image bus (docs/image-builds.md): builder pods pull their
+ * parents from it and push every product back — a pod's graphroot is
+ * scratch, so this is the only place a build survives — node containerd
+ * pulls every session image from it, and the vcluster chart's images are
+ * named through it. It is deliberately the SAME topology as the per-project
  * registries (project-registry.ts) rather than a second pattern:
  * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
  * ClusterIP Service, an RWO PVC for the blobs, and a per-node containerd
@@ -38,7 +38,7 @@
  * is the same thing the project registries' does: it pins the caller set so
  * a future egress loosening cannot silently widen it. Closing the
  * builder-origin write surface needs auth or path scoping; the open risk is
- * written up in docs/trust-split-builds.md.
+ * written up in docs/image-builds.md.
  *
  * The server reaches it through a `kubectl port-forward`, not by any host
  * networking assumption — see `#platform/container`'s registry module for

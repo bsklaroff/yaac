@@ -41,7 +41,7 @@ node:
 - ~~**Registry wiring**~~ — **done**: the main registry is an in-cluster
   Deployment + Service like the per-project ones, so the kind-network join
   and the `localhost:5001` `hosts.toml` fixup are gone. The server pushes
-  through a `kubectl port-forward` (docs/trust-split-builds.md).
+  through a `kubectl port-forward` (docs/image-builds.md).
 - **kind↔podman version skew**: podman 6.x breaks kind ≤ v0.32.0, hence
   the tap-pinned `yaac-kind` build and the preflight
   (`diagnoseKindPodmanSkew`, `cluster-setup.ts:244-305`). Goes away
@@ -146,12 +146,12 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
    - registry reachability from node containerd;
    - sleep/clock behavior (krunkit `--timesync` must be passed by the VM
      manager the way podman 6 passes it).
-2. **Builds without podman machine** (only if a macOS spike passes):
-   prototype buildkitd-in-cluster + `buildctl` (homebrew-core) behind a
-   builder abstraction — both `src/lib/container/image-builder.ts:105`
-   and `src/lib/container/proxy-client.ts:491` spawn `podman build`
-   directly, and the push paths in `src/lib/k8s/registry.ts` assume host
-   podman. Passing would remove host podman entirely on both platforms.
+2. ~~**Builds without podman machine**~~ — **done**, and not with
+   buildkit: every image builds in an ephemeral runsc pod running the
+   podman CLI, behind an `ImageBuilder` seam whose other backend is the
+   host engine (docs/image-builds.md). Host podman is no longer on the
+   server's build path on either platform; what still needs it here is the
+   kind node itself.
 3. **Linux end-state**: validate native k3s + Calico against
    `yaac cluster check`; `yaac cluster setup` grows a k3s path.
 

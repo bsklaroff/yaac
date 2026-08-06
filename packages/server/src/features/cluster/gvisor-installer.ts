@@ -1,7 +1,6 @@
 import {
   GVISOR_INSTALLER_READY_FILE,
   buildRuntimeClassManifests,
-  execFileAsync,
   gvisorInstallScript,
   gvisorInstallerHostMounts,
   k8sNamespace,
@@ -9,9 +8,7 @@ import {
   kubectlWithRetry,
 } from '#platform/k8s'
 import type { PodToleration } from '#platform/k8s'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
-import { testEnv } from '@yaac/shared/env'
-import { assertMirrorArch } from './netd'
+import { registryHasTag, registryRef } from '#platform/container'
 
 /**
  * `yaac-gvisor-install` — the privileged DaemonSet that puts the gVisor
@@ -48,9 +45,8 @@ export const GVISOR_INSTALLER_APP_NAME = 'yaac-gvisor-install'
 
 /**
  * The installer's container image: upstream `curl`, digest-pinned by its
- * multi-arch INDEX digest and mirrored into the local registry like Envoy
- * and registry:2 (a child-platform digest would mirror one architecture's
- * bytes onto every node — hence the `assertMirrorArch` re-check).
+ * multi-arch INDEX digest — never a child-platform digest, which would put
+ * one architecture's bytes on every node.
  *
  * Deliberately NOT a yaac-built image. Everything the installer needs is a
  * shell, an HTTP client that can verify TLS and speak PATCH (fetching the
@@ -67,28 +63,25 @@ export const GVISOR_INSTALLER_UPSTREAM_IMAGE = `docker.io/curlimages/curl@${CURL
 export const GVISOR_INSTALLER_MIRROR_TAG =
   `curlimages/curl:${CURL_VERSION}-${CURL_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** Mirror the pinned installer image into the local registry. */
-export async function ensureGvisorInstallerImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
-  if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
-    return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
-  }
-  if (!await imageExists(GVISOR_INSTALLER_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `gVisor installer image ${GVISOR_INSTALLER_MIRROR_TAG} is missing. `
-        + 'Restart the test run so the global setup can mirror it.',
-      )
-    }
-    await execFileAsync('podman', ['pull', GVISOR_INSTALLER_UPSTREAM_IMAGE], { timeout: 300_000 })
-    const { stdout: arch } = await execFileAsync('podman', [
-      'image', 'inspect', '--format', '{{.Architecture}}', GVISOR_INSTALLER_UPSTREAM_IMAGE,
-    ]).catch(() => ({ stdout: '' }))
-    assertMirrorArch(GVISOR_INSTALLER_UPSTREAM_IMAGE, arch)
-    await execFileAsync('podman', ['tag', GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG])
-  }
-  return pushImageToRegistry(GVISOR_INSTALLER_MIRROR_TAG)
+/**
+ * The installer's image ref: the local mirror when the registry holds it,
+ * else the upstream digest for node containerd to pull.
+ *
+ * This one is NOT mirrored on demand, unlike Envoy or `registry:2`, and the
+ * reason is the bootstrap order. Every other mirror is made by a builder
+ * pod, a builder pod is a gVisor pod, and gVisor is what THIS image
+ * installs — mirroring here would be asking the runtime to install itself.
+ * So the installer takes the same exemption the main registry's own
+ * Deployment takes for `registry:2`, and for the same reason: it cannot be
+ * a consumer of the thing it brings up.
+ *
+ * The mirror is still used when it exists — the e2e global setup makes one
+ * host-side, which keeps repeat runs and offline clusters off docker.io.
+ */
+export async function ensureGvisorInstallerImage(): Promise<string> {
+  return await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)
+    ? registryRef(GVISOR_INSTALLER_MIRROR_TAG)
+    : GVISOR_INSTALLER_UPSTREAM_IMAGE
 }
 
 export function buildGvisorInstallerServiceAccountManifest(): Record<string, unknown> {

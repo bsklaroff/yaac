@@ -77,17 +77,30 @@ export function selectStaleGenerationTags(
   return stale
 }
 
+export interface HostImageGcResult {
+  retired: string[]
+  pruned: number
+}
+
 /**
  * One GC pass over the host engine: retire stale generation tags (no
  * `-f` — a tag whose image is in use by a container, or mid-build as a
  * FROM, fails its rmi and is retried next sweep), then prune dangling
- * images past the age floor. Returns what was done for the log line.
+ * images past the age floor. Returns what was done for the log line, or
+ * null when this machine has no reachable host engine — which is the
+ * ordinary state of a server that builds in cluster pods, and not an
+ * error worth surfacing on a hygiene sweep.
  */
-export async function gcHostImages(): Promise<{ retired: string[]; pruned: number }> {
-  const { stdout } = await execFileAsync('podman', [
-    'image', 'ls', '--sort', 'created',
-    '--format', '{{.Repository}}|{{.Repository}}:{{.Tag}}',
-  ])
+export async function gcHostImages(): Promise<HostImageGcResult | null> {
+  let stdout: string
+  try {
+    ({ stdout } = await execFileAsync('podman', [
+      'image', 'ls', '--sort', 'created',
+      '--format', '{{.Repository}}|{{.Repository}}:{{.Tag}}',
+    ]))
+  } catch {
+    return null
+  }
   const stale = selectStaleGenerationTags(parseImageLsRows(stdout))
   const retired: string[] = []
   for (const ref of stale) {
@@ -108,17 +121,26 @@ export async function gcHostImages(): Promise<{ retired: string[]; pruned: numbe
 let lastSweepMs = 0
 
 /**
- * Reconcile step. Gated to the default install: e2e servers
- * (per-run `YAAC_K8S_NAMESPACE`) share the host engine, and a GC firing
- * at every test-server boot could retire generations a concurrent run's
+ * Reconcile step, gated to the default install: e2e servers (per-run
+ * `YAAC_K8S_NAMESPACE`) share the host engine, and a GC firing at every
+ * test-server boot could retire generations a concurrent run's
  * `requirePrebuilt` sessions still resolve on the host. The long-running
  * dev server does the cleanup for everyone.
+ *
+ * Deliberately NOT gated on `imageBuilderKind()`. A `cluster-pod` install
+ * builds nothing into a host store, but the machine may still HAVE one that
+ * fills up — the test global setup prebuilds the whole e2e chain there on
+ * every developer machine — and this sweep is the only thing that ever
+ * reclaims it. Where there is no host engine at all (the server as a pod)
+ * the sweep finds no store and stands down on its own.
  */
 export async function reconcileHostImageGc(nowMs: number = Date.now()): Promise<void> {
   if (testEnv.k8sNamespace !== 'yaac') return
   if (nowMs - lastSweepMs < HOST_IMAGE_GC_INTERVAL_MS) return
   lastSweepMs = nowMs
-  const { retired, pruned } = await gcHostImages()
+  const result = await gcHostImages()
+  if (!result) return
+  const { retired, pruned } = result
   if (retired.length > 0 || pruned > 0) {
     serverLog(
       `[image-gc] retired ${retired.length} stale image tag(s), `

@@ -3,40 +3,23 @@ import { promisify } from 'node:util'
 
 export const execFileAsync = promisify(execFile)
 
-let runtimeVerified = false
-
 /**
- * Verify both halves of the split runtime:
- *   - podman — the image build engine (`podman build` / `podman push`).
- *     Sessions never run on it; it only produces images for the registry.
- *   - kubernetes — the session runtime (one Job per session).
+ * Verify this machine has a usable podman engine, printing install
+ * instructions and exiting when it does not.
  *
- * Verified once per process: both halves are ~hundreds of ms of child
- * processes on every session create, and a runtime that disappears mid-run
- * surfaces immediately in whichever podman/kubectl call needs it — this
- * check only exists to print install instructions on first contact.
+ * Only reached on an install whose image builder is `host-podman` — a
+ * server that builds in cluster pods has no host engine to check, and
+ * telling its operator to `apt install podman` would be wrong. The
+ * once-per-process memo and the session runtime's half of the old
+ * `ensureContainerRuntime` live in `#features/image-engine`'s
+ * `ensureImageBuildRuntime`, which is what session create calls.
  */
-export async function ensureContainerRuntime(): Promise<void> {
-  if (runtimeVerified) return
+export async function ensureHostPodman(): Promise<void> {
   if (process.platform === 'darwin') {
     await ensurePodmanMachine()
   } else {
     await ensurePodmanLinux()
   }
-  // Imported here, not at module scope: `@kubernetes/client-node` is 967 ESM
-  // files behind a single barrel, ~2.2s to load, and this module's other
-  // exports are what the CLI reaches for on every invocation — including
-  // `ensureRootfulPodmanHost`, two lines that set an env var. Only the
-  // runtime check needs a cluster, and it is already async.
-  // eslint-disable-next-line no-restricted-syntax -- deferring this import is the point; see above
-  const { ensureKubernetes } = await import('#platform/k8s')
-  await ensureKubernetes()
-  runtimeVerified = true
-}
-
-/** Test-only: forget the process-wide runtime verification. */
-export function _resetContainerRuntimeForTests(): void {
-  runtimeVerified = false
 }
 
 async function ensurePodmanMachine(): Promise<void> {

@@ -406,8 +406,9 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(true)
     expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
 
-    // Probe ran through the deps: image pushed, pod applied, pod deleted.
-    expect(deps.pushImage).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
+    // Probe ran: the pod was applied against the mirrored probe image
+    // (already in the registry here, so nothing was copied in for it).
+    expect(deps.pushImage).not.toHaveBeenCalled()
     const probePod = vi.mocked(deps.apply).mock.calls
       .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
       .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check')
@@ -419,6 +420,7 @@ describe('runClusterCheck', () => {
         runtimeClassName?: string
         securityContext: { seccompProfile: { type: string } }
         containers: Array<{
+          image: string
           securityContext?: { runAsUser?: number }
           volumeMounts: Array<{ readOnly?: boolean }>
         }>
@@ -426,6 +428,8 @@ describe('runClusterCheck', () => {
       }
     }
     expect(podManifest.kind).toBe('Pod')
+    expect(podManifest.spec.containers[0].image)
+      .toBe('yaac-registry.yaac.svc.cluster.local:5000/yaac-cluster-probe:busybox-1.36')
     expect(podManifest.spec.volumes[0].hostPath.path).toBe(getDataDir())
     // The probe mirrors the session-pod containment: the default gvisor
     // tier with no user namespace (the sentry replaces it).

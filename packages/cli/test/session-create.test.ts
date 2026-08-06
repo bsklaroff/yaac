@@ -31,9 +31,11 @@ vi.mock('simple-git', () => ({
   })),
 }))
 
-vi.mock('@yaac/server/platform/container/runtime', () => ({
-  ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
-} satisfies Partial<typeof runtimeModule>))
+// The image path's preflight — podman only where podman builds, then the
+// cluster. Stubbed so a CLI unit test needs neither.
+vi.mock('@yaac/server/features/image-engine/builder', () => ({
+  ensureImageBuildRuntime: vi.fn().mockResolvedValue(undefined),
+} satisfies Partial<typeof builderModule>))
 
 // Stubbed to keep podman off the import path; nothing on the create path
 // calls into it (sessionUid, the one name it used to supply, is in pod-spec).
@@ -250,7 +252,7 @@ import { recordAgentSessions } from '@yaac/server/features/sessions/agent-sessio
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/agents/agent-command'
 import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
-import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
+import { ensureImageBuildRuntime } from '@yaac/server/features/image-engine/builder'
 import { ensureImage, pushImageShared } from '@yaac/server/features/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import { containerExec } from '@yaac/server/platform/k8s/exec'
@@ -354,7 +356,7 @@ describe('createSession', () => {
         ? [{ name: 'yaac-session-init', isFile: () => true }]
         : [],
     )) as never)
-    vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
+    vi.mocked(ensureImageBuildRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
@@ -1195,7 +1197,7 @@ import type * as allowedHostsModule from '@yaac/server/features/egress/default-a
 import type * as sharedGitModule from '@yaac/shared/git'
 import type * as codexAgentModule from '@yaac/server/features/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/features/agents/opencode'
-import type * as runtimeModule from '@yaac/server/platform/container/runtime'
+import type * as builderModule from '@yaac/server/features/image-engine/builder'
 import type * as imageBuilderModule from '@yaac/server/features/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/features/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/platform/k8s/kubectl'

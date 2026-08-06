@@ -14,19 +14,18 @@
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
  */
-import { imageExists } from '#platform/container'
-import {
-  engineForLayer,
-  TRUSTED_PARENT_COMPRESSION,
-} from './build-engine'
-import { BuilderPodLease } from './builder-pod'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { registryHasTag, registryRef } from '#platform/container'
+import { ensureClusterBuilderHost } from '#features/cluster'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 import {
   attachImageBuildProject,
+  cacheRepoForLayer,
   failImageBuild,
   finishImageBuild,
+  imageBuilder,
+  imageBuilderKind,
+  type ImageBuilder,
   type ImageBuildReason,
   type ImageLayer,
   ingestImageBuildLine,
@@ -39,12 +38,14 @@ interface BuildContext {
   reason: ImageBuildReason
   onLog?: (line: string) => void
   /**
-   * Builder-pod lease for trust-split untrusted layers, owned by the
-   * ensureImage/rebuild call that created it — adjacent untrusted layers
-   * of one chain build in the same pod. Ignored by the host engine.
-   * Required so no build path can reach the cluster engine without one.
+   * The builder realizing this request's layers, owned by the
+   * ensureImage/rebuild call that created it — every layer of one chain
+   * builds through it, which on the cluster backend means one pod for the
+   * whole chain and no registry round-trip between adjacent layers.
+   * Required so no build path can reach a builder without owning its
+   * lifetime.
    */
-  lease: BuilderPodLease
+  builder: ImageBuilder
 }
 
 const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
@@ -112,10 +113,13 @@ async function runBuild(
     // slot, so the removal never races a concurrent build of the tag.
     if (opts.preStep) await opts.preStep()
     serverLog(`[build] starting ${layer.tag}`)
-    await engineForLayer(layer.name).build(layer, {
-      projectSlug: ctx.projectSlug,
+    await ctx.builder.build({
+      tag: layer.tag,
+      dockerfile: layer.dockerfile,
+      context: layer.context,
+      buildArgs: layer.buildArgs,
       noCache: opts.noCache,
-      lease: ctx.lease,
+      cacheRepo: cacheRepoForLayer(layer.name, ctx.projectSlug),
       onLog: (line) => {
         ingestImageBuildLine(id, line)
         ctx.onLog?.(line)
@@ -166,7 +170,7 @@ export async function rebuildLayerExclusive(
   })
   const promise = runBuild(id, layer, ctx, {
     noCache: opts.noCache,
-    preStep: () => engineForLayer(layer.name).remove(layer.tag),
+    preStep: () => ctx.builder.remove(layer.tag),
   })
   // Set synchronously (before any await inside runBuild resolves) so a
   // same-tick caller joins instead of double-building.
@@ -188,6 +192,17 @@ export async function pushImageShared(
   ctx: { projectSlug: string; reason: ImageBuildReason },
   opts: { force?: boolean; compressionFormat?: 'zstd' | 'gzip' } = {},
 ): Promise<string> {
+  // On the cluster backend there is nothing to push and nowhere to push it
+  // from: a builder pod's build ENDS in the registry (its graphroot dies
+  // with the pod), so a realized tag is by construction already there —
+  // including a `force` rebuild's fresh bytes, which the pod pushed over
+  // the unchanged content-hash tag. Registering a push row here would
+  // invent work that never happens.
+  if (imageBuilderKind() === 'cluster-pod') return registryRef(tag)
+  // Host backend only past here, and it holds nothing to release: its
+  // products are already in a local store, and publishing them is a push.
+  const builder = imageBuilder(ensureClusterBuilderHost)
+
   const existing = inflightPushes.get(tag)
   if (existing) return existing
 
@@ -197,11 +212,10 @@ export async function pushImageShared(
     return registryRef(tag)
   }
 
-  // A force-push of a tag the host store never held (a cluster-pod-built
-  // untrusted layer) is already satisfied: the builder pod force-pushed
-  // the fresh bytes as part of its build. Pushing would fail — there is
+  // A force-push of a tag the host store never held is already satisfied
+  // by whoever put it in the registry. Pushing would fail — there is
   // nothing local to push.
-  if (opts.force && !await imageExists(tag) && await registryHasTag(tag)) {
+  if (opts.force && !await builder.imageExists(tag) && await registryHasTag(tag)) {
     return registryRef(tag)
   }
 
@@ -216,7 +230,7 @@ export async function pushImageShared(
     projectSlug: ctx.projectSlug,
     reason: ctx.reason,
   })
-  const promise = pushImageToRegistry(tag, {
+  const promise = builder.publish(tag, {
     onLog: (line) => ingestImageBuildLine(id, line),
     force: opts.force,
     compressionFormat: opts.compressionFormat,
@@ -283,18 +297,19 @@ export async function ensureImage(
   const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
   const reason = opts.reason ?? 'session'
 
-  // One builder pod per request, shared by adjacent untrusted layers.
-  // Created lazily on the first cluster-pod build; a no-op release when
-  // every layer was already realized or host-built.
-  const lease = new BuilderPodLease()
+  // One builder per request, shared by every layer of the chain. On the
+  // cluster backend that is one pod, created lazily on the first build that
+  // needs it — so a chain whose layers are all already realized touches no
+  // pod at all, and a cold chain builds its layers back-to-back with each
+  // parent already local.
+  const builder = imageBuilder(ensureClusterBuilderHost)
   try {
     for (const [i, layer] of layers.entries()) {
-      const engine = engineForLayer(layer.name)
       // An in-flight build means the tag doesn't exist yet — join it rather
       // than trusting the exists check (podman commits the tag at the end).
       if (!inflightBuilds.has(layer.tag)) {
         if (realizedTags.has(layer.tag)) continue
-        if (await engine.imageExists(layer.tag)) {
+        if (await builder.imageExists(layer.tag)) {
           realizedTags.add(layer.tag)
           continue
         }
@@ -307,20 +322,11 @@ export async function ensureImage(
         )
       }
 
-      // A cluster-pod build pulls its parent from the registry — push a
-      // host-built parent first (HEAD-skipped when already present; a
-      // cluster-pod parent was pushed by its own build).
-      if (engine.kind === 'cluster-pod' && layer.buildArgs?.BASE_IMAGE) {
-        await pushImageShared(layer.buildArgs.BASE_IMAGE, { projectSlug, reason }, {
-          compressionFormat: TRUSTED_PARENT_COMPRESSION,
-        })
-      }
-
       opts.onLayerStart?.(i + 1, layers.length, layer.name)
-      await buildLayerShared(layer, { projectSlug, reason, lease })
+      await buildLayerShared(layer, { projectSlug, reason, builder })
     }
   } finally {
-    await lease.release()
+    await builder.close()
   }
 
   return finalTag
@@ -378,37 +384,27 @@ export async function rebuildProjectImage(
   // they're rebuilt cleanly. Each removal happens inside the layer's
   // single-flight slot, so concurrent creates join the fresh build instead
   // of racing the removed tag.
-  const lease = new BuilderPodLease()
+  // One builder for the whole rebuilt suffix, so each layer's freshly
+  // rebuilt parent is already local to the next — which is also what makes
+  // the rebuild correct without any force-push bookkeeping: a rebuild
+  // changes bytes under unchanged content-hash tags, and on the cluster
+  // backend every layer pushes its own fresh bytes over its tag as the last
+  // step of its build.
+  const builder = imageBuilder(ensureClusterBuilderHost)
   try {
     for (let i = toolsIdx; i < layers.length; i++) {
       const layer = layers[i]
       const noCache = i === toolsIdx
-      const engine = engineForLayer(layer.name)
-      // A cluster-pod layer pulls its parent from the registry. A rebuild
-      // changes bytes under unchanged content-hash tags, so a host-built
-      // parent that was itself just rebuilt (index >= toolsIdx) must be
-      // FORCE-pushed — a HEAD-skip would hand the builder pod stale bytes.
-      // A cluster-pod parent already force-pushed from its own builder pod.
-      if (engine.kind === 'cluster-pod' && layer.buildArgs?.BASE_IMAGE) {
-        const parentTag = layer.buildArgs.BASE_IMAGE
-        const parentIdx = layers.findIndex((l) => l.tag === parentTag)
-        const parentRebuilt = parentIdx >= toolsIdx
-          && engineForLayer(layers[parentIdx].name).kind === 'host-podman'
-        await pushImageShared(parentTag, { projectSlug, reason: 'rebuild' }, {
-          force: parentRebuilt,
-          compressionFormat: TRUSTED_PARENT_COMPRESSION,
-        })
-      }
       emit(`removing existing image ${layer.tag}`)
       emit(`building ${layer.tag}${noCache ? ' (no cache)' : ''}`)
       await rebuildLayerExclusive(
         layer,
-        { projectSlug, reason: 'rebuild', onLog: opts.onLog, lease },
+        { projectSlug, reason: 'rebuild', onLog: opts.onLog, builder },
         { noCache },
       )
     }
   } finally {
-    await lease.release()
+    await builder.close()
   }
 
   emit(`done — final image is ${finalTag}`)

@@ -1,15 +1,22 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
-import { imageExists } from '#platform/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#features/image-engine'
+import {
+  contextHash,
+  failImageBuild,
+  finishImageBuild,
+  ingestImageBuildLine,
+  registerImageBuild,
+  SHIPPED_BUILD_CACHE_REPO,
+} from '#features/image-engine'
 import {
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
   resetProxyClusterIpCache,
+  withClusterImageBuilder,
 } from '#features/cluster'
 import {
   PROXY_APP_NAME,
@@ -19,7 +26,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { registryHasTag, registryRef } from '#platform/container'
 import { listSshEntries } from '#features/projects'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
@@ -656,20 +663,25 @@ export class ProxyClient {
     const localTag = `${this.config.image}:${hash}`
     if (await registryHasTag(localTag)) return registryRef(localTag)
 
-    if (!await imageExists(localTag)) {
-      if (this.config.requirePrebuilt) {
-        throw new Error(
-          `Proxy image ${localTag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-      // Track the build in the shared registry so it surfaces in the webapp's
-      // "building" UX like every other image build. It has no owning project
-      // (shared infrastructure), so it registers with an empty projectSlugs.
-      const id = registerImageBuild({ tag: localTag, layer: 'proxy', action: 'build', reason: 'session' })
-      serverLog(`[build] starting ${localTag} (proxy sidecar)`)
+    if (this.config.requirePrebuilt) {
+      throw new Error(
+        `Proxy image ${localTag} is missing or stale. ` +
+        'Restart the test run so the global setup can rebuild it.',
+      )
+    }
+    // Track the build in the shared registry so it surfaces in the webapp's
+    // "building" UX like every other image build. It has no owning project
+    // (shared infrastructure), so it registers with an empty projectSlugs.
+    const id = registerImageBuild({ tag: localTag, layer: 'proxy', action: 'build', reason: 'session' })
+    serverLog(`[build] starting ${localTag} (proxy sidecar)`)
+    return withClusterImageBuilder(async (builder) => {
       try {
-        await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR, undefined, {
+        await builder.build({
+          tag: localTag,
+          dockerfile: path.join(PROXY_DIR, 'Dockerfile'),
+          context: PROXY_DIR,
+          noCache: false,
+          cacheRepo: SHIPPED_BUILD_CACHE_REPO,
           onLog: (line) => ingestImageBuildLine(id, line),
         })
         finishImageBuild(id)
@@ -677,8 +689,9 @@ export class ProxyClient {
         failImageBuild(id, err instanceof Error ? err.message : String(err))
         throw err
       }
-    }
-    return pushImageToRegistry(localTag)
+      // A no-op on the cluster backend, whose build already pushed it.
+      return builder.publish(localTag)
+    })
   }
 
   private async waitForHealthy(): Promise<void> {

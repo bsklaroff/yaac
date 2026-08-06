@@ -3,11 +3,12 @@
 // stops src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// Three modules, one per job the host's container engine does. runtime.ts is the
-// host side of the split runtime: the once-per-process check that podman (the
-// image build engine) and kubernetes (the session runtime) are both usable,
-// the CONTAINER_HOST lever that points every podman call at the rootful
-// engine, and the two image-store queries the image and cluster features make.
+// Three modules, one per job a host container engine does — for the installs
+// that still have one. runtime.ts is the host engine itself: the check that
+// podman is usable (run only where podman is the image builder — see
+// `#features/image-engine`'s builder seam), the CONTAINER_HOST lever that
+// points every podman call at the rootful engine, and the two image-store
+// queries the image feature makes.
 // registry.ts is the CLIENT of the main OCI registry — the two addresses it
 // has (the cluster ref every image name carries, and the port-forwarded
 // endpoint this process pushes and HEADs through) plus the push itself. The
@@ -44,7 +45,7 @@ export {
   REGISTRY_SERVICE_PORT,
 } from './registry'
 export {
-  ensureContainerRuntime,
+  ensureHostPodman,
   ensureRootfulPodmanHost,
   execFileAsync,
   imageExists,

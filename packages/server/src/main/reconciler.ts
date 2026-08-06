@@ -12,8 +12,8 @@ import {
   reconcileRedirectClaims,
   reconcileVclusters,
 } from '#features/cluster'
-import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#features/images'
-import { reconcileHostImageGc } from '#features/image-engine'
+import { reconcileBuildCacheGc, reconcileImagePrewarm } from '#features/images'
+import { reconcileBuilderPodGc, reconcileHostImageGc } from '#features/image-engine'
 import { reconcileGeneratedTitles } from '#features/titles'
 import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
 import { serverLog } from '#log'
@@ -52,7 +52,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
       run: (s) => reconcileStaleSessions(s) },
     // Service in-session `yaac-spawn` requests queued at the egress proxy.
     { name: 'spawn-requests', triggers: ['poll'], run: (s) => reconcileSpawnRequests({}, s) },
-    // Leaked trust-split builder pods (server restarted mid-build) — the
+    // Leaked builder pods (server restarted mid-build) — the
     // label sweep backstop. Throttled internally. Ahead of image-prewarm on
     // purpose: a leaked builder's memory reservation is what stops the next
     // build from scheduling, so it has to go before builds are launched.

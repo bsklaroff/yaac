@@ -226,8 +226,8 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
  *
  *  - the proxy: the one pod that legitimately reaches the internet.
  *  - session pods: governed by buildSessionEgressNpManifest.
- *  - builder pods: trust-split image builds fetch upstream packages and
- *    push to a registry (docs/trust-split-builds.md); their own scoped
+ *  - builder pods: image builds fetch upstream packages and
+ *    push to a registry (docs/image-builds.md); their own scoped
  *    policy governs them.
  *
  * `NotIn`/`DoesNotExist` also match pods carrying no such label, so

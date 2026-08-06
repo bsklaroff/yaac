@@ -36,11 +36,14 @@ import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
-  pushImageToRegistry,
+  registryHasTag,
   registryHost,
   registryReachable,
+  registryRef,
 } from '#platform/container'
+import { withClusterImageBuilder } from './builder-host'
 import { sharedRoot } from '@yaac/shared/paths'
+import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
 // consumers can name the shape without importing the check suite.
@@ -601,18 +604,31 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
 }
 
 /**
- * Make the probe image available in the local registry (pulling/tagging
- * the busybox source once) and return its in-cluster ref — shared by every
- * probe that schedules a pod.
+ * Make the probe image available to the cluster and return the ref every
+ * probe that schedules a pod pulls it by: the local mirror, made once
+ * through a builder pod, falling back to the upstream ref when that fails.
+ *
+ * The fallback is what keeps a diagnostic from depending on the machinery
+ * it diagnoses. Mirroring needs a healthy builder — which needs the
+ * registry, the guard and gVisor, three of the things `cluster check`
+ * exists to report on — so a broken cluster must still be able to schedule
+ * the probe that names what is broken, rather than failing here on the
+ * mirror and reporting nothing.
  */
 async function ensureProbeImage(): Promise<string> {
+  if (await registryHasTag(PROBE_LOCAL_TAG)) return registryRef(PROBE_LOCAL_TAG)
   try {
-    await execFileAsync('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
-  } catch {
-    await execFileAsync('podman', ['pull', PROBE_SOURCE_IMAGE], { timeout: 120_000 })
-    await execFileAsync('podman', ['tag', PROBE_SOURCE_IMAGE, PROBE_LOCAL_TAG])
+    return await withClusterImageBuilder((builder) => builder.mirror({
+      upstream: PROBE_SOURCE_IMAGE,
+      tag: PROBE_LOCAL_TAG,
+    }))
+  } catch (err) {
+    serverLog(
+      `[check] could not mirror the probe image (${truncate(err)}) — `
+      + `probes will pull ${PROBE_SOURCE_IMAGE} directly`,
+    )
+    return PROBE_SOURCE_IMAGE
   }
-  return pushImageToRegistry(PROBE_LOCAL_TAG)
 }
 
 const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
@@ -1480,7 +1496,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_REGISTRY_OPEN || echo NP_REGISTRY_LOCKED'
       : ''
 
-    const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
+    const imageRef = await ensureProbeImage()
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
@@ -1747,7 +1763,7 @@ const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
 async function runNestedMountProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
+    const imageRef = await ensureProbeImage()
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',

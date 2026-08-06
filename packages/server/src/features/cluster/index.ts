@@ -9,8 +9,10 @@
 // vclusters with their sleep activators. Three kinds of consumer enter here: `yaac cluster
 // check/setup/delete` (before any server exists), session create and its
 // reconcilers (which stand a session's slice of that datapath up and tear it
-// down), and the image builders (which need the builder pod's admission
-// guard and its route to the registry).
+// down), and the image builder (which builds in a pod on this cluster, and
+// takes `ensureClusterBuilderHost` from here as the guarantee that it can —
+// #features/image-engine sits BELOW this feature, since cluster setup builds
+// netd's image).
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/cluster/. Modules not re-exported are
@@ -43,6 +45,10 @@ export {
   getActivatorPodIp,
   vclusterSleepSliceName,
 } from './activator'
+export {
+  ensureClusterBuilderHost,
+  withClusterImageBuilder,
+} from './builder-host'
 export { formatCheckResult, runClusterCheck } from './check'
 export { reconcileRedirectClaims } from './redirect-claim-reconcile'
 export { ClusterDeleteError, runClusterDelete } from './delete'
