@@ -49,8 +49,8 @@ This is the third track alongside two existing plans, and it subsumes parts
 of both:
 
 - `moving-off-kind.md` — replace the node-in-a-container backend; still
-  single-node, still local. Its buildkitd-in-cluster spike and
-  "main registry in-cluster" section are prerequisites here.
+  single-node, still local. Its buildkitd-in-cluster spike is a
+  prerequisite here (its main-registry-in-cluster section has shipped).
 - `multi-node-storage-plan.md` — shared project state across nodes. Its
   gVisor-enables-NFS analysis, shared-vs-node-local dir split, and NFS spike
   apply here unchanged; only the mount mechanism differs (CSI PV instead of
@@ -240,17 +240,48 @@ instead of assuming them.
   buildkitd-in-cluster + `buildctl` (spike 2 of `moving-off-kind.md`,
   now mandatory). Trust-split untrusted layers already build in in-cluster
   runsc builder pods and only need registry reachability.
-- **Main registry**: the `localhost:5001` podman container, the `kind`
-  network join, and the node `hosts.toml` fixup all disappear. Two options:
-  DO Container Registry (DOCR — TLS, DOKS-integrated pull secrets, zero
-  node config; adds a DO dependency + egress cost) or an in-cluster
-  registry Service with proper certs (what per-project registries almost
-  are). Either way "the registry is the only image bus" becomes literally
-  true. Content-hash tags + `IfNotPresent` survive unchanged.
-- **Per-project registries** are already in-cluster and loop all nodes for
-  `hosts.toml` via privileged node-write pods — that pattern still works on
-  managed nodes (privileged pods are allowed), but their storage hostPath
-  (`/var/lib/yaac/registry/<hash>`) becomes a PVC.
+- **Main registry**: **done** — it is an in-cluster `registry:2`
+  Deployment + ClusterIP Service on the per-project registries' pattern, so
+  the podman container, the `kind` network join, and the `localhost:5001`
+  node `hosts.toml` fixup are all gone. The server reaches it over a
+  `kubectl port-forward`; content-hash tags + `IfNotPresent` are unchanged.
+  What is left is the storage question below, plus TLS/auth if the registry
+  ever has to be addressable from outside the cluster (DOCR remains the
+  alternative there — TLS, DOKS-integrated pull secrets, zero node config,
+  at the cost of a DO dependency and egress).
+- **Registry storage** is the open half for BOTH registries: the main one
+  stores under `/var/lib/yaac/main-registry/<install-hash>` and the
+  per-project ones under `/var/lib/yaac/registry/<hash>`, node hostPaths in
+  each case, which have to become PVCs. Their `hosts.toml` loop over all
+  nodes via privileged node-write pods still works on managed nodes
+  (privileged pods are allowed).
+
+  A node-local store under an unpinned Deployment costs more than the
+  re-pushes it looks like it costs, and both halves are observable on a
+  three-node kind cluster today:
+
+  - **Every reschedule strands a store.** The pod lands on a node whose
+    hostPath is empty, `registryHasTag` misses, and the pushers refill it —
+    correct, and invisible to the user. What stays behind is a full copy of
+    the image store on the node it left, which nothing reclaims: the build
+    cache GC only ever prunes the store of the pod it can `kubectl exec`
+    into. Several GB per reschedule, growing.
+  - **The GC's own restart can swap the store.** A collect ends in
+    `restartMainRegistry`, and with `Recreate` the old pod is deleted before
+    the replacement is scheduled — so the registry can come back on a
+    different node, serving a *different* store, while the pass reports
+    `restored: true` (which only ever meant "the rollout succeeded"). The
+    collect's reclaim then applies to a store that is no longer served, and
+    the served catalog changes wholesale. Scheduler-dependent rather than
+    guaranteed, which makes it a periodic coin flip rather than a bug that
+    shows up once and gets fixed.
+
+  A `nodeSelector` pinning the registry to its store's node would close
+  both and is still the wrong trade — it converts a self-healing
+  degradation into a single point of failure, and the store it pins to is
+  exactly the one a node replacement destroys. A PVC (RWO is enough; both
+  registries are single-replica by construction) is what actually makes the
+  store outlive the pod's placement.
 - **Image salvage / shared image store**: the node-local
   `/var/lib/yaac/imagecache` hostPath + unpinned writer pod is already a
   latent multi-node bug. Replace store-on-disk promotion with **push to the
@@ -353,8 +384,9 @@ shaped.
    - buildkitd-in-cluster + push/pull against DOCR or in-cluster registry.
 2. **Host-decoupling that pays off on single-node too** (land on the
    current backend first): buildkit builds behind a builder abstraction,
-   registry in-cluster, salvage-via-registry, ~~ssh-agent off the hostPath
-   socket~~ (done — over the proxy's agent port, not the stream relay),
+   ~~registry in-cluster~~ (done — §5), salvage-via-registry,
+   ~~ssh-agent off the hostPath socket~~ (done — over the proxy's agent
+   port, not the stream relay),
    ~~tmux socket to emptyDir~~ (done), ~~shared/node-local root split in
    `project-paths.ts`~~ (done — §2).
 3. **Server-in-cluster mode:** ~~volume-source abstraction in `pod-spec.ts`

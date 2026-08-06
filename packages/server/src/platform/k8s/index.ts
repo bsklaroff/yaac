@@ -47,6 +47,8 @@ export {
   kubectlWithRetry,
 } from './kubectl'
 export { ensurePinnedBinary } from './pinned-binary'
+export { invalidatePortForward, resolvePortForward } from './port-forward'
+export type { ForwardAddr, PortForwardSpec } from './port-forward'
 export {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,

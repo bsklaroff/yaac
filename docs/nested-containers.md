@@ -280,7 +280,7 @@ nested `docker pull` goes through the MITM proxy, not this registry.
 
 - Plain HTTP on **:5000**, node-local hostPath storage, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
-  and mirrored into the local registry.
+  and mirrored into the yaac registry.
 - Ensured for every **nested** session (it also carries their cross-session
   image cache), not only `virtualCluster` ones — except inside an inner
   yaac, whose vcluster denies the node hostPath the registry storage needs;
@@ -326,7 +326,7 @@ session:
   demand. The API Service exposes the API on **8443**, reached by its
   service-DNS name (see Service addressing); the serving-cert SAN and the
   exported kubeconfig use that name, so the ClusterIP need not be pinned.
-  `defaultImageRegistry` points at the local registry; vcluster images are
+  `defaultImageRegistry` points at the yaac registry; vcluster images are
   digest-pinned and mirrored. Every synced pod is stamped with
   `yaac.session-id` so the egress backstop confines it for free.
 - **VAP guard** (synced-pod containment): a ValidatingAdmissionPolicy +

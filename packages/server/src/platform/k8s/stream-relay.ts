@@ -2,12 +2,12 @@ import net from 'node:net'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { spawn, type ChildProcess } from 'node:child_process'
 import { env } from '@yaac/shared/env'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, kubectlGetJson } from './kubectl'
 import { sessionIdFromJobName } from './pods'
 import { containerExec } from './exec'
+import { invalidatePortForward, resolvePortForward } from './port-forward'
 import {
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -53,17 +53,19 @@ interface RelayAddr {
   port: number
 }
 
+/** Key the shared port-forward registry files this install's relay child
+ *  under (see platform/k8s/port-forward.ts). */
+const RELAY_FORWARD_KEY = 'stream-relay'
+
 let cachedAddr: RelayAddr | null = null
 let cachedSecret: string | null = null
-let portForwardChild: ChildProcess | null = null
 
 /** Drop the cached relay address so the next dial re-resolves it (an inner
  *  proxy pod replacement moves the target IP; a dead port-forward child
  *  gets respawned). */
 export function invalidateRelayAddr(): void {
   cachedAddr = null
-  portForwardChild?.kill()
-  portForwardChild = null
+  invalidatePortForward(RELAY_FORWARD_KEY)
 }
 
 /**
@@ -76,9 +78,15 @@ export function invalidateRelayAddr(): void {
  * look again. A live port-forward child is left strictly alone — the whole
  * reason timeouts stopped recycling is that respawning it drops every
  * stream riding it.
+ *
+ * That last part is now structural rather than a runtime check: `cachedAddr`
+ * holds ONLY the nested pod IP, since the top-level path delegates its
+ * address to the shared port-forward registry and never memoizes anything
+ * here. So clearing it cannot reach a port-forward child — which is exactly
+ * the guarantee the old `portForwardChild === null` test was making.
  */
 function invalidateResolvedPodAddr(): void {
-  if (portForwardChild === null) cachedAddr = null
+  cachedAddr = null
 }
 
 /** Test-only: reset all module caches. */
@@ -104,44 +112,10 @@ export function _resetRelayCacheForTests(): void {
  * the hop via YAAC_RELAY_ADDR.
  */
 function startRelayPortForward(): Promise<RelayAddr> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('kubectl', [
-      'port-forward', '-n', k8sNamespace(), `deploy/${PROXY_APP_NAME}`, `0:${RELAY_PORT}`,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] })
-    portForwardChild = child
-    let out = ''
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      child.kill()
-      reject(new Error('relay port-forward did not become ready within 15s'))
-    }, 15_000)
-    child.stdout?.on('data', (chunk: Buffer) => {
-      out += chunk.toString('utf8')
-      const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out)
-      if (m && !settled) {
-        settled = true
-        clearTimeout(timer)
-        resolve({ host: '127.0.0.1', port: Number(m[1]) })
-      }
-    })
-    child.stderr?.on('data', () => { /* surfaced via exit/timeout */ })
-    child.on('exit', () => {
-      if (portForwardChild === child) portForwardChild = null
-      cachedAddr = null
-      if (!settled) {
-        settled = true
-        clearTimeout(timer)
-        reject(new Error('relay port-forward exited during startup'))
-      }
-    })
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      reject(err)
-    })
+  return resolvePortForward(RELAY_FORWARD_KEY, {
+    namespace: k8sNamespace(),
+    target: `deploy/${PROXY_APP_NAME}`,
+    remotePort: RELAY_PORT,
   })
 }
 
@@ -162,21 +136,21 @@ let resolveInflight: Promise<RelayAddr> | null = null
 export async function resolveRelayAddr(): Promise<RelayAddr> {
   const override = env.relayAddr
   if (override) return override
+  // Top-level: the shared port-forward registry owns both the cache and
+  // the child's lifetime, so a child that dies is respawned on the next
+  // dial rather than leaving a stale address memoized here.
+  if (!env.nested) return startRelayPortForward()
   if (cachedAddr) return cachedAddr
   if (resolveInflight) return resolveInflight
   resolveInflight = (async () => {
-    if (env.nested) {
-      interface RawPods { items: Array<{ status?: { podIP?: string; phase?: string } }> }
-      const list = await kubectlGetJson<RawPods>([
-        'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
-      ])
-      const ip = list?.items.find((p) => p.status?.phase === 'Running')?.status?.podIP
-        ?? list?.items[0]?.status?.podIP
-      if (!ip) throw new Error('stream relay: no inner proxy pod IP yet')
-      cachedAddr = { host: ip, port: RELAY_PORT }
-    } else {
-      cachedAddr = await startRelayPortForward()
-    }
+    interface RawPods { items: Array<{ status?: { podIP?: string; phase?: string } }> }
+    const list = await kubectlGetJson<RawPods>([
+      'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
+    ])
+    const ip = list?.items.find((p) => p.status?.phase === 'Running')?.status?.podIP
+      ?? list?.items[0]?.status?.podIP
+    if (!ip) throw new Error('stream relay: no inner proxy pod IP yet')
+    cachedAddr = { host: ip, port: RELAY_PORT }
     return cachedAddr
   })().finally(() => {
     resolveInflight = null

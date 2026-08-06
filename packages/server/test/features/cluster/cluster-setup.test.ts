@@ -104,9 +104,9 @@ function makeDeps(
     runStreaming,
     log: overrides.log ?? vi.fn(),
     confirm: overrides.confirm ?? vi.fn().mockResolvedValue(false),
-    ensureRegistry: overrides.ensureRegistry ?? vi.fn().mockResolvedValue(undefined),
-    exposeRegistry: overrides.exposeRegistry
+    ensureRegistry: overrides.ensureRegistry
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
+    ensureBuilderGuard: overrides.ensureBuilderGuard ?? vi.fn().mockResolvedValue(undefined),
     ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
     ensureGvisorRuntime: overrides.ensureGvisorRuntime ?? vi.fn().mockResolvedValue(undefined),
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
@@ -143,9 +143,11 @@ describe('runClusterSetup', () => {
     const ok = await runClusterSetup({}, deps)
 
     expect(ok).toBe(true)
+    // The registry is an in-cluster Deployment, so it is stood up AFTER
+    // the cluster exists, not before it.
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
-    // In-cluster registry Service for trust-split builder pods.
-    expect(deps.exposeRegistry).toHaveBeenCalledOnce()
+    // Admission guard reserving yaac.role=builder for the sandboxed builders.
+    expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
     // netd deployed before the check, so the datapath gate has something
     // to verify on a freshly-created cluster.
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
@@ -173,12 +175,14 @@ describe('runClusterSetup', () => {
       f === 'kubectl' && a.includes('rollout') && a.includes('daemonset/calico-node'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
-    // Node fixups: hosts.toml + TasksMax/sysctls via podman exec, then the
-    // node container's pids ceiling, then the network connect.
+    // Node fixups: TasksMax/sysctls via podman exec, then the node
+    // container's pids ceiling. NO registry wiring — neither the kind
+    // network join nor a hosts.toml write survives here; the registries
+    // write their own from in-cluster pods.
     const execCmds = runCalls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec')
       .map(([, a]) => a[a.length - 1])
-    expect(execCmds.some((c) => c.includes('hosts.toml'))).toBe(true)
+    expect(execCmds.some((c) => c.includes('hosts.toml'))).toBe(false)
     expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
     // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
@@ -188,7 +192,7 @@ describe('runClusterSetup', () => {
       && c.includes('/var/lib/kubelet/kubeadm-flags.env')
       && c.includes('systemctl restart kubelet'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
-    expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network' && a[1] === 'connect')).toBe(true)
+    expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network')).toBe(false)
 
     // gVisor: an in-cluster installer DaemonSet, so setup itself never
     // touches a node for it — no podman exec, no host-side download.
@@ -196,13 +200,14 @@ describe('runClusterSetup', () => {
     expect(runCalls.some(([f]) => f === 'sh')).toBe(false)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'cp')).toBe(false)
     expect(execCmds.some((c) => c.includes('runsc') || c.includes('restart containerd'))).toBe(false)
-    // ...and it lands after the node's registry wiring, since its image is
-    // pulled from the local registry the fixups just pointed the node at.
+    // ...and it lands after the REGISTRY is stood up, since its image is
+    // mirrored through it — the same dependency netd has. (The old anchor
+    // was the kind-network join, which no longer exists: the registry is an
+    // in-cluster Deployment, so there is no container to attach to a
+    // podman network.)
     const gvisorOrder = vi.mocked(deps.ensureGvisorRuntime).mock.invocationCallOrder[0]
-    const connectOrder = runCalls
-      .map((c, i) => ({ c, order: deps.run.mock.invocationCallOrder[i] }))
-      .find(({ c }) => c[0] === 'podman' && c[1][0] === 'network' && c[1][1] === 'connect')!.order
-    expect(gvisorOrder).toBeGreaterThan(connectOrder)
+    const registryOrder = vi.mocked(deps.ensureRegistry).mock.invocationCallOrder[0]
+    expect(gvisorOrder).toBeGreaterThan(registryOrder)
 
     expect(deps.check).toHaveBeenCalledOnce()
   })
@@ -268,13 +273,20 @@ describe('runClusterSetup', () => {
     await runClusterSetup({ nodes: 3 }, deps)
 
     const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
-    // The registry hosts.toml (containerd's `localhost:5001` mapping) is
-    // per-node state: a node without it cannot pull a session image.
-    const hostsWrites = run.mock.calls
+    // The container-side fixups are per-node state: a node missing them
+    // dies under subagent fan-out no matter what the other nodes have.
+    const fixupWrites = run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec'
-        && String(a[a.length - 1]).includes('hosts.toml'))
+        && String(a[a.length - 1]).includes('DefaultTasksMax=infinity'))
       .map(([, a]) => a[1])
-    expect(hostsWrites).toEqual(allNodes)
+    expect(fixupWrites).toEqual(allNodes)
+    // The per-node REGISTRY wiring is deliberately NOT in this loop: both
+    // registries are in-cluster Services now, and their containerd
+    // hosts.toml is written by one-shot pods that loop the live node list
+    // themselves (pinned in main-registry.test.ts). Setup never execs a
+    // node for it, so nothing here can go stale against a node added later.
+    expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec'
+      && String(a[a.length - 1]).includes('hosts.toml'))).toBe(false)
     // Same for the pids ceiling on the node container...
     expect(run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))
@@ -477,7 +489,7 @@ describe('runClusterSetup', () => {
 
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
-    expect(deps.exposeRegistry).toHaveBeenCalledOnce()
+    expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
     // Re-applied on --repair too: that is how an existing cluster picks
     // netd, the PriorityClasses and a runsc version bump up on a yaac
     // upgrade. The gVisor half no longer repairs node state — the installer

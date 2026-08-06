@@ -1,17 +1,24 @@
 import { confirmDefault, kindEnv } from './setup'
 import { execFileAsync } from '#platform/k8s'
-import { removeLocalRegistry, REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { env } from '@yaac/shared/env'
 
 /**
- * `yaac cluster delete` — tear down the local kind cluster and the local
- * registry container `yaac cluster setup` created, leaving on-disk sessions
- * and worktrees untouched. Deleting the cluster removes the node and
- * everything living inside it (Calico, netd, every vcluster, the per-project
- * registries, all node-local storage); the standalone registry container
- * lives beside the cluster on podman, so it is removed explicitly. Nothing
- * under the yaac data dir (projects, sessions, worktrees) is touched — a
- * later `yaac cluster setup` recreates the cluster and re-pushes images.
+ * `yaac cluster delete` — tear down the local kind cluster `yaac cluster
+ * setup` created, leaving on-disk sessions and worktrees untouched.
+ *
+ * One `kind delete` is now the whole teardown: every yaac workload lives
+ * inside the cluster (Calico, netd, every vcluster, the main and
+ * per-project registries) and so does all of their node-local storage,
+ * including the registries' image blobs — the node's filesystem goes with
+ * the node. Nothing under the yaac data dir (projects, sessions, worktrees)
+ * is touched, so a later `yaac cluster setup` recreates the cluster and
+ * re-pushes the images.
+ *
+ * There is deliberately no host-container step here any more. The registry
+ * an older yaac ran as a podman container beside the cluster is retired by
+ * the ensure that stands up its in-cluster replacement (main-registry.ts),
+ * not by delete — otherwise an install that upgraded and never deleted
+ * would keep the orphan forever.
  */
 
 /** A delete step failed in a way the user must resolve; message is the fix. */
@@ -48,10 +55,9 @@ async function listKindClusters(): Promise<string[]> {
 }
 
 /**
- * Delete the kind cluster and remove the local registry container. Refuses
- * inside a nested yaac session (the cluster is the outer install's
- * infrastructure), confirms first unless `yes`, and is idempotent: an absent
- * cluster and an absent registry container are both no-ops. Throws
+ * Delete the kind cluster. Refuses inside a nested yaac session (the
+ * cluster is the outer install's infrastructure), confirms first unless
+ * `yes`, and is idempotent: an absent cluster is a no-op. Throws
  * ClusterDeleteError with a user-actionable message when a step cannot
  * proceed.
  */
@@ -70,9 +76,9 @@ export async function runClusterDelete(
 
   if (!opts.yes) {
     const proceed = await confirmDefault(
-      `This deletes the kind cluster "${cluster}" and the local registry `
-      + `container "${REGISTRY_CONTAINER_NAME}". Any running sessions stop, but `
-      + 'their on-disk state and worktrees are kept. Continue?',
+      `This deletes the kind cluster "${cluster}", including the in-cluster `
+      + 'image registry and every image pushed to it. Any running sessions '
+      + 'stop, but their on-disk state and worktrees are kept. Continue?',
     )
     if (!proceed) {
       console.log('Aborted — nothing was deleted.')
@@ -86,9 +92,6 @@ export async function runClusterDelete(
   } else {
     console.log(`No kind cluster "${cluster}" to delete.`)
   }
-
-  console.log(`Removing local registry container "${REGISTRY_CONTAINER_NAME}"...`)
-  await removeLocalRegistry()
 
   console.log(
     '\nDone. Sessions and worktrees on disk are untouched — run '

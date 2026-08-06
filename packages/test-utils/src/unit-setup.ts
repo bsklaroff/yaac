@@ -5,7 +5,8 @@ import { setHermeticScratch } from '#tmp'
 // *inside* a yaac session (nested yaac), the session preset leaks
 // YAAC_NESTED=1, YAAC_DATA_DIR, and YAAC_K8S_REGISTRY into the process.
 // Those flip environment-sensitive code paths — registryHost() returns the
-// in-cluster per-project registry instead of localhost:5001, createSession /
+// outer install's per-project registry instead of this install's own
+// in-cluster registry Service, createSession /
 // runClusterCheck take their nested branches, and getDataDir() resolves to
 // the session's node-shared virtiofs data dir (slow, coarse file
 // timestamps) for any test that doesn't set its own — which breaks

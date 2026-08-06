@@ -38,9 +38,10 @@ node:
   fan-out dies with `fork: resource temporarily unavailable`. The
   container-level PID/task caps disappear with the container; the vm
   sysctls may still be wanted inside a VM.
-- **Registry wiring**: the podman-hosted `registry:2` container joined to
-  the kind network plus per-node `hosts.toml`
-  (`cluster-setup.ts:419,443`).
+- ~~**Registry wiring**~~ — **done**: the main registry is an in-cluster
+  Deployment + Service like the per-project ones, so the kind-network join
+  and the `localhost:5001` `hosts.toml` fixup are gone. The server pushes
+  through a `kubectl port-forward` (docs/trust-split-builds.md).
 - **kind↔podman version skew**: podman 6.x breaks kind ≤ v0.32.0, hence
   the tap-pinned `yaac-kind` build and the preflight
   (`diagnoseKindPodmanSkew`, `cluster-setup.ts:244-305`). Goes away
@@ -76,8 +77,11 @@ Probed by `src/lib/k8s/cluster-check.ts`:
   default host-routing) consume the frame before netfilter — see
   docs/session-egress.md. Policy itself is plain `networking.k8s.io/v1`
   NetworkPolicy only, which is what keeps managed-cloud ports cheap.
-- **Local registry** at `registryHost()` (default `localhost:5001`,
-  `src/lib/k8s/registry.ts`) pullable by the node's containerd.
+- **An image registry the node's containerd can pull from.** No longer a
+  host-side constraint: the registry is an in-cluster Service, reached by
+  the node through a containerd `hosts.toml` that a one-shot pod writes, so
+  a backend only has to admit privileged hostPath pods and let containerd
+  read `/etc/containerd/certs.d` (the `config_path` patch).
 - **Runtime binaries**: `kubectl` (context-agnostic), `podman` (build
   engine — unless spike 2 below removes it), `helm` (vcluster only,
   auto-downloaded).
@@ -150,16 +154,6 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
    podman. Passing would remove host podman entirely on both platforms.
 3. **Linux end-state**: validate native k3s + Calico against
    `yaac cluster check`; `yaac cluster setup` grows a k3s path.
-
-## Main registry in-cluster (deferred from the old Phase 3)
-
-Moving the `localhost:5001` podman registry container in-cluster —
-mirroring the per-project in-cluster registries, with server-side pushes
-over the existing `kubectl port-forward` pattern
-(`src/lib/k8s/port-forward.ts`) — kills `connectRegistryToKindNetwork`
-and the localhost hosts.toml fixup entirely. Today's podman-network
-registry works fine under kind, so this lands with (and only with) the
-first backend that needs it.
 
 ## setup/check integration
 

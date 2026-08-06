@@ -8,8 +8,10 @@
 // image build engine) and kubernetes (the session runtime) are both usable,
 // the CONTAINER_HOST lever that points every podman call at the rootful
 // engine, and the two image-store queries the image and cluster features make.
-// registry.ts is the local OCI registry — a podman container and an HTTP
-// endpoint that the image builders, the proxy client and server start push to.
+// registry.ts is the CLIENT of the main OCI registry — the two addresses it
+// has (the cluster ref every image name carries, and the port-forwarded
+// endpoint this process pushes and HEADs through) plus the push itself. The
+// registry workload lives in the cluster and is owned by `#features/cluster`.
 // host-procs.ts owns every long-running podman child (`build` / `push`): it
 // runs them, and it makes them die with the server rather than outliving it
 // into the next one, which is where duplicate builds come from.
@@ -30,14 +32,16 @@ export {
   runTrackedPodman,
 } from './host-procs'
 export {
-  ensureLocalRegistry,
+  invalidateRegistryEndpoint,
   pushImageToRegistry,
+  registryEndpoint,
   registryHasTag,
   registryHost,
   registryReachable,
   registryRef,
-  REGISTRY_CONTAINER_NAME,
-  removeLocalRegistry,
+  REGISTRY_NAMESPACE,
+  REGISTRY_SERVICE_NAME,
+  REGISTRY_SERVICE_PORT,
 } from './registry'
 export {
   ensureContainerRuntime,

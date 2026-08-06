@@ -41,9 +41,13 @@ import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { ensureNamespace, gcOrphanProjectRegistries, sweepLegacyImageStore } from '#features/cluster'
 import {
-  ensureLocalRegistry,
+  ensureMainRegistry,
+  ensureNamespace,
+  gcOrphanProjectRegistries,
+  sweepLegacyImageStore,
+} from '#features/cluster'
+import {
   killTrackedPodmanProcs,
   reapOrphanedPodmanProcs,
 } from '#platform/container'
@@ -439,8 +443,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       serverLog(`[server] orphan podman reap failed: ${String(err)}`)
     }
 
-    // Best-effort cluster bootstrap: the local registry and the yaac
-    // namespace are cheap to ensure and needed by the first session.
+    // Best-effort cluster bootstrap: the yaac namespace and the in-cluster
+    // registry are cheap to ensure and needed by the first session.
     // Failures are logged, not fatal — the server can serve project/auth
     // RPCs without a cluster, and session creation surfaces its own
     // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
@@ -448,12 +452,21 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // the first session create — sees the namespace exist before it
     // applies anything into it.
     await (async () => {
-      await ensureLocalRegistry()
       await ensureNamespace()
       // Cluster-scoped and idempotent, like the RuntimeClasses `cluster
       // setup` installs — re-ensured here because every pod yaac creates
       // names one, and a cluster set up by an older yaac has neither.
+      //
+      // STRICTLY before the registry: its Deployment's pod names the infra
+      // class, and a pod naming a class the apiserver does not have is
+      // rejected — so on the very cluster this re-ensure exists for, the
+      // rollout would wait out its full timeout, throw, and abort this
+      // chain before ever installing the classes. `cluster setup` orders
+      // these the same way.
       await ensurePriorityClasses()
+      // The registry stands itself up only when it isn't already answering,
+      // so a healthy install pays one HTTP ping here.
+      await ensureMainRegistry()
     })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
     // A server restart loses the in-memory forwarder registry while

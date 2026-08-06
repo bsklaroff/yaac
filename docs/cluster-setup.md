@@ -10,10 +10,10 @@ yaac cluster setup --nodes 3  # one control-plane node + two workers
 ```
 
 The command bootstraps the podman machine on macOS (see below) — or expects a
-reachable rootful podman on Linux (see below) — starts the local registry,
-creates a kind cluster from the bundled `k8s/kind-config.yaml`, installs pinned
-Calico (the CNI and NetworkPolicy engine) and netd (the session-egress redirect), and
-applies the node fixups to every node.
+reachable rootful podman on Linux (see below) — creates a kind cluster from the
+bundled `k8s/kind-config.yaml`, installs pinned Calico (the CNI and
+NetworkPolicy engine) and netd (the session-egress redirect), applies the node
+fixups to every node, and deploys the in-cluster image registry.
 
 ## The split runtime
 
@@ -108,8 +108,8 @@ steps if the rootful socket isn't reachable.
 ## Linux: VPN and firewall interference
 
 Two host-level blockers that both present as "container is up but its
-published port doesn't answer" (the registry probe on `127.0.0.1:5001`,
-kind's API server on `127.0.0.1:<port>`):
+published port doesn't answer" (kind's API server on `127.0.0.1:<port>`,
+or the loopback end of a `kubectl port-forward`):
 
 - **VPN firewalls (e.g. Mullvad)** reject traffic to the podman bridge
   subnets — including loopback-published ports, whose destination is
@@ -150,11 +150,16 @@ only kind's provider breaks.
 
 ## What it wires up
 
-1. **Local image registry** on `127.0.0.1:5001` — yaac pushes built session
-   images there and pods pull them as `localhost:5001/...` (the kind
-   [local-registry pattern](https://kind.sigs.k8s.io/docs/user/local-registry/)).
-   Host port 5001 (not the registry-default 5000) sidesteps macOS AirPlay
-   Receiver, which binds `::1:5000`; the container-internal port stays 5000.
+1. **The image registry**, as an in-cluster `registry:2` Deployment behind
+   a ClusterIP Service — the same shape the per-project registries use.
+   Pods and builder pods pull by its Service FQDN
+   (`yaac-registry.yaac.svc.cluster.local:5000`); the node, which is not a
+   cluster-DNS client, matches that host against a containerd `hosts.toml`
+   holding the live ClusterIP, written by a one-shot pod per node. The
+   server pushes and queries through a `kubectl port-forward`, so nothing in
+   the image path depends on host↔cluster networking. Blobs live on a node
+   hostPath (`/var/lib/yaac/main-registry/<install-hash>`), so they die with
+   the cluster and cost only re-pushes.
 2. **Home-directory extraMount** — session pods mount worktrees, caches, and
    credentials via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
@@ -398,16 +403,36 @@ others, so no gate ever passes on a node it could not actually check.
 > runtime-agnostic, unlike `kubectl port-forward`, which cannot reach
 > gVisor pods); nothing yaac deploys listens on host interfaces.
 
+### Upgrading from the host registry container
+
+Installs that predate the in-cluster registry ran it as a podman container
+named `yaac-registry`, published on `127.0.0.1:5001`. The upgrade is
+automatic — the server re-ensures the in-cluster registry at boot, and that
+ensure also drops the hand-written `yaac-registry-1` EndpointSlice the old
+selectorless Service was backed by (left in place, kube-proxy would union
+the dead container's address into the new Service and half the pulls would
+fail). The same ensure removes the old container, once its in-cluster
+replacement is rolled out and the nodes point at it — a failure there is
+logged and not fatal, so if the container somehow survives, `podman rm -f
+yaac-registry` finishes the job.
+
+One thing the upgrade deliberately does not do:
+
+- Images that existed ONLY in it — builder-pod-built untrusted layers and
+  their step caches, which never touch the host image store — are not
+  migrated. They are re-pushed or rebuilt on demand, so this costs one
+  slower build per affected image, not correctness.
+
 ## Deleting the cluster
 
 ```sh
 yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
-The teardown counterpart to `setup`. It deletes the kind cluster (which
-takes every node and all of it — Calico, netd, every vcluster, the
-per-project registries, and all node-local storage) and removes the local
-`yaac-registry` container that sits beside it on podman. Running session pods
+The teardown counterpart to `setup`, and one `kind delete` is the whole of
+it: everything yaac deploys lives inside the cluster — Calico, netd, every
+vcluster, the main and per-project registries — and so does their
+node-local storage on every node, including every pushed image. Running session pods
 stop, but nothing under the yaac data dir is touched: on-disk sessions and
 worktrees survive, and a later `yaac cluster setup` recreates the cluster and
 re-pushes images on demand. It leaves the podman machine and its shared image

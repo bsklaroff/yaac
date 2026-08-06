@@ -11,7 +11,7 @@
  *   1. bootstrap /etc/containers/storage.conf (native overlay on the
  *      sentry tmpfs graphroot — the stock image forces fuse-overlayfs,
  *      which is broken under runsc),
- *   2. materialize the parent: pull `<registry-svc>/P` + retag to the bare
+ *   2. materialize the parent: pull `<registry-host>/P` + retag to the bare
  *      tag so `--build-arg BASE_IMAGE=P` matches host builds,
  *   3. stream the build context in as a tar over `kubectl exec -i`,
  *      honoring `.containerignore` exactly like `contextHash()`,
@@ -30,7 +30,13 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import {
+  imageExists,
+  pushImageToRegistry,
+  registryHasTag,
+  registryHost,
+  registryRef,
+} from '#platform/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#platform/build-context'
 import { testEnv } from '@yaac/shared/env'
 import {
@@ -55,8 +61,7 @@ import {
 import {
   buildEgressWorldDenyNpManifest,
   ensureBuilderRoleGuard,
-  ensureRegistryClusterService,
-  registryClusterHost,
+  ensureMainRegistry,
 } from '#features/cluster'
 import { runStreamingProcess } from '#platform/streaming-proc'
 import type { EngineBuildContext } from './build-engine'
@@ -155,6 +160,11 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
  * a per-project repo confines that to the project whose image the
  * attacker already controls. `Dockerfile.user` layers cache into the repo
  * of the project being built.
+ *
+ * The confinement is over WHERE THIS BUILD READS AND WRITES, not a
+ * boundary: the registry is unauthenticated with no path ACLs, so a
+ * hostile RUN step can push to another project's cache repo by hand. See
+ * the open risk in docs/trust-split-builds.md.
  */
 export function buildCacheRepo(projectSlug: string): string {
   const slug = projectSlug.toLowerCase().replace(/[^a-z0-9._-]/g, '-')
@@ -535,8 +545,11 @@ export class BuilderPodLease {
         + `Run \`yaac cluster check\`.\n${detail}`,
       )
     }
+    // The registry is what a builder pod pulls its parent from and pushes
+    // its product to, so an install whose registry never came up must fail
+    // here rather than inside the pod.
+    await ensureMainRegistry()
     const imageRef = await ensureBuilderImage()
-    await ensureRegistryClusterService()
     await ensureBuilderNetworkPolicies()
 
     const name = builderPodName(seedTag)
@@ -645,7 +658,7 @@ export async function buildLayerInPod(
   // created it — adjacent untrusted layers share one pod, and that caller's
   // `finally` releases it. Nothing here owns the pod's lifetime.
   const pod = await ctx.lease.acquire(layer.tag)
-  const clusterHost = registryClusterHost()
+  const clusterHost = registryHost()
   const logPrefix = `[build ${layer.tag}] `
   const execOpts = { onLog: ctx.onLog, logPrefix }
   try {

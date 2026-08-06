@@ -29,7 +29,14 @@ import {
 import { nodeIpBlocks } from './cluster-cidrs'
 import { ensureNamespace } from './proxy-apply'
 import { vapAvailable } from './vcluster'
-import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container'
+import {
+  REGISTRY_NAMESPACE,
+  REGISTRY_SERVICE_NAME,
+  REGISTRY_SERVICE_PORT,
+  pushImageToRegistry,
+  registryHost,
+  registryReachable,
+} from '#platform/container'
 import { sharedRoot } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
@@ -53,8 +60,8 @@ const PROBE_POD_NAME = 'yaac-cluster-check'
 const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac by running:',
   '  yaac cluster setup',
-  'It provisions the podman machine (macOS), the local registry, the kind',
-  'cluster (registry wiring + home extraMount), Calico, and the node fixups.',
+  'It provisions the podman machine (macOS), the kind cluster (home',
+  'extraMount), Calico, the node fixups, and the in-cluster registry.',
 ].join('\n')
 
 /**
@@ -106,7 +113,8 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   3. node inventory: how many nodes, how many of them can schedule a
  *      session, and are they all Ready
  *   4. podman present (the image build engine)
- *   5. local registry answering on the configured address
+ *   5. the in-cluster registry answering (through this process's route to
+ *      it — a kubectl port-forward, or the outer project registry nested)
  *   6. yaac namespace exists / can be created
  *   6b. node fixups (warn-only, kind nodes only): DefaultTasksMax,
  *      vm.min_free_kbytes, the kubelet housekeeping interval, and node
@@ -119,7 +127,7 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      actually sentry-sandboxed (dmesg fingerprint) — session pods cannot
  *      run without all three
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
- *      from `localhost:5001/...` (on the default gvisor tier) that reads
+ *      from its cluster ref (on the default gvisor tier) that reads
  *      a nonce file from a hostPath mount of the data dir and writes a
  *      marker back at the session uid — proves in-cluster registry
  *      pulls, host-visible hostPath, AND unprivileged hostPath writes
@@ -226,16 +234,20 @@ export async function runClusterCheck(
     })
   }
 
-  // 5. registry
+  // 5. registry. Reachability here means "this process can reach it",
+  // which for a top-level install is a kubectl port-forward into the
+  // registry Deployment — so a failure is either an absent Deployment or
+  // an apiserver that will not forward, never a host networking question.
   if (await registryReachable()) {
-    add({ name: 'registry', status: 'pass', detail: `answering on ${registryHost()}` })
+    add({ name: 'registry', status: 'pass', detail: `serving as ${registryHost()}` })
   } else {
     add({
       name: 'registry', status: 'fail',
-      detail: `nothing answering on ${registryHost()}`,
-      fix: 'The yaac server auto-starts a registry container on startup.\n'
-        + 'Start it manually with:\n'
-        + '  podman run -d --name yaac-registry -p 127.0.0.1:5001:5000 docker.io/library/registry:2',
+      detail: `the in-cluster registry ${registryHost()} is not answering`,
+      fix: 'The registry is an in-cluster Deployment installed by `yaac '
+        + 'cluster setup` and re-ensured by the yaac server on start. '
+        + 'Re-apply it with:\n  yaac cluster setup --repair\n'
+        + `Inspect it with \`kubectl -n ${REGISTRY_NAMESPACE} get deploy,pods -l app=yaac-main-registry\`.`,
     })
   }
 
@@ -849,9 +861,10 @@ async function runEndToEndProbe(): Promise<CheckResult> {
       return {
         name: 'probe', status: 'fail',
         detail: `probe pod ended in phase ${phase}`,
-        fix: 'If the pod is stuck in ImagePullBackOff, the cluster cannot '
-          + `pull from ${registryHost()} — wire the registry into the `
-          + 'cluster (kind local-registry setup).\nIf it failed mounting '
+        fix: 'If the pod is stuck in ImagePullBackOff, the node cannot '
+          + `pull from ${registryHost()} — its containerd hosts.toml for `
+          + 'that host is missing or stale; re-apply it with `yaac cluster '
+          + 'setup --repair`.\nIf it failed mounting '
           + `/probe, the node cannot see ${dataDir} — add an extraMounts `
           + 'entry for your home directory to the kind config.\n'
           + 'If it never got past Pending or failed with a runsc/'
@@ -1334,6 +1347,26 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_PROXY_OPEN || echo NP_PROXY_LOCKED'
       : ''
 
+    // Third leg, same pod: the registry is unauthenticated with mutable
+    // tags and no path ACLs, so "a session cannot reach it" is a security
+    // property and worth asserting rather than assuming. Addressed by
+    // ClusterIP, not by name — a DNS failure would otherwise read as a
+    // pass. Absent Service → skip (nothing to reach).
+    let registryIp: string | null = null
+    try {
+      const { stdout } = await execFileAsync('kubectl', [
+        'get', 'svc', REGISTRY_SERVICE_NAME, '-n', REGISTRY_NAMESPACE,
+        '-o', 'jsonpath={.spec.clusterIP}',
+      ])
+      registryIp = stdout.trim() || null
+    } catch {
+      registryIp = null
+    }
+    const registryCheck = registryIp
+      ? `; nc -w 4 ${registryIp} ${REGISTRY_SERVICE_PORT} </dev/null >/dev/null 2>&1`
+        + ' && echo NP_REGISTRY_OPEN || echo NP_REGISTRY_LOCKED'
+      : ''
+
     const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
@@ -1355,7 +1388,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           image: imageRef,
           command: [
             'sh', '-c',
-            `nc -w 4 ${apiserverIp} 443 </dev/null && echo NP_REACHED || echo NP_BLOCKED${proxyCheck}`,
+            `nc -w 4 ${apiserverIp} 443 </dev/null && echo NP_REACHED || echo NP_BLOCKED`
+            + proxyCheck + registryCheck,
           ],
         }],
       },
@@ -1382,6 +1416,16 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           + 'policy engine.',
       }
     }
+    if (logs.includes('NP_REGISTRY_OPEN')) {
+      return {
+        name: 'egress', status: 'fail',
+        detail: 'a session-labeled pod reached the image registry directly — it is '
+          + 'unauthenticated with mutable tags, so any session could overwrite any image',
+        fix: 'Session egress must default-deny everything but the node\'s netd '
+          + 'listener range, and the registry admits only the node and builder '
+          + 'pods. Restart the yaac server so both policies are re-applied.',
+      }
+    }
     if (logs.includes('NP_PROXY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
@@ -1393,12 +1437,22 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       }
     }
     if (logs.includes('NP_BLOCKED')) {
-      const proxyHalf = proxyIp
-        ? ', and cannot dial a transparent port directly (forgery lock holds)'
-        : ' (proxy not deployed — forgery-lock half unverified)'
+      // Both extra legs are skipped when their target is absent, so the
+      // clauses are COMPOSED rather than concatenated: appending a bare
+      // ", nor the image registry" after the "proxy not deployed"
+      // parenthetical leaves a sentence with nothing for the "nor" to
+      // continue.
+      const denied: string[] = []
+      if (proxyIp) denied.push('a transparent port directly (forgery lock holds)')
+      if (registryIp) denied.push('the image registry')
+      const deniedHalf = denied.length ? `, and cannot dial ${denied.join(', nor ')}` : ''
+      const unverified: string[] = []
+      if (!proxyIp) unverified.push('proxy not deployed — forgery-lock half unverified')
+      if (!registryIp) unverified.push('registry not deployed — that half unverified')
+      const unverifiedHalf = unverified.length ? ` (${unverified.join('; ')})` : ''
       return {
         name: 'egress', status: 'pass',
-        detail: `session egress is default-denied at the CNI${proxyHalf}`,
+        detail: `session egress is default-denied at the CNI${deniedHalf}${unverifiedHalf}`,
       }
     }
     return {

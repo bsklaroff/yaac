@@ -167,7 +167,10 @@ cluster
 
 cluster
   .command('delete')
-  .description('Delete the kind cluster and local registry (keeps worktrees and their checkouts)')
+  .description(
+    'Delete the kind cluster, including the in-cluster registry and its '
+    + 'images (keeps worktrees and their checkouts)',
+  )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
     const { clusterDelete } = await import('#commands/cluster-delete')

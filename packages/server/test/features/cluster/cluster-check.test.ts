@@ -11,11 +11,14 @@ vi.mock('#platform/k8s/kubectl', () => ({
 }))
 
 vi.mock('#platform/container/registry', () => ({
+  REGISTRY_NAMESPACE: 'yaac',
   registryReachable: vi.fn().mockResolvedValue(true),
-  registryHost: vi.fn(() => 'localhost:5001'),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
+  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
+  registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
   registryHasTag: vi.fn().mockResolvedValue(true),
-  pushImageToRegistry: vi.fn().mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36'),
+  pushImageToRegistry: vi.fn().mockResolvedValue(
+    'yaac-registry.yaac.svc.cluster.local:5000/yaac-cluster-probe:busybox-1.36',
+  ),
 }))
 
 import { formatCheckResult, runClusterCheck } from '#features/cluster'
@@ -1228,7 +1231,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(true) // warn-only — only virtualCluster sessions are affected
   })
 
-  it('fails the registry check with start instructions when nothing answers', async () => {
+  it('fails the registry check with repair instructions when nothing answers', async () => {
     stage({
       registryReachable: false,
     })
@@ -1236,7 +1239,10 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     const registry = byName(results, 'registry')
     expect(registry).toMatchObject({ status: 'fail' })
-    expect(registry?.fix).toContain('podman run -d --name yaac-registry')
+    // The registry is an in-cluster Deployment, so the fix is a repair pass
+    // and a look at the workload — never a host container to start by hand.
+    expect(registry?.fix).toContain('yaac cluster setup --repair')
+    expect(registry?.fix).toContain('app=yaac-main-registry')
   })
 
   it('fails the probe with wiring hints when the pod ends in a non-Succeeded phase', async () => {
