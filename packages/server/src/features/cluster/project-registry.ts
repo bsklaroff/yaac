@@ -143,17 +143,73 @@ function registrySelector(projectSlug: string): string {
   ].join(',')
 }
 
+/** Records which node a project registry's blob store lives on. */
+const REGISTRY_NODE_ANNOTATION = 'yaac.dev/registry-node'
+
+/**
+ * The node a project's registry must run on: wherever its blobs already
+ * are, since the store is a node-local hostPath.
+ *
+ * Answered in order of how much the answer is worth: an existing pin is
+ * authoritative; a running pod's node is what the pin would have said had
+ * one been recorded (this is the migration path for registries created
+ * before pinning, and it keeps their blobs); otherwise this is a first
+ * placement and any node that can take work will do, chosen by name so
+ * repeated calls agree.
+ *
+ * Returns null when no node can be resolved at all, which leaves the
+ * Deployment unpinned rather than pinning it to a guess — an unpinned
+ * registry still works, it just has the old rescheduling exposure.
+ */
+async function resolveRegistryNode(projectSlug: string): Promise<string | null> {
+  const ns = k8sNamespace()
+  interface RawDeploy { metadata?: { annotations?: Record<string, string> } }
+  const existing = await kubectlGetJson<RawDeploy>([
+    'get', 'deployment', projectRegistryName(projectSlug), '-n', ns,
+  ]).catch(() => null)
+  const pinned = existing?.metadata?.annotations?.[REGISTRY_NODE_ANNOTATION]
+  if (pinned) return pinned
+
+  interface RawPodList { items?: Array<{ spec?: { nodeName?: string } }> }
+  const pods = await kubectlGetJson<RawPodList>([
+    'get', 'pods', '-n', ns, '-l', registrySelector(projectSlug),
+  ]).catch(() => null)
+  const onNode = (pods?.items ?? []).map((p) => p.spec?.nodeName).find(Boolean)
+  if (onNode) return onNode
+
+  interface RawNodeList {
+    items?: Array<{
+      metadata?: { name?: string }
+      spec?: { unschedulable?: boolean; taints?: Array<{ effect?: string }> }
+      status?: { conditions?: Array<{ type?: string; status?: string }> }
+    }>
+  }
+  const nodes = await kubectlGetJson<RawNodeList>(['get', 'nodes']).catch(() => null)
+  const candidates = (nodes?.items ?? [])
+    .filter((n) =>
+      (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True')
+      && n.spec?.unschedulable !== true
+      && !(n.spec?.taints ?? [])
+        .some((t) => t.effect === 'NoSchedule' || t.effect === 'NoExecute'))
+    .map((n) => n.metadata?.name)
+    .filter((n): n is string => !!n)
+    .sort()
+  return candidates[0] ?? null
+}
+
 /**
  * Build the registry:2 Deployment. Trusted infra like the proxy, so no
  * runtimeClassName — it runs on runc; the sentry buys no containment for
  * yaac-shipped code and its CPU cost starves the node (see the gvisor.ts
  * module doc). Recreate strategy: two pods would race over the node-local
  * storage hostPath during a rolling overlap.
+ *
+ * `node` pins it to where its blobs are — see resolveRegistryNode.
  */
 export function buildProjectRegistryDeploymentManifest(
   projectSlug: string,
   imageRef: string,
-  opts: { readOnly?: boolean } = {},
+  opts: { readOnly?: boolean; node?: string | null } = {},
 ): Record<string, unknown> {
   const name = projectRegistryName(projectSlug)
   const selector = { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug }
@@ -164,6 +220,10 @@ export function buildProjectRegistryDeploymentManifest(
       name,
       namespace: k8sNamespace(),
       labels: registryLabels(projectSlug),
+      // The pin is recorded here, not merely expressed in the affinity
+      // below, so the next ensure can read back which node this
+      // registry's blobs are on without having to find a live pod.
+      ...(opts.node ? { annotations: { [REGISTRY_NODE_ANNOTATION]: opts.node } } : {}),
     },
     spec: {
       replicas: 1,
@@ -174,6 +234,34 @@ export function buildProjectRegistryDeploymentManifest(
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
+          // Pinned to the node holding its storage. The blob store is a
+          // node-local hostPath, so the pod and its data are one unit: a
+          // rollout that lands elsewhere comes up serving an EMPTY
+          // catalog, silently turning every cross-session layer hit into
+          // a rebuild. Single-node clusters never showed this because
+          // there was nowhere else for a Recreate to land.
+          //
+          // Affinity rather than nodeName: this still goes through the
+          // scheduler, so a cordoned or pressured node leaves the pod
+          // Pending (visible, recoverable) instead of being force-bound
+          // to a node that cannot take it.
+          ...(opts.node
+            ? {
+              affinity: {
+                nodeAffinity: {
+                  requiredDuringSchedulingIgnoredDuringExecution: {
+                    nodeSelectorTerms: [{
+                      matchExpressions: [{
+                        key: 'kubernetes.io/hostname',
+                        operator: 'In',
+                        values: [opts.node],
+                      }],
+                    }],
+                  },
+                },
+              },
+            }
+            : {}),
           // Infra tier: the project's sessions pull their images from here,
           // so evicting it to make room for a session is backwards.
           priorityClassName: PRIORITY_CLASS_INFRA,
@@ -760,7 +848,8 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
     const ns = k8sNamespace()
     const imageRef = await ensureRegistryImage()
 
-    await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
+    const node = await resolveRegistryNode(projectSlug)
+    await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef, { node }))
     await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
     await kubectlApply(buildRegistrySessionsNetworkPolicyManifest(projectSlug))
     await kubectlApply(buildRegistryIngressNetworkPolicyManifest(projectSlug, await nodeIpBlocks()))
@@ -985,8 +1074,14 @@ async function collectProjectRegistry(projectSlug: string): Promise<void> {
     const name = projectRegistryName(projectSlug)
     const ns = k8sNamespace()
     const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+    // Resolved once, before the first rollout: a collect is two Recreate
+    // rollouts of the very pod whose node the pin is read from, so
+    // re-resolving between them could answer from a moment when no pod
+    // exists — and re-pin the registry away from its own blobs.
+    const node = await resolveRegistryNode(projectSlug)
     const roll = async (readOnly: boolean): Promise<void> => {
-      await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef, { readOnly }))
+      await kubectlApply(
+        buildProjectRegistryDeploymentManifest(projectSlug, imageRef, { readOnly, node }))
       await kubectlWithRetry([
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
       ], { timeout: 130_000, maxAttempts: 2 })

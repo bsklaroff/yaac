@@ -200,12 +200,23 @@ Multi-node kind on one host: all node containers see the same host
 filesystem, so extending `extraMounts: $HOME → $HOME` to every node keeps
 hostPath + ext4 working while exercising real multi-node scheduling.
 
-- [ ] kind config with 2–3 nodes, `extraMounts` on each.
-- [ ] Make the local registry reachable from every node (Service/hosts.toml
-      on all nodes, not just control-plane).
-- [ ] Audit node-local paths (`/var/lib/yaac/imagecache/<hash>`,
-      `/var/lib/yaac/registry/<hash>`) — they become per-node (acceptable:
-      cold cache on other nodes, warms slower).
+- [x] kind config with 2–3 nodes, `extraMounts` on each — `yaac cluster
+      setup --nodes N` renders the bundled config's one control-plane entry
+      into N-1 worker copies, so the `$HOME` bind lands on every node
+      (docs/cluster-setup.md, "Multi-node").
+- [x] Make the local registry reachable from every node — it already was:
+      the registry container joins the podman `kind` network (every node
+      container is on it) and the containerd `hosts.toml` fixup, like every
+      other per-node step in setup, loops the enumerated node set. `yaac
+      cluster check`'s `registry-nodes` gate now proves it per node by
+      pulling `Always` from a pod pinned to each.
+- [x] Audit node-local paths — `/var/lib/yaac/imagecache/<hash>` is dead
+      (the cross-session cache moved into the project registry); only the
+      one-shot sweep pods touch it, and they already run on every node.
+      `/var/lib/yaac/registry/<hash>` is live and per-node, and stays
+      acceptable: a registry pod that lands on a different node starts cold,
+      the prime side treats a missing image as a miss, and session images
+      themselves come from the host-side registry.
 - [ ] Run the e2e suite against the multi-node cluster.
 
 ### NFS spike (go/no-go)

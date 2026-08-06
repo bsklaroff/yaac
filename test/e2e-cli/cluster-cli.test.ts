@@ -7,8 +7,8 @@ import { IS_NESTED_YAAC } from '@yaac/test-utils/setup'
 
 /**
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no
- * options), `setup` (and its `--repair` option), and `delete` (and its
- * `-y/--yes` option). All three are host-side commands — they talk to
+ * options), `setup` (and its `--repair` / `--nodes` options), and `delete`
+ * (and its `-y/--yes` option). All three are host-side commands — they talk to
  * kubectl/podman/kind/the registry directly, never to the server — so no
  * server is spawned anywhere in this file and every case runs without a
  * cluster: we sabotage the environment (PATH stripping, bogus KUBECONFIG,
@@ -112,6 +112,40 @@ describe('yaac cluster setup (real CLI)', () => {
     // Actionable installs accompany each entry.
     expect(stderr).toMatch(/brew install/)
   }, 30_000)
+
+  // The --nodes cases below stop in the option check, which runs before
+  // the binary preflight and before anything is created — so they need no
+  // podman, no kind, and no gate.
+  it('rejects --nodes together with --repair', async () => {
+    // The node count is fixed when the cluster is created; --repair fixes
+    // up the nodes that exist, so the combination cannot mean anything.
+    const env: NodeJS.ProcessEnv = { ...testEnv.env }
+    delete env.YAAC_NESTED
+
+    const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', '3', '--repair')
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/--nodes cannot be combined with --repair/)
+    // The fix is the create that would honor it.
+    expect(stderr).toMatch(/yaac cluster setup --nodes 3/)
+    expect(stdout).not.toMatch(/Re-applying node fixups/)
+  }, 30_000)
+
+  it('rejects a --nodes value outside the supported range', async () => {
+    const env: NodeJS.ProcessEnv = { ...testEnv.env }
+    delete env.YAAC_NESTED
+
+    for (const value of ['0', '99', 'three']) {
+      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', value)
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(/--nodes must be an integer between 1 and \d+/)
+      // The message quotes what was typed — the CLI passes the raw text
+      // through rather than converting `three` to NaN first.
+      expect(stderr).toContain(`"${value}"`)
+      // Nothing was created: the check precedes the binary preflight.
+      expect(stdout).not.toMatch(/Recreating kind cluster/)
+      expect(stderr).not.toMatch(/Missing required tools/)
+    }
+  }, 60_000)
 
   // Needs a real, working podman+kind pair (`kind get clusters` must
   // succeed), so: not in a nested session (no kind in there), and not on a

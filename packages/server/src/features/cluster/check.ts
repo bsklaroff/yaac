@@ -66,6 +66,20 @@ export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.c
 export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
 /**
+ * inotify ceilings. Unlike everything else here these are host-global
+ * rather than per-node — the kind nodes are containers in the host's
+ * init user namespace, so all of them draw on the ONE root-uid pool.
+ * Every node therefore multiplies the demand against a fixed budget, and
+ * the stock 128 instances is not enough for a multi-node cluster: netd's
+ * Envoy asserts on `inotify_fd_ >= 0` and dies with SIGSEGV, which
+ * presents as every session losing its egress redirect rather than as
+ * anything mentioning inotify. Applied on each node for the same reason
+ * `--repair` re-applies the vm sysctls — whichever node runs it, the
+ * write lands on the host.
+ */
+export const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
+export const NODE_INOTIFY_MAX_USER_WATCHES = 524288
+/**
  * kubelet cAdvisor housekeeping interval (default 10s). Its per-container
  * process stats readlink EVERY open fd of EVERY process in each container
  * cgroup per tick; a gVisor session sandbox concentrates ~9k host fds in
@@ -89,8 +103,8 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  * Checks, in order:
  *   1. kubectl binary present
  *   2. cluster API server reachable
- *   3. single-node cluster (warn otherwise — hostPath mounts assume
- *      node == host)
+ *   3. node inventory: how many nodes, how many of them can schedule a
+ *      session, and are they all Ready
  *   4. podman present (the image build engine)
  *   5. local registry answering on the configured address
  *   6. yaac namespace exists / can be created
@@ -115,6 +129,12 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      cannot dial a proxy transparent port directly (the forgery lock —
  *      those ports are admitted from the node CIDRs only, so nothing but
  *      netd's Envoy can reach them)
+ *   8b. multi-node readiness (warn-only, multi-node clusters only):
+ *      one pinned probe pod per session-eligible node proves the three
+ *      things a session needs from the node it lands on — the gvisor
+ *      RuntimeClass is accepted there (runsc-nodes), its containerd can
+ *      pull from the registry (registry-nodes), and the shared data dir is
+ *      the same bytes the server sees (volume-nodes)
  *   9. datapath: calico-node is Ready (NetworkPolicy is enforced at all)
  *      and yaac-netd is Ready (session egress has a redirect). Nested, this
  *      becomes "the claim-mode netd is publishing" — the inner install's own
@@ -186,19 +206,11 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
 
-  // 3. single-node
+  // 3. node inventory — the input to the multi-node readiness gates below.
+  let nodes: ClusterNode[] = []
   try {
-    const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
-    const nodes = (JSON.parse(stdout) as { items: unknown[] }).items
-    if (nodes.length === 1) {
-      add({ name: 'nodes', status: 'pass', detail: 'single-node cluster' })
-    } else {
-      add({
-        name: 'nodes', status: 'warn',
-        detail: `${nodes.length} nodes — yaac v1 assumes single-node (hostPath mounts)`,
-        fix: 'Use a single-node cluster (kind with one control-plane node).',
-      })
-    }
+    nodes = await listClusterNodes()
+    add(nodeInventoryResult(nodes))
   } catch (err) {
     add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
   }
@@ -247,6 +259,7 @@ export async function runClusterCheck(
   // prerequisites already failed)
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'probe', 'egress', 'datapath',
+    ...MULTI_NODE_GATES,
     'nested-mount', 'vap', 'runtime-stamp',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
@@ -287,7 +300,7 @@ export async function runClusterCheck(
     // claim-mode netd must be publishing, or the host has nothing to program
     // and inner sessions fall back to the outer proxy's allowlist alone.
     add(await runClaimDatapathCheck())
-    for (const name of ['nested-mount', 'vap', 'runtime-stamp']) {
+    for (const name of [...MULTI_NODE_GATES, 'nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     // The stream relay IS checkable nested: the inner proxy's pod IP must
@@ -305,10 +318,11 @@ export async function runClusterCheck(
   // still runs first, so none of them can sit Pending to its timeout
   // waiting for a RuntimeClass that will never appear — which is the one
   // ordering that was ever load-bearing.
-  const [probeResult, egressResult, nestedMountResult] = await Promise.all([
+  const [probeResult, egressResult, nestedMountResult, multiNodeResults] = await Promise.all([
     runEndToEndProbe(),
     runNetworkPolicyProbe(),
     runNestedMountProbe(),
+    runMultiNodeReadiness(nodes),
   ])
   add(probeResult)
   add(egressResult)
@@ -318,6 +332,12 @@ export async function runClusterCheck(
   // apiserver access the checks above already prove — there is no
   // cluster-shape wiring to verify.)
   add(await runDatapathCheck())
+
+  // 8b. multi-node readiness. Ran above, alongside the other pod probes;
+  // reported here because a node that cannot pull or cannot see the shared
+  // dir is a *scheduling* failure, and the datapath verdict above is what
+  // tells you whether the node has a redirect at all.
+  for (const r of multiNodeResults) add(r)
 
   // 10. nested userns-mount probe (warn-only: only nestedContainers
   // sessions need it — the tripwire for containerd versions where the
@@ -335,6 +355,88 @@ export async function runClusterCheck(
   add(await runRuntimeStampSweep())
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
+}
+
+/**
+ * What the readiness gates need to know about one node. `schedulable` is
+ * "a session pod could land here": session pods (and these probes) declare
+ * no tolerations, so any NoSchedule/NoExecute taint takes the node out of
+ * scope, as does cordoning. `runtimeHandlers` is the kubelet's report of
+ * the runtimes containerd registered (kubernetes >= 1.30); it is empty on
+ * clusters that do not publish it, which is why it only ever *adds*
+ * confidence below.
+ */
+interface ClusterNode {
+  name: string
+  ready: boolean
+  schedulable: boolean
+  labels: Record<string, string>
+  runtimeHandlers: string[]
+}
+
+interface RawNodeItem {
+  metadata?: { name?: string; labels?: Record<string, string> }
+  spec?: { unschedulable?: boolean; taints?: Array<{ effect?: string }> }
+  status?: {
+    conditions?: Array<{ type?: string; status?: string }>
+    runtimeHandlers?: Array<{ name?: string }>
+  }
+}
+
+async function listClusterNodes(): Promise<ClusterNode[]> {
+  const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
+  const items = (JSON.parse(stdout) as { items?: RawNodeItem[] }).items ?? []
+  return items.map((n) => ({
+    name: n.metadata?.name ?? '<unnamed>',
+    ready: (n.status?.conditions ?? [])
+      .some((c) => c.type === 'Ready' && c.status === 'True'),
+    schedulable: n.spec?.unschedulable !== true
+      && !(n.spec?.taints ?? []).some((t) => t.effect === 'NoSchedule' || t.effect === 'NoExecute'),
+    labels: n.metadata?.labels ?? {},
+    runtimeHandlers: (n.status?.runtimeHandlers ?? [])
+      .map((h) => h.name ?? '')
+      .filter(Boolean),
+  }))
+}
+
+/**
+ * The node inventory line. Multi-node is a supported topology now (the
+ * local backend renders it with `yaac cluster setup --nodes N`), so node
+ * count alone is never a warning — what is worth flagging is a node that
+ * cannot take work: NotReady, or cordoned/tainted so that no session can
+ * ever land on it. The readiness gates below say whether the nodes that
+ * CAN take a session are actually equipped for one.
+ */
+function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
+  if (nodes.length === 0) {
+    return { name: 'nodes', status: 'warn', detail: 'the cluster reports no nodes' }
+  }
+  const notReady = nodes.filter((n) => !n.ready).map((n) => n.name)
+  if (notReady.length > 0) {
+    return {
+      name: 'nodes', status: 'warn',
+      detail: `${nodes.length} node(s), NotReady: ${notReady.join(', ')}`,
+      fix: 'A NotReady node runs nothing. Check the CNI on it '
+        + '(`kubectl -n kube-system get pods -o wide -l k8s-app=calico-node`).',
+    }
+  }
+  const eligible = nodes.filter((n) => n.schedulable)
+  if (eligible.length === 0) {
+    return {
+      name: 'nodes', status: 'warn',
+      detail: `${nodes.length} node(s), none able to schedule a session (cordoned or tainted)`,
+      fix: 'Session pods declare no tolerations, so a NoSchedule/NoExecute '
+        + 'taint on every node leaves them Pending forever. Uncordon a node '
+        + '(`kubectl uncordon <node>`) or remove the taint.',
+    }
+  }
+  if (nodes.length === 1) {
+    return { name: 'nodes', status: 'pass', detail: 'single-node cluster' }
+  }
+  return {
+    name: 'nodes', status: 'pass',
+    detail: `${nodes.length} nodes, ${eligible.length} able to schedule sessions`,
+  }
 }
 
 const NODE_FIXUPS_FIX =
@@ -371,6 +473,8 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
         const res = await execFileAsync('podman', ['exec', node, 'sh', '-c',
           `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
           + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
+          + 'echo inotifyinst=$(cat /proc/sys/fs/inotify/max_user_instances); '
+          + 'echo inotifywatch=$(cat /proc/sys/fs/inotify/max_user_watches); '
           + `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
           + `${NODE_KUBELET_FLAGS_ENV} && echo hk=ok || echo hk=missing`,
         ])
@@ -384,6 +488,16 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
       if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
       const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
       if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
+      // Host-global, so one node reporting low condemns the whole cluster —
+      // which is right: that is the pool every node's Envoy draws from.
+      const inotifyInst = Number(/inotifyinst=(\d+)/.exec(report)?.[1] ?? '0')
+      if (inotifyInst < NODE_INOTIFY_MAX_USER_INSTANCES) {
+        missing.add('fs.inotify.max_user_instances (netd Envoy startup)')
+      }
+      const inotifyWatch = Number(/inotifywatch=(\d+)/.exec(report)?.[1] ?? '0')
+      if (inotifyWatch < NODE_INOTIFY_MAX_USER_WATCHES) {
+        missing.add('fs.inotify.max_user_watches (netd Envoy startup)')
+      }
       // Default-interval cAdvisor housekeeping burns whole kubelet cores
       // against gVisor sandboxes — see NODE_KUBELET_HOUSEKEEPING_INTERVAL.
       if (report.includes('hk=missing')) {
@@ -787,6 +901,380 @@ async function runEndToEndProbe(): Promise<CheckResult> {
   } finally {
     await fs.rm(nonceFile, { force: true }).catch(() => { /* best-effort */ })
     await fs.rm(writeFile, { force: true }).catch(() => { /* best-effort */ })
+  }
+}
+
+/** The readiness gates the multi-node sweep reports, in order. */
+const MULTI_NODE_GATES = ['runsc-nodes', 'registry-nodes', 'volume-nodes'] as const
+
+const NODE_PROBE_POD_PREFIX = 'yaac-cluster-check-node'
+/** Nonce file for the per-node sweep — distinct from the e2e probe's, which
+ *  runs concurrently and removes its own on the way out. */
+const NODE_PROBE_NONCE_FILE = '.cluster-check-nodes-nonce'
+
+/**
+ * Which gate owns a probe pod that never ran. A pod that does not start
+ * says nothing by itself — the same Pending is a node that cannot pull, a
+ * node whose containerd has no runsc handler, and a node missing the home
+ * extraMount — so the failure is attributed from the kubelet's own event
+ * before it is reported, and `unknown` is carried as *unverified* on every
+ * gate rather than silently passing one of them.
+ */
+type ProbeBlame = 'registry' | 'volume' | 'runsc' | 'unknown'
+
+interface NodeProbeOutcome {
+  node: string
+  /** Terminal phase of the pinned probe pod ('Pending' when it never ran). */
+  phase: string
+  /** The sentry fingerprint showed up in the logs. Bonus, not a verdict:
+   *  the probe runs at the session uid, which may not read dmesg at all. */
+  sandboxed: boolean
+  sawNonce: boolean
+  wroteMarker: boolean
+  /** Set when the pod did not succeed: which gate its failure belongs to. */
+  blame: ProbeBlame
+  /** The kubelet event the blame was read from, for the warn detail. */
+  failureHint: string
+}
+
+/**
+ * The gvisor RuntimeClass as the cluster holds it: the containerd handler
+ * it names, and the node selector that restricts where pods carrying it may
+ * schedule. The selector is empty on the local backend today; the gVisor
+ * installer DaemonSet adds one so pods only land where the shim exists, and
+ * this sweep is written to honor it — a node outside the selector is not a
+ * node a session could use, so it is not a node this reports on.
+ */
+async function gvisorRuntimeClass(): Promise<{
+  handler: string
+  nodeSelector: Record<string, string>
+}> {
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'runtimeclass', RUNTIME_CLASS_GVISOR, '-o', 'json',
+    ])
+    const rc = JSON.parse(stdout) as {
+      handler?: string
+      scheduling?: { nodeSelector?: Record<string, string> }
+    }
+    return { handler: rc.handler ?? '', nodeSelector: rc.scheduling?.nodeSelector ?? {} }
+  } catch {
+    return { handler: '', nodeSelector: {} }
+  }
+}
+
+/**
+ * The most recent Warning event the kubelet recorded for a pod, as
+ * `reason: message`. Read AFTER the pod is gone (runPodToCompletion deletes
+ * it), which works because events outlive their object — and is why this is
+ * a separate call rather than a field of the pod status the poll already
+ * sees: a pod stuck in Pending has no containerStatuses at all when the
+ * failure is a volume mount.
+ */
+async function podFailureEvent(podName: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'events', '-n', k8sNamespace(),
+      '--field-selector', `involvedObject.name=${podName}`, '-o', 'json',
+    ])
+    const items = (JSON.parse(stdout) as {
+      items?: Array<{ type?: string; reason?: string; message?: string }>
+    }).items ?? []
+    const warning = items.filter((e) => e.type === 'Warning').pop()
+    if (!warning) return ''
+    return `${warning.reason ?? 'Warning'}: ${(warning.message ?? '').trim()}`
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Attribute a probe pod that never ran to the gate that can actually fix
+ * it. The mount check comes first on purpose: kubelet sets volumes up
+ * before it pulls, so a node missing the home extraMount fails at
+ * FailedMount having never touched the registry — reporting that as a
+ * registry problem would hand the user a fix (`--repair` rewrites
+ * hosts.toml) that cannot address it.
+ *
+ * Nothing matches on the bare word "sandbox": `FailedCreatePodSandBox` is
+ * also what kubelet reports when the CNI cannot wire a pod up, and sending
+ * a CNI-broken node to the runsc repair helps no one. Unrecognized is a
+ * better answer than confidently wrong — it lands as unverified on every
+ * gate, which is visible and true.
+ */
+function blameProbeFailure(event: string): ProbeBlame {
+  if (/FailedMount|MountVolume|hostPath/i.test(event)) return 'volume'
+  if (/RuntimeClass|runsc|no runtime for/i.test(event)) return 'runsc'
+  if (/ImagePull|ErrImage|pull|manifest unknown|no such host|connection refused/i.test(event)) {
+    return 'registry'
+  }
+  return 'unknown'
+}
+
+/**
+ * One pinned probe pod on one node, mirroring what a session asks of the
+ * node it lands on: pull the image from the registry (`Always`, so a
+ * cached copy cannot mask an unreachable registry), run on the gvisor
+ * RuntimeClass, and read *and write* the shared data dir at the session
+ * uid through the gofer.
+ *
+ * `nodeName` rather than a nodeSelector: this is a per-node question, and
+ * bypassing the scheduler is what makes the answer about the node instead
+ * of about where the scheduler felt like putting the pod.
+ */
+async function probeNode(
+  node: ClusterNode,
+  index: number,
+  ctx: { imageRef: string; nonce: string; dataDir: string },
+): Promise<NodeProbeOutcome> {
+  const marker = `.cluster-check-node-${index}`
+  const podName = `${NODE_PROBE_POD_PREFIX}-${index}`
+  const outcome: NodeProbeOutcome = {
+    node: node.name, phase: 'Pending', sandboxed: false, sawNonce: false, wroteMarker: false,
+    blame: 'unknown', failureHint: '',
+  }
+  try {
+    const { phase, logs } = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: podName, namespace: k8sNamespace() },
+      spec: {
+        nodeName: node.name,
+        restartPolicy: 'Never',
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+        containers: [{
+          name: 'probe',
+          image: ctx.imageRef,
+          imagePullPolicy: 'Always',
+          securityContext: { runAsUser: sessionUid() },
+          command: [
+            'sh', '-c',
+            'dmesg 2>/dev/null | grep -qi gvisor && echo GVISOR_SANDBOXED; '
+            + `cat /probe/${NODE_PROBE_NONCE_FILE} && echo ok > /probe/${marker}`,
+          ],
+          volumeMounts: [{ name: 'probe', mountPath: '/probe' }],
+        }],
+        volumes: [{ name: 'probe', hostPath: { path: ctx.dataDir, type: 'Directory' } }],
+      },
+    }, {
+      // Shorter than the e2e probe's: these run one per node, and a pinned
+      // pod that has not started inside a minute is stuck on something this
+      // reports (an image it cannot pull, a runtime it cannot find) rather
+      // than merely slow.
+      timeoutMs: 60_000,
+      kubectl: (args) => execFileAsync('kubectl', args),
+      apply: kubectlApply,
+    })
+    outcome.phase = phase
+    outcome.sandboxed = logs.includes('GVISOR_SANDBOXED')
+    outcome.sawNonce = logs.includes(ctx.nonce)
+    outcome.wroteMarker = (await fs.readFile(path.join(ctx.dataDir, marker), 'utf8')
+      .catch(() => '')).trim() === 'ok'
+    if (phase !== 'Succeeded') {
+      outcome.failureHint = await podFailureEvent(podName)
+      outcome.blame = blameProbeFailure(outcome.failureHint)
+    }
+    return outcome
+  } catch {
+    return outcome
+  } finally {
+    await fs.rm(path.join(ctx.dataDir, marker), { force: true })
+      .catch(() => { /* best-effort */ })
+  }
+}
+
+const REGISTRY_NODES_FIX =
+  'Each node pulls session images itself, so every node needs the registry '
+  + 'wiring: the containerd `hosts.toml` mapping and the registry container '
+  + 'on the kind network. `yaac cluster setup --repair` re-applies both on '
+  + 'every node.'
+
+const VOLUME_NODES_FIX =
+  'Session pods mount worktrees, caches and credentials by hostPath, which '
+  + 'resolves on the NODE. Every node therefore needs the home-directory '
+  + 'extraMount — `yaac cluster setup --nodes N` renders it onto every node '
+  + 'it creates, so a cluster made by hand (or by an older yaac) is the '
+  + 'usual cause.'
+
+/** Node names for a warn detail, capped so a wide cluster stays readable. */
+function nodeList(names: string[]): string {
+  return names.slice(0, 4).join(', ') + (names.length > 4 ? ` (+${names.length - 4} more)` : '')
+}
+
+/**
+ * The multi-node readiness sweep: for each node a session could actually
+ * land on, does that node have the three things a session needs?
+ *
+ *  - **runsc-nodes** — the gvisor RuntimeClass is accepted there. Three
+ *    sources, cheapest first: a session-capable node the installer
+ *    DaemonSet has not labelled cannot even be scheduled a sandboxed pod,
+ *    which is the DaemonSet's own not-converged-here signal; otherwise a
+ *    node whose kubelet publishes `status.runtimeHandlers` is judged by
+ *    that; otherwise by its probe pod, since containerd refuses a pod whose
+ *    handler it never registered. The `gvisor` gate above proves the
+ *    handler really is the sentry, and that SOME node carries the label —
+ *    how many is this gate's question.
+ *  - **registry-nodes** — that node's containerd can pull from the local
+ *    registry (the probe pulls `Always`).
+ *  - **volume-nodes** — the shared data dir hostPath resolves to the same
+ *    bytes the server sees, and the session uid can write it.
+ *
+ * A pod that never runs is attributed to ONE of them from the kubelet's
+ * event (blameProbeFailure) and left *unverified* — never passed — on the
+ * others: the three failures are indistinguishable from the pod phase
+ * alone, and the whole value of splitting them is that each carries the
+ * repair for its own cause.
+ *
+ * Warn-level throughout, and skipped on a single-node cluster where the
+ * `gvisor`, `probe` and `egress` gates already cover the only node: this
+ * exists to catch the topology drift a multi-node cluster introduces, not
+ * to re-litigate what the single-node gates decided.
+ */
+async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[]> {
+  const uniform = (status: CheckResult['status'], detail: string, fix?: string): CheckResult[] =>
+    MULTI_NODE_GATES.map((name) => ({ name, status, detail, ...(fix ? { fix } : {}) }))
+
+  if (nodes.length === 0) {
+    return uniform('warn', 'node list unavailable — per-node readiness unverified')
+  }
+  if (nodes.length === 1) {
+    return uniform('skip', 'skipped — single-node cluster (the gvisor and probe gates cover it)')
+  }
+
+  const { handler, nodeSelector } = await gvisorRuntimeClass()
+
+  // Two different populations, and conflating them is how this gate would
+  // miss the very thing it is for. `sessionCapable` is where a session
+  // could run if the runtime were there — Ready, uncordoned, untainted.
+  // `eligible` narrows that to where a sandboxed pod can be SCHEDULED
+  // today: the RuntimeClass's nodeSelector matches the label the installer
+  // DaemonSet stamps once it has converged on a node. So a session-capable
+  // node OUTSIDE the selector is not out of scope — it is precisely a node
+  // the runtime has not reached, which is a runsc-nodes finding, not a
+  // reason to stop reporting on it.
+  const sessionCapable = nodes.filter((n) => n.ready && n.schedulable)
+  const eligible = sessionCapable.filter((n) =>
+    Object.entries(nodeSelector).every(([k, v]) => n.labels[k] === v))
+  const unlabelled = sessionCapable.filter((n) => !eligible.includes(n))
+
+  if (sessionCapable.length === 0) {
+    return uniform('warn', 'no node can schedule a session (see the nodes check above)')
+  }
+  if (eligible.length === 0) {
+    return uniform(
+      'warn',
+      `no session-capable node satisfies the ${RUNTIME_CLASS_GVISOR} RuntimeClass `
+      + `nodeSelector, so nothing can be probed: ${nodeList(sessionCapable.map((n) => n.name))}`,
+      gvisorFix(),
+    )
+  }
+
+  const dataDir = sharedRoot()
+  const nonce = crypto.randomUUID()
+  const nonceFile = path.join(dataDir, NODE_PROBE_NONCE_FILE)
+  try {
+    await fs.mkdir(dataDir, { recursive: true })
+    await fs.writeFile(nonceFile, nonce)
+    const imageRef = await ensureProbeImage()
+    const outcomes = await Promise.all(eligible.map((node, i) =>
+      probeNode(node, i, { imageRef, nonce, dataDir })))
+
+    const ran = new Map(outcomes.map((o) => [o.node, o]))
+    const failed = outcomes.filter((o) => o.phase !== 'Succeeded')
+    const withCause = (o: NodeProbeOutcome): string =>
+      `${o.node} (${o.failureHint || o.phase})`
+
+    // Per node, not per cluster: a node whose kubelet publishes the handler
+    // list is judged by it, and one that publishes nothing (an older
+    // kubelet beside a newer one) falls back to its own pod outcome. A
+    // cluster-wide "someone published, so everyone is judged by the field"
+    // would flag the silent node as missing runsc while its probe ran fine.
+    const runscVerdict = (n: ClusterNode): 'ok' | 'missing' | 'unknown' => {
+      if (handler !== '' && n.runtimeHandlers.length > 0) {
+        return n.runtimeHandlers.includes(handler) ? 'ok' : 'missing'
+      }
+      const o = ran.get(n.name)
+      if (o?.phase === 'Succeeded') return 'ok'
+      return o?.blame === 'runsc' ? 'missing' : 'unknown'
+    }
+
+    const sentryVerified = outcomes.filter((o) => o.sandboxed).length
+    const gate = (
+      name: (typeof MULTI_NODE_GATES)[number],
+      broken: string[],
+      unverified: string[],
+      fix: string,
+      brokenDetail: (list: string) => string,
+      passDetail: string,
+    ): CheckResult => {
+      const unverifiedTail = unverified.length > 0
+        ? `; unverified on ${nodeList(unverified)} (their probe pod did not run)`
+        : ''
+      if (broken.length > 0) {
+        return { name, status: 'warn', detail: brokenDetail(nodeList(broken)) + unverifiedTail, fix }
+      }
+      if (unverified.length > 0) {
+        // No fix: the gate that owns the failure carries it, and repeating
+        // an unrelated one here is how a user gets sent to the wrong repair.
+        return {
+          name, status: 'warn',
+          detail: `unverified on ${nodeList(unverified)} — their probe pod did not run `
+            + '(the cause is reported by whichever of the *-nodes gates owns it)',
+        }
+      }
+      return { name, status: 'pass', detail: passDetail }
+    }
+
+    // A session-capable node the installer has not labelled cannot host a
+    // sandboxed pod at all, so it is a runsc finding — and it is unprobeable,
+    // so the other two gates can only call it unverified.
+    const unlabelledNames = unlabelled.map((n) => n.name)
+
+    return [
+      gate(
+        'runsc-nodes',
+        [
+          ...unlabelled.map((n) => `${n.name} (no ${GVISOR_NODE_LABEL} label)`),
+          ...eligible.filter((n) => runscVerdict(n) === 'missing').map((n) => n.name),
+        ],
+        eligible.filter((n) => runscVerdict(n) === 'unknown').map((n) => n.name),
+        gvisorFix(),
+        (list) => `${RUNTIME_CLASS_GVISOR} unavailable on: ${list}`,
+        `${RUNTIME_CLASS_GVISOR} accepted on all ${sessionCapable.length} session-capable `
+          + `nodes${sentryVerified > 0 ? ` (${sentryVerified} sentry-verified)` : ''}`,
+      ),
+      gate(
+        'registry-nodes',
+        failed.filter((o) => o.blame === 'registry').map(withCause),
+        [...failed.filter((o) => o.blame !== 'registry').map((o) => o.node), ...unlabelledNames],
+        REGISTRY_NODES_FIX,
+        (list) => `could not pull from ${registryHost()} on: ${list}`,
+        `all ${eligible.length} session-eligible nodes pulled from ${registryHost()}`,
+      ),
+      gate(
+        'volume-nodes',
+        [
+          ...failed.filter((o) => o.blame === 'volume').map(withCause),
+          ...outcomes
+            .filter((o) => o.phase === 'Succeeded' && !(o.sawNonce && o.wroteMarker))
+            .map((o) => `${o.node} (${o.sawNonce
+              ? `uid ${sessionUid()} write did not reach the host`
+              : 'stale or absent mount'})`),
+        ],
+        [...failed.filter((o) => o.blame !== 'volume').map((o) => o.node), ...unlabelledNames],
+        VOLUME_NODES_FIX,
+        (list) => `${sharedRoot()} is not the server's on: ${list}`,
+        `shared data dir visible and writable at uid ${sessionUid()} from all `
+          + `${eligible.length} session-eligible nodes`,
+      ),
+    ]
+  } catch (err) {
+    return uniform('warn', `multi-node readiness sweep errored (${truncate(err)})`)
+  } finally {
+    await fs.rm(nonceFile, { force: true }).catch(() => { /* best-effort */ })
   }
 }
 

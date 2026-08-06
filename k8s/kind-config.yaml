@@ -11,6 +11,28 @@
 # Substitute $HOME for your real home directory before use (kind does not
 # expand environment variables), e.g.:
 #   sed "s|\$HOME|$HOME|g" k8s/kind-config.yaml | kind create cluster --name yaac --config -
+#
+# MULTI-NODE: `yaac cluster setup --nodes N` renders this file into an
+# N-node cluster by COPYING the control-plane entry below into N-1 `role:
+# worker` entries — so the $HOME extraMount lands on every node, which is
+# what keeps hostPath working when a session schedules off the control
+# plane (all kind node containers share the one host filesystem). The
+# `nodes:` list must therefore stay LAST in this file, and hold exactly one
+# entry. Everything above it is cluster-scoped and kind applies it to every
+# node already: the containerd registry patch, the kubelet swap patch, and
+# disableDefaultCNI.
+#
+# Anything added to the node entry is therefore copied to every worker too,
+# so it must be a per-node property. A HOST-scoped one — extraPortMappings
+# above all — would have N nodes claiming one host port; put such settings
+# in the cluster-scoped section, or teach the renderer to strip them.
+#
+# kind keeps the control-plane's `node-role.kubernetes.io/control-plane`
+# NoSchedule taint once a cluster has workers (it only clears it on
+# worker-less ones), and yaac does not untaint it. So sessions land on the
+# WORKERS only: `--nodes 2` gives one session-eligible node, `--nodes 3`
+# gives two — which is the smallest topology that actually exercises
+# multi-node scheduling.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:

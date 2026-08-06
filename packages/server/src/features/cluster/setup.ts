@@ -14,6 +14,8 @@ import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
 import {
   formatCheckResult,
+  NODE_INOTIFY_MAX_USER_INSTANCES,
+  NODE_INOTIFY_MAX_USER_WATCHES,
   NODE_KUBELET_FLAGS_ENV,
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
   NODE_MIN_FREE_KBYTES,
@@ -35,7 +37,11 @@ import { env } from '@yaac/shared/env'
  * container, the kind cluster, Calico, the node fixups — happens here,
  * idempotently and with actionable error messages.
  *
- * Full mode recreates the cluster from scratch (delete + create). `--repair`
+ * Full mode recreates the cluster from scratch (delete + create), with
+ * `--nodes N` choosing the topology: one control-plane node by default,
+ * plus N-1 workers when asked for. Every per-node step below (fixups,
+ * hosts.toml, the runsc install) already runs over the enumerated node
+ * set, so multi-node is a config-rendering change here. `--repair`
  * re-applies only the node fixups that vanish on a node/VM restart
  * (DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
  * touching the cluster itself. Both modes also converge the in-cluster
@@ -130,7 +136,26 @@ export class ClusterSetupError extends Error {}
 export interface ClusterSetupOptions {
   /** Re-apply node fixups on the existing cluster instead of recreating it. */
   repair?: boolean
+  /**
+   * kind nodes to create: one control-plane plus `nodes - 1` workers.
+   * Undefined (the default) means one node. Create-time only — the node
+   * count of an existing cluster is not something `--repair` can change.
+   *
+   * A string is accepted so the CLI can hand the raw `--nodes` text
+   * through: converting first would turn `--nodes three` into `NaN` and the
+   * error could no longer quote what was actually typed.
+   */
+  nodes?: number | string
 }
+
+/**
+ * Node-count ceiling for `--nodes`. Every kind node is a full node
+ * container (kubelet, containerd, calico-node, netd, a runsc install) on
+ * ONE host, so this is a rehearsal knob, not a capacity knob: 2–3 is what
+ * shakes out scheduling assumptions, and anything past this is a way to
+ * wedge a laptop rather than a supported topology.
+ */
+export const MAX_KIND_NODES = 5
 
 export interface ClusterSetupDeps {
   /** execFile-style runner, injectable for tests. */
@@ -282,6 +307,8 @@ export async function runClusterSetup(
     )
   }
 
+  const nodeCount = resolveNodeCount(opts)
+
   const cluster = env.kindCluster
   const versions = await requireBinaries(deps)
 
@@ -312,7 +339,7 @@ export async function runClusterSetup(
     await deployNetd(deps)
   } else {
     await deps.ensureRegistry()
-    await recreateKindCluster(deps, cluster)
+    await recreateKindCluster(deps, cluster, nodeCount)
     // The node `/32`s and pod CIDRs of the cluster that just went away say
     // nothing about the one that replaced it. A process that outlives the
     // recreate would otherwise render every policy below for the dead
@@ -336,6 +363,70 @@ export async function runClusterSetup(
     ? '\nCluster is ready for yaac sessions.'
     : '\nCluster is not ready — fix the failures above and re-run `yaac cluster setup`.')
   return ok
+}
+
+/**
+ * Validate `--nodes` and return the node count to build. Runs before any
+ * binary probe or podman call so a bad value costs nothing, and rejects
+ * the combination that cannot mean anything: a node count is decided when
+ * the cluster is created, so `--repair --nodes N` is a request `--repair`
+ * has no way to honor (it fixes up the nodes that exist).
+ */
+function resolveNodeCount(opts: ClusterSetupOptions): number {
+  if (opts.nodes === undefined) return 1
+  const count = typeof opts.nodes === 'string' ? Number(opts.nodes) : opts.nodes
+  if (!Number.isInteger(count) || count < 1 || count > MAX_KIND_NODES) {
+    throw new ClusterSetupError(
+      `--nodes must be an integer between 1 and ${MAX_KIND_NODES} (got `
+      + `"${String(opts.nodes)}"). Every node is a full node container on this one `
+      + 'host; 2–3 is the multi-node rehearsal topology.',
+    )
+  }
+  if (opts.repair) {
+    throw new ClusterSetupError(
+      '--nodes cannot be combined with --repair: the node count is fixed when '
+      + 'the cluster is created, and --repair fixes up the nodes that exist. '
+      + `Recreate the cluster instead:\n  yaac cluster setup --nodes ${count}`,
+    )
+  }
+  return count
+}
+
+/** The `nodes:` list, which the bundled config keeps last (see its header). */
+const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
+
+/**
+ * The kind config to feed `kind create cluster`: `$HOME` substituted (kind
+ * expands no environment variables), and the node list grown to `nodes`
+ * entries.
+ *
+ * Workers are COPIES of the bundled control-plane entry with the role
+ * swapped, which is the whole trick behind the multi-node rehearsal: the
+ * copy carries the `$HOME → $HOME` extraMount, and since every kind node
+ * container shares this one host's filesystem, hostPath keeps resolving to
+ * the same bytes on whichever node a session lands. Everything else in the
+ * file is cluster-scoped (containerd registry patch, kubelet swap patch,
+ * disableDefaultCNI), and kind applies those to every node itself.
+ */
+export function renderKindConfig(
+  raw: string,
+  opts: { homedir: string; nodes: number },
+): string {
+  const substituted = raw.replaceAll('$HOME', opts.homedir)
+  if (opts.nodes <= 1) return substituted
+
+  const template = KIND_NODES_SECTION.exec(substituted)?.[1]
+  const entries = template?.match(/^- /gm) ?? []
+  if (!template || entries.length !== 1 || !/^- role: control-plane$/m.test(template)) {
+    throw new ClusterSetupError(
+      'The bundled kind config no longer ends in a single control-plane node '
+      + 'entry, so --nodes cannot render worker copies of it. Restore the '
+      + '`nodes:` list as the last section of k8s/kind-config.yaml (one entry, '
+      + '`- role: control-plane`, carrying the $HOME extraMount).',
+    )
+  }
+  const worker = `${template.replace(/^- role: control-plane$/m, '- role: worker').trimEnd()}\n`
+  return `${substituted.trimEnd()}\n${worker.repeat(opts.nodes - 1)}`
 }
 
 interface BinaryVersions {
@@ -487,20 +578,30 @@ async function kindNodes(deps: ClusterSetupDeps, cluster: string): Promise<strin
 }
 
 /**
- * Delete + recreate the kind cluster from the bundled k8s/kind-config.yaml
- * ($HOME substituted — kind does not expand environment variables). No
- * --wait: the config disables the default CNI, so nodes cannot go Ready
- * until Calico is installed.
+ * Delete + recreate the kind cluster from the bundled k8s/kind-config.yaml,
+ * rendered for the requested node count (see renderKindConfig). No --wait:
+ * the config disables the default CNI, so nodes cannot go Ready until
+ * Calico is installed.
  */
-async function recreateKindCluster(deps: ClusterSetupDeps, cluster: string): Promise<void> {
+async function recreateKindCluster(
+  deps: ClusterSetupDeps,
+  cluster: string,
+  nodes: number,
+): Promise<void> {
   const configPath = path.join(PACKAGE_ROOT, 'k8s', 'kind-config.yaml')
   const raw = await deps.readTextFile(configPath)
   if (raw === null) {
     throw new ClusterSetupError(`Bundled kind config not found at ${configPath} — broken install?`)
   }
-  const config = raw.replaceAll('$HOME', deps.homedir())
+  const config = renderKindConfig(raw, { homedir: deps.homedir(), nodes })
 
-  deps.log(`Recreating kind cluster "${cluster}" (this deletes any existing "${cluster}" cluster)...`)
+  const topology = nodes === 1
+    ? 'single node'
+    : `${nodes} nodes: 1 control-plane + ${nodes - 1} worker${nodes > 2 ? 's' : ''}`
+  deps.log(
+    `Recreating kind cluster "${cluster}" (${topology}; this deletes any `
+    + `existing "${cluster}" cluster)...`,
+  )
   await deps.run('kind', ['delete', 'cluster', '--name', cluster], { env: kindEnv() })
     .catch(() => { /* no existing cluster */ })
   try {
@@ -652,7 +753,13 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
     + `printf '[Manager]\\nDefaultTasksMax=infinity\\n' > ${NODE_TASKSMAX_CONF}\n`
     + 'systemctl daemon-reexec\n'
     + `echo ${NODE_MIN_FREE_KBYTES} > /proc/sys/vm/min_free_kbytes\n`
-    + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n',
+    + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n'
+    // Host-global (see the constants' doc): every node container draws on
+    // the one root-uid inotify pool, so a multi-node cluster starves
+    // netd's Envoy at the stock ceiling. Writing it per node is
+    // idempotent — each write sets the same host value.
+    + `echo ${NODE_INOTIFY_MAX_USER_INSTANCES} > /proc/sys/fs/inotify/max_user_instances\n`
+    + `echo ${NODE_INOTIFY_MAX_USER_WATCHES} > /proc/sys/fs/inotify/max_user_watches\n`,
   ])
   // kubelet housekeeping interval: prepend the flag to the kubeadm-written
   // flags env (idempotent — skipped when the exact flag is already there;

@@ -5,14 +5,15 @@ what the command provisions, and why. Companion to `yaac cluster check`,
 which verifies all of it (the command finishes by running it).
 
 ```sh
-yaac cluster setup
+yaac cluster setup            # one node
+yaac cluster setup --nodes 3  # one control-plane node + two workers
 ```
 
 The command bootstraps the podman machine on macOS (see below) — or expects a
 reachable rootful podman on Linux (see below) — starts the local registry,
 creates a kind cluster from the bundled `k8s/kind-config.yaml`, installs pinned
 Calico (the CNI and NetworkPolicy engine) and netd (the session-egress redirect), and
-applies the node fixups.
+applies the node fixups to every node.
 
 ## The split runtime
 
@@ -21,8 +22,8 @@ yaac splits the container runtime in two:
 - **Podman** builds session images (`podman build` / `podman push`) and
   hosts the kind node container.
 - **Kubernetes** runs the sessions — one Job (single-pod) per session, plus
-  a shared proxy Deployment. yaac targets a **local single-node cluster**
-  (kind recommended). Session pods run under gVisor (runsc): the gofer
+  a shared proxy Deployment. yaac targets a **local kind cluster** of one or
+  more nodes (see "Multi-node" below). Session pods run under gVisor (runsc): the gofer
   performs hostPath I/O as node root while the sentry enforces file
   permissions on the ownership the backing filesystem reports, so that
   filesystem must report **real file ownership**. Any normal Linux
@@ -157,9 +158,10 @@ only kind's provider breaks.
 2. **Home-directory extraMount** — session pods mount worktrees, caches, and
    credentials via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
-   yaac touches.
+   yaac touches. Every node gets it, so the bind holds wherever a session
+   is scheduled.
 3. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
-   the node and a raised pids-limit on the node container, so subagent
+   each node and a raised pids-limit on the node container, so subagent
    fan-out and virtiofs I/O don't die with
    `fork: resource temporarily unavailable`. Also `--housekeeping-interval=60s`
    in the kubelet flags (kubeadm-flags.env): at the 10s default, cAdvisor's
@@ -232,6 +234,51 @@ only kind's provider breaks.
    pulled to the *host* engine and side-loaded onto the node, which keeps
    the ~235 MB one-time rather than per-recreate. `k8s/calico/README.md`
    has the repin recipe.
+
+## Multi-node
+
+```sh
+yaac cluster setup --nodes 3
+```
+
+`--nodes N` creates one control-plane node and `N-1` workers (max 5 — every
+node is a full node container on this one host, so this is a topology knob,
+not a capacity one). It is create-time only: `--repair` fixes up the nodes
+that exist and rejects `--nodes`.
+
+**Sessions land on the workers.** kind keeps the control-plane's
+`node-role.kubernetes.io/control-plane:NoSchedule` taint as soon as a cluster
+has workers (it only clears it on worker-less ones), and session pods declare
+no tolerations. So `--nodes 2` leaves exactly one session-eligible node and
+`--nodes 3` leaves two — **3 is the smallest topology that actually
+exercises multi-node scheduling.** `yaac cluster check` reports both numbers
+(`3 nodes, 2 able to schedule sessions`).
+
+The rendering is the whole mechanism. `k8s/kind-config.yaml` holds one
+control-plane node entry carrying the `$HOME → $HOME` extraMount, and setup
+copies that entry into `N-1` `role: worker` entries — so **every** node
+binds the host's home directory at the same path. Since all kind nodes are
+containers on this one host, hostPath keeps resolving to the same bytes no
+matter which node a session lands on, and the shared-filesystem model
+survives unchanged while real multi-node *scheduling* is exercised. The rest
+of the config is cluster-scoped and kind applies it to every node itself:
+the containerd `config_path` registry patch, the kubelet swap patch, and
+`disableDefaultCNI`.
+
+Everything else already reached every node and stays that way, by one of
+two mechanisms. Host-side loops over the node list: the node fixups and the
+containerd registry `hosts.toml` (both `podman exec`), and the per-project
+registries' `hosts.toml` writer pods. DaemonSets, which need no list and
+also cover nodes added later: the gVisor installer, Calico, and netd. What
+is genuinely node-*local* is the per-project registry's blob
+storage (`/var/lib/yaac/registry/<hash>`), which backs the cross-session
+image cache: it lives on whichever node the registry pod runs, so a pod
+that moves nodes starts with a cold cache. That costs rebuild time, never
+correctness — the cache prime treats a missing image as a miss, and session
+images themselves come from the host-side registry every node can pull.
+
+`yaac cluster check` reports per-node readiness on a multi-node cluster
+(`runsc-nodes`, `registry-nodes`, `volume-nodes` — see "Verifying").
 
 ## Node fixups vanish on restart
 
@@ -318,11 +365,38 @@ ends with a sweep warning about any untrusted pod (session-labeled or
 vcluster-synced) running without a gvisor-tier `runtimeClassName` (pods
 predating the gVisor migration). Run it whenever sessions fail to start.
 
-> **v1 limits:** single-node clusters only (the hostPath model assumes
-> node == host). The server's control traffic reaches the proxy through a
-> loopback exec tunnel (`kubectl exec` + socat — runtime-agnostic, unlike
-> `kubectl port-forward`, which cannot reach gVisor pods); nothing yaac
-> deploys listens on host interfaces.
+On a cluster with more than one node it also runs a **per-node readiness
+sweep** over the nodes a session could land on (Ready, uncordoned,
+untainted), pinning one probe pod to each and reporting three warn-level
+gates —
+
+- `runsc-nodes`: that node can host a sandboxed pod. A node the installer
+  DaemonSet has not labelled yet fails here by definition — the
+  RuntimeClasses schedule on that label, so nothing sandboxed can be placed
+  there. Beyond that, a node whose kubelet publishes
+  `status.runtimeHandlers` is judged by it, and otherwise by whether its
+  probe pod ran at all (containerd refuses a pod whose handler it never
+  registered). The `gvisor` gate above proves the handler is really the
+  sentry and that *some* node has it; this one says how many.
+- `registry-nodes`: that node's containerd can pull from the registry (the
+  probe pulls `Always`, so a layer already on the node cannot mask an
+  unreachable one).
+- `volume-nodes`: the shared data dir is the same bytes the server sees
+  from that node, and the session uid can write it.
+
+They are warnings, not failures: a single-node cluster is still a legitimate
+topology, and each carries the fix for its own cause — the installer
+DaemonSet for runsc, `--repair` for the registry wiring, the home
+extraMount for the volume. A probe pod that never ran is attributed to one
+gate from the kubelet's event and left explicitly *unverified* on the
+others, so no gate ever passes on a node it could not actually check.
+
+> **Limits:** all nodes must share one filesystem — the hostPath model
+> assumes node == host, which multi-node kind preserves by binding `$HOME`
+> into every node container. The server's control traffic reaches the proxy
+> through a loopback exec tunnel (`kubectl exec` + socat —
+> runtime-agnostic, unlike `kubectl port-forward`, which cannot reach
+> gVisor pods); nothing yaac deploys listens on host interfaces.
 
 ## Deleting the cluster
 
@@ -331,7 +405,7 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
 The teardown counterpart to `setup`. It deletes the kind cluster (which
-takes the node and everything living in it — Calico, netd, every vcluster, the
+takes every node and all of it — Calico, netd, every vcluster, the
 per-project registries, and all node-local storage) and removes the local
 `yaac-registry` container that sits beside it on podman. Running session pods
 stop, but nothing under the yaac data dir is touched: on-disk sessions and
