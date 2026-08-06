@@ -20,7 +20,7 @@ import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 import {
   attachImageBuildProject,
-  cacheRepoForLayer,
+  layerBuildTrust,
   failImageBuild,
   finishImageBuild,
   imageBuilder,
@@ -31,6 +31,7 @@ import {
   ingestImageBuildLine,
   registerImageBuild,
   resolveImageChain,
+  withImageBuilder,
 } from '#features/image-engine'
 
 interface BuildContext {
@@ -119,7 +120,7 @@ async function runBuild(
       context: layer.context,
       buildArgs: layer.buildArgs,
       noCache: opts.noCache,
-      cacheRepo: cacheRepoForLayer(layer.name, ctx.projectSlug),
+      ...layerBuildTrust(layer.name, ctx.projectSlug),
       onLog: (line) => {
         ingestImageBuildLine(id, line)
         ctx.onLog?.(line)
@@ -199,54 +200,55 @@ export async function pushImageShared(
   // the unchanged content-hash tag. Registering a push row here would
   // invent work that never happens.
   if (imageBuilderKind() === 'cluster-pod') return registryRef(tag)
-  // Host backend only past here, and it holds nothing to release: its
-  // products are already in a local store, and publishing them is a push.
-  const builder = imageBuilder(ensureClusterBuilderHost)
+  // Host backend only past here — but scoped anyway rather than relying on
+  // that: the day a third backend exists, an unclosed builder leaks a pod
+  // silently.
+  return withImageBuilder(ensureClusterBuilderHost, async (builder) => {
+    const existing = inflightPushes.get(tag)
+    if (existing) return existing
 
-  const existing = inflightPushes.get(tag)
-  if (existing) return existing
-
-  if (!opts.force && pushedTags.has(tag)) return registryRef(tag)
-  if (!opts.force && await registryHasTag(tag)) {
-    pushedTags.add(tag)
-    return registryRef(tag)
-  }
-
-  // A force-push of a tag the host store never held is already satisfied
-  // by whoever put it in the registry. Pushing would fail — there is
-  // nothing local to push.
-  if (opts.force && !await builder.imageExists(tag) && await registryHasTag(tag)) {
-    return registryRef(tag)
-  }
-
-  // Re-check after the await: another caller may have started the push.
-  const raced = inflightPushes.get(tag)
-  if (raced) return raced
-
-  const id = registerImageBuild({
-    tag,
-    layer: 'push',
-    action: 'push',
-    projectSlug: ctx.projectSlug,
-    reason: ctx.reason,
-  })
-  const promise = builder.publish(tag, {
-    onLog: (line) => ingestImageBuildLine(id, line),
-    force: opts.force,
-    compressionFormat: opts.compressionFormat,
-  })
-    .then((ref) => {
-      finishImageBuild(id)
+    if (!opts.force && pushedTags.has(tag)) return registryRef(tag)
+    if (!opts.force && await registryHasTag(tag)) {
       pushedTags.add(tag)
-      return ref
+      return registryRef(tag)
+    }
+
+    // A force-push of a tag the host store never held is already satisfied
+    // by whoever put it in the registry. Pushing would fail — there is
+    // nothing local to push.
+    if (opts.force && !await builder.imageExists(tag) && await registryHasTag(tag)) {
+      return registryRef(tag)
+    }
+
+    // Re-check after the await: another caller may have started the push.
+    const raced = inflightPushes.get(tag)
+    if (raced) return raced
+
+    const id = registerImageBuild({
+      tag,
+      layer: 'push',
+      action: 'push',
+      projectSlug: ctx.projectSlug,
+      reason: ctx.reason,
     })
-    .catch((err: unknown) => {
-      failImageBuild(id, err instanceof Error ? err.message : String(err))
-      throw err
+    const promise = builder.publish(tag, {
+      onLog: (line) => ingestImageBuildLine(id, line),
+      force: opts.force,
+      compressionFormat: opts.compressionFormat,
     })
-    .finally(() => inflightPushes.delete(tag))
-  inflightPushes.set(tag, promise)
-  return promise
+      .then((ref) => {
+        finishImageBuild(id)
+        pushedTags.add(tag)
+        return ref
+      })
+      .catch((err: unknown) => {
+        failImageBuild(id, err instanceof Error ? err.message : String(err))
+        throw err
+      })
+      .finally(() => inflightPushes.delete(tag))
+    inflightPushes.set(tag, promise)
+    return promise
+  })
 }
 
 export interface EnsureImageOpts {

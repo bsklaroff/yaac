@@ -87,9 +87,14 @@ export interface HostImageGcResult {
  * `-f` — a tag whose image is in use by a container, or mid-build as a
  * FROM, fails its rmi and is retried next sweep), then prune dangling
  * images past the age floor. Returns what was done for the log line, or
- * null when this machine has no reachable host engine — which is the
- * ordinary state of a server that builds in cluster pods, and not an
- * error worth surfacing on a hygiene sweep.
+ * null when there is no podman on this machine at all — the ordinary state
+ * of a server that builds in cluster pods, and not an error worth
+ * surfacing on a hygiene sweep.
+ *
+ * Only ENOENT reads as "no engine here". A podman that is installed but
+ * wedged, or a socket this user cannot open, is a real fault and is
+ * raised: swallowing it would stop reclaiming forever, silently, on
+ * exactly the machine whose store the e2e prebuild fills.
  */
 export async function gcHostImages(): Promise<HostImageGcResult | null> {
   let stdout: string
@@ -98,8 +103,9 @@ export async function gcHostImages(): Promise<HostImageGcResult | null> {
       'image', 'ls', '--sort', 'created',
       '--format', '{{.Repository}}|{{.Repository}}:{{.Tag}}',
     ]))
-  } catch {
-    return null
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
   }
   const stale = selectStaleGenerationTags(parseImageLsRows(stdout))
   const retired: string[] = []

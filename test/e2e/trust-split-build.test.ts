@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import {
   requirePodman,
@@ -14,6 +15,9 @@ import {
 import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/build-dirs'
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
 import { ensureImage } from '@yaac/server/features/images/build-coordinator'
+import { withImageBuilder } from '@yaac/server/features/image-engine/builder'
+import { SHIPPED_BUILD_CACHE_REPO } from '@yaac/server/features/image-engine/builder-pod'
+import { ensureClusterBuilderHost } from '@yaac/server/features/cluster/builder-host'
 import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/features/cluster/proxy-apply'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
 import { resolveImageChain } from '@yaac/server/features/image-engine/image-builder'
@@ -21,6 +25,7 @@ import { imageExists } from '@yaac/server/platform/container/runtime'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
+  registryEndpoint,
   registryHasTag,
   registryHost,
   registryReachable,
@@ -41,8 +46,9 @@ import {
 import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/image-engine/image-builds'
 
 /**
- * End-to-end coverage of trust-split builds (docs/image-builds.md):
- * untrusted Dockerfile.yaac / Dockerfile.user layers build inside ephemeral
+ * End-to-end coverage of in-cluster image builds (docs/image-builds.md):
+ * every layer — the yaac-shipped ones and the user- and agent-editable
+ * Dockerfile.yaac / Dockerfile.user — builds inside ephemeral
  * runsc builder pods that pull their parent from the shared registry
  * (an in-cluster Deployment behind a ClusterIP Service), stream
  * build logs back through the build-tracking registry, delta-push their
@@ -93,6 +99,11 @@ const DOCKERFILE_USER = [
 
 let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
+let shippedCtxDir: string | null = null
+
+/** Tiny upstream base for the shipped-tier build — a builder pod has world
+ *  egress, so its `FROM` needs nothing mirrored. */
+const PROBE_BASE_IMAGE = 'docker.io/library/busybox:1.36'
 
 async function writeProjectDockerfile(content: string): Promise<void> {
   const dir = projectBuildDir(PROJECT_SLUG)
@@ -130,6 +141,8 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     restoreNamespace = null
     if (tempDataDir) await cleanupTempDir(tempDataDir)
     tempDataDir = null
+    if (shippedCtxDir) await fs.rm(shippedCtxDir, { recursive: true, force: true })
+    shippedCtxDir = null
   })
 
   it('serves the registry in-cluster behind a selector-backed Service', async () => {
@@ -225,6 +238,46 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
 
     await kubectlWithRetry(['delete', 'pod', 'faker-control', '-n', ns, '--ignore-not-found'])
   }, 120_000)
+
+  it('builds a shipped-tier layer in a pod, cached in the shipped repo', async () => {
+    // The half this suite predates: the yaac-shipped layers used to build on
+    // the host engine. They are sandboxed now, and the only thing trust
+    // still decides is which step cache the build may read — so this drives
+    // a `shipped` request through the seam and checks where its cache went.
+    //
+    // Parentless and over a tiny upstream base on purpose: the parent-pull
+    // leg and the delta push are covered by the chain build below, and
+    // pulling the multi-GB tools image a second time would buy nothing.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-e2e-'))
+    shippedCtxDir = dir
+    await fs.writeFile(
+      path.join(dir, 'Dockerfile'),
+      `FROM ${PROBE_BASE_IMAGE}\nRUN echo shipped-${NONCE} > /tmp/marker-shipped\n`,
+    )
+    const tag = `${TEST_IMAGE_PREFIX}-shipped:${NONCE}`
+
+    await withImageBuilder(ensureClusterBuilderHost, (builder) => builder.build({
+      tag,
+      dockerfile: path.join(dir, 'Dockerfile'),
+      context: dir,
+      noCache: false,
+      trust: 'shipped',
+      cacheRepo: SHIPPED_BUILD_CACHE_REPO,
+    }))
+
+    // Same contract as any pod build: the product exists in the registry
+    // and nowhere on the host.
+    expect(await registryHasTag(tag)).toBe(true)
+    expect(await imageExists(tag)).toBe(false)
+
+    // And its step cache landed in the install-wide shipped repo, which is
+    // the whole of what the trust tier still governs.
+    const endpoint = await registryEndpoint()
+    const res = await fetch(`http://${endpoint}/v2/${SHIPPED_BUILD_CACHE_REPO}/tags/list`)
+    expect(res.ok).toBe(true)
+    const listed = await res.json() as { tags?: string[] }
+    expect(listed.tags?.length ?? 0).toBeGreaterThan(0)
+  }, 300_000)
 
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
     // --- First build: fresh project layer, built in a builder pod. ---

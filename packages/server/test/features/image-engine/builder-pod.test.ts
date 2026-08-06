@@ -1,7 +1,8 @@
 /**
  * The builder-pod entry points that are not reached through a chain build:
- * the builder pods' egress policy (applied by the cluster feature before it
- * leases one) and the leaked-pod reaper (a reconcile step).
+ * the trust classifier every build is routed by, the builder pods' egress
+ * policy (applied by the cluster feature before it leases one), and the
+ * leaked-pod reaper (a reconcile step).
  *
  * Everything else in this module — pod manifests, in-pod scripts, build
  * argv, context tar, the upstream-image fallback that makes a builder
@@ -9,6 +10,7 @@
  * build-coordinator.test.ts, where it is actually wired up.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { ImageLayerName } from '@yaac/shared/types'
 import type * as kubectlModule from '#platform/k8s/kubectl'
 import type * as registryModule from '#platform/container/registry'
 import type * as runtimeModule from '#platform/container/runtime'
@@ -54,7 +56,9 @@ vi.mock('#platform/container/registry', async (importOriginal) => ({
 
 import {
   buildBuilderEgressNetworkPolicyManifest,
+  layerBuildTrust,
   reconcileBuilderPodGc,
+  SHIPPED_BUILD_CACHE_REPO,
 } from '#features/image-engine'
 // Reap policy constant, the upstream pin, and the sweep-throttle reset:
 // setup values, not units under test.
@@ -80,6 +84,38 @@ beforeEach(() => {
   mockKubectlGetJson.mockResolvedValue(null)
   mockRegistryHasTag.mockResolvedValue(true)
   mockImageExists.mockResolvedValue(false)
+})
+
+describe('layerBuildTrust', () => {
+  it('routes only the yaac-shipped layer names to the shipped tier', () => {
+    for (const name of ['base', 'tools', 'nestable'] as const) {
+      expect(layerBuildTrust(name, 'demo')).toEqual({
+        trust: 'shipped',
+        cacheRepo: SHIPPED_BUILD_CACHE_REPO,
+      })
+    }
+  })
+
+  it('defaults everything else to the project tier, including a future name', () => {
+    // A whitelist, so a layer name nobody has written yet is sandboxed from
+    // the shipped cache and the shipped pod rather than silently sharing
+    // them. `resolveImageChain` is the only producer of these names and
+    // assigns the shipped three exclusively to yaac's own Dockerfiles.
+    for (const name of ['project', 'user', 'some-future-layer'] as ImageLayerName[]) {
+      expect(layerBuildTrust(name, 'demo')).toEqual({
+        trust: 'project',
+        cacheRepo: 'yaac-buildcache-project-demo',
+      })
+    }
+  })
+
+  it('sanitizes the slug, and cannot collide with the shipped repo', () => {
+    expect(layerBuildTrust('project', 'My Project!').cacheRepo)
+      .toBe('yaac-buildcache-project-my-project-')
+    // A project literally called `shipped` gets its own repo, not yaac's.
+    expect(layerBuildTrust('project', 'shipped').cacheRepo)
+      .not.toBe(SHIPPED_BUILD_CACHE_REPO)
+  })
 })
 
 describe('buildBuilderEgressNetworkPolicyManifest', () => {

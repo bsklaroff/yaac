@@ -681,6 +681,7 @@ export class ProxyClient {
           dockerfile: path.join(PROXY_DIR, 'Dockerfile'),
           context: PROXY_DIR,
           noCache: false,
+          trust: 'shipped',
           cacheRepo: SHIPPED_BUILD_CACHE_REPO,
           onLog: (line) => ingestImageBuildLine(id, line),
         })

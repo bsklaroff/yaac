@@ -39,16 +39,13 @@ export {
   imageBuilderKind,
   withImageBuilder,
   type ImageBuilder,
-  type ImageBuilderKind,
-  type MirrorSpec,
 } from './builder'
 export {
   buildBuilderEgressNetworkPolicyManifest,
-  cacheRepoForLayer,
+  layerBuildTrust,
   reconcileBuilderPodGc,
   BUILD_CACHE_TTL,
   SHIPPED_BUILD_CACHE_REPO,
-  type EnsureBuilderHost,
 } from './builder-pod'
 export {
   attachImageBuildProject,

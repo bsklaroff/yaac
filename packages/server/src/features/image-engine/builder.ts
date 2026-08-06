@@ -43,6 +43,7 @@ import { serverLog } from '#log'
 import { buildImage } from './image-builder'
 import {
   BuilderPodLease,
+  type BuildTrust,
   type EnsureBuilderHost,
   buildInPod,
   mirrorInPod,
@@ -61,6 +62,14 @@ export interface BuildRequest {
   /** Re-run every step (`yaac project rebuild`). Required, not defaulted:
    *  every build path decides this explicitly. */
   noCache: boolean
+  /**
+   * Whose content this build executes. It travels with the request rather
+   * than being collapsed into `cacheRepo`, because the cluster backend
+   * needs it for a second decision the repo name cannot express: a
+   * `shipped` build may not run in a pod that has already executed a
+   * `project` one (see `BuilderPodLease`).
+   */
+  trust: BuildTrust
   /** Registry repo for the step cache. Ignored by the host builder, which
    *  caches in the host engine's own store. */
   cacheRepo: string

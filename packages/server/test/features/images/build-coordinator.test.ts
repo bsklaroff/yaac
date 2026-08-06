@@ -681,6 +681,79 @@ describe('ensureImage', () => {
     expect(SHIPPED_BUILD_CACHE_REPO).not.toMatch(/^yaac-buildcache-project-/)
   })
 
+  it('refuses to build a shipped layer in a pod that ran a project one', async () => {
+    // The chain order that makes this unrepresentable is `push()` calls in
+    // resolveImageChain; the lease is where the consequence would land, so
+    // it does not take that on faith. A future layer appended after
+    // `project` gets a fresh pod rather than the tainted one.
+    const project = await podLayer({ tag: 'yaac-base:t1', buildArgs: undefined })
+    const shipped = layer('yaac-tools:t2', 'tools', { buildArgs: { BASE_IMAGE: project.tag } })
+    chain([project, shipped])
+
+    await ensureImage('proj')
+
+    const pods = mockKubectlApply.mock.calls
+      .map((c) => c[0] as { kind: string; metadata: { name: string } })
+      .filter((m) => m.kind === 'Pod')
+    expect(pods).toHaveLength(2)
+    expect(pods[0].metadata.name).not.toBe(pods[1].metadata.name)
+    // Both are deleted — the tainted one when it is replaced, the second
+    // when the chain ends.
+    expect(deleteCalls()).toHaveLength(2)
+    // The fresh pod has no local parent, so it pulls the tainted pod's
+    // product from the registry like any first layer would.
+    expect(remoteCommands().filter((argv) => argv.join(' ').includes('podman pull')))
+      .toHaveLength(1)
+  })
+
+  it('keeps one pod for a chain whose shipped layers come first', async () => {
+    // The ordinary shape, and the reason the taint check is not just a
+    // blanket fresh-pod-per-layer rule.
+    const tools = layer('yaac-tools:o1', 'tools')
+    const project = await podLayer({ buildArgs: { BASE_IMAGE: tools.tag } })
+    chain([tools, project])
+    await ensureImage('proj')
+    expect(mockKubectlApply.mock.calls
+      .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
+  })
+
+  it('retries a builder pod on the upstream image when the mirror will not run', async () => {
+    // registryHasTag answers on the manifest, so a mirror whose blobs a
+    // registry collect took out from under it still reads present. Without
+    // this retry that is every build on the install failing to schedule,
+    // recoverable only by deleting the mirror tag by hand.
+    const podImage = (): string[] => mockKubectlApply.mock.calls
+      .map((c) => c[0] as { kind: string; spec?: { containers: Array<{ image: string }> } })
+      .filter((m) => m.kind === 'Pod')
+      .map((m) => m.spec!.containers[0].image)
+    let waits = 0
+    mockKubectlWithRetry.mockImplementation((args: string[]) => {
+      if (args[0] !== 'wait') return Promise.resolve({ stdout: '', stderr: '' })
+      waits += 1
+      return waits === 1
+        ? Promise.reject(new Error('timed out waiting for the condition'))
+        : Promise.resolve({ stdout: '', stderr: '' })
+    })
+    chain([await podLayer({ buildArgs: undefined })])
+
+    await ensureImage('proj')
+
+    expect(podImage()).toEqual([`${CLUSTER_HOST}/${BUILDER_LOCAL_TAG}`, BUILDER_UPSTREAM_IMAGE])
+  })
+
+  it('does not retry when the pod was already on the upstream image', async () => {
+    mockHasTag.mockResolvedValue(false)
+    mockKubectlWithRetry.mockImplementation((args: string[]) =>
+      args[0] === 'wait'
+        ? Promise.reject(new Error('timed out waiting for the condition'))
+        : Promise.resolve({ stdout: '', stderr: '' }))
+    chain([await podLayer({ buildArgs: undefined })])
+
+    await expect(ensureImage('proj')).rejects.toThrow('timed out')
+    expect(mockKubectlApply.mock.calls
+      .filter((c) => (c[0] as { kind: string }).kind === 'Pod')).toHaveLength(1)
+  })
+
   it('falls back to the upstream builder image when no mirror exists', async () => {
     // The bootstrap floor: a builder pod cannot be the source of its own
     // image, so an install with an empty registry still gets one.

@@ -154,6 +154,7 @@ describe('imageBuilder', () => {
       context: '/ctx',
       buildArgs: { YAAC_UID: '1000' },
       noCache: true,
+      trust: 'shipped',
       cacheRepo: 'ignored-by-this-backend',
     })
     expect(mockBuildImage).toHaveBeenCalledWith(

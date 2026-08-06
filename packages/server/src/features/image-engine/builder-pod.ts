@@ -185,18 +185,30 @@ export function buildCacheRepo(projectSlug: string): string {
 }
 
 /**
- * Which step-cache repo a layer builds against — the one thing the trust
- * split still decides now that every layer builds in a sandbox.
+ * What a build's trust tier decides. Two things, and they are the whole of
+ * what the trust split still governs now that every layer builds in a
+ * sandbox: which step cache the build may read, and whether it may run in a
+ * pod that has already executed someone else's `RUN` step.
+ */
+export type BuildTrust = 'shipped' | 'project'
+
+/**
+ * A layer's trust tier and the cache repo that follows from it.
  *
  * The whitelist is the same one that used to route layers to the host
  * engine, and cannot be faked: `resolveImageChain` is the only producer of
  * `ImageLayerName` and assigns `base`/`tools`/`nestable` exclusively to the
  * yaac-shipped Dockerfiles, whatever a project's own file contains. A
- * future layer name therefore lands in the project repo by default rather
- * than sharing the shipped layers' cache.
+ * future layer name is therefore `project` by default rather than sharing
+ * the shipped layers' cache or their pod.
  */
-export function cacheRepoForLayer(name: ImageLayerName, projectSlug: string): string {
-  return SHIPPED_LAYERS.has(name) ? SHIPPED_BUILD_CACHE_REPO : buildCacheRepo(projectSlug)
+export function layerBuildTrust(
+  name: ImageLayerName,
+  projectSlug: string,
+): { trust: BuildTrust; cacheRepo: string } {
+  return SHIPPED_LAYERS.has(name)
+    ? { trust: 'shipped', cacheRepo: SHIPPED_BUILD_CACHE_REPO }
+    : { trust: 'project', cacheRepo: buildCacheRepo(projectSlug) }
 }
 
 const SHIPPED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'nestable'])
@@ -213,9 +225,11 @@ const SHIPPED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'n
  * only a cluster whose nodes can pull a digest-pinned upstream ref, which
  * is already true of the registry and the gVisor installer.
  *
- * The mirror is still preferred where it exists (`mirrorBuilderImage`, run
- * by the test global setup and by host-podman installs): it keeps repeat
- * pod creates and offline runs off the upstream registry.
+ * The mirror is still preferred where it exists — the e2e global setup
+ * makes one on the host engine — since it keeps repeat pod creates and
+ * offline runs off the upstream registry. A mirror that exists but will
+ * not RUN is a different failure, and `BuilderPodLease.provision` handles
+ * it by retrying on the upstream ref.
  */
 export async function builderPodImageRef(): Promise<string> {
   return await registryHasTag(BUILDER_LOCAL_TAG)
@@ -554,25 +568,41 @@ export type EnsureBuilderHost = () => Promise<void>
  *
  * Sharing one pod across a whole chain is what makes a cold chain cheap:
  * layer N+1's `FROM ${BASE_IMAGE}` resolves against the product layer N
- * just built, with no registry round-trip in between. It is also why the
- * chain's layers must stay in dependency order — a pod that has executed
- * an untrusted `RUN` step must never be reused to build one of the
- * yaac-shipped layers, and `resolveImageChain` emits those first, each one
- * pushed before the next layer starts.
+ * just built, with no registry round-trip in between.
+ *
+ * ONE THING THAT SHARING MUST NOT DO is let a `project` build's leftovers
+ * into a `shipped` build. `resolveImageChain` emits the shipped layers
+ * first, so no chain it produces asks for that — but that is the order of
+ * `push()` calls in one function, and this class is where the consequence
+ * would land, so it does not take that on faith: a pod that has run a
+ * `project` build is TAINTED, and a `shipped` build asking for one gets a
+ * fresh pod instead (at the cost of pulling its parent from the registry,
+ * which is what a first pod pays anyway).
  */
 export class BuilderPodLease {
   private podName: string | null = null
   private acquiring: Promise<string> | null = null
+  /** Whether the pod this lease is holding has run a `project` build. */
+  private tainted = false
 
   constructor(private readonly ensureHost: EnsureBuilderHost) {}
 
-  async acquire(seedTag: string): Promise<string> {
+  async acquire(seedTag: string, trust: BuildTrust): Promise<string> {
+    if (this.acquiring && this.tainted && trust === 'shipped') {
+      serverLog(
+        '[builder] replacing a builder pod that has run an untrusted build '
+        + `before building ${seedTag}`,
+      )
+      await this.release()
+    }
     if (!this.acquiring) {
       this.acquiring = this.provision(seedTag).catch((err: unknown) => {
         this.acquiring = null // a later layer may retry provisioning
         throw err
       })
     }
+    // Set before the pod is handed out: the build is about to run in it.
+    if (trust === 'project') this.tainted = true
     return this.acquiring
   }
 
@@ -591,6 +621,28 @@ export class BuilderPodLease {
     await this.ensureHost()
     const imageRef = await builderPodImageRef()
 
+    try {
+      this.podName = await this.startPod(seedTag, imageRef)
+    } catch (err) {
+      // A pod that never came up on the MIRROR gets one retry on the
+      // upstream digest. `registryHasTag` answers on the manifest, so a
+      // mirror whose blobs a registry collect took out from under it still
+      // reads present, and then every build on the install is an
+      // ErrImagePull with nothing to fall back to — the absence edge is
+      // covered by `builderPodImageRef`, and this is the corruption edge.
+      if (imageRef === BUILDER_UPSTREAM_IMAGE) throw err
+      serverLog(
+        `[builder] the mirrored builder image did not come up (${errText(err)}) — `
+        + 'retrying on the upstream digest',
+      )
+      this.podName = await this.startPod(seedTag, BUILDER_UPSTREAM_IMAGE)
+    }
+    return this.podName
+  }
+
+  /** Create one pod, wait for Ready, bootstrap its storage.conf. Deletes
+   *  the pod and annotates the failure with the pod's own status. */
+  private async startPod(seedTag: string, imageRef: string): Promise<string> {
     const name = builderPodName(seedTag)
     serverLog(`[builder] creating builder pod ${name}`)
     await kubectlApply(buildBuilderPodManifest(name, imageRef))
@@ -607,9 +659,8 @@ export class BuilderPodLease {
       const blocked = await builderPodBlockDetail(name)
       await deleteBuilderPod(name)
       if (!blocked) throw err
-      throw new Error(`${err instanceof Error ? err.message : String(err)}\n${blocked}`)
+      throw new Error(`${errText(err)}\n${blocked}`)
     }
-    this.podName = name
     return name
   }
 
@@ -617,6 +668,7 @@ export class BuilderPodLease {
   async release(): Promise<void> {
     const pending = this.acquiring
     this.acquiring = null
+    this.tainted = false
     const name = this.podName ?? (pending ? await pending.catch(() => null) : null)
     this.podName = null
     if (name) await deleteBuilderPod(name)
@@ -675,6 +727,10 @@ async function builderPodBlockDetail(name: string): Promise<string | null> {
   return reason ? `builder pod ${name}: ${reason}` : null
 }
 
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 async function deleteBuilderPod(name: string): Promise<void> {
   await kubectlWithRetry([
     'delete', 'pod', name, '-n', k8sNamespace(),
@@ -692,8 +748,9 @@ async function deleteBuilderPod(name: string): Promise<void> {
 export async function buildInPod(req: BuildRequest, lease: BuilderPodLease): Promise<void> {
   // The lease belongs to the call that created it — every layer of one
   // chain shares its pod, and that caller's `finally` releases it. Nothing
-  // here owns the pod's lifetime.
-  const pod = await lease.acquire(req.tag)
+  // here owns the pod's lifetime. The trust tier goes with the request:
+  // it is what stops a shipped layer landing in a tainted pod.
+  const pod = await lease.acquire(req.tag, req.trust)
   const logPrefix = `[build ${req.tag}] `
   await inBuilderPod(pod, async () => {
     const clusterHost = registryHost()
@@ -741,7 +798,10 @@ export async function buildInPod(req: BuildRequest, lease: BuilderPodLease): Pro
  * rather than as an `exec format error` in whatever pod pulls it later.
  */
 export async function mirrorInPod(req: MirrorRequest, lease: BuilderPodLease): Promise<void> {
-  const pod = await lease.acquire(req.tag)
+  // A mirror carries yaac-chosen bytes from a pinned upstream digest into
+  // the registry, so it is `shipped` for the same reason a shipped layer
+  // is: it must not run where an untrusted step has been.
+  const pod = await lease.acquire(req.tag, 'shipped')
   const logPrefix = `[mirror ${req.tag}] `
   await inBuilderPod(pod, async () => {
     await execInBuilderPod(

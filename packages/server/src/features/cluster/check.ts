@@ -167,6 +167,7 @@ export async function runClusterCheck(
 ): Promise<{ ok: boolean; results: CheckResult[] }> {
   const results: CheckResult[] = []
   const add = (r: CheckResult): void => { results.push(r) }
+  probeImageRef = null
 
   // A nested server whose deferred cluster attach hasn't fired yet fronts an
   // intentionally-asleep (scale-to-zero) vcluster and has no sessions by
@@ -603,6 +604,9 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
   }
 }
 
+/** Resolved once per `runClusterCheck`, which clears it — see below. */
+let probeImageRef: string | null = null
+
 /**
  * Make the probe image available to the cluster and return the ref every
  * probe that schedules a pod pulls it by: the local mirror, made once
@@ -614,11 +618,27 @@ async function runNodeFixupsCheck(): Promise<CheckResult> {
  * exists to report on — so a broken cluster must still be able to schedule
  * the probe that names what is broken, rather than failing here on the
  * mirror and reporting nothing.
+ *
+ * Memoized for the run, and the FAILURE is what makes that load-bearing:
+ * five probes call this, and on the install this fallback exists for
+ * (registry up, gVisor broken) each call would otherwise lease its own
+ * builder pod and spend the full readiness budget discovering the same
+ * thing — minutes added to a run that already knows the answer.
+ *
+ * One thing to know about the mirror path: leasing a builder applies the
+ * builder-role admission policy and the builder egress NetworkPolicy, so
+ * on a cold install this diagnostic writes those two objects. They are the
+ * same ones `cluster setup` applies, and it happens only when no mirror
+ * exists yet.
  */
 async function ensureProbeImage(): Promise<string> {
-  if (await registryHasTag(PROBE_LOCAL_TAG)) return registryRef(PROBE_LOCAL_TAG)
+  if (probeImageRef) return probeImageRef
+  if (await registryHasTag(PROBE_LOCAL_TAG)) {
+    probeImageRef = registryRef(PROBE_LOCAL_TAG)
+    return probeImageRef
+  }
   try {
-    return await withClusterImageBuilder((builder) => builder.mirror({
+    probeImageRef = await withClusterImageBuilder((builder) => builder.mirror({
       upstream: PROBE_SOURCE_IMAGE,
       tag: PROBE_LOCAL_TAG,
     }))
@@ -627,8 +647,9 @@ async function ensureProbeImage(): Promise<string> {
       `[check] could not mirror the probe image (${truncate(err)}) — `
       + `probes will pull ${PROBE_SOURCE_IMAGE} directly`,
     )
-    return PROBE_SOURCE_IMAGE
+    probeImageRef = PROBE_SOURCE_IMAGE
   }
+  return probeImageRef
 }
 
 const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'

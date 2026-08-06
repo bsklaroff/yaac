@@ -123,6 +123,7 @@ export async function ensureNetdImage(
         dockerfile: path.join(NETD_DIR, 'Dockerfile'),
         context: NETD_DIR,
         noCache: false,
+        trust: 'shipped',
         cacheRepo: SHIPPED_BUILD_CACHE_REPO,
       })
       finishImageBuild(id)

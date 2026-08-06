@@ -332,12 +332,19 @@ may write*. The reachable blast radius is the whole store — the yaac-shipped
 content-hash tags, other projects' final images, and any cache repo,
 including `yaac-buildcache-shipped`.
 
-Two consequences worth stating plainly:
+Three consequences worth stating plainly:
 
 - The separation of cache repos confines a poisoned entry only against a
   build that stays inside its own cache. It is **not** a boundary against a
-  builder that writes another repo directly, which it can — including the
-  shipped layers' cache, whose entries the session base image is built from.
+  builder that writes another repo directly, which it can.
+- `yaac-buildcache-shipped` is a **new path to that ceiling, with worse
+  properties than the old one**. Overwriting `yaac-base:<hash>` outright was
+  always reachable and always affected every project on the install; what is
+  new is that a hostile `RUN` step can now poison an *input* to the shipped
+  layers' builds rather than only replacing their output. The poisoned bytes
+  then leave the pipeline under a content-hash tag yaac itself computed and
+  certified, and there is no host-store copy left to cross-check against. The
+  blast radius is the same; the path is newly available and harder to notice.
 - An overwritten tag is consumed: a builder pod pulls its parent fresh
   whenever it is not already local, and node containerd re-pulls once
   kubelet image GC has evicted a tag.
@@ -382,8 +389,8 @@ image-store lock.
   generations in the registry with no host-store sweep to catch them. Size
   the `--cache-ttl` bound (currently 168h) and the GC cadence against
   observed growth.
-- **zstd for in-pod pushes.** Host-side trusted pushes used
-  `--compression-format zstd`, which roughly halved an empty-graphroot
+- **zstd for in-pod pushes.** A host-engine push applies
+  `--compression-format zstd`, which roughly halves an empty-graphroot
   parent pull (65.6s → 40.4s measured). Now that every parent pull is a
   builder pod's, the same flag belongs on the in-pod push; it is not there
   yet.

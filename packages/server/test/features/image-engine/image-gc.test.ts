@@ -107,6 +107,22 @@ describe('reconcileHostImageGc', () => {
     expect(rmiRefs()).toEqual([])
   })
 
+  it('stands down where there is no podman, but raises a broken one', async () => {
+    // A server that builds in cluster pods may be on a machine with no
+    // engine at all — nothing to sweep, and not a fault.
+    const missing = Object.assign(new Error('spawn podman ENOENT'), { code: 'ENOENT' })
+    mockExecFileAsync.mockRejectedValue(missing)
+    await expect(reconcileHostImageGc(nextSweep())).resolves.toBeUndefined()
+    expect(mockServerLog).not.toHaveBeenCalled()
+
+    // An engine that IS there and answers with an error is a real fault:
+    // swallowing it would stop reclaiming forever, silently, on exactly the
+    // machine whose store the e2e prebuild fills.
+    mockExecFileAsync.mockRejectedValue(new Error('Cannot connect to Podman socket'))
+    await expect(reconcileHostImageGc(nextSweep()))
+      .rejects.toThrow('Cannot connect to Podman')
+  })
+
   it('tolerates an rmi failure and still prunes', async () => {
     servingLs((args) => args[0] === 'rmi' && args[1] === 'localhost/yaac-base:old1'
       ? Promise.reject(new Error('image is in use by a container'))
