@@ -15,13 +15,16 @@ import {
   TRANSPARENT_HTTPS_PORT,
   buildPriorityClassManifests,
   execFileAsync,
+  formatTaint,
   isDeferredClusterBootPending,
   k8sNamespace,
   kubectlApply,
   runPodToCompletion,
   runtimeClassSpec,
   sessionUid,
+  untoleratedTaints,
 } from '#platform/k8s'
+import type { NodeTaint, PodToleration } from '#platform/k8s'
 import {
   buildProxyIngressNpManifest,
   buildSessionEgressNpManifest,
@@ -215,9 +218,18 @@ export async function runClusterCheck(
   }
 
   // 3. node inventory — the input to the multi-node readiness gates below.
+  // Whether a node can take a session is a question about the SESSION pod's
+  // tolerations as much as the node's taints, and those live on the gvisor
+  // RuntimeClass (the admission controller merges them into every pod naming
+  // it), so the class is read here and handed down to the sweep rather than
+  // re-read there. A cluster with no such class — a fresh install, or an
+  // inner yaac against its vcluster, where the syncer sets the host-side
+  // runtime — yields no tolerations, which is the honest answer for pods
+  // that stamp no class.
+  const gvisorScheduling = await gvisorRuntimeClass()
   let nodes: ClusterNode[] = []
   try {
-    nodes = await listClusterNodes()
+    nodes = await listClusterNodes(gvisorScheduling.tolerations)
     add(nodeInventoryResult(nodes))
   } catch (err) {
     add({ name: 'nodes', status: 'warn', detail: `could not list nodes (${truncate(err)})` })
@@ -334,7 +346,7 @@ export async function runClusterCheck(
     runEndToEndProbe(),
     runNetworkPolicyProbe(),
     runNestedMountProbe(),
-    runMultiNodeReadiness(nodes),
+    runMultiNodeReadiness(nodes, gvisorScheduling),
   ])
   add(probeResult)
   add(egressResult)
@@ -371,53 +383,96 @@ export async function runClusterCheck(
 
 /**
  * What the readiness gates need to know about one node. `schedulable` is
- * "a session pod could land here": session pods (and these probes) declare
- * no tolerations, so any NoSchedule/NoExecute taint takes the node out of
- * scope, as does cordoning. `runtimeHandlers` is the kubelet's report of
- * the runtimes containerd registered (kubernetes >= 1.30); it is empty on
- * clusters that do not publish it, which is why it only ever *adds*
- * confidence below.
+ * "a session pod could land here", and it is answered by real per-taint
+ * matching (untoleratedTaints) against the tolerations the gvisor
+ * RuntimeClass merges into every sandboxed pod — not by "carries no taint at
+ * all", which is the same answer only while nothing tolerates anything, and
+ * which would report a deliberately tainted sessions pool as zero usable
+ * nodes. `excludedBecause` is the human half of that verdict, empty when the
+ * node is schedulable: a narrowed sweep has to be able to say WHICH nodes it
+ * left out and why, or a node sitting under a transient memory-pressure
+ * taint just silently stops being reported on.
+ *
+ * `runtimeHandlers` is the kubelet's report of the runtimes containerd
+ * registered (kubernetes >= 1.30); it is empty on clusters that do not
+ * publish it, which is why it only ever *adds* confidence below.
  */
 interface ClusterNode {
   name: string
   ready: boolean
   schedulable: boolean
+  excludedBecause: string
   labels: Record<string, string>
   runtimeHandlers: string[]
 }
 
 interface RawNodeItem {
   metadata?: { name?: string; labels?: Record<string, string> }
-  spec?: { unschedulable?: boolean; taints?: Array<{ effect?: string }> }
+  spec?: { unschedulable?: boolean; taints?: NodeTaint[] }
   status?: {
     conditions?: Array<{ type?: string; status?: string }>
     runtimeHandlers?: Array<{ name?: string }>
   }
 }
 
-async function listClusterNodes(): Promise<ClusterNode[]> {
+/**
+ * Why a session cannot land on this node, or '' when one can. Cordoning is
+ * reported separately from its taints even though kubernetes also expresses
+ * it as one, because the two have different repairs (`kubectl uncordon` vs.
+ * a toleration the RuntimeClass has to declare).
+ */
+function sessionExclusion(node: RawNodeItem, tolerations: PodToleration[]): string {
+  if (node.spec?.unschedulable === true) return 'cordoned'
+  const blocking = untoleratedTaints(node.spec?.taints, tolerations)
+  if (blocking.length === 0) return ''
+  return `untolerated taint ${blocking.map(formatTaint).join(', ')}`
+}
+
+async function listClusterNodes(tolerations: PodToleration[]): Promise<ClusterNode[]> {
   const { stdout } = await execFileAsync('kubectl', ['get', 'nodes', '-o', 'json'])
   const items = (JSON.parse(stdout) as { items?: RawNodeItem[] }).items ?? []
-  return items.map((n) => ({
-    name: n.metadata?.name ?? '<unnamed>',
-    ready: (n.status?.conditions ?? [])
-      .some((c) => c.type === 'Ready' && c.status === 'True'),
-    schedulable: n.spec?.unschedulable !== true
-      && !(n.spec?.taints ?? []).some((t) => t.effect === 'NoSchedule' || t.effect === 'NoExecute'),
-    labels: n.metadata?.labels ?? {},
-    runtimeHandlers: (n.status?.runtimeHandlers ?? [])
-      .map((h) => h.name ?? '')
-      .filter(Boolean),
-  }))
+  return items.map((n) => {
+    const excludedBecause = sessionExclusion(n, tolerations)
+    return {
+      name: n.metadata?.name ?? '<unnamed>',
+      ready: (n.status?.conditions ?? [])
+        .some((c) => c.type === 'Ready' && c.status === 'True'),
+      schedulable: excludedBecause === '',
+      excludedBecause,
+      labels: n.metadata?.labels ?? {},
+      runtimeHandlers: (n.status?.runtimeHandlers ?? [])
+        .map((h) => h.name ?? '')
+        .filter(Boolean),
+    }
+  })
 }
+
+/** `name (why)` for every node a session cannot land on, truncated. */
+function excludedList(nodes: ClusterNode[]): string {
+  return nodeList(nodes
+    .filter((n) => !n.schedulable)
+    .map((n) => `${n.name} (${n.excludedBecause})`))
+}
+
+const SESSION_SCHEDULING_FIX =
+  'A session pod tolerates exactly what the gvisor RuntimeClass declares in '
+  + '`scheduling.tolerations` (the admission controller merges it into every '
+  + 'pod naming the class), so a node whose taints it does not match leaves '
+  + 'sessions Pending forever. Uncordon a node (`kubectl uncordon <node>`), '
+  + 'wait out a transient pressure taint, or — for a deliberately tainted '
+  + 'sessions pool — declare the pool\'s toleration on the RuntimeClass so '
+  + 'every sandboxed pod inherits it, rather than removing the taint that '
+  + 'keeps other workloads off the pool. Key that toleration to the pool\'s '
+  + 'own taint: a bare `{operator: Exists}` tolerates everything, so every '
+  + 'node reads eligible whatever it is carrying.'
 
 /**
  * The node inventory line. Multi-node is a supported topology now (the
  * local backend renders it with `yaac cluster setup --nodes N`), so node
  * count alone is never a warning — what is worth flagging is a node that
- * cannot take work: NotReady, or cordoned/tainted so that no session can
- * ever land on it. The readiness gates below say whether the nodes that
- * CAN take a session are actually equipped for one.
+ * cannot take work: NotReady, or cordoned/tainted in a way no session pod
+ * tolerates. The readiness gates below say whether the nodes that CAN take a
+ * session are actually equipped for one.
  */
 function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
   if (nodes.length === 0) {
@@ -436,18 +491,20 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
   if (eligible.length === 0) {
     return {
       name: 'nodes', status: 'warn',
-      detail: `${nodes.length} node(s), none able to schedule a session (cordoned or tainted)`,
-      fix: 'Session pods declare no tolerations, so a NoSchedule/NoExecute '
-        + 'taint on every node leaves them Pending forever. Uncordon a node '
-        + '(`kubectl uncordon <node>`) or remove the taint.',
+      detail: `${nodes.length} node(s), none able to schedule a session: ${excludedList(nodes)}`,
+      fix: SESSION_SCHEDULING_FIX,
     }
   }
   if (nodes.length === 1) {
     return { name: 'nodes', status: 'pass', detail: 'single-node cluster' }
   }
+  // The excluded nodes are named even on a pass: "2 of 3" without saying
+  // which one dropped out reads as a healthy cluster right up until the node
+  // that dropped out was the one under memory pressure.
   return {
     name: 'nodes', status: 'pass',
-    detail: `${nodes.length} nodes, ${eligible.length} able to schedule sessions`,
+    detail: `${nodes.length} nodes, ${eligible.length} able to schedule sessions`
+      + (eligible.length < nodes.length ? `; skipping ${excludedList(nodes)}` : ''),
   }
 }
 
@@ -951,28 +1008,44 @@ interface NodeProbeOutcome {
 }
 
 /**
- * The gvisor RuntimeClass as the cluster holds it: the containerd handler
- * it names, and the node selector that restricts where pods carrying it may
- * schedule. The selector is empty on the local backend today; the gVisor
- * installer DaemonSet adds one so pods only land where the shim exists, and
- * this sweep is written to honor it — a node outside the selector is not a
- * node a session could use, so it is not a node this reports on.
+ * The gvisor RuntimeClass as the cluster holds it — the single source of
+ * truth for where a sandboxed pod may go, because the RuntimeClass admission
+ * controller merges both halves of `scheduling` into every pod naming the
+ * class. So this reads what the SCHEDULER will see, not what a manifest
+ * builder intended:
+ *
+ *  - `handler`: the containerd handler the class names.
+ *  - `nodeSelector`: where such a pod may land. The gVisor installer stamps
+ *    the label it selects on, so a node outside it is a node the runtime has
+ *    not reached — reported as a runsc-nodes finding, not dropped.
+ *  - `tolerations`: what such a pod tolerates, which is how a tainted
+ *    sessions pool is usable at all. Empty on the local backend (nothing is
+ *    tainted there but the control plane, which sessions genuinely cannot
+ *    use), and empty on a cluster with no class at all — where the blanket
+ *    "no taint tolerated" answer is the correct one.
  */
-async function gvisorRuntimeClass(): Promise<{
+interface GvisorScheduling {
   handler: string
   nodeSelector: Record<string, string>
-}> {
+  tolerations: PodToleration[]
+}
+
+async function gvisorRuntimeClass(): Promise<GvisorScheduling> {
   try {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'runtimeclass', RUNTIME_CLASS_GVISOR, '-o', 'json',
     ])
     const rc = JSON.parse(stdout) as {
       handler?: string
-      scheduling?: { nodeSelector?: Record<string, string> }
+      scheduling?: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] }
     }
-    return { handler: rc.handler ?? '', nodeSelector: rc.scheduling?.nodeSelector ?? {} }
+    return {
+      handler: rc.handler ?? '',
+      nodeSelector: rc.scheduling?.nodeSelector ?? {},
+      tolerations: rc.scheduling?.tolerations ?? [],
+    }
   } catch {
-    return { handler: '', nodeSelector: {} }
+    return { handler: '', nodeSelector: {}, tolerations: [] }
   }
 }
 
@@ -1033,7 +1106,13 @@ function blameProbeFailure(event: string): ProbeBlame {
  *
  * `nodeName` rather than a nodeSelector: this is a per-node question, and
  * bypassing the scheduler is what makes the answer about the node instead
- * of about where the scheduler felt like putting the pod.
+ * of about where the scheduler felt like putting the pod. Bypassing the
+ * scheduler is not bypassing kubelet, though — a `NoExecute` taint evicts a
+ * pod that does not tolerate it however it got bound — which is why the pod
+ * names the gvisor RuntimeClass and inherits its tolerations along with its
+ * handler, exactly as a session pod does. Nothing here declares a toleration
+ * of its own: a probe that tolerated more than a session would report a node
+ * as usable that no session can reach.
  */
 async function probeNode(
   node: ClusterNode,
@@ -1141,12 +1220,22 @@ function nodeList(names: string[]): string {
  * alone, and the whole value of splitting them is that each carries the
  * repair for its own cause.
  *
+ * Every gate's detail carries what the sweep did NOT cover — the nodes no
+ * session can land on, each with its reason. A sweep that narrows silently
+ * is worse than one that does not narrow: a node that dropped out under a
+ * transient pressure taint, or a joining node still carrying kubelet's
+ * `uninitialized` taint, would otherwise be invisible behind an "all N
+ * session-eligible nodes" pass.
+ *
  * Warn-level throughout, and skipped on a single-node cluster where the
  * `gvisor`, `probe` and `egress` gates already cover the only node: this
  * exists to catch the topology drift a multi-node cluster introduces, not
  * to re-litigate what the single-node gates decided.
  */
-async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[]> {
+async function runMultiNodeReadiness(
+  nodes: ClusterNode[],
+  gvisorScheduling: GvisorScheduling,
+): Promise<CheckResult[]> {
   const uniform = (status: CheckResult['status'], detail: string, fix?: string): CheckResult[] =>
     MULTI_NODE_GATES.map((name) => ({ name, status, detail, ...(fix ? { fix } : {}) }))
 
@@ -1157,11 +1246,12 @@ async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[
     return uniform('skip', 'skipped — single-node cluster (the gvisor and probe gates cover it)')
   }
 
-  const { handler, nodeSelector } = await gvisorRuntimeClass()
+  const { handler, nodeSelector } = gvisorScheduling
 
   // Two different populations, and conflating them is how this gate would
   // miss the very thing it is for. `sessionCapable` is where a session
-  // could run if the runtime were there — Ready, uncordoned, untainted.
+  // could run if the runtime were there — Ready, uncordoned, and carrying no
+  // taint the gvisor RuntimeClass's tolerations fail to cover.
   // `eligible` narrows that to where a sandboxed pod can be SCHEDULED
   // today: the RuntimeClass's nodeSelector matches the label the installer
   // DaemonSet stamps once it has converged on a node. So a session-capable
@@ -1173,14 +1263,32 @@ async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[
     Object.entries(nodeSelector).every(([k, v]) => n.labels[k] === v))
   const unlabelled = sessionCapable.filter((n) => !eligible.includes(n))
 
+  // What the sweep is NOT reporting on, carried into every gate's detail.
+  // Narrowing to the nodes a session can use is right; doing it silently is
+  // not — "all 2 session-eligible nodes pulled" on a three-node cluster
+  // reads as full coverage whether the third node is a control plane or a
+  // worker that just picked up a disk-pressure taint.
+  const skipped = [
+    ...nodes.filter((n) => !n.ready).map((n) => `${n.name} (NotReady)`),
+    ...nodes.filter((n) => n.ready && !n.schedulable)
+      .map((n) => `${n.name} (${n.excludedBecause})`),
+  ]
+  const skippedTail = skipped.length > 0
+    ? `; not swept: ${nodeList(skipped)}`
+    : ''
+
   if (sessionCapable.length === 0) {
-    return uniform('warn', 'no node can schedule a session (see the nodes check above)')
+    return uniform(
+      'warn',
+      `no node can schedule a session (see the nodes check above): ${nodeList(skipped)}`,
+    )
   }
   if (eligible.length === 0) {
     return uniform(
       'warn',
       `no session-capable node satisfies the ${RUNTIME_CLASS_GVISOR} RuntimeClass `
-      + `nodeSelector, so nothing can be probed: ${nodeList(sessionCapable.map((n) => n.name))}`,
+      + `nodeSelector, so nothing can be probed: ${nodeList(sessionCapable.map((n) => n.name))}`
+      + skippedTail,
       gvisorFix(),
     )
   }
@@ -1227,7 +1335,11 @@ async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[
         ? `; unverified on ${nodeList(unverified)} (their probe pod did not run)`
         : ''
       if (broken.length > 0) {
-        return { name, status: 'warn', detail: brokenDetail(nodeList(broken)) + unverifiedTail, fix }
+        return {
+          name, status: 'warn',
+          detail: brokenDetail(nodeList(broken)) + unverifiedTail + skippedTail,
+          fix,
+        }
       }
       if (unverified.length > 0) {
         // No fix: the gate that owns the failure carries it, and repeating
@@ -1235,10 +1347,11 @@ async function runMultiNodeReadiness(nodes: ClusterNode[]): Promise<CheckResult[
         return {
           name, status: 'warn',
           detail: `unverified on ${nodeList(unverified)} — their probe pod did not run `
-            + '(the cause is reported by whichever of the *-nodes gates owns it)',
+            + '(the cause is reported by whichever of the *-nodes gates owns it)'
+            + skippedTail,
         }
       }
-      return { name, status: 'pass', detail: passDetail }
+      return { name, status: 'pass', detail: passDetail + skippedTail }
     }
 
     // A session-capable node the installer has not labelled cannot host a

@@ -32,6 +32,7 @@ import {
 } from '#platform/k8s/deferred-boot'
 import { sessionUid } from '#platform/k8s'
 import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#platform/k8s'
+import type { NodeTaint, PodToleration } from '#platform/k8s'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -81,8 +82,28 @@ function livePriorityClasses(): LivePriorityClass[] {
 }
 
 /**
+ * The taint a dedicated sessions pool carries, and the toleration the gvisor
+ * RuntimeClass declares for it — the pool is tainted so nothing else drifts
+ * onto it, and admission merges the toleration into every pod naming the
+ * class. Both effects, because a pool taint is normally both: keep others
+ * off, and evict what already drifted on.
+ */
+const POOL_TAINTS: NodeTaint[] = [
+  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' },
+  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoExecute' },
+]
+const POOL_TOLERATIONS: PodToleration[] = [
+  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
+  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
+]
+/** A transient taint kubelet adds and removes on its own. */
+const MEMORY_PRESSURE: NodeTaint = {
+  key: 'node.kubernetes.io/memory-pressure', effect: 'NoSchedule',
+}
+
+/**
  * A node object shaped like the apiserver's, with the fields the readiness
- * gates read: Ready condition, cordon/taint (what makes a node unable to
+ * gates read: Ready condition, cordon/taints (what makes a node unable to
  * take a session), and the kubelet's runtime-handler report.
  */
 function nodeItem(
@@ -90,7 +111,9 @@ function nodeItem(
   opts: {
     ready?: boolean
     cordoned?: boolean
+    /** Shorthand for the kubeadm control-plane taint. */
     tainted?: boolean
+    taints?: NodeTaint[]
     handlers?: string[]
     /** Omit the label the installer DaemonSet stamps — i.e. a node the
      *  runtime has not converged on, which the RuntimeClass will not
@@ -99,6 +122,12 @@ function nodeItem(
     labels?: Record<string, string>
   } = {},
 ): Record<string, unknown> {
+  const taints = [
+    ...(opts.tainted
+      ? [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }]
+      : []),
+    ...(opts.taints ?? []),
+  ]
   return {
     metadata: {
       name,
@@ -110,9 +139,7 @@ function nodeItem(
     },
     spec: {
       ...(opts.cordoned ? { unschedulable: true } : {}),
-      ...(opts.tainted
-        ? { taints: [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }] }
-        : {}),
+      ...(taints.length > 0 ? { taints } : {}),
     },
     status: {
       conditions: [{ type: 'Ready', status: opts.ready === false ? 'False' : 'True' }],
@@ -128,6 +155,10 @@ function nodeItem(
  * reassign it.
  */
 let clusterNodes: Array<Record<string, unknown>> = []
+/** What the installed gvisor RuntimeClass declares in
+ *  `scheduling.tolerations` — i.e. what a session pod inherits, and so what
+ *  the check matches node taints against. Empty on a local cluster. */
+let gvisorTolerations: PodToleration[] = []
 /** Pod name → terminal phase, for probe pods a test wants to fail. */
 let podPhases: Record<string, string> = {}
 /** Per-node probe indices whose pod "ran" without its write reaching the host. */
@@ -164,13 +195,15 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
     return { stdout: JSON.stringify({ items: clusterNodes }), stderr: '' }
   }
-  // The multi-node sweep reads the gvisor RuntimeClass object for its
-  // handler name and its scheduling nodeSelector — served from the same
-  // builder the installer applies, so the check cannot drift from it.
+  // The check reads the gvisor RuntimeClass object for its handler name and
+  // both halves of its scheduling — the nodeSelector the sweep honors and
+  // the tolerations session eligibility is matched against — served from the
+  // same builder the installer applies, so the check cannot drift from it.
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass'
     && args[2] === 'gvisor') {
-    const gvisor = (buildRuntimeClassManifests() as Array<{ metadata: { name: string } }>)
-      .find((rc) => rc.metadata.name === 'gvisor')
+    const gvisor = (buildRuntimeClassManifests({ tolerations: gvisorTolerations }) as Array<{
+      metadata: { name: string }
+    }>).find((rc) => rc.metadata.name === 'gvisor')
     return { stdout: JSON.stringify(gvisor), stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass') {
@@ -312,6 +345,7 @@ describe('runClusterCheck', () => {
     mockGetJson.mockReset()
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
+    gvisorTolerations = []
     podPhases = {}
     nodeMarkerFails = new Set()
     podEvents = {}
@@ -564,9 +598,23 @@ describe('runClusterCheck', () => {
     // Multi-node is a supported topology, not a warning — and the two
     // counts are reported separately, because they differ here.
     expect(byName(results, 'nodes')).toMatchObject({ status: 'pass' })
-    expect(byName(results, 'nodes')?.detail).toBe('3 nodes, 2 able to schedule sessions')
+    // The node left out is NAMED, with the taint that left it out: "2 of 3"
+    // alone reads the same whether the third node is a control plane or a
+    // worker that just went under memory pressure.
+    expect(byName(results, 'nodes')?.detail).toBe(
+      '3 nodes, 2 able to schedule sessions; skipping yaac-control-plane '
+      + '(untolerated taint node-role.kubernetes.io/control-plane:NoSchedule)',
+    )
     expect(byName(results, 'runsc-nodes')).toMatchObject({ status: 'pass' })
     expect(byName(results, 'runsc-nodes')?.detail).toContain('all 2 session-capable nodes')
+    // ...and the same in the sweep's own gates, which otherwise report full
+    // coverage of a population they quietly narrowed.
+    for (const gate of ['runsc-nodes', 'registry-nodes', 'volume-nodes']) {
+      expect(byName(results, gate)?.detail, gate).toContain(
+        'not swept: yaac-control-plane '
+        + '(untolerated taint node-role.kubernetes.io/control-plane:NoSchedule)',
+      )
+    }
     // The sentry fingerprint is a bonus the probe prints when it can read
     // dmesg at the session uid.
     expect(byName(results, 'runsc-nodes')?.detail).toContain('2 sentry-verified')
@@ -775,6 +823,86 @@ describe('runClusterCheck', () => {
     expect(probed).toEqual(['yaac-control-plane'])
     expect(byName(results, 'runsc-nodes')).toMatchObject({ status: 'pass' })
     expect(byName(results, 'volume-nodes')?.detail).toContain('all 1 session-eligible nodes')
+    // NotReady is a distinct reason from cordoned, and both are named.
+    expect(byName(results, 'volume-nodes')?.detail)
+      .toContain('not swept: yaac-worker (NotReady), yaac-worker2 (cordoned)')
+  })
+
+  it('treats a tainted sessions pool as usable when the RuntimeClass tolerates it', async () => {
+    // The pool is tainted so nothing else drifts onto it, and the toleration
+    // is declared once on the gvisor RuntimeClass — which admission merges
+    // into every pod naming the class, the probe pods included. Under the
+    // old "carries no taint at all" rule this cluster read as ZERO nodes a
+    // session could use.
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { tainted: true }),
+      nodeItem('yaac-pool-1', { taints: POOL_TAINTS }),
+      // A pool node kubelet has just taken out of service. Tolerating the
+      // pool taint says nothing about this one, so the node genuinely cannot
+      // take a session — and that must stay visible rather than being folded
+      // into a pass over "the pool".
+      nodeItem('yaac-pool-2', { taints: [...POOL_TAINTS, MEMORY_PRESSURE] }),
+    ]
+    gvisorTolerations = POOL_TOLERATIONS
+    const deps = stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(true)
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'nodes')?.detail)
+      .toContain('3 nodes, 1 able to schedule sessions')
+    expect(byName(results, 'nodes')?.detail).toContain(
+      'yaac-pool-2 (untolerated taint node.kubernetes.io/memory-pressure:NoSchedule)',
+    )
+
+    // Only the healthy pool node is probed: the pinned probes bypass the
+    // scheduler, but kubelet still admits them, so a NoExecute pool taint
+    // they did not inherit a toleration for would evict them mid-sweep.
+    const probed = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
+      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .map((m) => m.spec?.nodeName)
+    expect(probed).toEqual(['yaac-pool-1'])
+    for (const gate of ['runsc-nodes', 'registry-nodes', 'volume-nodes']) {
+      expect(byName(results, gate), gate).toMatchObject({ status: 'pass' })
+      expect(byName(results, gate)?.detail, gate).toContain(
+        'yaac-pool-2 (untolerated taint node.kubernetes.io/memory-pressure:NoSchedule)',
+      )
+      expect(byName(results, gate)?.detail, gate).not.toContain('yaac-pool-1 (')
+    }
+  })
+
+  it('points an all-tainted cluster at the RuntimeClass toleration, not at removing the taint', async () => {
+    // A sessions pool whose toleration was never declared: every node is
+    // tainted and nothing tolerates it. The finding is right — no session can
+    // land — but the repair must not be "remove the taint", which dismantles
+    // the isolation the pool exists for.
+    clusterNodes = [
+      nodeItem('yaac-pool-1', { taints: POOL_TAINTS }),
+      nodeItem('yaac-pool-2', { taints: POOL_TAINTS }),
+    ]
+    stage()
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(true)
+    const nodes = byName(results, 'nodes')
+    expect(nodes).toMatchObject({ status: 'warn' })
+    expect(nodes?.detail).toContain('2 node(s), none able to schedule a session')
+    // Both blocking effects named, so the reader can see what to tolerate.
+    expect(nodes?.detail).toContain(
+      'yaac-pool-1 (untolerated taint yaac.dev/sessions=true:NoSchedule, '
+      + 'yaac.dev/sessions=true:NoExecute)',
+    )
+    expect(nodes?.fix).toContain('scheduling.tolerations')
+    expect(nodes?.fix).toContain('rather than removing the taint')
+
+    // The sweep says the same, naming the nodes instead of reporting a
+    // vacuous pass over an empty population.
+    for (const gate of ['runsc-nodes', 'registry-nodes', 'volume-nodes']) {
+      expect(byName(results, gate), gate).toMatchObject({ status: 'warn' })
+      expect(byName(results, gate)?.detail, gate).toContain('no node can schedule a session')
+      expect(byName(results, gate)?.detail, gate).toContain('yaac-pool-1 (untolerated taint')
+    }
   })
 
   it('skips the end-to-end probe when an earlier check failed', async () => {

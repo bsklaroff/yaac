@@ -190,6 +190,12 @@ describe('ensureProjectRegistry', () => {
       .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
       .find((m) => m.kind === 'Pod')!
     expect(pod.spec.nodeName).toBe('yaac-control-plane')
+    // Tolerates everything: nodeName bypasses the scheduler, but kubelet
+    // still admits and the taint manager still evicts, so a NoExecute taint
+    // (a dedicated sessions pool's) would deny this write to the very nodes
+    // that need it — and a node with no hosts.toml cannot pull.
+    expect((pod.spec as unknown as { tolerations: unknown }).tolerations)
+      .toEqual([{ operator: 'Exists' }])
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
     expect(mockExec).not.toHaveBeenCalled()
@@ -266,13 +272,26 @@ describe('ensureProjectRegistry', () => {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      // Every node cordoned: nothing is a legitimate landing spot.
+      // One node cordoned, one a tainted sessions pool: neither is a
+      // legitimate landing spot. The pool taint excludes this registry even
+      // on a cluster where the gvisor RuntimeClass tolerates it — a project
+      // registry is trusted infra, names no RuntimeClass, and so inherits no
+      // toleration, which is exactly what keeps infra off the pool.
       if (args[1] === 'nodes') {
         return Promise.resolve({
-          items: [{
-            ...NODE_LIST.items[0],
-            spec: { unschedulable: true },
-          }],
+          items: [
+            { ...NODE_LIST.items[0], spec: { unschedulable: true } },
+            {
+              metadata: { name: 'yaac-pool-1' },
+              spec: {
+                taints: [
+                  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' },
+                  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoExecute' },
+                ],
+              },
+              status: { conditions: [{ type: 'Ready', status: 'True' }] },
+            },
+          ],
         })
       }
       return Promise.resolve(null)

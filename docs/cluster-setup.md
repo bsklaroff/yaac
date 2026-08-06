@@ -370,10 +370,57 @@ ends with a sweep warning about any untrusted pod (session-labeled or
 vcluster-synced) running without a gvisor-tier `runtimeClassName` (pods
 predating the gVisor migration). Run it whenever sessions fail to start.
 
+### Which nodes count as session-eligible
+
+Both the node inventory line and the per-node sweep below narrow to the
+nodes a session could actually land on: Ready, uncordoned, and carrying no
+taint the session pod fails to tolerate. That last clause is real per-taint
+matching, not "carries no taint at all" — a session pod's tolerations are
+whatever the `gvisor` RuntimeClass declares in `scheduling.tolerations`,
+which the RuntimeClass admission controller merges into every pod naming the
+class.
+
+That is also how a **dedicated sessions node pool** works: taint the pool so
+other workloads stay off it, declare the matching toleration once on the
+RuntimeClass, and session pods, builder pods, vcluster-synced pods and this
+check's own pinned probes all inherit it — the probes included because they
+bypass the scheduler but are still admitted by kubelet, and a `NoExecute`
+pool taint would evict one that tolerated nothing. Scope the toleration to
+the pool's own key; a bare `{operator: Exists}` tolerates every taint on
+every node, which reads as a fully eligible cluster no matter what its nodes
+are carrying.
+
+Because the toleration rides the RuntimeClass rather than the workload, the
+pool is really an **untrusted-sandboxed-workload** pool: builder pods name
+the same class, so untrusted image builds land there too and compete with
+sessions for its capacity. Separating them would take a second RuntimeClass,
+which does not exist today. Trusted infra (the proxy, the registries) names
+no RuntimeClass, inherits no toleration, and so stays off the pool by
+construction. The one-shot **node-write pods** are the deliberate exception:
+they are pinned by `nodeName` to every node and blanket-tolerate, because a
+pool node that never receives its containerd `hosts.toml` cannot pull the
+images its sessions need. Being `nodeName`-pinned, the toleration buys them
+no scheduling freedom.
+
+Nothing declares a toleration on a local cluster, where the only tainted
+node is the control plane a session genuinely cannot use. When no node
+qualifies, the check names each node and the taint that excluded it, and the
+fix points at declaring the pool's toleration on the RuntimeClass — not at
+removing the taint, which would dismantle the isolation the pool exists for.
+
+Nothing persists that toleration yet, so whether it survives `yaac cluster
+setup --repair` depends on how it got there — the repair re-applies the
+RuntimeClasses from the builder's defaults, which carry none. A toleration
+that went in through the code path is recorded in the object's
+`last-applied-configuration` and is pruned by that re-apply, putting the
+pool's nodes straight back to reading excluded; one added with `kubectl
+edit`/`patch` survives, because client-side apply only prunes fields it
+previously owned. Neither is a home for it: check after a repair until the
+pool's own config knob exists.
+
 On a cluster with more than one node it also runs a **per-node readiness
-sweep** over the nodes a session could land on (Ready, uncordoned,
-untainted), pinning one probe pod to each and reporting three warn-level
-gates —
+sweep** over those session-eligible nodes, pinning one probe pod to each and
+reporting three warn-level gates —
 
 - `runsc-nodes`: that node can host a sandboxed pod. A node the installer
   DaemonSet has not labelled yet fails here by definition — the
@@ -395,6 +442,12 @@ DaemonSet for runsc, `--repair` for the registry wiring, the home
 extraMount for the volume. A probe pod that never ran is attributed to one
 gate from the kubelet's event and left explicitly *unverified* on the
 others, so no gate ever passes on a node it could not actually check.
+
+Every gate also names what it did **not** sweep, and why (`not swept:
+yaac-worker3 (untolerated taint node.kubernetes.io/disk-pressure:NoSchedule)`).
+Narrowing is right; narrowing silently is not — an "all N session-eligible
+nodes" pass otherwise reads identically whether the node that dropped out
+was a control plane or a worker that just went under disk pressure.
 
 > **Limits:** all nodes must share one filesystem — the hostPath model
 > assumes node == host, which multi-node kind preserves by binding `$HOME`

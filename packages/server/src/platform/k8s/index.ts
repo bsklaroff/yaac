@@ -133,6 +133,8 @@ export {
   sessionStreamToken,
   waitForStreamd,
 } from './stream-relay'
+export { formatTaint, untoleratedTaints } from './taints'
+export type { NodeTaint, PodToleration } from './taints'
 export { createTickSnapshot } from './tick-snapshot'
 export type { TickSnapshot } from './tick-snapshot'
 export {

@@ -83,6 +83,37 @@ describe('buildRuntimeClassManifests', () => {
     // Cluster-scoped and install-independent: no namespace, no install labels
     // (coexisting installs share these objects).
     expect(manifests.every((m) => !('namespace' in m.metadata))).toBe(true)
+    // No tolerations by default, and the field absent rather than empty: an
+    // untainted cluster needs none, and cluster check reads this same field
+    // to decide which nodes a session can use — an empty array there would
+    // be indistinguishable from a pool toleration that was dropped.
+    expect(manifests.every((m) => !('tolerations' in m.scheduling))).toBe(true)
+  })
+
+  it('carries a sessions-pool toleration onto both classes when one is declared', () => {
+    // The one declaration point for a dedicated sessions pool: admission
+    // merges this into session pods, builder pods, vcluster-synced pods and
+    // cluster check's pinned probes alike, so nothing per-pod knows the pool
+    // exists. NoExecute as well as NoSchedule, since a pool taint is
+    // typically both (keep others off, evict what drifted on).
+    const tolerations = [
+      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
+      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
+    ]
+    const manifests = buildRuntimeClassManifests({ tolerations }) as Array<{
+      metadata: { name: string }
+      scheduling: { nodeSelector: Record<string, string>; tolerations?: unknown }
+    }>
+
+    expect(manifests.map((m) => m.metadata.name))
+      .toEqual([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
+    for (const m of manifests) {
+      expect(m.scheduling.tolerations).toEqual(tolerations)
+      // The selector is untouched: where the runtime IS and which pool it
+      // belongs to are separate questions, and the label the installer
+      // stamps answers only the first.
+      expect(m.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
+    }
   })
 })
 

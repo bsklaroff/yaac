@@ -163,10 +163,16 @@ docs/cluster-setup.md §4:
   yaac-built one — the install needs a shell, curl, sha512sum and nsenter,
   and must work before any yaac image or host podman exists.
 - Still to do here: a dedicated **sessions node pool** for the installer's
-  blast radius. The `nodeSelector` is plumbed through the DaemonSet builder
-  and defaults to every node; pointing it at a pool label is a config
-  change, and the RuntimeClasses need no edit because they select on what
-  the installer stamps, not on the pool.
+  blast radius. Both knobs it needs are now plumbed and default to a
+  no-op — `nodeSelector` on the DaemonSet builder (where the runtime gets
+  installed, and where a containerd restart is spent) and `tolerations` on
+  the RuntimeClasses (what lets sandboxed pods onto the tainted pool, merged
+  by admission into every pod naming the class). Cluster check matches node
+  taints against those same tolerations, so a tainted pool reads as usable
+  rather than as zero eligible nodes. What is left is the config surface
+  that sets them, plus a real pool to point them at; the RuntimeClass
+  *selector* still needs no edit, because it selects on what the installer
+  stamps, not on the pool.
 - **This is the binding portability constraint.** Mutating a managed node's
   containerd is vendor-*unsupported* but mechanically works on mutable-OS
   pools (DOKS; EKS AL2023/AL2, needs a node reboot + manual gVisor
@@ -338,31 +344,23 @@ instead of assuming them.
   shared-volume visibility per node) — **that inversion has shipped** on the
   local backend (docs/cluster-setup.md, "Verifying"), and its probes are
   pod-based, so they carry over to any backend.
-- **The readiness sweep's eligibility model needs tolerations before the
-  dedicated sessions pool lands.** It currently answers "can a session land
-  on this node?" with "the node is Ready, uncordoned, carries no
-  NoSchedule/NoExecute taint at all, and matches the gvisor RuntimeClass's
-  `nodeSelector`". The taint clause is not general — it is what falls out
-  when the pod tolerates nothing, which is true of every yaac pod today
-  except netd. A sessions pool built the conventional way (§3: taint the
-  pool so other workloads stay off it, tolerate it from the workload that
-  belongs there) therefore reads as *zero* eligible nodes, and the check
-  warns "none able to schedule a session" with a fix suggesting the taint be
-  removed — dismantling the isolation the pool exists for.
-  The fix rides on the same object the sweep already reads:
-  `RuntimeClass.scheduling` carries `tolerations` beside the `nodeSelector`,
-  and the RuntimeClass admission controller merges both into every pod
-  naming the class — so the pool's toleration is declared once on `gvisor`
-  and inherited by session pods, builder pods, synced pods, and the sweep's
-  own pinned probes (which bypass the scheduler but are still admitted by
-  kubelet, and would be evicted by a `NoExecute` taint). Eligibility then
-  becomes real per-taint matching against those tolerations instead of a
-  blanket rejection. Deliberately not built on the local backend: no yaac
-  pod carries a toleration there, so there is nothing to test it against but
-  an invented fixture. While in there, name the nodes the sweep excluded and
-  why — a narrowed sweep currently reports "all N session-eligible nodes"
-  with no sign that a transiently-tainted node (memory/disk/pid pressure, a
-  joining node's `uninitialized` taint) was skipped.
+- **The readiness sweep's eligibility model takes tolerations** — the
+  prerequisite for a dedicated sessions pool, and **shipped**
+  (docs/cluster-setup.md, "Which nodes count as session-eligible"). "Can a
+  session land on this node?" is answered by real per-taint matching against
+  what the `gvisor` RuntimeClass declares in `scheduling.tolerations`, which
+  the admission controller merges into every pod naming the class — session
+  pods, builder pods, synced pods, and the sweep's own pinned probes (which
+  bypass the scheduler but are still admitted by kubelet, and would be
+  evicted by a `NoExecute` taint). A pool tainted the conventional way is
+  therefore usable once its toleration is declared, instead of reading as
+  *zero* eligible nodes with a fix suggesting the taint be removed. Both
+  the inventory and the sweep now name the nodes they excluded and why, so a
+  transient taint (memory/disk/pid pressure, a joining node's
+  `uninitialized`) is visible rather than hidden behind "all N
+  session-eligible nodes". Nothing declares a toleration on the local
+  backend, where the only taint is the control plane's, so the local verdict
+  is unchanged and the matching is covered by unit fixtures.
 
 ## What survives unchanged
 

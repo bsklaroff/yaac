@@ -1,4 +1,5 @@
 import { shellQuote } from '#platform/shell'
+import type { PodToleration } from './taints'
 
 /**
  * gVisor (runsc) is the runtime for every pod that hosts UNTRUSTED code:
@@ -270,8 +271,21 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
  * container create with a bare "failed to get sandbox runtime" — and on a
  * pool being recycled, intermittently. With it, such a pod sits Pending
  * with an unsatisfied-node-selector event, which says what is wrong.
+ *
+ * `scheduling.tolerations` rides the same merge, and is how a dedicated
+ * sessions pool works at all. The pool is tainted so nothing else drifts
+ * onto it; declaring that taint's toleration HERE — once — reaches every
+ * pod that names the class: session pods, builder pods, vcluster-synced
+ * tenant pods, and cluster check's pinned probes (which bypass the
+ * scheduler, but are still admitted by kubelet, and a `NoExecute` pool taint
+ * would evict them). Nothing per-pod has to know the pool exists. Empty by
+ * default — an untainted cluster (every local one) needs none, and cluster
+ * check reads this same field to decide which nodes a session can use.
  */
-export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
+export function buildRuntimeClassManifests(
+  opts: { tolerations?: PodToleration[] } = {},
+): Array<Record<string, unknown>> {
+  const tolerations = opts.tolerations ?? []
   return [
     { name: RUNTIME_CLASS_GVISOR, handler: RUNSC_HANDLER },
     { name: RUNTIME_CLASS_GVISOR_NESTED, handler: RUNSC_NESTED_HANDLER },
@@ -280,7 +294,12 @@ export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
     kind: 'RuntimeClass',
     metadata: { name },
     handler,
-    scheduling: { nodeSelector: { [GVISOR_NODE_LABEL]: 'true' } },
+    scheduling: {
+      nodeSelector: { [GVISOR_NODE_LABEL]: 'true' },
+      // Omitted rather than empty: an absent field cannot be mistaken for a
+      // pool toleration that was configured and then emptied.
+      ...(tolerations.length > 0 ? { tolerations } : {}),
+    },
   }))
 }
 

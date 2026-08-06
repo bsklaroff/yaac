@@ -12,7 +12,9 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
   runPodToCompletion,
+  untoleratedTaints,
 } from '#platform/k8s'
+import type { NodeTaint } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { nodeIpBlocks } from './cluster-cidrs'
@@ -180,17 +182,23 @@ async function resolveRegistryNode(projectSlug: string): Promise<string | null> 
   interface RawNodeList {
     items?: Array<{
       metadata?: { name?: string }
-      spec?: { unschedulable?: boolean; taints?: Array<{ effect?: string }> }
+      spec?: { unschedulable?: boolean; taints?: NodeTaint[] }
       status?: { conditions?: Array<{ type?: string; status?: string }> }
     }>
   }
   const nodes = await kubectlGetJson<RawNodeList>(['get', 'nodes']).catch(() => null)
+  // Matched against an EMPTY toleration set on purpose, and that is the
+  // whole statement: this Deployment is trusted infra, stamps no
+  // RuntimeClass, and so declares no tolerations — every blocking taint
+  // really does rule its node out. Written as matching rather than as "has
+  // no taint" so a tainted sessions pool is excluded for the right reason:
+  // the pool's toleration lives on the gvisor RuntimeClass, which this pod
+  // deliberately does not name, so a project registry must never land there.
   const candidates = (nodes?.items ?? [])
     .filter((n) =>
       (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True')
       && n.spec?.unschedulable !== true
-      && !(n.spec?.taints ?? [])
-        .some((t) => t.effect === 'NoSchedule' || t.effect === 'NoExecute'))
+      && untoleratedTaints(n.spec?.taints, []).length === 0)
     .map((n) => n.metadata?.name)
     .filter((n): n is string => !!n)
     .sort()
@@ -467,10 +475,9 @@ export function buildRegistryEgressNetworkPolicyManifest(
  * Scaffolding shared by the one-shot node-write pods that replaced the
  * old `podman exec <node>` writes: node files are written by a pod that
  * hostPath-mounts the target directory, so the server never assumes the
- * node is a container on its own podman engine. Pinned by `nodeName`
- * (bypasses the scheduler, so taints cannot strand it), plain root like
- * the registry itself, `restartPolicy: Never` — the caller polls it to a
- * terminal phase and deletes it. Names carry a per-run random suffix so
+ * node is a container on its own podman engine. Pinned by `nodeName`, plain
+ * root like the registry itself, `restartPolicy: Never` — the caller polls
+ * it to a terminal phase and deletes it. Names carry a per-run random suffix so
  * two runs can never fight over one pod name (delete each other's pod
  * mid-poll); strays from crashed runs are reaped by label — the
  * `LABEL_NODE_WRITE` sweep before each hosts write, and
@@ -503,6 +510,14 @@ function buildNodeWritePodManifest(
       // Trusted infra (runs a fixed yaac-authored script) — no
       // runtimeClassName, so it runs on runc like the proxy and registry.
       restartPolicy: 'Never',
+      // Tolerates everything, like netd and the gVisor installer. `nodeName`
+      // bypasses the SCHEDULER, so NoSchedule never mattered — but kubelet
+      // admits and the taint manager evicts, so a NoExecute taint would
+      // refuse this pod on the very nodes it exists to write to: a tainted
+      // sessions pool would get no hosts.toml, and its sessions could not
+      // pull. Free in scheduling terms — the pod is pinned to one named node
+      // and lives for seconds.
+      tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       // Infra tier: it is pinned to one node (nodeName) and a session pod

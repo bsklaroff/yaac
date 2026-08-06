@@ -274,8 +274,17 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
  * One-shot pod writing one node's containerd hosts.toml for the registry.
  * The hostPath is scoped to exactly the one `certs.d/<registry-host>`
  * directory, so the pod can affect no other registry's mapping. Pinned by
- * `nodeName` (bypasses the scheduler, so taints cannot strand it) and
- * `restartPolicy: Never` — the caller polls it to a terminal phase.
+ * `nodeName` and `restartPolicy: Never` — the caller polls it to a terminal
+ * phase.
+ *
+ * Tolerates everything, like netd and the gVisor installer. `nodeName`
+ * bypasses the SCHEDULER, so a `NoSchedule` taint never mattered — but
+ * kubelet still admits, and the taint manager still evicts, so a
+ * `NoExecute` taint would refuse this pod on the very nodes it has to reach.
+ * A node with no hosts.toml cannot pull, so the pods that most need this
+ * write are exactly the ones a tainted sessions pool would deny it to. The
+ * blanket toleration costs nothing in scheduling freedom: the pod is pinned
+ * to one named node and lives for seconds.
  *
  * It runs the same upstream `registry:2` the Deployment does, which the
  * rollout has already put on the node: the local mirror tag the project
@@ -302,6 +311,7 @@ export function buildMainRegistryHostsWriterPodManifest(
       // Trusted infra running a fixed yaac-authored script — no
       // runtimeClassName, so it runs on runc like the registry itself.
       restartPolicy: 'Never',
+      tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       priorityClassName: PRIORITY_CLASS_INFRA,
