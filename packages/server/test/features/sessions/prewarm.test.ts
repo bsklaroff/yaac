@@ -16,6 +16,8 @@ vi.mock('#features/status/liveness', () => ({
 // execFileAsync/kubectlApply are read at module-eval time by the cluster
 // registry service, which `#features/projects` now reaches transitively.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   kubectlWithRetry: vi.fn(),
   k8sNamespace: () => 'ns',
   execFileAsync: vi.fn(),

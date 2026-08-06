@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockApply = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   kubectlApply: mockApply,
   k8sNamespace: () => 'test-ns',
 }))

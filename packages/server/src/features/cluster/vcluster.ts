@@ -10,15 +10,6 @@ import {
 } from './policy-manifests'
 import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
 import {
-  LABEL_SESSION_ID,
-  LABEL_VCLUSTER,
-  LABEL_VCLUSTER_DATA_DIR_HASH,
-  LABEL_VCLUSTER_MANAGED_BY,
-  LABEL_VCLUSTER_NAMESPACE,
-  LABEL_VCLUSTER_SESSION_ID,
-  RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
-  VCLUSTER_API_PORT,
   dataDirHash,
   ensurePinnedBinary,
   execFileAsync,
@@ -26,6 +17,16 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  LABEL_SESSION_ID,
+  LABEL_VCLUSTER,
+  LABEL_VCLUSTER_DATA_DIR_HASH,
+  LABEL_VCLUSTER_MANAGED_BY,
+  LABEL_VCLUSTER_NAMESPACE,
+  LABEL_VCLUSTER_SESSION_ID,
+  PRIVILEGED_PSS_LABELS,
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+  VCLUSTER_API_PORT,
 } from '#platform/k8s'
 import {
   ACTIVATOR_APP_NAME,
@@ -285,7 +286,17 @@ export function buildVclusterNamespaceManifest(
       // LABEL_VCLUSTER_NAMESPACE is what lets plain NetworkPolicy name
       // these namespaces as peers: a namespaceSelector matches labels, so
       // cross-namespace rules key on this rather than on a name pattern.
-      labels: { ...vclusterLabels(name, sessionId), [LABEL_VCLUSTER_NAMESPACE]: 'true' },
+      //
+      // Privileged PSS alongside it: this namespace holds synced tenant
+      // pods, whose shape is decided by the vcluster's own admission guard
+      // rather than by the host default. On an adopted cluster a
+      // baseline/restricted default would reject them here instead —
+      // loudly, but for the wrong reason.
+      labels: {
+        ...vclusterLabels(name, sessionId),
+        [LABEL_VCLUSTER_NAMESPACE]: 'true',
+        ...PRIVILEGED_PSS_LABELS,
+      },
     },
   }
 }

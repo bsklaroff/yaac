@@ -1,7 +1,15 @@
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+  // The REAL predicate: these suites drive the absent-vs-unevaluable
+  // split, which is the whole point of the adoption gate's reads.
+  isKubectlAbsentError: (await importOriginal<
+    { isKubectlAbsentError: (err: unknown) => boolean }
+  >()).isKubectlAbsentError,
+  kubectlErrorSummary: (await importOriginal<
+    { kubectlErrorSummary: (err: unknown) => string }
+  >()).kubectlErrorSummary,
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -126,6 +134,161 @@ function makeDeps(
   } as ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock }
 }
 
+// ---------------------------------------------------------------------------
+// --adopt-cni fixtures
+// ---------------------------------------------------------------------------
+
+/** A fully rolled-out calico-node DaemonSet in the iptables dataplane. */
+const HEALTHY_CALICO_DS = {
+  status: { numberReady: 1, desiredNumberScheduled: 1 },
+  spec: { template: { spec: { containers: [{ name: 'calico-node', env: [] }] } } },
+}
+
+/** Real kind-node `ip -4 route show`, as netd's exec returns it. */
+const ADOPT_ROUTES = [
+  'default via 10.89.0.1 dev eth0',
+  'blackhole 10.244.169.192/26 proto 80',
+  '10.244.169.193 dev calibb6b64b7901 scope link',
+  '10.244.169.197 dev calia132c78e002 scope link',
+].join('\n')
+
+/** The single-node fleet the fixtures describe, unless a case says otherwise. */
+const ADOPT_NODES = ['yaac-control-plane']
+
+interface AdoptFacts {
+  /** calico-node DaemonSet; `null` means the cluster has none. */
+  calico?: object | null
+  /** FelixConfiguration objects; omitted means none is served (Felix defaults). */
+  felix?: object[]
+  /** kube-proxy pods, keyed by the label that finds them (default `k8s-app`). */
+  kubeProxyPods?: Array<{ spec?: { nodeName?: string }; status?: { phase?: string } }>
+  /** Which label selector answers — GKE/AKS stamp `component`, not `k8s-app`. */
+  kubeProxyLabel?: 'k8s-app' | 'component'
+  /** `false` removes the system-node-critical PriorityClass. */
+  systemNodeCritical?: boolean
+  /** Node names, and whether each is schedulable (taint-free / uncordoned). */
+  nodes?: Array<{ name: string; schedulable?: boolean; taint?: string }>
+  /** `scheduling.tolerations` on the gvisor RuntimeClass. */
+  tolerations?: Array<Record<string, string>>
+  /** netd pods to probe; omitted means one Running per node. */
+  netdPods?: Array<{ name: string; node: string; phase?: string }>
+  /** `ip -4 route show` per netd pod name; a string applies to all. */
+  routes?: string | null | Record<string, string | null>
+  /** `false` takes kind off PATH — adopt mode must not need it. */
+  kind?: boolean
+  /** A kubectl read that fails for a reason that is NOT genuine absence. */
+  denied?: 'felix' | 'kube-proxy' | 'nodes' | 'calico'
+}
+
+/**
+ * deps.run answering every kubectl read the `--adopt-cni` gate makes, on
+ * top of the healthy-host responses. Absence is modelled as kubectl's own
+ * NotFound wording — which is what a cluster serving no Calico CRD actually
+ * says, and what the gate must distinguish from a read it could not make.
+ */
+function adoptRun(facts: AdoptFacts = {}): RunMock {
+  const json = (v: unknown): Promise<{ stdout: string; stderr: string }> =>
+    Promise.resolve({ stdout: JSON.stringify(v), stderr: '' })
+  const absent = (): Promise<never> => Promise.reject(new Error('Error from server (NotFound)'))
+  const denied = (): Promise<never> => Promise.reject(Object.assign(new Error('exit 1'), {
+    stderr: 'Error from server (Forbidden): pods is forbidden: User "x" cannot list resource',
+  }))
+  const nodes: NonNullable<AdoptFacts['nodes']> =
+    facts.nodes ?? ADOPT_NODES.map((name) => ({ name }))
+  const netdPods: NonNullable<AdoptFacts['netdPods']> = facts.netdPods
+    ?? nodes.map((n, i) => ({ name: `yaac-netd-${i}`, node: n.name }))
+
+  return vi.fn((file: string, args: string[]) => {
+    if (file === 'kind' && facts.kind === false) return Promise.reject(new Error('ENOENT'))
+    if (file === 'kubectl' && args[0] === 'get') {
+      if (args[1] === 'daemonset' && args[2] === 'calico-node') {
+        if (facts.denied === 'calico') return denied()
+        return facts.calico === null ? absent() : json(facts.calico ?? HEALTHY_CALICO_DS)
+      }
+      if (args[1]?.startsWith('felixconfigurations')) {
+        if (facts.denied === 'felix') return denied()
+        return facts.felix === undefined ? absent() : json({ items: facts.felix })
+      }
+      if (args[1] === 'pods' && args.some((a) => a.includes('kube-proxy'))) {
+        if (facts.denied === 'kube-proxy') return denied()
+        const label = facts.kubeProxyLabel ?? 'k8s-app'
+        const asked = args.includes(`${label}=kube-proxy`)
+        return json({
+          items: asked
+            ? facts.kubeProxyPods
+              ?? nodes.map((n) => ({ spec: { nodeName: n.name }, status: { phase: 'Running' } }))
+            : [],
+        })
+      }
+      if (args[1] === 'pods' && args.includes('app=yaac-netd')) {
+        return json({
+          items: netdPods.map((p) => ({
+            metadata: { name: p.name },
+            spec: { nodeName: p.node },
+            status: { phase: p.phase ?? 'Running' },
+          })),
+        })
+      }
+      if (args[1] === 'nodes') {
+        if (facts.denied === 'nodes') return denied()
+        return json({
+          items: nodes.map((n) => ({
+            metadata: { name: n.name },
+            spec: n.taint
+              ? { taints: [{ key: n.taint, effect: 'NoSchedule' }] }
+              : n.schedulable === false
+                ? { taints: [{ key: 'node.kubernetes.io/unschedulable', effect: 'NoSchedule' }] }
+                : {},
+          })),
+        })
+      }
+      if (args[1] === 'runtimeclass') {
+        return json({ scheduling: { tolerations: facts.tolerations ?? [] } })
+      }
+      if (args[1] === 'priorityclass') {
+        return facts.systemNodeCritical === false ? absent() : json({ metadata: { name: args[2] } })
+      }
+    }
+    if (file === 'kubectl' && args[0] === 'exec') {
+      const pod = args[1]
+      const routes = typeof facts.routes === 'object' && facts.routes !== null
+        ? facts.routes[pod]
+        : facts.routes
+      return routes === null
+        ? Promise.reject(new Error('unable to upgrade connection: container not found'))
+        : Promise.resolve({ stdout: routes ?? ADOPT_ROUTES, stderr: '' })
+    }
+    return happyRun(file, args)
+  }) as RunMock
+}
+
+/**
+ * The pod-CIDR sources `clusterPodCidrs`/the gate read through
+ * `kubectlGetJson` (a different process boundary than deps.run).
+ */
+function stageAdoptCidrs(opts: { pools?: string[]; nodeCidrs?: string[] } = {}): void {
+  resetClusterCidrCache()
+  const impl = (args: string[]): Promise<unknown> => {
+    if (args[1]?.startsWith('ippools')) {
+      return Promise.resolve({
+        items: (opts.pools ?? ['192.168.0.0/16']).map((cidr) => ({ spec: { cidr } })),
+      })
+    }
+    if (args[1] === 'nodes') {
+      return Promise.resolve({
+        items: (opts.nodeCidrs ?? ['10.244.0.0/24']).map((podCIDR) => ({ spec: { podCIDR } })),
+      })
+    }
+    return Promise.resolve(null)
+  }
+  vi.mocked(kubectlGetJson).mockImplementation(impl as never)
+}
+
+/** Every line the setup logged, joined — the gate's record lives here. */
+function logged(deps: { log: unknown }): string {
+  return vi.mocked(deps.log as (m: string) => void).mock.calls.map(([m]) => m).join('\n')
+}
+
 /** readTextFile serving the committed pin, plus whatever else a case wants. */
 function calicoReads(rest: (p: string) => string | null) {
   return vi.fn((p: string) => Promise.resolve(
@@ -232,6 +395,27 @@ describe('runClusterSetup', () => {
       }),
     })
     await expect(runClusterSetup({}, deps)).resolves.toBe(false)
+    // A generic failure gets the generic line and nothing more.
+    expect(logged(deps)).not.toMatch(/Do not start sessions/)
+  })
+
+  it('spells out what a failed egress gate leaves behind, since the install stays', async () => {
+    // Every mode installs BEFORE it verifies, so the exit code is the only
+    // artifact of a failed check and nothing re-checks between explicit
+    // `cluster check` runs. For the egress gate that means sessions whose
+    // lockdown is applied but not ENFORCED — they work, and the proxy
+    // allowlist silently covers only the ports the redirect steers. A red
+    // line in a list is not enough for a containment weakening.
+    const deps = makeDeps({
+      check: vi.fn().mockResolvedValue({
+        ok: false,
+        results: [{ name: 'egress', status: 'fail', detail: 'reached the apiserver' }],
+      }),
+    })
+    await expect(runClusterSetup({}, deps)).resolves.toBe(false)
+    const log = logged(deps)
+    expect(log).toMatch(/Do not start sessions until a re-run passes/)
+    expect(log).toMatch(/advisory/)
   })
 
   it('honors YAAC_KIND_CLUSTER for every kind invocation', async () => {
@@ -882,6 +1066,464 @@ describe('runClusterSetup', () => {
       )),
     })
     await expect(runClusterSetup({}, deps)).rejects.toThrow(/checksum not found/)
+  })
+
+  // -------------------------------------------------------------------
+  // --adopt-cni: installing into a cluster whose CNI yaac did not install
+  // -------------------------------------------------------------------
+
+  it('--adopt-cni installs the in-cluster layers without creating a cluster or a CNI', async () => {
+    stageAdoptCidrs()
+    const deps = makeDeps({ run: adoptRun() })
+    const ok = await runClusterSetup({ adoptCni: true }, deps)
+
+    expect(ok).toBe(true)
+    // Nothing destructive and no CNI: the cluster and its Calico are the
+    // user's, which is the entire point of the mode.
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
+    expect(deps.runStreaming).not.toHaveBeenCalled()
+    expect(deps.fetchText).not.toHaveBeenCalled()
+    expect(deps.run.mock.calls.some(([f, a]) =>
+      f === 'kubectl' && a.includes('daemonset/calico-node'))).toBe(false)
+
+    // ...but every in-cluster layer an owned cluster gets, it gets.
+    expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
+    expect(deps.ensureRegistry).toHaveBeenCalledOnce()
+    expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
+    expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
+    expect(deps.ensureNetd).toHaveBeenCalledOnce()
+    // An adopted cluster can still be a kind one (the cheapest rehearsal),
+    // so the node-container fixups run where the nodes are podman containers.
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
+    // The finishing check is what positively probes NetworkPolicy
+    // enforcement — "Calico is installed" is not evidence of it.
+    expect(deps.check).toHaveBeenCalledOnce()
+
+    // The verification's record, which is the audit trail for a cluster
+    // yaac does not own.
+    const log = logged(deps)
+    expect(log).toContain('chainInsertMode: Insert')
+    expect(log).toContain('10.244.0.0/24')
+    expect(log).toContain('192.168.0.0/16')
+    expect(log).toContain('veth prefix: cali*')
+    expect(log).toMatch(/cali\* resolves 2 workload route\(s\) across all 1 node/)
+  })
+
+  it('--adopt-cni needs no kind, and refuses the flags that cannot mean anything with it', async () => {
+    // Adopt mode creates nothing, so the local cluster tool is not part of
+    // its shopping list — the target may be any cluster the kubeconfig names.
+    stageAdoptCidrs()
+    const deps = makeDeps({ run: adoptRun({ kind: false }) })
+    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+
+    // --repair fixes up a cluster yaac built; --nodes renders nodes it
+    // creates. Both are refused before anything on the host is touched.
+    for (const opts of [{ adoptCni: true, repair: true }, { adoptCni: true, nodes: 3 }]) {
+      const d = makeDeps({ run: adoptRun() })
+      const err = await runClusterSetup(opts, d).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect((err as Error).message).toContain('--adopt-cni')
+      expect(d.run).not.toHaveBeenCalled()
+      expect(d.ensureRegistry).not.toHaveBeenCalled()
+    }
+  })
+
+  it('--adopt-cni refuses Calico\'s eBPF dataplane, from the CR or the container env', async () => {
+    // The hard one. eBPF host-routing short-circuits host netfilter exactly
+    // the way Cilium does, so netd's nat DNAT at the veth peer would never
+    // see pod egress: the chain exists, counts zero, and every session
+    // silently loses the internet. A warning would be read past.
+    const cases: AdoptFacts[] = [
+      { felix: [{ spec: { bpfEnabled: true } }] },
+      {
+        calico: {
+          status: { numberReady: 1, desiredNumberScheduled: 1 },
+          spec: {
+            template: {
+              spec: {
+                containers: [{
+                  name: 'calico-node',
+                  env: [{ name: 'FELIX_BPFENABLED', value: 'true' }],
+                }],
+              },
+            },
+          },
+        },
+      },
+    ]
+    for (const facts of cases) {
+      stageAdoptCidrs()
+      const deps = makeDeps({ run: adoptRun(facts) })
+      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect((err as Error).message).toMatch(/eBPF dataplane/)
+      expect((err as Error).message).toContain('bpfEnabled')
+      // The gate runs before anything is applied: a cluster that cannot
+      // work costs the user the diagnosis and nothing else.
+      expect(deps.ensureRegistry).not.toHaveBeenCalled()
+      expect(deps.ensureNetd).not.toHaveBeenCalled()
+      expect(deps.check).not.toHaveBeenCalled()
+    }
+  })
+
+  it('--adopt-cni refuses every other silent-failure shape, naming which one it is', async () => {
+    const refuse = async (facts: AdoptFacts, cidrs?: Parameters<typeof stageAdoptCidrs>[0]) => {
+      stageAdoptCidrs(cidrs)
+      const deps = makeDeps({ run: adoptRun(facts) })
+      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect(deps.ensureRegistry).not.toHaveBeenCalled()
+      return (err as Error).message
+    }
+
+    // No Calico at all — which is also how a Cilium cluster reads, and
+    // there is no configuration of Cilium the veth-peer redirect survives.
+    expect(await refuse({ calico: null })).toMatch(/no calico-node found/)
+    expect(await refuse({ calico: null })).toMatch(/Cilium is not supported/)
+
+    // Present but not rolled out: policy is the enforcement plane, so a
+    // node without Felix is a node with no session egress lockdown.
+    expect(await refuse({
+      calico: { status: { numberReady: 1, desiredNumberScheduled: 3 } },
+    })).toMatch(/calico-node is 1\/3 ready/)
+
+    // No kube-proxy: netd's Envoy dials the yaac proxy by ClusterIP from
+    // the host netns, and nothing would translate it.
+    expect(await refuse({ kubeProxyPods: [] })).toMatch(/no kube-proxy pod found/)
+    // Calico replacing kube-proxy is the same failure, declared.
+    expect(await refuse({ felix: [{ spec: { bpfKubeProxyIptablesCleanupEnabled: true } }] }))
+      .toMatch(/replacing kube-proxy/)
+
+    // Nothing publishes a pod CIDR. An empty exclusion set makes netd DNAT
+    // pod-to-pod 443/80 into the proxy, so this refuses rather than
+    // falling back to kind's default the way the per-apply path does.
+    const noCidrs = await refuse({}, { pools: [], nodeCidrs: [] })
+    expect(noCidrs).toMatch(/no pod CIDR could be resolved/)
+    expect(noCidrs).toContain('YAAC_POD_CIDRS')
+
+    // netd names system-node-critical, and the apiserver rejects a pod
+    // naming a class it does not have — for a DaemonSet that means no netd
+    // pod is ever created.
+    expect(await refuse({ systemNodeCritical: false }))
+      .toMatch(/system-node-critical PriorityClass is missing/)
+  })
+
+  it('--adopt-cni records Append chainInsertMode and the node-podCIDR-only shape as warnings', async () => {
+    // Neither breaks the datapath — netd appends its own jump and never
+    // competes with Felix for position — but both are things the operator
+    // of a cluster yaac does not own should be told.
+    stageAdoptCidrs({ pools: [], nodeCidrs: ['10.244.0.0/24'] })
+    const deps = makeDeps({ run: adoptRun({ felix: [{ spec: { chainInsertMode: 'Append' } }] }) })
+    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+
+    const log = logged(deps)
+    expect(log).toContain('chainInsertMode: Append')
+    expect(log).toMatch(/Append chainInsertMode/)
+    expect(log).toMatch(/only pod-CIDR source is node spec\.podCIDR/)
+    expect(log).toContain('YAAC_POD_CIDRS')
+  })
+
+  it('--adopt-cni honors an explicit pod-CIDR and veth-prefix config, verifying the prefix on a node', async () => {
+    // Policy-only Calico over a foreign IPAM: pod IPs appear in no IPPool
+    // and no spec.podCIDR, and workload veths are named `eni*`. Both are
+    // configuration — and the prefix is verified against the node's real
+    // routing table, since a prefix that matches nothing renders a redirect
+    // chain with no per-pod rules, indistinguishable from a healthy netd.
+    vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16')
+    vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
+    stageAdoptCidrs({ pools: [], nodeCidrs: [] })
+    const deps = makeDeps({
+      run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
+    })
+    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+
+    const log = logged(deps)
+    expect(log).toContain('172.31.0.0/16')
+    expect(log).toContain('from YAAC_POD_CIDRS')
+    expect(log).toContain('veth prefix: eni*')
+    expect(log).toMatch(/eni\* resolves 1 workload route\(s\) across all 1 node/)
+  })
+
+  it('--adopt-cni refuses a veth prefix that resolves nothing, and names the one that would', async () => {
+    // The pod → veth binding is netd's ONLY source of the identity a
+    // sandboxed workload cannot forge. Read through netd itself, which is
+    // hostNetwork and ships iproute2, so it is the node's own view.
+    stageAdoptCidrs()
+    const deps = makeDeps({
+      run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
+    })
+    const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterSetupError)
+    expect((err as Error).message).toMatch(/no per-workload host route matches cali\*/)
+    // The suggested prefix is the veth FAMILY, not the family plus however
+    // many leading hash characters happen to be letters: hex digits are
+    // letters too, so `enia7b3c9d1e2f4` must yield `eni`, not `enia` (which
+    // would match exactly the one veth the user was shown).
+    expect((err as Error).message).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
+    // This one runs LAST, after netd is on a node — there is no other way
+    // to see the routing table — so the layers below it were applied.
+    expect(deps.ensureNetd).toHaveBeenCalledOnce()
+
+    // A CNI writing no per-workload route at all cannot be adopted either,
+    // and there is no prefix to suggest.
+    stageAdoptCidrs()
+    const bare = makeDeps({ run: adoptRun({ routes: 'default via 10.89.0.1 dev eth0' }) })
+    await expect(runClusterSetup({ adoptCni: true }, bare))
+      .rejects.toThrow(/no per-workload host route at all/)
+  })
+
+  it('--adopt-cni refuses a check it could not EVALUATE, not just one that failed', async () => {
+    // The fail-open this gate cannot afford. Absence is a fact with meaning
+    // — no FelixConfiguration means Felix runs its iptables defaults — so a
+    // read that merely ERRORED must not read as absence, or an RBAC-denied
+    // FelixConfiguration would wave an eBPF cluster straight through and
+    // land as silent no-egress.
+    for (const denied of ['felix', 'kube-proxy', 'nodes', 'calico'] as const) {
+      stageAdoptCidrs()
+      const deps = makeDeps({ run: adoptRun({ denied }) })
+      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect((err as Error).message).toMatch(/could not be evaluated/)
+      expect((err as Error).message).toMatch(/Forbidden/)
+      expect(deps.ensureRegistry).not.toHaveBeenCalled()
+      // A read that FAILED must not also be reported as an absence the gate
+      // never established: two refusals, one of them pointing at the wrong
+      // fix, is a dishonest diagnosis even when both refuse. "No calico-node
+      // in kube-system" reads as a Cilium cluster; "no kube-proxy" sends the
+      // user to YAAC_KUBE_PROXY_EXTERNAL. Neither was established.
+      const absenceClaims: Record<typeof denied, RegExp> = {
+        calico: /no calico-node found/,
+        'kube-proxy': /no kube-proxy pod found/,
+        nodes: /no pod CIDR could be resolved/,
+        felix: /eBPF dataplane/,
+      }
+      expect((err as Error).message).not.toMatch(absenceClaims[denied])
+      // Nor may the RECORD claim one. "chainInsertMode: Insert (Felix
+      // default — nothing sets it)" is a statement about the cluster, and
+      // an audit trail asserting one the gate never established is worse
+      // than one that stays silent.
+      if (denied === 'felix') expect(logged(deps)).not.toMatch(/chainInsertMode/)
+    }
+
+    // The pod-CIDR sources read through a different runner, so an RBAC
+    // denial scoped to `ippools` alone would otherwise present as "Calico
+    // publishes no pool" and silently narrow the exclusion set.
+    resetClusterCidrCache()
+    vi.mocked(kubectlGetJson).mockImplementation(((args: string[]) => {
+      if (args[1]?.startsWith('ippools')) {
+        return Promise.reject(Object.assign(new Error('exit 1'), {
+          stderr: 'Error from server (Forbidden): ippools.crd.projectcalico.org is forbidden',
+        }))
+      }
+      return Promise.resolve({ items: [{ spec: { podCIDR: '10.244.0.0/24' } }] })
+    }) as never)
+    const cidrDeps = makeDeps({ run: adoptRun() })
+    const cidrErr = await runClusterSetup({ adoptCni: true }, cidrDeps).catch((e: unknown) => e)
+    expect(cidrErr).toBeInstanceOf(ClusterSetupError)
+    expect((cidrErr as Error).message).toMatch(/pod-CIDR source: Calico IPPools/)
+    expect(cidrDeps.ensureRegistry).not.toHaveBeenCalled()
+
+    // A CRD the cluster does not serve at all is the OTHER outcome, and it
+    // must stay a fact: a provider-managed Calico serves no
+    // FelixConfiguration, which means Felix's iptables defaults — exactly
+    // what yaac wants.
+    stageAdoptCidrs()
+    const ok = makeDeps({ run: adoptRun() })
+    await expect(runClusterSetup({ adoptCni: true }, ok)).resolves.toBe(true)
+    expect(logged(ok)).toMatch(/no FelixConfiguration sets it/)
+  })
+
+  it('--adopt-cni sees eBPF in a per-node FelixConfiguration and in Felix\'s wider booleans', async () => {
+    const refuse = async (facts: AdoptFacts): Promise<string> => {
+      stageAdoptCidrs()
+      const deps = makeDeps({ run: adoptRun(facts) })
+      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterSetupError)
+      expect(deps.ensureNetd).not.toHaveBeenCalled()
+      return (err as Error).message
+    }
+
+    // Felix honors per-node overrides, so reading only `default` would miss
+    // a cluster whose default leaves bpfEnabled unset and whose
+    // `node.<name>` object turns it on.
+    expect(await refuse({
+      felix: [
+        { metadata: { name: 'default' }, spec: { chainInsertMode: 'Insert' } },
+        { metadata: { name: 'node.worker-1' }, spec: { bpfEnabled: true } },
+      ],
+    })).toMatch(/eBPF dataplane/)
+
+    // Felix's env boolean parsing is wider than true|1 — `yes` enables it.
+    const withEnv = (value?: string, valueFrom?: object): AdoptFacts => ({
+      calico: {
+        status: { numberReady: 1, desiredNumberScheduled: 1 },
+        spec: {
+          template: {
+            spec: {
+              containers: [{
+                name: 'calico-node',
+                env: [{ name: 'FELIX_BPFENABLED', ...(valueFrom ? { valueFrom } : { value }) }],
+              }],
+            },
+          },
+        },
+      },
+    })
+    for (const truthy of ['yes', 'Y', 't', 'ON', '1', 'TRUE']) {
+      expect(await refuse(withEnv(truthy))).toMatch(/eBPF dataplane/)
+    }
+
+    // A `valueFrom` entry carries no literal value, so the manifest does not
+    // say what the dataplane is — and "cannot tell" must not collapse into
+    // "off", which is the direction that ends in silent no-egress.
+    expect(await refuse(withEnv(undefined, { configMapKeyRef: { name: 'felix', key: 'bpf' } })))
+      .toMatch(/valueFrom/)
+
+    // The recognizably-false spellings still pass, or the gate would refuse
+    // every healthy cluster that sets the variable explicitly.
+    for (const falsey of ['false', 'no', '0', 'off', 'F']) {
+      stageAdoptCidrs()
+      const deps = makeDeps({ run: adoptRun(withEnv(falsey)) })
+      await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    }
+  })
+
+  it('--adopt-cni finds kube-proxy however the cluster labels it, and accepts a declared external one', async () => {
+    // kubeadm/EKS/kind stamp `k8s-app`; GKE and AKS stamp `component`. A
+    // label mismatch would falsely REFUSE the very clusters this mode
+    // advertises — fail-closed, but an adoption blocker.
+    stageAdoptCidrs()
+    const gke = makeDeps({ run: adoptRun({ kubeProxyLabel: 'component' }) })
+    await expect(runClusterSetup({ adoptCni: true }, gke)).resolves.toBe(true)
+
+    // k3s runs kube-proxy in-process inside the kubelet: no pod, no
+    // DaemonSet, no label. Self-managed k3s is a PRIMARY target, so the
+    // refusal names the case and an explicit acknowledgement clears it —
+    // recorded, since it is the one check an operator can wave through.
+    stageAdoptCidrs()
+    const k3sRefusal = await runClusterSetup(
+      { adoptCni: true }, makeDeps({ run: adoptRun({ kubeProxyPods: [] }) }),
+    ).catch((e: unknown) => (e as Error).message)
+    expect(k3sRefusal).toMatch(/YAAC_KUBE_PROXY_EXTERNAL=1/)
+    expect(k3sRefusal).toMatch(/k3s runs it in-process/)
+
+    vi.stubEnv('YAAC_KUBE_PROXY_EXTERNAL', '1')
+    stageAdoptCidrs()
+    const k3s = makeDeps({ run: adoptRun({ kubeProxyPods: [] }) })
+    await expect(runClusterSetup({ adoptCni: true }, k3s)).resolves.toBe(true)
+    expect(logged(k3s)).toMatch(/declared external/)
+  })
+
+  it('--adopt-cni warns per NODE about kube-proxy and refuses per NODE about veths', async () => {
+    // One running kube-proxy proves the cluster has one; it says nothing
+    // about the node a session actually lands on. A node without one loses
+    // egress by itself while the rest work, which reads as intermittent.
+    const nodes = [{ name: 'cp' }, { name: 'w1' }, { name: 'w2' }]
+    stageAdoptCidrs()
+    const partial = makeDeps({
+      run: adoptRun({
+        nodes,
+        kubeProxyPods: [
+          { spec: { nodeName: 'cp' }, status: { phase: 'Running' } },
+          { spec: { nodeName: 'w1' }, status: { phase: 'Running' } },
+        ],
+      }),
+    })
+    await expect(runClusterSetup({ adoptCni: true }, partial)).resolves.toBe(true)
+    expect(logged(partial)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): w2/)
+
+    // Which nodes count is answered by real per-taint matching against the
+    // gvisor RuntimeClass's tolerations — the same model `cluster check`
+    // uses. A dedicated sessions pool is a TAINTED pool plus a matching
+    // toleration on the class, so a blanket "any taint disqualifies" rule
+    // would read it as zero session-capable nodes and check nothing at all.
+    stageAdoptCidrs()
+    const pool = makeDeps({
+      run: adoptRun({
+        nodes: [{ name: 'cp', taint: 'node-role.kubernetes.io/control-plane' },
+          { name: 'pool-1', taint: 'yaac.sessions' },
+          { name: 'pool-2', taint: 'yaac.sessions' }],
+        tolerations: [{ key: 'yaac.sessions', operator: 'Exists' }],
+        kubeProxyPods: [{ spec: { nodeName: 'pool-1' }, status: { phase: 'Running' } }],
+      }),
+    })
+    await expect(runClusterSetup({ adoptCni: true }, pool)).resolves.toBe(true)
+    // pool-2 is tolerated and therefore in scope, and IS uncovered; the
+    // control plane is not tolerated, so it is out of scope entirely.
+    expect(logged(pool)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): pool-2/)
+    expect(logged(pool)).not.toMatch(/\bcp\b/)
+
+    // The veth sweep is per node too, and `exec daemonset/...` would have
+    // sampled only one: on a heterogeneous fleet (mixed pools or AMIs) one
+    // node's routing table says nothing about the others'.
+    stageAdoptCidrs()
+    const mixed = makeDeps({
+      run: adoptRun({
+        nodes,
+        routes: {
+          'yaac-netd-0': ADOPT_ROUTES,
+          'yaac-netd-1': ADOPT_ROUTES,
+          // This node's CNI names its veths differently — its sessions
+          // would get a redirect chain with no rules in it.
+          'yaac-netd-2': '10.0.3.41 dev enia7b3c9d1e2f4 scope link',
+        },
+      }),
+    })
+    const err = await runClusterSetup({ adoptCni: true }, mixed).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterSetupError)
+    expect((err as Error).message).toMatch(/matches cali\* on w2/)
+    expect((err as Error).message).toMatch(/2 other node\(s\) resolve fine/)
+    expect((err as Error).message).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
+
+    // But a node with NO per-workload route of any kind is ambiguous, not a
+    // mismatch: netd and kube-proxy are hostNetwork and own no veth, so
+    // that is also exactly what a freshly added node looks like. Warn where
+    // others resolve; only refuse when nothing anywhere does.
+    stageAdoptCidrs()
+    const idle = makeDeps({
+      run: adoptRun({
+        nodes,
+        routes: {
+          'yaac-netd-0': ADOPT_ROUTES,
+          'yaac-netd-1': ADOPT_ROUTES,
+          'yaac-netd-2': 'default via 10.89.0.1 dev eth0',
+        },
+      }),
+    })
+    await expect(runClusterSetup({ adoptCni: true }, idle)).resolves.toBe(true)
+    expect(logged(idle)).toMatch(/w2 have no per-workload route at all/)
+  })
+
+  it('--adopt-cni refuses a YAAC_POD_CIDRS entry it cannot use rather than dropping it', async () => {
+    // A typo'd entry that merely vanished would leave the exclusion set
+    // NARROWER than what the operator wrote, with nothing to tell them: the
+    // recorded list shows only what survived. Narrower means those pods'
+    // 443/80 goes into the proxy.
+    vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 172.31/16, 999.1.1.1/99, 10.0.0.0/33')
+    stageAdoptCidrs()
+    const deps = makeDeps({ run: adoptRun() })
+    const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterSetupError)
+    const msg = (err as Error).message
+    expect(msg).toMatch(/not usable IPv4 CIDRs/)
+    // Out-of-range octets and masks are rejected too — they would otherwise
+    // reach iptables-restore, which rejects the WHOLE document on one bad
+    // line and stalls every redirect update on the node.
+    expect(msg).toContain('172.31/16')
+    expect(msg).toContain('999.1.1.1/99')
+    expect(msg).toContain('10.0.0.0/33')
+    expect(deps.ensureRegistry).not.toHaveBeenCalled()
+  })
+
+  it('--adopt-cni treats an unreachable netd as unverified rather than refused', async () => {
+    // netd deploys fail-soft (the server re-ensures it on every proxy
+    // bootstrap), so "I could not read the routing table" is a different
+    // claim from "this cluster has no workload routes" — and the cluster
+    // check's datapath gate is what owns the first one.
+    stageAdoptCidrs()
+    const deps = makeDeps({ run: adoptRun({ routes: null }) })
+    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    expect(logged(deps)).toMatch(/unverified on yaac-control-plane/)
   })
 
   it('mirrors the deduped image set the Calico manifest names, and nothing else', async () => {

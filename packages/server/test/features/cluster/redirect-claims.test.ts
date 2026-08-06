@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: () => 'test-ns',
 }))
 

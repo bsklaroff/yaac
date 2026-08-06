@@ -77,14 +77,15 @@
  */
 import crypto from 'node:crypto'
 import {
-  LABEL_ROLE,
-  PRIORITY_CLASS_INFRA,
-  ROLE_BUILDER,
   dataDirHash,
   execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  LABEL_ROLE,
+  PRIORITY_CLASS_INFRA,
+  PRIVILEGED_PSS_LABELS,
+  ROLE_BUILDER,
   runPodToCompletion,
 } from '#platform/k8s'
 import { nodeIpBlocks } from './cluster-cidrs'
@@ -613,7 +614,10 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Namespace',
-    metadata: { name: REGISTRY_NAMESPACE },
+    // Privileged PSS: this namespace also holds the node-write pods that
+    // hostPath-mount a node's certs.d, which an adopted cluster's
+    // baseline/restricted default would reject at admission.
+    metadata: { name: REGISTRY_NAMESPACE, labels: { ...PRIVILEGED_PSS_LABELS } },
   })
   // Before the Service apply that would otherwise inherit it.
   await kubectlWithRetry([

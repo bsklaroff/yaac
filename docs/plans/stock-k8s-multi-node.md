@@ -235,10 +235,14 @@ short-circuits the netfilter hook the redirect needs. The only known way
 around that is docs/plans/in-sandbox-netstack-dnat.md, which is written up
 and deliberately not planned.
 
-**Remaining work here is adoption, not viability**: installing into a
-cluster whose Calico we did not install (docs/plans/adopt-existing-cni.md)
-— detecting the dataplane mode, the veth naming, and the real pod CIDRs
-instead of assuming them.
+**Adoption has shipped too**: `yaac cluster setup --adopt-cni` installs
+into a cluster whose Calico we did not install, detecting the dataplane
+mode, the veth naming and the real pod CIDRs instead of assuming them, and
+refusing the configurations that would otherwise fail silently (Calico in
+eBPF mode, a replaced kube-proxy, an empty pod-CIDR set, a veth prefix that
+resolves nothing). Current-state reference: docs/cluster-setup.md,
+"Adopting a CNI yaac did not install". So the §4 networking envelope is
+reachable on a real managed cluster without further design work here.
 
 ### 5. Images: host podman + localhost registry → in-cluster builds + real registry
 
@@ -315,6 +319,12 @@ instead of assuming them.
   fail the probe; GKE routes to the Sandbox adapter. Then install in-cluster
   components (proxy, RuntimeClasses + the node agent, registry, priority
   classes) and record the backend in config.
+  **The §4 half of that already exists** as `yaac cluster setup
+  --adopt-cni`: it creates no cluster, probes the CNI/kube-proxy/pod-CIDR
+  capabilities and refuses what cannot work, labels the install namespace
+  for the privileged Pod Security Standard, and then installs exactly that
+  in-cluster component set (docs/cluster-setup.md). What `attach` adds is
+  the §3 node-OS probe, the storage-class probe, and recording the backend.
 - Every `podman exec <node>` fixup either dies with kind (sysfs, TasksMax,
   pids-limit — node-container artifacts) or moves into the installer
   DaemonSet if still wanted on real nodes (vm sysctls).
@@ -359,9 +369,10 @@ shaped.
 
 1. **Spikes (kill-order):**
    - ~~Node agent owns the redirect at the veth peer~~ — **done and
-     shipped** (§4, docs/session-egress.md), forgery e2e included. What is
-     left for this plan is adopting a Calico we did not install
-     (docs/plans/adopt-existing-cni.md), which is a probe, not a spike.
+     shipped** (§4, docs/session-egress.md), forgery e2e included, and so
+     is adopting a Calico we did not install (`--adopt-cni`,
+     docs/cluster-setup.md). What is left is running that gate against a
+     real provider-managed Calico rather than a kind cluster.
    - gVisor installer DaemonSet on a target node pool; sentry probe green;
      survive a node-pool upgrade.
    - RWX (NFS-CSI) under gVisor: the storage plan's probe chain + perf

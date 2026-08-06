@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // for real behind it — including `runPodToCompletion`, which is what drives
 // the node-write pods the hosts.toml leg schedules.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -172,6 +174,12 @@ describe('ensureMainRegistry', () => {
     expect(applied().map((m) => m.kind)).toEqual([
       'Namespace', 'PersistentVolumeClaim', 'Deployment', 'Service', 'NetworkPolicy', 'Pod',
     ])
+
+    // The namespace carries the privileged Pod Security Standard: it also
+    // holds the node-write pods that hostPath-mount a node's certs.d, which
+    // an adopted cluster's baseline/restricted default would reject.
+    expect(appliedOfKind('Namespace').metadata.labels)
+      .toMatchObject({ 'pod-security.kubernetes.io/enforce': 'privileged' })
 
     // Everything lands in the DEFAULT namespace, not k8sNamespace() (mocked
     // to test-ns here): per-run e2e namespaces share one image store.

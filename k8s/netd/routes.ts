@@ -18,7 +18,7 @@
  * Pure parsing here; the caller supplies `ip route show` output.
  */
 
-/** A Calico workload veth as seen from the node root netns. */
+/** A workload veth as seen from the node root netns. */
 export interface PodVeth {
   podIp: string
   /** Host-side interface name, e.g. `calia132c78e002`. */
@@ -26,13 +26,37 @@ export interface PodVeth {
 }
 
 /**
- * Interface-name prefix Calico gives every workload veth. Matching on it
- * (rather than on any `dev` in the table) keeps node-level routes — the
- * default route, the podman bridge, tunnel devices — out of the map, so a
- * malformed table can never make netd redirect something that is not a
- * workload.
+ * Interface-name prefix Calico gives every workload veth, and the default
+ * everywhere Calico does the IPAM.
+ *
+ * Matching on a prefix (rather than on any `dev` in the table) keeps
+ * node-level routes — the default route, the podman bridge, tunnel devices
+ * — out of the map, so a malformed table can never make netd redirect
+ * something that is not a workload. That is why the prefix stays required
+ * when it becomes configurable: an adopted CNI may name its veths
+ * differently (policy-only Calico over the AWS VPC CNI gives `eni*`), but
+ * "any device" is never the answer.
  */
-const CALICO_VETH_PREFIX = 'cali'
+export const DEFAULT_VETH_PREFIX = 'cali'
+
+/** Prefix characters an interface name can actually contain. */
+const VETH_PREFIX_RE = /^[A-Za-z0-9_.@-]+$/
+
+/**
+ * The veth prefix to match on, from a configured value.
+ *
+ * Empty, whitespace, or anything that is not a plausible interface-name
+ * fragment falls back to the default rather than being honored: an empty
+ * prefix would match EVERY device in the table, which is exactly the
+ * "redirect something that is not a workload" failure the prefix exists to
+ * prevent. A misconfiguration therefore costs the adopted cluster its
+ * redirect (fail-closed) instead of widening it.
+ */
+export function normalizeVethPrefix(raw: string | undefined): string {
+  const value = raw?.trim() ?? ''
+  if (value === '' || !VETH_PREFIX_RE.test(value)) return DEFAULT_VETH_PREFIX
+  return value
+}
 
 /** Dotted-quad with no leading zeros and every octet in range. */
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
@@ -41,8 +65,8 @@ const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\
  * Parse `ip route show` output into the podIP → veth map.
  *
  * Matches only single-address (`/32`, i.e. no prefix suffix) `scope link`
- * routes pointing at a `cali*` device — the exact shape Calico writes per
- * workload:
+ * routes pointing at a `<prefix>*` device — the exact shape Calico writes
+ * per workload:
  *
  *     10.244.169.197 dev calia132c78e002 scope link
  *
@@ -51,8 +75,12 @@ const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\
  * the kernel's own "most recently installed route for this destination"
  * behaviour after a pod is replaced on the same IP.
  */
-export function parsePodVeths(ipRouteOutput: string): Map<string, string> {
+export function parsePodVeths(
+  ipRouteOutput: string,
+  prefix: string = DEFAULT_VETH_PREFIX,
+): Map<string, string> {
   const map = new Map<string, string>()
+  const vethPrefix = normalizeVethPrefix(prefix)
   for (const rawLine of ipRouteOutput.split('\n')) {
     const line = rawLine.trim()
     if (!line) continue
@@ -62,7 +90,7 @@ export function parsePodVeths(ipRouteOutput: string): Map<string, string> {
     const devIdx = fields.indexOf('dev')
     if (devIdx < 0) continue
     const iface = fields[devIdx + 1]
-    if (!iface?.startsWith(CALICO_VETH_PREFIX)) continue
+    if (!iface?.startsWith(vethPrefix)) continue
     // `scope link` is what distinguishes a workload route from a via-route
     // that happens to egress a cali device.
     if (!/\bscope link\b/.test(line)) continue

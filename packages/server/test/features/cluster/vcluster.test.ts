@@ -9,6 +9,8 @@ const parseDocs = (s: string): K8sObj[] =>
   s.split(/^---$/m).map((d) => YAML.parse(d) as K8sObj)
 
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -395,6 +397,12 @@ describe('ensureSessionVcluster', () => {
     expect(ns.metadata.labels?.[LABEL_VCLUSTER]).toBe(VC)
     expect(ns.metadata.labels?.[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
     expect(ns.metadata.labels?.[LABEL_VCLUSTER_DATA_DIR_HASH]).toBe('ddh16')
+    // ...and for the privileged Pod Security Standard. Inert on a cluster
+    // yaac builds; on an adopted one whose cluster-wide default is
+    // baseline/restricted, the synced tenant pods this namespace holds —
+    // whose shape is decided by the vcluster's own admission guard, not the
+    // host default — would otherwise be rejected at admission here.
+    expect(ns.metadata.labels?.['pod-security.kubernetes.io/enforce']).toBe('privileged')
 
     const nps = appliedAll('NetworkPolicy')
     // The session policy lives in the INSTALL namespace (it selects the

@@ -34,6 +34,8 @@ vi.mock('#features/cluster/activator', () => ({
 }))
 
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn().mockResolvedValue(null),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),

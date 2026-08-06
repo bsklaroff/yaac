@@ -28,6 +28,7 @@ const ENV_KEYS = [
   'YAAC_NAMESPACE', 'NODE_NAME', 'NODE_IP', 'CLUSTER_POD_CIDRS', 'SSH_TUNNEL_SENTINEL',
   'TUNNEL_INGRESS_PORT', 'TRANSPARENT_HTTPS_PORT', 'TRANSPARENT_HTTP_PORT',
   'TRANSPARENT_TUNNEL_PORT', 'NETD_LISTENER_PORT_BASE', 'NETD_LISTENER_SLOTS',
+  'NETD_VETH_PREFIX',
 ]
 
 describe('loadConfig', () => {
@@ -94,6 +95,25 @@ describe('loadConfig', () => {
     process.env.TRANSPARENT_HTTPS_PORT = 'not-a-port'
     expect(loadConfig().transparentPorts.https).toBe(10256)
   })
+
+  it('takes the workload veth prefix from the env, defaulting to Calico\'s', () => {
+    // Correct only where Calico does the IPAM; policy-only Calico over the
+    // AWS VPC CNI gives `eni*`, which is why the server can override it.
+    expect(loadConfig().vethPrefix).toBe('cali')
+    process.env.NETD_VETH_PREFIX = 'eni'
+    expect(loadConfig().vethPrefix).toBe('eni')
+  })
+
+  it('falls back to cali rather than honoring a prefix that would match everything', () => {
+    // An empty prefix matches EVERY device in the routing table, which is
+    // exactly the "redirect something that is not a workload" failure the
+    // prefix exists to prevent — so a misconfiguration costs the cluster its
+    // redirect (fail-closed) instead of widening it.
+    for (const bad of ['', '   ', 'cali *', 'a/b']) {
+      process.env.NETD_VETH_PREFIX = bad
+      expect(loadConfig().vethPrefix).toBe('cali')
+    }
+  })
 })
 
 describe('netdMode', () => {
@@ -159,6 +179,7 @@ const CONFIG: NetdConfig = {
   nodeName: 'node-1',
   nodeIp: '10.89.0.7',
   podCidrs: ['10.244.0.0/16'],
+  vethPrefix: 'cali',
   sshSentinelIp: '198.18.0.2',
   sshSentinelPort: 10259,
   transparentPorts: { https: 10256, http: 10257, tunnel: 10258 },

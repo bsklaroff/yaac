@@ -71,6 +71,74 @@ export function isNotFoundKubectlError(stderr: string): boolean {
   return lower.includes('(notfound)') || lower.includes('not found')
 }
 
+/**
+ * kubectl's vocabulary for "this genuinely is not there", as opposed to "I
+ * could not ask" — a missing OBJECT (`isNotFoundKubectlError`) or a
+ * resource type the cluster does not serve at all, which is the normal
+ * shape of a Calico CRD on a provider-managed install.
+ *
+ * The distinction is load-bearing wherever absence is a FACT with meaning
+ * rather than merely a failure: `--adopt-cni` reads "no FelixConfiguration"
+ * as "Felix runs its iptables defaults" and proceeds, so an RBAC denial or
+ * a timeout that collapsed into absence would license exactly the eBPF
+ * cluster the gate exists to refuse. Takes the whole error (not just
+ * stderr) because callers reach kubectl through different runners, and
+ * execFile puts some failures only in `message`.
+ */
+export function isKubectlAbsentError(err: unknown): boolean {
+  const text = [
+    (err as { stderr?: string })?.stderr ?? '',
+    err instanceof Error ? err.message : String(err),
+  ].join(' ')
+
+  // A failure of the machinery IN FRONT of the object is never the
+  // object's absence, and it can carry the same words: a broken
+  // conversion/admission webhook fails with `Internal error occurred:
+  // failed calling webhook …: service "calico-apiserver" not found`, whose
+  // trailing `not found` is about the WEBHOOK'S service. Classifying that
+  // as absence on the FelixConfiguration read would mean "Felix runs its
+  // iptables defaults" on a cluster whose Felix config was unknowable —
+  // exactly the inversion this predicate exists to prevent. Checked first,
+  // so no later pattern can rescue it.
+  if (/failed calling webhook|internal error occurred/i.test(text)) return false
+
+  // kubectl's own shapes, anchored rather than matched as bare substrings:
+  //   Error from server (NotFound): daemonsets.apps "calico-node" not found
+  //   error: the server doesn't have a resource type "felixconfigurations"
+  //   error: no matches for kind "FelixConfiguration" in version "…"
+  //   Error from server (NotFound): the server could not find the requested resource
+  if (/\(notfound\)/i.test(text)) return true
+  if (/"[^"]*"\s+not found/i.test(text)) return true
+  const lower = text.toLowerCase()
+  return lower.includes("the server doesn't have a resource type")
+    || lower.includes('no matches for kind')
+    || lower.includes('could not find the requested resource')
+}
+
+/**
+ * The one line of a kubectl failure worth showing a user.
+ *
+ * kubectl narrates client-go's retries through klog first (`E0806
+ * 12:00:00.000000 1234 memcache.go:265] "Unhandled Error" err=...`) and
+ * only then prints its own diagnosis ("The connection to the server ... was
+ * refused"). Taking the first line yields five near-identical walls of klog
+ * across five failed checks and buries the sentence that says what to fix,
+ * so klog lines are skipped in favour of the real message.
+ */
+export function kubectlErrorSummary(err: unknown): string {
+  const raw = [
+    (err as { stderr?: string })?.stderr ?? '',
+    err instanceof Error ? err.message : String(err),
+  ].join('\n')
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
+  const klog = /^[EIWF]\d{4}\s/
+  const best = lines.find((l) => !klog.test(l) && !l.startsWith('Command failed:'))
+    ?? lines.find((l) => !klog.test(l))
+    ?? lines[0]
+    ?? 'unknown error'
+  return best.length > 140 ? `${best.slice(0, 140)}…` : best
+}
+
 export interface KubectlExecOptions {
   timeout?: number
   maxAttempts?: number

@@ -41,8 +41,10 @@ export {
   dataDirHash,
   ensureKubernetes,
   execFileAsync,
+  isKubectlAbsentError,
   k8sNamespace,
   kubectlApply,
+  kubectlErrorSummary,
   kubectlGetJson,
   kubectlWithRetry,
 } from './kubectl'
@@ -71,6 +73,7 @@ export {
   ensurePriorityClasses,
 } from './priority-classes'
 export { waitForJobPodReady } from './pod-wait'
+export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,

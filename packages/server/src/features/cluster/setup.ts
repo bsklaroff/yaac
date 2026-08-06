@@ -13,6 +13,13 @@ import { ensureNetd } from './netd'
 import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
 import {
+  assessCniAdoption,
+  assessVethSource,
+  cniVethPrefix,
+  gatherCniFacts,
+  probeWorkloadVeths,
+} from './cni-adopt'
+import {
   formatCheckResult,
   NODE_INOTIFY_MAX_USER_INSTANCES,
   NODE_INOTIFY_MAX_USER_WATCHES,
@@ -48,6 +55,11 @@ import { env } from '@yaac/shared/env'
  * layers an upgrade can change — the gVisor runtime (installer DaemonSet +
  * RuntimeClasses), the PriorityClasses, netd — which is how an existing
  * cluster picks them up on a yaac upgrade.
+ *
+ * `--adopt-cni` is the third mode, and the only one that does not assume
+ * yaac owns the cluster: it skips both the kind create and the Calico
+ * install, verifies the CNI the cluster already runs (cni-adopt.ts), and
+ * then applies the same in-cluster layers the other two modes converge.
  *
  * The gVisor install is NOT a node fixup any more: a DaemonSet reinstalls
  * it on every node that appears, so a restarted (or replaced) node repairs
@@ -136,6 +148,14 @@ export class ClusterSetupError extends Error {}
 export interface ClusterSetupOptions {
   /** Re-apply node fixups on the existing cluster instead of recreating it. */
   repair?: boolean
+  /**
+   * Bring-your-own-CNI: install into the cluster the current kubeconfig
+   * points at, adopting the Calico it already runs instead of creating a
+   * cluster and installing one. Runs the verification gate in cni-adopt.ts
+   * in place of `installCalico`, and refuses the configurations that would
+   * otherwise fail silently.
+   */
+  adoptCni?: boolean
   /**
    * kind nodes to create: one control-plane plus `nodes - 1` workers.
    * Undefined (the default) means one node. Create-time only — the node
@@ -296,9 +316,15 @@ export function kindEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Run the full setup (or a `--repair` fixup pass) and finish with a cluster
+ * Run the full setup (or a `--repair` fixup pass, or an `--adopt-cni`
+ * install into a cluster yaac does not own) and finish with a cluster
  * check. Returns the check's overall verdict; throws ClusterSetupError with
  * a user-actionable message when a step cannot proceed.
+ *
+ * The finishing check is load-bearing for adoption specifically: its
+ * `egress` gate is the positive NetworkPolicy probe the CNI verification
+ * deliberately does not try to infer, so a `false` return there means "the
+ * adopted policy engine is not enforcing" and the CLI exits non-zero.
  */
 export async function runClusterSetup(
   opts: ClusterSetupOptions = {},
@@ -314,14 +340,45 @@ export async function runClusterSetup(
   const nodeCount = resolveNodeCount(opts)
 
   const cluster = env.kindCluster
-  const versions = await requireBinaries(deps)
+  // Adopt mode creates no cluster, so kind is not part of its shopping
+  // list — the target may be any cluster the kubeconfig points at.
+  const versions = await requireBinaries(deps, { requireKind: !opts.adoptCni })
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
   else await ensureRootfulPodmanReachable(deps)
 
-  await preflightKindProvider(deps, versions)
+  if (!opts.adoptCni) await preflightKindProvider(deps, versions)
 
-  if (opts.repair) {
+  if (opts.adoptCni) {
+    // The gate runs FIRST, before anything is applied: an adoption that
+    // cannot work must cost the user nothing but the diagnosis.
+    await verifyAdoptedCni(deps)
+    // Whatever this process cached about "the cluster" was learned from a
+    // different one — adopt mode is normally the first thing a fresh
+    // install runs against a cluster it has never seen.
+    resetClusterCidrCache()
+    // Node fixups are kind-node-container state (sysctls, TasksMax, pids
+    // limit). An adopted cluster may still BE a kind cluster — that is the
+    // cheapest way to rehearse this path — so apply them where the nodes
+    // are podman containers and say so where they are not.
+    const nodes = await kindNodes(deps, cluster)
+    if (nodes.length > 0) for (const node of nodes) await applyNodeFixups(deps, node)
+    else {
+      deps.log(
+        `note: no kind cluster "${cluster}" on this host, so the node fixups are `
+        + 'skipped — they are kind-node-container state and do not apply to nodes yaac '
+        + 'has no shell on.',
+      )
+    }
+    await installPriorityClasses(deps)
+    await installRegistry(deps)
+    await installBuilderGuard(deps)
+    await installGvisorRuntime(deps)
+    await deployNetd(deps)
+    // Last, because it needs netd on a node: netd is hostNetwork and ships
+    // iproute2, so it is the node's own view of the routing table.
+    await verifyAdoptedVethSource(deps)
+  } else if (opts.repair) {
     const nodes = await kindNodes(deps, cluster)
     if (nodes.length === 0) {
       throw new ClusterSetupError(
@@ -361,10 +418,32 @@ export async function runClusterSetup(
   deps.log('\nVerifying with cluster check...')
   const { ok, results } = await deps.check()
   for (const r of results) deps.log(formatCheckResult(r))
-  deps.log(ok
-    ? '\nCluster is ready for yaac sessions.'
-    : '\nCluster is not ready — fix the failures above and re-run `yaac cluster setup`.')
-  return ok
+  if (ok) {
+    deps.log('\nCluster is ready for yaac sessions.')
+    return true
+  }
+  deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster setup`.')
+  // Every mode installs BEFORE it verifies, so a failed check leaves the
+  // in-cluster layers in place and a usable-looking cluster behind. The
+  // exit code is the only artifact of the failure, and nothing re-checks
+  // between explicit `cluster check` runs — so say plainly what that
+  // means rather than leaving it to be inferred from a red line.
+  //
+  // The `egress` gate is the one where it really bites: it is the positive
+  // NetworkPolicy probe, and a cluster that fails it runs sessions whose
+  // egress lockdown is ADVISORY — they still work, and the proxy allowlist
+  // silently covers only what the redirect steers (443/80/the sentinel).
+  // That is a containment weakening with no symptom, which is exactly the
+  // class of failure this whole gate exists to make loud.
+  if (results.some((r) => r.name === 'egress' && r.status === 'fail')) {
+    deps.log(
+      '\nThe egress gate FAILED, and the install is already in place. Do not start '
+      + 'sessions until a re-run passes: this cluster is not enforcing the session '
+      + 'NetworkPolicy, so their egress lockdown is advisory and the proxy allowlist '
+      + 'covers only the ports the redirect steers.',
+    )
+  }
+  return false
 }
 
 /**
@@ -375,7 +454,21 @@ export async function runClusterSetup(
  * has no way to honor (it fixes up the nodes that exist).
  */
 function resolveNodeCount(opts: ClusterSetupOptions): number {
+  if (opts.repair && opts.adoptCni) {
+    throw new ClusterSetupError(
+      '--adopt-cni cannot be combined with --repair: --repair fixes up a kind cluster '
+      + 'yaac built, and --adopt-cni installs into a cluster it did not. Re-run '
+      + '--adopt-cni on its own — it is idempotent, and converges the same in-cluster '
+      + 'layers --repair does.',
+    )
+  }
   if (opts.nodes === undefined) return 1
+  if (opts.adoptCni) {
+    throw new ClusterSetupError(
+      '--nodes cannot be combined with --adopt-cni: adopt mode creates no cluster, so '
+      + 'there are no nodes for it to render. The adopted cluster brings its own.',
+    )
+  }
   const count = typeof opts.nodes === 'string' ? Number(opts.nodes) : opts.nodes
   if (!Number.isInteger(count) || count < 1 || count > MAX_KIND_NODES) {
     throw new ClusterSetupError(
@@ -437,10 +530,17 @@ interface BinaryVersions {
 }
 
 /**
- * All three setup-time binaries up front, reported together so a fresh
+ * All the setup-time binaries up front, reported together so a fresh
  * machine gets one complete shopping list instead of failing serially.
+ *
+ * `requireKind` is false in adopt mode: nothing is created there, and the
+ * adopted cluster need not be a kind one at all. podman stays required
+ * either way — it is the image build engine.
  */
-async function requireBinaries(deps: ClusterSetupDeps): Promise<BinaryVersions> {
+async function requireBinaries(
+  deps: ClusterSetupDeps,
+  opts: { requireKind: boolean } = { requireKind: true },
+): Promise<BinaryVersions> {
   const missing: string[] = []
   let podman = ''
   let kind = ''
@@ -453,9 +553,11 @@ async function requireBinaries(deps: ClusterSetupDeps): Promise<BinaryVersions> 
   try {
     kind = (await deps.run('kind', ['version'])).stdout.trim()
   } catch {
-    missing.push('kind — creates the local kubernetes cluster.\n'
-      + '  Install: brew install bsklaroff/yaac/yaac-kind\n'
-      + '  (with podman 6.x, plain kind <= v0.32.0 is broken — see kind#4201)')
+    if (opts.requireKind) {
+      missing.push('kind — creates the local kubernetes cluster.\n'
+        + '  Install: brew install bsklaroff/yaac/yaac-kind\n'
+        + '  (with podman 6.x, plain kind <= v0.32.0 is broken — see kind#4201)')
+    }
   }
   try {
     await deps.run('kubectl', ['version', '--client', '--output', 'json'])
@@ -660,6 +762,63 @@ async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<v
     '--context', context,
     'wait', '--for=condition=Ready', 'node', '--all', '--timeout=120s',
   ])
+}
+
+/**
+ * The bring-your-own-CNI gate: everything `installCalico` would otherwise
+ * have guaranteed by construction, verified against the cluster instead.
+ *
+ * Refuses rather than warns, because every one of these fails SILENTLY.
+ * Calico in its eBPF dataplane, a replaced kube-proxy, an empty pod-CIDR
+ * exclusion set — none of them stops a session from starting; they show up
+ * as "sessions have no egress" or, worse, as a redirect chain that counts
+ * packets and never fires. The full reasoning per check is in cni-adopt.ts.
+ *
+ * The NetworkPolicy half is deliberately not decided here: "Calico is
+ * installed" does not mean policy is enforced (policy-only Calico over a
+ * foreign IPAM is a supported topology and a misconfigured one looks
+ * identical until a session escapes), so it is left to the `egress` gate of
+ * the cluster check that finishes every setup — a positive probe from a
+ * session-labeled pod, whose failure makes this command exit non-zero.
+ */
+async function verifyAdoptedCni(deps: ClusterSetupDeps): Promise<void> {
+  deps.log('Verifying the CNI this cluster already runs (--adopt-cni)...')
+  const facts = await gatherCniFacts(deps.run)
+  const { refusals, warnings, notes } = assessCniAdoption(facts)
+  for (const note of notes) deps.log(`  recorded: ${note}`)
+  for (const warning of warnings) deps.log(`  ! ${warning}`)
+  if (refusals.length > 0) {
+    throw new ClusterSetupError(
+      `Cannot adopt this cluster's CNI:\n\n${refusals.map((r) => `  - ${r}`).join('\n\n')}`,
+    )
+  }
+  deps.log('  CNI accepted: Calico in the iptables dataplane, kube-proxy owning ClusterIP DNAT.')
+}
+
+/**
+ * The other half of the gate, which needs a node: netd's pod → veth source
+ * must actually exist for the configured prefix. `cali*` is correct only
+ * where Calico does the IPAM — policy-only Calico over the AWS VPC CNI
+ * gives `eni*` — and a prefix that matches nothing renders a redirect chain
+ * with no per-pod rules in it, which is indistinguishable from a healthy
+ * netd until a session tries to reach the internet.
+ *
+ * Fail-soft on an unreachable netd (the cluster check's datapath gate owns
+ * that verdict), fail-hard on a node that has the routes but not under this
+ * prefix — that is the misconfiguration this exists to catch.
+ */
+async function verifyAdoptedVethSource(deps: ClusterSetupDeps): Promise<void> {
+  const prefix = cniVethPrefix()
+  const { status, detail, fix } = assessVethSource(
+    await probeWorkloadVeths(deps.run, prefix), prefix,
+  )
+  if (status === 'fail') {
+    throw new ClusterSetupError(
+      `Cannot adopt this cluster's CNI:\n\n  - ${detail}${fix ? `\n\n    ${fix}` : ''}`,
+    )
+  }
+  if (status === 'warn') deps.log(`  ! ${detail}`)
+  else deps.log(`  recorded: pod → veth source: ${detail}`)
 }
 
 /**

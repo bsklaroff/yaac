@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+  // The REAL predicate: these suites drive the absent-vs-unevaluable
+  // split, which is the whole point of the adoption gate's reads.
+  isKubectlAbsentError: (await importOriginal<
+    { isKubectlAbsentError: (err: unknown) => boolean }
+  >()).isKubectlAbsentError,
+  kubectlErrorSummary: (await importOriginal<
+    { kubectlErrorSummary: (err: unknown) => string }
+  >()).kubectlErrorSummary,
   execFileAsync: vi.fn(),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn(),
@@ -237,6 +245,29 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-gvisor') {
     return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
   }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+    && args.includes('app=yaac-netd')) {
+    // The veth-source gate reads every netd pod, then execs each one for
+    // its own node's routing table.
+    return {
+      stdout: JSON.stringify({
+        items: [{
+          metadata: { name: 'yaac-netd-0' },
+          spec: { nodeName: 'yaac-control-plane' },
+          status: { phase: 'Running' },
+        }],
+      }),
+      stderr: '',
+    }
+  }
+  if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
+    // A healthy Calico node: two workload veths under the default prefix.
+    return {
+      stdout: '10.244.169.193 dev calibb6b64b7901 scope link\n'
+        + '10.244.169.197 dev calia132c78e002 scope link\n',
+      stderr: '',
+    }
+  }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
     // runtime-stamp sweep (-A): every untrusted (session-labeled / synced)
     // pod is gvisor-sandboxed; unstamped infra (the proxy) is fine, and
@@ -394,6 +425,11 @@ describe('runClusterCheck', () => {
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['datapath', 'pass'],
+      // Re-verified on every run, not only at --adopt-cni time: netd's
+      // readiness is Envoy's config ack, which is green with zero pod →
+      // veth mappings, so nothing else here would notice a prefix that
+      // resolves nothing.
+      ['veth-source', 'pass'],
       // Per-node readiness is a multi-node question: on one node the
       // gvisor/probe/egress gates above already covered it.
       ['runsc-nodes', 'skip'],
@@ -1169,6 +1205,51 @@ describe('runClusterCheck', () => {
       status: 'pass',
       detail: expect.stringContaining('policy enforced, egress redirected') as string,
     })
+  })
+
+  it('fails veth-source when the redirect resolves no workload veth, though netd is Ready', async () => {
+    // The gap the datapath gate structurally cannot see: netd's readiness is
+    // Envoy's config ack, which goes green with ZERO pod → veth mappings. So
+    // a wrong prefix (or a CNI writing no per-workload route) leaves netd
+    // Ready with a chain that has no per-pod rules in it, and every session
+    // quietly without egress. Re-checked here on every run, not just at
+    // --adopt-cni time, because a node pool added later can differ from the
+    // one adoption sampled.
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
+        return { stdout: '10.0.3.41 dev enia7b3c9d1e2f4 scope link\n', stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(false)
+    // datapath still passes — which is exactly why this is its own gate.
+    expect(byName(results, 'datapath')).toMatchObject({ status: 'pass' })
+    const veth = byName(results, 'veth-source')
+    expect(veth).toMatchObject({ status: 'fail' })
+    expect(veth?.detail).toContain('cali*')
+    expect(veth?.detail).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
+  })
+
+  it('leaves veth-source unverified, not failed, when a netd pod cannot be exec\'d', async () => {
+    // "I could not read the routing table" is a different claim from "this
+    // node has no workload routes", and only the second is a broken cluster.
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
+        throw new Error('unable to upgrade connection: container not found')
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+
+    expect(ok).toBe(true)
+    expect(byName(results, 'veth-source')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'veth-source')?.detail).toContain('unverified on yaac-control-plane')
   })
 
   it('fails datapath when calico-node is not ready (policy unenforced)', async () => {

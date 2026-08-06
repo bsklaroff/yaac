@@ -30,6 +30,7 @@ import {
   buildSessionEgressNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
+import { assessVethSource, cniVethPrefix, probeWorkloadVeths } from './cni-adopt'
 import { ensureNamespace } from './proxy-apply'
 import { vapAvailable } from './vcluster'
 import {
@@ -150,6 +151,11 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      and yaac-netd is Ready (session egress has a redirect). Nested, this
  *      becomes "the claim-mode netd is publishing" — the inner install's own
  *      half of the same guarantee, warn-level until it is deployed
+ *   9b. veth-source: the pod → veth binding the redirect keys on actually
+ *      resolves on every node, for the configured prefix. Not covered by
+ *      the datapath gate: netd's readiness is Envoy's config ack, which is
+ *      green with zero pod → veth mappings, so a wrong prefix leaves a Ready
+ *      netd whose chain has no per-pod rules in it
  *  10. nested-mount (warn-only): under the nested session securityContext
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
@@ -282,7 +288,7 @@ export async function runClusterCheck(
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'probe', 'egress', 'datapath',
+    'node-fixups', 'gvisor', 'probe', 'egress', 'datapath', 'veth-source',
     ...MULTI_NODE_GATES,
     'nested-mount', 'vap', 'runtime-stamp',
   ] as const
@@ -324,6 +330,12 @@ export async function runClusterCheck(
     // claim-mode netd must be publishing, or the host has nothing to program
     // and inner sessions fall back to the outer proxy's allowlist alone.
     add(await runClaimDatapathCheck())
+    // A vcluster has no nodes, so there is no routing table in here to read
+    // — the HOST install's check owns this verdict for the whole node.
+    add({
+      name: 'veth-source', status: 'skip',
+      detail: 'skipped — nested yaac (the host cluster owns the pod → veth source)',
+    })
     for (const name of [...MULTI_NODE_GATES, 'nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
@@ -356,6 +368,17 @@ export async function runClusterCheck(
   // apiserver access the checks above already prove — there is no
   // cluster-shape wiring to verify.)
   add(await runDatapathCheck())
+
+  // 9b. veth-source: the redirect's pod → veth binding actually resolves on
+  // every node, for the prefix netd was configured with. Separate from the
+  // datapath gate above because the two fail differently and the datapath
+  // gate CANNOT see this one: netd's readiness is Envoy's config ack, which
+  // is green with zero pod → veth mappings. So a wrong prefix (or a CNI that
+  // writes no per-workload route) leaves netd Ready, its chain empty of
+  // per-pod rules, and every session quietly without egress. Re-checked on
+  // every run, not just at `--adopt-cni` time, since a node pool added later
+  // can differ from the one adoption sampled.
+  add(await runVethSourceCheck())
 
   // 8b. multi-node readiness. Ran above, alongside the other pod probes;
   // reported here because a node that cannot pull or cannot see the shared
@@ -1526,7 +1549,11 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         fix: 'Session egress lockdown fails open without NetworkPolicy '
           + 'enforcement, leaving the proxy allowlist advisory. Re-run '
           + '`yaac cluster setup`, which installs Calico as the CNI and '
-          + 'policy engine.',
+          + 'policy engine.\nOn a cluster whose CNI yaac adopted '
+          + '(`--adopt-cni`), this is the probe that says the adopted engine '
+          + 'is not actually enforcing plain networking.k8s.io/v1 policy — '
+          + '"Calico is installed" does not imply it. Policy-only Calico over '
+          + 'a foreign IPAM needs its policy plane genuinely wired up.',
       }
     }
     if (logs.includes('NP_REGISTRY_OPEN')) {
@@ -1685,7 +1712,8 @@ async function runDatapathCheck(): Promise<CheckResult> {
       return {
         name: 'datapath', status: 'fail',
         detail: `calico-node is ${calico.trim()} ready — NetworkPolicy is not being enforced`,
-        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster setup`, '
+        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster setup` '
+          + '(or `--adopt-cni` on a cluster whose Calico yaac did not install), '
           + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
       }
     }
@@ -1725,6 +1753,30 @@ async function runDatapathCheck(): Promise<CheckResult> {
       name: 'datapath', status: 'fail',
       detail: `could not query the datapath components (${truncate(err)})`,
       fix: KIND_SETUP_FIX,
+    }
+  }
+}
+
+/**
+ * The pod → veth gate. Reads every netd pod's own node routing table and
+ * applies the same verdict `--adopt-cni` applies (assessVethSource), so
+ * setup and check cannot disagree about what a working redirect source
+ * looks like.
+ *
+ * Cheap: one `kubectl exec` per node into a container that is already
+ * running, no pod to schedule.
+ */
+async function runVethSourceCheck(): Promise<CheckResult> {
+  const prefix = cniVethPrefix()
+  try {
+    const outcomes = await probeWorkloadVeths(execFileAsync, prefix)
+    const { status, detail, fix } = assessVethSource(outcomes, prefix)
+    return { name: 'veth-source', status, detail, ...(fix ? { fix } : {}) }
+  } catch (err) {
+    return {
+      name: 'veth-source', status: 'warn',
+      detail: `could not read the node routing tables (${truncate(err)}) — the pod → veth `
+        + `source for ${prefix}* is unverified`,
     }
   }
 }

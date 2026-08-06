@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // whole module is stubbed (not just kubectlApply) because the barrel's other
 // modules import its rest at link time.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
