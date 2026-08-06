@@ -552,7 +552,12 @@ describe('ensureImage', () => {
       'yaac.data-dir-hash': 'ddh0000000000000',
       'yaac.role': 'builder',
     })
-    // Sandboxed, bounded and unprivileged pod-side.
+    // Sandboxed, bounded and unprivileged pod-side. Naming the class is
+    // also what PLACES the pod: admission merges the RuntimeClass's
+    // nodeSelector and tolerations into it, which is how a builder reaches
+    // a gVisor-labelled node and tolerates a sessions pool's taint with
+    // nothing about either in this manifest. That merge happens at
+    // admission, so this assertion is as close as a unit test gets to it.
     expect(pod.spec.runtimeClassName).toBe('gvisor')
     // Above sessions for eviction, but on the no-preemption tier: a build
     // must never displace a running session to start.

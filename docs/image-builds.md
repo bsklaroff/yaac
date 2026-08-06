@@ -135,7 +135,8 @@ Per layer the flow is:
 
 Pod spec: name `yaac-builder-<tag-hash8>-<rand>`, label `yaac.role: builder`
 plus install labels, `runtimeClassName: gvisor` (chroot builds need no raw
-sockets), the nested-engine cap set, `automountServiceAccountToken: false`,
+sockets, and see below for what naming the class also buys), the
+nested-engine cap set, `automountServiceAccountToken: false`,
 seccomp RuntimeDefault, an explicit memory request well under its ~8Gi
 limit, and `activeDeadlineSeconds` bounding the whole pod. The graphroot
 lives on a disk-backed sentry-internal tmpfs (~16Gi) via the
@@ -143,6 +144,17 @@ lives on a disk-backed sentry-internal tmpfs (~16Gi) via the
 path, and no cache GC to run. The entrypoint sleeps; the server drives it
 with `kubectl exec` so build logs stream into the build-tracking registry
 exactly like a piped host build's.
+
+**Where a builder pod lands is inherited, not written.** Naming the `gvisor`
+RuntimeClass is what places it: the RuntimeClass admission controller merges
+that class's `scheduling.nodeSelector` AND `scheduling.tolerations` into every
+pod naming it, so a builder pod reaches the gVisor-labelled nodes it needs and
+tolerates whatever taint a dedicated sessions pool carries — without either
+being in the manifest yaac writes. That inheritance is required, not
+incidental: on a tainted pool a builder pod with no toleration would be
+unschedulable on exactly the nodes that can run it. It is also invisible to a
+unit test, since it happens at admission rather than in the manifest, so
+"builds work on a tainted sessions pool" is checked by running one there.
 
 Every step is bounded by a pair of timeouts, run by the shared
 `platform/streaming-proc.ts`:
