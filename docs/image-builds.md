@@ -156,6 +156,14 @@ unschedulable on exactly the nodes that can run it. It is also invisible to a
 unit test, since it happens at admission rather than in the manifest, so
 "builds work on a tainted sessions pool" is checked by running one there.
 
+The two fields do not merge the same way, which matters only if a future
+change gives builder pods placement of their own: tolerations are appended,
+but a `nodeSelector` key the pod already carries with a *different* value
+than the RuntimeClass's makes admission **reject** the pod. A builder sets
+neither key today, so there is no conflict surface — and adding one on
+`GVISOR_NODE_LABEL` would fail every build with an error that does not point
+back here.
+
 Every step is bounded by a pair of timeouts, run by the shared
 `platform/streaming-proc.ts`:
 
