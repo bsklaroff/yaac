@@ -282,12 +282,18 @@ instead of assuming them.
   exactly the one a node replacement destroys. A PVC (RWO is enough; both
   registries are single-replica by construction) is what actually makes the
   store outlive the pod's placement.
-- **Image salvage / shared image store**: the node-local
-  `/var/lib/yaac/imagecache` hostPath + unpinned writer pod is already a
-  latent multi-node bug. Replace store-on-disk promotion with **push to the
-  project registry** (salvage writer pushes; nested engines pull) — one
-  distribution mechanism, no node affinity. If the per-file pull cost hurts,
-  a per-node cache DaemonSet is an optimization, not a correctness need.
+- ~~**Image salvage / shared image store**~~ — **done**. The cross-session
+  image cache for nested sessions travels through the project's in-cluster
+  registry: the session pushes what its in-pod engine built or pulled, a
+  later session pulls it back. The registry is the only distribution
+  mechanism, so a session scheduled on a different node than the one that
+  built the images still gets the cache. The push runs *inside* the sandbox
+  because the one hard constraint is that no layer may be extracted
+  file-by-file through the gVisor gofer (~2ms/file; a 4GB salvage took 16+
+  minutes) — the engine's graphroot is a sentry-internal tmpfs, so the push
+  reads at native speed and streams blobs out over netstack, the same shape
+  the trust-split builder pods already push with. No node-local store, no
+  node affinity, no node-side writer.
 - **Builder pods** carry a reserved `yaac.role=builder` label, kept
   unforgeable by the stock-k8s builder-role `ValidatingAdmissionPolicy` (no
   ServiceAccount may set it; the pod must be gvisor). The node agent gives a
@@ -384,7 +390,8 @@ shaped.
    - buildkitd-in-cluster + push/pull against DOCR or in-cluster registry.
 2. **Host-decoupling that pays off on single-node too** (land on the
    current backend first): buildkit builds behind a builder abstraction,
-   ~~registry in-cluster~~ (done — §5), salvage-via-registry,
+   registry storage on PVCs (§5), ~~registry in-cluster~~ (done — §5),
+   ~~salvage-via-registry~~ (done — §5),
    ~~ssh-agent off the hostPath socket~~ (done — over the proxy's agent
    port, not the stream relay),
    ~~tmux socket to emptyDir~~ (done), ~~shared/node-local root split in
@@ -393,12 +400,17 @@ shaped.
    (hostPath | PVC)~~ (done — §2; the `pvc` source renders but nothing
    selects it until the claims exist), server Deployment + PVCs, `yaac
    cluster attach` installer, provider-aware check.
-4. **Multi-node rehearsal, then a real managed cluster:** ~~multi-node kind
-   with per-node extraMounts (from the storage plan)~~ — `yaac cluster setup
-   --nodes N` builds it and `cluster check` gates per-node readiness
-   (runsc / registry pull / shared volume), which is §7's "single node
-   assumed" warning inverted; what is left is running the e2e suite against
-   one. Then a real EKS-AL/self-managed cluster behind the spikes.
+4. **A real managed cluster:** EKS-AL / self-managed, behind the spikes.
+
+**Final gate, re-run after every migration above lands: the e2e suite on a
+multi-node cluster.** ~~Multi-node kind with per-node extraMounts (from the
+storage plan)~~ — `yaac cluster setup --nodes N` builds it, `cluster check`
+gates per-node readiness (runsc / registry pull / shared volume), which is
+§7's "single node assumed" warning inverted, and the suite has been run
+against one. It is listed last rather than as a phase because each item
+above changes what a second node can observe — registry storage, session
+eligibility, the server's own volumes — so a green multi-node run is the
+acceptance criterion for each, not a milestone reached once.
 
 ## Open questions
 
