@@ -10,6 +10,8 @@ import fs from 'node:fs/promises'
 // and through cluster setup).
 const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -178,12 +180,24 @@ afterEach(async () => {
 })
 
 describe('ensureNamespace', () => {
-  it('applies a Namespace manifest for the active namespace', async () => {
+  it('applies a Namespace manifest labelled for the privileged Pod Security Standard', async () => {
+    // The labels are inert on a cluster yaac builds (kind enforces no PSS)
+    // and load-bearing on one it adopts, where the cluster default is often
+    // baseline: netd is hostNetwork with NET_ADMIN, so under an inherited
+    // restrictive default its DaemonSet creates no pod at all and no session
+    // gets a redirect.
     await ensureNamespace()
     expect(mockApply).toHaveBeenCalledWith({
       apiVersion: 'v1',
       kind: 'Namespace',
-      metadata: { name: 'test-ns' },
+      metadata: {
+        name: 'test-ns',
+        labels: {
+          'pod-security.kubernetes.io/enforce': 'privileged',
+          'pod-security.kubernetes.io/audit': 'privileged',
+          'pod-security.kubernetes.io/warn': 'privileged',
+        },
+      },
     })
   })
 })
@@ -458,8 +472,40 @@ describe('ensureProxyResources', () => {
       .flatMap((c) => c.env)
       .find((e) => e.value?.includes('10.244.0.0/24'))
     expect(podCidrEnv?.value).toContain('192.168.0.0/16')
+    // Calico's veth naming is the default, passed explicitly rather than
+    // baked into netd: an adopted CNI can name workload veths differently,
+    // and netd's pod → veth resolution keys on that prefix.
+    const vethEnv = pod.containers
+      .flatMap((c) => c.env)
+      .find((e) => e.name === 'NETD_VETH_PREFIX')
+    expect(vethEnv?.value).toBe('cali')
     // Both images resolve through the local registry, never upstream.
     for (const c of pod.containers) expect(c.image).toMatch(/^localhost:5001\//)
+  })
+
+  it('adds the configured pod CIDRs and veth prefix for an adopted CNI', async () => {
+    // A cluster yaac did not build may allocate pod IPs from a range that
+    // appears in no IPPool and no spec.podCIDR (a VPC CNI hands out subnet
+    // addresses), and name its workload veths something other than `cali*`.
+    // Both are explicit configuration — and the CIDR one UNIONS with what
+    // was discovered rather than replacing it, because too narrow is the
+    // dangerous direction: an unlisted pod IP is treated as world and its
+    // pod-to-pod 443/80 is redirected into the proxy.
+    vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 10.1.0.0/16 , not-a-cidr')
+    vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
+    resetClusterCidrCache()
+    stageClusterReads()
+    await ensureProxyResources('img')
+
+    const env = (applied().find((m) => m.kind === 'DaemonSet') as unknown as {
+      spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } }
+    }).spec.template.spec.containers.flatMap((c) => c.env)
+    const cidrs = env.find((e) => e.name === 'CLUSTER_POD_CIDRS')?.value?.split(',')
+    expect(cidrs).toEqual(['10.1.0.0/16', '10.244.0.0/24', '172.31.0.0/16', '192.168.0.0/16'])
+    // A malformed entry is dropped rather than reaching a nat rule that
+    // iptables-restore would reject, stalling every redirect update.
+    expect(cidrs).not.toContain('not-a-cidr')
+    expect(env.find((e) => e.name === 'NETD_VETH_PREFIX')?.value).toBe('eni')
   })
 
   it('builds the netd image when neither the registry nor podman has it', async () => {

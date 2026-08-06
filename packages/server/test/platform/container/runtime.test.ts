@@ -28,6 +28,8 @@ vi.mock('node:child_process', () => ({
 // makes outside this folder. ensureKubernetes has its own test in
 // test/platform/k8s/kubectl.test.ts.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   ensureKubernetes: vi.fn().mockResolvedValue(undefined),
 }))
 

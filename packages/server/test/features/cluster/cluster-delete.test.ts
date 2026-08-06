@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // TTY prompt. Nothing inside features/cluster is mocked — the confirmation
 // gate runs for real behind the readline fake.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   execFileAsync: vi.fn(),
 }))
 

@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // mocked, so cluster-cidrs resolves the node/apiserver ipBlocks for real off
 // the `get nodes` / `get endpoints` responses staged below.
 vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),

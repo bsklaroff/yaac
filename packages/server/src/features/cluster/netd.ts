@@ -23,6 +23,7 @@ import { NETD_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import { clusterPodCidrs } from './cluster-cidrs'
+import { cniVethPrefix } from './cni-adopt'
 import {
   INNER_CLAIM_CM_NAME,
   buildInnerClaimConfigMapManifest,
@@ -280,6 +281,13 @@ export interface NetdDaemonSetOptions {
   envoyImage: string
   /** Cluster pod CIDRs — excluded from the redirect so pod-to-pod stays direct. */
   podCidrs: string[]
+  /**
+   * Interface-name prefix this cluster's CNI gives every workload veth.
+   * `cali` wherever Calico does the IPAM; an adopted CNI may differ (see
+   * cni-adopt.ts), and `--adopt-cni` verifies the value against a node's
+   * real routing table before any session depends on it.
+   */
+  vethPrefix: string
 }
 
 /**
@@ -344,6 +352,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
               env: [
                 { name: 'YAAC_NAMESPACE', value: k8sNamespace() },
                 { name: 'CLUSTER_POD_CIDRS', value: opts.podCidrs.join(',') },
+                { name: 'NETD_VETH_PREFIX', value: opts.vethPrefix },
                 { name: 'NETD_LISTENER_PORT_BASE', value: String(NETD_LISTENER_PORT_BASE) },
                 { name: 'NETD_LISTENER_SLOTS', value: String(NETD_LISTENER_SLOTS) },
                 { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
@@ -524,7 +533,9 @@ export async function ensureNetd(opts: { nested?: boolean } = {}): Promise<void>
   await kubectlApply(buildNetdClusterRoleBindingManifest())
   await kubectlApply(buildNetdRoleManifest())
   await kubectlApply(buildNetdRoleBindingManifest())
-  await kubectlApply(buildNetdDaemonSetManifest({ netdImage, envoyImage, podCidrs }))
+  await kubectlApply(buildNetdDaemonSetManifest({
+    netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix(),
+  }))
   await kubectlWithRetry([
     'rollout', 'status', `daemonset/${NETD_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=180s',

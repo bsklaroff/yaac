@@ -92,6 +92,64 @@ export const env = {
   },
 
   /**
+   * `YAAC_CNI_VETH_PREFIX` — interface-name prefix the adopted CNI gives
+   * every workload's host-side veth. netd resolves a pod to the veth its
+   * frames arrive on by matching this prefix against the node's per-workload
+   * host routes, and that prefix is what guarantees a malformed routing
+   * table can never make it redirect something that is not a workload.
+   *
+   * Unset → `cali`, correct wherever Calico does the IPAM (every cluster
+   * `yaac cluster setup` builds). Policy-only Calico over the AWS VPC CNI
+   * gives `eni`; other pairings give other names, which is why this is
+   * configuration rather than a constant. `yaac cluster setup --adopt-cni`
+   * verifies the effective prefix against the node's real routing table and
+   * refuses an adoption where it resolves nothing.
+   */
+  get cniVethPrefix(): string | undefined {
+    const raw = process.env.YAAC_CNI_VETH_PREFIX
+    return raw && raw.trim() !== '' ? raw.trim() : undefined
+  },
+
+  /**
+   * `YAAC_POD_CIDRS` — comma-separated pod CIDRs to add to netd's redirect
+   * exclusion set, for allocations the cluster publishes nowhere else. A VPC
+   * CNI hands out subnet addresses that appear in no Calico IPPool and no
+   * node `spec.podCIDR`, and too NARROW is the dangerous direction here: a
+   * pod IP outside the list is treated as world and its pod-to-pod 443/80
+   * gets redirected into the proxy. So this is unioned with the discovered
+   * sources rather than replacing them.
+   *
+   * Entries that are not a usable dotted-quad v4 CIDR are rejected by the
+   * consumer (`podCidrSources`) — but never *silently*: an entry that simply
+   * vanished would leave the exclusion set narrower than what the operator
+   * believes they set, which is the failure this list exists to prevent.
+   * `--adopt-cni` refuses on one; a running server logs it. Raw strings are
+   * returned here so the consumer can name what it rejected.
+   */
+  get podCidrs(): string[] {
+    const raw = process.env.YAAC_POD_CIDRS
+    if (!raw) return []
+    return raw.split(',').map((c) => c.trim()).filter((c) => c.length > 0)
+  },
+
+  /**
+   * `YAAC_KUBE_PROXY_EXTERNAL` — set to `1` when kube-proxy runs somewhere
+   * `--adopt-cni` cannot see it as a pod. k3s is the case that matters: it
+   * runs kube-proxy **in-process inside the kubelet**, so the cluster has
+   * no kube-proxy pod, DaemonSet or label to find — and self-managed k3s is
+   * a primary target, not an exotic one.
+   *
+   * This acknowledges the operator has verified ClusterIP translation is
+   * still kube-proxy's job; it does not weaken anything else. Getting it
+   * wrong costs egress rather than opening it: netd's Envoy simply fails to
+   * dial the proxy's ClusterIP, and the session NetworkPolicy still denies
+   * every world-ward destination but the node's listener range.
+   */
+  get kubeProxyExternal(): boolean {
+    return process.env.YAAC_KUBE_PROXY_EXTERNAL === '1'
+  },
+
+  /**
    * `YAAC_PREWARM_POOL_SIZE` — prewarmed sessions per active project (`0`
    * disables). Default 1; a non-integer or negative value falls back to 1.
    */

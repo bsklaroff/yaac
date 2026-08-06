@@ -56,6 +56,15 @@ netd resolves pod → veth from the per-workload host route Calico installs
 resource is served only by the optional Calico apiserver, which yaac does
 not install.
 
+The `cali` prefix is configuration (`NETD_VETH_PREFIX`, set by the server
+from `YAAC_CNI_VETH_PREFIX`), because it is correct only where Calico does
+the IPAM — policy-only Calico over the AWS VPC CNI gives `eni*`. It is
+never relaxed to "any device": matching a prefix is what guarantees a
+malformed routing table cannot make netd redirect a node interface, so an
+empty or unusable value falls back to `cali` rather than becoming a
+wildcard. A prefix that resolves nothing costs egress; a wildcard would
+corrupt the node's own traffic.
+
 ## Why DNAT and not TPROXY
 
 **netd must never compete with Felix for iptables chain position.** Felix
@@ -228,6 +237,19 @@ The **policy** half has no such constraint. Every policy is plain
 `networking.k8s.io/v1` NetworkPolicy, which every engine — including
 Cilium — enforces natively. Only the redirect is CNI-sensitive.
 
+**Calico's own eBPF dataplane is the same refusal as Cilium.**
+`FelixConfiguration.bpfEnabled` (or `FELIX_BPFENABLED` on the calico-node
+container) bypasses iptables for pod traffic exactly the way Cilium's
+host-routing does, and it can be turned on under a Calico install that
+otherwise looks adoptable. `yaac cluster setup --adopt-cni` — the mode
+that installs into a cluster whose Calico yaac did not install — refuses
+it outright rather than warning, along with a replaced kube-proxy, an
+empty pod-CIDR set, and a veth prefix that resolves no workload route.
+The full gate is in docs/cluster-setup.md ("Adopting a CNI yaac did not
+install"); the reason every one of them is a refusal is that each fails
+*silently*, as "sessions have no egress" or as a chain that counts packets
+and never fires.
+
 ## Managed-cloud portability
 
 netd is identical everywhere; what varies is who runs the policy engine.
@@ -243,6 +265,10 @@ per provider.
 | EKS (AWS VPC CNI) | **our Calico, policy-only mode** | do *not* use AWS's network-policy agent: it enforces via TC eBPF *before* netfilter, which would force world-allows on 443/80 into the session policy and destroy the netd-late fail-closed floor; its default mode is also fail-open at pod birth |
 | AKS (Azure CNI, non-Cilium) | **Microsoft-managed Calico** (`--network-policy calico`) | plain NP enforced natively |
 | GKE Dataplane V2 / Autopilot, AKS-Cilium, DOKS | — | **out of scope**: Cilium-mandated (DOKS's is not replaceable), which defeats the veth-peer redirect. Autopilot also blocks the privileged DaemonSet netd needs |
+
+Every row but the first is an **adoption**: `yaac cluster setup
+--adopt-cni` installs into the cluster without touching its CNI, after
+verifying the dataplane it is about to depend on (docs/cluster-setup.md).
 
 ## Plain NetworkPolicy only
 
@@ -262,13 +288,20 @@ its vcluster — plain NetworkPolicy is a core API every vcluster serves.
 ## Operational notes
 
 - **Pod CIDRs are discovered, not assumed.** `clusterPodCidrs()` unions
-  Calico's IPPools with every node's `spec.podCIDR` and passes the list to
-  netd. IPPools come first because Calico allocates /26 blocks anywhere in
-  its pool, so a pod's IP routinely falls outside its own node's
-  `spec.podCIDR`. Too narrow is the dangerous direction — a pod IP outside
-  the list is treated as world and its pod-to-pod 443/80 is redirected
-  into the proxy — so the sources union rather than compete, and netd
-  refuses to start on an empty list.
+  explicit config (`YAAC_POD_CIDRS`) with Calico's IPPools and every node's
+  `spec.podCIDR`, and passes the list to netd. IPPools beat `spec.podCIDR`
+  because Calico allocates /26 blocks anywhere in its pool, so a pod's IP
+  routinely falls outside its own node's `spec.podCIDR`; the config source
+  exists for a foreign IPAM that publishes neither (a VPC CNI hands out
+  subnet addresses). Too narrow is the dangerous direction — a pod IP
+  outside the list is treated as world and its pod-to-pod 443/80 is
+  redirected into the proxy — so the sources union rather than compete,
+  and netd refuses to start on an empty list. `disabled` IPPools are
+  included for the same reason: the flag stops new allocations, and pods
+  already holding an address from that pool keep it. An unusable
+  `YAAC_POD_CIDRS` entry is reported rather than dropped, since a vanished
+  typo narrows the set with nothing to say so. Resolved at apply time, so a
+  CIDR added to a live cluster needs a re-apply.
 - **iptables backend.** netd probes at startup for whichever backend
   carries Calico's chains (a kind node's `iptables` alternative points at
   **legacy**). Writing to the wrong backend produces a chain that exists,

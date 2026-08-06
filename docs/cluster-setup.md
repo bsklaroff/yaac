@@ -5,8 +5,9 @@ what the command provisions, and why. Companion to `yaac cluster check`,
 which verifies all of it (the command finishes by running it).
 
 ```sh
-yaac cluster setup            # one node
-yaac cluster setup --nodes 3  # one control-plane node + two workers
+yaac cluster setup             # one node
+yaac cluster setup --nodes 3   # one control-plane node + two workers
+yaac cluster setup --adopt-cni # install into a cluster whose CNI is not ours
 ```
 
 The command bootstraps the podman machine on macOS (see below) — or expects a
@@ -14,6 +15,10 @@ reachable rootful podman on Linux (see below) — creates a kind cluster from th
 bundled `k8s/kind-config.yaml`, installs pinned Calico (the CNI and
 NetworkPolicy engine) and netd (the session-egress redirect), applies the node
 fixups to every node, and deploys the in-cluster image registry.
+
+`--adopt-cni` is the one non-destructive mode: it creates nothing and
+installs no CNI, adopting the Calico an existing cluster already runs (see
+"Adopting a CNI yaac did not install").
 
 ## The split runtime
 
@@ -302,6 +307,115 @@ for a single point of failure.
 `yaac cluster check` reports per-node readiness on a multi-node cluster
 (`runsc-nodes`, `registry-nodes`, `volume-nodes` — see "Verifying").
 
+## Adopting a CNI yaac did not install
+
+```sh
+yaac cluster setup --adopt-cni
+```
+
+Installs into the cluster the current kubeconfig points at, adopting the
+**Calico it already runs** — ours, a self-managed one, or a provider-managed
+one (GKE Dataplane V1, AKS `--network-policy calico`, Calico policy-only over
+the AWS VPC CNI on EKS). It creates no cluster, needs no `kind`, and skips
+the Calico install; everything else it applies is what the other modes apply
+(PriorityClasses, registry, builder guard, gVisor runtime, netd), so it is
+idempotent and re-runnable. It refuses `--nodes` (no nodes to render) and
+`--repair` (that mode fixes up a cluster yaac built).
+
+There is no datapath change here — the netd redirect (docs/session-egress.md)
+works unmodified on any CNI whose pod egress traverses host netfilter and
+that leaves ClusterIP translation to kube-proxy. What changes is that four
+things the owned-cluster path guarantees by construction become things this
+mode **verifies**, and every one of them fails *silently* when the
+assumption is wrong. So each is a refusal, not a warning:
+
+| Verified | Why a refusal |
+|---|---|
+| calico-node present and fully rolled out | policy is the enforcement plane; a node without Felix is a node with no session egress lockdown. Absent Calico is also how a Cilium cluster reads, and no Cilium configuration survives the veth-peer redirect |
+| **not** the eBPF dataplane — `spec.bpfEnabled` on **any** FelixConfiguration, or `FELIX_BPFENABLED` on the container | eBPF host-routing short-circuits host netfilter exactly as Cilium does: the redirect chain exists, counts zero packets, and every session silently loses the internet |
+| kube-proxy running, and not replaced (`bpfKubeProxyIptablesCleanupEnabled`) | netd's Envoy dials the yaac proxy by ClusterIP from the host netns, and appending below `KUBE-SERVICES` is what keeps ClusterIP traffic out of the redirect |
+| a pod-CIDR set that is non-empty and wholly parseable | those CIDRs lead netd's chain as RETURNs; with none it would DNAT pod-to-pod 443/80 into the proxy, and a silently-dropped `YAAC_POD_CIDRS` entry narrows the set below what was configured. The per-apply path falls back to kind's default — adoption refuses instead |
+| `system-node-critical` exists | netd names it, and the apiserver rejects a pod naming a missing class: the DaemonSet then creates no pod and no node has a redirect |
+| workload host routes match the veth prefix, **on every node** | netd's only pod → veth source, read through each netd pod once it is up. A prefix matching nothing renders a chain with no per-pod rules — indistinguishable from a healthy netd |
+| every check was actually **evaluated** | a read that failed for any reason other than genuine absence is an unknown, not a fact. Absence is meaningful here (no FelixConfiguration means Felix's iptables defaults), so an RBAC-denied or timed-out read that collapsed into "absent" would wave an eBPF cluster through |
+
+Two things are **recorded, not enforced**. `chainInsertMode`: netd appends
+its own `nat PREROUTING` jump and never competes with Felix for position, so
+`Append` is safe and only warns. And per-node kube-proxy coverage: one
+running kube-proxy proves the cluster has one, but a node without it loses
+egress by itself while the rest work — which reads as intermittent, so the
+nodes are named.
+
+The pod → veth and kube-proxy checks are **per node**, not per cluster. On a
+heterogeneous fleet — mixed node pools or AMIs, the realistic EKS shape —
+one node's routing table says nothing about the others', and a node whose
+veths are named differently is a node whose sessions get no redirect.
+
+**NetworkPolicy enforcement is probed, never inferred.** "Calico is
+installed" is not evidence that plain `networking.k8s.io/v1` policy is
+enforced — policy-only Calico over a foreign IPAM is a supported topology and
+a misconfigured one looks identical until a session escapes. The `egress`
+gate of the cluster check that finishes every setup is that probe (see
+"Verifying"), and its failure makes the command exit non-zero.
+
+**A failed check leaves the install in place.** Every mode installs before
+it verifies, so the failure's only artifact is the non-zero exit code —
+nothing uninstalls, and nothing re-checks between explicit `yaac cluster
+check` runs. That matters most for the `egress` gate: a cluster that fails
+it runs sessions whose egress lockdown is *advisory*, since the policy is
+applied but not enforced, and the proxy allowlist then covers only the
+ports the redirect steers (443/80/the ssh sentinel). Setup says so
+explicitly when that gate fails. **Do not start sessions until a re-run
+passes.**
+
+**The veth check is re-run by every `yaac cluster check`**, not only at
+adoption. It has its own gate (`veth-source`) rather than living inside
+`datapath`, because `datapath` structurally cannot see it: netd's readiness
+is Envoy's config ack, which goes green with zero pod → veth mappings. A
+node pool added after adoption is the case that matters.
+
+The namespaces yaac creates — the install namespace, the registry namespace,
+and each per-session vcluster namespace — are labelled for the `privileged`
+Pod Security Standard. Inert on kind, load-bearing on an adopted cluster
+whose default is `baseline` or `restricted`: netd is `hostNetwork` with
+`NET_ADMIN`/`NET_RAW`, the node-write pods hostPath-mount `certs.d`, and
+synced tenant pods are shaped by the vcluster's own guard. PSS is
+namespace-scoped, so this relaxes nothing outside them.
+
+Three knobs exist for what a foreign cluster does not publish:
+
+- `YAAC_CNI_VETH_PREFIX` — the interface-name prefix the CNI gives workload
+  veths (default `cali`; policy-only Calico over the AWS VPC CNI gives
+  `eni`). Never relaxed to "any device": that prefix is what stops a
+  malformed routing table from making netd redirect something that is not a
+  workload, so an empty or nonsense value falls back to `cali` rather than
+  becoming a wildcard. When the configured prefix resolves nothing, the
+  refusal names the prefix the node's routes actually use.
+- `YAAC_POD_CIDRS` — extra pod CIDRs, comma-separated. Unioned with the
+  discovered sources rather than replacing them, because too *narrow* is the
+  dangerous direction: a pod IP outside the list is treated as world. An
+  entry that is not a usable dotted-quad v4 CIDR is refused rather than
+  dropped — a vanished typo would leave the set narrower than what was
+  written, with nothing to say so.
+- `YAAC_KUBE_PROXY_EXTERNAL=1` — acknowledges that kube-proxy runs where no
+  pod can be found. **k3s** is the case: it runs kube-proxy in-process inside
+  the kubelet, so there is no pod, DaemonSet or label to detect, and
+  self-managed k3s is a primary target rather than an exotic one. Getting it
+  wrong costs egress rather than opening it — netd's Envoy simply fails to
+  dial the proxy's ClusterIP, and the session NetworkPolicy still denies
+  every world-ward destination but the node's listener range. Recorded in the
+  audit trail, since it is the one check an operator can wave through.
+
+All are read at apply time, so a CIDR added to a live cluster needs a
+re-run to take effect.
+
+Calico's kube-proxy pods are found under either `k8s-app=kube-proxy`
+(kubeadm, EKS, kind) or `component=kube-proxy` (GKE, AKS).
+
+Out of scope, deliberately: Cilium in any configuration, and installing
+policy for anyone else's workloads — every yaac policy selects only its own
+pods and its own vcluster namespaces.
+
 ## Node fixups vanish on restart
 
 The node limits live in node/VM state and **vanish on a node or VM restart**
@@ -387,15 +501,27 @@ ends with a sweep warning about any untrusted pod (session-labeled or
 vcluster-synced) running without a gvisor-tier `runtimeClassName` (pods
 predating the gVisor migration). Run it whenever sessions fail to start.
 
+Two gates cover the redirect, and they fail differently on purpose.
+`datapath` says calico-node and netd are Ready — policy is enforced and a
+redirect exists. `veth-source` says the redirect can actually *key* on
+anything: it execs each netd pod for its own node's routing table and
+checks that workload host routes match the configured veth prefix. Ready
+netd does not imply that — netd's readiness is Envoy's config ack, which
+goes green with zero pod → veth mappings — so without this gate a wrong
+prefix presents only as sessions with no egress.
+
 ### Which nodes count as session-eligible
 
-Both the node inventory line and the per-node sweep below narrow to the
-nodes a session could actually land on: Ready, uncordoned, and carrying no
-taint the session pod fails to tolerate. That last clause is real per-taint
-matching, not "carries no taint at all" — a session pod's tolerations are
-whatever the `gvisor` RuntimeClass declares in `scheduling.tolerations`,
-which the RuntimeClass admission controller merges into every pod naming the
-class.
+The node inventory line, the per-node sweep below, and `--adopt-cni`'s
+per-node kube-proxy coverage all narrow to the nodes a session could
+actually land on: Ready, uncordoned, and carrying no taint the session pod
+fails to tolerate. That last clause is real per-taint matching, not "carries
+no taint at all" — a session pod's tolerations are whatever the `gvisor`
+RuntimeClass declares in `scheduling.tolerations`, which the RuntimeClass
+admission controller merges into every pod naming the class. One definition,
+shared: a second one would drift, and on a tainted pool the blanket rule
+reads as *zero* eligible nodes, so a coverage check built on it would
+silently verify nothing.
 
 That is also how a **dedicated sessions node pool** works: taint the pool so
 other workloads stay off it, declare the matching toleration once on the

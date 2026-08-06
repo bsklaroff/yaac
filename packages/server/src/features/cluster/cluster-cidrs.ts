@@ -1,4 +1,6 @@
-import { kubectlGetJson } from '#platform/k8s'
+import { isKubectlAbsentError, kubectlErrorSummary, kubectlGetJson } from '#platform/k8s'
+import { env } from '@yaac/shared/env'
+import { serverLog } from '#log'
 
 /**
  * The CIDR literals the policies need.
@@ -130,13 +132,30 @@ export async function apiserverIpBlocks(): Promise<string[]> {
 /** kind's default cluster CIDR, and the last resort when nothing answers. */
 export const FALLBACK_POD_CIDR = '10.244.0.0/16'
 
-/** A dotted-quad CIDR, which is all the v4 nat rules can express. */
+/**
+ * A dotted-quad CIDR, which is all the v4 nat rules can express — with
+ * every octet and the mask actually in range.
+ *
+ * The range check is not pedantry: these strings become `-d <cidr>` in the
+ * `iptables-restore` document netd applies, and `iptables-restore` rejects
+ * the WHOLE document on one bad line. A `999.1.1.1/99` that reached the
+ * renderer would stall every redirect update on the node, not just its own
+ * rule.
+ */
 function isIpv4Cidr(value: string): boolean {
-  return /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(value)
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value)
+  if (!m) return false
+  const octets = [m[1], m[2], m[3], m[4]].map(Number)
+  return octets.every((o) => o <= 255) && Number(m[5]) <= 32
 }
 
 function normalize(cidrs: string[]): string[] {
   return [...new Set(cidrs.filter(isIpv4Cidr))].sort()
+}
+
+/** The entries `normalize` would throw away — what the caller must report. */
+function rejected(cidrs: string[]): string[] {
+  return [...new Set(cidrs.filter((c) => !isIpv4Cidr(c)))].sort()
 }
 
 /**
@@ -146,16 +165,23 @@ function normalize(cidrs: string[]): string[] {
  * Sourced in preference order, because no single source is right
  * everywhere:
  *
- *  1. **Calico IPPools.** The authority wherever Calico does the IPAM,
- *     which is every cluster `yaac cluster setup` builds. Calico allocates
- *     /26 blocks from anywhere in its pool, so a pod's IP routinely falls
- *     outside its own node's `spec.podCIDR` — that field describes the
- *     kubeadm allocation Calico is not using.
+ *  0. **Explicit config** (`YAAC_POD_CIDRS`). For a cluster yaac did not
+ *     build, whose IPAM publishes its allocations nowhere the two sources
+ *     below can read: an AWS VPC CNI hands out VPC subnet addresses that
+ *     appear in no IPPool and no `spec.podCIDR`. Named first because it is
+ *     the only source an operator controls, but it ADDS rather than
+ *     overrides — see the too-narrow note below.
+ *  1. **Calico IPPools**, including `disabled` ones — that flag stops new
+ *     allocations, not existing ones. The authority wherever Calico does
+ *     the IPAM, which is every cluster `yaac cluster setup` builds. Calico
+ *     allocates /26 blocks from anywhere in its pool, so a pod's IP
+ *     routinely falls outside its own node's `spec.podCIDR` — that field
+ *     describes the kubeadm allocation Calico is not using.
  *  2. **`spec.podCIDR` across ALL nodes.** For clusters whose CNI does use
  *     the kubeadm per-node allocation. Every node, not the first one: on a
  *     multi-node cluster each holds a different slice.
- *  3. **kind's default.** Only when the cluster publishes neither, which
- *     no cluster yaac installs into does.
+ *  3. **kind's default.** Only when nothing above answers, which no
+ *     cluster yaac installs into leaves true.
  *
  * Too NARROW is the dangerous direction — a pod IP outside the list is
  * treated as world and its pod-to-pod 443/80 gets redirected into the
@@ -164,21 +190,84 @@ function normalize(cidrs: string[]): string[] {
  */
 export async function clusterPodCidrs(): Promise<string[]> {
   if (podCidrCache) return podCidrCache
+  const { configured, pools, nodes, droppedConfigured } = await podCidrSources()
+  if (droppedConfigured.length > 0) {
+    // The adopt gate refuses on these; here — the per-apply path on a
+    // running server — the redirect still has to be programmed, so this is
+    // the loudest available signal that the exclusion set is narrower than
+    // what was configured.
+    serverLog(
+      `[netd] ignoring unusable YAAC_POD_CIDRS entries: ${droppedConfigured.join(', ')} `
+      + '— pods addressed from them will be treated as world and redirected',
+    )
+  }
+  const resolved = normalize([...configured, ...pools, ...nodes])
+  podCidrCache = resolved.length > 0 ? resolved : [FALLBACK_POD_CIDR]
+  return podCidrCache
+}
 
-  // `ippools` is a Calico CRD; on a cluster without Calico the get fails,
-  // which is a missing source and not an error.
-  const pools = await kubectlGetJson<RawIpPoolList>([
-    'get', 'ippools.crd.projectcalico.org',
-  ]).catch(() => null)
-  const poolCidrs = normalize((pools?.items ?? [])
-    .filter((p) => p.spec?.disabled !== true)
-    .map((p) => p.spec?.cidr ?? ''))
+/**
+ * The three sources above, kept apart and unnormalized-into-one.
+ *
+ * `clusterPodCidrs` unions them; the `--adopt-cni` gate needs to know
+ * WHICH answered, because "only node spec.podCIDR answered" on a cluster
+ * yaac did not build is the shape where the exclusion set is most likely
+ * too narrow — and too narrow means pod-to-pod 443/80 gets redirected into
+ * the proxy. Uncached on purpose: this runs once per adoption, and the
+ * cache exists for the per-apply path.
+ */
+export async function podCidrSources(): Promise<{
+  configured: string[]
+  pools: string[]
+  nodes: string[]
+  /**
+   * `YAAC_POD_CIDRS` entries that are not a usable v4 CIDR. Reported, never
+   * merely dropped: a typo'd entry that vanishes leaves the exclusion set
+   * NARROWER than the operator believes it set, which is the dangerous
+   * direction — the pods in that range get redirected into the proxy.
+   */
+  droppedConfigured: string[]
+  /**
+   * Sources whose read FAILED for a reason other than genuine absence —
+   * an RBAC denial scoped to `ippools` alone, say, which would otherwise
+   * present as "Calico publishes no pool" and silently narrow the set.
+   * Absence stays a fact: a cluster without Calico serves no IPPool CRD,
+   * and that is a source that does not exist rather than one we could not
+   * read. `--adopt-cni` refuses on anything listed here.
+   */
+  unreadable: Array<{ source: string; cause: string }>
+}> {
+  const configured = normalize(env.podCidrs)
+  const droppedConfigured = rejected(env.podCidrs)
+  const unreadable: Array<{ source: string; cause: string }> = []
 
-  const nodes = await kubectlGetJson<RawPodCidrNodeList>(['get', 'nodes']).catch(() => null)
+  /** A source read, distinguishing "not served" from "could not ask". */
+  const read = async <T>(source: string, args: string[]): Promise<T | null> => {
+    try {
+      return await kubectlGetJson<T>(args)
+    } catch (err) {
+      if (!isKubectlAbsentError(err)) {
+        unreadable.push({ source, cause: kubectlErrorSummary(err) })
+      }
+      return null
+    }
+  }
+
+  // `ippools` is a Calico CRD; on a cluster without Calico it is not served
+  // at all, which is a missing source and not an error.
+  const pools = await read<RawIpPoolList>(
+    'Calico IPPools', ['get', 'ippools.crd.projectcalico.org'],
+  )
+  // Disabled pools count. `disabled: true` stops NEW allocations; every pod
+  // already holding an address from that pool keeps it, so a cluster
+  // adopted mid-pool-migration still has live pod IPs in there. Excluding
+  // them from the redirect is what the list is for, and a pool that is
+  // disabled and fully drained costs nothing but a RETURN rule.
+  const poolCidrs = normalize((pools?.items ?? []).map((p) => p.spec?.cidr ?? ''))
+
+  const nodes = await read<RawPodCidrNodeList>('node spec.podCIDR', ['get', 'nodes'])
   const nodeCidrs = normalize((nodes?.items ?? [])
     .flatMap((n) => [n.spec?.podCIDR ?? '', ...(n.spec?.podCIDRs ?? [])]))
 
-  const resolved = normalize([...poolCidrs, ...nodeCidrs])
-  podCidrCache = resolved.length > 0 ? resolved : [FALLBACK_POD_CIDR]
-  return podCidrCache
+  return { configured, pools: poolCidrs, nodes: nodeCidrs, droppedConfigured, unreadable }
 }

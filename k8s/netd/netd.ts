@@ -75,7 +75,7 @@ import {
   teardownChain,
   type IptablesBackend,
 } from 'yaac-netd/iptables'
-import { parsePodVeths } from 'yaac-netd/routes'
+import { normalizeVethPrefix, parsePodVeths } from 'yaac-netd/routes'
 import {
   distinctTargets,
   selectClaimProxyPodIp,
@@ -170,6 +170,13 @@ export interface NetdConfig {
   nodeIp: string
   /** Every CIDR the cluster allocates pod IPs from. */
   podCidrs: string[]
+  /**
+   * Interface-name prefix this cluster's CNI gives every workload veth —
+   * `cali` wherever Calico does the IPAM, something else on an adopted CNI
+   * (see routes.ts). Configuration rather than a constant, but never
+   * "match anything".
+   */
+  vethPrefix: string
   sshSentinelIp: string
   sshSentinelPort: number
   transparentPorts: TransparentPorts
@@ -192,6 +199,7 @@ export function loadConfig(): NetdConfig {
     nodeName: required('NODE_NAME'),
     nodeIp: required('NODE_IP'),
     podCidrs,
+    vethPrefix: normalizeVethPrefix(process.env.NETD_VETH_PREFIX),
     sshSentinelIp: process.env.SSH_TUNNEL_SENTINEL ?? '198.18.0.2',
     sshSentinelPort: envInt('TUNNEL_INGRESS_PORT', 10259),
     transparentPorts: {
@@ -332,7 +340,7 @@ export async function reconcileOnce(
     ports: trioPorts(trio),
   })
 
-  const vethByPodIp = parsePodVeths(await deps.routes())
+  const vethByPodIp = parsePodVeths(await deps.routes(), config.vethPrefix)
   const rules = renderRedirectRules({
     selected,
     vethByPodIp,
@@ -554,7 +562,8 @@ export async function runHostMode(): Promise<void> {
   const backend = await detectBackend()
   const chain = redirectChainName(config.installNamespace)
   log(`[netd] node=${config.nodeName} ip=${config.nodeIp} ns=${config.installNamespace} `
-    + `iptables=${backend} chain=${chain} podCidrs=${config.podCidrs.join(',')}`)
+    + `iptables=${backend} chain=${chain} veth=${config.vethPrefix}* `
+    + `podCidrs=${config.podCidrs.join(',')}`)
 
   await fs.mkdir(ENVOY_DIR, { recursive: true })
   // Never inherit a previous container's marker.

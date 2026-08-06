@@ -20,6 +20,14 @@ import { IS_NESTED_YAAC } from '@yaac/test-utils/setup'
  * registry) — all are exercised manually per the README. The guard-rail
  * cases below all stop BEFORE any mutating step.
  *
+ * `setup --adopt-cni` is the one mode that is NOT destructive, but a real
+ * run of it needs a second cluster whose CNI yaac did not install, which no
+ * e2e worker can stand up beside the one it is running in. What is covered
+ * here is its whole option surface plus its refusal gate — which is the
+ * part that matters, since an unverified adoption fails silently. The
+ * gate's per-refusal reasoning is unit-tested against staged cluster reads
+ * in packages/server/test/features/cluster/cluster-setup.test.ts.
+ *
  * One test env is shared for the whole file: these tests never write into
  * the data dir (every path fails preflight), and each test that needs a
  * tweaked environment overrides it per-call via the runYaac env argument,
@@ -146,6 +154,105 @@ describe('yaac cluster setup (real CLI)', () => {
       expect(stderr).not.toMatch(/Missing required tools/)
     }
   }, 60_000)
+
+  // The --adopt-cni option checks run before the binary preflight too, so
+  // they need no podman, no kind, and no cluster.
+  it('rejects --adopt-cni together with --repair or --nodes', async () => {
+    const env: NodeJS.ProcessEnv = { ...testEnv.env }
+    delete env.YAAC_NESTED
+
+    // --repair fixes up a kind cluster yaac built; --adopt-cni installs
+    // into one it did not, and is itself idempotent.
+    const repair = await runYaac(env, 'cluster', 'setup', '--adopt-cni', '--repair')
+    expect(repair.exitCode).toBe(1)
+    expect(repair.stderr).toMatch(/--adopt-cni cannot be combined with --repair/)
+    expect(repair.stdout).not.toMatch(/Re-applying node fixups/)
+
+    // Adopt mode creates no cluster, so there are no nodes to render.
+    const nodes = await runYaac(env, 'cluster', 'setup', '--adopt-cni', '--nodes', '3')
+    expect(nodes.exitCode).toBe(1)
+    expect(nodes.stderr).toMatch(/--nodes cannot be combined with --adopt-cni/)
+    expect(nodes.stdout).not.toMatch(/Recreating kind cluster/)
+  }, 60_000)
+
+  it('refuses to run --adopt-cni inside a nested yaac session', async () => {
+    // Same guard as the other modes: the cluster is the outer yaac's.
+    const { stderr, exitCode } = await runYaac(
+      { ...testEnv.env, YAAC_NESTED: '1' },
+      'cluster', 'setup', '--adopt-cni',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/nested yaac session/)
+  }, 30_000)
+
+  // The CNI gate itself, driven against a cluster that answers nothing: a
+  // KUBECONFIG pointing at a nonexistent file makes every `kubectl get` in
+  // the gate fail. It must refuse — and refuse BEFORE anything is applied,
+  // since an unverifiable adoption must cost the user the diagnosis and
+  // nothing else. Needs podman (adopt mode still builds images with it) but
+  // deliberately NOT kind: not needing kind is part of the mode — which is
+  // also why this one runs nested, unlike the two cluster-touching cases
+  // below. Nothing here reaches the cluster: the gate refuses first.
+  it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
+    '--adopt-cni refuses a cluster it cannot read, without claiming what it found',
+    async () => {
+      const env: NodeJS.ProcessEnv = {
+        ...testEnv.env,
+        KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig'),
+      }
+      delete env.YAAC_NESTED
+
+      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
+      expect(exitCode).toBe(1)
+      expect(stdout).toMatch(/Verifying the CNI this cluster already runs/)
+      expect(stderr).toMatch(/Cannot adopt this cluster's CNI/)
+
+      // An unreachable apiserver is an UNKNOWN, not a set of absences — so
+      // the diagnosis is the unevaluated refusal, naming every check that
+      // did not happen, and nothing that asserts what the cluster contains.
+      expect(stderr).toMatch(/check\(s\) could not be evaluated/)
+      expect(stderr).toMatch(/Calico FelixConfiguration \(the eBPF-dataplane check\)/)
+      expect(stderr).toMatch(/pod-CIDR source/)
+      // Absence-shaped claims the gate never established must NOT appear:
+      // "no calico-node in kube-system" reads as a Cilium cluster, which
+      // would send the user to entirely the wrong fix.
+      expect(stderr).not.toMatch(/no calico-node found/)
+      expect(stderr).not.toMatch(/no kube-proxy pod found/)
+      expect(stderr).not.toMatch(/no pod CIDR could be resolved/)
+      expect(stderr).not.toMatch(/PriorityClass is missing/)
+
+      // Nothing was installed, and no cluster was touched.
+      expect(stdout).not.toMatch(/Deploying the in-cluster image registry/)
+      expect(stdout).not.toMatch(/Recreating kind cluster/)
+    },
+    120_000,
+  )
+
+  // The config knobs are the other half of the gate's surface, and both
+  // refuse rather than narrowing the redirect behind the operator's back.
+  it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
+    '--adopt-cni refuses a YAAC_POD_CIDRS entry it cannot use, naming the entry',
+    async () => {
+      const env: NodeJS.ProcessEnv = {
+        ...testEnv.env,
+        KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig'),
+        // A plausible typo plus an out-of-range mask. Dropping either
+        // silently would leave netd's exclusion set narrower than what was
+        // configured, and those pods' 443/80 would go into the proxy.
+        YAAC_POD_CIDRS: '172.31.0.0/16, 172.31/16, 10.0.0.0/33',
+      }
+      delete env.YAAC_NESTED
+
+      const { stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(/not usable IPv4 CIDRs/)
+      expect(stderr).toContain('172.31/16')
+      expect(stderr).toContain('10.0.0.0/33')
+      // The good entry is not named as a problem.
+      expect(stderr).not.toMatch(/CIDRs:[^.]*172\.31\.0\.0\/16/)
+    },
+    120_000,
+  )
 
   // Needs a real, working podman+kind pair (`kind get clusters` must
   // succeed), so: not in a nested session (no kind in there), and not on a

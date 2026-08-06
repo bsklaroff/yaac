@@ -38,8 +38,10 @@ import {
   dataDirHash,
   ensureKubernetes,
   execFileAsync,
+  isKubectlAbsentError,
   k8sNamespace,
   kubectlApply,
+  kubectlErrorSummary,
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s'
@@ -167,6 +169,74 @@ describe('kubectlGetJson', () => {
   it('rethrows other errors', async () => {
     execFileMock.mockRejectedValue(stderrError('forbidden'))
     await expect(kubectlGetJson(['get', 'secret', 'x'])).rejects.toThrow('kubectl failed')
+  })
+})
+
+describe('isKubectlAbsentError', () => {
+  // The predicate exists for one caller with an unusual requirement:
+  // `--adopt-cni` treats "no FelixConfiguration" as a FACT meaning "Felix
+  // runs its iptables defaults" and proceeds on it. So a failure
+  // misclassified as absence licenses an eBPF cluster the gate exists to
+  // refuse, and the failure mode is silent no-egress.
+  it('accepts kubectl\'s own absence shapes, for an object or a whole resource type', () => {
+    for (const stderr of [
+      'Error from server (NotFound): daemonsets.apps "calico-node" not found',
+      'error: the server doesn\'t have a resource type "felixconfigurations"',
+      'error: no matches for kind "FelixConfiguration" in version "crd.projectcalico.org/v1"',
+      'Error from server (NotFound): the server could not find the requested resource',
+    ]) {
+      expect(isKubectlAbsentError(stderrError(stderr))).toBe(true)
+    }
+  })
+
+  it('rejects a failure of the machinery in FRONT of the object', () => {
+    // The trap: a broken conversion/admission webhook carries "not found"
+    // about its OWN service. A bare substring match would read that as the
+    // FelixConfiguration being absent — i.e. "Felix defaults" on a cluster
+    // whose Felix config was unknowable.
+    expect(isKubectlAbsentError(stderrError(
+      'Error from server (InternalError): Internal error occurred: failed calling webhook '
+      + '"conversion.projectcalico.org": service "calico-apiserver" not found',
+    ))).toBe(false)
+
+    // ...and the ordinary non-absences.
+    for (const stderr of [
+      'Error from server (Forbidden): felixconfigurations.crd.projectcalico.org is forbidden',
+      'The connection to the server localhost:8080 was refused',
+      'error: context deadline exceeded',
+    ]) {
+      expect(isKubectlAbsentError(stderrError(stderr))).toBe(false)
+    }
+  })
+})
+
+describe('kubectlErrorSummary', () => {
+  it('skips klog retry narration for kubectl\'s own diagnosis', () => {
+    // kubectl narrates client-go's retries first and prints the sentence
+    // that says what to fix last; taking the first line buries it under
+    // near-identical walls of klog, one per failed check.
+    const summary = kubectlErrorSummary(stderrError(
+      'E0806 15:53:50.959713 19874 memcache.go:265] "Unhandled Error" err="couldn\'t get '
+      + 'current server API group list: Get \\"http://localhost:8080/api\\": dial tcp"\n'
+      + 'The connection to the server localhost:8080 was refused - did you specify the '
+      + 'right host or port?',
+    ))
+    expect(summary).toBe(
+      'The connection to the server localhost:8080 was refused - did you specify the '
+      + 'right host or port?',
+    )
+  })
+
+  it('falls back rather than returning nothing, and caps the length', () => {
+    // Klog all the way down (no message to fall back to): show it rather
+    // than an empty string, since something is better than silence.
+    const klogOnly = Object.assign(new Error(''), {
+      stderr: 'E0806 12:00:00.0 1 x.go:1] only klog here',
+    })
+    expect(kubectlErrorSummary(klogOnly)).toContain('only klog here')
+    expect(kubectlErrorSummary(new Error('plain failure'))).toBe('plain failure')
+    // Capped, with the ellipsis marking the truncation.
+    expect(kubectlErrorSummary(stderrError('x'.repeat(400)))).toHaveLength(141)
   })
 })
 

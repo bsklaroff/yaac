@@ -10,7 +10,9 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
 // runtime behind it run for real.
-vi.mock('#platform/k8s/kubectl', () => ({ execFileAsync: vi.fn() }))
+vi.mock('#platform/k8s/kubectl', () => ({
+  isKubectlAbsentError: vi.fn(() => false),
+  kubectlErrorSummary: vi.fn((e: unknown) => String(e)), execFileAsync: vi.fn() }))
 
 import { reconcileGeneratedTitles } from '#features/titles'
 import { _resetTitleGenerationForTests } from '#features/titles/title-generation'

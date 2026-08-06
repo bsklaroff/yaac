@@ -5,14 +5,15 @@ import {
   CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
-  LABEL_ROLE,
-  PROXY_APP_NAME,
-  PROXY_AUTH_SECRET_NAME,
-  ROLE_BUILDER,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  LABEL_ROLE,
+  PRIVILEGED_PSS_LABELS,
+  PROXY_APP_NAME,
+  PROXY_AUTH_SECRET_NAME,
+  ROLE_BUILDER,
 } from '#platform/k8s'
 import { credentialsDir, proxyDataHostDir } from '@yaac/shared/project-paths'
 import {
@@ -35,11 +36,15 @@ import { nodeIpBlocks } from './cluster-cidrs'
 import { vapAvailable } from './vcluster'
 import { ensureNetd } from './netd'
 
+/**
+ * The install namespace, labelled for the `privileged` Pod Security
+ * Standard (see PRIVILEGED_PSS_LABELS for what that admits and why).
+ */
 export async function ensureNamespace(): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Namespace',
-    metadata: { name: k8sNamespace() },
+    metadata: { name: k8sNamespace(), labels: { ...PRIVILEGED_PSS_LABELS } },
   })
 }
 
