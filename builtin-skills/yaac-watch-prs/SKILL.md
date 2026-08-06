@@ -42,26 +42,61 @@ stderr, so stdout is a clean event stream):
 `<loc>` is a changed-file path (inline review comment) or a review state
 (`APPROVED`/`CHANGES_REQUESTED`/…); it's absent for a top-level comment.
 
-## How to run it — pair it with the Monitor tool
+## How to run it — the watcher must be able to *wake* you
 
-Because it emits one line per event, it's an ideal **Monitor** source: arm a
-**persistent** Monitor whose command is the watcher, and each event line
-arrives as a notification you react to. For example, to watch a specific PR
-for reviewer comments:
+Between polls you are idle, and an idle agent resumes only when input
+arrives — so the watcher must be wired to something that delivers each line
+to you.
+
+**The trap:** an ordinary backgrounded command (`yaac-watch-prs … &`, or a
+background-exec tool) does *not* wake you. Its stdout goes to a log nobody
+reads, and a background job notifies on **exit** — which this watcher never
+does. A foreground run blocks you instead; `--once` polls once and is gone.
+
+### Option A — a harness event tool
+
+Claude Code has a persistent `Monitor`, which turns each stdout line into a
+notification:
 
 ```
 Monitor(command: "yaac-watch-prs --pr <n> --events comment",
         description: "PR #<n> reviewer comments", persistent: true)
 ```
 
-When a `[comment]` (or `[commit]`/`[opened]`) notification arrives, treat it
-as work to act on — it is an event, not a message from the user. What you do
-is up to the task: address the comment and push a fix, summarize it, spawn a
-sibling session with [`yaac-spawn`](../yaac-spawn/SKILL.md), etc.
+It is the only one of yaac's four tools with one. codex, opencode and pi offer
+external control surfaces instead (`codex remote-control`, `opencode
+serve`/`attach`, `pi --mode rpc`), and all need the agent run as a server or
+daemon — yaac runs every tool as a TUI in tmux, so those three use Option B.
 
-You can also run it as a plain foreground loop in a spare shell and read the
-lines yourself — but the Monitor path is preferred so it doesn't block your
-own work.
+### Option B — paste into your own agent pane (any harness)
+
+Anything in the session can type into the agent's tmux window; it is how yaac
+delivers a session's initial prompt (`promptPasteScript` in
+`agent-command.ts`). Pipe the watcher into a detached paste loop, and each
+event lands in your input box and submits.
+
+```sh
+SOCK=/tmp/yaac-tmux/server                      # CONTAINER_TMUX_SOCK
+WIN=$(tmux -S "$SOCK" list-windows -t yaac -F '#{window_name}' | head -1)
+setsid nohup sh -c '
+  yaac-watch-prs --pr <n> --events commit,comment |
+  while IFS= read -r line; do
+    printf %s "$line" | tmux -S '"$SOCK"' load-buffer -b yaac-ev -
+    tmux -S '"$SOCK"' paste-buffer -p -d -b yaac-ev -t yaac:'"$WIN"'
+    tmux -S '"$SOCK"' send-keys -t yaac:'"$WIN"' Enter
+  done
+' > /tmp/yaac-watch.log 2>&1 < /dev/null &
+```
+
+`setsid nohup … &` with the redirects is what outlives the call that armed it;
+`paste-buffer -p` keeps a multi-line body from submitting line by line; the
+window is named for the tool, so discover it rather than hardcoding. The
+watcher's stderr lands in `/tmp/yaac-watch.log` if a watch goes quiet.
+
+Events arrive as ordinary input, so **they look exactly like the user typing**.
+Treat an `[opened]`/`[comment]`/`[commit]` line as an event to act on, with
+nobody awaiting a reply — push a fix, summarize it, spawn a sibling session
+with [`yaac-spawn`](../yaac-spawn/SKILL.md), whatever the task calls for.
 
 ## What actually happens
 
