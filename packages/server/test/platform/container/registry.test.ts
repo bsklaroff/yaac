@@ -89,6 +89,23 @@ const fetchMock = vi.fn<typeof fetch>()
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 /** Where this process reaches it: the fake port-forward's local end. */
 const ENDPOINT = `127.0.0.1:${FORWARD_PORT}`
+/**
+ * Where the podman ENGINE reaches it under podman machine — same forwarded
+ * port, host swapped for the VM's alias of the host loopback.
+ */
+const VM_ENDPOINT = `host.containers.internal:${FORWARD_PORT}`
+
+const realPlatform = process.platform
+
+/**
+ * Pin the host platform: it is what decides whether podman shares this
+ * process's netns (Linux) or runs in a VM (macOS), and therefore which
+ * address a push target carries. Pinned in `beforeEach` so the suite asserts
+ * one platform's behaviour at a time rather than the developer's.
+ */
+function stubPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+}
 
 /** Only the podman children (the port-forward child is not a push). */
 function podmanPushes(): Array<{ file: string; args: string[] }> {
@@ -107,12 +124,14 @@ beforeEach(() => {
   forwardFails = false
   _resetPortForwardsForTests()
   vi.stubGlobal('fetch', fetchMock)
+  stubPlatform('linux')
 })
 
 afterEach(() => {
   _resetPortForwardsForTests()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+  stubPlatform(realPlatform)
 })
 
 function fetchResponse(init: { ok: boolean; status?: number }): Response {
@@ -263,6 +282,42 @@ describe('pushImageToRegistry', () => {
     expect(podmanPushes()[0].args).toEqual([
       'push', '--tls-verify=false', 'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
     ])
+  })
+
+  it('targets the VM alias under podman machine, keeping the forwarded port', async () => {
+    // Under podman machine the push runs INSIDE the VM, where 127.0.0.1 is
+    // the VM's own loopback and the forward's host-side listener is refused.
+    // Targeting the loopback there costs three retries per blob, lands
+    // nothing, and leaves registryHasTag() unable to skip the next attempt —
+    // so the endpoint podman gets must differ from the one the server dials.
+    stubPlatform('darwin')
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    const ref = await pushImageToRegistry('yaac-tools:abc')
+    expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
+    expect(podmanPushes()[0].args).toEqual([
+      'push', '--tls-verify=false', 'yaac-tools:abc', `${VM_ENDPOINT}/yaac-tools:abc`,
+    ])
+    // The host is swapped, the PORT is not: it is a host port either way, and
+    // a second forward would hand podman a port nothing is listening on.
+    expect(podmanPushes()[0].args.at(-1)).toContain(`:${FORWARD_PORT}/`)
+    expect(forwardArgs()).toHaveLength(1)
+    // The server's OWN reachability check keeps using the loopback — the two
+    // endpoints are resolved separately and must not collapse into one.
+    expect(fetchMock.mock.calls[0][0]).toContain(ENDPOINT)
+  })
+
+  it('sends an external registry to both halves unchanged, VM or not', async () => {
+    // A nested yaac's registry is a cluster address its in-pod podman and the
+    // server reach identically, so the VM swap must not touch it.
+    stubPlatform('darwin')
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    await pushImageToRegistry('yaac-tools:abc')
+    expect(podmanPushes()[0].args.at(-1)).toBe(
+      'yaac-reg-proj.yaac.svc.cluster.local:5000/yaac-tools:abc',
+    )
+    // No forward at all — there is nothing to port-forward to.
+    expect(forwardArgs()).toHaveLength(0)
   })
 
   it('rejects when podman push exits non-zero', async () => {
