@@ -552,6 +552,7 @@ describe('write routes', () => {
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
+          mode: 'tui' as const,
         })
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
@@ -575,6 +576,9 @@ describe('write routes', () => {
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
+            // Streamed verbatim, and the CLI reads it: an acp worktree must
+            // not get a PTY attached after a create or a restart.
+            mode: 'tui',
           },
         },
       ])
@@ -596,7 +600,7 @@ describe('write routes', () => {
 
     it('threads a branch into createSession', async () => {
       mockCreateSession.mockResolvedValue({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo', branch: 'dev' } })
@@ -616,7 +620,7 @@ describe('write routes', () => {
 
     it('threads a client-supplied sessionId into createSession', async () => {
       mockCreateSession.mockResolvedValue({
-        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const id = '11111111-1111-4111-8111-111111111111'
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
@@ -673,6 +677,7 @@ describe('write routes', () => {
           jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
+          mode: 'tui' as const,
         })
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
@@ -695,6 +700,9 @@ describe('write routes', () => {
             jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
+            // Streamed verbatim, and the CLI reads it: an acp worktree must
+            // not get a PTY attached after a create or a restart.
+            mode: 'tui',
           },
         },
       ])

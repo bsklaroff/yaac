@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildAgentCmd,
   MODEL_RE,
+  agentWindowTarget,
   buildPromptPasteCmd,
   buildPromptPasteBgCmd,
   typeInitialPrompt,
@@ -163,15 +164,24 @@ function embeddedPrompt(cmd: string): string {
   return Buffer.from(match![1], 'base64').toString('utf8')
 }
 
+describe('agentWindowTarget', () => {
+  it.each(AGENT_TOOLS)('addresses the %s primary agent window', (tool) => {
+    // Session create's initial ask goes to the window; a later message goes to
+    // a pane id instead, since a worktree with several conversations has only
+    // one `yaac:<tool>` window between them.
+    expect(agentWindowTarget(tool)).toBe(`yaac:${tool}`)
+  })
+})
+
 describe('buildPromptPasteCmd', () => {
   it('round-trips arbitrary prompt text through the base64 payload', () => {
     const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
-    expect(embeddedPrompt(buildPromptPasteCmd('claude', nasty))).toBe(nasty)
+    expect(embeddedPrompt(buildPromptPasteCmd('yaac:claude', nasty))).toBe(nasty)
   })
 
   it('verifies the paste against the first line, capped at 40 columns', () => {
     const prompt = `${'x'.repeat(60)} tail\nsecond line`
-    const cmd = buildPromptPasteCmd('claude', prompt)
+    const cmd = buildPromptPasteCmd('yaac:claude', prompt)
     const probe = /probe="\$\(printf %s ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(cmd)
     expect(probe).not.toBeNull()
     expect(Buffer.from(probe![1], 'base64').toString('utf8')).toBe('x'.repeat(40))
@@ -179,7 +189,7 @@ describe('buildPromptPasteCmd', () => {
 
   it('never embeds the raw prompt, and stays single-quote-clean for the host shell', () => {
     const nasty = "it's $HOME; \"quoted\""
-    const cmd = buildPromptPasteCmd('claude', nasty)
+    const cmd = buildPromptPasteCmd('yaac:claude', nasty)
     expect(cmd).not.toContain('$HOME')
     // The one single-quote pair is the outer sh -c wrapper; the script body
     // must not contain any (the host shell would split the command there).
@@ -189,13 +199,13 @@ describe('buildPromptPasteCmd', () => {
   })
 
   it.each(AGENT_TOOLS)('targets the %s agent window', (tool) => {
-    const cmd = buildPromptPasteCmd(tool, 'prompt')
+    const cmd = buildPromptPasteCmd(agentWindowTarget(tool), 'prompt')
     expect(cmd).toContain(`paste-buffer -p -d -b yaac-prompt -t yaac:${tool}`)
     expect(cmd).toContain(`send-keys -t yaac:${tool} Enter`)
   })
 
   it('gates on the alternate screen, verify-pastes, then submits with a guard resend', () => {
-    const cmd = buildPromptPasteCmd('codex', 'hello')
+    const cmd = buildPromptPasteCmd('yaac:codex', 'hello')
     // Order matters: alternate_on readiness gate → paste-until-visible loop
     // (capture-pane grep) → Enter → delayed second Enter for a TUI that
     // dropped the first one mid-startup-render.
@@ -205,7 +215,7 @@ describe('buildPromptPasteCmd', () => {
   })
 
   it('degrades to a single blind paste for a whitespace-only prompt', () => {
-    const cmd = buildPromptPasteCmd('claude', ' \n ')
+    const cmd = buildPromptPasteCmd('yaac:claude', ' \n ')
     expect(cmd).not.toContain('probe=')
     expect(cmd).toContain('paste-buffer -p -d -b yaac-prompt -t yaac:claude')
   })
@@ -213,17 +223,17 @@ describe('buildPromptPasteCmd', () => {
 
 describe('buildPromptPasteBgCmd', () => {
   it('decodes the paste script to a pod file and detaches it with setsid', () => {
-    const cmd = buildPromptPasteBgCmd('claude', 'hello')
+    const cmd = buildPromptPasteBgCmd('yaac:claude', 'hello')
     expect(cmd).toMatch(/^printf %s [A-Za-z0-9+/=]+ \| base64 -d > \/tmp\/\.yaac-prompt\.sh/)
     expect(cmd).toContain('setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &')
   })
 
   it('embeds exactly the script buildPromptPasteCmd wraps', () => {
-    const cmd = buildPromptPasteBgCmd('codex', "it's $HOME\nline 2")
+    const cmd = buildPromptPasteBgCmd('yaac:codex', "it's $HOME\nline 2")
     const b64 = /^printf %s ([A-Za-z0-9+/=]+) \|/.exec(cmd)
     expect(b64).not.toBeNull()
     const script = Buffer.from(b64![1], 'base64').toString('utf8')
-    expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('codex', "it's $HOME\nline 2"))
+    expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('yaac:codex', "it's $HOME\nline 2"))
   })
 })
 
@@ -234,7 +244,7 @@ describe('typeInitialPrompt', () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
     expect(sessionExec).toHaveBeenCalledWith(
       'yaac-job-1',
-      buildPromptPasteBgCmd('claude', 'hello there'),
+      buildPromptPasteBgCmd('yaac:claude', 'hello there'),
       { maxAttempts: 1, timeout: 15_000 },
     )
   })

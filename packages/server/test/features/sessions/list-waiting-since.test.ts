@@ -22,7 +22,7 @@ import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import type * as agentToolsModule from '#features/agents/agent-tools'
 import {
-  setPaneStatus,
+  setAgentStatus,
   _resetSessionStatusStoreForTests,
 } from '#features/status/status-store'
 import { listActiveSessions, _clearListActiveInflightForTests } from '#features/sessions/list'
@@ -69,7 +69,7 @@ describe('listActiveSessions waitingSinceMs (store projection)', () => {
   it('projects the store spell into the entry, stable across listings', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
     const first = await listFresh()
     expect(first.worktrees[0].status).toBe('waiting')
     expect(first.worktrees[0].waitingSinceMs).toBe(1_000)
@@ -83,14 +83,14 @@ describe('listActiveSessions waitingSinceMs (store projection)', () => {
   it('running is unstamped; a fresh wait restamps', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
-    setPaneStatus('demo', 's1', '%0', 'waiting')
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'running')
     const running = await listFresh()
     expect(running.worktrees[0].status).toBe('running')
     expect(running.worktrees[0].waitingSinceMs).toBeUndefined()
 
     vi.setSystemTime(2_000)
-    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
     const waiting = await listFresh()
     expect(waiting.worktrees[0].status).toBe('waiting')
     expect(waiting.worktrees[0].waitingSinceMs).toBe(2_000)

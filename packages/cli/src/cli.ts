@@ -1,7 +1,8 @@
-import { Command, Argument, type Help } from 'commander'
+import { Command, Argument, Option, type Help } from 'commander'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- the repo-root package.json is the published @bsklaroff/yaac manifest and the single source of truth for the CLI version (inlined by tsup at build time).
 import pkg from '../../../package.json' with { type: 'json' }
 import { exitOnApiError } from '@yaac/shared/server-api'
+import { AGENT_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectRebuild } from '#commands/project-rebuild'
@@ -213,6 +214,7 @@ worktree
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the worktree is up')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi')
+  .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app (claude only)').choices([...AGENT_MODES]))
   .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
     await worktreeCreate(project, options)
   })

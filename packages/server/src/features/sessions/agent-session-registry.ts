@@ -1,9 +1,11 @@
 import { isPrewarmed, listSessionPods, type TickSnapshot } from '#platform/k8s'
-import { classifySessionPods, liveAgentPanes, probeTmuxLiveness } from '#features/status'
+import { classifySessionPods, liveAgents, podAgentMode, probeTmuxLiveness } from '#features/status'
 import {
   normalizeTool,
+  readAcpFirstPrompt,
   readAllWorktreeLinks,
   sessionTranscriptPath,
+  transcriptLastActiveMs,
   type AgentSessionLink,
 } from '#features/agents'
 import {
@@ -11,24 +13,35 @@ import {
   setActiveAgentSessions,
   type DiscoveredAgentSession,
 } from './agent-session-store'
+import path from 'node:path'
+import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
  * Reconcile the agent-session model from what the pods report.
  *
  * Two independent sources, joined here:
- *  - the in-pod hook's link tree (`agent-links.ts`) — the *history*: every
- *    conversation a worktree has hosted, readable even after the pod is gone;
- *  - the status watcher's live pane set (`status-store.ts`) — the *present*:
- *    which panes are running an agent right now.
+ *  - the *history*: every conversation a worktree has hosted. Where it comes
+ *    from is the one thing that differs by mode (see below);
+ *  - the status watcher's live agent set (`status-store.ts`) — the *present*:
+ *    which conversations are running right now, keyed by the driver's handle.
  *
- * A conversation is active in a worktree when a pane pointer names it AND
- * that pane is currently alive. Neither source can answer that alone: the
- * pointers outlive the pane that wrote them (a `/clear` leaves the previous
- * conversation's pointer in place only until the pane is rewritten, but a
- * pane that simply exited leaves a live-looking pointer behind), and the pane
- * list knows nothing about which conversation is loaded.
+ * A conversation is active in a worktree when the history names it AND its
+ * handle is currently alive.
+ *
+ * For `tui`, history is the in-pod hook's link tree (`agent-links.ts`), and
+ * neither source can answer alone: the pointers outlive the pane that wrote
+ * them (a `/clear` leaves the previous conversation's pointer in place only
+ * until the pane is rewritten, but a pane that simply exited leaves a
+ * live-looking pointer behind), and the pane list knows nothing about which
+ * conversation is loaded.
+ *
+ * For `acp` there is no hook and no link tree, because there is nothing to
+ * discover: the server IS the ACP client, so `session/new` hands it the
+ * conversation id directly and the live set carries it. That is a strictly
+ * simpler path — the mode replaces a whole discovery mechanism with a return
+ * value — and it is why the two branches below look so different in length.
  *
  * Runs on the reconciler tick, like prompt capture, so the record exists for
  * `worktree list` and restart even when no client is watching. Only running
@@ -59,6 +72,7 @@ export async function reconcileAgentSessions(snapshot?: TickSnapshot): Promise<v
         pod.projectSlug,
         pod.sessionId,
         normalizeTool(pod.tool),
+        podAgentMode(pod),
       )
     } catch {
       // best-effort — next tick retries
@@ -74,7 +88,12 @@ export async function reconcileWorktreeAgentSessions(
   projectSlug: string,
   worktreeId: string,
   tool: AgentTool,
+  mode: AgentMode = 'tui',
 ): Promise<void> {
+  if (mode === 'acp') {
+    await reconcileAcpAgentSessions(projectSlug, worktreeId)
+    return
+  }
   const links = await readAllWorktreeLinks(projectSlug, worktreeId)
   if (links.length === 0) {
     // No link tree yet. That is ambiguous: either the pod predates the hook
@@ -97,20 +116,74 @@ export async function reconcileWorktreeAgentSessions(
 
   await recordAgentSessions(projectSlug, worktreeId, links.map(toDiscovered))
 
-  // Intersect the pointers with the panes the status watcher can see. When
-  // the watcher has no pane list yet (a pod whose control stream hasn't
+  // Intersect the pointers with the conversations the status watcher can see.
+  // When the watcher has no live set yet (a pod whose connection hasn't
   // attached), leave the active set alone rather than blanking it — a
   // transient stream gap must never look like "every agent exited".
-  const panes = liveAgentPanes(projectSlug, worktreeId)
-  if (panes === undefined) return
+  const observed = liveAgents(projectSlug, worktreeId)
+  if (observed === undefined) return
+  const handles = new Set(observed.map((a) => a.handle))
   const live = links
     .map((l) => ({
       tool: l.tool as AgentTool,
       agentSessionId: l.agentSessionId,
-      paneId: l.paneIds.find((p) => panes.has(p)),
+      paneId: l.paneIds.find((p) => handles.has(p)),
     }))
     .filter((l): l is { tool: AgentTool; agentSessionId: string; paneId: string } =>
       l.paneId !== undefined)
+  await setActiveAgentSessions(projectSlug, worktreeId, live)
+}
+
+/**
+ * The `acp` branch: the live set already carries each conversation's id, so
+ * there is nothing to join against and nothing to discover. A conversation
+ * appears here the moment the ACP handshake produces its id, which is what
+ * makes the row exist for the restart path and the webapp's pane list.
+ *
+ * A conversation whose handshake hasn't landed yet has no id and is skipped —
+ * recording it under its handle would mint a phantom the real one could never
+ * displace.
+ */
+async function reconcileAcpAgentSessions(
+  projectSlug: string,
+  worktreeId: string,
+): Promise<void> {
+  const observed = liveAgents(projectSlug, worktreeId)
+  if (observed === undefined) return
+  const live = await Promise.all(
+    observed
+      .filter((a) => a.agentSessionId !== undefined)
+      .map(async (a) => {
+        const agentSessionId = a.agentSessionId as string
+        // The ACP adapter is the tool's own SDK under a different front end, so
+        // where it leaves a transcript it leaves it where the TUI would. Naming
+        // it here is what gives an ACP conversation a last-activity time and
+        // keeps it legible to every path that reads transcripts — the stopped
+        // listing above all, which outlives the pod and so cannot ask the
+        // conversation anything. Resolution is best-effort: a conversation with
+        // no locatable transcript records none and loses only that timestamp.
+        const transcriptPath = await sessionTranscriptPath(projectSlug, agentSessionId, a.tool)
+        const lastActiveMs = transcriptPath !== undefined
+          ? await transcriptLastActiveMs(transcriptPath)
+          : undefined
+        // The opening message, from the record rather than a live conversation:
+        // the record is on disk whether or not anything is attached, so a
+        // worktree can be labelled without one.
+        const firstPrompt = await readAcpFirstPrompt(
+          path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`),
+        )
+        return {
+          tool: a.tool,
+          agentSessionId,
+          paneId: a.handle,
+          mode: 'acp' as const,
+          ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+          ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+          ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
+        }
+      }),
+  )
+  if (live.length > 0) await recordAgentSessions(projectSlug, worktreeId, live)
   await setActiveAgentSessions(projectSlug, worktreeId, live)
 }
 

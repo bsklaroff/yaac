@@ -1,0 +1,6 @@
+{
+  "name": "yaac-acpd",
+  "private": true,
+  "type": "module",
+  "description": "In-pod supervisor for an ACP agent process (stdio ⇄ UNIX socket, survives client detach)"
+}

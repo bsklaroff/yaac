@@ -17,10 +17,15 @@
 // healthy session, Job and vcluster and all, with no recovery. Callers get
 // the tri-state or the deliberately-safe boolean, never the probe itself.
 //
+// What this feature does NOT own is how an agent is observed. That is an
+// `AgentDriver` (`#features/agents`), picked per session from its mode, so
+// the watcher's respawn/backoff/self-heal is written once and both `tui`
+// and `acp` sessions run through it. The store keys statuses by the
+// driver's opaque handle for a conversation, never by anything
+// tmux-shaped.
+//
 // Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/features/status/. Modules not re-exported are
-// internal: `control-mode.ts` is the tmux protocol client the watcher
-// holds, covered through the watcher.
+// packages/server/test/features/status/.
 
 export { classifySessionPods, watcherDisplayLiveness } from './classify'
 export { sessionControlStreamSend, type ControlStreamSend } from './control-stream-registry'
@@ -34,13 +39,18 @@ export {
 } from './liveness'
 export {
   evictSessionStatus,
-  liveAgentPanes,
+  liveAgents,
   onSessionStatusChanged,
-  readPaneStatus,
+  readAgentStatus,
   readSessionStatus,
   readSessionWaitingSince,
 } from './status-store'
-export { StatusWatcherManager } from './status-watcher'
+export {
+  StatusWatcherManager,
+  podAgentMode,
+  type StatusWatcherDeps,
+  type WatchedSession,
+} from './status-watcher'
 export {
   clearSessionTerminating,
   isSessionTerminating,

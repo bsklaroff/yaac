@@ -134,7 +134,7 @@ describe('NewSessionButton', () => {
 
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createSession)).toHaveBeenCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), undefined,
+      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui',
     )
   })
 
@@ -156,7 +156,7 @@ describe('NewSessionButton', () => {
 
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createSession)).toHaveBeenCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x',
+      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x', 'tui',
     )
   })
 

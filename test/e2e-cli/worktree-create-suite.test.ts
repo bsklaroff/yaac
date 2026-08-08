@@ -1630,4 +1630,163 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect((await listSessionPods(SLUG)).length).toBe(podsBefore)
     }, 60_000)
   })
+  describe('agent mode (--mode acp)', () => {
+    const SLUG = 'acped'
+    let jobName = ''
+    let sessionId = ''
+    let agentSessionId = ''
+
+    // Its own session, unlike the describes above: an ACP worktree is a
+    // different pod (a different launch command and a different pod label),
+    // so no shared TUI fixture can stand in for it. One create for the whole
+    // block, and both cases below only read it.
+    beforeAll(async () => {
+      await setupProject(SLUG)
+      const created = await createSession(SLUG, '--tool', 'claude', '--mode', 'acp')
+      jobName = created.jobName
+      sessionId = (await findSessionPod(SLUG)).sessionId
+
+      // The ACP handshake mints the conversation id, and the registry records
+      // it — ACP mode's replacement for the in-pod hook and its link tree, so
+      // this is also the proof that replacement works.
+      for (let i = 0; i < 120 && agentSessionId === ''; i++) {
+        const res = await fetch(`${base}/worktree/list?project=${SLUG}`, { headers: auth })
+        const body = await res.json() as {
+          worktrees: Array<{
+            worktreeId: string
+            agentSessions: Array<{ agentSessionId: string; mode?: string }>
+          }>
+        }
+        agentSessionId = body.worktrees
+          .find((w) => w.worktreeId === sessionId)
+          ?.agentSessions.find((a) => a.mode === 'acp')?.agentSessionId ?? ''
+        if (agentSessionId === '') await sleep(1000)
+      }
+    }, 300_000)
+
+    it('runs the agent under acpd, not a TUI, with its socket in the pod', async () => {
+      // tmux still supervises the agent — that is what lets a dropped
+      // connection (or a restarted server) leave a running turn alone. Only
+      // the window's command differs from a TUI session's.
+      const { stdout: startCmd } = await execInJob(jobName, [
+        'sh', '-c',
+        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
+      ])
+      expect(startCmd).toContain('/opt/yaac/acpd/main.js')
+      expect(startCmd).toContain('claude-agent-acp')
+
+      // A UNIX socket rather than a port, so the conversation's endpoint never
+      // lands in the auto-forward port scan.
+      const { stdout: socks } = await execInJob(jobName, [
+        'sh', '-c', 'ls /tmp/yaac-acp/ 2>/dev/null || true',
+      ])
+      expect(socks).toContain('claude.sock')
+      expect(agentSessionId).not.toBe('')
+    }, 120_000)
+
+    it('records the conversation to a host-mounted file, named for the conversation', async () => {
+      // The record is the conversation's history — the server holds none — so
+      // this is the load-bearing artifact of the whole mode. It has to exist
+      // in the pod, carry the ACP stream verbatim, and be named for the
+      // conversation rather than the window it runs in.
+      const { stdout: files } = await execInJob(jobName, [
+        'sh', '-c', 'ls /home/yaac/.yaac-acp/ 2>/dev/null || true',
+      ])
+      expect(files).toContain(`${agentSessionId}.jsonl`)
+
+      const { stdout: recorded } = await execInJob(jobName, [
+        'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
+      ])
+      // Both directions: acpd's own life marker, our handshake going out, and
+      // the agent's reply coming back. Without the client's own lines a
+      // replayed conversation would show no user turns at all.
+      expect(recorded).toContain('_acpd/life')
+      expect(recorded).toContain('"method":"initialize"')
+      expect(recorded).toContain('"method":"session/new"')
+      expect(recorded).toContain(agentSessionId)
+    }, 120_000)
+
+    it('carries a message from the pane through to the agent, and records it', async () => {
+      // The full loop in one assertion: pane → server → ctrl stream → acpd →
+      // agent, with acpd teeing it on the way past. Deliberately asserts the
+      // RECORD rather than a reply, so it proves the path without depending on
+      // what the agent decides to answer.
+      const { ws, opened } = openWs(
+        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+        auth,
+      )
+      await opened
+      await sleep(1000)
+      ws.send(JSON.stringify({ type: 'prompt', text: 'e2e recorded prompt' }))
+
+      let recorded = ''
+      for (let i = 0; i < 60 && !recorded.includes('e2e recorded prompt'); i++) {
+        await sleep(1000)
+        recorded = (await execInJob(jobName, [
+          'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
+        ])).stdout
+      }
+      ws.close()
+      expect(recorded).toContain('"method":"session/prompt"')
+      expect(recorded).toContain('e2e recorded prompt')
+    }, 180_000)
+
+    it('replays the record to a pane that attaches after the fact', async () => {
+      // A fresh attach reads the record from the start, so a pane that was not
+      // there when something was said still sees it. This is what the
+      // in-memory event log used to do, badly.
+      const { ws, text, opened } = openWs(
+        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+        auth,
+      )
+      await opened
+      for (let i = 0; i < 60 && !text.some((l) => l.includes('e2e recorded prompt')); i++) await sleep(500)
+      ws.close()
+
+      const hello = text.map((l) => JSON.parse(l) as { type: string; events?: Array<{ type: string }> })
+        .find((m) => m.type === 'hello')
+      expect(hello).toBeDefined()
+      // The user turn is reconstructed from the client's own `session/prompt`
+      // line in the record — the agent only echoes user messages when
+      // replaying under `session/load`.
+      expect(text.some((l) => l.includes('e2e recorded prompt'))).toBe(true)
+    }, 120_000)
+
+    it('serves the conversation over /acp/attach', async () => {
+      const { ws, text, opened } = openWs(
+        `ws://127.0.0.1:${server!.lock.port}/acp/attach`
+          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+        auth,
+      )
+      await opened
+      for (let i = 0; i < 30 && text.length === 0; i++) await sleep(500)
+      ws.close()
+
+      // `hello` carries the replayable event log — what a chat pane renders on
+      // attach, and what makes a reconnect idempotent.
+      expect(text.length).toBeGreaterThan(0)
+      const hello = JSON.parse(text[0]) as {
+        type: string
+        agentSessionId?: string
+        events?: unknown[]
+      }
+      expect(hello.type).toBe('hello')
+      expect(hello.agentSessionId).toBe(agentSessionId)
+      expect(Array.isArray(hello.events)).toBe(true)
+    }, 60_000)
+
+    it('refuses a tool with no ACP adapter before provisioning anything', async () => {
+      await setupProject('acp-unsupported')
+      const podsBefore = (await listSessionPods('acp-unsupported')).length
+      const bad = await runYaac(
+        serverEnv, 'worktree', 'create', 'acp-unsupported', '--tool', 'opencode', '--mode', 'acp',
+      )
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stdout + bad.stderr).toMatch(/no ACP adapter/)
+      // The check runs before the worktree, the Job, or a database row exists.
+      expect((await listSessionPods('acp-unsupported')).length).toBe(podsBefore)
+    }, 120_000)
+  })
 })

@@ -64,6 +64,10 @@ export const worktreeApp = new Hono()
       // server mints one.
       worktreeId: z.string().uuid().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
+      // Which protocol drives the agent. `acp` needs a tool with an adapter
+      // in the image; createSession rejects the combination before it
+      // provisions anything.
+      mode: z.enum(['tui', 'acp']).optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
       // Omitted → the project's referenceBranch config default, else the
       // remote default branch.
@@ -89,9 +93,14 @@ export const worktreeApp = new Hono()
         // returns the spare's own id and registers no provisioning row — the
         // unhidden session lists in the very next snapshot. A spare warmed
         // from a different branch is re-branched inside the claim.
-        const claimed = await tryClaimPrewarmed(
-          body.project, tool, body.gitUser, onProgress, body.branch, body.model,
-        )
+        // Spares are warmed in tui mode, so an acp create can never claim one
+        // — the spare's agent window already runs a TUI. Skipping the claim is
+        // what keeps it from being retooled into a half-ACP session.
+        const claimed = body.mode === 'acp'
+          ? undefined
+          : await tryClaimPrewarmed(
+            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
+          )
         if (claimed) {
           // The spare's agent booted with no prompt; type it in now.
           if (body.prompt !== undefined) {
@@ -110,6 +119,7 @@ export const worktreeApp = new Hono()
         if (body.gitUser) opts.gitUser = body.gitUser
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         if (body.model !== undefined) opts.model = body.model
+        if (body.mode !== undefined) opts.mode = body.mode
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ worktreeId: sessionId, projectSlug: body.project, tool, kind: 'create' })
@@ -127,6 +137,10 @@ export const worktreeApp = new Hono()
       // need the row.
       projectSlug: z.string().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
+      // No `mode` here, deliberately: a worktree comes back the way it went
+      // down, so restart resolves it from `agent_sessions` rather than from
+      // the caller. Accepting one would advertise a choice this route does
+      // not have — it would be silently ignored.
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
     (c) => {

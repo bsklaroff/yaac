@@ -4,7 +4,7 @@ import {
   readSessionStatus,
   readSessionWaitingSince,
   isSessionStreamHealthy,
-  setPaneStatus,
+  setAgentStatus,
   setSessionStreamHealth,
   evictSessionStatus,
   onSessionStatusChanged,
@@ -21,12 +21,12 @@ describe('readSessionStatus', () => {
   })
 
   it('returns the stored status after a write', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(readSessionStatus('demo', 's1')).toBe('running')
   })
 
   it('keys by slug AND session id', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(readSessionStatus('other', 's1')).toBe('waiting')
     expect(readSessionStatus('demo', 's2')).toBe('waiting')
   })
@@ -38,35 +38,35 @@ describe('isSessionStreamHealthy', () => {
   })
 
   it('returns true after a status write (classification implies a live stream)', () => {
-    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
     expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
   })
 })
 
-describe('setPaneStatus', () => {
+describe('setAgentStatus', () => {
   it('fires the change listener when the status flips', () => {
     const listener = vi.fn()
     onSessionStatusChanged(listener)
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
-    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
     expect(listener).toHaveBeenCalledTimes(2)
   })
 
   it('does not fire when the same status is re-set on a healthy entry', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
     onSessionStatusChanged(listener)
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).not.toHaveBeenCalled()
   })
 
   it('fires when re-classifying an unhealthy entry (health became visible)', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     setSessionStreamHealth('demo', 's1', false)
     const listener = vi.fn()
     onSessionStatusChanged(listener)
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
     expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
   })
@@ -91,14 +91,14 @@ describe('setSessionStreamHealth', () => {
   })
 
   it('keeps the sticky status across a health drop', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     setSessionStreamHealth('demo', 's1', false)
     expect(readSessionStatus('demo', 's1')).toBe('running')
     expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
   })
 
   it('fires only when the health bit actually flips', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
     onSessionStatusChanged(listener)
     setSessionStreamHealth('demo', 's1', true)
@@ -119,10 +119,10 @@ describe('readSessionWaitingSince (waiting spells)', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(1_000)
-      setPaneStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%0', 'waiting')
       expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
       vi.setSystemTime(5_000)
-      setPaneStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%0', 'waiting')
       expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
     } finally {
       vi.useRealTimers()
@@ -133,11 +133,11 @@ describe('readSessionWaitingSince (waiting spells)', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(1_000)
-      setPaneStatus('demo', 's1', '%0', 'waiting')
-      setPaneStatus('demo', 's1', '%0', 'running')
+      setAgentStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%0', 'running')
       expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
       vi.setSystemTime(2_000)
-      setPaneStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%0', 'waiting')
       expect(readSessionWaitingSince('demo', 's1')).toBe(2_000)
     } finally {
       vi.useRealTimers()
@@ -153,7 +153,7 @@ describe('readSessionWaitingSince (waiting spells)', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(1_000)
-      setPaneStatus('demo', 's1', '%0', 'waiting')
+      setAgentStatus('demo', 's1', '%0', 'waiting')
       vi.setSystemTime(9_000)
       setSessionStreamHealth('demo', 's1', false)
       setSessionStreamHealth('demo', 's1', true)
@@ -164,7 +164,7 @@ describe('readSessionWaitingSince (waiting spells)', () => {
   })
 
   it('is gone after eviction', () => {
-    setPaneStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
     evictSessionStatus('demo', 's1')
     expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
   })
@@ -172,7 +172,7 @@ describe('readSessionWaitingSince (waiting spells)', () => {
 
 describe('evictSessionStatus', () => {
   it('removes the entry and fires the listener', () => {
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
     onSessionStatusChanged(listener)
     evictSessionStatus('demo', 's1')
@@ -194,7 +194,7 @@ describe('onSessionStatusChanged', () => {
     const second = vi.fn()
     onSessionStatusChanged(first)
     onSessionStatusChanged(second)
-    setPaneStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
   })

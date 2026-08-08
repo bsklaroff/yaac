@@ -44,10 +44,10 @@ const SEALED_FOLDERS = {
 }
 
 export default tseslint.config(
-  // dockerfiles/streamd is plain JS baked into the base image (its test
-  // imports untyped .js modules), deliberately outside the tsconfig
-  // projects — vitest (unit:streamd) is its gate.
-  { ignores: ['dist', 'dist-test', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging', 'dockerfiles/streamd'] },
+  // dockerfiles/streamd and dockerfiles/acpd are plain JS baked into the base
+  // image (their tests import untyped .js modules), deliberately outside the
+  // tsconfig projects — vitest (unit:streamd, unit:acpd) is their gate.
+  { ignores: ['dist', 'dist-test', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging', 'dockerfiles/streamd', 'dockerfiles/acpd'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,

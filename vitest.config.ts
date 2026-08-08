@@ -89,6 +89,9 @@ export default defineConfig({
       // in the root tsconfig (untyped .js imports), so vitest is its only
       // gate.
       unitProject('dockerfiles/streamd'),
+      // acpd (the in-pod ACP agent supervisor) — same deal as streamd:
+      // plain JS in the base image, outside the root tsconfig, gated here.
+      unitProject('dockerfiles/acpd'),
       // api + e2e live in the root test/ tree (inherently cross-package).
       {
         extends: true,

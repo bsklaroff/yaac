@@ -1,0 +1,1 @@
+ALTER TABLE "agent_sessions" ADD COLUMN "mode" text DEFAULT 'tui' NOT NULL;

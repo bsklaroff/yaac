@@ -51,6 +51,7 @@ function pod(sessionId: string): SessionPod {
 const CREATED: SessionCreateResult = {
   worktreeId: 'sid-1',
   jobName: 'yaac-proj-sid-1',
+  mode: 'tui',
   forwardedPorts: [],
   tool: 'claude',
 }

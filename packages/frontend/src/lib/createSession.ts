@@ -1,6 +1,6 @@
 import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 export interface CreateSessionResult {
   worktreeId: string
@@ -35,12 +35,16 @@ export async function createSession(
   onProgress: (message: string) => void,
   worktreeId?: string,
   branch?: string,
+  mode?: AgentMode,
 ): Promise<CreateSessionResult> {
   const body = {
     project,
     tool,
     ...(worktreeId ? { worktreeId } : {}),
     ...(branch ? { branch } : {}),
+    // Omitted for tui: the server defaults it, and sending the default would
+    // make every create look like an explicit mode choice in the logs.
+    ...(mode === 'acp' ? { mode } : {}),
   }
   return await streamSessionOp('/worktree/create', body, onProgress) as CreateSessionResult
 }

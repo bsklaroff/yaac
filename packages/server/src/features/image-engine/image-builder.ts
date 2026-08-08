@@ -30,11 +30,15 @@ export async function fileHash(filePath: string): Promise<string> {
  * tags.
  */
 export async function baseImageHash(dockerfilePath: string): Promise<string> {
-  // The base build also COPYs dockerfiles/streamd/ (the in-pod stream
-  // daemon), so its source is part of the layer's content hash — editing
-  // streamd retags the image just like a Dockerfile edit.
+  // The base build also COPYs the in-pod daemons — dockerfiles/streamd/ (the
+  // stream daemon) and dockerfiles/acpd/ (the ACP agent supervisor) — so
+  // their sources are part of the layer's content hash: editing either
+  // retags the image just like a Dockerfile edit.
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
-  return stringHash(`${await fileHash(dockerfilePath)}:streamd=${streamdHash}:uid=${sessionUid()}`)
+  const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
+  return stringHash(
+    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${sessionUid()}`,
+  )
 }
 
 /**

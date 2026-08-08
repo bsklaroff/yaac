@@ -44,7 +44,7 @@ function makeDeps(over: Parameters<typeof handleSpawnRequest>[1] = {}): {
   createSessionFn: ReturnType<typeof vi.fn<CreateSessionFn>>
 } {
   const createSessionFn = vi.fn<CreateSessionFn>().mockResolvedValue({
-    worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude',
+    worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
   } as SessionCreateResult)
   return {
     deps: {

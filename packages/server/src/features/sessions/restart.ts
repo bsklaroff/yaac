@@ -100,9 +100,16 @@ export async function restartWorktree(
   // Each conversation resumes under its OWN tool: a worktree can hold a
   // codex conversation next to claude ones, and launching the wrong binary
   // against an id it does not know kills the pane.
-  const resume = (await listActiveAgentSessions(projectSlug, worktreeId).catch(() => []))
-    .map((l) => ({ agentSessionId: l.agentSessionId, tool: l.tool }))
+  const active = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+  const resume = active.map((l) => ({ agentSessionId: l.agentSessionId, tool: l.tool }))
   if (resume.length > 1) opts.onProgress?.(`Restoring ${resume.length} agent sessions...`)
+
+  // A worktree comes back the way it went down. Mode is per-conversation in
+  // the schema but per-pod at launch (the driver is chosen once, from the pod
+  // label), so the primary conversation's mode is the worktree's — which is
+  // exact, since nothing today can mix modes inside one worktree. A worktree
+  // with nothing recorded (an older row, or a create that never got an id)
+  // falls back to tui, the mode every pre-ACP worktree ran.
 
   const result = await createSession(projectSlug, {
     // Always reuse the checkout — that is what a restart *is*. Clearing this
@@ -111,6 +118,7 @@ export async function restartWorktree(
     resume: true,
     sessionId: worktreeId,
     tool,
+    mode: active[0]?.mode ?? 'tui',
     resumeAgentSessions: resume,
     gitUser: opts.gitUser,
     onProgress: opts.onProgress,

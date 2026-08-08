@@ -132,6 +132,9 @@ vi.mock('@yaac/shared/project-paths', () => ({
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
   piDir: vi.fn((slug: string) => `/tmp/${slug}/pi`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
+  // Per-worktree ACP conversation records; create makes the dir so acpd can
+  // write into it through the mount.
+  acpLogDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/acp/${worktreeId}`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
@@ -415,7 +418,7 @@ describe('createSession', () => {
     expect(vi.mocked(recordAgentSessions)).toHaveBeenCalledWith(
       'demo',
       result?.worktreeId,
-      [{ tool: 'codex', agentSessionId: result?.worktreeId, firstPrompt: 'ship it' }],
+      [{ tool: 'codex', agentSessionId: result?.worktreeId, mode: 'tui', firstPrompt: 'ship it' }],
     )
     // Ordering is the point: no pod can exist without a row.
     const recordOrder = vi.mocked(recordWorktreeCreated).mock.invocationCallOrder[0] ?? Infinity
