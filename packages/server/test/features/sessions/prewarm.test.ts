@@ -120,7 +120,7 @@ describe('tryClaimPrewarmed', () => {
   it('claims a ready spare: removes the label, re-applies identity, returns its id', async () => {
     mockListPods.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
-    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
+    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
     expect(mockKubectl).toHaveBeenCalledWith(
       ['label', 'pod', 'yaac-p-spare-x', '-n', 'ns', `${LABEL_PREWARMED}-`],
     )
@@ -142,7 +142,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
 
-    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
+    expect(result).toEqual({ worktreeId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', mode: 'tui', forwardedPorts: [] })
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', undefined)
     expect(mockKubectl).toHaveBeenCalledWith([
       'label', 'pod', 'yaac-p-spare-x', '-n', 'ns',

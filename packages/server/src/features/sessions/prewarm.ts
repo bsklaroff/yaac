@@ -362,7 +362,9 @@ export async function tryClaimPrewarmed(
     }
 
     emit('Using prewarmed session...')
-    return { worktreeId: chosen.sessionId, jobName: chosen.jobName, tool, forwardedPorts: [] }
+    // Always tui: spares are warmed with a TUI agent window, which is exactly
+    // why the route refuses to let an acp create claim one.
+    return { worktreeId: chosen.sessionId, jobName: chosen.jobName, tool, mode: 'tui', forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to
     // see — a cold create would fail identically, so don't degrade.

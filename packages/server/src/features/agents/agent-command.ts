@@ -174,14 +174,25 @@ export function buildAgentCmd(
  * `paste-buffer -p` honors bracketed paste so a multiline prompt lands in
  * the input box instead of submitting line by line.
  */
-export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
-  return `sh -c '${promptPasteScript(tool, prompt)}'`
+export function buildPromptPasteCmd(target: string, prompt: string): string {
+  return `sh -c '${promptPasteScript(target, prompt)}'`
 }
 
-/** The paste-and-submit shell script buildPromptPasteCmd wraps. */
-function promptPasteScript(tool: AgentTool, prompt: string): string {
+/**
+ * The tmux target for a tool's primary agent window — where session create's
+ * initial ask goes. A *later* message addresses the conversation's pane id
+ * instead (see the tui driver's `deliverPrompt`), because a worktree with
+ * several conversations has several panes and only one `yaac:<tool>` window.
+ */
+export function agentWindowTarget(tool: AgentTool): string {
+  return `yaac:${tool}`
+}
+
+/** The paste-and-submit shell script buildPromptPasteCmd wraps. `paneTarget`
+ *  is any tmux target — a window (`yaac:claude`) or a pane id (`%3`). */
+function promptPasteScript(paneTarget: string, prompt: string): string {
   const b64 = Buffer.from(prompt, 'utf8').toString('base64')
-  const target = `-t yaac:${tool}`
+  const target = `-t ${paneTarget}`
   // First non-empty line anchors the paste verification; a whitespace-only
   // prompt (nothing capture-pane could match) degrades to one blind paste.
   const probeLine = prompt.split('\n').find((l) => l.trim() !== '')?.slice(0, 40)
@@ -211,8 +222,8 @@ function promptPasteScript(tool: AgentTool, prompt: string): string {
  * to /tmp/yaac-prompt.log for postmortems. The script travels
  * base64-encoded so its quoting survives the single shell pass unchanged.
  */
-export function buildPromptPasteBgCmd(tool: AgentTool, prompt: string): string {
-  const b64 = Buffer.from(promptPasteScript(tool, prompt), 'utf8').toString('base64')
+export function buildPromptPasteBgCmd(target: string, prompt: string): string {
+  const b64 = Buffer.from(promptPasteScript(target, prompt), 'utf8').toString('base64')
   return `printf %s ${b64} | base64 -d > /tmp/.yaac-prompt.sh`
     + ' && setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &'
 }
@@ -231,7 +242,10 @@ export async function typeInitialPrompt(
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  await sessionExec(jobName, buildPromptPasteBgCmd(tool, prompt), { maxAttempts: 1, timeout: 15_000 })
+  await sessionExec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
+    maxAttempts: 1,
+    timeout: 15_000,
+  })
 }
 
 /**

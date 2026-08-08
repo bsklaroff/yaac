@@ -15,6 +15,7 @@ import { ensureContainerRuntime } from '#platform/container'
 import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import {
   LABEL_DATA_DIR_HASH,
+  LABEL_MODE,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
@@ -55,6 +56,7 @@ import {
 } from '#features/cluster'
 import {
   repoDir,
+  acpLogDir,
   claudeDir,
   claudeJsonFile,
   codexDir,
@@ -70,6 +72,7 @@ import {
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
+  CONTAINER_ACP_LOG_DIR,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import {
@@ -92,8 +95,11 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
+import { serverLog } from '#log'
 import {
-  buildAgentCmd,
+  acpAdapterFor,
+  agentDriver,
+  agentWindowName,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
@@ -101,7 +107,6 @@ import {
   ensureClaudeHooks,
   ensureOpencodeConfigJson,
   removeLegacyCodexHook,
-  typeInitialPrompt,
   validateInitWindows,
   type InitWindow,
 } from '#features/agents'
@@ -133,7 +138,7 @@ import {
   buildStatusRight,
   registerSessionForwarders,
 } from '#features/forwarders'
-import type { AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,
   piProviderInfo,
@@ -157,6 +162,13 @@ export interface SessionCreateOptions {
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
+  /**
+   * Which protocol drives the agent (default: 'tui'). `acp` runs the tool's
+   * ACP adapter under acpd instead of its TUI, and the webapp renders the
+   * conversation as chat rather than attaching a PTY. Validated by the create
+   * route against the tools that have an adapter.
+   */
+  mode?: AgentMode
   /**
    * Reference branch for the fresh worktree (a branch on `origin`, no
    * `origin/` prefix). Overrides the project's `referenceBranch` config
@@ -213,6 +225,9 @@ export interface SessionCreateResult {
   jobName: string
   forwardedPorts: PortMapping[]
   tool: AgentTool
+  /** Which driver the pod came up under. Callers that would attach a PTY need
+   *  it: an `acp` worktree's window runs acpd, not a shell. */
+  mode: AgentMode
 }
 
 interface SessionSetupParams {
@@ -228,6 +243,8 @@ interface SessionSetupParams {
   /** Inner (nested) yaac — don't stamp a RuntimeClass (see SessionJobParams). */
   innerYaac?: boolean
   tool: AgentTool
+  /** Which driver launches and observes the agents. */
+  mode: AgentMode
   /** The conversations to bring up, in window order — the same list the
    *  worktree's rows were written from, so the DB can never name one the
    *  agent did not open. */
@@ -281,7 +298,7 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, mounts,
-    proxyHost, nested, innerYaac, tool, launching, initWindows, piProvider,
+    proxyHost, nested, innerYaac, tool, mode, launching, initWindows, piProvider,
     options, worktree,
   } = params
 
@@ -293,6 +310,10 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
       [LABEL_SESSION_ID]: sessionId,
       [LABEL_DATA_DIR_HASH]: dataDirHash(),
       [LABEL_TOOL]: tool,
+      // Stamped only for acp: the status watcher picks its driver from this,
+      // and every pod without it (every TUI pod, and every pod predating
+      // modes) reads as tui.
+      ...(mode === 'acp' ? { [LABEL_MODE]: mode } : {}),
       // Prewarmed spares carry this until claimed; claiming removes it
       // (kubectl label pod yaac.prewarmed-), flipping the pod to a normal
       // session that lists in the user-facing views.
@@ -449,9 +470,21 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // back to the worktree-id pin, which is the pre-hook worktree's path.
   const resumesConversation = (options.resumeAgentSessions ?? []).length > 0
     || options.resume === true
-  const agentCmds = launching.map((a) => ({
+  const driver = agentDriver(mode)
+  const agentCmds = launching.map((a, i) => ({
     tool: a.tool,
-    cmd: buildAgentCmd(a.tool, a.agentSessionId, resumesConversation, piProvider, options.model),
+    cmd: driver.launchCmd({
+      tool: a.tool,
+      agentSessionId: a.agentSessionId,
+      resume: resumesConversation,
+      // The window a conversation lands in — the primary keeps the tool's own
+      // name, extras get `<tool>-2`, … . Under acp it doubles as the acpd
+      // socket's name, which is why the driver needs it and the TUI one
+      // ignores it.
+      windowName: agentWindowName(a.tool, i),
+      ...(piProvider !== undefined ? { piProvider } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+    }),
   }))
   const toolLabel =
     tool === 'codex' ? 'Codex' :
@@ -463,7 +496,16 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 
   if (options.initialPrompt !== undefined) {
     emit('Sending initial prompt...', options)
-    await typeInitialPrompt(jobName, tool, options.initialPrompt)
+    // Mode-agnostic: `tui` pastes it into the pane and submits, `acp` waits
+    // for the conversation's handshake and sends `session/prompt`. Neither
+    // waits for the agent to answer.
+    await driver.deliverPrompt(
+      { slug: projectSlug, sessionId, jobName, tool },
+      agentWindowName(tool, 0),
+      options.initialPrompt,
+    ).catch((err: unknown) => {
+      serverLog(`[server] create ${sessionId}: initial prompt failed: ${String(err)}`)
+    })
   }
 }
 
@@ -605,6 +647,15 @@ export async function createSession(
   // any resource is provisioned.
   const initWindows = validateInitWindows(config)
 
+  // Resolved (and rejected) before anything is provisioned, like the init
+  // windows above: only some tools ship an ACP adapter, and a bad combination
+  // must fail the create rather than become a tmux window that exits on
+  // startup with nobody watching.
+  const mode: AgentMode = options.mode ?? 'tui'
+  if (mode === 'acp' && acpAdapterFor(tool) === undefined) {
+    throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
+  }
+
   const sessionId = options.sessionId ?? crypto.randomUUID()
   // The conversations this create will launch, decided here rather than at
   // agent-command time so they can be recorded alongside the worktree row.
@@ -652,14 +703,36 @@ export async function createSession(
     // recorded with the row rather than left to discovery. An initial prompt
     // is the first conversation's opening message by definition — the user
     // typed it before the agent had said anything.
-    await recordAgentSessions(projectSlug, sessionId, launching.map((a, i) => ({
-      tool: a.tool,
-      agentSessionId: a.agentSessionId,
-      ...(i === 0 && options.initialPrompt !== undefined
-        ? { firstPrompt: options.initialPrompt }
-        : {}),
-    })))
-    await setActiveAgentSessions(projectSlug, sessionId, launching)
+    //
+    // A FRESH acp create is the one case that cannot do this: an ACP
+    // conversation's id is minted by the agent (`session/new`), so there is
+    // nothing to record until the handshake answers, seconds later. The
+    // registry writes the row then, first prompt and all. A resumed acp
+    // worktree is unaffected — its ids are exactly what was frozen at
+    // teardown — which is why the guard is on the ids being real, not on the
+    // mode alone.
+    if (mode === 'tui' || (launching.length > 0 && options.resumeAgentSessions !== undefined)) {
+      // Under `acp` the handle is knowable here, and recording it is what makes
+      // a restart resume rather than start over: the driver reads it back to
+      // address the conversation, and without it the fresh acpd handshake mints
+      // a NEW session and silently abandons the history this row exists to
+      // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
+      // pane exists, so that stays for the registry to fill in.
+      const live = launching.map((a, i) => ({
+        ...a,
+        ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
+      }))
+      await recordAgentSessions(projectSlug, sessionId, live.map((a, i) => ({
+        tool: a.tool,
+        agentSessionId: a.agentSessionId,
+        mode,
+        ...(a.paneId !== undefined ? { paneId: a.paneId } : {}),
+        ...(i === 0 && options.initialPrompt !== undefined
+          ? { firstPrompt: options.initialPrompt }
+          : {}),
+      })))
+      await setActiveAgentSessions(projectSlug, sessionId, live)
+    }
   }
 
   // ── Concurrent provisioning ─────────────────────────────────────────
@@ -918,6 +991,13 @@ export async function createSession(
     // agent/sessions subdir under it on first run.
     await fs.mkdir(pi, { recursive: true })
     await fs.mkdir(cachedPackages, { recursive: true })
+    // One worktree's ACP conversation records, written by acpd inside the pod
+    // and read by the server from here — including after the pod is gone,
+    // which is why they sit under the project rather than the session dir
+    // (teardown prunes that one). Only `acp` sessions have any, so a `tui` pod
+    // carries neither the directory nor the mount.
+    const acpLogs = mode === 'acp' ? acpLogDir(projectSlug, sessionId) : undefined
+    if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
 
     // SSH provisioning: when the project's remote is SSH, forward the proxy's
     // ssh-agent into the pod (no private key inside the container) and
@@ -1075,7 +1155,7 @@ export async function createSession(
       toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
       builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
       claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-      cachedPackages,
+      cachedPackages, acpLogs,
     }
   })()
 
@@ -1084,7 +1164,7 @@ export async function createSession(
     toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
     builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
     claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-    cachedPackages,
+    cachedPackages, acpLogs,
   } = prep
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1289,6 +1369,11 @@ export async function createSession(
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: '/repo/.git' },
     { source: { kind: 'hostPath', path: claude }, mountPath: '/home/yaac/.claude' },
+    // Tool-agnostic on purpose: an ACP record belongs to the protocol, not to
+    // whichever agent happens to speak it.
+    ...(acpLogs !== undefined
+      ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
+      : []),
     {
       source: { kind: 'hostPath', path: claudeJson, type: 'File' },
       mountPath: '/home/yaac/.claude.json',
@@ -1347,7 +1432,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, mounts, launching,
-    proxyHost: cluster.proxyHost, nested: nestedContainers, innerYaac, tool, initWindows,
+    proxyHost: cluster.proxyHost, nested: nestedContainers, innerYaac, tool, mode, initWindows,
     piProvider: toolAuthByTool.pi?.piProvider,
     options, worktree: worktreeTask,
   }
@@ -1412,5 +1497,6 @@ export async function createSession(
     jobName,
     forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
     tool,
+    mode,
   }
 }

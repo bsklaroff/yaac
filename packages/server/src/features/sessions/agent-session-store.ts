@@ -6,7 +6,7 @@ import {
   toStoredTranscriptPath,
 } from '#features/agents'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
 /**
  * The conversation side of the model: `agent_sessions` (one row per
@@ -35,6 +35,7 @@ export function toAgentSessionEntry(
   return {
     agentSessionId: l.agentSessionId,
     tool: l.tool,
+    mode: l.mode,
     ordinal: l.ordinal,
     active: l.active,
     ...(live !== undefined ? { status: live.status } : {}),
@@ -51,6 +52,8 @@ export interface AgentSessionRow {
   projectSlug: string
   tool: AgentTool
   agentSessionId: string
+  /** Which protocol drives it — see the `mode` column. */
+  mode: AgentMode
   createdAt: Date
   /** Absolute — the column stores it home-relative, and this layer is where
    *  the two forms meet (see `toStoredTranscriptPath`). */
@@ -73,6 +76,10 @@ export interface AgentSessionLinkRow extends AgentSessionRow {
 export interface DiscoveredAgentSession {
   tool: AgentTool
   agentSessionId: string
+  /** Defaults to 'tui'. Only ever set on INSERT: a conversation cannot change
+   *  protocol mid-life, and a later sighting that guessed wrong must not
+   *  rewrite what the create path recorded. */
+  mode?: AgentMode
   transcriptPath?: string
   firstPrompt?: string
   lastActiveMs?: number
@@ -143,6 +150,7 @@ export async function recordAgentSessions(
         tool: d.tool,
         agentSessionId: d.agentSessionId,
         createdAt: seenAt,
+        mode: d.mode ?? 'tui',
         transcriptPath: stored,
         firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
         lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
@@ -243,6 +251,7 @@ function selectLinked() {
     worktreeId: worktreeAgentSessions.worktreeId,
     tool: worktreeAgentSessions.tool,
     agentSessionId: worktreeAgentSessions.agentSessionId,
+    mode: agentSessions.mode,
     active: worktreeAgentSessions.active,
     ordinal: worktreeAgentSessions.ordinal,
     paneId: worktreeAgentSessions.paneId,
@@ -260,6 +269,7 @@ type LinkedSelect = {
   worktreeId: string
   tool: string
   agentSessionId: string
+  mode: string
   active: boolean
   ordinal: number
   paneId: string | null
@@ -282,6 +292,7 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
     worktreeId: r.worktreeId,
     tool: r.tool as AgentTool,
     agentSessionId: r.agentSessionId,
+    mode: r.mode === 'acp' ? 'acp' : 'tui',
     active: r.active,
     ordinal: r.ordinal,
     createdAt: r.createdAt,

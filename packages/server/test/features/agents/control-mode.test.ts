@@ -4,7 +4,7 @@ import {
   ControlModeClient,
   parseControlModeNotification,
   type ControlModeNotification,
-} from '#features/status/control-mode'
+} from '#features/agents/control-mode'
 
 describe('parseControlModeNotification', () => {
   it('parses a %subscription-changed line into name/pane/value', () => {

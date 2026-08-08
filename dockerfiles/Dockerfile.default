@@ -27,6 +27,12 @@ RUN corepack enable
 # dockerfiles/.containerignore keeps its dev-only files out of the context.
 COPY streamd/ /opt/yaac/streamd/
 RUN cd /opt/yaac/streamd && npm install --omit=dev --no-audit --no-fund
+# acpd: the in-pod supervisor for an ACP agent process. Runs in a tmux window
+# and exposes the agent's stdio on a UNIX socket the server attaches to, so a
+# dropped connection never kills a turn. Dependency-free (plain node), so
+# unlike streamd it needs no install step. Its source is folded into this
+# layer's content hash (see baseImageHash) alongside streamd's.
+COPY acpd/ /opt/yaac/acpd/
 # Install both the full Chromium (symlinked to /opt/google/chrome for tools
 # that auto-detect it, e.g. chrome-devtools-mcp) and the headless shell that
 # Playwright's default `chromium.launch()` looks for. PLAYWRIGHT_BROWSERS_PATH

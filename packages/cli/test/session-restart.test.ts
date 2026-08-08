@@ -1,4 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// The CLI shim's own collaborators. Only the `worktreeRestart` describe below
+// uses these; the pipeline describes drive the server modules directly.
+// Hoisted with the vi.mock calls, which run before any import.
+const { attachSpy, postSpy, consumeSpy } = vi.hoisted(() => ({
+  attachSpy: vi.fn().mockResolvedValue(undefined),
+  postSpy: vi.fn().mockResolvedValue({}),
+  consumeSpy: vi.fn(),
+}))
+vi.mock('#commands/ws-terminal', () => ({ attachSessionPty: attachSpy }))
+vi.mock('#commands/git-identity', () => ({
+  ensureGitIdentity: vi.fn().mockResolvedValue({ name: 'T', email: 't@e' }),
+}))
+vi.mock('#commands/api', () => ({ api: { worktree: { restart: { $post: postSpy } } } }))
+vi.mock('@yaac/shared/ndjson', () => ({ consumeNdjsonStream: consumeSpy }))
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/sessions/cleanup'
@@ -217,7 +232,32 @@ describe('restartWorktree', () => {
 })
 
 describe('worktreeRestart (CLI shim)', () => {
-  it('is exported as a function', () => {
-    expect(typeof worktreeRestart).toBe('function')
+  beforeEach(() => {
+    attachSpy.mockClear()
+    postSpy.mockClear()
+  })
+
+  it('attaches a terminal to a restarted tui worktree', async () => {
+    consumeSpy.mockResolvedValueOnce({ worktreeId: 'w1', jobName: 'j1', mode: 'tui' })
+    await expect(worktreeRestart('w1')).resolves.toBe('w1')
+    expect(attachSpy).toHaveBeenCalledWith('w1', 'native')
+  })
+
+  it('does not attach a terminal to a restarted acp worktree', async () => {
+    // An ACP worktree's agent window runs acpd, so attaching drops the user
+    // into the supervisor's stdio and sits there — create already refuses for
+    // this reason, and a restart has to refuse identically or the CLI hangs
+    // until the attach times out.
+    consumeSpy.mockResolvedValueOnce({ worktreeId: 'w2', jobName: 'j2', mode: 'acp' })
+    await expect(worktreeRestart('w2')).resolves.toBe('w2')
+    expect(attachSpy).not.toHaveBeenCalled()
+  })
+
+  it('attaches when the server reports no mode at all', async () => {
+    // A server that predates the field: tui is what every pre-ACP worktree
+    // ran, so the old behaviour is the right fallback.
+    consumeSpy.mockResolvedValueOnce({ worktreeId: 'w3', jobName: 'j3' })
+    await expect(worktreeRestart('w3')).resolves.toBe('w3')
+    expect(attachSpy).toHaveBeenCalledWith('w3', 'native')
   })
 })

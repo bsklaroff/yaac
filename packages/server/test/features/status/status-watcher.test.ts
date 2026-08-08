@@ -3,14 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SessionStatusWatcher,
   StatusWatcherManager,
-  attachClientFlags,
-  type AttachChild,
+  podAgentMode,
   type WatchedSession,
 } from '#features/status/status-watcher'
+import type { StreamChild } from '#platform/k8s'
 import {
   readSessionStatus,
   isSessionStreamHealthy,
-  setPaneStatus,
+  setAgentStatus,
   _resetSessionStatusStoreForTests,
 } from '#features/status/status-store'
 import {
@@ -19,7 +19,7 @@ import {
 } from '#features/status/control-stream-registry'
 import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '#platform/k8s/pods'
 
-class FakeAttachChild implements AttachChild {
+class FakeAttachChild implements StreamChild {
   writes: string[] = []
   killed = false
   private stdoutCbs: Array<(chunk: Buffer | string) => void> = []
@@ -57,7 +57,7 @@ class FakeAttachChild implements AttachChild {
 }
 
 function session(tool: WatchedSession['tool']): WatchedSession {
-  return { slug: 'demo', sessionId: 's1', jobName: 'yaac-demo-s1', tool }
+  return { slug: 'demo', sessionId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
 }
 
 function makeWatcher(tool: WatchedSession['tool'], deps: {
@@ -68,7 +68,7 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
   const children: FakeAttachChild[] = []
   const revives: string[] = []
   const watcher = new SessionStatusWatcher(session(tool), {
-    spawnAttach: () => {
+    dial: () => {
       const child = new FakeAttachChild()
       children.push(child)
       return child
@@ -117,15 +117,30 @@ afterEach(() => {
   watchers = []
 })
 
-describe('attachClientFlags', () => {
-  it('attaches every watcher with no-output so agent TUI redraws never cross the exec stream', () => {
-    // No tool's status is read from raw pane output any more — claude/codex
-    // ride the title subscription, opencode/pi a tmux-side content search —
-    // so the client never needs %output.
-    const flags = attachClientFlags().split(',')
-    expect(flags).toContain('no-output')
-    expect(flags).toContain('read-only')
-    expect(flags).toContain('ignore-size')
+describe('podAgentMode', () => {
+  const pod = (labels: Record<string, string>): SessionPod => ({
+    jobName: 'yaac-demo-s1',
+    podName: 'yaac-demo-s1-abc',
+    sessionId: 's1',
+    projectSlug: 'demo',
+    tool: 'claude',
+    ...(labels['yaac.mode'] !== undefined ? { mode: labels['yaac.mode'] } : {}),
+    phase: 'Running',
+    running: true,
+    terminating: false,
+    createdAtMs: 0,
+    labels,
+  })
+
+  it('reads acp off the pod label', () => {
+    expect(podAgentMode(pod({ 'yaac.mode': 'acp' }))).toBe('acp')
+  })
+
+  it('defaults to tui, so every TUI pod and every pod predating modes still works', () => {
+    // The label is stamped only for acp — an unlabeled pod is not ambiguous,
+    // it is the mode yaac has always run.
+    expect(podAgentMode(pod({}))).toBe('tui')
+    expect(podAgentMode(pod({ 'yaac.mode': 'something-else' }))).toBe('tui')
   })
 })
 
@@ -369,7 +384,7 @@ describe('StatusWatcherManager', () => {
   function makeManager(): { manager: StatusWatcherManager; children: FakeAttachChild[] } {
     const children: FakeAttachChild[] = []
     const manager = new StatusWatcherManager({
-      spawnAttach: () => {
+      dial: () => {
         const child = new FakeAttachChild()
         children.push(child)
         return child
@@ -411,7 +426,7 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([pod({ sessionId: 's1' })])
-      setPaneStatus('demo', 's1', '%0', 'running')
+      setAgentStatus('demo', 's1', '%0', 'running')
       manager.sync([])
       expect(manager.size).toBe(0)
       expect(children[0].killed).toBe(true)

@@ -5,6 +5,27 @@ export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
+/**
+ * How yaac drives a conversation, and therefore how the webapp renders it.
+ * Orthogonal to `AgentTool`: it selects the *protocol* between the server and
+ * the agent, not which agent runs.
+ *
+ * - `tui`  the agent's own terminal UI under tmux; the server observes it
+ *          through tmux control mode and the browser attaches a PTY.
+ * - `acp`  the agent speaks the Agent Client Protocol (JSON-RPC over stdio)
+ *          to the server, which renders structured messages in a chat pane.
+ *
+ * Both modes run the agent in a tmux window — tmux is the process supervisor
+ * that outlives the viewer either way. Only the presentation transport
+ * differs (a PTY stream vs a ctrl stream into acpd's socket).
+ */
+export type AgentMode = 'tui' | 'acp'
+
+export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
+
+/** Tools with an ACP adapter in the session image. */
+export const ACP_TOOLS: readonly AgentTool[] = ['claude']
+
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
@@ -432,6 +453,9 @@ export interface AgentSessionEntry {
   /** The tool's own conversation id, not yaac's. */
   agentSessionId: string
   tool: AgentTool
+  /** Which protocol drives it, and therefore which pane renders it. Absent
+   *  on rows recorded before modes existed, which are `tui`. */
+  mode?: AgentMode
   /** Restore order; 0 is the worktree's original agent. */
   ordinal: number
   /** Had a live agent process when the worktree was last observed running —

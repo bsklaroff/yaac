@@ -13,6 +13,14 @@ export const LABEL_SESSION_ID = 'yaac.session-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
 /**
+ * Which protocol drives the session's agents — `tui` or `acp` (AgentMode).
+ * Stamped only for `acp`, so every pod that predates modes (and every TUI pod)
+ * simply lacks it and reads as `tui`. It rides a label rather than a DB lookup
+ * because the status watcher picks its driver from informer deltas, where a
+ * per-pod query would put the database on the pod-event hot path.
+ */
+export const LABEL_MODE = 'yaac.mode'
+/**
  * Label the SYNCER stamps on every host object a vcluster creates (value =
  * the vcluster name). Lives here — not in vcluster.ts, which defines the
  * other vcluster constants — because bootstrap.ts needs it too and
@@ -95,6 +103,8 @@ export interface SessionPod {
   sessionId: string
   projectSlug: string
   tool: string
+  /** `yaac.mode` when stamped; absent on every TUI pod (see LABEL_MODE). */
+  mode?: string
   /** Pod phase: Pending | Running | Succeeded | Failed | Unknown. */
   phase: string
   /** True when the pod is Running and not terminating. */
@@ -201,6 +211,7 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
     sessionId: metadata.labels[LABEL_SESSION_ID],
     projectSlug: metadata.labels[LABEL_PROJECT],
     tool: metadata.labels[LABEL_TOOL],
+    ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
     phase: status.phase,
     running: status.phase === 'Running' && !terminating,
     terminating,

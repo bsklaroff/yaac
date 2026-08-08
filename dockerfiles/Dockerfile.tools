@@ -43,6 +43,13 @@ RUN npm install -g @openai/codex
 RUN npm install -g opencode-ai@1.0.142
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 RUN curl -fsSL https://claude.ai/install.sh | bash
+# The ACP adapter for Claude — the agent side of yaac's `acp` mode. Speaks
+# JSON-RPC over stdio (Agent Client Protocol) instead of rendering a TUI, so
+# the server drives it directly and the webapp renders structured messages in
+# a chat pane rather than attaching a PTY. Launched under acpd (see
+# /opt/yaac/acpd in the base image), never on its own. Pinned like every other
+# agent CLI here so a session's behavior can't change under it mid-release.
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
 
 # Agent-session discovery hook. The script body lives once at
 # /etc/yaac/agent-links.sh and is parameterized by the tool's host-mounted

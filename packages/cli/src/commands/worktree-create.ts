@@ -7,7 +7,7 @@ import { resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 export interface WorktreeCreateOptions {
   tool?: AgentTool
@@ -19,6 +19,9 @@ export interface WorktreeCreateOptions {
   /** Model override for the agent's launch command (`--model <model>`):
    *  an id or alias for claude/codex, `provider/model` for opencode/pi. */
   model?: string
+  /** How the agent is driven (default: tui). `acp` has no terminal to attach,
+   *  so the CLI prints where to find the conversation instead. */
+  mode?: AgentMode
 }
 
 interface WorktreeCreateResult {
@@ -69,6 +72,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       gitUser,
       prompt: options.prompt,
       model: options.model,
+      mode: options.mode,
     },
   })
 
@@ -85,6 +89,14 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
   // an interactive attach hangs waiting for terminal capabilities.
   // Setting this env var returns after provisioning and lets the test
   // drive the container directly via `kubectl exec`.
+  // An ACP worktree has no TUI to attach to: its agent speaks JSON-RPC, and
+  // the conversation lives in the web app's chat pane. Attaching anyway would
+  // drop the user into the acpd supervisor's window, which shows only its log.
+  if (options.mode === 'acp') {
+    console.log(`Worktree ${worktreeId} is running in ACP mode — open it in the web app to chat with the agent.`)
+    return worktreeId
+  }
+
   if (!testEnv.e2eNoAttach) {
     try {
       await attachSessionPty(worktreeId, 'native')

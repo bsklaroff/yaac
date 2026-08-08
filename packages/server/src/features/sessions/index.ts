@@ -23,6 +23,7 @@
 
 export {
   deleteProjectAgentSessions,
+  listActiveAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
   setActiveAgentSessions,

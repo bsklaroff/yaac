@@ -10,7 +10,8 @@ import { useProvisionSession } from '#lib/useProvisionSession'
 import { randomUUID } from '#lib/uuid'
 import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
 import { useUiStore } from '#store'
-import type { AgentTool } from '@yaac/shared/types'
+import { ACP_TOOLS } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 text-xs outline-none '
@@ -72,12 +73,12 @@ export function NewSessionButton(
   const branchValue = (branchInput ?? defaultResolved ?? '').trim()
   const isDefault = branchValue === (defaultResolved ?? '')
 
-  const create = (tool: AgentTool): void => {
+  const create = (tool: AgentTool, mode: AgentMode = 'tui'): void => {
     const worktreeId = randomUUID()
     const branch = branchValue && !isDefault ? branchValue : undefined
     setOpen(false)
     provision(projectSlug, tool, 'create', worktreeId,
-      (sid, onProgress) => createSession(projectSlug, tool, onProgress, sid, branch))
+      (sid, onProgress) => createSession(projectSlug, tool, onProgress, sid, branch, mode))
   }
 
   const pinAsDefault = (): void => {
@@ -173,9 +174,24 @@ export function NewSessionButton(
 
             <div className="mx-1 mb-1 border-t border-border" />
             {TOOLS.map((t) => configured.has(t) ? (
-              <button key={t} type="button" className={ITEM} onClick={() => create(t)}>
-                {TOOL_LABEL[t]}
-              </button>
+              <div key={t} className="flex items-center">
+                <button type="button" className={clsx(ITEM, 'flex-1')} onClick={() => create(t)}>
+                  {TOOL_LABEL[t]}
+                </button>
+                {/* The same tool, driven over ACP instead of its TUI: the
+                    worktree opens with a chat pane rather than a terminal.
+                    Only offered for tools whose adapter ships in the image. */}
+                {ACP_TOOLS.includes(t) && (
+                  <button
+                    type="button"
+                    title={`Run ${TOOL_LABEL[t]} as a chat pane (Agent Client Protocol)`}
+                    className="mr-1 rounded-md px-2 py-1 text-[11px] text-text-faint outline-none transition hover:bg-surface-3 hover:text-accent"
+                    onClick={() => create(t, 'acp')}
+                  >
+                    chat
+                  </button>
+                )}
+              </div>
             ) : (
               <button
                 key={t}

@@ -3,10 +3,12 @@ import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
+import type { AgentMode } from '@yaac/shared/types'
 
 interface WorktreeRestartResult {
   worktreeId?: string
   jobName?: string
+  mode?: AgentMode
 }
 
 /**
@@ -32,11 +34,20 @@ export async function worktreeRestart(worktreeId: string): Promise<string | unde
 
   const result = await consumeNdjsonStream<WorktreeRestartResult>(res)
 
-  const { worktreeId: restartedId, jobName } = result
+  const { worktreeId: restartedId, jobName, mode } = result
   if (!restartedId || !jobName) {
     console.error('Server did not return a worktreeId/jobName.')
     process.exitCode = 1
     return
+  }
+
+  // Same rule as create: an ACP worktree's agent window runs acpd, so
+  // attaching would drop the user into the supervisor's stdio rather than a
+  // usable terminal — and sit there until they kill it. The chat pane is the
+  // way in.
+  if (mode === 'acp') {
+    console.log(`Worktree ${restartedId} is running in ACP mode — open it in the web app to chat with the agent.`)
+    return restartedId
   }
 
   if (!testEnv.e2eNoAttach) {

@@ -183,6 +183,25 @@ export function codexDir(slug: string): string {
 }
 
 /**
+ * SHARED. One worktree's ACP conversation logs — the verbatim `session/update`
+ * stream acpd tees as it relays, one file per conversation, mounted read-write
+ * at `/home/yaac/.yaac-acp` in that worktree's session.
+ *
+ * Deliberately beside the tool homes rather than inside one: the log is a
+ * property of the *protocol*, so a future codex or pi adapter writes to the
+ * same place. Project-level rather than under the session dir because teardown
+ * prunes that, and a stopped worktree's conversation should still be readable —
+ * the same reason a tool's transcripts outlive their pod.
+ *
+ * Worktree-scoped because the file is named for its conversation and every
+ * worktree's primary window is named for its tool, so a flat project-level dir
+ * would collide across worktrees.
+ */
+export function acpLogDir(slug: string, worktreeId: string): string {
+  return sharedProjectPath(slug, 'acp', worktreeId)
+}
+
+/**
  * NODE-LOCAL. The project's pnpm store plus the per-session ephemeral
  * module dirs under it, mounted at `/home/yaac/.cached-packages`. A store
  * on a network filesystem turns every `link(2)`/stat into a round trip,

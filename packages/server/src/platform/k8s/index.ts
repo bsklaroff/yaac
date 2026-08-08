@@ -79,6 +79,7 @@ export {
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
+  LABEL_MODE,
   LABEL_TOOL,
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
@@ -135,6 +136,7 @@ export {
   sessionExec,
   sessionStreamToken,
   waitForStreamd,
+  type StreamChild,
 } from './stream-relay'
 export { formatTaint, untoleratedTaints } from './taints'
 export type { NodeTaint, PodToleration } from './taints'

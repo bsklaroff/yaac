@@ -167,6 +167,35 @@ export const CONTAINER_TMUX_DIR = '/tmp/yaac-tmux'
 export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
 
 /**
+ * Where acpd puts one UNIX socket per ACP conversation, named for the tmux
+ * window that supervises it (`claude`, `claude-2`, …) — the same handle the
+ * status store keys that conversation by.
+ *
+ * Pod-local on purpose, unlike the tmux dir: nothing on the host connects to
+ * it. The server reaches it the way it reaches everything else in a session
+ * pod, over a streamd `ctrl` stream (`socat - UNIX-CONNECT:<path>`), so the
+ * socket needs no host mount and no port — which also keeps it out of the
+ * auto-forward port scan a TCP listener would land in.
+ */
+export const CONTAINER_ACP_DIR = '/tmp/yaac-acp'
+
+export function containerAcpSock(handle: string): string {
+  return `${CONTAINER_ACP_DIR}/${handle}.sock`
+}
+
+/**
+ * Where a worktree's ACP conversation logs are mounted in its session — the
+ * host side is `acpLogDir()`. Unlike the socket dir above this one IS
+ * host-mounted, because the log is what the server reads to rebuild a
+ * conversation, including for a worktree whose pod is long gone.
+ */
+export const CONTAINER_ACP_LOG_DIR = '/home/yaac/.yaac-acp'
+
+export function containerAcpLog(name: string): string {
+  return `${CONTAINER_ACP_LOG_DIR}/${name}.jsonl`
+}
+
+/**
  * SHARED: per-project config (yaac-config.json, the project Dockerfile and
  * its build context). Only the server reads it today, but it sits inside
  * the project tree and moves with it.

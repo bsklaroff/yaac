@@ -51,6 +51,11 @@ backend. Every connection opens with one JSON handshake line
   proxy-side dial of `podIP:port` could not do.
 - `ctrl {cmd}` — spawn argv with piped stdio, raw stdin/stdout splice
   (tmux control mode is a line protocol). Socket close ⇔ process kill.
+  Also carries ACP: a session in `acp` mode dials `socat -
+  UNIX-CONNECT:/tmp/yaac-acp/<window>.sock` here, and the JSON-RPC rides the
+  same raw duplex. Note the socket-close semantics — which is exactly why the
+  ACP agent is supervised by acpd inside a tmux window rather than being this
+  stream's child (see docs/agent-modes.md).
 - `exec {cmd}` — one-shot: run argv, reply with a single JSON line
   `{exitCode, stdout, stderr}` (bounded) and close. The `containerExec`
   replacement for session pods (`sessionExec`).

@@ -14,7 +14,7 @@ import { getProjectWorktreeRows, type WorktreeRow } from './worktree-store'
 import {
   classifySessionPods,
   pruneTerminating,
-  readPaneStatus,
+  readAgentStatus,
   readSessionStatus,
   readSessionWaitingSince,
   watcherDisplayLiveness,
@@ -224,8 +224,9 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
 }
 
 /**
- * A live conversation's own busy/idle, from the pane it sits on. A
- * conversation with no live pane (the worktree's history) has none, which is
+ * A live conversation's own busy/idle, read by the handle it was last seen on
+ * — a tmux pane id under `tui`, the acpd window name under `acp`. A
+ * conversation with no live handle (the worktree's history) has none, which is
  * how a client tells "still open" from "was open".
  */
 function liveStatus(
@@ -234,10 +235,10 @@ function liveStatus(
   l: AgentSessionLinkRow,
 ): { status: 'running' | 'waiting'; waitingSinceMs?: number } | undefined {
   if (!l.active || l.paneId === undefined) return undefined
-  const pane = readPaneStatus(projectSlug, worktreeId, l.paneId)
-  if (pane === undefined) return undefined
+  const agent = readAgentStatus(projectSlug, worktreeId, l.paneId)
+  if (agent === undefined) return undefined
   return {
-    status: pane.status,
-    ...(pane.waitingSinceMs !== undefined ? { waitingSinceMs: pane.waitingSinceMs } : {}),
+    status: agent.status,
+    ...(agent.waitingSinceMs !== undefined ? { waitingSinceMs: agent.waitingSinceMs } : {}),
   }
 }

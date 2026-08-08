@@ -19,6 +19,7 @@ import {
 } from '#platform/k8s'
 import {
   gcOrphanEphemeralModuleDirs,
+  listActiveAgentSessions,
   resolveSessionContainer,
 } from '#features/sessions'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#notify'
@@ -29,6 +30,7 @@ import {
   provisionSessionForwarders,
   stopAllSessionForwarders,
 } from '#features/forwarders'
+import { attachAcp } from '#features/agents'
 import { refreshClaudeBundledSkills } from '#features/skills'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
@@ -299,6 +301,52 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     }
   }))
 
+  // ACP conversation bridge: one chat pane per connection, attached to the
+  // live `AcpConversation` the status watcher's driver holds. The PTY route's
+  // twin — same auth-on-upgrade, same per-client disposability — but the
+  // frames are JSON events rather than terminal bytes.
+  app.get('/acp/attach', nodeWs.upgradeWebSocket((c) => {
+    const id = c.req.query('id') ?? ''
+    const agentSessionId = c.req.query('session') ?? ''
+    return {
+      onOpen: (_evt, ws) => {
+        void (async () => {
+          const fail = (message: string): void => {
+            try {
+              ws.send(JSON.stringify({ type: 'health', connected: false }))
+              ws.send(JSON.stringify({ type: 'error', message }))
+            } catch { /* socket already gone */ }
+            ws.close(1011, message)
+          }
+          if (agentSessionId === '') {
+            fail('missing session')
+            return
+          }
+          let projectSlug: string
+          try {
+            projectSlug = (await resolveSessionContainer(id, { requireRunning: true })).projectSlug
+          } catch {
+            fail('session not found or not running')
+            return
+          }
+          const raw = ws.raw as RawWebSocket | undefined
+          if (!raw) {
+            ws.close(1011, 'no raw socket')
+            return
+          }
+          attachAcp(projectSlug, id, agentSessionId, {
+            send: (data) => raw.send(data),
+            close: (code, reason) => raw.close(code, reason),
+            onMessage: (cb) => raw.on('message', (data, isBinary) =>
+              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
+            onClose: (cb) => raw.on('close', () => cb()),
+          })
+          serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
+        })()
+      },
+    }
+  }))
+
   const startPort = resolveServerPort(opts.port)
   const { server, port } = await bindServer(app.fetch, startPort)
   if (startPort !== 0 && port !== startPort) {
@@ -486,7 +534,19 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // reconciler's delta triggers. Pod deltas fire sessions-changed, so
     // snapshots push the moment state changes.
     const cache = new ClusterCache()
-    const manager = new StatusWatcherManager()
+    // `recordedSessions` is injected here rather than read inside the status
+    // feature: the ACP driver needs a worktree's already-recorded
+    // conversations to re-address a live agent (and to `session/load` after a
+    // restart), but that is a database read, and `#features/status` importing
+    // `#features/sessions` would invert the one-directional dependency the two
+    // are built on. `main` is the one place allowed to know both.
+    const manager = new StatusWatcherManager({
+      recordedSessions: async (session) =>
+        (await listActiveAgentSessions(session.slug, session.sessionId).catch(() => []))
+          .flatMap((l) => (l.paneId === undefined
+            ? []
+            : [{ handle: l.paneId, agentSessionId: l.agentSessionId }])),
+    })
     // Detected-listener streams (streamd `ports` pushes) feeding the
     // snapshot's unforwardedPorts; a set change pushes a fresh snapshot.
     const detector = new PortDetectorManager(() => notifySessionListChanged())

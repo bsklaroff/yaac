@@ -87,16 +87,27 @@ export const worktrees = snakeCase.table('worktrees', {
  * sessions — any session of a project can resume any of its conversations,
  * which is exactly why the link below is many-to-many.
  *
- * Rows are discovered, not authored: the in-pod SessionStart hook links each
- * conversation into the worktree's link tree and the registry reconciler
- * imports them. `transcriptPath` is null for opencode (no host transcript) and
- * for a conversation whose transcript has since been removed.
+ * A `tui` conversation is discovered, not authored: the in-pod SessionStart
+ * hook links it into the worktree's link tree and the registry reconciler
+ * imports it. An `acp` one is authored — the server is the ACP client, so
+ * `session/new` hands it the id directly and no hook is involved.
+ * `transcriptPath` is null for opencode (no host transcript) and for a
+ * conversation whose transcript has since been removed.
  */
 export const agentSessions = snakeCase.table('agent_sessions', {
   projectSlug: text().notNull(),
   tool: text().notNull(),
   agentSessionId: text().notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /**
+   * Which protocol drives this conversation — 'tui' or 'acp' (see AgentMode).
+   * The ONE piece of state the ACP mode adds: a restart has to bring a
+   * conversation back the way it was started, and nothing else on disk says
+   * which that was. Everything else about an ACP conversation (its messages,
+   * its tool calls) is read back from the same transcript a TUI conversation
+   * writes, so it needs no storage here.
+   */
+  mode: text().notNull().default('tui'),
   /** The conversation's transcript, *relative to the tool home* — never
    *  absolute, so the row survives the data dir moving (see
    *  `toStoredTranscriptPath`). Null when the tool leaves no transcript, or

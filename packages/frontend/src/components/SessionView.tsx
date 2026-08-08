@@ -5,8 +5,10 @@ import { useUiStore } from '#store'
 import { SessionTerminal } from '#components/SessionTerminal'
 import { SessionPreview } from '#components/SessionPreview'
 import { SessionChanges } from '#components/SessionChanges'
+import { SessionChat } from '#components/SessionChat'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
+import { acpTarget, acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { isElectron } from '#lib/platform'
 import { SessionTitle } from '#components/SessionTitle'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
@@ -40,7 +42,12 @@ import {
   type DropTarget,
   type Workspace,
 } from '#lib/layout'
-import type { ServerSnapshot, ProvisioningWorktreeEntry, SessionTerminalEntry } from '@yaac/shared/types'
+import type {
+  ProvisioningWorktreeEntry,
+  ServerSnapshot,
+  SessionTerminalEntry,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
 /** Gap between column cards. */
 const GAP = 8
@@ -71,14 +78,35 @@ function paneName(
   if (target === 'agent') return 'Agent'
   if (isPreviewTarget(target)) return previewLabel(previewPort)
   if (isChangesTarget(target)) return 'Changes'
+  if (isAcpTarget(target)) return 'Agent'
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
 
-/** Preview and changes are special (non-terminal) panes: kept out of the
- *  tmux-window sync, closed without a kill-confirm. */
+/**
+ * Special (non-terminal) panes: kept out of the tmux-window sync, closed
+ * without a kill-confirm.
+ *
+ * An ACP conversation is special in the same way even though it *does* have a
+ * tmux window behind it — the window runs acpd, not a TUI, so attaching a PTY
+ * to it would show a supervisor's log instead of the conversation. It is
+ * addressed by conversation id (`acp:<id>`), which the snapshot carries, not
+ * by window id like a terminal.
+ */
 function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isChangesTarget(target)
+  return isPreviewTarget(target) || isChangesTarget(target) || isAcpTarget(target)
+}
+
+/**
+ * The pane a worktree opens with. A `tui` worktree attaches a PTY to its agent
+ * window; an `acp` one opens its first conversation's chat pane. Falls back to
+ * the terminal when a fresh ACP worktree has not reported a conversation yet
+ * (its id is minted by the agent, seconds after the pod is up) — the window
+ * sync swaps in the chat pane as soon as it appears.
+ */
+function defaultPaneTarget(session: WorktreeListEntry | undefined): string {
+  const acp = session?.agentSessions.find((a) => a.mode === 'acp' && a.active)
+  return acp ? acpTarget(acp.agentSessionId) : 'agent'
 }
 
 export function SessionView({
@@ -127,7 +155,9 @@ export function SessionView({
 
   // The session's workspace: missing key = the default single agent column;
   // null = explicitly emptied.
-  const layout: Workspace | null = sid ? (sid in layouts ? layouts[sid] : singleColumn('agent')) : null
+  const layout: Workspace | null = sid
+    ? (sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(session)))
+    : null
 
   // The container's terminals beyond the agent (initCommands windows and
   // scratch shells) — drives which panes exist, and their names.
@@ -161,14 +191,26 @@ export function SessionView({
   // measure; the split heuristic just needs an aspect ratio.
   useEffect(() => {
     if (!sid || !session || !terminals) return
-    const cur: Workspace | null = sid in layouts ? layouts[sid] : singleColumn('agent')
-    const live = ['agent', ...terminals.map((t) => t.target)]
+    const cur: Workspace | null = sid in layouts ? layouts[sid] : singleColumn(defaultPaneTarget(session))
+    // An ACP worktree's conversations are panes too, but they come off the
+    // snapshot rather than the window list: the tmux window behind one runs
+    // acpd, and its name says nothing about which conversation it holds.
+    const acpPanes = session.agentSessions
+      .filter((a) => a.mode === 'acp' && a.active)
+      .map((a) => acpTarget(a.agentSessionId))
+    const isAcp = acpPanes.length > 0
+    // With chat panes present the raw agent window is acpd's log, not
+    // something to attach a terminal to — drop it from the live set.
+    const live = [...(isAcp ? [] : ['agent']), ...acpPanes, ...terminals.map((t) => t.target)]
     const liveSet = new Set(live)
     let next: Workspace | null = cur
     for (const t of paneTargets(next)) {
       // Preview/changes panes aren't tmux windows — they're owned by their own
-      // open/close logic, so this window-driven sync must leave them be.
-      if (!liveSet.has(t) && !isSpecialPane(t)) next = removeTarget(next, t)
+      // open/close logic, so this window-driven sync must leave them be. An
+      // ACP pane IS in the live set when its conversation is active, so it is
+      // checked like a window and removed when the conversation ends.
+      if (liveSet.has(t)) continue
+      if (isAcpTarget(t) || !isSpecialPane(t)) next = removeTarget(next, t)
     }
     for (const t of live) {
       // New windows (init commands, scratch shells) show up as their own
@@ -756,7 +798,8 @@ export function SessionView({
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
           const changes = isChangesTarget(target)
-          const special = preview || changes
+          const chat = acpTargetSession(target)
+          const special = preview || changes || chat !== undefined
           // In tiles mode a pane is on-screen when it's the active tab of its
           // column; its rect is that column's body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
@@ -818,6 +861,10 @@ export function SessionView({
                     currentPort={previewPortForSession}
                     onSwitchPort={(p) => setPreviewPort(id, p)}
                   />
+                </div>
+              ) : chat !== undefined ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionChat worktreeId={id} agentSessionId={chat} visible={onScreen} />
                 </div>
               ) : changes ? (
                 <div className="h-full w-full overflow-hidden rounded-md">

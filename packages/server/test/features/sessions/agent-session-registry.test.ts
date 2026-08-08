@@ -8,7 +8,7 @@ import { reconcileWorktreeAgentSessions } from '#features/sessions/agent-session
 import { listWorktreeAgentSessions } from '#features/sessions/agent-session-store'
 import { recordWorktreeCreated } from '#features/sessions/worktree-store'
 import {
-  setLiveAgentPanes,
+  setLiveAgents,
   _resetSessionStatusStoreForTests,
 } from '#features/status/status-store'
 
@@ -65,7 +65,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     // the worktree's history. conv-b holds the pane.
     await link('conv-a')
     await link('conv-b', '%0')
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
@@ -74,13 +74,13 @@ describe('reconcileWorktreeAgentSessions', () => {
 
   it('deactivates a conversation whose pane exited, keeping it linked', async () => {
     await link('conv-a', '%0')
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect(await states()).toEqual([['conv-a', true]])
 
     // The pane is gone but its pointer file survives — exactly the case the
     // pointers alone would get wrong.
-    setLiveAgentPanes('demo', 'wt-1', [])
+    setLiveAgents('demo', 'wt-1', [])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     expect(await states()).toEqual([['conv-a', false]])
   })
@@ -88,7 +88,7 @@ describe('reconcileWorktreeAgentSessions', () => {
   it('keeps two agents active on two panes, and orders them by first sighting', async () => {
     await link('conv-a', '%0')
     await link('conv-b', '%3')
-    setLiveAgentPanes('demo', 'wt-1', ['%0', '%3'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }, { handle: '%3', tool: 'claude' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
@@ -99,7 +99,7 @@ describe('reconcileWorktreeAgentSessions', () => {
 
   it('leaves the active set untouched when no pane list has arrived yet', async () => {
     await link('conv-a', '%0')
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
     // A watcher that dropped its stream reports nothing — which must not read
@@ -117,7 +117,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, 'wt-1.jsonl'), '{"type":"user"}\n')
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
@@ -131,20 +131,70 @@ describe('reconcileWorktreeAgentSessions', () => {
     // every fresh create. Recording the pin here would mint a conversation
     // that never existed, claim ordinal 0, and starve the real one of its
     // founding prompt.
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
     expect(await states()).toEqual([])
   })
 
+  it('records an acp conversation off the live set, with its transcript', async () => {
+    // ACP mode has no hook and no link tree: the server IS the ACP client, so
+    // `session/new` hands it the id and the live set carries it. The adapter
+    // still writes the tool's usual transcript, and naming it is what gives
+    // the conversation a last-activity time for the stopped listing — which
+    // outlives the pod and so cannot ask the conversation anything.
+    const transcripts = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(transcripts, { recursive: true })
+    await fs.writeFile(path.join(transcripts, 'acp-1.jsonl'), '{"type":"user"}\n')
+    setLiveAgents('demo', 'wt-1', [
+      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
+    ])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+
+    const [link] = await listWorktreeAgentSessions('demo', 'wt-1')
+    expect(link).toMatchObject({ agentSessionId: 'acp-1', mode: 'acp', active: true })
+    // The handle is the acpd window, not a pane id — that is what the status
+    // store keys this conversation's busy/idle by.
+    expect(link.paneId).toBe('claude')
+    expect(link.transcriptPath).toBe(path.join(transcripts, 'acp-1.jsonl'))
+    expect(link.lastActiveAt).toBeInstanceOf(Date)
+  })
+
+  it('keeps the acp handle across a reconcile, so a restart can resume the conversation', async () => {
+    // The handle is what a restart reads back to address the conversation:
+    // lose it and the fresh acpd handshake mints a NEW session and abandons
+    // the history the mode column exists to preserve. Session create stamps
+    // it (it is the deterministic window name), and reconciling must not
+    // blank it.
+    setLiveAgents('demo', 'wt-1', [
+      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
+    ])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+
+    const [link] = await listWorktreeAgentSessions('demo', 'wt-1')
+    expect(link.paneId).toBe('claude')
+    expect(link.active).toBe(true)
+  })
+
+  it('records nothing for an acp conversation whose handshake has not landed', async () => {
+    // No id yet — `session/new` has not answered. Recording it under its
+    // handle would mint a phantom the real conversation could never displace.
+    setLiveAgents('demo', 'wt-1', [{ handle: 'claude', tool: 'claude' }])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+
+    expect(await states()).toEqual([])
+  })
+
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {
     await link('conv-a', '%0')
-    setLiveAgentPanes('demo', 'wt-1', ['%0'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
     await link('conv-b', '%1')
-    setLiveAgentPanes('demo', 'wt-1', ['%0', '%1'])
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }, { handle: '%1', tool: 'claude' }])
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
