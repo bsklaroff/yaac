@@ -17,6 +17,12 @@ import { defineConfig } from 'vitest/config'
 // output-form (.js) targets in the package's exports map.
 const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
 const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
+// Stubs @kubernetes/client-node, which costs ~2.8s to evaluate in every
+// isolated test file that reaches #platform/k8s — the largest single cost in
+// a unit run. Withheld from the projects whose subject is a k8s client
+// (k8s/proxy, k8s/netd build real KubeConfigs and informers); api/e2e talk to
+// a real cluster and never load it either.
+const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'
 // api/e2e only: drops each file's test namespace as it finishes, so a run
 // doesn't accumulate one netd DaemonSet per completed file on the single
 // node the remaining files still have to share.
@@ -27,13 +33,14 @@ const CLUSTER_SETUP = [...SETUP, './packages/test-utils/src/cluster-setup.ts']
 const TEST_FAILURES_FILE = './.vitest-last-run.json'
 
 function unitProject(pkgDir: string, extra: object = {}) {
+  const realK8sClient = pkgDir.startsWith('k8s/')
   return {
     extends: true as const,
     ...extra,
     test: {
       name: `unit:${pkgDir.split('/').pop()!}`,
       include: [`${pkgDir}/test/**/*.test.{ts,tsx}`],
-      setupFiles: UNIT_SETUP,
+      setupFiles: realK8sClient ? UNIT_SETUP : [...UNIT_SETUP, K8S_STUB_SETUP],
       sequence: { groupOrder: 0 },
     },
   }

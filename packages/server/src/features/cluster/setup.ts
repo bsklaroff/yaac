@@ -12,6 +12,7 @@ import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-install
 import { ensureNetd } from './netd'
 import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
+import { ClusterSetupError, MAX_KIND_NODES, assertNotNested, resolveNodeCount } from './arg-guards'
 import {
   assessCniAdoption,
   assessVethSource,
@@ -142,8 +143,10 @@ export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<stri
   return raw
 }
 
-/** A setup step failed in a way the user must resolve; message is the fix. */
-export class ClusterSetupError extends Error {}
+// Both live in arg-guards.ts (which costs nothing to import) so the CLI can
+// reject a bad flag without loading this module. Re-exported here because
+// this is where consumers of `runClusterSetup` expect to find them.
+export { ClusterSetupError, MAX_KIND_NODES }
 
 export interface ClusterSetupOptions {
   /** Re-apply node fixups on the existing cluster instead of recreating it. */
@@ -167,15 +170,6 @@ export interface ClusterSetupOptions {
    */
   nodes?: number | string
 }
-
-/**
- * Node-count ceiling for `--nodes`. Every kind node is a full node
- * container (kubelet, containerd, calico-node, netd, a runsc install) on
- * ONE host, so this is a rehearsal knob, not a capacity knob: 2–3 is what
- * shakes out scheduling assumptions, and anything past this is a way to
- * wedge a laptop rather than a supported topology.
- */
-export const MAX_KIND_NODES = 5
 
 export interface ClusterSetupDeps {
   /** execFile-style runner, injectable for tests. */
@@ -330,12 +324,7 @@ export async function runClusterSetup(
   opts: ClusterSetupOptions = {},
   deps: ClusterSetupDeps = defaultDeps(),
 ): Promise<boolean> {
-  if (env.nested) {
-    throw new ClusterSetupError(
-      'yaac cluster setup cannot run inside a nested yaac session — the '
-      + 'cluster is external infrastructure managed by the outer yaac.',
-    )
-  }
+  assertNotNested('setup')
 
   const nodeCount = resolveNodeCount(opts)
 
@@ -444,47 +433,6 @@ export async function runClusterSetup(
     )
   }
   return false
-}
-
-/**
- * Validate `--nodes` and return the node count to build. Runs before any
- * binary probe or podman call so a bad value costs nothing, and rejects
- * the combination that cannot mean anything: a node count is decided when
- * the cluster is created, so `--repair --nodes N` is a request `--repair`
- * has no way to honor (it fixes up the nodes that exist).
- */
-function resolveNodeCount(opts: ClusterSetupOptions): number {
-  if (opts.repair && opts.adoptCni) {
-    throw new ClusterSetupError(
-      '--adopt-cni cannot be combined with --repair: --repair fixes up a kind cluster '
-      + 'yaac built, and --adopt-cni installs into a cluster it did not. Re-run '
-      + '--adopt-cni on its own — it is idempotent, and converges the same in-cluster '
-      + 'layers --repair does.',
-    )
-  }
-  if (opts.nodes === undefined) return 1
-  if (opts.adoptCni) {
-    throw new ClusterSetupError(
-      '--nodes cannot be combined with --adopt-cni: adopt mode creates no cluster, so '
-      + 'there are no nodes for it to render. The adopted cluster brings its own.',
-    )
-  }
-  const count = typeof opts.nodes === 'string' ? Number(opts.nodes) : opts.nodes
-  if (!Number.isInteger(count) || count < 1 || count > MAX_KIND_NODES) {
-    throw new ClusterSetupError(
-      `--nodes must be an integer between 1 and ${MAX_KIND_NODES} (got `
-      + `"${String(opts.nodes)}"). Every node is a full node container on this one `
-      + 'host; 2–3 is the multi-node rehearsal topology.',
-    )
-  }
-  if (opts.repair) {
-    throw new ClusterSetupError(
-      '--nodes cannot be combined with --repair: the node count is fixed when '
-      + 'the cluster is created, and --repair fixes up the nodes that exist. '
-      + `Recreate the cluster instead:\n  yaac cluster setup --nodes ${count}`,
-    )
-  }
-  return count
 }
 
 /** The `nodes:` list, which the bundled config keeps last (see its header). */

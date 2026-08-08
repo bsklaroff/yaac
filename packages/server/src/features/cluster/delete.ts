@@ -1,4 +1,5 @@
 import { confirmDefault, kindEnv } from './setup'
+import { ClusterDeleteError, assertNotNested } from './arg-guards'
 import { execFileAsync } from '#platform/k8s'
 import { env } from '@yaac/shared/env'
 
@@ -21,8 +22,10 @@ import { env } from '@yaac/shared/env'
  * would keep the orphan forever.
  */
 
-/** A delete step failed in a way the user must resolve; message is the fix. */
-export class ClusterDeleteError extends Error {}
+// Lives in arg-guards.ts (which costs nothing to import) so the CLI can
+// reject the nested guard without loading this module. Re-exported here
+// because this is where consumers of `runClusterDelete` expect to find it.
+export { ClusterDeleteError }
 
 export interface ClusterDeleteOptions {
   /** Skip the interactive confirmation (for scripts / non-interactive use). */
@@ -64,12 +67,7 @@ async function listKindClusters(): Promise<string[]> {
 export async function runClusterDelete(
   opts: ClusterDeleteOptions = {},
 ): Promise<void> {
-  if (env.nested) {
-    throw new ClusterDeleteError(
-      'yaac cluster delete cannot run inside a nested yaac session — the '
-      + 'cluster is external infrastructure managed by the outer yaac.',
-    )
-  }
+  assertNotNested('delete')
 
   const cluster = env.kindCluster
   const exists = (await listKindClusters()).includes(cluster)

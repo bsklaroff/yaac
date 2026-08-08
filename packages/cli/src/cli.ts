@@ -40,7 +40,28 @@ import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
+import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/features/cluster/arg-guards'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
+
+/**
+ * Reject a `cluster setup`/`delete` invocation the flags and environment
+ * already condemn, printing the same message the command itself would.
+ * Returns true when it did, and the action must return without loading the
+ * command.
+ *
+ * This exists purely so a rejection stays cheap. The guards are the
+ * command's own (arg-guards.ts, which imports nothing but `env`), and the
+ * command re-runs them — but reaching the command means evaluating
+ * `@kubernetes/client-node` and the cluster feature graph, ~3s to tell
+ * someone they typed `--nodes three`.
+ */
+function rejectClusterArgs(command: 'setup' | 'delete', options: ClusterSetupArgs = {}): boolean {
+  const message = clusterArgError(command, options)
+  if (message === null) return false
+  console.error(`\n${message}`)
+  process.exitCode = 1
+  return true
+}
 
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
 // here so every command — `cluster setup` (kind inherits our env) and the
@@ -163,6 +184,7 @@ cluster
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; sessions run on the workers, so 3 is the smallest real multi-node rehearsal)')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
   .action(async (options: { repair?: boolean; nodes?: string; adoptCni?: boolean }) => {
+    if (rejectClusterArgs('setup', options)) return
     const { clusterSetup } = await import('#commands/cluster-setup')
     await clusterSetup(options)
   })
@@ -175,6 +197,7 @@ cluster
   )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
+    if (rejectClusterArgs('delete')) return
     const { clusterDelete } = await import('#commands/cluster-delete')
     await clusterDelete(options)
   })
