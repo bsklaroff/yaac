@@ -106,22 +106,6 @@ export async function execInJob(
 }
 
 /**
- * Remove a session Job (and its pod) by name, swallowing errors if it's
- * already gone or the cluster is unreachable.
- */
-export async function removeSessionJob(jobName: string): Promise<void> {
-  try {
-    await kubectlWithRetry([
-      'delete', 'job', jobName,
-      '-n', k8sNamespace(),
-      '--ignore-not-found', '--wait=false',
-    ])
-  } catch {
-    // already gone / cluster unreachable — best-effort cleanup
-  }
-}
-
-/**
  * Delete every session Job/pod this test's data dir created in the active
  * namespace, and wait for them to actually go away. The data-dir-hash
  * scoping matters within a file: sequential tests share TEST_NAMESPACE, so
@@ -225,27 +209,6 @@ export async function createTestRepo(dir: string): Promise<string> {
   await git.commit('initial commit')
 
   return dir
-}
-
-/**
- * Remove all yaac test containers left behind in the podman store (the
- * build engine). Session workloads run as kubernetes Jobs now, but
- * interrupted older runs / stray build helpers may still leave podman
- * containers carrying the test label.
- */
-export async function cleanupContainers(): Promise<void> {
-  try {
-    const { stdout } = await execFileAsync('podman', [
-      'ps', '-a', '--filter', 'label=yaac.test=true',
-      '--format', '{{.ID}}',
-    ])
-    const ids = stdout.trim().split('\n').filter(Boolean)
-    if (ids.length > 0) {
-      await execFileAsync('podman', ['rm', '-f', ...ids])
-    }
-  } catch {
-    // podman not available or no containers
-  }
 }
 
 /**
