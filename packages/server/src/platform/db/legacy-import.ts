@@ -10,17 +10,8 @@ import {
   worktreeAgentSessions,
   worktrees,
 } from './schema'
-import {
-  DEFAULT_TOOL_KEY,
-  SESSIONS_BACKFILLED_KEY,
-  TRANSCRIPT_PATHS_RELATIVE_KEY,
-  TRANSCRIPT_PATHS_RESOLVED_KEY,
-  isFlagSet,
-  isSerializedChord,
-  isValidTool,
-  setFlag,
-} from '#features/projects'
-import { MAX_PROMPT_LENGTH } from '#features/sessions'
+import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, TRANSCRIPT_PATHS_RELATIVE_KEY, TRANSCRIPT_PATHS_RESOLVED_KEY, isFlagSet, isSerializedChord, isValidTool, setFlag } from '#features/records'
+import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool } from '@yaac/shared/types'
 import { worktreeUpstreamBranch } from '#platform/git'

@@ -18,7 +18,6 @@ import {
   type SpawnResultWire,
 } from '#features/egress'
 import { type SessionPod, type TickSnapshot, listSessionPods } from '#platform/k8s'
-import { getDefaultTool } from '#features/projects'
 import { registerProvisioning, runProvisioned } from './provisioning'
 import { createSession, type SessionCreateOptions, type SessionCreateResult } from './create'
 import { MODEL_RE } from '#features/agents'
@@ -41,7 +40,9 @@ export interface SpawnReconcileDeps {
   fetchPendingFn?: () => Promise<PendingSpawn[]>
   postResultsFn?: (results: SpawnResultWire[]) => Promise<void>
   listSessionPodsFn?: () => Promise<SessionPod[]>
-  getDefaultToolFn?: () => Promise<AgentTool | undefined>
+  /** The configured default, resolved by the server: it is a preference row,
+   *  and a herd never looks one up. */
+  defaultTool?: AgentTool
   createSessionFn?: (slug: string, opts: SessionCreateOptions) => Promise<SessionCreateResult>
   mintIdFn?: () => string
 }
@@ -119,7 +120,7 @@ export async function handleSpawnRequest(
     : undefined
   const tool = (req.tool as AgentTool | undefined)
     ?? callerTool
-    ?? (await (deps.getDefaultToolFn ?? getDefaultTool)())
+    ?? deps.defaultTool
     ?? 'claude'
 
   const newSessionId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()

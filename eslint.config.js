@@ -39,8 +39,77 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|sessions|skills|status|terminals|titles)|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|sessions|skills|status|terminals|titles)|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
+}
+
+// The HERD half — everything that touches the cluster, a git worktree, a
+// transcript or tmux — is being split into its own process
+// (docs/plans/herd-split.md). It will talk to the server over JSON-RPC and
+// never open the database: PGlite is single-writer and the server holds it,
+// so a DB read left in here is a crash the day the split lands rather than a
+// style question. A herd reports what it discovered and is handed what it
+// needs; it never looks a row up.
+//
+// This list is the split's progress bar. It is seeded with the paths that
+// are ALREADY clean, and every step of the plan's phase 1 severs one more
+// module and adds it here. Paths are only ever added.
+const HERD_SRC = [
+  'packages/server/src/platform/container/**/*.ts',
+  'packages/server/src/platform/k8s/**/*.ts',
+  'packages/server/src/features/agents/**/*.ts',
+  'packages/server/src/features/cluster/**/*.ts',
+  'packages/server/src/features/egress/**/*.ts',
+  'packages/server/src/features/forwarders/**/*.ts',
+  'packages/server/src/features/image-engine/**/*.ts',
+  // #features/projects is split the same way: everything that touches the
+  // clone, its config files, its credentials or its build context is
+  // herd-side. `add`, `detail` and `list` answer "which projects exist" from
+  // the server's rows, so they stay out.
+  'packages/server/src/features/projects/branches.ts',
+  'packages/server/src/features/projects/build-dirs.ts',
+  'packages/server/src/features/projects/build-files.ts',
+  'packages/server/src/features/projects/config.ts',
+  'packages/server/src/features/projects/credentials.ts',
+  'packages/server/src/features/projects/dockerfile.ts',
+  'packages/server/src/features/projects/fake-auth.ts',
+  'packages/server/src/features/projects/git-auth-failures.ts',
+  'packages/server/src/features/projects/local-config.ts',
+  'packages/server/src/features/images/**/*.ts',
+  'packages/server/src/features/status/**/*.ts',
+  'packages/server/src/features/terminals/**/*.ts',
+  // #features/sessions is split down the middle. Everything that acts on the
+  // substrate is herd-side and named here; what is left — the JOIN paths that
+  // read the server's rows alongside a herd's report (list, detail, resolve,
+  // restart, changes, the stopped listing, project teardown) — is the
+  // server's half, and stays out until the herd becomes a package of its own.
+  'packages/server/src/features/sessions/agent-session-registry.ts',
+  'packages/server/src/features/sessions/cleanup.ts',
+  'packages/server/src/features/sessions/create.ts',
+  'packages/server/src/features/sessions/observe.ts',
+  'packages/server/src/features/sessions/prewarm.ts',
+  'packages/server/src/features/sessions/prewarm-reconcile.ts',
+  'packages/server/src/features/sessions/prompt-capture.ts',
+  'packages/server/src/features/sessions/provisioning.ts',
+  'packages/server/src/features/sessions/salvage-reconcile.ts',
+  'packages/server/src/features/sessions/seed.ts',
+  'packages/server/src/features/sessions/spare-pool.ts',
+  'packages/server/src/features/sessions/spawn-reconcile.ts',
+  'packages/server/src/features/sessions/spawn-script.ts',
+  'packages/server/src/features/sessions/stale-sessions.ts',
+  'packages/server/src/features/sessions/stop.ts',
+]
+
+// A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
+// the leading `#` as a comment and silently matches nothing. The driver
+// packages are named too, so the ban cannot be walked around by opening
+// PGlite directly instead of going through the barrel.
+// `#features/records` is the server's rows and the only feature allowed to
+// open the database, so banning it is banning the database — which is why
+// this covers the barrel as well as the driver packages beneath it.
+const NO_DATABASE = {
+  regex: '^(#features/records|#platform/db|@electric-sql/pglite|drizzle-orm)',
+  message: 'The herd must not read the database (docs/plans/herd-split.md): emit a HerdEvent for the server to persist, or take the value as an argument.',
 }
 
 export default tseslint.config(
@@ -114,6 +183,30 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The herd half of the server (see HERD_SRC): the zone above, plus the
+  // database ban. Later than that zone on purpose — flat-config rule options
+  // replace rather than merge, so this re-states every pattern it inherits.
+  {
+    files: HERD_SRC,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

@@ -12,7 +12,7 @@ vi.mock('#features/sessions/cleanup', () => ({
   cleanupSession: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#features/sessions/worktree-store', () => ({
+vi.mock('#features/records/worktree-store', () => ({
   clearWorktreeStopped: vi.fn().mockResolvedValue(undefined),
   findWorktreeRow: vi.fn().mockResolvedValue(undefined),
 }))
@@ -25,7 +25,7 @@ import { restartWorktree } from '#features/sessions/restart'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSession } from '#features/sessions/cleanup'
-import { clearWorktreeStopped } from '#features/sessions/worktree-store'
+import { clearWorktreeStopped } from '#features/records/worktree-store'
 import { createSession, type SessionCreateResult } from '#features/sessions/create'
 
 const mockListPods = vi.mocked(listSessionPods)

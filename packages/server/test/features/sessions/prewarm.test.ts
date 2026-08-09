@@ -63,6 +63,8 @@ import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
 import { ServerError } from '@yaac/shared/errors'
+import { onHerdEvent } from '#herd-events'
+import type { HerdEvent } from '@yaac/shared/herd'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
@@ -97,10 +99,20 @@ function spare(o: Partial<SessionPod> = {}): SessionPod {
   }
 }
 
+const herdEvents: HerdEvent[] = []
+
 describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
+    // The claim reports what it recorded rather than writing rows, so the
+    // sink stands in for the server: no DB is opened, and what a claim tells
+    // it is asserted directly.
+    herdEvents.length = 0
+    onHerdEvent((event) => {
+      herdEvents.push(event)
+      return Promise.resolve()
+    })
     mockTmuxAlive.mockResolvedValue(true)
     mockKubectl.mockResolvedValue(undefined as never)
     mockExec.mockResolvedValue(undefined as never)
@@ -130,6 +142,49 @@ describe('tryClaimPrewarmed', () => {
       "git config --global user.name 'A B' && git config --global user.email 'a@b.co'",
     )
     expect(claiming.size).toBe(0) // released in finally
+  })
+
+  it('reports the worktree and its first conversation, warmed-from branch and all', async () => {
+    mockListPods.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
+
+    // The spare's own id is the worktree's first conversation — that is
+    // where its tool is read from — and no re-branch means no second
+    // branch report.
+    expect(herdEvents).toEqual([
+      {
+        type: 'worktree-created', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'main',
+      },
+      {
+        type: 'conversations-launched',
+        projectSlug: 'p',
+        worktreeId: 'spare1',
+        conversations: [{ tool: 'claude', agentSessionId: 'spare1' }],
+      },
+    ])
+  })
+
+  it('reports the branch a re-branched claim ended on, not the one it was warmed from', async () => {
+    mockListPods.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
+
+    expect(herdEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
+      {
+        type: 'base-branch-resolved', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'dev',
+      },
+    ])
+  })
+
+  // A claim that gave up after reporting describes a session that never
+  // existed; the caller is about to cold-create a different one.
+  it('reports the create failed when a claim gives up after reporting the worktree', async () => {
+    mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+
+    expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
+    expect(herdEvents.at(-1)).toEqual({
+      type: 'worktree-create-failed', projectSlug: 'p', worktreeId: 'spare1',
+    })
   })
 
   it('returns undefined when there is no spare', async () => {

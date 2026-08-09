@@ -2,11 +2,38 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+
+// opencode's opening message is not on the host — it is probed inside the pod
+// — so the transport is stubbed to assert the sweep carries the job name down
+// to that read. Nothing else here execs.
+vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof relayModule>(),
+  sessionExec: vi.fn(),
+}))
+
+// The pod-level entry point is driven only for the unreachable-cluster case.
+vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+  ...await importOriginal<typeof podsModule>(),
+  listSessionPods: vi.fn().mockResolvedValue([]),
+}))
 import { closeDb } from '#platform/db/client'
 import { claudeDir, worktreeLinksDir } from '@yaac/shared/project-paths'
-import { reconcileWorktreeAgentSessions } from '#features/sessions/agent-session-registry'
-import { listWorktreeAgentSessions } from '#features/sessions/agent-session-store'
-import { recordWorktreeCreated } from '#features/sessions/worktree-store'
+import {
+  reconcileAgentSessions,
+  reconcileWorktreeAgentSessions,
+} from '#features/sessions/agent-session-registry'
+import {
+  listWorktreeAgentSessions,
+  recordAgentSessions,
+} from '#features/records/agent-session-store'
+import { applyHerdEvent } from '#features/records/apply-herd-event'
+import { _resetPromptCaptureForTests } from '#features/sessions/prompt-capture'
+import { recordWorktreeCreated } from '#features/records/worktree-store'
+import { onHerdEvent, _resetHerdEventsForTests } from '#herd-events'
+import { listSessionPods } from '#platform/k8s/pods'
+import { sessionExec } from '#platform/k8s/stream-relay'
+import type * as relayModule from '#platform/k8s/stream-relay'
+import type * as podsModule from '#platform/k8s/pods'
 import {
   setLiveAgents,
   _resetSessionStatusStoreForTests,
@@ -21,6 +48,10 @@ import {
  * The link tree is written here directly rather than by running the hook —
  * `agent-links.test.ts` covers the hook→tree half end to end, so this file can
  * stay about the join.
+ *
+ * The sweep reports what it found rather than writing rows, so the real
+ * `applyHerdEvent` is wired as the sink: every assertion below is on the rows
+ * a herd's report actually produces, end to end.
  */
 describe('reconcileWorktreeAgentSessions', () => {
   let tmpDir: string
@@ -28,14 +59,32 @@ describe('reconcileWorktreeAgentSessions', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     _resetSessionStatusStoreForTests()
+    _resetPromptCaptureForTests()
+    onHerdEvent(applyHerdEvent)
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
   })
 
   afterEach(async () => {
+    _resetHerdEventsForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
     vi.restoreAllMocks()
   })
+
+  /** A claude transcript whose first user message is `firstMessage`. */
+  async function writeTranscript(id: string, firstMessage: string): Promise<string> {
+    const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(dir, { recursive: true })
+    const file = path.join(dir, `${id}.jsonl`)
+    await fs.writeFile(file, `${JSON.stringify({
+      type: 'user', message: { role: 'user', content: firstMessage },
+    })}\n`)
+    return file
+  }
+
+  /** The worktree's founding ask: its first conversation's opening message. */
+  const foundingAsk = async (): Promise<string | undefined> =>
+    (await listWorktreeAgentSessions('demo', 'wt-1'))[0]?.firstPrompt
 
   /** Link a conversation, optionally pinning it to a pane, as the hook would. */
   async function link(agentSessionId: string, paneId?: string): Promise<void> {
@@ -184,6 +233,108 @@ describe('reconcileWorktreeAgentSessions', () => {
     setLiveAgents('demo', 'wt-1', [{ handle: 'claude', tool: 'claude' }])
 
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+
+    expect(await states()).toEqual([])
+  })
+
+  it('reports each conversation\'s opening message, read from its transcript', async () => {
+    await link('conv-a')
+    await writeTranscript('conv-a', 'refactor the parser')
+    setLiveAgents('demo', 'wt-1', [])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(await foundingAsk()).toBe('refactor the parser')
+  })
+
+  it('keeps the founding ask when a later conversation opens differently', async () => {
+    // What `/clear` produces: a second conversation whose opening message is
+    // not the ask the worktree was created for. The sidebar keeps the first.
+    await link('conv-a')
+    await writeTranscript('conv-a', 'the original ask')
+    setLiveAgents('demo', 'wt-1', [])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    await link('conv-b')
+    await writeTranscript('conv-b', 'something else entirely')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(await foundingAsk()).toBe('the original ask')
+    expect((await listWorktreeAgentSessions('demo', 'wt-1'))
+      .map((l) => [l.agentSessionId, l.firstPrompt]))
+      .toEqual([['conv-a', 'the original ask'], ['conv-b', 'something else entirely']])
+  })
+
+  it('reports no message until the agent has been prompted, then picks it up', async () => {
+    await link('conv-a') // transcript exists but holds no user message yet
+    setLiveAgents('demo', 'wt-1', [])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await foundingAsk()).toBeUndefined()
+
+    await writeTranscript('conv-a', 'later ask')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await foundingAsk()).toBe('later ask')
+  })
+
+  it('cannot overwrite the create-time prompt with what the transcript now opens with', async () => {
+    // The mainstream `worktree create -p` / spawn path: create reported the
+    // conversation it launched with the ask the user typed. A sweep reading a
+    // transcript that has since been compacted must not replace it — the
+    // server's write is fill-only, which is what makes re-reporting safe.
+    await link('conv-a')
+    await writeTranscript('conv-a', 'a different first message')
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'already captured' },
+    ])
+    setLiveAgents('demo', 'wt-1', [])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(await foundingAsk()).toBe('already captured')
+  })
+
+  it('probes an opencode conversation in the pod, since it leaves no transcript', async () => {
+    // The one tool whose opening message is not on the host — which is why the
+    // sweep has to carry the job name down to the read.
+    // No link tree and no transcript will ever exist for it, so the sweep has
+    // only the pin create made — and that exemption is what keeps an opencode
+    // worktree from going permanently unlabelled.
+    vi.mocked(sessionExec).mockResolvedValue({
+      stdout: JSON.stringify([{ id: 'ses_1', title: 'build a thing', time: { updated: 1 } }]),
+      stderr: '',
+    })
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'opencode' }])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'opencode', 'tui', 'yaac-demo-wt-1')
+
+    expect(await foundingAsk()).toBe('build a thing')
+    expect((await listWorktreeAgentSessions('demo', 'wt-1'))
+      .map((l) => l.agentSessionId)).toEqual(['wt-1'])
+    expect(vi.mocked(sessionExec).mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
+  })
+
+  // The exemption's whole safety rests on there being exactly one
+  // conversation to report, because this branch does not join against the
+  // live set — see the comment on the emit. If a second one ever becomes
+  // reachable here, this fails rather than silently deactivating it.
+  it('reports only the pinned conversation for a tool with no discovery source', async () => {
+    vi.mocked(sessionExec).mockResolvedValue({ stdout: '[]', stderr: '' })
+    setLiveAgents('demo', 'wt-1', [
+      { handle: '%0', tool: 'opencode' },
+      { handle: '%1', tool: 'opencode' },
+    ])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'opencode', 'tui', 'yaac-demo-wt-1')
+
+    expect(await states()).toEqual([['wt-1', true]])
+  })
+
+  // A sweep that cannot list pods reports nothing rather than an empty world,
+  // which would blank every worktree's active set at once.
+  it('survives an unreachable cluster without reporting anything', async () => {
+    vi.mocked(listSessionPods).mockRejectedValue(new Error('cluster down'))
+
+    await expect(reconcileAgentSessions()).resolves.toBeUndefined()
 
     expect(await states()).toEqual([])
   })

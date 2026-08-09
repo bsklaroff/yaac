@@ -1,11 +1,14 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import { type SessionPod, listSessionPods } from '#platform/k8s'
 import { removeProjectRegistry } from '#features/cluster'
-import { projectDir, projectRoots } from '@yaac/shared/project-paths'
+import { projectRoots } from '@yaac/shared/project-paths'
 import { cleanupSessionDetached } from './cleanup'
-import { deleteProjectAgentSessions } from './agent-session-store'
-import { deleteProjectWorktrees } from './worktree-store'
+import {
+  deleteProjectAgentSessions,
+  deleteProjectRow,
+  deleteProjectWorktrees,
+  getProjectRow,
+} from '#features/records'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -20,10 +23,7 @@ import { ServerError } from '@yaac/shared/errors'
  * projects feature itself.
  */
 export async function removeProject(slug: string): Promise<void> {
-  const dir = projectDir(slug)
-  try {
-    await fs.access(path.join(dir, 'project.json'))
-  } catch {
+  if (!await getProjectRow(slug)) {
     throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 
@@ -61,6 +61,10 @@ export async function removeProject(slug: string): Promise<void> {
   // project that no longer exists.
   await deleteProjectWorktrees(slug)
   await deleteProjectAgentSessions(slug)
+  // The project's own record goes last: while it exists the project exists,
+  // so dropping it first would make a teardown that then failed leave a
+  // clone nothing can list, remove, or re-add.
+  await deleteProjectRow(slug)
 
   // Both tier roots: the project's node-local tree (the pnpm store and
   // opencode data) is not under `dir` once the tiers are separate volumes,

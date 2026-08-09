@@ -3,11 +3,6 @@ import { agentSessions, getDb, worktreeAgentSessions, worktrees } from '#platfor
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
 
-/** Cap on a stored founding prompt. Generous next to a title — the sidebar
- *  truncates for display, but the prompt also feeds title generation, which
- *  reads the opening ~1000 chars. */
-export const MAX_PROMPT_LENGTH = 4000
-
 /**
  * The worktree spine: one row per (project, worktree id) for every worktree
  * yaac has created. Reads that used to walk transcript directories, git

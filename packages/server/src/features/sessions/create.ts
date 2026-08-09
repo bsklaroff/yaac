@@ -110,21 +110,7 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#features/agents'
-import {
-  deleteWorktreeAgentSessions,
-  recordAgentSessions,
-  setActiveAgentSessions,
-} from './agent-session-store'
-import {
-  deleteWorktreeRow,
-  getWorktreeRow,
-  priorStopOf,
-  recordWorktreeCreated,
-  recordWorktreeStopped,
-  restoreWorktreeStop,
-  setWorktreeBaseBranch,
-  type PriorStop,
-} from './worktree-store'
+import { emitHerdEvent } from '#herd-events'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
@@ -510,40 +496,25 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 }
 
 /**
- * Undo the pre-provisioning row write for a create that gave up. A fresh
- * create invented the row, so it goes; a restart re-stamped a row that
- * already carried the session's history (title, pin, captured prompt), so
- * it is put back the way it was found — recorded as deleted — rather than
- * erased.
+ * Report that a create gave up, so the server can undo what the matching
+ * `worktree-created` started. What "undo" means differs by `resume` and is
+ * the server's to decide (see `apply-herd-event.ts`); this half knows only
+ * that provisioning failed.
  */
-async function rollbackSessionRow(
+async function reportCreateFailed(
   projectSlug: string,
   sessionId: string,
   options: SessionCreateOptions,
-  priorDeletion: PriorStop | undefined,
 ): Promise<void> {
-  try {
-    if (!options.resume) {
-      // The links go with the row, and the conversations behind them: a
-      // create that never came up should leave nothing, and nothing else
-      // prunes either. Caught separately so a failure here cannot skip the row
-      // delete below — the row is what makes the worktree visible, and leaking
-      // it is far worse than leaking a conversation nothing lists.
-      try {
-        await deleteWorktreeAgentSessions(projectSlug, sessionId)
-      } catch { /* best-effort */ }
-      await deleteWorktreeRow(projectSlug, sessionId)
-    } else if (priorDeletion) {
-      // Exactly as the restart found it — including the cause it died of
-      // and whether the user had already seen that death.
-      await restoreWorktreeStop(projectSlug, sessionId, priorDeletion)
-    } else {
-      await recordWorktreeStopped(projectSlug, sessionId)
-    }
-  } catch {
+  await emitHerdEvent({
+    type: 'worktree-create-failed',
+    projectSlug,
+    worktreeId: sessionId,
+    resume: options.resume,
+  }).catch(() => {
     // Best-effort: the create is already failing, and the reaper records a
     // row whose pod never arrived.
-  }
+  })
 }
 
 /**
@@ -676,29 +647,25 @@ export async function createSession(
   // checkout below may still be running.
   await fs.mkdir(wtDir, { recursive: true })
 
-  // Record the session BEFORE anything is provisioned, so no pod can ever
+  // Report the session BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
   // reads recorded state (titles, background, the deleted listing, restart)
   // and there is no safe way to tell one from an unclaimed spare later.
-  // A write failure therefore fails the create before it has built
-  // anything, and a create that fails later rolls the row back (see
-  // `rollbackSessionRow`). Prewarmed spares are not sessions until claimed,
-  // so the claim writes their row instead (see tryClaimPrewarmed).
+  // A failure to record therefore fails the create before it has built
+  // anything, and a create that fails later reports that too (see
+  // `reportCreateFailed`). Prewarmed spares are not sessions until claimed,
+  // so the claim reports their row instead (see tryClaimPrewarmed).
   //
   // `baseBranch` is deliberately not here: it comes from the worktree leg
   // that runs concurrently with the pod boot, and waiting for it would undo
-  // that overlap. It is stamped at the end.
-  // A restart is about to clear the row's deletion; remember it first, so a
-  // restart that then fails can put the row back rather than leaving a dead
-  // session looking alive (or forgetting how it died).
-  let priorDeletion: PriorStop | undefined
+  // that overlap. It is reported at the end.
   if (!options.prewarm) {
-    if (options.resume) {
-      priorDeletion = priorStopOf(
-        await getWorktreeRow(projectSlug, sessionId).catch(() => undefined),
-      )
-    }
-    await recordWorktreeCreated({ projectSlug, worktreeId: sessionId })
+    await emitHerdEvent({
+      type: 'worktree-created',
+      projectSlug,
+      worktreeId: sessionId,
+      resume: options.resume,
+    })
     // The worktree's tool and founding ask are read off this, so it is
     // recorded with the row rather than left to discovery. An initial prompt
     // is the first conversation's opening message by definition — the user
@@ -718,20 +685,20 @@ export async function createSession(
       // a NEW session and silently abandons the history this row exists to
       // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
       // pane exists, so that stays for the registry to fill in.
-      const live = launching.map((a, i) => ({
-        ...a,
-        ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
-      }))
-      await recordAgentSessions(projectSlug, sessionId, live.map((a, i) => ({
-        tool: a.tool,
-        agentSessionId: a.agentSessionId,
-        mode,
-        ...(a.paneId !== undefined ? { paneId: a.paneId } : {}),
-        ...(i === 0 && options.initialPrompt !== undefined
-          ? { firstPrompt: options.initialPrompt }
-          : {}),
-      })))
-      await setActiveAgentSessions(projectSlug, sessionId, live)
+      await emitHerdEvent({
+        type: 'conversations-launched',
+        projectSlug,
+        worktreeId: sessionId,
+        conversations: launching.map((a, i) => ({
+          tool: a.tool,
+          agentSessionId: a.agentSessionId,
+          mode,
+          ...(mode === 'acp' ? { paneId: agentWindowName(a.tool, i) } : {}),
+          ...(i === 0 && options.initialPrompt !== undefined
+            ? { firstPrompt: options.initialPrompt }
+            : {}),
+        })),
+      })
     }
   }
 
@@ -1467,7 +1434,7 @@ export async function createSession(
       // Release any pre-bound host ports so a retry (or the reaper) can
       // rebind them.
       for (const p of forwardedPorts) p.server.close()
-      if (!options.prewarm) await rollbackSessionRow(projectSlug, sessionId, options, priorDeletion)
+      if (!options.prewarm) await reportCreateFailed(projectSlug, sessionId, options)
       throw err instanceof SetupInputError ? err.inner : err
     }
   }
@@ -1481,14 +1448,19 @@ export async function createSession(
   }
 
   // The branch the worktree forked from, now that the (concurrent) checkout
-  // has resolved it. A separate write from the row above so recording the
+  // has resolved it. A separate report from the one above so recording the
   // session never had to wait on provisioning; best-effort, since a missing
   // base costs a sidebar chip and nothing else. A resume keeps what it
   // already recorded — its worktree was left as-is.
   if (!options.prewarm) {
     const { upstreamStartPoint } = await worktreeTask
     if (upstreamStartPoint !== undefined) {
-      await setWorktreeBaseBranch(projectSlug, sessionId, upstreamStartPoint.replace(/^origin\//, ''))
+      await emitHerdEvent({
+        type: 'base-branch-resolved',
+        projectSlug,
+        worktreeId: sessionId,
+        baseBranch: upstreamStartPoint.replace(/^origin\//, ''),
+      })
     }
   }
 

@@ -15,7 +15,7 @@ vi.mock('#platform/git', () => ({
 import { sessionExec } from '#platform/k8s/stream-relay'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { closeDb } from '#platform/db/client'
-import { recordWorktreeCreated } from '#features/sessions/worktree-store'
+import { recordWorktreeCreated } from '#features/records/worktree-store'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   statusFromCode,

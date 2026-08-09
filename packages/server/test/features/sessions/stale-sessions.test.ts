@@ -23,24 +23,17 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The reaper reads session rows to tell a yaac-issued delete (whose
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
-vi.mock('#features/sessions/worktree-store', () => ({
-  listStoppedWorktreeIds: vi.fn(),
-  listLiveWorktreeRows: vi.fn(),
-  recordWorktreeStopped: vi.fn(),
-}))
 vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState } from '#features/status/liveness'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { markSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
-import {
-  listStoppedWorktreeIds,
-  listLiveWorktreeRows,
-  recordWorktreeStopped,
-} from '#features/sessions/worktree-store'
 import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
+import { onHerdEvent, _resetHerdEventsForTests } from '#herd-events'
+import { publishDesiredWorkspaces, _resetDesiredWorkspacesForTests } from '#herd-desired'
+import type { DesiredWorkspaces, HerdEvent } from '@yaac/shared/herd'
 import {
   reconcileStaleSessions,
   _clearMissingPodTimersForTests,
@@ -51,9 +44,15 @@ const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
-const mockListDeletedIds = vi.mocked(listStoppedWorktreeIds)
-const mockListLiveRows = vi.mocked(listLiveWorktreeRows)
-const mockRecordDeleted = vi.mocked(recordWorktreeStopped)
+// The reaper is told what exists rather than reading rows, and reports a
+// death rather than writing one — so the desired set is published directly
+// and the sink stands in for the server.
+const herdEvents: HerdEvent[] = []
+const stopsReported = (): Array<[string, string, unknown]> => herdEvents
+  .filter((e) => e.type === 'worktree-stopped')
+  .map((e) => [e.projectSlug, e.worktreeId, e.cause])
+const setDesired = (d: Partial<DesiredWorkspaces>): void =>
+  publishDesiredWorkspaces({ live: [], stopped: [], ...d })
 const mockListProvisioning = vi.mocked(listProvisioning)
 const mockLog = vi.mocked(serverLog)
 
@@ -84,9 +83,12 @@ describe('reconcileStaleSessions', () => {
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
-    mockListDeletedIds.mockReset().mockResolvedValue(new Set())
-    mockListLiveRows.mockReset().mockResolvedValue([])
-    mockRecordDeleted.mockReset().mockResolvedValue(undefined)
+    herdEvents.length = 0
+    onHerdEvent((event) => {
+      herdEvents.push(event)
+      return Promise.resolve()
+    })
+    setDesired({})
     mockListProvisioning.mockReset().mockReturnValue([])
     mockLog.mockClear()
     _clearTerminatingForTests()
@@ -227,6 +229,24 @@ describe('reconcileStaleSessions', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
+  // The split cannot be made without a published set, and the safe side is
+  // "ours": restamping would overwrite a plain user delete or an earlier
+  // reaped death with "removed outside yaac". Silence preserves.
+  it('preserves the recorded cause when nothing has been published', async () => {
+    _resetDesiredWorkspacesForTests()
+    mockListPods.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'term-unknown',
+        preserveDeletedRecord: true,
+      }),
+    )
+    expect(loggedLines()).not.toContain('terminating out-of-band past grace')
+  })
+
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
     // Same pod state as the out-of-band case (terminating, no in-memory mark:
     // dropped by a restart or the TTL), but the row's recorded stoppedAt
@@ -234,7 +254,7 @@ describe('reconcileStaleSessions', () => {
     // the real cause (a plain user delete) survives — no "removed outside
     // yaac".
     mockListPods.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
-    mockListDeletedIds.mockResolvedValue(new Set(['proj/term-ours']))
+    setDesired({ stopped: ['proj/term-ours'] })
 
     await reconcileStaleSessions()
 
@@ -380,46 +400,44 @@ describe('reconcileStaleSessions', () => {
 
     it('records nothing on the first tick a pod is missing', async () => {
       mockListPods.mockResolvedValue([])
-      mockListLiveRows.mockResolvedValue([row('abandoned')])
+      setDesired({ live: [row('abandoned')] })
 
       await reconcileStaleSessions()
 
-      expect(mockRecordDeleted).not.toHaveBeenCalled()
+      expect(stopsReported()).toEqual([])
     })
 
     it('records an abandoned create once it has stayed podless for the window', async () => {
       mockListPods.mockResolvedValue([])
-      mockListLiveRows.mockResolvedValue([row('abandoned')])
+      setDesired({ live: [row('abandoned')] })
 
       await reconcileStaleSessions()
       await tickPastGrace()
 
-      expect(mockRecordDeleted).toHaveBeenCalledWith('proj', 'abandoned', {
-        reason: 'never-started',
-        detail: 'session create did not complete',
-      })
+      expect(stopsReported()).toEqual([
+          ['proj', 'abandoned', { reason: 'never-started', detail: 'session create did not complete' }],
+        ])
     })
 
     it('calls a session that ran orphaned, not never-started', async () => {
       // A captured prompt or transcript path proves the agent got going, so
       // its Job went away out-of-band rather than never arriving.
       mockListPods.mockResolvedValue([])
-      mockListLiveRows.mockResolvedValue([row('had-history', true)])
+      setDesired({ live: [row('had-history', true)] })
 
       await reconcileStaleSessions()
       await tickPastGrace()
 
-      expect(mockRecordDeleted).toHaveBeenCalledWith('proj', 'had-history', {
-        reason: 'orphaned',
-        detail: 'Job and pod deleted out-of-band',
-      })
+      expect(stopsReported()).toEqual([
+          ['proj', 'had-history', { reason: 'orphaned', detail: 'Job and pod deleted out-of-band' }],
+        ])
     })
 
     it('a single empty-but-successful pod listing condemns nothing', async () => {
       // The dangerous case: an informer cache before its initial sync
       // returns [] without throwing. Every long-lived session looks podless
       // for one tick, and nothing un-marks a death but a restart.
-      mockListLiveRows.mockResolvedValue([row('old-1', true), row('old-2', true)])
+      setDesired({ live: [row('old-1', true), row('old-2', true)] })
       mockListPods.mockResolvedValue([pod('old-1'), pod('old-2')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
       await reconcileStaleSessions()
@@ -432,12 +450,12 @@ describe('reconcileStaleSessions', () => {
       vi.setSystemTime(Date.now() + 31 * 60_000)
       await reconcileStaleSessions()
 
-      expect(mockRecordDeleted).not.toHaveBeenCalled()
+      expect(stopsReported()).toEqual([])
     })
 
     it('exempts a session this process is still provisioning', async () => {
       mockListPods.mockResolvedValue([])
-      mockListLiveRows.mockResolvedValue([row('slow-build')])
+      setDesired({ live: [row('slow-build')] })
       mockListProvisioning.mockReturnValue([
         { worktreeId: 'slow-build', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Building…', createdAt: '2026-08-01 00:00:00' },
       ])
@@ -445,18 +463,30 @@ describe('reconcileStaleSessions', () => {
       await reconcileStaleSessions()
       await tickPastGrace()
 
-      expect(mockRecordDeleted).not.toHaveBeenCalled()
+      expect(stopsReported()).toEqual([])
+    })
+
+    // A herd that has been told nothing must reap nothing: an empty set would
+    // condemn every running workspace at once, and nothing un-marks a death.
+    it('stands down entirely until the server has published a set', async () => {
+      _resetDesiredWorkspacesForTests()
+      mockListPods.mockResolvedValue([])
+
+      await reconcileStaleSessions()
+      await tickPastGrace()
+
+      expect(stopsReported()).toEqual([])
     })
 
     it('leaves a row alone while its pod is running', async () => {
       mockListPods.mockResolvedValue([pod('healthy')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
-      mockListLiveRows.mockResolvedValue([row('healthy', true)])
+      setDesired({ live: [row('healthy', true)] })
 
       await reconcileStaleSessions()
       await tickPastGrace()
 
-      expect(mockRecordDeleted).not.toHaveBeenCalled()
+      expect(stopsReported()).toEqual([])
     })
   })
 })

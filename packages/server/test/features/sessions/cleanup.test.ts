@@ -66,12 +66,6 @@ vi.mock('node:child_process', async () => {
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
-// The session store writes through PGlite — stub it so cleanup tests never
-// open a DB, and so cause forwarding can be asserted.
-vi.mock('#features/sessions/worktree-store', () => ({
-  recordWorktreeStopped: vi.fn().mockResolvedValue(undefined),
-}))
-
 import { salvageSessionImages } from '#features/images/image-promoter'
 import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
@@ -87,13 +81,26 @@ import { listProvisioning } from '#features/sessions/provisioning'
 import { isSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/status/liveness'
 import { _resetSessionStatusStoreForTests } from '#features/status/status-store'
-import { recordWorktreeStopped } from '#features/sessions/worktree-store'
+import { onHerdEvent } from '#herd-events'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
+import type { HerdEvent } from '@yaac/shared/herd'
 
 const sessionExecMock = vi.mocked(sessionExec)
 const mockServerLog = vi.mocked(serverLog)
-const mockRecordDeleted = vi.mocked(recordWorktreeStopped)
+
+// Cleanup reports the stop rather than writing the row itself, so the sink
+// stands in for the server: these tests never open a DB, and what the herd
+// half says about a teardown is asserted directly.
+const herdEvents: HerdEvent[] = []
+onHerdEvent((event) => {
+  herdEvents.push(event)
+  return Promise.resolve()
+})
+const clearHerdEvents = (): void => { herdEvents.length = 0 }
+const stopsReported = (): Array<[string, string, unknown]> => herdEvents
+  .filter((e) => e.type === 'worktree-stopped')
+  .map((e) => [e.projectSlug, e.worktreeId, e.cause])
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
@@ -171,8 +178,8 @@ describe('cleanupSession', () => {
     expect(sessionExecMock).toHaveBeenCalledTimes(2)
   })
 
-  it('forwards the death cause to the session store', async () => {
-    mockRecordDeleted.mockClear()
+  it('reports the death cause with the stop', async () => {
+    clearHerdEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupSession({
@@ -181,8 +188,9 @@ describe('cleanupSession', () => {
       sessionId: 's-cause',
       cause: { reason: 'crashed', detail: 'exit code 1' },
     })
-    expect(mockRecordDeleted).toHaveBeenCalledWith(
-      'p', 's-cause', { reason: 'crashed', detail: 'exit code 1' })
+    expect(stopsReported()).toEqual([
+      ['p', 's-cause', { reason: 'crashed', detail: 'exit code 1' }],
+    ])
   })
 })
 
@@ -251,9 +259,9 @@ describe('cleanupSessionDetached', () => {
     _clearTerminatingForTests()
   })
 
-  it('persists the death cause and includes it in the audit line', async () => {
+  it('reports the death cause and includes it in the audit line', async () => {
     mockServerLog.mockClear()
-    mockRecordDeleted.mockClear()
+    clearHerdEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupSessionDetached({
@@ -263,15 +271,16 @@ describe('cleanupSessionDetached', () => {
       cause: { reason: 'oom', detail: 'exit code 137' },
     })
 
-    expect(mockRecordDeleted).toHaveBeenCalledWith(
-      'proj-a', 's-cause', { reason: 'oom', detail: 'exit code 137' })
+    expect(stopsReported()).toEqual([
+      ['proj-a', 's-cause', { reason: 'oom', detail: 'exit code 137' }],
+    ])
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('cause=oom (exit code 137)')
   })
 
-  it('a causeless teardown records no cause and keeps the audit line bare', async () => {
+  it('a causeless teardown reports no cause and keeps the audit line bare', async () => {
     mockServerLog.mockClear()
-    mockRecordDeleted.mockClear()
+    clearHerdEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupSessionDetached({
@@ -280,15 +289,15 @@ describe('cleanupSessionDetached', () => {
       sessionId: 's-nocause',
     })
 
-    expect(mockRecordDeleted).toHaveBeenCalledWith('proj-a', 's-nocause', undefined)
+    expect(stopsReported()).toEqual([['proj-a', 's-nocause', undefined]])
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).not.toContain('cause=')
   })
 
-  it('preserveDeletedRecord skips the deletion write, leaving the cause intact', async () => {
+  it('preserveDeletedRecord reports no stop, leaving the recorded cause intact', async () => {
     // Resuming a teardown yaac already recorded (its terminating mark was lost)
-    // must not re-record — that would clobber the real cause with a stray one.
-    mockRecordDeleted.mockClear()
+    // must not re-report — that would clobber the real cause with a stray one.
+    clearHerdEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupSessionDetached({
@@ -298,7 +307,7 @@ describe('cleanupSessionDetached', () => {
       preserveDeletedRecord: true,
     })
 
-    expect(mockRecordDeleted).not.toHaveBeenCalled()
+    expect(stopsReported()).toEqual([])
     // The teardown itself still runs (idempotent Job delete resumes).
     const spawned = spawnMock.mock.calls.some(([cmd]) => cmd === 'sh')
     expect(spawned).toBe(true)

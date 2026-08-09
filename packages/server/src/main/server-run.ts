@@ -19,9 +19,13 @@ import {
 } from '#platform/k8s'
 import {
   gcOrphanEphemeralModuleDirs,
-  listActiveAgentSessions,
   resolveSessionContainer,
 } from '#features/sessions'
+import {
+  applyHerdEvent,
+  listActiveAgentSessions,
+} from '#features/records'
+import { onHerdEvent } from '#herd-events'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#notify'
 import { StatusWatcherManager, isTmuxSessionAlive, onSessionStatusChanged } from '#features/status'
 import {
@@ -381,6 +385,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(process.pid)
     process.exit(1)
   }
+  // Take the server's end of the herd's report channel. Registered here
+  // rather than beside the other listeners above because the sink writes
+  // rows: it cannot exist before the DB it writes to is open, and nothing
+  // can emit until the reconcile loop and the routes below are live.
+  onHerdEvent(applyHerdEvent)
+
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
   // control returns to the event loop and any queued request is processed.

@@ -16,7 +16,7 @@ import { listSessionPods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { markSessionTerminating, isSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { closeDb } from '#platform/db/client'
-import { recordWorktreeCreated } from '#features/sessions/worktree-store'
+import { recordWorktreeCreated } from '#features/records/worktree-store'
 import {
   getProjectsDir,
   projectDir,

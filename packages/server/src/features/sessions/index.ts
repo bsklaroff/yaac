@@ -21,14 +21,6 @@
 // packages/server/test/features/sessions/. Modules not re-exported are
 // internal: the seed/spawn-script staging is covered through `createSession`.
 
-export {
-  deleteProjectAgentSessions,
-  listActiveAgentSessions,
-  listWorktreeAgentSessions,
-  recordAgentSessions,
-  setActiveAgentSessions,
-  toAgentSessionEntry,
-} from './agent-session-store'
 export { reconcileAgentSessions } from './agent-session-registry'
 export { getSessionChanges, sessionForkBranch } from './changes'
 export { cleanupSessionDetached, gcOrphanEphemeralModuleDirs } from './cleanup'
@@ -45,7 +37,6 @@ export {
 } from './detail'
 export { ensureProjectExists, listActiveSessions } from './list'
 export { removeProject } from './project-teardown'
-export { captureSessionPrompts } from './prompt-capture'
 export { tryClaimPrewarmed } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {
@@ -62,14 +53,3 @@ export { reconcileSpawnRequests } from './spawn-reconcile'
 export { reconcileStaleSessions } from './stale-sessions'
 export { stopWorktree } from './stop'
 export { listStoppedWorktrees } from './stopped-list'
-export {
-  MAX_PROMPT_LENGTH,
-  deleteProjectWorktrees,
-  deleteWorktreeRow,
-  recordAllDeathsSeen,
-  recordDeathSeen,
-  recordWorktreeCreated,
-  setWorktreeBackground,
-  setWorktreeBaseBranch,
-  setWorktreeTitle,
-} from './worktree-store'

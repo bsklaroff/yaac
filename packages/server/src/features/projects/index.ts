@@ -44,19 +44,3 @@ export {
   setProjectReferenceBranch,
   writeProjectConfig,
 } from './local-config'
-export {
-  DEFAULT_TOOL_KEY,
-  SESSIONS_BACKFILLED_KEY,
-  TRANSCRIPT_PATHS_RELATIVE_KEY,
-  TRANSCRIPT_PATHS_RESOLVED_KEY,
-  clearShortcutOverrides,
-  getDefaultTool,
-  getShortcutOverrides,
-  clearFlag,
-  isFlagSet,
-  isSerializedChord,
-  isValidTool,
-  setDefaultToolChecked,
-  setFlag,
-  setShortcutOverride,
-} from './preferences'

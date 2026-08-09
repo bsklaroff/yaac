@@ -1,41 +1,19 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import {
-  type SessionPod,
-  getActiveClusterCache,
-  isDeferredClusterBootPending,
-  isPrewarmed,
-  listSessionPods,
-  triggerDeferredClusterBoot,
-} from '#platform/k8s'
-import { projectDir } from '@yaac/shared/project-paths'
-import { normalizeTool } from '#features/agents'
-import { getProjectWorktreeRows, type WorktreeRow } from './worktree-store'
-import {
-  classifySessionPods,
-  pruneTerminating,
-  readAgentStatus,
-  readSessionStatus,
-  readSessionWaitingSince,
-  watcherDisplayLiveness,
-} from '#features/status'
 import {
   getProjectAgentSessions,
+  getProjectRow,
+  getProjectWorktreeRows,
   toAgentSessionEntry,
   type AgentSessionLinkRow,
-} from './agent-session-store'
-import { getSessionPorts, getUnforwardedPorts } from '#features/forwarders'
-import { readBlockedHosts } from '#features/egress'
-import { readAllGitAuthFailures } from '#features/projects'
+  type WorktreeRow,
+} from '#features/records'
+import { observeWorkspaces } from './observe'
 import { ServerError } from '@yaac/shared/errors'
-import { testEnv } from '@yaac/shared/env'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import type { AgentLiveness, WorkspaceReport } from '@yaac/shared/herd'
 import type { ActiveSessionsResult, WorktreeListEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(slug: string): Promise<void> {
-  try {
-    await fs.access(path.join(projectDir(slug), 'project.json'))
-  } catch {
+  if (!await getProjectRow(slug)) {
     throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 }
@@ -56,9 +34,15 @@ export function _clearListActiveInflightForTests(): void {
 }
 
 /**
- * Enumerate session pods for a project (or all projects), splitting
- * them into the active-session rows the renderer displays and the stale
- * set the caller is expected to tear down.
+ * The active-session rows the renderer displays, and the stale set the caller
+ * is expected to tear down.
+ *
+ * This is the JOIN. The herd reports what its substrate can see right now
+ * (`observeWorkspaces`); everything else here is what only the server knows —
+ * the title a user typed, the pin they set, the creation time that has to
+ * survive a restart the runtime did not, and the conversations a workspace
+ * has hosted with their opening messages. Neither half can answer alone
+ * (docs/plans/herd-split.md).
  *
  * Concurrent calls with the same `projectFilter` share one in-flight
  * Promise (see `listActiveInflight`).
@@ -75,167 +59,104 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
 }
 
 async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
+  // Whether a project exists is the server's own record, so it is checked
+  // here rather than left to a herd, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  // In the server the informer's push-fed cache answers instantly; the
-  // one-shot kubectl list is the fallback for cache-less contexts (unit
-  // tests, a cache that hasn't started yet).
-  const cache = getActiveClusterCache()
-  let pods: SessionPod[]
-  if (cache) {
-    pods = cache.sessionPods(projectFilter)
-  } else if (isDeferredClusterBootPending()) {
-    // A nested server whose deferred cluster attach hasn't finished has
-    // no session pods by construction (session create awaits the
-    // attach), so answer empty instantly instead of holding the caller
-    // — and the web-app's first snapshot, projects included — on a
-    // kubectl call to a still-waking vcluster. Still kick the attach:
-    // connecting the web app is a real use, and once it completes the
-    // caches push a fresh snapshot.
-    triggerDeferredClusterBoot()
-    pods = []
-  } else {
-    try {
-      pods = await listSessionPods(projectFilter)
-    } catch (err) {
-      throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
-    }
-  }
+  const report = await observeWorkspaces(projectFilter)
 
-  // Prewarmed spares are not user sessions until claimed — hide them from the
-  // session list (and skip the status/first-message reads they'd trigger).
-  // The stale reaper deliberately still sees them (it lists pods itself), so a
-  // stuck spare is still reaped.
-  pods = pods.filter((p) => !isPrewarmed(p))
-
-  const { running, stale, terminating } = await classifySessionPods(
-    pods, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
-  )
-
-  // Forget terminating marks whose pod is gone (teardown finished) or that
-  // outlived the TTL (a failed teardown), so the set can't leak or strand a
-  // permanently-greyed row.
-  pruneTerminating(new Set(pods.map((p) => p.sessionId).filter((v): v is string => !!v)), Date.now())
-
-  // Recorded session state — prompt, title, base branch, pin — one query per
-  // project for both live and terminating rows (the latter keep their title
-  // and pin on the way out).
-  const rowSlugs = [...new Set(
-    [...running, ...terminating].map((p) => p.projectSlug).filter((v): v is string => !!v),
-  )]
+  // Recorded state — prompt, title, base branch, pin — one query per project
+  // for both live and terminating workspaces (the latter keep their title and
+  // pin on the way out).
+  const rowSlugs = [...new Set(report.workspaces.map((w) => w.projectSlug).filter((v) => !!v))]
   const rowsBySlug = new Map(await Promise.all(
     rowSlugs.map(async (slug) => [slug, await getProjectWorktreeRows(slug)] as const),
   ))
-  const rowFor = (p: SessionPod): WorktreeRow | undefined =>
-    p.projectSlug && p.sessionId ? rowsBySlug.get(p.projectSlug)?.get(p.sessionId) : undefined
+  const rowFor = (w: WorkspaceReport): WorktreeRow | undefined =>
+    w.projectSlug && w.workspaceId ? rowsBySlug.get(w.projectSlug)?.get(w.workspaceId) : undefined
 
-  // The conversations inside each worktree, one query per project — the same
+  // The conversations inside each workspace, one query per project — the same
   // shape as the rows above, so a snapshot never pays per row.
   const idsBySlug = new Map<string, string[]>()
-  for (const p of [...running, ...terminating]) {
-    if (!p.projectSlug || !p.sessionId) continue
-    idsBySlug.set(p.projectSlug, [...(idsBySlug.get(p.projectSlug) ?? []), p.sessionId])
+  for (const w of report.workspaces) {
+    if (!w.projectSlug || !w.workspaceId) continue
+    idsBySlug.set(w.projectSlug, [...(idsBySlug.get(w.projectSlug) ?? []), w.workspaceId])
   }
   const agentsBySlug = new Map(await Promise.all(
     rowSlugs.map(async (slug) =>
       [slug, await getProjectAgentSessions(slug, idsBySlug.get(slug) ?? [])] as const),
   ))
-  const agentsFor = (p: SessionPod): AgentSessionLinkRow[] =>
-    (p.projectSlug && p.sessionId
-      ? agentsBySlug.get(p.projectSlug)?.get(p.sessionId)
+  const agentsFor = (w: WorkspaceReport): AgentSessionLinkRow[] =>
+    (w.projectSlug && w.workspaceId
+      ? agentsBySlug.get(w.projectSlug)?.get(w.workspaceId)
       : undefined) ?? []
 
-  const worktrees: WorktreeListEntry[] = await Promise.all(
-    running.map(async (p): Promise<WorktreeListEntry> => {
-      const tool = normalizeTool(p.tool)
-      if (!p.sessionId || !p.projectSlug) {
-        return {
-          worktreeId: p.sessionId,
-          projectSlug: p.projectSlug,
-          tool,
-          status: 'running',
-          createdAt: formatUtcTimestamp(p.createdAtMs),
-          agentSessions: [],
-          blockedHosts: [],
-          forwardedPorts: [],
-          unforwardedPorts: [],
-        }
-      }
-      const row = rowFor(p)
-      const blockedHosts = await readBlockedHosts(p.sessionId)
-      return {
-        worktreeId: p.sessionId,
-        projectSlug: p.projectSlug,
-        tool,
-        // Aggregate over the worktree's live agents (see status-store).
-        status: readSessionStatus(p.projectSlug, p.sessionId),
-        // The recorded creation time, which — unlike the pod's — survives a
-        // restart. A session with no row yet (created by an older yaac, no
-        // transcript for the backfill to find) falls back to its pod.
-        createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
-        waitingSinceMs: readSessionWaitingSince(p.projectSlug, p.sessionId),
-        // The founding ask is the first conversation's opening message —
-        // the worktree has none of its own.
-        prompt: agentsFor(p)[0]?.firstPrompt,
-        title: row?.title,
-        agentSessions: agentsFor(p).map((l) => toAgentSessionEntry(l, liveStatus(p.projectSlug, p.sessionId, l))),
-        blockedHosts,
-        forwardedPorts: getSessionPorts(p.sessionId),
-        unforwardedPorts: getUnforwardedPorts(p.sessionId),
-        baseBranch: row?.baseBranch,
-        background: row?.background || undefined,
-      }
-    }),
-  )
-
-  // Terminating rows: a distinct, non-interactive placeholder. Status is
-  // forced to 'running' (never read from the status store, which was evicted
-  // at teardown and would default to 'waiting' — the flash we're killing) and
-  // waitingSinceMs is omitted, so no attention badge fires.
-  worktrees.push(...terminating.map((p): WorktreeListEntry => {
-    const row = rowFor(p)
-    return {
-      worktreeId: p.sessionId,
-      projectSlug: p.projectSlug,
-      tool: normalizeTool(p.tool),
-      status: 'running',
-      stopping: true,
-      createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(p.createdAtMs)).getTime()),
-      prompt: agentsFor(p)[0]?.firstPrompt,
+  const worktrees = report.workspaces.map((w): WorktreeListEntry => {
+    const row = rowFor(w)
+    const links = agentsFor(w)
+    const base = {
+      worktreeId: w.workspaceId,
+      projectSlug: w.projectSlug,
+      tool: w.tool,
+      // The recorded creation time, which — unlike the runtime's — survives a
+      // restart. A workspace with no row yet (created by an older yaac, no
+      // transcript for the backfill to find) falls back to what the herd saw.
+      createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
+      // The founding ask is the first conversation's opening message — the
+      // worktree has none of its own.
+      prompt: links[0]?.firstPrompt,
       title: row?.title,
-      agentSessions: [],
-      blockedHosts: [],
-      forwardedPorts: [],
-      unforwardedPorts: [],
       background: row?.background || undefined,
     }
-  }))
+    if (w.phase === 'terminating') {
+      // A distinct, non-interactive placeholder: no agents, no ports, and a
+      // forced `running` so no attention badge fires on a row on its way out.
+      return {
+        ...base,
+        status: 'running',
+        stopping: true,
+        agentSessions: [],
+        blockedHosts: [],
+        forwardedPorts: [],
+        unforwardedPorts: [],
+      }
+    }
+    return {
+      ...base,
+      status: w.status,
+      ...(w.waitingSinceMs !== undefined ? { waitingSinceMs: w.waitingSinceMs } : {}),
+      agentSessions: links.map((l) => toAgentSessionEntry(l, liveStatus(w.agents, l))),
+      blockedHosts: w.blockedHosts,
+      forwardedPorts: w.forwardedPorts,
+      unforwardedPorts: w.unforwardedPorts,
+      baseBranch: row?.baseBranch,
+    }
+  })
 
-  // Project-wide git credential failures — independent of the session set
+  // Project-wide git credential failures — independent of the workspace set
   // (a bad token persists with zero running sessions and blocks new ones).
-  const allGitAuthFailures = await readAllGitAuthFailures()
   const gitAuthFailures = projectFilter
-    ? (allGitAuthFailures[projectFilter]
-      ? { [projectFilter]: allGitAuthFailures[projectFilter] }
+    ? (report.gitAuthFailures[projectFilter]
+      ? { [projectFilter]: report.gitAuthFailures[projectFilter] }
       : {})
-    : allGitAuthFailures
+    : report.gitAuthFailures
 
-  return { worktrees, stale, gitAuthFailures }
+  return { worktrees, stale: report.stale, gitAuthFailures }
 }
 
 /**
- * A live conversation's own busy/idle, read by the handle it was last seen on
- * — a tmux pane id under `tui`, the acpd window name under `acp`. A
- * conversation with no live handle (the worktree's history) has none, which is
- * how a client tells "still open" from "was open".
+ * A live conversation's own busy/idle, joined onto the herd's per-handle
+ * liveness by the handle this conversation was last seen on — a tmux pane id
+ * under `tui`, the acpd window name under `acp`. A conversation with no live
+ * handle (the worktree's history) has none, which is how a client tells
+ * "still open" from "was open".
  */
 function liveStatus(
-  projectSlug: string,
-  worktreeId: string,
+  agents: AgentLiveness[],
   l: AgentSessionLinkRow,
 ): { status: 'running' | 'waiting'; waitingSinceMs?: number } | undefined {
   if (!l.active || l.paneId === undefined) return undefined
-  const agent = readAgentStatus(projectSlug, worktreeId, l.paneId)
+  const agent = agents.find((a) => a.handle === l.paneId)
   if (agent === undefined) return undefined
   return {
     status: agent.status,

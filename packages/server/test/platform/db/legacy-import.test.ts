@@ -15,17 +15,17 @@ import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/
 import { claudeDir, codexDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
 import { eq } from 'drizzle-orm'
 import { _freshDbForTests, agentSessions, closeDb, getDb, importLegacyJsonStores } from '#platform/db'
-import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
+import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/records/preferences'
 import {
-  MAX_PROMPT_LENGTH,
   getProjectWorktreeRows,
   listWorktreeRows,
   recordWorktreeCreated,
-} from '#features/sessions/worktree-store'
+} from '#features/records/worktree-store'
+import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
 import {
   listWorktreeAgentSessions,
   recordAgentSessions,
-} from '#features/sessions/agent-session-store'
+} from '#features/records/agent-session-store'
 import { loadTokens } from '#http'
 
 // The legacy on-disk layout, rebuilt by hand: the production path builders

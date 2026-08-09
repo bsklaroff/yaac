@@ -1,6 +1,5 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { projectDir, projectConfigDir } from '@yaac/shared/project-paths'
+import { projectConfigDir } from '@yaac/shared/project-paths'
+import { getProjectRow } from '#features/records'
 import { listSessionPods } from '#platform/k8s'
 import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
@@ -19,14 +18,9 @@ export interface ProjectConfigResult {
 }
 
 async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
-  const metaPath = path.join(projectDir(slug), 'project.json')
-  let raw: string
-  try {
-    raw = await fs.readFile(metaPath, 'utf8')
-  } catch {
-    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
-  }
-  return JSON.parse(raw) as ProjectMeta
+  const meta = await getProjectRow(slug)
+  if (!meta) throw new ServerError('NOT_FOUND', `project ${slug} not found`)
+  return meta
 }
 
 /**

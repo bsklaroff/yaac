@@ -17,6 +17,7 @@ export { importLegacyJsonStores } from './legacy-import'
 export {
   agentSessions,
   preferences,
+  projects,
   shortcutOverrides,
   tokens,
   worktreeAgentSessions,

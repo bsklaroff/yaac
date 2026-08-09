@@ -10,25 +10,27 @@ import {
   getSessionPrompt,
   listActiveSessions,
   listStoppedWorktrees,
-  listWorktreeAgentSessions,
-  recordAllDeathsSeen,
-  recordDeathSeen,
   registerProvisioning,
   removeProvisioning,
   resolveSessionContainer,
   resolveWorktreeRecord,
   restartWorktree,
   sessionForkBranch,
-  setWorktreeBackground,
-  setWorktreeTitle,
   stopWorktree,
-  toAgentSessionEntry,
   tryClaimPrewarmed,
   type SessionCreateOptions,
 } from '#features/sessions'
+import {
+  listWorktreeAgentSessions,
+  recordAllDeathsSeen,
+  recordDeathSeen,
+  setWorktreeBackground,
+  setWorktreeTitle,
+  toAgentSessionEntry,
+} from '#features/records'
 import { notifySessionListChanged } from '#notify'
 import { typeInitialPrompt, MODEL_RE } from '#features/agents'
-import { getDefaultTool } from '#features/projects'
+import { getDefaultTool } from '#features/records'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
 import { allowSessionHost } from '#features/egress'

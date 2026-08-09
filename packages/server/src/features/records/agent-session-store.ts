@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions } from '#platform/db'
-import { MAX_PROMPT_LENGTH } from './worktree-store'
+import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
 import {
   fromStoredTranscriptPath,
   toStoredTranscriptPath,
@@ -404,15 +404,6 @@ export async function getAgentSessionsFor(
   return byWorktree
 }
 
-/** Conversations of a worktree still missing their first message — what the
- *  capture step works through while the pod is up. */
-export async function listAgentSessionsMissingPrompt(
-  projectSlug: string,
-  worktreeId: string,
-): Promise<AgentSessionLinkRow[]> {
-  const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
-  return links.filter((l) => l.firstPrompt === undefined)
-}
 
 /** Persist a conversation's captured first message and transcript path. */
 export async function setAgentSessionCapture(

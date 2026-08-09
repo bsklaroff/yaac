@@ -49,7 +49,7 @@ function makeDeps(over: Parameters<typeof handleSpawnRequest>[1] = {}): {
   return {
     deps: {
       listSessionPodsFn: () => Promise.resolve([makePod()]),
-      getDefaultToolFn: () => Promise.resolve(undefined),
+      defaultTool: undefined,
       createSessionFn,
       ...over,
     },
@@ -124,7 +124,7 @@ describe('handleSpawnRequest', () => {
   it('falls back to the configured default, then claude, for an unknown caller tool', async () => {
     const withDefault = makeDeps({
       listSessionPodsFn: () => Promise.resolve([makePod({ tool: 'bogus' })]),
-      getDefaultToolFn: () => Promise.resolve('pi' as const),
+      defaultTool: 'pi' as const,
     })
     const r1 = await handleSpawnRequest(makeReq(), withDefault.deps)
     expect(r1.ok).toBe(true)

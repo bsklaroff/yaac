@@ -8,14 +8,12 @@ import {
   transcriptLastActiveMs,
   type AgentSessionLink,
 } from '#features/agents'
-import {
-  recordAgentSessions,
-  setActiveAgentSessions,
-  type DiscoveredAgentSession,
-} from './agent-session-store'
+import { emitHerdEvent } from '#herd-events'
+import { captureFirstPrompt } from './prompt-capture'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
+import type { DiscoveredConversation } from '@yaac/shared/herd'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -73,6 +71,7 @@ export async function reconcileAgentSessions(snapshot?: TickSnapshot): Promise<v
         pod.sessionId,
         normalizeTool(pod.tool),
         podAgentMode(pod),
+        pod.jobName,
       )
     } catch {
       // best-effort — next tick retries
@@ -89,6 +88,7 @@ export async function reconcileWorktreeAgentSessions(
   worktreeId: string,
   tool: AgentTool,
   mode: AgentMode = 'tui',
+  jobName?: string,
 ): Promise<void> {
   if (mode === 'acp') {
     await reconcileAcpAgentSessions(projectSlug, worktreeId)
@@ -106,15 +106,51 @@ export async function reconcileWorktreeAgentSessions(
     // existing is the evidence that separates them. Guessing instead would
     // mint a phantom conversation that never existed, claim ordinal 0, and
     // starve the real one of its founding prompt.
+    //
+    // opencode is exempt because for it the evidence can never exist: it
+    // writes no host transcript and has no link tree, so the pin create made
+    // is the only account of its conversation there will ever be, and its
+    // opening message has to be probed out of the pod.
     const pinned = await sessionTranscriptPath(projectSlug, worktreeId, tool)
-    if (pinned === undefined) return
-    const legacy = [{ tool, agentSessionId: worktreeId, transcriptPath: pinned }]
-    await recordAgentSessions(projectSlug, worktreeId, legacy)
-    await setActiveAgentSessions(projectSlug, worktreeId, legacy)
+    if (pinned === undefined && tool !== 'opencode') return
+    const legacy = [await withFirstPrompt(
+      {
+        tool,
+        agentSessionId: worktreeId,
+        ...(pinned !== undefined ? { transcriptPath: pinned } : {}),
+      },
+      projectSlug,
+      jobName,
+    )]
+    await emitHerdEvent({
+      type: 'conversations-discovered', projectSlug, worktreeId, conversations: legacy,
+    })
+    // Unlike the link-tree branch below, this reports the active set without
+    // consulting `liveAgents` — safe only because a worktree reaching here has
+    // exactly ONE conversation, the pin, so "all of them" and "the pinned one"
+    // are the same list. If opencode ever grows a discoverable id source, or
+    // anything else links a second conversation to such a worktree, this line
+    // starts deactivating every conversation but the pin on each tick — and
+    // the set it clobbers is the frozen one a restart reads back. Anything
+    // that makes a second conversation reachable here must join against the
+    // live set first.
+    await emitHerdEvent({
+      type: 'conversations-active',
+      projectSlug,
+      worktreeId,
+      active: legacy.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId })),
+    })
     return
   }
 
-  await recordAgentSessions(projectSlug, worktreeId, links.map(toDiscovered))
+  await emitHerdEvent({
+    type: 'conversations-discovered',
+    projectSlug,
+    worktreeId,
+    conversations: await Promise.all(
+      links.map((l) => withFirstPrompt(toDiscovered(l), projectSlug, jobName)),
+    ),
+  })
 
   // Intersect the pointers with the conversations the status watcher can see.
   // When the watcher has no live set yet (a pod whose connection hasn't
@@ -131,7 +167,31 @@ export async function reconcileWorktreeAgentSessions(
     }))
     .filter((l): l is { tool: AgentTool; agentSessionId: string; paneId: string } =>
       l.paneId !== undefined)
-  await setActiveAgentSessions(projectSlug, worktreeId, live)
+  await emitHerdEvent({ type: 'conversations-active', projectSlug, worktreeId, active: live })
+}
+
+/**
+ * Add the conversation's opening message, when this herd has not read it yet.
+ * Folded into the sweep rather than run as a pass of its own: the sweep has
+ * just resolved the transcript, and the alternative — asking the server which
+ * conversations still lack a prompt — is the row read this whole exercise is
+ * removing. The server's write is fill-only, so re-reporting one it already
+ * has costs nothing and cannot overwrite a create-time prompt.
+ */
+async function withFirstPrompt(
+  conversation: DiscoveredConversation,
+  projectSlug: string,
+  jobName: string | undefined,
+): Promise<DiscoveredConversation> {
+  if (conversation.firstPrompt !== undefined) return conversation
+  const firstPrompt = await captureFirstPrompt(
+    projectSlug,
+    conversation.tool,
+    conversation.agentSessionId,
+    conversation.transcriptPath,
+    jobName,
+  )
+  return firstPrompt !== undefined ? { ...conversation, firstPrompt } : conversation
 }
 
 /**
@@ -183,11 +243,22 @@ async function reconcileAcpAgentSessions(
         }
       }),
   )
-  if (live.length > 0) await recordAgentSessions(projectSlug, worktreeId, live)
-  await setActiveAgentSessions(projectSlug, worktreeId, live)
+  if (live.length > 0) {
+    await emitHerdEvent({
+      type: 'conversations-discovered', projectSlug, worktreeId, conversations: live,
+    })
+  }
+  await emitHerdEvent({
+    type: 'conversations-active',
+    projectSlug,
+    worktreeId,
+    active: live.map((c) => ({
+      tool: c.tool, agentSessionId: c.agentSessionId, paneId: c.paneId,
+    })),
+  })
 }
 
-function toDiscovered(link: AgentSessionLink): DiscoveredAgentSession {
+function toDiscovered(link: AgentSessionLink): DiscoveredConversation {
   return {
     tool: link.tool,
     agentSessionId: link.agentSessionId,
