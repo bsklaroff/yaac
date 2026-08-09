@@ -2,6 +2,7 @@ import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import { invalidatePortForward, resolvePortForward } from '#platform/k8s'
 import { runTrackedPodman } from './host-procs'
+import { usesRootfulPodman } from './runtime'
 
 /**
  * The CLIENT half of the main OCI registry — the one image bus between
@@ -10,7 +11,7 @@ import { runTrackedPodman } from './host-procs'
  * Deployment + Service stood up by `#features/cluster` (main-registry.ts);
  * nothing here creates or owns it.
  *
- * Two addresses, and keeping them apart is the whole point of this module:
+ * THREE addresses, and keeping them apart is the whole point of this module:
  *
  *  - `registryHost()` is the CLUSTER address, and the only one that ever
  *    appears in an image ref. Pods and node containerd resolve it; the
@@ -21,11 +22,23 @@ import { runTrackedPodman } from './host-procs'
  *    networking beyond the apiserver access every other call already needs.
  *    Nested, it is the outer per-project registry, which the inner server —
  *    itself a pod — dials directly.
+ *  - `podmanRegistryEndpoint()` is where the PODMAN ENGINE reaches it. On
+ *    Linux that is the same loopback the server uses, because podman runs in
+ *    this process's network namespace. On macOS it is NOT: podman runs inside
+ *    the machine VM, where `127.0.0.1` is the VM's own loopback and the
+ *    forward — a listener on the HOST — is unreachable. Only the port is
+ *    shared; the host is the gvproxy alias.
  *
  * Blob storage is addressed by repository path alone, so pushing through
- * the forwarded loopback port and pulling by the cluster ref name the same
- * bytes. Content-hash tags stay immutable, `registryHasTag()` stays the
- * server-side push skip, and pods keep `imagePullPolicy: IfNotPresent`.
+ * the forwarded port and pulling by the cluster ref name the same bytes.
+ * Content-hash tags stay immutable, `registryHasTag()` stays the server-side
+ * push skip, and pods keep `imagePullPolicy: IfNotPresent`.
+ *
+ * The split matters because the two endpoints fail differently: a wrong
+ * `registryEndpoint()` fails the server's own HEAD, while a wrong
+ * `podmanRegistryEndpoint()` fails only inside podman — every blob retried
+ * three times against a refused port, a push that never lands, and a
+ * `registryHasTag()` that therefore never skips it on the next sweep.
  */
 
 /** Service (and Deployment) name of the in-cluster registry. */
@@ -52,6 +65,15 @@ export const REGISTRY_NAMESPACE = 'yaac'
 
 /** Key for this process's registry port-forward child. */
 const REGISTRY_FORWARD_KEY = 'main-registry'
+
+/**
+ * The host's loopback as seen from inside the podman machine VM, published by
+ * gvproxy (the machine's user-mode network stack) and resolvable in the VM
+ * without any per-machine setup. This is the ONE name that reaches a
+ * host-side listener — notably a `kubectl port-forward` — from a `podman
+ * push` running in the VM.
+ */
+const PODMAN_VM_HOST_ALIAS = 'host.containers.internal'
 
 /**
  * Host:port that image refs are prefixed with — a cluster-DNS name, never
@@ -85,12 +107,41 @@ export function registryRef(tag: string): string {
 export async function registryEndpoint(): Promise<string> {
   const external = env.k8sRegistry
   if (external) return external
-  const { host, port } = await resolvePortForward(REGISTRY_FORWARD_KEY, {
+  const { host, port } = await registryForward()
+  return `${host}:${port}`
+}
+
+/**
+ * Establish (or reuse) this process's forward into the registry Deployment.
+ * Both endpoint accessors go through here so they name the same forward
+ * child, and so the VM-facing address can never drift onto a second forward
+ * with a different port.
+ */
+async function registryForward(): Promise<{ host: string; port: number }> {
+  return resolvePortForward(REGISTRY_FORWARD_KEY, {
     namespace: REGISTRY_NAMESPACE,
     target: `deploy/${REGISTRY_SERVICE_NAME}`,
     remotePort: REGISTRY_SERVICE_PORT,
   })
-  return `${host}:${port}`
+}
+
+/**
+ * Where the podman engine reaches the registry — the address that goes into
+ * a `podman push` target, which is NOT always the one this process dials.
+ *
+ * An externally managed registry (nested yaac) is a cluster address both
+ * halves reach, and on Linux podman shares this process's netns, so in both
+ * cases the two endpoints coincide. Under podman machine they do not: the
+ * forward's listener belongs to the host, so the VM has to come back out to
+ * it by name. The forward's PORT still applies — it is a host port, and
+ * gvproxy maps the alias to the host loopback it is bound on.
+ */
+async function podmanRegistryEndpoint(): Promise<string> {
+  const external = env.k8sRegistry
+  if (external) return external
+  const { host, port } = await registryForward()
+  if (usesRootfulPodman()) return `${host}:${port}`
+  return `${PODMAN_VM_HOST_ALIAS}:${port}`
 }
 
 /**
@@ -167,10 +218,13 @@ export async function registryHasTag(tag: string): Promise<boolean> {
  * an unchanged tag (`yaac project rebuild`'s --no-cache tools refresh).
  * `--tls-verify=false` because the registry serves plain HTTP.
  *
- * The push TARGET is the process-local endpoint while the RETURNED ref is
+ * The push TARGET is the ENGINE-facing endpoint while the RETURNED ref is
  * the cluster one: the registry stores by repository path, so the bytes a
- * push puts at `127.0.0.1:<fwd>/yaac-tools:abc` are exactly what a node
+ * push puts at `<engine endpoint>/yaac-tools:abc` are exactly what a node
  * pulls as `yaac-registry.yaac.svc.cluster.local:5000/yaac-tools:abc`.
+ * Note the target is `podmanRegistryEndpoint()`, not `registryEndpoint()` —
+ * this runs podman, which on macOS is in the machine VM and cannot see the
+ * host loopback the server itself HEADs through.
  *
  * `compressionFormat: 'zstd'` is used for trusted-layer pushes feeding
  * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
@@ -189,7 +243,7 @@ export async function pushImageToRegistry(
   const ref = registryRef(localTag)
   if (!opts.force && await registryHasTag(localTag)) return ref
 
-  const target = `${await registryEndpoint()}/${localTag}`
+  const target = `${await podmanRegistryEndpoint()}/${localTag}`
   const compressionArgs = opts.compressionFormat
     ? ['--compression-format', opts.compressionFormat]
     : []
