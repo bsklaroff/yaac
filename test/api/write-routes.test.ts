@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
+import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import simpleGit from 'simple-git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/platform/git'
@@ -167,11 +168,13 @@ describe('write routes', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    setHerd(createInProcessHerd())
     vi.resetAllMocks()
     clearAllProvisioningForTests()
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

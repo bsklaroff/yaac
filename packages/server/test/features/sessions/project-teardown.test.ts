@@ -1,43 +1,45 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The three things a remove reaches outside the feature for. Session
-// teardown and the push-registry delete drive kubectl (and spawn a detached
-// script), so they are faked at that boundary; the session rows below are
-// deleted for real, against the temp data dir's database.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
-  ...(await importOriginal<typeof podsModule>()),
-  listSessionPods: vi.fn(),
-}))
-vi.mock('#features/sessions/cleanup', () => ({ cleanupSessionDetached: vi.fn() }))
-vi.mock('#features/cluster/project-registry', () => ({ removeProjectRegistry: vi.fn() }))
-
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
-import { cleanupSessionDetached } from '#features/sessions/cleanup'
-import { removeProjectRegistry } from '#features/cluster/project-registry'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { removeProject } from '#features/sessions'
 import { listWorktreeRows, recordWorktreeCreated } from '#features/records/worktree-store'
+import { listProjectRows } from '#features/records/project-store'
 import { closeDb } from '#platform/db/client'
-import { projectDir } from '@yaac/shared/project-paths'
+import { projectDir, projectRoots } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-const mockListPods = vi.mocked(listSessionPods)
-const mockCleanup = vi.mocked(cleanupSessionDetached)
-const mockRemoveRegistry = vi.mocked(removeProjectRegistry)
+/** What the herd was asked to erase, and what the rows looked like when it
+ *  was asked — the ordering across the boundary is half of what this tests. */
+const purged: string[] = []
+let rowsAtPurge: string[] = []
 
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  mockListPods.mockReset().mockResolvedValue([])
-  mockCleanup.mockReset().mockResolvedValue(undefined)
-  mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
+  purged.length = 0
+  rowsAtPurge = []
+  _setHerdForTests({
+    projects: {
+      purge: async (slug: string) => {
+        purged.push(slug)
+        rowsAtPurge = (await listWorktreeRows()).map((r) => r.worktreeId)
+        // Erasing the clone is what the real half does, and it matters here:
+        // the adoption shim would otherwise re-adopt the project from the
+        // directory the moment its row was deleted.
+        for (const root of projectRoots(slug)) {
+          await fs.rm(root, { recursive: true, force: true })
+        }
+      },
+    },
+  })
 })
 
 afterEach(async () => {
+  _resetHerdForTests()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -53,71 +55,51 @@ async function writeProject(slug: string): Promise<void> {
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
 }
 
-function pod(projectSlug: string, sessionId: string): SessionPod {
-  return {
-    jobName: `yaac-${projectSlug}-${sessionId}`,
-    podName: `yaac-${projectSlug}-${sessionId}-abcde`,
-    sessionId,
-    projectSlug,
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {},
-  }
-}
-
 describe('removeProject', () => {
-  it('tears down every live session, drops the registry and rows, then the dir', async () => {
+  it('has the herd erase the bytes, then drops only this project’s rows', async () => {
     await writeProject('demo')
     await writeProject('keeper')
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'a' })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'b' })
     await recordWorktreeCreated({ projectSlug: 'keeper', worktreeId: 'c' })
-    mockListPods.mockResolvedValue([pod('demo', 'a'), pod('demo', 'b')])
 
     await removeProject('demo')
 
-    expect(mockListPods).toHaveBeenCalledWith('demo')
-    expect(mockCleanup.mock.calls.map(([c]) => c)).toEqual([
-      { jobName: 'yaac-demo-a', projectSlug: 'demo', sessionId: 'a' },
-      { jobName: 'yaac-demo-b', projectSlug: 'demo', sessionId: 'b' },
-    ])
-    expect(mockRemoveRegistry).toHaveBeenCalledWith('demo')
-
+    expect(purged).toEqual(['demo'])
+    // The bytes go FIRST: while the project's record exists the project
+    // exists, so a purge that then failed must not leave a clone nothing can
+    // list, remove, or re-add.
+    expect(rowsAtPurge.sort()).toEqual(['a', 'b', 'c'])
     // Only this project's rows go: the deleted listing is row-driven, and
-    // the worktrees they point at went with the dir.
+    // the worktrees they point at went with the bytes.
     expect((await listWorktreeRows()).map((r) => r.worktreeId)).toEqual(['c'])
-    await expect(fs.access(projectDir('demo'))).rejects.toThrow()
-    await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
+    expect((await listProjectRows()).map((p) => p.slug)).toEqual(['keeper'])
   })
 
   it('throws NOT_FOUND for an unknown project, touching nothing', async () => {
     await expect(removeProject('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect(mockListPods).not.toHaveBeenCalled()
-    expect(mockRemoveRegistry).not.toHaveBeenCalled()
+    expect(purged).toEqual([])
   })
 
-  it('still removes the dir when the cluster is unreachable', async () => {
+  // A purge that throws must not take the rows with it: the project is still
+  // there, and `project remove` can be run again.
+  it('keeps the rows when the herd cannot erase the bytes', async () => {
     await writeProject('demo')
-    mockListPods.mockRejectedValue(new Error('connection refused'))
-    mockRemoveRegistry.mockRejectedValue(new Error('connection refused'))
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'a' })
+    _setHerdForTests({
+      projects: { purge: () => Promise.reject(new Error('connection refused')) },
+    })
 
-    await removeProject('demo')
+    await expect(removeProject('demo')).rejects.toThrow('connection refused')
 
-    expect(mockCleanup).not.toHaveBeenCalled()
-    await expect(fs.access(projectDir('demo'))).rejects.toThrow()
+    expect((await listWorktreeRows()).map((r) => r.worktreeId)).toEqual(['a'])
+    expect((await listProjectRows()).map((p) => p.slug)).toEqual(['demo'])
   })
 
-  it('carries on when one session fails to tear down', async () => {
+  it('is idempotent once the rows are gone', async () => {
     await writeProject('demo')
-    mockListPods.mockResolvedValue([pod('demo', 'a'), pod('demo', 'b')])
-    mockCleanup.mockRejectedValueOnce(new Error('exec failed'))
-
     await removeProject('demo')
-
-    expect(mockCleanup).toHaveBeenCalledTimes(2)
-    await expect(fs.access(projectDir('demo'))).rejects.toThrow()
+    await expect(removeProject('demo')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(purged).toEqual(['demo'])
   })
 })

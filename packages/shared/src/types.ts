@@ -6,6 +6,20 @@ export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
+ * Allowed shape for a `--model` override. Deliberately strict: the value is
+ * embedded bare in agent launch commands that travel inside single-quoted
+ * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
+ * whitespace, or shell metacharacters — model ids, aliases, and
+ * `provider/model` paths (`claude-opus-4-8`, `opus`,
+ * `anthropic/claude-opus-4-8`) never need them.
+ *
+ * Here rather than beside the command builder because it is request
+ * vocabulary: the route that accepts a model and the herd that launches with
+ * it both need it, and neither may import the other.
+ */
+export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
+
+/**
  * How yaac drives a conversation, and therefore how the webapp renders it.
  * Orthogonal to `AgentTool`: it selects the *protocol* between the server and
  * the agent, not which agent runs.

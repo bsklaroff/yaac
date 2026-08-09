@@ -3,30 +3,26 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// The session count is a cluster read; faked so the count a case asserts
-// on is the one it set up, whether or not a cluster is reachable.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
-  ...(await importOriginal<typeof podsModule>()),
-  listSessionPods: vi.fn(),
-}))
-
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { projectConfigDir, getProjectsDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '#features/projects'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-const mockListPods = vi.mocked(listSessionPods)
+// The live session count is the herd's answer; stubbed so the count a case
+// asserts on is the one it set up.
+const count = vi.fn<(slug: string) => Promise<number>>()
 
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  mockListPods.mockReset().mockResolvedValue([])
+  count.mockReset().mockResolvedValue(0)
+  _setHerdForTests({ workspaces: { count } })
 })
 
 afterEach(async () => {
+  _resetHerdForTests()
   await cleanupTempDir(tmpDir)
 })
 
@@ -53,7 +49,7 @@ describe('getProjectDetail', () => {
       path.join(projectConfigDir('foo'), 'yaac-config.json'),
       JSON.stringify({ envPassthrough: ['B'] }),
     )
-    mockListPods.mockResolvedValue([{} as SessionPod, {} as SessionPod])
+    count.mockResolvedValue(2)
 
     expect(await getProjectDetail('foo')).toEqual({
       slug: 'foo',
@@ -62,16 +58,17 @@ describe('getProjectDetail', () => {
       sessionCount: 2,
       config: { envPassthrough: ['B'] },
     })
-    expect(mockListPods).toHaveBeenCalledWith('foo')
+    expect(count).toHaveBeenCalledWith('foo')
   })
 
-  it('reports a zero count rather than failing when the cluster is unavailable', async () => {
+  // The herd answers zero for an unreachable substrate rather than throwing
+  // (see test/herd/), so a project still renders with no cluster at all.
+  it('renders with a zero count when the herd has nothing to report', async () => {
     await writeProject('foo', {
       slug: 'foo',
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
-    mockListPods.mockRejectedValue(new Error('connection refused'))
 
     const detail = await getProjectDetail('foo')
     expect(detail.sessionCount).toBe(0)

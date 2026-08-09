@@ -8,7 +8,7 @@ import {
   transcriptLastActiveMs,
   type AgentSessionLink,
 } from '#features/agents'
-import { emitHerdEvent } from '#herd-events'
+import { serverLink } from '#server-link'
 import { captureFirstPrompt } from './prompt-capture'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
@@ -122,7 +122,7 @@ export async function reconcileWorktreeAgentSessions(
       projectSlug,
       jobName,
     )]
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'conversations-discovered', projectSlug, worktreeId, conversations: legacy,
     })
     // Unlike the link-tree branch below, this reports the active set without
@@ -134,7 +134,7 @@ export async function reconcileWorktreeAgentSessions(
     // the set it clobbers is the frozen one a restart reads back. Anything
     // that makes a second conversation reachable here must join against the
     // live set first.
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'conversations-active',
       projectSlug,
       worktreeId,
@@ -143,7 +143,7 @@ export async function reconcileWorktreeAgentSessions(
     return
   }
 
-  await emitHerdEvent({
+  await serverLink().workspaceEvent({
     type: 'conversations-discovered',
     projectSlug,
     worktreeId,
@@ -167,7 +167,7 @@ export async function reconcileWorktreeAgentSessions(
     }))
     .filter((l): l is { tool: AgentTool; agentSessionId: string; paneId: string } =>
       l.paneId !== undefined)
-  await emitHerdEvent({ type: 'conversations-active', projectSlug, worktreeId, active: live })
+  await serverLink().workspaceEvent({ type: 'conversations-active', projectSlug, worktreeId, active: live })
 }
 
 /**
@@ -244,11 +244,11 @@ async function reconcileAcpAgentSessions(
       }),
   )
   if (live.length > 0) {
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'conversations-discovered', projectSlug, worktreeId, conversations: live,
     })
   }
-  await emitHerdEvent({
+  await serverLink().workspaceEvent({
     type: 'conversations-active',
     projectSlug,
     worktreeId,

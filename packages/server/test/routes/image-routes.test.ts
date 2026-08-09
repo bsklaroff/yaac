@@ -1,25 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
 
-// The retry route wires HTTP → retryImageBuild and owns the sidecar rebuild
-// for an infra build. The feature's own forget/re-fire behavior is unit-tested
-// in features/images/image-prewarm.test.ts; mock both leaves here so the route
-// test stays hermetic and doesn't pull in the proxy client's k8s deps.
-vi.mock('#features/images/image-prewarm', () => ({ retryImageBuild: vi.fn() }))
-const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn().mockResolvedValue(undefined) }))
-vi.mock('#features/egress', () => ({ proxyClient: { ensureRunning } }))
-vi.mock('#log', () => ({ serverLog: vi.fn() }))
-
+// Image builds are the herd's, so these routes are pure translation: HTTP in,
+// one herd call out, and a 404 for an id it does not know. The real registry
+// stands behind the stub for the read routes (so a case asserts on entries it
+// registered), and the retry outcome is dictated — what a retry actually does
+// is asserted in test/herd/in-process.test.ts.
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
-import { retryImageBuild } from '#features/images/image-prewarm'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import {
   clearAllImageBuildsForTests,
+  dismissImageBuild,
   failImageBuild,
+  getImageBuildLog,
   ingestImageBuildLine,
+  listImageBuilds,
   registerImageBuild,
 } from '#features/image-engine/image-builds'
 import type { ImageBuildEntry } from '@yaac/shared/types'
+
+const retryImageBuild = vi.fn<(id: string) => Promise<{ retried: boolean; infra: boolean }>>()
 
 // The log route throws NOT_FOUND; only the root app's onError serializes it,
 // so exercise the routes through a wrapper that installs the same handler.
@@ -37,8 +38,22 @@ function register(): string {
 }
 
 describe('image routes', () => {
-  beforeEach(() => { clearAllImageBuildsForTests(); vi.clearAllMocks() })
-  afterEach(() => { clearAllImageBuildsForTests() })
+  beforeEach(() => {
+    clearAllImageBuildsForTests()
+    vi.clearAllMocks()
+    _setHerdForTests({
+      images: {
+        listBuilds: () => Promise.resolve(listImageBuilds()),
+        buildLog: (id) => Promise.resolve(getImageBuildLog(id)),
+        dismissBuild: (id) => { dismissImageBuild(id); return Promise.resolve() },
+        retryBuild: retryImageBuild,
+      },
+    })
+  })
+  afterEach(() => {
+    _resetHerdForTests()
+    clearAllImageBuildsForTests()
+  })
 
   it('GET /builds lists registry entries', async () => {
     const id = register()
@@ -78,29 +93,20 @@ describe('image routes', () => {
     expect(list.map((b) => b.id)).toEqual([id])
   })
 
-  it('POST /builds/:id/retry retries and returns 202', async () => {
-    ensureRunning.mockResolvedValue(undefined)
-    vi.mocked(retryImageBuild).mockReturnValue({ retried: true, infra: false })
-    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
-    expect(res.status).toBe(202)
-    expect(vi.mocked(retryImageBuild)).toHaveBeenCalledWith('build-1')
-    // A project build is re-fired by the feature; the route stays out of it.
-    expect(ensureRunning).not.toHaveBeenCalled()
-  })
-
-  it('POST /builds/:id/retry rebuilds the proxy sidecar for an infra build', async () => {
-    ensureRunning.mockResolvedValue(undefined)
-    vi.mocked(retryImageBuild).mockReturnValue({ retried: true, infra: true })
-    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
-    expect(res.status).toBe(202)
-    expect(ensureRunning).toHaveBeenCalledTimes(1)
+  // 202 either way — whether the rebuild is a project chain or the proxy
+  // sidecar is the herd's business, and the route never learns which.
+  it('POST /builds/:id/retry asks the herd and returns 202', async () => {
+    for (const infra of [false, true]) {
+      retryImageBuild.mockResolvedValue({ retried: true, infra })
+      const res = await app.request('/builds/build-1/retry', { method: 'POST' })
+      expect(res.status).toBe(202)
+      expect(retryImageBuild).toHaveBeenCalledWith('build-1')
+    }
   })
 
   it('POST /builds/:id/retry 404s when there is nothing to retry', async () => {
-    ensureRunning.mockResolvedValue(undefined)
-    vi.mocked(retryImageBuild).mockReturnValue({ retried: false, infra: false })
+    retryImageBuild.mockResolvedValue({ retried: false, infra: false })
     const res = await app.request('/builds/nope/retry', { method: 'POST' })
     expect(res.status).toBe(404)
-    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })

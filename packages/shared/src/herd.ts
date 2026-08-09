@@ -64,6 +64,31 @@ export interface WorkspaceReport {
  */
 export const MAX_PROMPT_LENGTH = 4000
 
+/**
+ * A workspace as the substrate can see it — everything a resolver needs and
+ * nothing the server records. The durable half (a title, a pin, the recorded
+ * creation time, the conversations) never appears here; joining the two is
+ * the server's job.
+ *
+ * Distinct from `WorkspaceReport`, which is what a whole-herd report carries:
+ * this is the answer to "which workspace does this id name", so it names the
+ * runtime handle an exec addresses and says nothing about liveness.
+ */
+export interface WorkspaceHandle {
+  workspaceId: string
+  projectSlug: string
+  /** The runtime's own name for it, which is what an exec addresses. */
+  jobName: string
+  tool: AgentTool
+  running: boolean
+  /** Lowercased runtime phase — `running`, `pending`, `failed`, … */
+  state: string
+  labels: Record<string, string>
+  createdAtMs: number
+  /** A warmed spare, not a user's workspace. */
+  prewarmed: boolean
+}
+
 export interface AgentLiveness {
   handle: string
   status: 'running' | 'waiting'
@@ -83,6 +108,20 @@ export interface DesiredWorkspaces {
   /** `<projectSlug>/<worktreeId>` of workspaces already recorded as stopped —
    *  what tells a teardown yaac issued from one that happened to it. */
   stopped: string[]
+  /**
+   * Workspaces the server is still provisioning, and therefore owns end to
+   * end. Every sweep exempts one regardless of age: a create's Job may not
+   * be applied yet, so no listing can vouch for it, and reaping mid-create
+   * deletes the staged session dir out from under the starting pod.
+   *
+   * Only ones still in flight. A create that has already FAILED is not still
+   * running — its row lingers until the user dismisses it and its own
+   * rollback has torn down whatever it left — so it must shield nothing.
+   *
+   * Delivered rather than looked up: the in-flight set is a server registry
+   * (it drives a sidebar row), and a herd never reads one.
+   */
+  provisioning: string[]
 }
 
 export interface DesiredWorkspace {

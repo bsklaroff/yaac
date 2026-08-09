@@ -110,7 +110,7 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#features/agents'
-import { emitHerdEvent } from '#herd-events'
+import { serverLink } from '#server-link'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
@@ -506,7 +506,7 @@ async function reportCreateFailed(
   sessionId: string,
   options: SessionCreateOptions,
 ): Promise<void> {
-  await emitHerdEvent({
+  await serverLink().workspaceEvent({
     type: 'worktree-create-failed',
     projectSlug,
     worktreeId: sessionId,
@@ -660,7 +660,7 @@ export async function createSession(
   // that runs concurrently with the pod boot, and waiting for it would undo
   // that overlap. It is reported at the end.
   if (!options.prewarm) {
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'worktree-created',
       projectSlug,
       worktreeId: sessionId,
@@ -685,7 +685,7 @@ export async function createSession(
       // a NEW session and silently abandons the history this row exists to
       // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
       // pane exists, so that stays for the registry to fill in.
-      await emitHerdEvent({
+      await serverLink().workspaceEvent({
         type: 'conversations-launched',
         projectSlug,
         worktreeId: sessionId,
@@ -1455,7 +1455,7 @@ export async function createSession(
   if (!options.prewarm) {
     const { upstreamStartPoint } = await worktreeTask
     if (upstreamStartPoint !== undefined) {
-      await emitHerdEvent({
+      await serverLink().workspaceEvent({
         type: 'base-branch-resolved',
         projectSlug,
         worktreeId: sessionId,

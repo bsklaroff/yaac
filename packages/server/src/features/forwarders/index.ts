@@ -16,6 +16,7 @@
 // packages/server/test/features/forwarders/.
 
 export { forwardSessionPort } from './forward-port'
+export { restoreAllSessionForwarders } from './restore'
 export {
   PortDetectorManager,
   dismissSessionPort,

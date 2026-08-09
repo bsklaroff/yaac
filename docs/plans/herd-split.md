@@ -116,13 +116,13 @@ sites perform today. Discrete and past-tense on purpose: this is what the herd
 *found*, applied once to a row, as against `#features/status`, which is the
 continuous "what is this agent doing right now".
 
-The channel itself is `#herd-events` — `emitHerdEvent` for the herd, a sink the
-server registers at startup — a zero-dependency module at the package root for
-the same reason `#notify` is one. The emit is **awaited**, and the sink resolves
-only once the row is written: a listing between the emit and the write would
-show a worktree as neither running nor stopped. Over a link that stays a call.
-An event whose ordering does not matter can be relaxed to a notification later,
-per event and on purpose.
+The channel itself is a zero-dependency module at the package root, for the
+same reason `#notify` is one — it became `#server-link` in step 11, where it
+grew the rest of the herd→server traffic. The report is **awaited**, and the
+server resolves only once the row is written: a listing between the report and
+the write would show a worktree as neither running nor stopped. Over a link
+that stays a call. An event whose ordering does not matter can be relaxed to a
+notification later, per event and on purpose.
 
 Convert one call site to prove the shape: `cleanup.ts`'s
 `recordWorktreeStopped`. Small, self-contained, and it is the mechanism every
@@ -294,29 +294,94 @@ from rows — out of it.
 
 ## Phase 2 — one interface, one channel (steps 10–11)
 
-No process yet. The point is that after this phase, swapping in a remote
+**Landed.** Both exit tests hold: `src/herd/in-process.ts` is the only module
+under `packages/server/src` that imports a herd feature, and no herd module
+imports `#main`, `#routes`, `#http`, `#notify` or `#herd`. `SERVER_SRC` and
+`NO_SERVER` in `eslint.config.js` are what keep it that way.
+
+Still one process. What the phase bought is that swapping in a remote
 implementation touches one file.
 
 ### 10. `HerdClient`
 
-An interface carrying every server→herd call — create/restart/stop/claim,
-observe, changes, branches, resolve-config, open-terminal, open-port, the
-cluster and image entry points — with an in-process implementation that calls
-today's functions. Routes, `#main`, and the reconciler stop importing herd
-features directly; a lint zone makes that permanent.
+`#herd` carries every server→herd call — create/restart/stop/claim, observe,
+changes, branches, resolve-config, open-terminal, open-port, the cluster and
+image entry points — grouped by what it acts on, with an in-process
+implementation that calls today's functions and decides nothing.
+
+Two shapes in it are still in-process-only, and named as such: the
+`onProgress` callbacks a create carries, and the sockets a PTY or ACP attach
+borrows. Both become addressed calls over the multiplex (steps 13–14);
+neither changes the interface's membership.
+
+The lifecycle is the part worth a reviewer's attention. `attach` owns
+everything convergence-owning — informer caches, status watchers, the port
+detector, the cluster bootstrap, the startup GCs — and fires `onAttached`
+when it is really attached, which a nested server defers until first use so
+its born-at-zero vcluster stays asleep. The server starts its reconcile loop
+from that callback rather than from the return, because a loop running
+against a sleeping vcluster is the same mistake as starting the caches.
+
+The reconciler splits the same way. The herd runs its own ordered steps over
+its own view of the substrate; what is left in `#main` is the two steps that
+touch rows, bracketing it — the desired set published before the reaper can
+judge an absence against it, and titles generated after the conversation
+sweep. Title generation therefore runs at the end of a pass rather than in
+the middle of one, which is the only observable behavior change in the phase.
 
 *Exit:* exactly one module imports the herd features.
 
 ### 11. `ServerLink`
 
-The mirror image: the event sink, the report push, and the queued-spawn
-notification become one interface the herd half is constructed with, instead of
-direct imports of `#notify`, the provisioning registry and `applyHerdEvent`.
-`spawn-reconcile` in particular stops calling `createSession` itself — it
-reports the request and the server drives the create, keeping policy (tool
-resolution, fan-out caps) on the server.
+The mirror image, and `#herd-events` grown up: the event sink, the
+change notification and the queued-spawn report become one interface at the
+package root, so the herd half is built against a link rather than against
+`#notify`, the provisioning registry and `applyHerdEvent`.
+
+`spawn-reconcile` stops calling `createSession` itself. It drains the proxy's
+queue and resolves who called from pod labels — the only two things on its
+side of the boundary — and reports; the server validates, applies the tool
+precedence and the fan-out cap, mints the id, registers the sidebar row and
+drives the create. The provisioning registry moves out of the zone with it,
+being a server concept throughout.
+
+One lookup survives in the other direction: `recordedConversations`, which an
+ACP driver needs to re-address a live agent it did not start. It is a row, so
+it is asked for rather than read.
+
+The in-flight set goes the other way. The reaper and the orphan-dir sweep
+both need to know which workspaces the server is still creating — it is the
+only thing standing between them and a create's staged directories — and they
+were reading the provisioning registry directly, which lint cannot see
+because it is a relative import inside the same folder. It rides down on
+`DesiredWorkspaces` instead: one push, one discipline, and nothing to
+re-plumb when the herd is a package that cannot see the registry at all. The
+orphan-dir sweep moves onto the reconcile loop for the same reason — it needs
+a set that only exists once a pass has published one — and self-gates to once
+per herd life, so it is still the startup sweep it always was.
 
 *Exit:* herd code imports nothing from `#main`, `#routes`, `#http`, `#notify`.
+
+### Two behavior changes, declared
+
+Title generation runs at the END of a pass rather than in the middle of one.
+It is still after the conversation sweep, which is the whole reason the
+ordering existed.
+
+`project remove` deletes the bytes before the rows, where it deleted rows
+first. The old order left a failed `fs.rm` with the project vanished and its
+bytes orphaned; the new one leaves it intact, listed, and retryable, and the
+window in between self-heals on the retry. The reversal is deliberate.
+
+### What phase 2 costs
+
+`#herd` joins the server package's existing import cycle rather than
+resolving it, because both halves still live in one package: the join paths
+call down through `#herd`, and its in-process implementation calls back into
+the features they sit above. `pnpm modularity` says so — one more module in
+the tangle, NCCD 5.65 → 5.81. Step 17 is what fixes it: once the herd is
+`packages/herd`, the edge runs one way and pnpm's strict `node_modules`
+enforces it by construction.
 
 ## Phase 3 — make it a process (steps 12–16)
 

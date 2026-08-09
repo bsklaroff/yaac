@@ -29,7 +29,7 @@ import {
 import { applyHerdEvent } from '#features/records/apply-herd-event'
 import { _resetPromptCaptureForTests } from '#features/sessions/prompt-capture'
 import { recordWorktreeCreated } from '#features/records/worktree-store'
-import { onHerdEvent, _resetHerdEventsForTests } from '#herd-events'
+import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
 import { listSessionPods } from '#platform/k8s/pods'
 import { sessionExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
@@ -60,12 +60,12 @@ describe('reconcileWorktreeAgentSessions', () => {
     tmpDir = await createTempDataDir()
     _resetSessionStatusStoreForTests()
     _resetPromptCaptureForTests()
-    onHerdEvent(applyHerdEvent)
+    _setServerLinkForTests({ workspaceEvent: applyHerdEvent })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
   })
 
   afterEach(async () => {
-    _resetHerdEventsForTests()
+    _resetServerLinkForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
     vi.restoreAllMocks()

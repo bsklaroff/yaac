@@ -13,15 +13,15 @@ import { serverLog } from '#log'
 import type { HerdEvent, WorktreeCreateFailed, WorktreeCreated } from '@yaac/shared/herd'
 
 /**
- * The server's end of `#herd-events`: persist what a herd reported.
+ * The server's end of a herd's reports (`ServerLink.workspaceEvent`):
+ * persist what one found.
  *
  * Nothing but row writes belongs here. A herd reports what it *found*, and
  * the decision of which table that lands in is the server's alone — which is
  * what lets the same event arrive from a herd in another process without a
  * single call site changing.
  *
- * Registered as the sink in `runServer`. It lives beside the row stores for
- * now and moves out with them when they leave `#features/sessions`.
+ * Wired into the link `runServer` installs (`#main/link`).
  */
 export async function applyHerdEvent(event: HerdEvent): Promise<void> {
   switch (event.type) {

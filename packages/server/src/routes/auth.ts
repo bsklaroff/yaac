@@ -2,9 +2,8 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { authAgentHub, clearAuth, listAuth, requestPlanUsageRefresh } from '#features/auth'
-import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#features/projects'
+import { herd } from '#herd'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
-import { proxyClient } from '#features/egress'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
 const httpsCredentialSchema = z.object({
@@ -52,7 +51,7 @@ export const authApp = new Hono()
       // De-dupe so `auth fake github github` seeds once; order is irrelevant
       // (each seed is independent).
       for (const kind of new Set(kinds)) {
-        await seedFakeAuth(kind)
+        await herd().credentials.seedFakeAuth(kind)
       }
       return c.body(null, 204)
     },
@@ -61,35 +60,15 @@ export const authApp = new Hono()
     '/git/credentials',
     zv('json', credentialSchema),
     async (c) => {
-      const entry = c.req.valid('json')
-      await addEntry(entry)
-      // SSH entries are useless without the proxy's ssh-agent knowing about
-      // the key. Sync immediately so a running proxy picks the change up
-      // without needing a restart. Failure to sync is non-fatal — the server
-      // will retry on next ensureRunning().
-      if (entry.kind === 'ssh') {
-        try {
-          await proxyClient.syncSshKeysFromCredentials()
-        } catch (err) {
-          console.warn(
-            '[auth] Saved SSH credential but failed to push to proxy ssh-agent: '
-            + (err instanceof Error ? err.message : String(err)),
-          )
-        }
-      }
+      // Credentials are files on the herd's disk, and re-syncing the proxy's
+      // ssh-agent rides along there — a key the agent has not been told about
+      // is one no clone can use.
+      await herd().credentials.add(c.req.valid('json'))
       return c.body(null, 204)
     },
   )
   .delete('/git/credentials/:pattern', async (c) => {
-    const pattern = decodeURIComponent(c.req.param('pattern'))
-    await removeEntryChecked(pattern)
-    // Removing any entry may leave a stale identity in the agent. Clear-and-
-    // reload the agent's full set.
-    try {
-      await proxyClient.syncSshKeysFromCredentials()
-    } catch {
-      // non-fatal — server will retry on next ensureRunning()
-    }
+    await herd().credentials.removeChecked(decodeURIComponent(c.req.param('pattern')))
     return c.body(null, 204)
   })
   .put(
@@ -98,13 +77,7 @@ export const authApp = new Hono()
       credentials: z.array(credentialSchema),
     })),
     async (c) => {
-      const { credentials } = c.req.valid('json')
-      await replaceEntries(credentials)
-      try {
-        await proxyClient.syncSshKeysFromCredentials()
-      } catch {
-        // non-fatal
-      }
+      await herd().credentials.replace(c.req.valid('json').credentials)
       return c.body(null, 204)
     },
   )

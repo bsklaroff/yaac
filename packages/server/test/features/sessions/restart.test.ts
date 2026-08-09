@@ -1,50 +1,36 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listSessionPods: vi.fn(),
-  }
-})
-
-vi.mock('#features/sessions/cleanup', () => ({
-  cleanupSession: vi.fn().mockResolvedValue(undefined),
-}))
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#features/records/worktree-store', () => ({
   clearWorktreeStopped: vi.fn().mockResolvedValue(undefined),
   findWorktreeRow: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#features/sessions/create', () => ({
-  createSession: vi.fn(),
-}))
-
 import { restartWorktree } from '#features/sessions/restart'
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
-import { cleanupSession } from '#features/sessions/cleanup'
+import { _resetHerdForTests, _setHerdForTests, type WorkspaceHandle } from '#herd'
 import { clearWorktreeStopped } from '#features/records/worktree-store'
-import { createSession, type SessionCreateResult } from '#features/sessions/create'
+import type { SessionCreateResult } from '#features/sessions/create'
 
-const mockListPods = vi.mocked(listSessionPods)
-const mockCleanup = vi.mocked(cleanupSession)
+// A restart is three herd calls bracketing two row reads, and the ORDER is
+// what this file pins: resolve, tear the old runtime down, create against
+// the same id, and only then clear the stop record.
+const mockFind = vi.fn<(idOrName: string) => Promise<WorkspaceHandle | undefined>>()
+const mockTeardown = vi.fn<
+  (t: { jobName: string | null; projectSlug: string; workspaceId: string }) => Promise<void>
+>()
+const mockCreate = vi.fn<(slug: string, opts: unknown) => Promise<SessionCreateResult>>()
 const mockClearDeleted = vi.mocked(clearWorktreeStopped)
-const mockCreate = vi.mocked(createSession)
 
-function pod(sessionId: string): SessionPod {
+function handle(workspaceId: string): WorkspaceHandle {
   return {
-    jobName: `yaac-proj-${sessionId}`,
-    podName: `yaac-proj-${sessionId}-x1`,
-    sessionId,
+    workspaceId,
     projectSlug: 'proj',
+    jobName: `yaac-proj-${workspaceId}`,
     tool: 'claude',
-    phase: 'Running',
     running: true,
-    terminating: false,
-    createdAtMs: 0,
+    state: 'running',
     labels: {},
+    createdAtMs: 0,
+    prewarmed: false,
   }
 }
 
@@ -58,17 +44,24 @@ const CREATED: SessionCreateResult = {
 
 describe('restartWorktree', () => {
   beforeEach(() => {
-    mockListPods.mockReset().mockResolvedValue([pod('sid-1')])
-    mockCleanup.mockClear()
-    mockClearDeleted.mockClear()
+    mockFind.mockReset().mockResolvedValue(handle('sid-1'))
+    mockTeardown.mockReset().mockResolvedValue(undefined)
     mockCreate.mockReset().mockResolvedValue(CREATED)
+    mockClearDeleted.mockClear()
+    _setHerdForTests({
+      workspaces: { find: mockFind, teardownForRestart: mockTeardown, create: mockCreate },
+    })
+  })
+
+  afterEach(() => {
+    _resetHerdForTests()
   })
 
   it('tears down the old Job, resumes, and clears the deletion record', async () => {
     const result = await restartWorktree('sid-1')
     expect(result).toEqual(CREATED)
-    expect(mockCleanup).toHaveBeenCalledWith({
-      jobName: 'yaac-proj-sid-1', projectSlug: 'proj', sessionId: 'sid-1',
+    expect(mockTeardown).toHaveBeenCalledWith({
+      jobName: 'yaac-proj-sid-1', projectSlug: 'proj', workspaceId: 'sid-1',
     })
     expect(mockCreate).toHaveBeenCalledWith('proj', expect.objectContaining({
       resume: true, sessionId: 'sid-1', tool: 'claude',
@@ -88,7 +81,7 @@ describe('restartWorktree', () => {
     // resolveRestartTarget falls back to the recorded row; with no pods and
     // no row this throws NOT_FOUND — covered here only to pin that the
     // record is untouched when resolution fails.
-    mockListPods.mockResolvedValue([])
+    mockFind.mockResolvedValue(undefined)
     await expect(restartWorktree('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockClearDeleted).not.toHaveBeenCalled()
   })

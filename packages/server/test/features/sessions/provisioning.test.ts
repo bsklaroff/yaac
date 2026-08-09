@@ -11,6 +11,7 @@ import {
   removeProvisioning,
   runProvisioned,
   listProvisioning,
+  inFlightWorktreeIds,
   clearAllProvisioningForTests,
 } from '#features/sessions/provisioning'
 import { notifySessionListChanged } from '#notify'
@@ -144,5 +145,30 @@ describe('no cap', () => {
   it('keeps every tracked entry (no eviction)', () => {
     for (let i = 0; i < 60; i++) register(`s${i}`)
     expect(listProvisioning()).toHaveLength(60)
+  })
+})
+
+describe('inFlightWorktreeIds', () => {
+  it('reports every entry the server is still provisioning', () => {
+    registerProvisioning({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'b', projectSlug: 'p', tool: 'claude', kind: 'restart' })
+    expect(inFlightWorktreeIds().sort()).toEqual(['a', 'b'])
+  })
+
+  // THE reason this is a function and not `listProvisioning().map(…)`: the
+  // set is what stops a sweep reaping mid-create, and a failed create's row
+  // lingers with no TTL until the user dismisses it. Shielding on that row
+  // would make one failed create protect its leftovers forever.
+  it('drops a failed entry, which is not still running', () => {
+    registerProvisioning({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ worktreeId: 'gone', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    failProvisioning('gone', 'image build exploded')
+    expect(inFlightWorktreeIds()).toEqual(['a'])
+    // The row itself survives for the user to dismiss.
+    expect(listProvisioning().map((e) => e.worktreeId).sort()).toEqual(['a', 'gone'])
+  })
+
+  it('is empty with nothing provisioning', () => {
+    expect(inFlightWorktreeIds()).toEqual([])
   })
 })

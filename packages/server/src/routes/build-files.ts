@@ -1,13 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import {
-  deleteBuildFile,
-  listBuildFiles,
-  readBuildFile,
-  renameBuildFile,
-  writeBuildFile,
-} from '#features/projects'
+import { herd } from '#herd'
 
 /**
  * Routes over one build dir's support files, mounted twice: under
@@ -23,12 +17,12 @@ import {
  */
 export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
   return new Hono()
-    .get('/', async (c) => c.json({ files: await listBuildFiles(await resolveRoot(c)) }))
+    .get('/', async (c) => c.json({ files: await herd().projects.listBuildFiles(await resolveRoot(c)) }))
     .get(
       '/file',
       zv('query', z.object({ path: z.string().min(1) })),
       async (c) =>
-        c.json(await readBuildFile(await resolveRoot(c), c.req.valid('query').path)),
+        c.json(await herd().projects.readBuildFile(await resolveRoot(c), c.req.valid('query').path)),
     )
     .put(
       '/file',
@@ -45,7 +39,7 @@ export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
         const data = content !== undefined
           ? Buffer.from(content, 'utf8')
           : Buffer.from(contentBase64!, 'base64')
-        return c.json(await writeBuildFile(await resolveRoot(c), rel, data))
+        return c.json(await herd().projects.writeBuildFile(await resolveRoot(c), rel, data))
       },
     )
     .post(
@@ -53,14 +47,14 @@ export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
       zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
       async (c) => {
         const { from, to } = c.req.valid('json')
-        return c.json(await renameBuildFile(await resolveRoot(c), from, to))
+        return c.json(await herd().projects.renameBuildFile(await resolveRoot(c), from, to))
       },
     )
     .delete(
       '/file',
       zv('query', z.object({ path: z.string().min(1) })),
       async (c) => {
-        await deleteBuildFile(await resolveRoot(c), c.req.valid('query').path)
+        await herd().projects.deleteBuildFile(await resolveRoot(c), c.req.valid('query').path)
         return c.body(null, 204)
       },
     )

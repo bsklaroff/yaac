@@ -1,6 +1,6 @@
 import { listActiveSessions, listProvisioning } from '#features/sessions'
 import { listProjects } from '#features/projects'
-import { listImageBuilds } from '#features/image-engine'
+import { herd } from '#herd'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -17,11 +17,12 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  const [active, projects, planUsage, codexPlanUsage] = await Promise.all([
+  const [active, projects, planUsage, codexPlanUsage, imageBuilds] = await Promise.all([
     listActiveSessions(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
+    herd().images.listBuilds(),
   ])
   // A worktree with a provisioning entry is mid-create/mid-restart (or
   // failed, awaiting dismissal) — the row, not the worktree, is what clients
@@ -39,7 +40,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     projects,
     provisioning,
     gitAuthFailures: active.gitAuthFailures,
-    imageBuilds: listImageBuilds(),
+    imageBuilds,
     planUsage,
     codexPlanUsage,
     forwardBindHost: env.forwardBind,

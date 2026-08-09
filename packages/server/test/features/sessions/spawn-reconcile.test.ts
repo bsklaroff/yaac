@@ -1,15 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { listProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
+import type { SpawnDecision, SpawnRequest } from '#server-link'
 import type { PendingSpawn, SpawnResultWire } from '#features/egress/proxy-client'
 import type { SessionPod } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import type { SessionCreateOptions, SessionCreateResult } from '#features/sessions/create'
-import {
-  SPAWN_MAX_IN_FLIGHT_PER_SESSION,
-  SPAWN_MAX_PROMPT_CHARS,
-  handleSpawnRequest,
-  reconcileSpawnRequests,
-} from '#features/sessions/spawn-reconcile'
+import { reconcileSpawnRequests } from '#features/sessions/spawn-reconcile'
 
 function makePod(over: Partial<SessionPod> = {}): SessionPod {
   return {
@@ -36,225 +31,96 @@ function makeReq(over: Partial<PendingSpawn> = {}): PendingSpawn {
   }
 }
 
-type CreateSessionFn = (slug: string, opts: SessionCreateOptions) => Promise<SessionCreateResult>
-
-/** Deps resolving the caller pod with a controllable createSession. */
-function makeDeps(over: Parameters<typeof handleSpawnRequest>[1] = {}): {
-  deps: NonNullable<Parameters<typeof handleSpawnRequest>[1]>
-  createSessionFn: ReturnType<typeof vi.fn<CreateSessionFn>>
-} {
-  const createSessionFn = vi.fn<CreateSessionFn>().mockResolvedValue({
-    worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-  } as SessionCreateResult)
-  return {
-    deps: {
-      listSessionPodsFn: () => Promise.resolve([makePod()]),
-      defaultTool: undefined,
-      createSessionFn,
-      ...over,
-    },
-    createSessionFn,
-  }
-}
-
-/** Let detached createSession .then/.finally chains settle. */
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+/** The reports the herd made, and what the server answered. Nothing about a
+ *  spawn's MEANING is decided on this side, so the link is the whole of what
+ *  these tests assert against. */
+const reports: SpawnRequest[] = []
+let answer: SpawnDecision = { ok: true, workspaceId: 'minted-id' }
 
 beforeEach(() => {
-  clearAllProvisioningForTests()
+  reports.length = 0
+  answer = { ok: true, workspaceId: 'minted-id' }
+  _setServerLinkForTests({
+    spawnRequested: (request) => {
+      reports.push(request)
+      return Promise.resolve(answer)
+    },
+  })
 })
 
-describe('handleSpawnRequest', () => {
-  it('spawns in the caller project with the minted id and returns ok', async () => {
-    const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
-    const result = await handleSpawnRequest(makeReq(), deps)
+afterEach(() => {
+  _resetServerLinkForTests()
+})
+
+/** Drain exactly one request and hand back what was posted for it. The
+ *  per-request path has no barrel entry of its own — a drain is the only way
+ *  in, which is also the only way the proxy reaches it. */
+async function drainOne(
+  req: PendingSpawn,
+  pods: () => Promise<SessionPod[]>,
+): Promise<SpawnResultWire> {
+  const posted: SpawnResultWire[][] = []
+  await reconcileSpawnRequests({
+    listSessionPodsFn: pods,
+    attachIfRunningFn: () => Promise.resolve(true),
+    fetchPendingFn: () => Promise.resolve([req]),
+    postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
+  })
+  return posted[0][0]
+}
+
+describe('reconcileSpawnRequests', () => {
+  it('reports the caller resolved from its pod and relays the minted id', async () => {
+    const result = await drainOne(makeReq(), () => Promise.resolve([makePod()]))
     expect(result).toEqual({ requestId: 'req-1', ok: true, sessionId: 'minted-id' })
-    expect(createSessionFn).toHaveBeenCalledWith('proj', {
-      tool: 'codex', // the caller's own tool, absent an explicit request
-      initialPrompt: 'write the report',
-      sessionId: 'minted-id',
-      onProgress: expect.any(Function) as (message: string) => void,
-    })
-    await settle()
+    expect(reports).toEqual([{
+      requestId: 'req-1',
+      callerWorkspaceId: 'caller-session',
+      callerProjectSlug: 'proj',
+      callerTool: 'codex',
+      prompt: 'write the report',
+    }])
   })
 
-  it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
-    let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
-    const { deps } = makeDeps({
-      mintIdFn: () => 'minted-id',
-      createSessionFn: vi.fn().mockImplementation((_slug, opts: SessionCreateOptions) => {
-        opts.onProgress?.('Creating job...')
-        rowDuringCreate = listProvisioning().find((p) => p.worktreeId === 'minted-id')
-        return Promise.resolve({ worktreeId: 'minted-id', jobName: 'j', forwardedPorts: [], tool: 'codex' })
-      }),
-    })
-    expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
-    expect(rowDuringCreate).toMatchObject({
-      worktreeId: 'minted-id',
-      projectSlug: 'proj',
-      tool: 'codex',
-      kind: 'create',
-      message: 'Creating job...',
-    })
-    await settle()
-    expect(listProvisioning()).toEqual([])
-  })
-
-  it('keeps a failed row (dismissable) when the detached create rejects', async () => {
-    const { deps } = makeDeps({
-      mintIdFn: () => 'minted-id',
-      createSessionFn: vi.fn().mockRejectedValue(new Error('image build exploded')),
-    })
-    expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
-    await settle()
-    expect(listProvisioning()[0]).toMatchObject({
-      worktreeId: 'minted-id',
-      error: 'image build exploded',
-    })
-  })
-
-  it('prefers an explicitly requested tool over the caller tool', async () => {
-    const { deps, createSessionFn } = makeDeps()
-    const result = await handleSpawnRequest(makeReq({ tool: 'opencode' }), deps)
-    expect(result.ok).toBe(true)
-    expect(createSessionFn.mock.calls[0][1].tool).toBe('opencode')
-    await settle()
-  })
-
-  it('falls back to the configured default, then claude, for an unknown caller tool', async () => {
-    const withDefault = makeDeps({
-      listSessionPodsFn: () => Promise.resolve([makePod({ tool: 'bogus' })]),
-      defaultTool: 'pi' as const,
-    })
-    const r1 = await handleSpawnRequest(makeReq(), withDefault.deps)
-    expect(r1.ok).toBe(true)
-    expect(withDefault.createSessionFn.mock.calls[0][1].tool).toBe('pi')
-
-    const noDefault = makeDeps({
-      listSessionPodsFn: () => Promise.resolve([makePod({ tool: 'bogus' })]),
-    })
-    const r2 = await handleSpawnRequest(makeReq(), noDefault.deps)
-    expect(r2.ok).toBe(true)
-    expect(noDefault.createSessionFn.mock.calls[0][1].tool).toBe('claude')
-    await settle()
-  })
-
-  it('threads a model override into the create', async () => {
-    const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
-    const result = await handleSpawnRequest(
-      makeReq({ tool: 'claude', model: 'claude-opus-4-8' }), deps,
+  it('passes an explicit tool and model through without judging them', async () => {
+    await drainOne(
+      makeReq({ tool: 'not-a-tool', model: "opus'; rm -rf /" }),
+      () => Promise.resolve([makePod()]),
     )
-    expect(result.ok).toBe(true)
-    expect(createSessionFn).toHaveBeenCalledWith('proj', {
-      tool: 'claude',
-      initialPrompt: 'write the report',
-      sessionId: 'minted-id',
-      model: 'claude-opus-4-8',
-      onProgress: expect.any(Function) as (message: string) => void,
+    expect(reports[0]).toMatchObject({ tool: 'not-a-tool', model: "opus'; rm -rf /" })
+  })
+
+  // A label that is not a tool yaac knows says nothing about what the spawned
+  // workspace should run, and reporting a guess would outrank the server's
+  // own configured default.
+  it('omits the caller tool when the pod is labelled with something else', async () => {
+    await drainOne(makeReq(), () => Promise.resolve([makePod({ tool: 'bogus' })]))
+    expect(reports[0].callerTool).toBeUndefined()
+  })
+
+  it('relays the server’s refusal back to the proxy', async () => {
+    answer = { ok: false, error: 'too many concurrent spawns' }
+    const result = await drainOne(makeReq(), () => Promise.resolve([makePod()]))
+    expect(result).toEqual({
+      requestId: 'req-1', ok: false, error: 'too many concurrent spawns',
     })
-    await settle()
   })
 
-  it('threads a provider/model override for a non-claude tool', async () => {
-    // No explicit tool: resolves to the caller's own tool (codex).
-    const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
-    const result = await handleSpawnRequest(
-      makeReq({ model: 'openai/gpt-5.2' }), deps,
-    )
-    expect(result.ok).toBe(true)
-    expect(createSessionFn.mock.calls[0][1]).toMatchObject({
-      tool: 'codex',
-      model: 'openai/gpt-5.2',
-    })
-    await settle()
-  })
-
-  it('rejects a malformed model without creating', async () => {
-    const { deps, createSessionFn } = makeDeps()
-    const result = await handleSpawnRequest(
-      makeReq({ tool: 'claude', model: "opus'; rm -rf /" }), deps,
-    )
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain('invalid model')
-    expect(createSessionFn).not.toHaveBeenCalled()
-  })
-
-  it('rejects an invalid requested tool without creating', async () => {
-    const { deps, createSessionFn } = makeDeps()
-    const result = await handleSpawnRequest(makeReq({ tool: 'not-a-tool' }), deps)
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain('not-a-tool')
-    expect(createSessionFn).not.toHaveBeenCalled()
-  })
-
-  it('rejects empty and oversize prompts', async () => {
-    const { deps, createSessionFn } = makeDeps()
-    expect((await handleSpawnRequest(makeReq({ prompt: '  ' }), deps)).ok).toBe(false)
-    const over = makeReq({ prompt: 'x'.repeat(SPAWN_MAX_PROMPT_CHARS + 1) })
-    expect((await handleSpawnRequest(over, deps)).ok).toBe(false)
-    expect(createSessionFn).not.toHaveBeenCalled()
-  })
-
-  it('rejects a caller with no live session pod', async () => {
-    const { deps, createSessionFn } = makeDeps({
-      listSessionPodsFn: () => Promise.resolve([]),
-    })
-    const result = await handleSpawnRequest(makeReq(), deps)
+  // The one judgement this side makes, and it is a substrate one: a request
+  // from a session no pod matches cannot be attributed to a project.
+  it('rejects a caller with no live session pod, without reporting it', async () => {
+    const result = await drainOne(makeReq(), () => Promise.resolve([]))
     expect(result).toEqual({ requestId: 'req-1', ok: false, error: 'calling session not found' })
-    expect(createSessionFn).not.toHaveBeenCalled()
+    expect(reports).toEqual([])
   })
 
   it('fails soft when pod listing throws', async () => {
-    const { deps } = makeDeps({
-      listSessionPodsFn: () => Promise.reject(new Error('apiserver down')),
-    })
-    const result = await handleSpawnRequest(makeReq(), deps)
+    const result = await drainOne(makeReq(), () => Promise.reject(new Error('apiserver down')))
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('apiserver down')
+    expect(result.ok ? '' : result.error).toContain('apiserver down')
+    expect(reports).toEqual([])
   })
 
-  it('caps concurrent in-flight creates per caller and releases on settle', async () => {
-    // Use a dedicated caller id so leakage between tests is impossible.
-    const sessionId = 'guarded-caller'
-    let release!: () => void
-    const gate = new Promise<void>((r) => { release = r })
-    const { deps } = makeDeps({
-      listSessionPodsFn: () => Promise.resolve([makePod({ sessionId })]),
-      createSessionFn: vi.fn().mockImplementation(async () => {
-        await gate
-        return { worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude' }
-      }),
-    })
-    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {
-      expect((await handleSpawnRequest(makeReq({ sessionId, requestId: `r${i}` }), deps)).ok).toBe(true)
-    }
-    const over = await handleSpawnRequest(makeReq({ sessionId, requestId: 'r-over' }), deps)
-    expect(over.ok).toBe(false)
-    expect(over.error).toContain('too many concurrent spawns')
-
-    release()
-    await settle()
-    expect((await handleSpawnRequest(makeReq({ sessionId, requestId: 'r-after' }), deps)).ok).toBe(true)
-    await settle()
-  })
-
-  it('releases the guard and stays ok when the detached create rejects', async () => {
-    const sessionId = 'failing-caller'
-    const { deps } = makeDeps({
-      listSessionPodsFn: () => Promise.resolve([makePod({ sessionId })]),
-      createSessionFn: vi.fn().mockRejectedValue(new Error('provision failed')),
-    })
-    // ok:true — the fire is already acked; the failure is a lost fire.
-    expect((await handleSpawnRequest(makeReq({ sessionId }), deps)).ok).toBe(true)
-    await settle()
-    for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {
-      expect((await handleSpawnRequest(makeReq({ sessionId, requestId: `r${i}` }), deps)).ok).toBe(true)
-      await settle()
-    }
-  })
-})
-
-describe('reconcileSpawnRequests', () => {
   it('does nothing when the proxy is not attachable', async () => {
     const fetchPendingFn = vi.fn()
     await reconcileSpawnRequests({
@@ -264,11 +130,10 @@ describe('reconcileSpawnRequests', () => {
     expect(fetchPendingFn).not.toHaveBeenCalled()
   })
 
-  it('drains, handles, and posts one result per request', async () => {
+  it('drains, reports, and posts one result per request', async () => {
     const posted: SpawnResultWire[][] = []
-    const { deps } = makeDeps({ mintIdFn: () => 'minted-id' })
     await reconcileSpawnRequests({
-      ...deps,
+      listSessionPodsFn: () => Promise.resolve([makePod()]),
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a' }),
@@ -281,14 +146,12 @@ describe('reconcileSpawnRequests', () => {
       { requestId: 'a', ok: true, sessionId: 'minted-id' },
       { requestId: 'b', ok: false, error: 'calling session not found' },
     ])
-    await settle()
   })
 
   it('lists session pods once per drain, not once per request', async () => {
     const listSessionPodsFn = vi.fn(() => Promise.resolve([makePod()]))
-    const { deps } = makeDeps({ listSessionPodsFn, mintIdFn: () => 'minted-id' })
     await reconcileSpawnRequests({
-      ...deps,
+      listSessionPodsFn,
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a', sessionId: 'nobody-1' }),
@@ -298,25 +161,20 @@ describe('reconcileSpawnRequests', () => {
       postResultsFn: () => Promise.resolve(),
     })
     expect(listSessionPodsFn).toHaveBeenCalledTimes(1)
-    await settle()
   })
 
   it('resolves callers from the tick snapshot when one is given', async () => {
     const pods = vi.fn(() => Promise.resolve([makePod()]))
     const posted: SpawnResultWire[][] = []
-    const { deps } = makeDeps({ mintIdFn: () => 'minted-id' })
     await reconcileSpawnRequests({
-      ...deps,
-      // Snapshot wins over the module-level kubectl list; makeDeps' stub is
-      // dropped so a leaked direct listing would fail the caller lookup.
-      listSessionPodsFn: undefined,
+      // No listSessionPodsFn: the snapshot wins over the module-level list,
+      // so a leaked direct listing would fail the caller lookup.
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
       postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
     }, { resync: true, pods } as unknown as TickSnapshot)
     expect(pods).toHaveBeenCalledTimes(1)
     expect(posted[0].every((r) => r.ok)).toBe(true)
-    await settle()
   })
 
   it('skips the post when nothing is pending', async () => {

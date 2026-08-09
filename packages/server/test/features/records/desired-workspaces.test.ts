@@ -4,8 +4,10 @@ import { closeDb } from '#platform/db/client'
 import { pushDesiredWorkspaces } from '#features/records/desired-workspaces'
 import {
   desiredWorkspaces,
+  publishDesiredWorkspaces,
   _resetDesiredWorkspacesForTests,
 } from '#herd-desired'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
@@ -17,10 +19,18 @@ describe('pushDesiredWorkspaces', () => {
 
   beforeEach(async () => {
     _resetDesiredWorkspacesForTests()
+    // The real herd-side store behind the boundary: this step's whole job is
+    // to hand the rows down, so what a herd would then read is the assertion.
+    _setHerdForTests({
+      workspaces: {
+        publishDesired: (d) => Promise.resolve(publishDesiredWorkspaces(d)),
+      },
+    })
     tmpDir = await createTempDataDir()
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -30,7 +40,7 @@ describe('pushDesiredWorkspaces', () => {
     await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'gone-1' })
     await recordWorktreeStopped('proj', 'gone-1')
 
-    await pushDesiredWorkspaces()
+    await pushDesiredWorkspaces([])
 
     const desired = desiredWorkspaces()
     expect(desired?.live.map((w) => w.worktreeId)).toEqual(['live-1'])
@@ -52,7 +62,7 @@ describe('pushDesiredWorkspaces', () => {
       { tool: 'claude', agentSessionId: 'conv-b' },
     ])
 
-    await pushDesiredWorkspaces()
+    await pushDesiredWorkspaces([])
 
     expect(desiredWorkspaces()?.live.map((w) => [w.worktreeId, w.ran]))
       .toEqual([['wt-1', true], ['wt-2', false]])
@@ -62,10 +72,10 @@ describe('pushDesiredWorkspaces', () => {
   // that reconnects learn the truth in one push.
   it('replaces the previous set', async () => {
     await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-1' })
-    await pushDesiredWorkspaces()
+    await pushDesiredWorkspaces([])
     await recordWorktreeStopped('proj', 'wt-1')
 
-    await pushDesiredWorkspaces()
+    await pushDesiredWorkspaces([])
 
     expect(desiredWorkspaces()?.live).toEqual([])
   })

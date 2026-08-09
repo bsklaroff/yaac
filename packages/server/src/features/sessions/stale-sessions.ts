@@ -6,9 +6,8 @@ import {
   probeTmuxLiveness,
 } from '#features/status'
 import { cleanupSessionDetached } from './cleanup'
-import { desiredWorkspaces } from '#herd-desired'
-import { emitHerdEvent } from '#herd-events'
-import { listProvisioning } from './provisioning'
+import { desiredWorkspaces, desiredWorkspacesGeneration } from '#herd-desired'
+import { serverLink } from '#server-link'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleSessionInfo } from '@yaac/shared/types'
@@ -33,12 +32,43 @@ export function _clearMissingPodTimersForTests(): void {
 }
 
 /**
+ * The publish this reaper last ran against. Every pass publishes a desired
+ * set before the reaper runs, so an unchanged generation means THIS pass's
+ * publish did not land — and an exemption set that is even one pass stale
+ * can miss a create started since, which is the one thing standing between
+ * these sweeps and a workspace being built right now.
+ *
+ * 0 is also "nothing has ever been published", so a herd that has been told
+ * nothing reaps nothing — herd-desired's own rule, applied to all of the
+ * reaper rather than to the half of it that reads the set.
+ */
+let reapedGeneration = 0
+
+/** Test helper: forget which publish was last reaped against. */
+export function _resetStaleReaperForTests(): void {
+  reapedGeneration = 0
+}
+
+/**
  * Tear down stale session Jobs (pod stopped, or running with a dead
  * tmux session) across every project. Swallows individual failures so
  * one broken session can't block the rest; designed to be called from
  * the server reconciler.
  */
 export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<void> {
+  // What the server says exists, for THIS pass. An unchanged generation
+  // means this pass's publish did not land — a herd that has been told
+  // nothing reaps nothing, and one told something stale is no better here:
+  // an exemption set one pass old can miss a create started since, and that
+  // set is the only thing between these sweeps and a workspace being built
+  // right now. Costs nothing in normal operation, since the publish step
+  // precedes this one in every pass that triggers either of them.
+  const generation = desiredWorkspacesGeneration()
+  if (generation === reapedGeneration) return
+  const desired = desiredWorkspaces()
+  if (desired === undefined) return
+  reapedGeneration = generation
+
   let pods
   try {
     pods = await (snapshot ? snapshot.pods() : listSessionPods())
@@ -47,25 +77,18 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  // What the server says exists. `undefined` means it has never said — so the
-  // two sweeps that need it stand down rather than guessing, which is the
-  // only safe direction: an empty set would condemn everything at once.
-  const desired = desiredWorkspaces()
   const { running, stale: staleAll, indeterminate, terminating } =
     await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
 
-  // Sessions this process is still creating. A create owns its pod's whole
-  // lifecycle, so every sweep below exempts one regardless of age: the grace
-  // window alone bounds nothing on a host where the image pull or the
-  // hostPath mounts outlast it, and reaping mid-create deletes the staged
-  // session dir out from under the starting pod — after which its Job can
-  // never mount and create fails on every retry. A create that has already
-  // failed is not still running: its row lingers (no TTL) until the user
-  // dismisses it, and its own rollback has torn down whatever it left, so
-  // that row must not shield anything from the reaper.
-  const provisioningIds = new Set(
-    listProvisioning().filter((p) => p.error === undefined).map((p) => p.worktreeId),
-  )
+  // Workspaces the server is still creating, delivered with the desired set
+  // (which failed creates it excludes is decided there). A create owns its
+  // pod's whole lifecycle, so every sweep below exempts one regardless of
+  // age: the grace window alone bounds nothing on a host where the image
+  // pull or the hostPath mounts outlast it, and reaping mid-create deletes
+  // the staged session dir out from under the starting pod — after which its
+  // Job can never mount and create fails on every retry.
+  //
+  const provisioningIds = new Set(desired.provisioning)
 
   // A pod that has not reached Running yet — pulling its image, mounting its
   // hostPaths — reads as stopped to the classifier, which derives
@@ -157,18 +180,10 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   const ourStuck: typeof stuckTerminating = []
   const externalStuck: typeof stuckTerminating = []
   if (stuckTerminating.length > 0) {
-    // With no published set this split cannot be made, and the safe side is
-    // OURS: `externalStuck` restamps the cause as "deleted out-of-band", which
-    // would overwrite a plain user delete or an earlier reaped death. Resuming
-    // the teardown while preserving whatever is recorded loses nothing — the
-    // delete is idempotent — so silence means preserve, not reclassify.
-    if (desired === undefined) ourStuck.push(...stuckTerminating)
-    else {
-      const recorded = new Set(desired.stopped)
-      for (const t of stuckTerminating) {
-        if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
-        else externalStuck.push(t)
-      }
+    const recorded = new Set(desired.stopped)
+    for (const t of stuckTerminating) {
+      if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
+      else externalStuck.push(t)
     }
   }
 
@@ -187,7 +202,7 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // makes one bad listing cost nothing. The map is in-memory, so a server
   // restart re-arms every timer, which errs toward not recording.
   const livePodIds = new Set(pods.map((p) => p.sessionId))
-  if (desired !== undefined) {
+  {
     const seen = new Set<string>()
     for (const row of desired.live) {
       const rowKey = `${row.projectSlug}/${row.worktreeId}`
@@ -213,7 +228,7 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
         `[server] stale-reaper: recording worktree=${row.worktreeId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
       )
-      await emitHerdEvent({
+      await serverLink().workspaceEvent({
         type: 'worktree-stopped',
         projectSlug: row.projectSlug,
         worktreeId: row.worktreeId,

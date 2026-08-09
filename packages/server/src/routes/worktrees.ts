@@ -3,9 +3,7 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
-  createSession,
   getSessionBlockedHosts,
-  getSessionChanges,
   getSessionDetail,
   getSessionPrompt,
   listActiveSessions,
@@ -16,10 +14,9 @@ import {
   resolveWorktreeRecord,
   restartWorktree,
   sessionForkBranch,
-  stopWorktree,
-  tryClaimPrewarmed,
   type SessionCreateOptions,
 } from '#features/sessions'
+import { herd } from '#herd'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
@@ -29,13 +26,10 @@ import {
   toAgentSessionEntry,
 } from '#features/records'
 import { notifySessionListChanged } from '#notify'
-import { typeInitialPrompt, MODEL_RE } from '#features/agents'
 import { getDefaultTool } from '#features/records'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
-import { allowSessionHost } from '#features/egress'
-import { dismissSessionPort, forwardSessionPort } from '#features/forwarders'
-import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals'
+import { MODEL_RE } from '@yaac/shared/types'
 
 export const worktreeApp = new Hono()
   .get(
@@ -100,14 +94,19 @@ export const worktreeApp = new Hono()
         // what keeps it from being retooled into a half-ACP session.
         const claimed = body.mode === 'acp'
           ? undefined
-          : await tryClaimPrewarmed(
-            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
-          )
+          : await herd().workspaces.claimPrewarmed({
+            projectSlug: body.project,
+            tool,
+            gitUser: body.gitUser,
+            onProgress,
+            branch: body.branch,
+            model: body.model,
+          })
         if (claimed) {
           // The spare's agent booted with no prompt; type it in now.
           if (body.prompt !== undefined) {
             onProgress('Sending initial prompt...')
-            await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
+            await herd().agents.typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
           }
           return claimed
         }
@@ -125,7 +124,7 @@ export const worktreeApp = new Hono()
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ worktreeId: sessionId, projectSlug: body.project, tool, kind: 'create' })
-        return await createSession(body.project, opts)
+        return await herd().workspaces.create(body.project, opts)
       })
     },
   )
@@ -164,7 +163,7 @@ export const worktreeApp = new Hono()
     zv('json', z.object({ worktreeId: z.string().min(1) })),
     async (c) => {
       const { worktreeId } = c.req.valid('json')
-      const info = await stopWorktree(worktreeId)
+      const info = await herd().workspaces.stop(worktreeId)
       return c.json(info)
     },
   )
@@ -241,7 +240,7 @@ export const worktreeApp = new Hono()
   })
   .get('/:id/terminals', async (c) => {
     const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await listSessionTerminals(jobName))
+    return c.json(await herd().terminals.list(jobName))
   })
   // The session's review diff — everything changed in the worktree since it
   // forked from the base branch (committed + working + untracked). An optional
@@ -260,14 +259,16 @@ export const worktreeApp = new Hono()
       // collapse the merge-base to HEAD. Cached, because this endpoint is
       // polled.
       const forkBranch = await sessionForkBranch(projectSlug, sessionId)
-      return c.json(await getSessionChanges(jobName, c.req.valid('query').base, forkBranch ?? undefined))
+      return c.json(await herd().workspaces.changes(
+        jobName, c.req.valid('query').base, forkBranch ?? undefined,
+      ))
     },
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
   .post('/:id/terminals', async (c) => {
     const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await createShellWindow(jobName))
+    return c.json(await herd().terminals.createShell(jobName))
   })
   .post(
     '/:id/terminals/close',
@@ -276,7 +277,7 @@ export const worktreeApp = new Hono()
       const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
       const { target } = c.req.valid('json')
       try {
-        await killWindowTerminal(jobName, target)
+        await herd().terminals.kill(jobName, target)
       } catch (err) {
         throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
       }
@@ -299,7 +300,11 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { host, persist } = c.req.valid('json')
       const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-      await allowSessionHost(target, host, { persist: persist ?? false })
+      await herd().hosts.allow(
+        { workspaceId: target.sessionId, projectSlug: target.projectSlug },
+        host,
+        { persist: persist ?? false },
+      )
       notifySessionListChanged()
       return c.body(null, 204)
     },
@@ -317,7 +322,11 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { containerPort, persist } = c.req.valid('json')
       const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-      const mapping = await forwardSessionPort(target, containerPort, { persist: persist ?? false })
+      const mapping = await herd().ports.forward(
+        { workspaceId: target.sessionId, projectSlug: target.projectSlug, jobName: target.jobName },
+        containerPort,
+        { persist: persist ?? false },
+      )
       // Fresh snapshot moves the port from unforwardedPorts into
       // forwardedPorts, self-clearing the popover row.
       notifySessionListChanged()
@@ -333,7 +342,7 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { containerPort } = c.req.valid('json')
       const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-      if (!dismissSessionPort(target.sessionId, containerPort)) {
+      if (!(await herd().ports.dismiss(target.sessionId, containerPort))) {
         throw new ServerError(
           'CONFLICT',
           `port ${containerPort} is not an unforwarded listener in session ${target.sessionId.slice(0, 8)}`,

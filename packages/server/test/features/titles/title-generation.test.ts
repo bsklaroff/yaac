@@ -10,9 +10,10 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
 // runtime behind it run for real.
-vi.mock('#platform/k8s/kubectl', () => ({
-  isKubectlAbsentError: vi.fn(() => false),
-  kubectlErrorSummary: vi.fn((e: unknown) => String(e)), execFileAsync: vi.fn() }))
+vi.mock('#platform/shell', async (importOriginal) => ({
+  ...(await importOriginal<typeof shellModule>()),
+  execFileAsync: vi.fn(),
+}))
 
 import { reconcileGeneratedTitles } from '#features/titles'
 import { _resetTitleGenerationForTests } from '#features/titles/title-generation'
@@ -24,7 +25,8 @@ import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveSessions } from '#features/sessions/list'
 import { setWorktreeTitle } from '#features/records/worktree-store'
 import { notifySessionListChanged } from '#notify'
-import { execFileAsync } from '#platform/k8s/kubectl'
+import { execFileAsync } from '#platform/shell'
+import type * as shellModule from '#platform/shell'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { WorktreeListEntry } from '@yaac/shared/types'

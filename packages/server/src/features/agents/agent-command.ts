@@ -48,16 +48,6 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
   }))
 }
 
-/**
- * Allowed shape for a `--model` override. Deliberately strict: the value is
- * embedded bare in agent launch commands that travel inside single-quoted
- * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
- * whitespace, or shell metacharacters — model ids, aliases, and
- * `provider/model` paths (`claude-opus-4-8`, `opus`,
- * `anthropic/claude-opus-4-8`) never need them.
- */
-export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
-
 export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,

@@ -1,9 +1,6 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
-import { retryImageBuild } from '#features/images'
-import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#features/image-engine'
-import { proxyClient } from '#features/egress'
-import { serverLog } from '#log'
+import { herd } from '#herd'
 
 /**
  * Image-build registry reads and mutations. The snapshot pushed over `/events`
@@ -12,9 +9,9 @@ import { serverLog } from '#log'
  * rate) — the webapp's build overlay polls it only while open.
  */
 export const imageApp = new Hono()
-  .get('/builds', (c) => c.json(listImageBuilds()))
-  .get('/builds/:id/log', (c) => {
-    const log = getImageBuildLog(c.req.param('id'))
+  .get('/builds', async (c) => c.json(await herd().images.listBuilds()))
+  .get('/builds/:id/log', async (c) => {
+    const log = await herd().images.buildLog(c.req.param('id'))
     if (log === undefined) {
       throw new ServerError('NOT_FOUND', 'no such build')
     }
@@ -22,25 +19,18 @@ export const imageApp = new Hono()
   })
   // Dismiss hides a finished row without rebuilding (a failed chain keeps
   // backing off the prewarm sweep until its window lapses).
-  .delete('/builds/:id', (c) => {
-    dismissImageBuild(c.req.param('id'))
+  .delete('/builds/:id', async (c) => {
+    await herd().images.dismissBuild(c.req.param('id'))
     return c.body(null, 204)
   })
   // Retry forgets the entry and rebuilds now — the owning project's chain, or
-  // the proxy sidecar for an infra build with no project. The feature fires
-  // the project rebuild itself; the sidecar is rebuilt from here, because
-  // #features/egress sits above #features/images and reaching for it from
-  // inside would put the two in a cycle.
-  .post('/builds/:id/retry', (c) => {
-    const { retried, infra } = retryImageBuild(c.req.param('id'))
+  // the proxy sidecar for an infra build with no project. Which of the two it
+  // is, and how to rebuild either, is the herd's; the route only decides that
+  // an unknown id is a 404.
+  .post('/builds/:id/retry', async (c) => {
+    const { retried } = await herd().images.retryBuild(c.req.param('id'))
     if (!retried) {
       throw new ServerError('NOT_FOUND', 'no such build to retry')
-    }
-    if (infra) {
-      // Re-running ensureRunning rebuilds the sidecar image when its tag is
-      // missing, which is what a failed build left behind.
-      void proxyClient.ensureRunning().catch((err: unknown) =>
-        serverLog(`[image-retry] proxy: ${String(err)}`))
     }
     return c.body(null, 202)
   })

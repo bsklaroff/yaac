@@ -6,7 +6,7 @@ import {
   type AgentSessionLinkRow,
   type WorktreeRow,
 } from '#features/records'
-import { observeWorkspaces } from './observe'
+import { herd } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentLiveness, WorkspaceReport } from '@yaac/shared/herd'
@@ -63,7 +63,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // here rather than left to a herd, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  const report = await observeWorkspaces(projectFilter)
+  const report = await herd().workspaces.observe(projectFilter)
 
   // Recorded state — prompt, title, base branch, pin — one query per project
   // for both live and terminating workspaces (the latter keep their title and

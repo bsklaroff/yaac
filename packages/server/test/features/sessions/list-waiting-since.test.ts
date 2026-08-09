@@ -18,6 +18,11 @@ vi.mock('#features/agents/agent-tools', async (importOriginal) => {
   }
 })
 
+// The join under test reads the server's rows alongside a herd's report.
+// The herd here is the real observation half, so the leaf mocks above still
+// drive it end to end — only the boundary between them is stubbed.
+import { observeWorkspaces } from '#features/sessions/observe'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import type * as agentToolsModule from '#features/agents/agent-tools'
@@ -57,11 +62,13 @@ describe('listActiveSessions waitingSinceMs (store projection)', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     _resetSessionStatusStoreForTests()
+    _setHerdForTests({ workspaces: { observe: observeWorkspaces } })
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([pod('s1')])
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     vi.useRealTimers()
     await cleanupTempDir(tmpDir)
   })

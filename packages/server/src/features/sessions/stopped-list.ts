@@ -1,4 +1,4 @@
-import { listSessionPods } from '#platform/k8s'
+import { herd } from '#herd'
 import { listWorktreeRows, type WorktreeRow } from '#features/records'
 import {
   getAgentSessionsFor,
@@ -6,11 +6,6 @@ import {
   toAgentSessionEntry,
   type AgentSessionLinkRow,
 } from '#features/records'
-import {
-  getAgentSessionFirstMessage,
-  sessionTranscriptPath,
-  transcriptLastActiveMs,
-} from '#features/agents'
 import { ensureProjectExists } from './list'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
@@ -33,11 +28,11 @@ export async function listStoppedWorktrees(
 
   const runningIds = new Set<string>()
   try {
-    for (const p of await listSessionPods()) {
-      if (p.sessionId) runningIds.add(p.sessionId)
+    for (const w of await herd().workspaces.list()) {
+      if (w.workspaceId) runningIds.add(w.workspaceId)
     }
   } catch {
-    // cluster not reachable — treat all as stopped
+    // substrate not reachable — treat all as stopped
   }
 
   const rows = (await listWorktreeRows(projectFilter))
@@ -101,7 +96,7 @@ async function lastActiveMs(
   const stamps = await Promise.all(links.map(async (l) => {
     const fromDisk = l.transcriptPath === undefined
       ? undefined
-      : await transcriptLastActiveMs(l.transcriptPath)
+      : await herd().agents.transcriptLastActiveMs(l.transcriptPath)
     return fromDisk ?? l.lastActiveAt?.getTime()
   }))
   const known = stamps.filter((s): s is number => s !== undefined)
@@ -109,8 +104,10 @@ async function lastActiveMs(
   // No links yet — a worktree that died before the registry's first tick
   // ever ran. Fall back to the conversation the old pin guarantees, so its
   // listing doesn't report its birth time as last-activity forever.
-  const pinned = await sessionTranscriptPath(r.projectSlug, r.worktreeId, links[0]?.tool ?? 'claude')
-  return pinned === undefined ? undefined : await transcriptLastActiveMs(pinned)
+  const pinned = await herd().agents.transcriptPath(
+    r.projectSlug, r.worktreeId, links[0]?.tool ?? 'claude',
+  )
+  return pinned === undefined ? undefined : await herd().agents.transcriptLastActiveMs(pinned)
 }
 
 /**
@@ -135,8 +132,8 @@ async function stoppedPrompt(
   // its prompt is ever recovered. `lastActiveMs` keeps the same fallback for
   // the same reason.
   const path = first.transcriptPath
-    ?? await sessionTranscriptPath(r.projectSlug, r.worktreeId, first.tool)
-  const prompt = await getAgentSessionFirstMessage(first.tool, path)
+    ?? await herd().agents.transcriptPath(r.projectSlug, r.worktreeId, first.tool)
+  const prompt = await herd().agents.firstMessage(first.tool, path)
   if (prompt === undefined) return undefined
   await setAgentSessionCapture(r.projectSlug, first.tool, first.agentSessionId, {
     firstPrompt: prompt,

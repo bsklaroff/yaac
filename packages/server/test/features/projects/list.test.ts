@@ -4,40 +4,14 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listSessionPods: vi.fn().mockResolvedValue([]),
-  }
-})
-
-import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
 import { listProjects } from '#features/projects'
-import {
-  _resetDeferredClusterBootForTests,
-  armDeferredClusterBoot,
-  awaitDeferredClusterBoot,
-} from '#platform/k8s/deferred-boot'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-const mockListPods = vi.mocked(listSessionPods)
-
-function pod(projectSlug: string, opts: { prewarmed?: boolean } = {}): SessionPod {
-  return {
-    jobName: `yaac-${projectSlug}-1`,
-    podName: `yaac-${projectSlug}-1-abcde`,
-    sessionId: '1',
-    projectSlug,
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: opts.prewarmed ? { [LABEL_PREWARMED]: 'true' } : {},
-  }
-}
+// Which projects exist is the server's own record; how many workspaces each
+// is running is the herd's, and what that count excludes (spares, unlabelled
+// pods) is asserted in test/herd/.
+const counts = vi.fn<() => Promise<Record<string, number>>>()
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
@@ -50,13 +24,12 @@ describe('listProjects', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    _resetDeferredClusterBootForTests()
-    mockListPods.mockReset()
-    mockListPods.mockResolvedValue([])
+    counts.mockReset().mockResolvedValue({})
+    _setHerdForTests({ workspaces: { counts } })
   })
 
   afterEach(async () => {
-    _resetDeferredClusterBootForTests()
+    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 
@@ -79,44 +52,25 @@ describe('listProjects', () => {
       remoteUrl: 'https://example/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
-    // Without podman the count is 0, not undefined.
+    // A project the herd said nothing about counts 0, not undefined.
     expect(typeof foo?.sessionCount).toBe('number')
   })
 
-  it('counts live session pods per project, ignoring spares and unlabelled pods', async () => {
+  it('joins the herd’s counts onto the recorded projects', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     await writeProject('bar', { slug: 'bar', remoteUrl: 'https://example/bar', addedAt: '2026-01-02T00:00:00.000Z' })
-    mockListPods.mockResolvedValue([
-      pod('foo'),
-      pod('foo'),
-      pod('bar'),
-      pod('bar', { prewarmed: true }), // a spare is not a user session
-      pod(''), // no project label at all
-    ])
+    counts.mockResolvedValue({ foo: 2, bar: 1 })
 
-    const counts = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.sessionCount]))
-    expect(counts).toEqual({ foo: 2, bar: 1 })
+    const joined = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.sessionCount]))
+    expect(joined).toEqual({ foo: 2, bar: 1 })
   })
 
-  it('reports zero counts when the cluster is unavailable', async () => {
+  // The whole point of the split: which projects exist is a row, so a herd
+  // with nothing to say costs the listing a count, not the project.
+  it('still lists a project the herd said nothing about', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
-    mockListPods.mockRejectedValue(new Error('connection refused'))
+    counts.mockResolvedValue({})
     expect((await listProjects())[0]?.sessionCount).toBe(0)
-  })
-
-  it('answers with zero counts and no cluster call while the deferred boot is pending', async () => {
-    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
-    const boot = vi.fn().mockResolvedValue(undefined)
-    armDeferredClusterBoot(boot)
-
-    const projects = await listProjects()
-    expect(projects.map((p) => p.slug)).toEqual(['foo'])
-    expect(projects[0]?.sessionCount).toBe(0)
-    expect(mockListPods).not.toHaveBeenCalled()
-
-    // The short-circuit still fires the attach — it just doesn't wait.
-    await awaitDeferredClusterBoot()
-    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('skips entries with malformed project.json', async () => {

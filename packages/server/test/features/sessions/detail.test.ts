@@ -1,25 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-
-// No cluster in unit tests — the detail helpers' pod listing is mocked to
-// an empty cluster so the NOT_FOUND paths are exercised.
-vi.mock('#platform/k8s/pods', async () => {
-  const actual = await vi.importActual<typeof podsModule>('#platform/k8s/pods')
-  return { ...actual, listSessionPods: vi.fn().mockResolvedValue([]) }
-})
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getSessionBlockedHosts, getSessionDetail, getSessionPrompt } from '#features/sessions/detail'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
-import type * as podsModule from '#platform/k8s/pods'
 
 describe('session detail helpers', () => {
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    // A herd running nothing: every helper here resolves the workspace first,
+    // so this is what proves each one refuses rather than half-answering.
+    _setHerdForTests({ workspaces: { find: () => Promise.resolve(undefined) } })
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 

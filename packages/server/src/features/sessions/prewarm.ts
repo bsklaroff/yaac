@@ -39,7 +39,7 @@ import {
   waitForStreamd,
 } from '#platform/k8s'
 import { cleanupSessionDetached } from './cleanup'
-import { emitHerdEvent } from '#herd-events'
+import { serverLink } from '#server-link'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import type { SessionCreateResult } from './create'
 import { isTmuxSessionAlive } from '#features/status'
@@ -271,7 +271,7 @@ export async function tryClaimPrewarmed(
     // here aborts the claim before any mutation, so the spare stays a spare
     // and the caller falls back to a cold create.
     recordedRow = true
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'worktree-created',
       projectSlug,
       worktreeId: chosen.sessionId,
@@ -280,7 +280,7 @@ export async function tryClaimPrewarmed(
     // The spare's agent is already running, pinned to its own id — report it
     // as the worktree's first conversation, since that is where the
     // worktree's tool is read from.
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'conversations-launched',
       projectSlug,
       worktreeId: chosen.sessionId,
@@ -354,7 +354,7 @@ export async function tryClaimPrewarmed(
     // A claim that moved the spare to another branch reports the branch it
     // ended on, not the one it was warmed from.
     if (rebranchTo !== null) {
-      await emitHerdEvent({
+      await serverLink().workspaceEvent({
         type: 'base-branch-resolved',
         projectSlug,
         worktreeId: chosen.sessionId,
@@ -386,7 +386,7 @@ export async function tryClaimPrewarmed(
     // existed — the caller is about to cold-create a different one. A claim
     // is always a fresh worktree, never a resume, so the row is erased.
     if (chosen && recordedRow) {
-      await emitHerdEvent({
+      await serverLink().workspaceEvent({
         type: 'worktree-create-failed', projectSlug, worktreeId: chosen.sessionId,
       }).catch(() => { /* best-effort; the row has no pod to back it */ })
     }

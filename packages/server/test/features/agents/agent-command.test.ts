@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildAgentCmd,
-  MODEL_RE,
   agentWindowTarget,
   buildPromptPasteCmd,
   buildPromptPasteBgCmd,
@@ -136,23 +135,6 @@ describe('buildAgentCmd', () => {
     it('combines a model override with resume', () => {
       const cmd = buildAgentCmd('claude', 'sess-1', true, undefined, 'opus')
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model opus --resume sess-1')
-    })
-  })
-
-  describe('MODEL_RE', () => {
-    it('accepts model ids, aliases, and provider/model paths', () => {
-      for (const m of [
-        'claude-opus-4-8', 'opus', 'claude-sonnet-5', 'us.anthropic.claude-fable-5:0',
-        'anthropic/claude-opus-4-8', 'fireworks/accounts/fireworks/models/kimi-k2p6',
-      ]) {
-        expect(MODEL_RE.test(m)).toBe(true)
-      }
-    })
-
-    it('rejects values unsafe for the single-quoted respawn wrapper', () => {
-      for (const m of ["o'pus", 'a model', 'x;y', 'a$b', '-opus', '', 'a`b', 'a[1m]']) {
-        expect(MODEL_RE.test(m)).toBe(false)
-      }
     })
   })
 })

@@ -18,6 +18,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/sessions/cleanup'
 import * as worktreeCreate from '@yaac/server/features/sessions/create'
+import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/features/sessions/restart'
 import { recordWorktreeCreated } from '@yaac/server/features/records/worktree-store'
 import { recordAgentSessions } from '@yaac/server/features/records/agent-session-store'
@@ -28,9 +29,10 @@ import type { SessionPod } from '@yaac/server/platform/k8s/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution
- * (live pod first, recorded session row for reaped sessions) and the
- * handoff to `cleanupSession` + `createSession(resume: true)`. Pod
- * listing / createSession are mocked so we don't need a cluster.
+ * (live workspace first, recorded row for reaped ones) and the handoff to
+ * the herd's teardown + create. The real in-process herd stands behind the
+ * boundary so the whole pipeline runs; only its substrate leaves are mocked,
+ * so we don't need a cluster.
  */
 function pod(overrides: Partial<SessionPod> = {}): SessionPod {
   return {
@@ -54,6 +56,7 @@ describe('resolveRestartTarget', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     vi.spyOn(pods, 'listSessionPods').mockImplementation(
       listSpy as unknown as typeof pods.listSessionPods,
@@ -61,6 +64,7 @@ describe('resolveRestartTarget', () => {
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)
@@ -157,6 +161,7 @@ describe('restartWorktree', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
     createSpy = vi.fn().mockResolvedValue({
@@ -168,8 +173,8 @@ describe('restartWorktree', () => {
     vi.spyOn(pods, 'listSessionPods').mockImplementation(
       listSpy as unknown as typeof pods.listSessionPods,
     )
-    vi.spyOn(cleanup, 'cleanupSession').mockImplementation(
-      cleanupSpy as unknown as typeof cleanup.cleanupSession,
+    vi.spyOn(cleanup, 'teardownForRestart').mockImplementation(
+      cleanupSpy as unknown as typeof cleanup.teardownForRestart,
     )
     vi.spyOn(worktreeCreate, 'createSession').mockImplementation(
       createSpy as unknown as typeof worktreeCreate.createSession,
@@ -177,6 +182,7 @@ describe('restartWorktree', () => {
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)
@@ -191,7 +197,7 @@ describe('restartWorktree', () => {
     expect(cleanupSpy).toHaveBeenCalledWith({
       jobName: 'yaac-demo-abcd1234',
       projectSlug: 'demo',
-      sessionId: 'abcd1234',
+      workspaceId: 'abcd1234',
     })
     expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
       resume: true,
@@ -204,13 +210,18 @@ describe('restartWorktree', () => {
     expect(progress.some((m) => m.includes('Stopping session job yaac-demo-abcd1234'))).toBe(true)
   })
 
-  it('skips cleanup when no pod exists and falls back to the recorded row', async () => {
+  it('has nothing to tear down when no pod exists, and falls back to the recorded row', async () => {
     listSpy.mockResolvedValueOnce([])
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'deadbeef' })
 
     await restartWorktree('deadbeef')
 
-    expect(cleanupSpy).not.toHaveBeenCalled()
+    // Still one teardown call, with no Job to delete: the reuse-blocking
+    // marks have to be cleared either way or the fresh session renders as
+    // "stopping…".
+    expect(cleanupSpy).toHaveBeenCalledWith({
+      jobName: null, projectSlug: 'demo', workspaceId: 'deadbeef',
+    })
     expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
       resume: true,
       sessionId: 'deadbeef',
