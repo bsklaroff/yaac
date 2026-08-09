@@ -55,7 +55,7 @@
     "@hono/zod-validator": "catalog:",
     "@kubernetes/client-node": "catalog:",
     "@lydell/node-pty": "catalog:",
-    "@openai/codex": "0.121.0",
+    "@openai/codex": "0.146.0",
     "commander": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
