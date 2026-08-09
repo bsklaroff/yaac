@@ -67,12 +67,18 @@ export interface HerdClient {
 /**
  * What the herd watches that the server's own reconcile steps care about.
  *
- * Substrate-flavored today because the informer is: these are the caches
+ * Mostly substrate-flavored because the informer is: these are the caches
  * whose deltas mark a pass dirty. The server only ever compares them for
  * equality, so the day a herd is not Kubernetes it can name its own sources
  * without anything above changing.
+ *
+ * `live-agents` is the one that is not a cache delta: a worktree's set of
+ * running conversations changed. It has to be its own source because the
+ * event that produces it is not a substrate event at all — an ACP handshake
+ * answering with a conversation id happens entirely inside the pod, and
+ * nothing the informer watches moves when it does.
  */
-export type HerdChangeSource = DeltaSource
+export type HerdChangeSource = DeltaSource | 'live-agents'
 
 /**
  * The sources on which a workspace may have appeared or gone.

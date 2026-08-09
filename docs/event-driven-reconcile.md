@@ -63,6 +63,12 @@ Steps subscribe to triggers; three lanes feed one serialized executor:
 - **deltas** — informer events mark their sources dirty; a pass runs
   after a 250ms debounce so event storms coalesce. This is what makes
   vcluster attribution land within milliseconds of the pod appearing.
+  One source in this lane is not an informer: `live-agents`, marked when a
+  worktree's set of running conversations changes (one appeared, one went,
+  or one learned its id). An `acp` conversation's id comes out of an in-pod
+  handshake that moves nothing the informers watch, so without it the
+  conversation sweep — and the chat pane waiting on the row it writes —
+  would sit out the rest of the resync interval.
 - **poll (5s)** — for state no watch can see: the proxy's queued spawn
   requests (local HTTP) and in-pod tmux death (the stale reaper; probes
   short-circuit on healthy status-watcher streams and are TTL-cached, so

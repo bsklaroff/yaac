@@ -13,7 +13,7 @@ import {
   sweepLegacyNodeStores,
 } from '#features/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
-import { StatusWatcherManager, onSessionStatusChanged } from '#features/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onSessionStatusChanged } from '#features/status'
 import {
   PortDetectorManager,
   restoreAllSessionForwarders,
@@ -127,6 +127,15 @@ export function createLifecycle(
       for (const fn of changeListeners) fn(source)
     })
     onSessionStatusChanged(() => serverLink().workspacesChanged())
+    // A conversation appearing, going, or learning its id is a change the
+    // reconcile steps owe work on, and no watch above can see it: for `acp`
+    // the id comes from the in-pod handshake, well after the pod deltas
+    // that created the window have gone quiet. Without this the worktree's
+    // conversation rows — and so the webapp's chat pane — wait for the 60s
+    // resync.
+    onLiveAgentsChanged(() => {
+      for (const fn of changeListeners) fn('live-agents')
+    })
     cache.start()
     setActiveClusterCache(cache)
 

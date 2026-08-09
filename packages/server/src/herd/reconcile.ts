@@ -80,7 +80,10 @@ function herdSteps(): HerdStep[] {
     // message rides along because the sweep has just resolved the transcript
     // it would be read from. Reported as events; the server writes the rows,
     // and its title generation runs after this pass for that reason.
-    { name: 'agent-sessions', triggers: ['session-pods'],
+    // `live-agents` is here and nowhere else: it is the only step that reads
+    // the watcher's live set, and it is what turns a fresh ACP handshake into
+    // a conversation row within a debounce instead of within a resync.
+    { name: 'agent-sessions', triggers: ['session-pods', 'live-agents'],
       run: (s) => reconcileAgentSessions(s) },
     // ssh-agent heal only (attach-only probe, never bootstraps): agent
     // identities are memory-only by design and need the server to re-upload

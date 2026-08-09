@@ -40,6 +40,7 @@ export {
 export {
   evictSessionStatus,
   liveAgents,
+  onLiveAgentsChanged,
   onSessionStatusChanged,
   readAgentStatus,
   readSessionStatus,

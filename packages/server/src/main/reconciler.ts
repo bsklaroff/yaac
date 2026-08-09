@@ -9,8 +9,9 @@ import { serverLog } from '#log'
  * not on a fixed clock — three lanes feed one serialized pass executor:
  *
  * - changes: the herd's watches (session pods/Jobs, vcluster namespaces and
- *   their pods/services) mark their sources dirty; a pass runs after a short
- *   debounce so event storms coalesce.
+ *   their pods/services, and the set of live conversations) mark their
+ *   sources dirty; a pass runs after a short debounce so event storms
+ *   coalesce.
  * - poll: a 5s mark for the state no watch can see — the proxy's queued
  *   spawn requests and in-pod tmux death (the stale reaper). These are
  *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
@@ -58,6 +59,7 @@ const HERD_TRIGGERS: readonly ReconcileTrigger[] = [
   'vcluster-pods',
   'vcluster-services',
   'vcluster-configmaps',
+  'live-agents',
   'poll',
 ]
 
@@ -86,8 +88,12 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     } },
     // Model-generated titles for untitled sessions, after the herd's
     // conversation sweep so a freshly captured prompt is eligible the same
-    // pass.
-    { name: 'generated-titles', triggers: ['session-pods'],
+    // pass. Which means it owes a pass on whatever dirties that sweep: an ACP
+    // worktree's opening message is captured on the pass its handshake
+    // triggers, and same-pass eligibility is the whole point of the ordering.
+    // Cheap when there is nothing to do — a row listing against a set of
+    // worktrees already attempted.
+    { name: 'generated-titles', triggers: ['session-pods', 'live-agents'],
       run: () => reconcileGeneratedTitles() },
   ]
 }
