@@ -97,7 +97,7 @@ describe('spawn-pr-reviewers skill', () => {
     // default, so no model id is baked in anywhere as one.
     expect(body).toContain('yaac-spawn --tool <tool> --model <model>')
     expect(body).toContain('yaac-spawn --models')
-    expect(body).toContain('There is **no default**.')
+    expect(body).toContain('There is **no default model**.')
   })
 })
 
