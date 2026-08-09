@@ -33,14 +33,14 @@ import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
 import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
-import { sessionExec } from '#platform/k8s'
+import { podExec } from '#platform/k8s'
 import type {
   AgentConnectDeps,
   AgentConnection,
   AgentDriver,
   AgentLaunchSpec,
   AgentObservation,
-  DrivenSession,
+  DrivenWorktree,
   LiveAgent,
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
@@ -107,7 +107,7 @@ class TuiConnection implements AgentConnection {
   private readonly log: (msg: string) => void
 
   constructor(
-    private readonly session: DrivenSession,
+    private readonly session: DrivenWorktree,
     private readonly sink: (obs: AgentObservation) => void,
     deps: AgentConnectDeps,
   ) {
@@ -117,7 +117,7 @@ class TuiConnection implements AgentConnection {
 
     let child: StreamChild
     try {
-      child = (deps.dial ?? ((s, argv) => dialCtrlStream(s.sessionId, argv)))(session, attachArgv())
+      child = (deps.dial ?? ((s, argv) => dialCtrlStream(s.worktreeId, argv)))(session, attachArgv())
     } catch (err) {
       this.down(`spawn failed: ${String(err)}`)
       return
@@ -296,7 +296,7 @@ class TuiConnection implements AgentConnection {
 
   close(): void {
     if (this.done) return
-    this.log(`[server] tui-driver ${this.session.sessionId}: closing`)
+    this.log(`[server] tui-driver ${this.session.worktreeId}: closing`)
     this.teardown()
   }
 }
@@ -312,10 +312,10 @@ export const tuiDriver: AgentDriver = {
     return new TuiConnection(session, sink, deps)
   },
 
-  async deliverPrompt(session: DrivenSession, handle: string, text: string): Promise<void> {
+  async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
     // The handle is a pane id, which is exactly what tmux's paste target
     // wants — no window-name indirection needed.
-    await sessionExec(session.jobName, buildPromptPasteBgCmd(handle, text), {
+    await podExec(session.jobName, buildPromptPasteBgCmd(handle, text), {
       maxAttempts: 1,
       timeout: 15_000,
     })

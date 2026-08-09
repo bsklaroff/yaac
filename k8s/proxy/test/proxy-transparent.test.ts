@@ -22,7 +22,7 @@ function u24(n: number): Buffer {
 /** Minimal synthetic ClientHello, optionally with a server_name extension. */
 function buildClientHello(serverName?: string): Buffer {
   const random = Buffer.alloc(32, 1)
-  const sessionId = Buffer.from([0])
+  const worktreeId = Buffer.from([0])
   const cipherSuites = Buffer.concat([u16(2), Buffer.from([0x13, 0x01])])
   const compression = Buffer.from([1, 0])
   let extensions = Buffer.alloc(0)
@@ -33,7 +33,7 @@ function buildClientHello(serverName?: string): Buffer {
     extensions = Buffer.concat([u16(0x0000), u16(list.length), list])
   }
   const body = Buffer.concat([
-    Buffer.from([3, 3]), random, sessionId, cipherSuites, compression,
+    Buffer.from([3, 3]), random, worktreeId, cipherSuites, compression,
     u16(extensions.length), extensions,
   ])
   const handshake = Buffer.concat([Buffer.from([1]), u24(body.length), body])

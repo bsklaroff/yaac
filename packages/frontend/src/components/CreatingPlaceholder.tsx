@@ -1,26 +1,26 @@
 import type { JSX } from 'react'
 import { LoadingIcon, TOOL_LABEL } from '#lib/icons'
-import { dismissProvisioning } from '#lib/createSession'
+import { dismissProvisioning } from '#lib/createWorktree'
 import { useUiStore } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
-/** Shown in the main pane while a selected session provisions, in place of the
+/** Shown in the main pane while a selected worktree provisions, in place of the
  *  terminal that will arrive. Streams progress; on failure offers dismiss. */
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktreeEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
-  const selectSession = useUiStore((s) => s.selectSession)
+  const selectWorktree = useUiStore((s) => s.selectWorktree)
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.worktreeId).catch(() => { /* best-effort */ })
     removeOptimisticProvisioning(creating.worktreeId)
-    selectSession(null)
+    selectWorktree(null)
   }
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       {creating.error ? (
         <>
-          <p className="text-sm font-medium text-[#d65858]">Couldn&apos;t create session</p>
+          <p className="text-sm font-medium text-[#d65858]">Couldn&apos;t create worktree</p>
           <p className="max-w-md text-xs text-text-faint">{creating.error}</p>
           <button
             onClick={dismiss}
@@ -34,7 +34,7 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktr
         <>
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
-            {creating.kind === 'restart' ? 'Restarting' : 'Creating'} {TOOL_LABEL[creating.tool]} session
+            {creating.kind === 'restart' ? 'Restarting' : 'Creating'} {TOOL_LABEL[creating.tool]} worktree
             in {creating.projectSlug}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>

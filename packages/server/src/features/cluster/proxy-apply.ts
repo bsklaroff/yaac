@@ -29,8 +29,8 @@ import {
 import {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
-  buildSessionEgressNpManifest,
-  buildSessionIngressLockNpManifest,
+  buildWorktreeEgressNpManifest,
+  buildWorktreeIngressLockNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { vapAvailable } from './vcluster'
@@ -79,13 +79,13 @@ export async function ensureProxyAuthSecret(): Promise<string> {
 let cachedProxyClusterIp: string | null = null
 
 /**
- * The live ClusterIP of the proxy Service — read at pod-create as the session
+ * The live ClusterIP of the proxy Service — read at pod-create as the worktree
  * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
  * pinned) for both the top-level and the vcluster-allocated inner proxy; stable
  * because the Service is never deleted/recreated. (The spike confirmed synced
  * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync.)
  * That stability is why the first read is cached for the process — it saves a
- * kubectl child per session create.
+ * kubectl child per worktree create.
  */
 export async function proxyServiceClusterIp(): Promise<string> {
   if (cachedProxyClusterIp) return cachedProxyClusterIp
@@ -122,9 +122,9 @@ export async function ensureProxyResources(
   if (opts.nested) {
     // Project the OUTER proxy's CA into the vcluster so the inner proxy's
     // chained upstream dial (inner proxy → outer proxy) trusts the outer MITM
-    // leaf — without it every inner-session HTTPS request fails closed with
+    // leaf — without it every inner-worktree HTTPS request fails closed with
     // "self-signed certificate in certificate chain". The inner yaac reads the
-    // outer CA from its own session-pod trust mount (it already trusts it to
+    // outer CA from its own worktree-pod trust mount (it already trusts it to
     // reach its own upstream). Applied before the Deployment so the mount
     // resolves on first schedule.
     const outerCaPem = await fs.readFile(CA_CERT_PATH, 'utf8')
@@ -132,7 +132,7 @@ export async function ensureProxyResources(
   }
 
   // SA + RBAC before the Deployment, which references the SA so the proxy
-  // can watch pods (source-IP → session). The Service's ClusterIP is
+  // can watch pods (source-IP → worktree). The Service's ClusterIP is
   // allocator-assigned and never deleted, so `apply` is a no-op on it after
   // first creation — no immutable-field migration needed (the pin is gone).
   await kubectlApply(buildProxyServiceAccountManifest())
@@ -141,17 +141,26 @@ export async function ensureProxyResources(
   await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
-  // session pod can be scheduled (sessions require ensureRunning()).
+  // worktree pod can be scheduled (worktrees require ensureRunning()).
   const nodeCidrs = await nodeIpBlocks()
-  await kubectlApply(buildSessionEgressNpManifest(nodeCidrs))
-  // Session-pod ingress lock: only the proxy's relay dials reach streamd;
+  await kubectlApply(buildWorktreeEgressNpManifest(nodeCidrs))
+  // Worktree-pod ingress lock: only the proxy's relay dials reach streamd;
   // everything else is default-denied. Applied with the proxy for the same
-  // exists-before-any-session reason as the egress lockdown.
-  await kubectlApply(buildSessionIngressLockNpManifest())
+  // exists-before-any-worktree reason as the egress lockdown.
+  await kubectlApply(buildWorktreeIngressLockNpManifest())
   // Lock the proxy's transparent ports to the node (forgery guard): only
   // netd's Envoy, which runs in the node netns, may originate PP2.
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
-  // World-egress default-deny over non-session, non-builder pods.
+  // The names these two policies had when a worktree was called a session.
+  // Deleted only AFTER their replacements are applied above: NetworkPolicies
+  // union, so an overlap is harmless, whereas deleting first would leave
+  // worktree egress unpoliced for the width of this function.
+  for (const stale of ['yaac-session-egress', 'yaac-session-ingress-lock']) {
+    await kubectlWithRetry([
+      'delete', 'networkpolicy', stale, '-n', k8sNamespace(), '--ignore-not-found',
+    ]).catch(() => { /* best-effort; a leftover policy is a duplicate, not a hole */ })
+  }
+  // World-egress default-deny over non-worktree, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
   // The redirect layer. A nested install runs netd in CLAIM mode: its
   // vcluster has no nodes, so it publishes what it wants redirected and the
@@ -169,7 +178,7 @@ interface RawConfigMap {
 }
 
 /**
- * Upsert the proxy-CA ConfigMap that every session pod mounts. Carries two
+ * Upsert the proxy-CA ConfigMap that every worktree pod mounts. Carries two
  * keys: the bare proxy CA (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS)
  * and the combined bundle `{public roots} ∪ {proxy CA}` (replace-semantics
  * trust for the own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write
@@ -195,7 +204,7 @@ export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Pro
 /**
  * Cluster-wide admission guard reserving the `yaac.role=builder` label:
  * no ServiceAccount (the only identity untrusted code can hold — e.g. a
- * vcluster syncer materializing a session's pods) may create or update a
+ * vcluster syncer materializing a worktree's pods) may create or update a
  * pod carrying it, and carriers must run under the gvisor RuntimeClass.
  * Fail-closed: the label excludes its pods from the world-deny egress
  * policy, so builders must not run on a cluster that cannot enforce the

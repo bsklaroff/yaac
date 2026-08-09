@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { listProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
+import { listProvisioning, clearAllProvisioningForTests } from '#features/worktrees/provisioning'
 import { _resetHerdForTests, _setHerdForTests } from '#herd'
-import type { SessionCreateOptions, SessionCreateResult } from '#features/sessions/create'
+import type { WorktreeCreateOptions, WorktreeCreateResult } from '#features/worktrees/create'
 import type { SpawnRequest } from '#server-link'
 import {
   SPAWN_MAX_IN_FLIGHT_PER_SESSION,
@@ -9,7 +9,7 @@ import {
   decideSpawn,
 } from '#main/spawn'
 
-type CreateFn = (slug: string, opts: SessionCreateOptions) => Promise<SessionCreateResult>
+type CreateFn = (slug: string, opts: WorktreeCreateOptions) => Promise<WorktreeCreateResult>
 
 function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
   return {
@@ -26,7 +26,7 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
 function stubHerd(impl?: CreateFn): ReturnType<typeof vi.fn<CreateFn>> {
   const create = vi.fn<CreateFn>(impl ?? (() => Promise.resolve({
     worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-  } as SessionCreateResult)))
+  } as WorktreeCreateResult)))
   _setHerdForTests({ workspaces: { create } })
   return create
 }
@@ -50,7 +50,7 @@ describe('decideSpawn', () => {
     expect(create).toHaveBeenCalledWith('proj', {
       tool: 'codex', // the caller's own tool, absent an explicit request
       initialPrompt: 'write the report',
-      sessionId: 'minted-id',
+      worktreeId: 'minted-id',
       onProgress: expect.any(Function) as (message: string) => void,
     })
     await settle()
@@ -63,7 +63,7 @@ describe('decideSpawn', () => {
       rowDuringCreate = listProvisioning().find((p) => p.worktreeId === 'minted-id')
       return Promise.resolve({
         worktreeId: 'minted-id', jobName: 'j', forwardedPorts: [], tool: 'codex', mode: 'tui',
-      } as SessionCreateResult)
+      } as WorktreeCreateResult)
     })
     expect((await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })).ok).toBe(true)
     expect(rowDuringCreate).toMatchObject({
@@ -125,7 +125,7 @@ describe('decideSpawn', () => {
     expect(create).toHaveBeenCalledWith('proj', {
       tool: 'claude',
       initialPrompt: 'write the report',
-      sessionId: 'minted-id',
+      worktreeId: 'minted-id',
       model: 'claude-opus-4-8',
       onProgress: expect.any(Function) as (message: string) => void,
     })
@@ -172,7 +172,7 @@ describe('decideSpawn', () => {
       await gate
       return {
         worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
-      } as SessionCreateResult
+      } as WorktreeCreateResult
     })
     for (let i = 0; i < SPAWN_MAX_IN_FLIGHT_PER_SESSION; i++) {
       expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: `r${i}` }))).ok).toBe(true)

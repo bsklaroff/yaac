@@ -2,14 +2,14 @@
  * MITM proxy sidecar for agent session containers.
  *
  * - Generates a self-signed CA on startup (persisted to /data/)
- * - Accepts per-session rules and allowlists via HTTP API
- * - Writes per-session registrations and blocked-host state through to
+ * - Accepts per-worktree rules and allowlists via HTTP API
+ * - Writes per-worktree registrations and blocked-host state through to
  *   /data/ (a hostPath the server reads directly) and reloads both at
- *   boot, so a pod replacement never strands live sessions
+ *   boot, so a pod replacement never strands live worktrees
  * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
  * - Reads GitHub / Claude / Codex credentials directly from the host-mounted
  *   `/yaac-credentials/` directory at request time, so updates to tokens via
- *   `yaac auth update` flow into every running session without a restart.
+ *   `yaac auth update` flow into every running worktree without a restart.
  * - Swaps placeholder tokens for real Claude OAuth credentials and writes
  *   refreshed tokens back to the host-mounted credentials file.
  *
@@ -36,8 +36,9 @@ import {
   splitHostHeader,
 } from './transparent'
 import { parsePp2Header } from './pp2'
+import { readJsonEither, writeJsonAtomic } from './state-files'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import { PodSessionIndex, fetchPodIpBySessionId, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
+import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import {
   SPAWN_MAGIC_HOST,
   SPAWN_MAX_BODY_BYTES,
@@ -58,7 +59,7 @@ import {
 } from './tools-report'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
-// from PORT now that no session egress reaches it — it is purely the API.
+// from PORT now that no worktree egress reaches it — it is purely the API.
 const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
 // Transparent egress listeners: netd's node-local Envoy forwards
@@ -68,7 +69,7 @@ const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
 const TRANSPARENT_HTTPS_PORT = process.env.TRANSPARENT_HTTPS_PORT
 const TRANSPARENT_HTTP_PORT = process.env.TRANSPARENT_HTTP_PORT
 const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
-// Stream relay: authenticated CONNECT from the yaac server into a session
+// Stream relay: authenticated CONNECT from the yaac server into a worktree
 // pod's streamd (docs/stream-relay.md).
 const RELAY_PORT = process.env.RELAY_PORT
 const POD_STREAM_PORT = process.env.POD_STREAM_PORT
@@ -80,10 +81,10 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
   process.exit(1)
 }
 const DATA_DIR = '/data'
-// UDP/53 DNS stub: session pods point their resolver here. Optional so
+// UDP/53 DNS stub: worktree pods point their resolver here. Optional so
 // non-cluster test runs can skip it.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
-// TCP port carrying the ssh-agent protocol to entitled session pods (see
+// TCP port carrying the ssh-agent protocol to entitled worktree pods (see
 // ssh-agent-relay.ts). Optional for the same reason as the DNS stub: a
 // non-cluster test run has no pod-watch to authenticate anyone with, so it
 // simply doesn't listen.
@@ -98,7 +99,7 @@ const DNS_SINKHOLE_IPV4 = '198.18.0.1'
 // route to the vcluster CoreDNS — see buildProxyDeploymentManifest's nested
 // dnsConfig), it sinkholes every name, and its upstream dials chain to the
 // outer proxy which resolves for real. Forwarding there would loop straight
-// back into its own stub, and inner sessions have no in-cluster Service to
+// back into its own stub, and inner worktrees have no in-cluster Service to
 // resolve anyway (no inner registry — vcluster-in-vcluster is rejected).
 const DNS_FORWARD_INTERNAL = process.env.DNS_FORWARD_INTERNAL === '1'
 
@@ -121,41 +122,41 @@ async function resolveInternalA(name: string): Promise<string | null> {
   }
 }
 
-// podIP → sessionId, kept fresh by watching the pods API with the proxy's
+// podIP → worktreeId, kept fresh by watching the pods API with the proxy's
 // read-only ServiceAccount. The transparent listeners resolve a connection's
-// session from the source pod IP in the Envoy-stamped PROXY header.
-const podIndex = new PodSessionIndex()
+// worktree from the source pod IP in the Envoy-stamped PROXY header.
+const podIndex = new PodWorktreeIndex()
 
-// podIP → OUTER sessionId for a vcluster's chained egress (yaac-in-yaac). The
+// podIP → OUTER worktreeId for a vcluster's chained egress (yaac-in-yaac). The
 // host server pushes this via PUT /vcluster-attribution: those source pods live
-// in another namespace the pod-watch SA can't resolve to the owning session, so
+// in another namespace the pod-watch SA can't resolve to the owning worktree, so
 // the server — which knows the mapping — supplies it. Full-replace each push.
-const vclusterPodSession = new Map<string, string>()
+const vclusterPodWorktree = new Map<string, string>()
 // Last-applied attribution content, so the every-tick re-push logs only on change.
 let lastVclusterAttributionKey = ''
 
-interface ResolvedSession {
-  sessionId: string
+interface ResolvedWorktree {
+  worktreeId: string
   /**
    * True when the source IP was attributed via the server-pushed vcluster
-   * map rather than a directly-watched session pod. Spawn requests key on
+   * map rather than a directly-watched worktree pod. Spawn requests key on
    * this: nested workloads must spawn against their own (inner) yaac, so
    * the outer proxy refuses them.
    */
   viaVclusterAttribution: boolean
 }
 
-async function resolveSession(ip: string): Promise<ResolvedSession | undefined> {
+async function resolveWorktree(ip: string): Promise<ResolvedWorktree | undefined> {
   const cached = podIndex.resolve(ip)
-  if (cached) return { sessionId: cached, viaVclusterAttribution: false }
+  if (cached) return { worktreeId: cached, viaVclusterAttribution: false }
   // Server-supplied attribution for a vcluster's chained egress (the pod-watch
   // can't see those cross-namespace source pods).
-  const vc = vclusterPodSession.get(ip)
-  if (vc) return { sessionId: vc, viaVclusterAttribution: true }
+  const vc = vclusterPodWorktree.get(ip)
+  if (vc) return { worktreeId: vc, viaVclusterAttribution: true }
   // Cache-miss fallback: a new pod's first packet can beat its watch event.
   try {
-    const fetched = await fetchSessionByPodIp(podIndex, ip)
-    return fetched ? { sessionId: fetched, viaVclusterAttribution: false } : undefined
+    const fetched = await fetchWorktreeByPodIp(podIndex, ip)
+    return fetched ? { worktreeId: fetched, viaVclusterAttribution: false } : undefined
   } catch { return undefined }
 }
 
@@ -192,11 +193,11 @@ const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
 const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // Codex in ChatGPT auth mode routes inference to chatgpt.com/backend-api, not
 // api.openai.com — so we must MITM it too and apply the same Authorization
-// swap for codex sessions.
+// swap for codex worktrees.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 // opencode and pi are api-key only. The proxy swaps the placeholder key for
-// the real one on the chosen provider's host when the session is registered as
+// the real one on the chosen provider's host when the worktree is registered as
 // that tool. The provider→host tables are code-generated from each tool's own
 // registry (models.dev for opencode, the pi package for pi) — see
 // ./tool-providers.generated and scripts/gen-tool-providers.ts. The credential
@@ -260,13 +261,13 @@ type Injection =
   | { action: 'replace_body_param'; name: string; value: string }
 
 /**
- * Injection as registered via PUT /sessions/:id. Instead of a literal
+ * Injection as registered via PUT /worktrees/:id. Instead of a literal
  * `value`, it may carry a `secretRef` naming an entry in the mounted
  * proxy-secrets credentials file (plus an optional header `prefix`, e.g.
  * "Bearer "). References keep registrations secret-free so they can be
  * persisted to /data; the real value is resolved per request from
  * `/yaac-credentials/proxy-secrets.json`, which also means rotation via
- * the server applies to live sessions immediately.
+ * the server applies to live worktrees immediately.
  */
 type RegisteredInjection = {
   action: Injection['action']
@@ -288,7 +289,7 @@ type HostInjectionRule = {
 }
 
 /**
- * Per-session upstream redirect: when the client MITMs `hostname`, forward
+ * Per-worktree upstream redirect: when the client MITMs `hostname`, forward
  * the inner HTTP request to this target instead of the real upstream. Only
  * applied inside the MITM path — the client still sees a TLS handshake for
  * the original hostname, and credential-injection still runs before forward.
@@ -318,7 +319,7 @@ function loadOrGenerateCA(): CA {
     // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
     // subjectKeyIdentifier, so a verifier holding another identically-named
     // "yaac Proxy CA" (e.g. the outer proxy's CA, folded into a nested
-    // session's combined trust bundle) can't tell which one signed a leaf and
+    // worktree's combined trust bundle) can't tell which one signed a leaf and
     // hard-fails on the wrong key. Regenerate it so new leaves get a matching
     // AKI. See getLeafCert.
     if (cert.getExtension('subjectKeyIdentifier')) {
@@ -345,7 +346,7 @@ function loadOrGenerateCA(): CA {
     { name: 'keyUsage', keyCertSign: true, cRLSign: true },
     // SKI so a verifier can pick THIS CA over another identically-named
     // "yaac Proxy CA" (each proxy mints its own self-signed CA with the same
-    // CN; a chained nested session trusts both). The leaf's AKI points here,
+    // CN; a chained nested worktree trusts both). The leaf's AKI points here,
     // so selection is by key id, not bundle order. See getLeafCert.
     { name: 'subjectKeyIdentifier' },
   ])
@@ -388,7 +389,7 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
     { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
     { name: 'extKeyUsage', serverAuth: true },
     // AKI = the issuing CA's SKI, so a verifier holding several same-named
-    // "yaac Proxy CA" roots (a nested session's combined bundle carries both
+    // "yaac Proxy CA" roots (a nested worktree's combined bundle carries both
     // the inner and outer proxy CAs) selects the CA that actually signed this
     // leaf instead of trying them in name order and hard-failing on the wrong
     // key (OpenSSL does not retry the other candidate). See loadOrGenerateCA.
@@ -536,7 +537,7 @@ function readPiCreds(): PiCreds | null {
 
 /**
  * Read the server-maintained envSecretProxy values (env var name -> secret)
- * from the mounted credentials dir. Written by session-create before each
+ * from the mounted credentials dir. Written by worktree-create before each
  * registration; injection rules reference entries by key via `secretRef`.
  */
 function readProxySecrets(): Record<string, string> {
@@ -697,7 +698,7 @@ function readGitCredentials(): HttpsCredentialEntry[] {
 }
 
 /**
- * Resolve the HTTPS credential for a session's repoUrl, returning the matched
+ * Resolve the HTTPS credential for a worktree's repoUrl, returning the matched
  * token along with the (host, path) it matched on so callers can guard against
  * cross-host token leakage.
  */
@@ -741,47 +742,47 @@ function writeCodexOAuthBundle(bundle: CodexOAuthBundle): void {
 
 // ── Secret Store ───────────────────────────────────────────────────────
 //
-// Per-tenant state is keyed by sessionId (the same credential the
+// Per-tenant state is keyed by worktreeId (the same credential the
 // container sends in the Proxy-Authorization header), except git-auth
-// failures, which are keyed by the session's project. A session is
-// registered once via PUT /sessions/:id with its full state payload and
-// removed via DELETE /sessions/:id when the container is torn down.
+// failures, which are keyed by the worktree's project. A worktree is
+// registered once via PUT /worktrees/:id with its full state payload and
+// removed via DELETE /worktrees/:id when the container is torn down.
 
-/** sessionId -> injection rules */
-const sessionRules = new Map<string, HostInjectionRule[]>()
+/** worktreeId -> injection rules */
+const worktreeRules = new Map<string, HostInjectionRule[]>()
 
-/** sessionId -> allowed host patterns (absent means block all — fail closed) */
-const sessionAllowedHosts = new Map<string, string[]>()
+/** worktreeId -> allowed host patterns (absent means block all — fail closed) */
+const worktreeAllowedHosts = new Map<string, string[]>()
 
-/** sessionId -> repo URL (drives GitHub token resolution against github.json) */
-const sessionRepoUrl = new Map<string, string>()
+/** worktreeId -> repo URL (drives GitHub token resolution against github.json) */
+const worktreeRepoUrl = new Map<string, string>()
 
-/** sessionId -> active agent tool ('claude' | 'codex') */
-const sessionTool = new Map<string, string>()
+/** worktreeId -> active agent tool ('claude' | 'codex') */
+const worktreeTool = new Map<string, string>()
 
-/** sessionId -> owning project slug (scopes the git-auth-failure records) */
-const sessionProject = new Map<string, string>()
+/** worktreeId -> owning project slug (scopes the git-auth-failure records) */
+const worktreeProject = new Map<string, string>()
 
 /**
- * sessionId -> (hostname -> upstream redirect target). Test-only: redirects
+ * worktreeId -> (hostname -> upstream redirect target). Test-only: redirects
  * the post-MITM upstream call to a mock while leaving TLS termination and
  * credential injection intact.
  */
-const sessionUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect>>()
+const worktreeUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect>>()
 
-/** sessionId -> Set of blocked hostnames */
-const blockedHostsBySession = new Map<string, Set<string>>()
+/** worktreeId -> Set of blocked hostnames */
+const blockedHostsByWorktree = new Map<string, Set<string>>()
 
 /**
  * projectSlug -> (hostname -> auth-failure record). Populated when an
  * upstream rejects a git smart-HTTP request that carried a yaac-injected
  * credential — i.e. the stored token itself is bad (expired/revoked),
  * not a missing allowlist entry. Keyed by project (resolved through the
- * requesting session's registration): the credential belongs to the
- * project's repo, so one bad token flags every session of the project,
- * and the record outlives the session that first hit it. Cleared per
+ * requesting worktree's registration): the credential belongs to the
+ * project's repo, so one bad token flags every worktree of the project,
+ * and the record outlives the worktree that first hit it. Cleared per
  * host on the next successful injected git request from any of the
- * project's sessions, so the flag self-heals after `yaac auth update`.
+ * project's worktrees, so the flag self-heals after `yaac auth update`.
  */
 const gitAuthFailuresByProject = new Map<string, Map<string, GitAuthFailureRecord>>()
 
@@ -797,7 +798,7 @@ interface GitAuthFailureRecord {
 // /data is a hostPath, so anything written here is directly readable by
 // the server off the host filesystem — no HTTP round-trip. Blocked hosts
 // are written through on change (they're plain hostnames, no secrets);
-// session registrations are written through on PUT/DELETE so a replaced
+// worktree registrations are written through on PUT/DELETE so a replaced
 // proxy pod reloads them at boot and self-heals without server help.
 // Registrations are safe to persist because injection rules carry
 // credential *references* (`secretRef`), never secret values — the values
@@ -805,21 +806,24 @@ interface GitAuthFailureRecord {
 
 const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
 const GIT_AUTH_FAILURES_FILE = path.join(DATA_DIR, 'git-auth-failures.json')
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json')
+const WORKTREES_FILE = path.join(DATA_DIR, 'worktrees.json')
+/**
+ * The name this file had before a worktree stopped being called a session.
+ * /data is a hostPath that outlives the pod on purpose — it is how a replaced
+ * proxy comes back knowing every worktree's allowlist — so a boot that finds
+ * only the old name must still load it. Reading the wrong name fails SILENTLY:
+ * the proxy starts empty, fails closed, and every running worktree loses
+ * egress until something re-registers it.
+ */
+const LEGACY_WORKTREES_FILE = path.join(DATA_DIR, 'sessions.json')
 
 /**
  * Atomic write via tmp+rename so a concurrent host-side reader never sees
  * a torn file — same pattern as the OAuth bundle writers.
  */
-function writeJsonAtomic(filePath: string, value: unknown): void {
-  const tmp = filePath + '.tmp-' + crypto.randomBytes(6).toString('hex')
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
-  fs.renameSync(tmp, filePath)
-}
-
 function persistBlockedHosts(): void {
   const result: Record<string, string[]> = {}
-  for (const [sid, hosts] of blockedHostsBySession) {
+  for (const [sid, hosts] of blockedHostsByWorktree) {
     if (hosts.size > 0) result[sid] = [...hosts]
   }
   try {
@@ -839,9 +843,9 @@ function loadBlockedHosts(): void {
   if (!parsed || typeof parsed !== 'object') return
   for (const [sid, hosts] of Object.entries(parsed as Record<string, unknown>)) {
     if (!Array.isArray(hosts)) continue
-    blockedHostsBySession.set(sid, new Set(hosts.filter((h) => typeof h === 'string')))
+    blockedHostsByWorktree.set(sid, new Set(hosts.filter((h) => typeof h === 'string')))
   }
-  console.log(`[proxy] Loaded blocked hosts for ${blockedHostsBySession.size} session(s) from disk`)
+  console.log(`[proxy] Loaded blocked hosts for ${blockedHostsByWorktree.size} worktree(s) from disk`)
 }
 
 function persistGitAuthFailures(): void {
@@ -880,11 +884,11 @@ function loadGitAuthFailures(): void {
 }
 
 /**
- * Snapshot of everything PUT /sessions/:id registers. `upstreamRedirects`
+ * Snapshot of everything PUT /worktrees/:id registers. `upstreamRedirects`
  * is test-only state (see UpstreamRedirect) — persisting it is harmless
  * and keeps the snapshot a faithful copy of the registration.
  */
-type PersistedSession = {
+type PersistedWorktree = {
   rules: HostInjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
@@ -893,46 +897,42 @@ type PersistedSession = {
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
-function persistSessions(): void {
-  const result: Record<string, PersistedSession> = {}
-  for (const [sid, allowedHosts] of sessionAllowedHosts) {
+function persistWorktrees(): void {
+  const result: Record<string, PersistedWorktree> = {}
+  for (const [sid, allowedHosts] of worktreeAllowedHosts) {
     result[sid] = {
-      rules: sessionRules.get(sid) ?? [],
+      rules: worktreeRules.get(sid) ?? [],
       allowedHosts,
-      repoUrl: sessionRepoUrl.get(sid),
+      repoUrl: worktreeRepoUrl.get(sid),
       // Both validated as present by the PUT handler.
-      tool: sessionTool.get(sid)!,
-      projectSlug: sessionProject.get(sid)!,
-      upstreamRedirects: sessionUpstreamRedirects.get(sid),
+      tool: worktreeTool.get(sid)!,
+      projectSlug: worktreeProject.get(sid)!,
+      upstreamRedirects: worktreeUpstreamRedirects.get(sid),
     }
   }
   try {
-    writeJsonAtomic(SESSIONS_FILE, result)
+    writeJsonAtomic(WORKTREES_FILE, result)
   } catch (err) {
-    console.error('[proxy] Failed to persist sessions:', (err as Error).message)
+    console.error('[proxy] Failed to persist worktrees:', (err as Error).message)
   }
 }
 
-function loadSessions(): void {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'))
-  } catch {
-    return // first boot or unreadable — start empty
-  }
+function loadWorktrees(): void {
+  // first boot or unreadable → null, and the proxy starts empty
+  const parsed = readJsonEither(WORKTREES_FILE, LEGACY_WORKTREES_FILE)
   if (!parsed || typeof parsed !== 'object') return
   for (const [sid, raw] of Object.entries(parsed as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object') continue
-    const s = raw as PersistedSession
+    const s = raw as PersistedWorktree
     if (!Array.isArray(s.rules) || !Array.isArray(s.allowedHosts)) continue
-    sessionRules.set(sid, s.rules)
-    sessionAllowedHosts.set(sid, s.allowedHosts)
-    if (s.repoUrl) sessionRepoUrl.set(sid, s.repoUrl)
-    sessionTool.set(sid, s.tool)
-    sessionProject.set(sid, s.projectSlug)
-    if (s.upstreamRedirects) sessionUpstreamRedirects.set(sid, s.upstreamRedirects)
+    worktreeRules.set(sid, s.rules)
+    worktreeAllowedHosts.set(sid, s.allowedHosts)
+    if (s.repoUrl) worktreeRepoUrl.set(sid, s.repoUrl)
+    worktreeTool.set(sid, s.tool)
+    worktreeProject.set(sid, s.projectSlug)
+    if (s.upstreamRedirects) worktreeUpstreamRedirects.set(sid, s.upstreamRedirects)
   }
-  console.log(`[proxy] Loaded ${sessionAllowedHosts.size} session registration(s) from disk`)
+  console.log(`[proxy] Loaded ${worktreeAllowedHosts.size} worktree registration(s) from disk`)
 }
 
 // ── Injection Logic ────────────────────────────────────────────────────
@@ -960,26 +960,26 @@ function hostMatches(hostname: string, pattern: string): boolean {
   return patternParts.every((p, i) => p === '*' || p === hostParts[i])
 }
 
-function findRulesForHost(sessionId: string, hostname: string): HostInjectionRule[] {
-  const rules = sessionRules.get(sessionId)
+function findRulesForHost(worktreeId: string, hostname: string): HostInjectionRule[] {
+  const rules = worktreeRules.get(worktreeId)
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
-function isHostAllowed(sessionId: string | null, hostname: string): boolean {
-  if (!sessionId) return false // no session = block by default (fail closed)
-  const allowed = sessionAllowedHosts.get(sessionId)
+function isHostAllowed(worktreeId: string | null, hostname: string): boolean {
+  if (!worktreeId) return false // no worktree = block by default (fail closed)
+  const allowed = worktreeAllowedHosts.get(worktreeId)
   if (!allowed) return false // no allowlist registered = block by default (fail closed)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
 
-function recordBlockedHost(sessionId: string | null, hostname: string): void {
-  if (!sessionId) return
-  let hosts = blockedHostsBySession.get(sessionId)
+function recordBlockedHost(worktreeId: string | null, hostname: string): void {
+  if (!worktreeId) return
+  let hosts = blockedHostsByWorktree.get(worktreeId)
   if (!hosts) {
     hosts = new Set()
-    blockedHostsBySession.set(sessionId, hosts)
+    blockedHostsByWorktree.set(worktreeId, hosts)
   }
   if (hosts.has(hostname)) return
   hosts.add(hostname)
@@ -1007,21 +1007,21 @@ function isGitSmartHttpPath(requestPath: string): boolean {
 /**
  * Track the upstream's verdict on a git smart-HTTP request that carried a
  * yaac-injected credential. A 401/403 means the stored token itself was
- * rejected (expired or revoked) — record it against the session's project
+ * rejected (expired or revoked) — record it against the worktree's project
  * (write-through, like blocked hosts) so the server surfaces a loud
  * project-wide error. A later 2xx on the same host from any of the
- * project's sessions clears the record, so the flag self-heals once the
+ * project's worktrees clears the record, so the flag self-heals once the
  * user runs `yaac auth update` and git is retried.
  */
 function noteGitUpstreamStatus(
-  sessionId: string,
+  worktreeId: string,
   hostname: string,
   requestPath: string,
   status: number,
 ): void {
   if (!isGitSmartHttpPath(requestPath)) return
-  const projectSlug = sessionProject.get(sessionId)
-  if (!projectSlug) return // unregistered session — can't attribute
+  const projectSlug = worktreeProject.get(worktreeId)
+  if (!projectSlug) return // unregistered worktree — can't attribute
   const byHost = gitAuthFailuresByProject.get(projectSlug)
   if (status === 401 || status === 403) {
     if (byHost?.has(hostname)) return // repeat failure — no disk traffic
@@ -1122,20 +1122,20 @@ function applyBodyInjections(
 /**
  * Hosts the proxy MITMs so it can inject agent-tool credentials read from
  * the mounted credentials dir, plus any HTTPS host for which the current
- * session has a matching git credential. SSH (port 22) is always tunneled,
- * never MITM'd. Rule-based per-session MITM is still applied on top of this.
+ * worktree has a matching git credential. SSH (port 22) is always tunneled,
+ * never MITM'd. Rule-based per-worktree MITM is still applied on top of this.
  */
-function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: number): boolean {
+function hostNeedsDynamicMitm(worktreeId: string | null, hostname: string, port: number): boolean {
   if (port === 22) return false
   if (hostname === ANTHROPIC_API_HOST) return true
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  // opencode / pi: MITM the session's chosen provider host so the api-key swap
+  // opencode / pi: MITM the worktree's chosen provider host so the api-key swap
   // in buildDynamicRules can run. Matches that swap's gating exactly — only the
   // one host the registered tool's credential points at.
-  const tool = sessionId ? sessionTool.get(sessionId) : undefined
+  const tool = worktreeId ? worktreeTool.get(worktreeId) : undefined
   if (tool === 'opencode') {
     const creds = readOpencodeCreds()
     if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) return true
@@ -1144,16 +1144,16 @@ function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: 
     const creds = readPiCreds()
     if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) return true
   }
-  if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
+  if (worktreeId && worktreeHasHttpsCredentialForHost(worktreeId, hostname)) return true
   // gh CLI: MITM the GitHub API host so we can swap the placeholder GH_TOKEN
-  // for the session's real git token (api.github.com is not the git remote
+  // for the worktree's real git token (api.github.com is not the git remote
   // host, so the credential check above misses it).
-  if (sessionId && resolveGithubApiTokenForSession(sessionId, hostname) !== null) return true
+  if (worktreeId && resolveGithubApiTokenForWorktree(worktreeId, hostname) !== null) return true
   return false
 }
 
-function sessionHasHttpsCredentialForHost(sessionId: string, hostname: string): boolean {
-  const cred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+function worktreeHasHttpsCredentialForHost(worktreeId: string, hostname: string): boolean {
+  const cred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
   return cred?.host === hostname
 }
 
@@ -1169,12 +1169,12 @@ function ghApiHostForGitHost(host: string): string | null {
 
 /**
  * Resolve the GitHub token to inject for `gh` traffic to `hostname`: the
- * session's HTTPS git token, but only when `hostname` is the gh API host for
+ * worktree's HTTPS git token, but only when `hostname` is the gh API host for
  * that credential's git host. The host gate keeps the token from leaking onto
  * unrelated MITM'd hosts.
  */
-function resolveGithubApiTokenForSession(sessionId: string, hostname: string): string | null {
-  const cred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+function resolveGithubApiTokenForWorktree(worktreeId: string, hostname: string): string | null {
+  const cred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
   if (!cred) return null
   if (ghApiHostForGitHost(cred.host) !== hostname) return null
   return cred.token
@@ -1225,20 +1225,20 @@ function swapApiKeyHeader(
  * rules — no separate mutation path.
  */
 function buildDynamicRules(
-  sessionId: string | null,
+  worktreeId: string | null,
   hostname: string,
   claudeTokenBundle: ClaudeOAuthBundle | null,
   codexTokenBundle: CodexOAuthBundle | null,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
-  if (!sessionId) return []
+  if (!worktreeId) return []
   const rules: InjectionRule[] = []
 
-  // HTTPS git credential injection: only fires when the session's repoUrl
+  // HTTPS git credential injection: only fires when the worktree's repoUrl
   // host matches the current MITM hostname. The host equality guard keeps a
   // token scoped to e.g. github.com from leaking into a request to
   // chatgpt.com (which is also MITM'd for other reasons).
-  const httpsCred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+  const httpsCred = resolveHttpsCredentialForRepo(worktreeRepoUrl.get(worktreeId))
   if (httpsCred && httpsCred.host === hostname) {
     const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
     rules.push({
@@ -1249,11 +1249,11 @@ function buildDynamicRules(
 
   // GitHub CLI (`gh`) auth: the container's GH_TOKEN carries the placeholder.
   // gh sends it to the GitHub API host (api.github.com — REST + GraphQL) as
-  // `Authorization: token <placeholder>` (or `Bearer`). Swap in the session's
+  // `Authorization: token <placeholder>` (or `Bearer`). Swap in the worktree's
   // real github.com HTTPS git token, preserving gh's auth scheme. Gated on the
-  // session having a matching GitHub credential AND on the placeholder
+  // worktree having a matching GitHub credential AND on the placeholder
   // sentinel, so traffic carrying a user-supplied token passes through.
-  const ghApiToken = resolveGithubApiTokenForSession(sessionId, hostname)
+  const ghApiToken = resolveGithubApiTokenForWorktree(worktreeId, hostname)
   if (ghApiToken) {
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     if (incomingAuth && incomingAuth.includes(PLACEHOLDER_GH_TOKEN)) {
@@ -1278,7 +1278,7 @@ function buildDynamicRules(
   //
   // There is deliberately no longer a per-tool gate here. A worktree is
   // tool-agnostic: it holds whatever agent sessions the user opens in it, in
-  // any mix, so "the session's tool" is not a property that exists to gate
+  // any mix, so "the worktree's tool" is not a property that exists to gate
   // on. Every pod already carries every tool's placeholder env (spares are
   // retoolable), so the gate only ever decided which of those placeholders
   // resolved — and any agent in any worktree may now spend any credential the
@@ -1341,7 +1341,7 @@ function buildDynamicRules(
   // opencode / pi credential swap. Both are api-key only: the container's env
   // carries the chosen provider's key var set to the placeholder, the tool
   // sends the placeholder to the provider's host, and the proxy substitutes
-  // the real key here. Gated on the session's registered tool + the host
+  // the real key here. Gated on the worktree's registered tool + the host
   // matching the credential's provider + the placeholder sentinel, so
   // unrelated traffic (or a user manually carrying their own key) passes
   // through untouched. Which header carries the key varies by provider
@@ -1679,7 +1679,7 @@ function handleMitm(
   clientSocket: Duplex,
   hostname: string,
   port: string | undefined,
-  sessionId: string | null,
+  worktreeId: string | null,
   rules: HostInjectionRule[],
   upstreamRedirect: UpstreamRedirect | null,
 ): void {
@@ -1703,17 +1703,17 @@ function handleMitm(
     // swap placeholder refresh_token outbound, then capture real tokens +
     // swap placeholders inbound. Null when this isn't the token endpoint or
     // no OAuth bundle is on disk (nothing to swap). Not gated on the
-    // session's tool: a worktree is tool-agnostic, so any agent in it may
+    // worktree's tool: a worktree is tool-agnostic, so any agent in it may
     // drive any signed-in tool's refresh. (The host-side tool sign-in flow
-    // never traverses the session proxy, so it's unaffected.)
+    // never traverses the worktree proxy, so it's unaffected.)
     const claudeTokenBundle =
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
-      && sessionId !== null
+      && worktreeId !== null
         ? readClaudeOAuthBundle()
         : null
     const codexTokenBundle =
       hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
-      && sessionId !== null
+      && worktreeId !== null
         ? readCodexOAuthBundle()
         : null
 
@@ -1722,18 +1722,18 @@ function handleMitm(
     // merged into the registered rules (secretRefs resolved per request,
     // same freshness semantics) so a single injection pipeline handles both.
     const dynamicRules = buildDynamicRules(
-      sessionId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
+      worktreeId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
     )
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
-    // Watch the upstream's verdict when this request goes to the session's
+    // Watch the upstream's verdict when this request goes to the worktree's
     // git host with a yaac-injected credential (the same condition under
     // which buildDynamicRules added the git Authorization rule above) — a
     // 401/403 on a git endpoint means the stored token is bad.
     const gitCredInjected =
-      sessionId !== null && sessionHasHttpsCredentialForHost(sessionId, hostname)
+      worktreeId !== null && worktreeHasHttpsCredentialForHost(worktreeId, hostname)
 
     const totalInj = injCount + bodyInjections.length
     if (totalInj > 0) {
@@ -1763,8 +1763,8 @@ function handleMitm(
         ...(useHttp ? {} : { rejectUnauthorized: true }),
         ...(useTorAgent ? { agent: torAgent } : {}),
       }, (upstreamRes) => {
-        if (gitCredInjected && sessionId !== null) {
-          noteGitUpstreamStatus(sessionId, hostname, reqPath, upstreamRes.statusCode ?? 0)
+        if (gitCredInjected && worktreeId !== null) {
+          noteGitUpstreamStatus(worktreeId, hostname, reqPath, upstreamRes.statusCode ?? 0)
         }
         if (claudeTokenBundle && shouldCaptureTokenResponse) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
@@ -1832,7 +1832,7 @@ function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
-    const dynamicRules = buildDynamicRules(sessionId, hostname, null, null, req.headers)
+    const dynamicRules = buildDynamicRules(worktreeId, hostname, null, null, req.headers)
     const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
 
@@ -1967,7 +1967,7 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
 // ── Upstream Dispatch (shared by CONNECT + transparent listeners) ─────
 
 /**
- * Authorize `hostname` for the session and hand the socket to the MITM
+ * Authorize `hostname` for the worktree and hand the socket to the MITM
  * or tunnel path. The explicit CONNECT listener and the transparent
  * HTTPS listener share everything from the allowlist check onward; they
  * differ only in framing — CONNECT writes an HTTP response head
@@ -1978,7 +1978,7 @@ function dispatchToUpstream(
   clientSocket: Duplex,
   hostname: string,
   port: string | undefined,
-  sessionId: string,
+  worktreeId: string,
   opts: { writeConnectOk: boolean; head?: Buffer },
 ): void {
   // Hold the read side until handleMitm/handleTunnel attaches the pipe (which
@@ -2003,10 +2003,10 @@ function dispatchToUpstream(
     return
   }
 
-  if (!isHostAllowed(sessionId, hostname)) {
+  if (!isHostAllowed(worktreeId, hostname)) {
     const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
     console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
-    recordBlockedHost(sessionId, hostname)
+    recordBlockedHost(worktreeId, hostname)
     if (opts.writeConnectOk) {
       clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       clientSocket.end()
@@ -2016,17 +2016,17 @@ function dispatchToUpstream(
     return
   }
 
-  const rules = findRulesForHost(sessionId, hostname)
+  const rules = findRulesForHost(worktreeId, hostname)
 
   // Always MITM well-known tool-auth hosts so we can inject credentials
-  // read from the host-mounted credentials dir, even when no per-session
+  // read from the host-mounted credentials dir, even when no per-worktree
   // rule-based injections apply. Port-aware: SSH (22) always tunnels.
   const destPort = parseInt(port ?? '', 10) || 443
-  const needsDynMitm = hostNeedsDynamicMitm(sessionId, hostname, destPort)
+  const needsDynMitm = hostNeedsDynamicMitm(worktreeId, hostname, destPort)
 
   // A registered redirect for this hostname forces MITM — without it, the
   // proxy would tunnel bytes unchanged and the redirect could never apply.
-  const redirect = sessionUpstreamRedirects.get(sessionId)?.[hostname] ?? null
+  const redirect = worktreeUpstreamRedirects.get(worktreeId)?.[hostname] ?? null
 
   if (opts.writeConnectOk) {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -2037,7 +2037,7 @@ function dispatchToUpstream(
   }
 
   if (rules.length > 0 || needsDynMitm || redirect) {
-    handleMitm(clientSocket, hostname, port, sessionId, rules, redirect)
+    handleMitm(clientSocket, hostname, port, worktreeId, rules, redirect)
   } else {
     handleTunnel(clientSocket, hostname, port)
   }
@@ -2099,10 +2099,17 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Register or update all state for a session
-  if (req.method === 'PUT' && req.url && /^\/sessions\/[^/]+$/.exec(req.url)) {
+  // Register or update all state for a worktree. `/sessions/:id` is the path
+  // this took before the rename: a server predating it still calls that, and
+  // several server paths reach the proxy without the currency check that
+  // would have redeployed it first (allow-host and worktree stop both go
+  // through attachIfRunning, not ensureRunning).
+  const registerMatch = req.method === 'PUT' && req.url
+    ? /^\/(?:worktrees|sessions)\/([^/]+)$/.exec(req.url)
+    : null
+  if (registerMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const sessionId = decodeURIComponent(req.url.slice('/sessions/'.length))
+    const worktreeId = decodeURIComponent(registerMatch[1])
     let body = ''
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
@@ -2117,16 +2124,16 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         if (!Array.isArray(o.allowedHosts)) { res.writeHead(400); res.end('Invalid body: need allowedHosts array'); return }
         if (typeof o.tool !== 'string' || !o.tool) { res.writeHead(400); res.end('Invalid body: need tool'); return }
         if (typeof o.projectSlug !== 'string' || !o.projectSlug) { res.writeHead(400); res.end('Invalid body: need projectSlug'); return }
-        sessionRules.set(sessionId, rules as HostInjectionRule[])
+        worktreeRules.set(worktreeId, rules as HostInjectionRule[])
         const allowedHosts = o.allowedHosts as string[]
-        sessionAllowedHosts.set(sessionId, allowedHosts)
+        worktreeAllowedHosts.set(worktreeId, allowedHosts)
         if (typeof o.repoUrl === 'string' && o.repoUrl) {
-          sessionRepoUrl.set(sessionId, o.repoUrl)
+          worktreeRepoUrl.set(worktreeId, o.repoUrl)
         } else {
-          sessionRepoUrl.delete(sessionId)
+          worktreeRepoUrl.delete(worktreeId)
         }
-        sessionTool.set(sessionId, o.tool)
-        sessionProject.set(sessionId, o.projectSlug)
+        worktreeTool.set(worktreeId, o.tool)
+        worktreeProject.set(worktreeId, o.projectSlug)
         if (o.upstreamRedirects && typeof o.upstreamRedirects === 'object') {
           const parsed: Record<string, UpstreamRedirect> = {}
           for (const [host, target] of Object.entries(o.upstreamRedirects as Record<string, unknown>)) {
@@ -2140,19 +2147,19 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
               }
             }
           }
-          sessionUpstreamRedirects.set(sessionId, parsed)
+          worktreeUpstreamRedirects.set(worktreeId, parsed)
         } else {
-          sessionUpstreamRedirects.delete(sessionId)
+          worktreeUpstreamRedirects.delete(worktreeId)
         }
         // Write-through: registrations are secret-free (rules carry
         // secretRefs), so a replaced pod reloads them at boot and live
-        // sessions keep working with zero server involvement.
-        persistSessions()
-        const redirectCount = sessionUpstreamRedirects.get(sessionId)
-          ? Object.keys(sessionUpstreamRedirects.get(sessionId)!).length
+        // worktrees keep working with zero server involvement.
+        persistWorktrees()
+        const redirectCount = worktreeUpstreamRedirects.get(worktreeId)
+          ? Object.keys(worktreeUpstreamRedirects.get(worktreeId)!).length
           : 0
         const redirectSuffix = redirectCount > 0 ? `, ${redirectCount} upstream redirects` : ''
-        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns${redirectSuffix})`)
+        console.log(`[proxy] Registered worktree ${worktreeId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns${redirectSuffix})`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
@@ -2162,18 +2169,18 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Live-widen one session's allowlist (webapp "allow blocked host" action).
+  // Live-widen one worktree's allowlist (webapp "allow blocked host" action).
   // Appends the host to the in-memory allowlist so the next connect is
   // permitted immediately, and prunes it from the recorded blocked set so the
   // webapp badge clears. Write-through both: a replaced pod keeps the widened
-  // allowlist for the session's lifetime, and the server reads the pruned
+  // allowlist for the worktree's lifetime, and the server reads the pruned
   // blocked-hosts file straight off /data.
   const allowHostMatch = req.method === 'POST' && req.url
-    ? /^\/sessions\/([^/]+)\/allow-host$/.exec(req.url)
+    ? /^\/(?:worktrees|sessions)\/([^/]+)\/allow-host$/.exec(req.url)
     : null
   if (allowHostMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const sessionId = decodeURIComponent(allowHostMatch[1])
+    const worktreeId = decodeURIComponent(allowHostMatch[1])
     let body = ''
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
@@ -2185,17 +2192,17 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         if (typeof host !== 'string' || !host) {
           res.writeHead(400); res.end('Invalid body: need host string'); return
         }
-        const allowed = sessionAllowedHosts.get(sessionId)
-        // Fail closed: only a registered session can be widened. The server
+        const allowed = worktreeAllowedHosts.get(worktreeId)
+        // Fail closed: only a registered worktree can be widened. The server
         // treats this 404 as a soft miss when fanning out over siblings.
-        if (!allowed) { res.writeHead(404); res.end('Unknown session'); return }
+        if (!allowed) { res.writeHead(404); res.end('Unknown worktree'); return }
         if (!allowed.includes(host)) {
           allowed.push(host)
-          persistSessions()
+          persistWorktrees()
         }
-        const blocked = blockedHostsBySession.get(sessionId)
+        const blocked = blockedHostsByWorktree.get(worktreeId)
         if (blocked && blocked.delete(host)) persistBlockedHosts()
-        console.log(`[proxy] Allowed ${host} for session ${sessionId.slice(0, 8)}...`)
+        console.log(`[proxy] Allowed ${host} for worktree ${worktreeId.slice(0, 8)}...`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
@@ -2206,9 +2213,9 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   }
 
   // yaac-in-yaac attribution: the host server pushes a full `{ podIP:
-  // outerSessionId }` map for every managed vcluster's pods, so chained egress
+  // outerWorktreeId }` map for every managed vcluster's pods, so chained egress
   // (the inner proxy's upstream dials + pre-opt-in synced pods) is attributed to
-  // the owning OUTER session and judged against its allowlist. Not persisted —
+  // the owning OUTER worktree and judged against its allowlist. Not persisted —
   // pod IPs are ephemeral and the server re-pushes every tick; a replaced proxy
   // fail-closes on this traffic until the next push.
   if (req.method === 'PUT' && req.url === '/vcluster-attribution') {
@@ -2217,10 +2224,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
       const map = parseVclusterAttribution(body)
-      if (!map) { res.writeHead(400); res.end('Invalid body: need {podIP: sessionId}'); return }
+      if (!map) { res.writeHead(400); res.end('Invalid body: need {podIP: worktreeId}'); return }
       const key = [...map.entries()].map(([ip, sid]) => `${ip}=${sid}`).sort().join(',')
-      vclusterPodSession.clear()
-      for (const [ip, sid] of map) vclusterPodSession.set(ip, sid)
+      vclusterPodWorktree.clear()
+      for (const [ip, sid] of map) vclusterPodWorktree.set(ip, sid)
       // The server re-pushes every tick (so the map survives a proxy restart);
       // only log when it actually changes, to keep the log quiet at steady state.
       if (key !== lastVclusterAttributionKey) {
@@ -2233,33 +2240,36 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // List registered session ids. Diagnostic surface — e2e tests use it
+  // List registered worktree ids. Diagnostic surface — e2e tests use it
   // to assert a replaced pod reloaded its registrations from /data.
-  if (req.method === 'GET' && req.url === '/sessions') {
+  if (req.method === 'GET' && (req.url === '/worktrees' || req.url === '/sessions')) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify([...sessionAllowedHosts.keys()]))
+    res.end(JSON.stringify([...worktreeAllowedHosts.keys()]))
     return
   }
 
-  // Remove all state for a session
-  if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
+  // Remove all state for a worktree
+  const removeMatch = req.method === 'DELETE' && req.url
+    ? /^\/(?:worktrees|sessions)\/([^/]+)$/.exec(req.url)
+    : null
+  if (removeMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const sessionId = decodeURIComponent(req.url.slice('/sessions/'.length))
-    const deleted = sessionRules.delete(sessionId)
-    sessionAllowedHosts.delete(sessionId)
-    sessionRepoUrl.delete(sessionId)
-    sessionTool.delete(sessionId)
-    sessionProject.delete(sessionId)
-    sessionUpstreamRedirects.delete(sessionId)
+    const worktreeId = decodeURIComponent(removeMatch[1])
+    const deleted = worktreeRules.delete(worktreeId)
+    worktreeAllowedHosts.delete(worktreeId)
+    worktreeRepoUrl.delete(worktreeId)
+    worktreeTool.delete(worktreeId)
+    worktreeProject.delete(worktreeId)
+    worktreeUpstreamRedirects.delete(worktreeId)
     // Git-auth failures are deliberately NOT cleared here: they are keyed by
-    // project, and a bad stored credential outlives any one session. The
+    // project, and a bad stored credential outlives any one worktree. The
     // record clears on the next successful git request from any of the
-    // project's sessions.
-    const hadBlockedHosts = blockedHostsBySession.delete(sessionId)
-    persistSessions()
+    // project's worktrees.
+    const hadBlockedHosts = blockedHostsByWorktree.delete(worktreeId)
+    persistWorktrees()
     if (hadBlockedHosts) persistBlockedHosts()
-    console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
+    console.log(`[proxy] Removed worktree ${worktreeId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
     return
@@ -2313,7 +2323,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // In-session spawn requests: the server drains pending requests each
+  // In-worktree spawn requests: the server drains pending requests each
   // background tick (drain = claim, at-most-once) ...
   if (req.method === 'GET' && req.url === '/spawn/pending') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -2322,7 +2332,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // ... and posts back results, which complete the held session responses.
+  // ... and posts back results, which complete the held worktree responses.
   if (req.method === 'POST' && req.url === '/spawn/results') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     let body = ''
@@ -2343,7 +2353,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         const result: SpawnResult = {
           requestId: r.requestId,
           ok: r.ok,
-          sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
+          worktreeId: typeof r.worktreeId === 'string' ? r.worktreeId : undefined,
           error: typeof r.error === 'string' ? r.error : undefined,
         }
         if (spawnQueue.complete(result)) completed++
@@ -2393,7 +2403,7 @@ const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
 const knownHostsByHost = new Map<string, string>()
 
 // The pod-local agent socket (created by entrypoint.sh under $HOME). The
-// proxy talks to it directly; session pods reach it through the
+// proxy talks to it directly; worktree pods reach it through the
 // SSH_AGENT_PORT listener, which splices to this same path.
 const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
 
@@ -2480,8 +2490,8 @@ function sshListAgent(): Promise<Array<{ fingerprint: string; comment: string }>
 
 ca = loadOrGenerateCA()
 // Reload write-through state so a pod replacement (image upgrade, crash,
-// eviction) doesn't 403 live sessions or lose their blocked-host history.
-loadSessions()
+// eviction) doesn't 403 live worktrees or lose their blocked-host history.
+loadWorktrees()
 loadBlockedHosts()
 loadGitAuthFailures()
 
@@ -2497,12 +2507,12 @@ loadGitAuthFailures()
 function forwardPlainHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  sessionId: string,
+  worktreeId: string,
   target: { hostname: string; port: number; path: string },
 ): void {
-  if (!isHostAllowed(sessionId, target.hostname)) {
+  if (!isHostAllowed(worktreeId, target.hostname)) {
     console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
-    recordBlockedHost(sessionId, target.hostname)
+    recordBlockedHost(worktreeId, target.hostname)
     res.writeHead(403, { 'Content-Type': 'text/plain' })
     res.end(`Blocked by URL allowlist: ${target.hostname} is not in the allowed hosts`)
     return
@@ -2539,8 +2549,8 @@ function forwardPlainHttp(
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-// :API_PORT serves only the server control API (CA cert, session
-// registrations, ssh-agent keys). Session egress never reaches it — all of
+// :API_PORT serves only the server control API (CA cert, worktree
+// registrations, ssh-agent keys). Worktree egress never reaches it — all of
 // it (HTTP, HTTPS, SSH) rides the relay-fed transparent listeners, gated by
 // the per-connection PP2 token.
 const server = http.createServer((req, res) => {
@@ -2571,12 +2581,12 @@ server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
 
 // ── Transparent listeners ──────────────────────────────────────────────
 //
-// Session pods' outbound 443/80 (and the SSH tunnel sentinel) is
+// Worktree pods' outbound 443/80 (and the SSH tunnel sentinel) is
 // redirected here by netd's per-pod nat DNAT at the pod's veth peer: the
 // node-local Envoy forwards each connection wrapped in a PROXY protocol
 // v2 header carrying the connection's real source pod IP. Identity is that
-// source IP, resolved to a session via the pod-watch index
-// (see resolveSessionBySourceIp). Destination comes from the TLS SNI
+// source IP, resolved to a worktree via the pod-watch index
+// (see resolveWorktreeBySourceIp). Destination comes from the TLS SNI
 // (443) / HTTP Host (80) after the PP2 header is consumed. The listeners
 // fail closed: no/invalid PP2, an unknown source pod, or (for HTTPS) an
 // SNI-less ClientHello → destroy.
@@ -2591,19 +2601,19 @@ const PP2_TIMEOUT_MS = 10_000
 
 /**
  * Consume the Envoy-stamped PROXY-protocol-v2 preamble on a freshly accepted
- * transparent socket, resolve the source pod IP it carries to a session id,
- * then hand that session id and the remaining stream to `next`. Any failure
+ * transparent socket, resolve the source pod IP it carries to a worktree id,
+ * then hand that worktree id and the remaining stream to `next`. Any failure
  * destroys the socket — this is the fail-closed gate. Identity is the source
  * pod IP, which netd's Envoy stamps from the connection's real peer address
  * (unforgeable: the redirect is keyed on the arrival veth, and neither a
  * gVisor guest nor a Felix-policed runc pod can spoof its source). The
  * proxy-ingress NetworkPolicy admits these ports from the node CIDRs only, so
- * a session pod cannot dial in and forge a source.
+ * a worktree pod cannot dial in and forge a source.
  */
-function resolveSessionBySourceIp(
+function resolveWorktreeBySourceIp(
   socket: net.Socket,
   label: string,
-  next: (sessionId: string, leftover: Buffer, viaVclusterAttribution: boolean) => void,
+  next: (worktreeId: string, leftover: Buffer, viaVclusterAttribution: boolean) => void,
 ): void {
   socket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
@@ -2633,22 +2643,22 @@ function resolveSessionBySourceIp(
       return
     }
     const srcIp = res.srcIp
-    // Keep buffering bytes that arrive while we resolve the session async, so
+    // Keep buffering bytes that arrive while we resolve the worktree async, so
     // none are lost between removing onData and `next` attaching its reader.
     let leftover = buf.subarray(res.bytesConsumed)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
-    void resolveSession(srcIp).then((resolved) => {
+    void resolveWorktree(srcIp).then((resolved) => {
       socket.removeListener('data', buffer)
       if (!resolved) {
-        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known session pod`)
+        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known worktree pod`)
         socket.destroy()
         return
       }
       // Hand the post-header bytes to `next` directly (the HTTPS peeker / HTTP
       // path each unshift once at dispatch; a second unshift would not
       // reliably re-emit to a freshly-added 'data' listener).
-      next(resolved.sessionId, leftover, resolved.viaVclusterAttribution)
+      next(resolved.worktreeId, leftover, resolved.viaVclusterAttribution)
     })
   }
   socket.on('data', onData)
@@ -2657,11 +2667,11 @@ function resolveSessionBySourceIp(
 /**
  * After the PP2 preamble: peek the ClientHello SNI without terminating
  * TLS, then dispatch to the shared MITM/tunnel path. `initial` is the
- * post-header leftover from resolveSessionBySourceIp (often the start of the
+ * post-header leftover from resolveWorktreeBySourceIp (often the start of the
  * ClientHello). The single unshift at dispatch drives the real handshake
  * downstream.
  */
-function peekSniAndDispatch(socket: net.Socket, sessionId: string, initial: Buffer): void {
+function peekSniAndDispatch(socket: net.Socket, worktreeId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
   let buf = initial
   let settled = false
@@ -2695,7 +2705,7 @@ function peekSniAndDispatch(socket: net.Socket, sessionId: string, initial: Buff
     if (buf.length > 0) socket.unshift(buf)
     // Destination port is 443 by construction: only dport-443 traffic is
     // REDIRECTed to the relay's HTTPS upstream.
-    dispatchToUpstream(socket, peek.serverName, '443', sessionId, { writeConnectOk: false })
+    dispatchToUpstream(socket, peek.serverName, '443', worktreeId, { writeConnectOk: false })
     return true
   }
 
@@ -2710,32 +2720,32 @@ function peekSniAndDispatch(socket: net.Socket, sessionId: string, initial: Buff
 }
 
 const transparentHttpsServer = net.createServer((socket) => {
-  resolveSessionBySourceIp(socket, 'HTTPS', (sessionId, leftover) =>
-    peekSniAndDispatch(socket, sessionId, leftover))
+  resolveWorktreeBySourceIp(socket, 'HTTPS', (worktreeId, leftover) =>
+    peekSniAndDispatch(socket, worktreeId, leftover))
 })
 
 // Origin-form HTTP after the PP2 preamble: feed the post-header stream
 // into an internal http.Server (the `emit('connection')` pattern handleMitm
-// already uses) and carry the verified session id on the socket.
-type IdentifiedSocket = net.Socket & { yaacSessionId?: string; yaacVclusterAttributed?: boolean }
+// already uses) and carry the verified worktree id on the socket.
+type IdentifiedSocket = net.Socket & { yaacWorktreeId?: string; yaacVclusterAttributed?: boolean }
 
-// In-session spawn requests (see spawn-queue.ts). Held responses expire on a
+// In-worktree spawn requests (see spawn-queue.ts). Held responses expire on a
 // coarse sweep — precision doesn't matter, only that abandoned requests
 // eventually 504 instead of leaking.
 const spawnQueue = new SpawnQueue()
 setInterval(() => { spawnQueue.expire() }, 5_000).unref()
 
 /**
- * `POST http://yaac.internal/spawn` from inside a session: validate, then
+ * `POST http://yaac.internal/spawn` from inside a worktree: validate, then
  * hold the response open until the server drains the queue and posts the
  * result (or the TTL sweep 504s it). Runs BEFORE the allowlist — spawning
- * works in every session without registration and is never recorded as a
+ * works in every worktree without registration and is never recorded as a
  * blocked host.
  */
 function handleSpawnRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  sessionId: string,
+  worktreeId: string,
   viaVclusterAttribution: boolean,
 ): void {
   const respond = (status: number, body: string): void => {
@@ -2774,19 +2784,19 @@ function handleSpawnRequest(
     let gone = false
     res.on('close', () => { gone = true })
     const enqueued = spawnQueue.enqueue(
-      { sessionId, prompt, tool, model },
+      { worktreeId, prompt, tool, model },
       (status, body) => { if (!gone) respond(status, body) },
     )
     if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }
-    console.log(`[proxy] spawn request from session ${sessionId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
+    console.log(`[proxy] spawn request from worktree ${worktreeId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
   })
 }
 
 /**
- * `GET http://yaac.internal/tools` from inside a session (yaac-spawn --models):
+ * `GET http://yaac.internal/tools` from inside a worktree (yaac-spawn --models):
  * report which agent tools have host credentials, their provider/host, and —
  * with `?models=1` — their accepted model ids from the baked catalog. Answered
- * synchronously from proxy-local state (mounted creds + the session's registered
+ * synchronously from proxy-local state (mounted creds + the worktree's registered
  * tool); no server round-trip, no network fetch. Like /spawn it runs BEFORE the
  * allowlist and is attributed by source pod IP; it exposes tool/provider/model
  * names only, never credential material.
@@ -2794,7 +2804,7 @@ function handleSpawnRequest(
 function handleToolsRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  sessionId: string,
+  worktreeId: string,
   viaVclusterAttribution: boolean,
 ): void {
   const respond = (status: number, contentType: string, body: string): void => {
@@ -2818,15 +2828,15 @@ function handleToolsRequest(
     opencode: view(readOpencodeCreds()),
     pi: view(readPiCreds()),
   }
-  const report = buildToolsReport({ currentTool: sessionTool.get(sessionId) ?? null, creds, includeModels })
+  const report = buildToolsReport({ currentTool: worktreeTool.get(worktreeId) ?? null, creds, includeModels })
   if (asJson) { respond(200, 'application/json; charset=utf-8', `${JSON.stringify(report, null, 2)}\n`); return }
   respond(200, 'text/plain; charset=utf-8', formatToolsReport(report))
 }
 
 const internalHttpServer = http.createServer((req, res) => {
   const socket = req.socket as IdentifiedSocket
-  const sessionId = socket.yaacSessionId
-  if (!sessionId) {
+  const worktreeId = socket.yaacWorktreeId
+  if (!worktreeId) {
     // Unreachable: sockets reach this server only after token verification.
     res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('No identity'); return
   }
@@ -2843,13 +2853,13 @@ const internalHttpServer = http.createServer((req, res) => {
   if (target.hostname === SPAWN_MAGIC_HOST) {
     const pathname = (req.url ?? '/').split('?', 1)[0]
     if (pathname === '/tools') {
-      handleToolsRequest(req, res, sessionId, socket.yaacVclusterAttributed === true)
+      handleToolsRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
       return
     }
-    handleSpawnRequest(req, res, sessionId, socket.yaacVclusterAttributed === true)
+    handleSpawnRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
     return
   }
-  forwardPlainHttp(req, res, sessionId, {
+  forwardPlainHttp(req, res, worktreeId, {
     hostname: target.hostname,
     port: target.port,
     path: req.url ?? '/',
@@ -2857,8 +2867,8 @@ const internalHttpServer = http.createServer((req, res) => {
 })
 
 const transparentHttpServer = net.createServer((socket) => {
-  resolveSessionBySourceIp(socket, 'HTTP', (sessionId, leftover, viaVclusterAttribution) => {
-    ;(socket as IdentifiedSocket).yaacSessionId = sessionId
+  resolveWorktreeBySourceIp(socket, 'HTTP', (worktreeId, leftover, viaVclusterAttribution) => {
+    ;(socket as IdentifiedSocket).yaacWorktreeId = worktreeId
     ;(socket as IdentifiedSocket).yaacVclusterAttributed = viaVclusterAttribution
     if (leftover.length > 0) socket.unshift(leftover)
     internalHttpServer.emit('connection', socket)
@@ -2876,7 +2886,7 @@ const CONNECT_TIMEOUT_MS = 10_000
  * through the relay to ncat. SSH (port 22) tunnels; the allowlist still
  * applies, on the hostname ncat preserved.
  */
-function readConnectAndDispatch(socket: net.Socket, sessionId: string, initial: Buffer): void {
+function readConnectAndDispatch(socket: net.Socket, worktreeId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
   let buf = initial
   let settled = false
@@ -2904,7 +2914,7 @@ function readConnectAndDispatch(socket: net.Socket, sessionId: string, initial: 
     }
     // Bytes past the request headers (normally none — ncat waits for 200).
     const rest = buf.subarray(end + 4)
-    dispatchToUpstream(socket, m[1], m[2], sessionId, {
+    dispatchToUpstream(socket, m[1], m[2], worktreeId, {
       writeConnectOk: true,
       head: rest.length > 0 ? rest : undefined,
     })
@@ -2921,8 +2931,8 @@ function readConnectAndDispatch(socket: net.Socket, sessionId: string, initial: 
 }
 
 const transparentTunnelServer = net.createServer((socket) => {
-  resolveSessionBySourceIp(socket, 'TUNNEL', (sessionId, leftover) =>
-    readConnectAndDispatch(socket, sessionId, leftover))
+  resolveWorktreeBySourceIp(socket, 'TUNNEL', (worktreeId, leftover) =>
+    readConnectAndDispatch(socket, worktreeId, leftover))
 })
 
 for (const [srv, portStr, label] of [
@@ -2938,18 +2948,18 @@ for (const [srv, portStr, label] of [
   })
 }
 
-// ── Stream relay (server ↔ session-pod streamd) ────────────────────────────
+// ── Stream relay (server ↔ worktree-pod streamd) ────────────────────────────
 //
 // A dumb authenticated CONNECT: the server dials in, sends ONE JSON auth
-// line `{"token": <proxyAuthSecret>, "sessionId": <sid>}`, and the relay
-// resolves the session's pod IP (pod-watch reverse index, labelSelector
+// line `{"token": <proxyAuthSecret>, "worktreeId": <sid>}`, and the relay
+// resolves the worktree's pod IP (pod-watch reverse index, labelSelector
 // list on a miss) and splices the rest of the stream to
 // `podIP:POD_STREAM_PORT` untouched — the streamd handshake, its reply,
 // and the payload are end-to-end server↔streamd. Per-stream failures
-// (unknown session, pod dial failure or timeout) are ANSWERED with an
+// (unknown worktree, pod dial failure or timeout) are ANSWERED with an
 // error line before closing: the server treats a silent close as a dead
 // transport and re-establishes its shared port-forward, so a stale
-// session's probe must not masquerade as one — and nothing before the
+// worktree's probe must not masquerade as one — and nothing before the
 // splice may hang instead, which is what the pre-splice deadline below
 // enforces. Only a bad auth line closes silently (no oracle for
 // unauthenticated peers). An inner (vcluster) proxy runs this
@@ -2961,7 +2971,7 @@ const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
  * Budget for every phase before the splice — the auth line, the pod-IP
  * resolve, then the pod dial (which re-arms it on the target socket, the
  * only handle that can also reap a hung connect). No phase may hang
- * instead of answering: a session pod whose ingress policy hasn't
+ * instead of answering: a worktree pod whose ingress policy hasn't
  * admitted this proxy yet DROPS the SYN, so an unbounded `net.connect`
  * sits out the OS retry series (~130s) holding both sockets, with the
  * server waiting out its own deadline and learning nothing about which
@@ -2991,7 +3001,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
   }
   const deadline = setTimeout(() => {
-    if (authed) refuse('timed out resolving the session pod')
+    if (authed) refuse('timed out resolving the worktree pod')
     else socket.destroy()
   }, RELAY_PRESPLICE_TIMEOUT_MS)
 
@@ -3004,7 +3014,8 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     }
     socket.removeListener('data', onData)
 
-    let params: { token?: unknown; sessionId?: unknown }
+    // `sessionId` is what a server predating the rename sends.
+    let params: { token?: unknown; worktreeId?: unknown; sessionId?: unknown }
     try {
       params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
     } catch {
@@ -3012,8 +3023,9 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       socket.destroy()
       return
     }
+    const dialled = typeof params.worktreeId === 'string' ? params.worktreeId : params.sessionId
     if (
-      typeof params.token !== 'string' || typeof params.sessionId !== 'string'
+      typeof params.token !== 'string' || typeof dialled !== 'string'
       || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)
     ) {
       console.log('[proxy] BLOCKED relay dial: bad auth line')
@@ -3022,7 +3034,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       return
     }
     authed = true
-    const sessionId = params.sessionId
+    const worktreeId = dialled
 
     // Keep buffering bytes (the pipelined streamd handshake) that arrive
     // before the splice starts — through BOTH async gaps: the pod-IP
@@ -3035,12 +3047,12 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
     void (async () => {
-      let ip = podIndex.resolveIp(sessionId)
+      let ip = podIndex.resolveIp(worktreeId)
       if (!ip) {
         try {
-          ip = await fetchPodIpBySessionId(podIndex, sessionId)
+          ip = await fetchPodIpByWorktreeId(podIndex, worktreeId)
         } catch (err) {
-          console.error(`[proxy] relay pod lookup failed for ${sessionId.slice(0, 8)}...:`, (err as Error).message)
+          console.error(`[proxy] relay pod lookup failed for ${worktreeId.slice(0, 8)}...:`, (err as Error).message)
         }
       }
       // `writableEnded` as well as `destroyed`: a refusal (the deadline
@@ -3049,8 +3061,8 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       // otherwise dial the pod anyway and splice into an ended socket.
       if (socket.destroyed || socket.writableEnded) return
       if (!ip) {
-        console.log(`[proxy] BLOCKED relay dial: unknown session ${sessionId.slice(0, 8)}...`)
-        refuse('unknown session')
+        console.log(`[proxy] BLOCKED relay dial: unknown worktree ${worktreeId.slice(0, 8)}...`)
+        refuse('unknown worktree')
         return
       }
       // allowHalfOpen so an EOF from either end passes through the splice
@@ -3100,18 +3112,18 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
 })
 
-// ── ssh-agent forwarding (session pod → this pod's agent) ──────────────────
+// ── ssh-agent forwarding (worktree pod → this pod's agent) ──────────────────
 //
-// The transport that replaced the hostPath socket the proxy and session pods
-// used to share: a session pod's local forwarder splices its SSH_AUTH_SOCK
+// The transport that replaced the hostPath socket the proxy and worktree pods
+// used to share: a worktree pod's local forwarder splices its SSH_AUTH_SOCK
 // UNIX socket to this listener, which splices to the agent. Identity is the
-// source pod IP (pod-watch), entitlement is the session's registered SSH
+// source pod IP (pod-watch), entitlement is the worktree's registered SSH
 // remote — see ssh-agent-relay.ts for the full gate.
 const sshAgentServer = SSH_AGENT_PORT
   ? createSshAgentServer({
     agentSock: AGENT_SOCK,
-    resolveSession,
-    repoUrlFor: (sessionId) => sessionRepoUrl.get(sessionId),
+    resolveWorktree,
+    repoUrlFor: (worktreeId) => worktreeRepoUrl.get(worktreeId),
   })
   : null
 if (sshAgentServer && SSH_AGENT_PORT) {
@@ -3124,7 +3136,7 @@ if (sshAgentServer && SSH_AGENT_PORT) {
 }
 
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
-// Session pods resolve against the proxy. External names get the sinkhole;
+// Worktree pods resolve against the proxy. External names get the sinkhole;
 // internal names (`*.svc`) are forwarded to cluster DNS on the top-level proxy
 // (DNS_FORWARD_INTERNAL) so pods learn live ClusterIPs — no IP pinning.
 const dnsServer = DNS_STUB_PORT ? dgram.createSocket('udp4') : null
@@ -3156,7 +3168,7 @@ if (dnsServer && DNS_STUB_PORT) {
   })
 }
 
-// ── Pod-watch (source IP → session) ────────────────────────────────────────
+// ── Pod-watch (source IP → worktree) ────────────────────────────────────────
 // Only in-cluster (a mounted SA). Local/test runs without it leave the index
 // empty, so transparent connections fail closed — which is correct.
 if (process.env.KUBERNETES_SERVICE_HOST) {

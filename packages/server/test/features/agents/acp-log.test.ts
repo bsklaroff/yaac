@@ -21,14 +21,14 @@ const life = (id: string): string =>
 const update = (u: unknown): string => line({
   jsonrpc: '2.0',
   method: 'session/update',
-  params: { sessionId: 'acp-1', update: u },
+  params: { worktreeId: 'acp-1', update: u },
 })
 
 const prompt = (text: string): string => line({
   jsonrpc: '2.0',
   id: 'abc-1',
   method: 'session/prompt',
-  params: { sessionId: 'acp-1', prompt: [{ type: 'text', text }] },
+  params: { worktreeId: 'acp-1', prompt: [{ type: 'text', text }] },
 })
 
 const dirs: string[] = []
@@ -333,7 +333,7 @@ describe('replayAcpLog', () => {
       line({ jsonrpc: '2.0', id: 'x-1', method: 'initialize', params: {} }),
       line({ jsonrpc: '2.0', id: 'x-1', result: { protocolVersion: 1 } }),
       line({ jsonrpc: '2.0', id: 'x-2', method: 'session/new', params: { cwd: '/workspace' } }),
-      line({ jsonrpc: '2.0', id: 'x-2', result: { sessionId: 'acp-1' } }),
+      line({ jsonrpc: '2.0', id: 'x-2', result: { worktreeId: 'acp-1' } }),
       line({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } }),
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'only this' } }),
     ].join('\n'))

@@ -3,19 +3,19 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  buildSessionRegistration,
+  buildWorktreeRegistration,
   syncProxySecrets,
 } from '#features/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#features/egress/default-allowed-hosts'
 import { proxySecretsCredentialsPath, setDataDir } from '@yaac/shared/project-paths'
 
-describe('buildSessionRegistration', () => {
+describe('buildWorktreeRegistration', () => {
   afterEach(() => {
     vi.clearAllMocks()
   })
 
   it('builds secret-free reference rules from envSecretProxy', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: {
         envSecretProxy: {
           MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
@@ -40,7 +40,7 @@ describe('buildSessionRegistration', () => {
   })
 
   it('resolves the default allowlist when config has no overrides', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
@@ -52,18 +52,18 @@ describe('buildSessionRegistration', () => {
   })
 
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
-    expect(buildSessionRegistration({
+    expect(buildWorktreeRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     }).allowedHosts).toEqual(['only.example.com'])
-    expect(buildSessionRegistration({
+    expect(buildWorktreeRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: { nestedContainers: true },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
@@ -80,7 +80,7 @@ describe('buildSessionRegistration', () => {
   })
 
   it('still appends the pull hosts on top of addAllowedUrls', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
@@ -89,7 +89,7 @@ describe('buildSessionRegistration', () => {
   })
 
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
@@ -97,7 +97,7 @@ describe('buildSessionRegistration', () => {
   })
 
   it('leaves the allowlist untouched when nestedContainers is off', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: {},
       remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
@@ -107,7 +107,7 @@ describe('buildSessionRegistration', () => {
   })
 
   it('parses upstream redirects from the e2e env hook', () => {
-    const reg = buildSessionRegistration({
+    const reg = buildWorktreeRegistration({
       config: {},
       remoteUrl: 'u',
       tool: 'opencode',

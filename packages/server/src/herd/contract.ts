@@ -5,12 +5,12 @@ import type {
   GitCredentialEntry,
   ImageBuildEntry,
   PortMapping,
-  SessionChanges,
-  SessionTerminalEntry,
+  WorktreeChanges,
+  WorktreeTerminalEntry,
   YaacConfig,
 } from '@yaac/shared/types'
 import type { DesiredWorkspaces, HerdReport, WorkspaceHandle } from '@yaac/shared/herd'
-import type { SessionCreateOptions, SessionCreateResult, StoppedWorktreeInfo } from '#features/sessions'
+import type { WorktreeCreateOptions, WorktreeCreateResult, StoppedWorktreeInfo } from '#features/worktrees'
 import type { AcpSocket } from '#features/agents'
 import type { SocketLike } from '#features/terminals'
 import type { VclusterStatus } from '#features/cluster'
@@ -91,8 +91,8 @@ export type HerdChangeSource = DeltaSource | 'live-agents'
  * silently make that false.
  */
 export const DESIRED_SET_TRIGGERS: readonly (HerdChangeSource | 'poll')[] = [
-  'session-pods',
-  'session-jobs',
+  'worktree-pods',
+  'worktree-jobs',
   'poll',
 ]
 
@@ -152,7 +152,7 @@ export interface HerdLifecycle {
 export interface HerdWorkspaces {
   /** Provision one. Rejects with `RUNTIME_UNAVAILABLE` when there is no
    *  substrate to provision on. */
-  create(projectSlug: string, opts: SessionCreateOptions): Promise<SessionCreateResult>
+  create(projectSlug: string, opts: WorktreeCreateOptions): Promise<WorktreeCreateResult>
 
   /**
    * Take a prewarmed spare for this project and tool, re-branching and
@@ -166,7 +166,7 @@ export interface HerdWorkspaces {
     onProgress?: (message: string) => void
     branch?: string
     model?: string
-  }): Promise<SessionCreateResult | undefined>
+  }): Promise<WorktreeCreateResult | undefined>
 
   /** Tear the runtime down, keeping the checkout — that is what makes it a
    *  stop rather than a delete, and what a restart re-attaches to. */
@@ -224,7 +224,7 @@ export interface HerdWorkspaces {
   count(projectSlug: string): Promise<number>
 
   /** The review diff: everything changed in the checkout since it forked. */
-  changes(jobName: string, base?: string, defaultBase?: string): Promise<SessionChanges>
+  changes(jobName: string, base?: string, defaultBase?: string): Promise<WorktreeChanges>
 
   /** The checkout's own idea of what its branch forked from — the fallback
    *  for a workspace whose row records no base branch. */
@@ -279,8 +279,8 @@ export interface HerdAgents {
 }
 
 export interface HerdTerminals {
-  list(jobName: string): Promise<SessionTerminalEntry[]>
-  createShell(jobName: string): Promise<SessionTerminalEntry>
+  list(jobName: string): Promise<WorktreeTerminalEntry[]>
+  createShell(jobName: string): Promise<WorktreeTerminalEntry>
   kill(jobName: string, target: string): Promise<void>
   /** Borrowed socket, like `attachAcp` — a stream over the multiplex later. */
   attachPty(

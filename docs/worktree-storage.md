@@ -16,17 +16,17 @@ for free: the new conversation is a second row, so the first one's opening
 message stays the label, with no write-once rule to enforce.
 
 A row is 1-1 with a git worktree, and that is why stopping keeps it: teardown
-prunes the session dir but never `worktreeDir`, so a stopped row is a checkout
+prunes the worktree dir but never `worktreeDir`, so a stopped row is a checkout
 still on disk, diff and all, waiting to be restarted.
 
 The agents *inside* a worktree are separate rows. `agent_sessions` holds one
 row per tool-native conversation — a claude/codex/pi/opencode session, keyed by
 the id the tool chose — and `worktree_agent_sessions` links the two, so a
 worktree can accumulate conversations over its life and one conversation can be
-resumed into a second worktree. See "Agent sessions" below.
+resumed into a second worktree. See "Agent worktrees" below.
 
-`features/sessions/worktree-store.ts` owns the `worktrees` table and
-`features/sessions/agent-session-store.ts` the other two: every runtime read and
+`features/worktrees/worktree-store.ts` owns the `worktrees` table and
+`features/worktrees/agent-session-store.ts` the other two: every runtime read and
 write goes through them. The one other writer is the startup sweep in
 `platform/db/legacy-import.ts`, which adopts worktrees that predate the tables —
 it inserts directly, but applies the stores' invariants (normalized titles,
@@ -39,7 +39,7 @@ capped prompts) so an imported row is indistinguishable from a recorded one.
   neither its tool nor its label, so create records the one it is about to
   launch rather than waiting for discovery to notice it. (Discovery only ever
   adds to that; for opencode, which no hook ever fires for, it never fires at
-  all.) Before the Job in `createSession`, and before a claim touches a
+  all.) Before the Job in `createWorktree`, and before a claim touches a
   prewarmed spare
   — the two paths that produce a user worktree. No pod can therefore exist
   without a row, which matters because a rowless pod is invisible to every
@@ -73,7 +73,7 @@ The base branch is stamped separately, once the worktree checkout resolves
 it — the checkout runs concurrently with the pod boot, and making the row
 wait for it would undo that overlap.
 
-`listActiveSessions` joins live pods to one `getProjectWorktreeRows` and one
+`listActiveWorktrees` joins live pods to one `getProjectWorktreeRows` and one
 `getProjectAgentSessions` query per project. `listStoppedWorktrees` is recorded
 rows minus live pod ids, sorted by `stoppedAt` (falling back to `createdAt`),
 capped, and only then touching the filesystem — one `stat` per linked
@@ -88,35 +88,35 @@ recorded as a `never-started` death once it is older than any legitimate
 cold create, which also makes it restartable. Creates still in flight in
 the current process are exempt via the provisioning registry.
 
-## Agent sessions
+## Agent worktrees
 
 A worktree's agent sessions are *discovered*, not authored. The herd keeps its
 own record of what it found, because after the database split
 (docs/plans/herd-split.md) it may not read a row: one **metadata document** per
 worktree, `projects/<slug>/meta/<worktreeId>.json`, owned and rewritten whole by
 the server process and validated by a zod schema
-(`features/sessions/worktree-meta.ts`).
+(`features/worktrees/worktree-meta.ts`).
 
-It holds only what the herd needs to work without the database — which sessions
+It holds only what the herd needs to work without the database — which worktrees
 a worktree has, where their transcripts are, their opening messages, and which
 handle each is on right now. Titles, background pins, `stoppedAt` and death
 causes are the server's; mirroring one here would make two sources of truth that
-drift. What the herd finds it reports as a `sessions-discovered` /
-`sessions-active` event, and the server writes the row.
+drift. What the herd finds it reports as a `worktrees-discovered` /
+`worktrees-active` event, and the server writes the row.
 
 Discovery has one input the host cannot see for itself. Every tool with a
 host-mounted home runs a `SessionStart` hook (`/etc/yaac/agent-links.sh`, baked
 into the tools image) which appends **one JSON line per firing** to
-`projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, mounted into the pod at
-`/home/yaac/.yaac/session-starts.jsonl`:
+`projects/<slug>/meta/<worktreeId>.worktree-starts.jsonl`, mounted into the pod at
+`/home/yaac/.yaac/worktree-starts.jsonl`:
 
 ```jsonc
 {"id":"<agentSessionId>","tool":"claude","pane":"3","path":"claude/projects/-workspace/….jsonl"}
 ```
 
 The hook fires on `startup`, `resume`, `clear` and `compact` — exactly the
-events that change which session a pane is in — and it is the only witness of a
-user-started one, because it alone sees `TMUX_PANE` beside the tool's session
+events that change which worktree a pane is in — and it is the only witness of a
+user-started one, because it alone sees `TMUX_PANE` beside the tool's worktree
 id. `/clear` and a hand-typed `claude --resume` are invisible from outside the
 pod.
 
@@ -130,14 +130,14 @@ a lock held across a hostPath mount from inside a gVisor sandbox — so the pod
 appends and the server folds, and no lock crosses the boundary. Within the
 server process, `updateWorktreeMeta` serializes per worktree on a keyed mutex.
 
-Nothing truncates the log. Sightings are idempotent — a session id maps to one
+Nothing truncates the log. Sightings are idempotent — a worktree id maps to one
 handle — so re-folding it every tick is correct, and it avoids the drain/append
 race a truncation would introduce.
 
-A session is **active** in a worktree when the document names a handle for it
+A worktree is **active** in a worktree when the document names a handle for it
 *and* the status watcher can currently see that handle. Neither source answers
 alone: a handle outlives the pane that wrote it, and the watcher knows nothing
-about which session is loaded. When the watcher has not enumerated handles yet
+about which worktree is loaded. When the watcher has not enumerated handles yet
 the active set is left untouched, so a stream gap never reads as "every agent
 exited".
 
@@ -148,12 +148,12 @@ handle would otherwise name this life's pane. Nothing has to be deleted before a
 pod starts.
 
 `active` is frozen at teardown and never recomputed while a worktree is stopped.
-That freeze is the whole contract: a restart brings back exactly the sessions
+That freeze is the whole contract: a restart brings back exactly the worktrees
 that were live when the worktree stopped, each in its own tmux window, in the
 order they were first opened (`agentWindowName` — the first keeps the bare tool
 name so every existing `yaac:<tool>` target still resolves).
 
-opencode is the exception throughout: it keeps history in a per-session sqlite
+opencode is the exception throughout: it keeps history in a per-worktree sqlite
 DB inside the container and leaves no host transcript, so no hook fires for it
 and its first message comes from an HTTP probe while the pod runs.
 
@@ -195,7 +195,7 @@ the halves still lives: the stopped listing stats a transcript for
 last-activity and the detail route parses one for a founding ask, both against
 files the herd owns.
 
-The session-starts log is the one input yaac does not write, so it is the one
+The worktree-starts log is the one input yaac does not write, so it is the one
 place a path is *validated* rather than converted: it is an RW mount in a
 sandboxed pod, and absolute paths are refused there — everything downstream
 takes the value at face value and would happily stat and parse whatever it
@@ -203,10 +203,10 @@ named.
 
 The transcripts themselves are deliberately left where each tool writes them,
 in the project-shared tool home. Recording the path is what makes them findable,
-and it costs less than relocating them would: no mount moves, a session started
+and it costs less than relocating them would: no mount moves, a worktree started
 before any of this still resolves, and cross-worktree `--resume` keeps working.
-The price is that the shared homes stay shared — `file-history/<sessionId>/` and
-`session-env/<sessionId>/` outlive the worktree that made them, `history.jsonl`
+The price is that the shared homes stay shared — `file-history/<worktreeId>/` and
+`worktree-env/<worktreeId>/` outlive the worktree that made them, `history.jsonl`
 is pooled across a project, and every worktree of a project is a concurrent
 writer into one transcript directory, which is why `seed.ts` raises claude's
 `cleanupPeriodDays` so it cannot prune another worktree's history on startup.
@@ -214,15 +214,15 @@ writer into one transcript directory, which is why `seed.ts` raises claude's
 codex is why the path is recorded at all: claude's transcript is at a
 conventional location and pi's is found by matching the id in its filename, but
 codex names its rollout files unpredictably, so nothing derives one from a
-session id.
+worktree id.
 
 ## First messages
 
-Capture is per session: each gets its own opening message, read from the
+Capture is per worktree: each gets its own opening message, read from the
 transcript the metadata document names. There is no separate worktree-level capture — the
-founding ask *is* the first session's opening message.
+founding ask *is* the first worktree's opening message.
 
-The discovery sweep does this once per session per herd life and folds the
+The discovery sweep does this once per worktree per herd life and folds the
 result back into the document, so a settled worktree costs one file read a tick. Where the transcripts live per tool
 is `features/agents/transcripts.ts`. A worktree that died before capture
 parses its first conversation's transcript on demand from the stopped listing,

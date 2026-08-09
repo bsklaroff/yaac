@@ -37,8 +37,8 @@ import { projectDir } from '@yaac/shared/project-paths'
  * and left in place. `.web-sessions.json` (pre-token-store web sessions) is
  * neither imported nor touched — those files were already ignored.
  *
- * Alongside them runs the one-shot session backfill (`backfillSessions`),
- * which adopts sessions that predate the `agent_sessions` table.
+ * Alongside them runs the one-shot worktree backfill (`backfillWorktrees`),
+ * which adopts worktrees that predate the `agent_sessions` table.
  *
  * The legacy path builders live here, private: no other code reads these
  * files anymore.
@@ -116,12 +116,12 @@ async function importSessionTitles(db: Db, slug: string): Promise<void> {
   if (raw === null) return
   const obj = parseObject(p, raw)
   if (obj === null) return
-  const rows = Object.entries(obj).flatMap(([sessionId, title]) => {
+  const rows = Object.entries(obj).flatMap(([worktreeId, title]) => {
     if (typeof title !== 'string') return []
     // Same normalization a rename goes through, so an imported title can't
     // be a shape the store would never write.
     const normalized = normalizeTitle(title)
-    return normalized === '' ? [] : [{ projectSlug: slug, worktreeId: sessionId, title: normalized, tool: 'claude' }]
+    return normalized === '' ? [] : [{ projectSlug: slug, worktreeId, title: normalized, tool: 'claude' }]
   })
   for (const row of rows) {
     // A worktree row may not exist yet (the backfill only sees worktrees with
@@ -161,7 +161,7 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
       leftBehind = true
       continue
     }
-    // The meta file's birthtime is what deleted-session listing used to
+    // The meta file's birthtime is what deleted-worktree listing used to
     // sort by; carry it over as the row's createdAt.
     const stat = await fs.lstat(p)
     // Capped like every other stored prompt (see MAX_PROMPT_LENGTH).
@@ -194,30 +194,30 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
 }
 
 /**
- * One-shot adoption of sessions that predate the `agent_sessions` table:
- * every session a project's transcripts prove existed becomes a row, and
+ * One-shot adoption of worktrees that predate the `agent_sessions` table:
+ * every worktree a project's transcripts prove existed becomes a row, and
  * rows the SQL data migration already created (from the old title /
  * deleted / pin / opencode-meta tables) get their guessed `tool` and
  * `createdAt` corrected from the file on disk.
  *
  * Gated on the table being empty rather than a marker row, and deliberately
- * so: once yaac has recorded a single session, an unrecognized transcript is
+ * so: once yaac has recorded a single worktree, an unrecognized transcript is
  * a conversation the agent started for itself (claude's `/clear` mints a new
- * id and file), not a session — adopting those on every boot is exactly the
+ * id and file), not a worktree — adopting those on every boot is exactly the
  * phantom-row behaviour the spine replaces. A fresh install re-scans a few
- * empty directories per boot until its first session, which costs nothing.
+ * empty directories per boot until its first worktree, which costs nothing.
  *
  * `prompt` is left for the capture step / the deleted listing to fill
  * lazily, so a data dir with thousands of transcripts doesn't pay a parse
  * per file at startup.
  */
-async function backfillSessions(db: Db, slug: string): Promise<void> {
+async function backfillWorktrees(db: Db, slug: string): Promise<void> {
   const records = await scanProjectTranscripts(slug)
   for (const r of records) {
-    // The base branch the pre-upgrade session forked from still lives in
+    // The base branch the pre-upgrade worktree forked from still lives in
     // the shared repo config, and nothing else would ever put it on the
     // row — the display used to read it from git on every tick.
-    const baseBranch = await worktreeUpstreamBranch(repoDir(slug), `agent/${r.sessionId}`)
+    const baseBranch = await worktreeUpstreamBranch(repoDir(slug), `agent/${r.worktreeId}`)
       .catch(() => null)
     const corrected = {
       tool: r.tool,
@@ -227,7 +227,7 @@ async function backfillSessions(db: Db, slug: string): Promise<void> {
     }
     const { transcriptPath, ...worktreeFields } = corrected
     await db.insert(worktrees)
-      .values({ projectSlug: slug, worktreeId: r.sessionId, ...worktreeFields })
+      .values({ projectSlug: slug, worktreeId: r.worktreeId, ...worktreeFields })
       .onConflictDoUpdate({
         target: [worktrees.projectSlug, worktrees.worktreeId],
         // The SQL data migration had to guess `tool` and `created_at` from
@@ -238,7 +238,7 @@ async function backfillSessions(db: Db, slug: string): Promise<void> {
     // A pre-upgrade session pinned the agent's conversation id to the
     // worktree id, so its one conversation is knowable without any link
     // tree — record it so every downstream path sees a uniform model.
-    await linkPreUpgradeAgentSession(db, slug, r.sessionId, r.tool, {
+    await linkPreUpgradeAgentSession(db, slug, r.worktreeId, r.tool, {
       createdAt: new Date(r.createdAtMs),
       transcriptPath,
     })
@@ -469,18 +469,18 @@ export async function importLegacyJsonStores(): Promise<void> {
   } catch {
     // No projects dir yet — nothing per-project to import.
   }
-  // Adopt pre-existing sessions before the legacy JSON stores, so a title or
+  // Adopt pre-existing worktrees before the legacy JSON stores, so a title or
   // opencode snapshot lands on a row that already knows its tool and age.
   //
   // Gated on a durable flag, NOT on the table being empty: the SQL data
   // migration seeds `agent_sessions` from the four folded side tables and
   // runs (inside getDb) before this does, so any install that ever titled a
-  // session would look "already populated" and skip adoption forever —
+  // worktree would look "already populated" and skip adoption forever —
   // leaving the migration's guessed tool/createdAt in place and never
-  // adopting transcript-only sessions.
+  // adopting transcript-only worktrees.
   const backfilled = await isFlagSet(SESSIONS_BACKFILLED_KEY)
   for (const slug of slugs) {
-    if (!backfilled) await backfillSessions(db, slug)
+    if (!backfilled) await backfillWorktrees(db, slug)
     await importSessionTitles(db, slug)
     await importOpencodeMeta(db, slug)
   }
@@ -520,9 +520,9 @@ export async function importLegacyJsonStores(): Promise<void> {
  * nothing writes and nothing follows.
  *
  * It has to come after BOTH one-shots that read the directory — the row
- * rewrite, and `backfillSessions`, for which `scanProjectTranscripts` treats
+ * rewrite, and `backfillWorktrees`, for which `scanProjectTranscripts` treats
  * this dir as codex's transcript root. Deleting a link before either would
- * cost a session its path, or lose it from the adoption entirely.
+ * cost a worktree its path, or lose it from the adoption entirely.
  *
  * Symlinks only, and the directory only if it empties. The path is still
  * codex's scan root, so a regular file that landed there is a transcript
@@ -568,9 +568,9 @@ async function purgeTranscriptSymlinks(slugs: string[]): Promise<void> {
  * Rewrite recorded transcript paths that point at a yaac-made symlink to the
  * file behind it.
  *
- * yaac used to index codex's transcripts with a symlink per session
+ * yaac used to index codex's transcripts with a symlink per worktree
  * (`.yaac-transcripts/<id>.jsonl`) because codex names its rollout files
- * unpredictably and there is no way to derive one from a session id. Capture
+ * unpredictably and there is no way to derive one from a worktree id. Capture
  * stored *that* path, so every codex row recorded before the hook began
  * reporting one points at a symlink rather than at a transcript — and nothing
  * maintains those symlinks now, so the ones on disk are the last that will

@@ -58,7 +58,7 @@ export function ProjectActionsMenu({ slug, remoteUrl }: {
         onOpenChange={setConfirm}
         busy={busy}
         title="Remove project?"
-        description={`Removes "${slug}" and all its sessions and worktrees. This can't be undone.`}
+        description={`Removes "${slug}" and all its worktrees and worktrees. This can't be undone.`}
         confirmText={remoteUrl}
         confirmLabel="Remove"
         onConfirm={onConfirm}

@@ -7,7 +7,7 @@
  *
  *  - the install namespace runs **netd** (`hostNetwork` plus
  *    `NET_ADMIN`/`NET_RAW`, each of which alone exceeds `baseline`) and
- *    session pods with capabilities `baseline` forbids;
+ *    worktree pods with capabilities `baseline` forbids;
  *  - the registry namespace runs the node-write pods that hostPath-mount a
  *    node's `certs.d`;
  *  - a vcluster namespace hosts synced tenant pods, whose shape is decided
@@ -19,7 +19,7 @@
  * ADOPTS: a cluster-wide `baseline`/`restricted` default is inherited by
  * every new namespace, and without declaring the level yaac's own pods are
  * rejected at admission — netd's DaemonSet creates no pod at all, so no node
- * gets a redirect and no session gets egress.
+ * gets a redirect and no worktree gets egress.
  *
  * Declared here rather than at each call site so the three namespaces
  * cannot drift, and so "which yaac namespaces are privileged, and why" has

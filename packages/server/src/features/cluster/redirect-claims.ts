@@ -21,7 +21,7 @@ import { NETD_APP_NAME, type VclusterPod, k8sNamespace } from '#platform/k8s'
  *   → ConfigMap `yaac-redirect-claims` in the install namespace
  *   → host netd, which re-validates and programs the redirect
  *
- * The synced document is tenant-writable: inside one session the inner yaac
+ * The synced document is tenant-writable: inside one worktree the inner yaac
  * and the agent code are the same trust domain, so a claim can never be
  * attributed to "the real inner yaac". Validation therefore does not try to
  * authenticate the claimant — it makes every expressible claim harmless, by

@@ -21,7 +21,7 @@
  * included — it emits `error` and STOPS. Restart-with-backoff is ours.
  *
  * Host-mode netd watches pods in ALL namespaces, unlike the proxy: it must
- * see session pods in the install namespace and synced pods in every
+ * see worktree pods in the install namespace and synced pods in every
  * vcluster namespace, since a pod's veth is what it programs. Services and
  * the redirect-claim ConfigMap it reads only in its OWN namespace — the
  * outer proxy's ClusterIP and the server-authored claims both live there —

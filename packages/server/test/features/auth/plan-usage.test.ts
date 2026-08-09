@@ -5,9 +5,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
-vi.mock('#notify', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
 
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import {
   planUsageForSnapshot,
   codexPlanUsageForSnapshot,
@@ -216,7 +216,7 @@ function useAuthFixture(prefix: string): () => string {
     _resetPlanUsageForTests()
     upstream.reset()
     upstream.install()
-    vi.mocked(notifySessionListChanged).mockReset()
+    vi.mocked(notifyWorktreeListChanged).mockReset()
     vi.useFakeTimers({ toFake: ['Date'] })
   })
   afterEach(async () => {
@@ -259,7 +259,7 @@ describe('planUsageForSnapshot', () => {
 
     // Nothing to show until the detached refresh completes.
     expect(await planUsageForSnapshot()).toBeNull()
-    expect(notifySessionListChanged).not.toHaveBeenCalled()
+    expect(notifyWorktreeListChanged).not.toHaveBeenCalled()
     await flush()
 
     expect(await planUsageForSnapshot()).toEqual({
@@ -269,7 +269,7 @@ describe('planUsageForSnapshot', () => {
       limits: CLAUDE_LIMITS,
     })
     // A landed refresh pushes a snapshot rather than waiting for the tick.
-    expect(notifySessionListChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorktreeListChanged).toHaveBeenCalledTimes(1)
 
     // Both endpoints got the stored token as an OAuth bearer.
     for (const url of [CLAUDE_USAGE_URL, CLAUDE_PROFILE_URL]) {
@@ -666,7 +666,7 @@ describe('codexPlanUsageForSnapshot', () => {
       rateLimitTier: null,
       limits: CODEX_LIMITS,
     })
-    expect(notifySessionListChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorktreeListChanged).toHaveBeenCalledTimes(1)
     expect(upstream.requestsTo(CODEX_USAGE_URL)[0].headers).toEqual({
       'Authorization': 'Bearer ctok-123',
       'User-Agent': 'codex-cli',

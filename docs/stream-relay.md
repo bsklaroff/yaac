@@ -1,10 +1,10 @@
-# Stream relay: session streams off the apiserver
+# Stream relay: worktree streams off the apiserver
 
-Every steady-state byte between the server and a session pod — terminal
+Every steady-state byte between the server and a worktree pod — terminal
 PTYs, the status watcher's tmux control stream, forwarded TCP, and
 one-shot pod commands — rides plain TCP through the proxy pod into an
-in-pod daemon, entirely off the apiserver. Session-create provisioning
-rides it too: the pod's postStart hook (`session-bin/yaac-session-init`)
+in-pod daemon, entirely off the apiserver. Worktree-create provisioning
+rides it too: the pod's postStart hook (`worktree-bin/yaac-worktree-init`)
 starts streamd before the container reports Ready, so every setup command
 the server still runs (worktree gitdir rewrite, branch upstream, init
 windows + agent respawn) is a relay exec. Claiming a prewarmed spare rides
@@ -12,7 +12,7 @@ it the same way — the claim gates on `waitForStreamd` before its first
 mutation, then re-branches, retools, and re-applies the git identity over
 the relay. `kubectl exec` survives only where no stream can be gated on:
 the streamd self-heal re-boot, the teardown-time image-salvage survey, and
-non-session infra pods. Before the relay, each
+non-worktree infra pods. Before the relay, each
 of these paths held a kubectl child per stream (or per TCP connection),
 and every chunk crossed pod → containerd shim → kubelet → apiserver →
 kubectl → server — with gVisor making the pod side extra expensive.
@@ -20,19 +20,19 @@ kubectl → server — with gVisor making the pod side extra expensive.
 ## Architecture
 
 ```
-browser ── WS ── server ──(A)── proxy pod ──(B)── session pod
+browser ── WS ── server ──(A)── proxy pod ──(B)── worktree pod
                              relay listener :10260   streamd :10300
                              (auth + splice)         (pty/ctrl/exec/tcp)
 
 top-level:  server = host process,   proxy via one kubectl port-forward
-nested:     server = session pod,    proxy = inner proxy (pod-IP dial)
+nested:     server = worktree pod,    proxy = inner proxy (pod-IP dial)
 ```
 
 Same three components on both levels; only hop A's addressing differs.
 The inner proxy runs the same image and code as the outer one, so nested
-sessions get the relay with no extra branch: its pod-watch runs against
+worktrees get the relay with no extra branch: its pod-watch runs against
 the vcluster apiserver, whose synced pods carry **host** pod IPs (syncer
-write-back), so the same resolve-and-dial serves inner session pods.
+write-back), so the same resolve-and-dial serves inner worktree pods.
 
 ### streamd (`dockerfiles/streamd/`)
 
@@ -51,14 +51,14 @@ backend. Every connection opens with one JSON handshake line
   proxy-side dial of `podIP:port` could not do.
 - `ctrl {cmd}` — spawn argv with piped stdio, raw stdin/stdout splice
   (tmux control mode is a line protocol). Socket close ⇔ process kill.
-  Also carries ACP: a session in `acp` mode dials `socat -
+  Also carries ACP: a worktree in `acp` mode dials `socat -
   UNIX-CONNECT:/tmp/yaac-acp/<window>.sock` here, and the JSON-RPC rides the
   same raw duplex. Note the socket-close semantics — which is exactly why the
   ACP agent is supervised by acpd inside a tmux window rather than being this
   stream's child (see docs/agent-modes.md).
 - `exec {cmd}` — one-shot: run argv, reply with a single JSON line
   `{exitCode, stdout, stderr}` (bounded) and close. The `containerExec`
-  replacement for session pods (`sessionExec`).
+  replacement for worktree pods (`podExec`).
 - `pty {cmd, cols, rows}` — spawn argv under a PTY. Framed both ways
   (`[1B type][4B BE length][payload]`, codec mirrored in
   `@yaac/shared/stream-frames`): data/resize/signal in, data/exit out.
@@ -77,9 +77,9 @@ backend. Every connection opens with one JSON handshake line
   port detector (docs/auto-forward-ports.md); the poll only runs while
   a ports stream is open.
 
-The handshake token is per-session — `HMAC-SHA256(proxyAuthSecret,
-sessionId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at
-create. It is defense in depth alongside the ingress NetworkPolicies: a session
+The handshake token is per-worktree — `HMAC-SHA256(proxyAuthSecret,
+worktreeId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at
+create. It is defense in depth alongside the ingress NetworkPolicies: a worktree
 leaking its own token gains nothing, since only its own daemon accepts it
 and only the proxy can reach any daemon.
 
@@ -87,17 +87,17 @@ and only the proxy can reach any daemon.
 
 A dumb authenticated CONNECT on `:10260`, present in every proxy. Per
 connection: read one JSON auth line (`{token: proxyAuthSecret,
-sessionId}`, timing-safe compare), resolve the session's pod IP from the
+worktreeId}`, timing-safe compare), resolve the worktree's pod IP from the
 pod-watch reverse index (labelSelector list on a miss), dial
 `podIP:10300`, splice. Everything after the auth line — the streamd
 handshake, its reply, the payload — flows through untouched, so the
 protocol stays end-to-end server↔streamd. Per-stream failures (unknown
-session, pod dial failure) are answered with an `{ok:false}` line before
+worktree, pod dial failure) are answered with an `{ok:false}` line before
 closing — the server reads a silent close as a dead transport and
-re-establishes its shared port-forward, so a stale session's probe must
+re-establishes its shared port-forward, so a stale worktree's probe must
 not masquerade as one; only a bad auth line closes silently.
 
-Nor may anything before the splice hang instead of answering. A session
+Nor may anything before the splice hang instead of answering. A worktree
 pod whose ingress policy has not yet admitted the proxy *drops* the SYN,
 so an unbounded `net.connect` would sit out the OS retry series holding
 both sockets while the server learns nothing; a deadline over the whole
@@ -124,7 +124,7 @@ Address resolution, cached per run and re-resolved on transport failure:
    host has zero listening ports, the kind config needs no port
    mappings, and there is no cluster-shape dependency at all. The wins
    the relay exists for — no kubectl child per stream, no
-   per-connection exec setup, session-pod bytes leaving via netstack
+   per-connection exec setup, worktree-pod bytes leaving via netstack
    networking instead of the gVisor exec machinery — are unaffected by
    this hop. Port-forward works here because the proxy is a runc pod
    (CRI port-forward dials localhost in the pod netns, which a gVisor
@@ -140,7 +140,7 @@ list behind a pod-index miss, or an unreachable pod looks like — so it
 fails its own caller and leaves everyone else's streams alone. For the
 same reason a caller's command budget is floored before the dial
 deadline is derived from it: how fast one probe wants an answer is not a
-statement about the transport every session shares.
+statement about the transport every worktree shares.
 
 A nested address is the exception, because nothing shared stands behind
 it: re-resolving the inner proxy's pod IP is one apiserver read and
@@ -153,7 +153,7 @@ Adapters give each consumer the surface it already used, so the
 respawn/backoff, `bridge()`, forwarder-registry, and frontend WS logic
 are unchanged: `dialCtrlStream` (child-shaped, the status watcher's
 `spawnAttach`), `dialPtyStream` (PtyLike, the terminal bridge),
-`relayTcpFactory` (the port-forward RelayFactory), and `sessionExec`
+`relayTcpFactory` (the port-forward RelayFactory), and `podExec`
 (the one-shot command runner behind tmux probes, terminal listing, view
 cleanup, status-right updates, the changes diff, and the opencode probe).
 
@@ -166,7 +166,7 @@ per-connection forward errors. Probe classification is conservative: only
 a stream that REACHED the pod and saw the command exit nonzero
 (`RelayExecError`) is conclusive; every transport failure
 (`RelayDialError`) is `unknown`, which the reaper treats as "do not
-reap" — a proxy outage degrades terminals, never session lifetimes. The
+reap" — a proxy outage degrades terminals, never worktree lifetimes. The
 status watcher self-heals streamd: every third consecutive stream death
 it re-runs the boot exec (`bootStreamd`), the one steady-state kubectl
 exec kept, because it is what works when no stream can.
@@ -174,32 +174,32 @@ exec kept, because it is what works when no stream can.
 ## Network policy
 
 The relay makes proxy→pod dialing real, so pod ingress is locked down
-with it (before, nothing dialed session pods and their ingress was
+with it (before, nothing dialed worktree pods and their ingress was
 default-allow by omission):
 
 - Proxy ingress (`buildProxyIngressNpManifest`): the relay port rides
   the host-only rule. The server's own dials arrive via port-forward —
   CRI dials localhost inside the pod netns, never traversing policy —
   so the network-side allowance exists for host-identity dials only
-  (the YAAC_RELAY_ADDR node-local case); session pods cannot reach it.
-- Session ingress lock (`buildSessionIngressLockNpManifest`): session
+  (the YAAC_RELAY_ADDR node-local case); worktree pods cannot reach it.
+- Worktree ingress lock (`buildWorktreeIngressLockNpManifest`): worktree
   pods accept only `app=yaac-proxy` on 10300, default-denying all other
   ingress.
 - Nested, applied by the OUTER server into the vcluster's host
   namespace (the inner install has no host RBAC): the inner proxy accepts
-  the relay port from its OWNING session pod only
-  (`buildInnerProxyIngressNpManifest`), and synced session pods accept
+  the relay port from its OWNING worktree pod only
+  (`buildInnerProxyIngressNpManifest`), and synced worktree pods accept
   10300 from their vcluster's inner proxies only
-  (`buildInnerSessionIngressLockNpManifest`). As with inner egress, a
+  (`buildInnerWorktreeIngressLockNpManifest`). As with inner egress, a
   nested install only streams when the outer yaac is new enough to
-  project these rules; `yaac cluster check` inside the session is the
+  project these rules; `yaac cluster check` inside the worktree is the
   diagnostic (its `relay` check dials the inner proxy).
 
 ## Compatibility edges
 
-- Sessions created before the upgrade have no streamd and an image
+- Worktrees created before the upgrade have no streamd and an image
   without it — their terminals/status/forwards are dead after the server
-  upgrade; restart the session. The reaper is unaffected (`unknown`
+  upgrade; restart the worktree. The reaper is unaffected (`unknown`
   probes don't reap; pod-informer evidence still drives cleanup).
 - The proxy control API still rides its kubectl exec tunnel
   (`ExecTunnel`); moving it onto the relay port is an open follow-up.

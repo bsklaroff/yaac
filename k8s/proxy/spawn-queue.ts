@@ -1,12 +1,12 @@
 /**
- * In-memory queue bridging in-session `yaac-spawn` requests to the host
- * server. A session pod POSTs to the magic host (`http://yaac.internal/spawn`)
+ * In-memory queue bridging in-worktree `yaac-spawn` requests to the host
+ * server. A worktree pod POSTs to the magic host (`http://yaac.internal/spawn`)
  * on its transparent HTTP egress path; the proxy holds that request open here
  * while the server drains the queue over the control API (`GET /spawn/pending`,
  * claim-on-drain) and posts back `POST /spawn/results`, which completes the
  * held responses. Nothing is persisted: a spawn is ephemeral, and replaying
  * stale spawn requests after a proxy restart would be worse than dropping
- * them (the in-session curl fails loudly and the agent can retry).
+ * them (the in-worktree curl fails loudly and the agent can retry).
  *
  * Wire shapes are mirrored in packages/server/src/features/egress/proxy-client.ts
  * (PendingSpawn / SpawnResultWire) — the proxy bundles independently and
@@ -16,10 +16,10 @@
 import crypto from 'node:crypto'
 
 /**
- * Magic hostname the in-session `yaac-spawn` script POSTs to. Every external
+ * Magic hostname the in-worktree `yaac-spawn` script POSTs to. Every external
  * name already resolves to the DNS sinkhole and rides the transparent HTTP
  * listener, so this needs no DNS or redirect change — the proxy routes on the
- * Host header alone. Keep in sync with session-bin/yaac-spawn.
+ * Host header alone. Keep in sync with worktree-bin/yaac-spawn.
  */
 export const SPAWN_MAGIC_HOST = 'yaac.internal'
 export const SPAWN_PATH = '/spawn'
@@ -34,11 +34,18 @@ export const SPAWN_MAX_PENDING_TOTAL = 32
 
 export interface SpawnRequest {
   requestId: string
-  /** Calling session, attributed from the source pod IP. */
+  /** Calling worktree, attributed from the source pod IP. */
+  worktreeId: string
+  /**
+   * The name `worktreeId` had on this wire before the rename, emitted
+   * alongside it. The server drains this queue over `/spawn/pending`, and a
+   * server predating the rename reads only this one — it would otherwise
+   * spawn for `undefined` and leave the in-pod caller hanging to its TTL.
+   */
   sessionId: string
   prompt: string
   tool?: string
-  /** Model override for the spawned session's agent. */
+  /** Model override for the spawned worktree's agent. */
   model?: string
   enqueuedAtMs: number
 }
@@ -46,12 +53,14 @@ export interface SpawnRequest {
 export interface SpawnResult {
   requestId: string
   ok: boolean
-  /** New session id when ok. */
+  /** New worktree id when ok. */
+  worktreeId?: string
+  /** `worktreeId` under the name it had before the rename (see SpawnRequest). */
   sessionId?: string
   error?: string
 }
 
-/** Writes the held HTTP response back to the waiting session pod. */
+/** Writes the held HTTP response back to the waiting worktree pod. */
 export type SpawnCompleter = (status: number, body: string) => void
 
 export function validateSpawnRequest(
@@ -70,7 +79,7 @@ export function validateSpawnRequest(
     return { ok: false, status: 400, error: `invalid tool '${tool}'` }
   }
   // Shape check mirroring the server's MODEL_RE (packages/server
-  // session-create.ts) — the server re-validates before use.
+  // worktree-create.ts) — the server re-validates before use.
   if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/.test(model)) {
     return { ok: false, status: 400, error: `invalid model '${model}'` }
   }
@@ -88,31 +97,39 @@ export class SpawnQueue {
   /** Drained by the server, awaiting its result. */
   private claimed = new Map<string, HeldRequest>()
 
-  pendingCountFor(sessionId: string): number {
+  pendingCountFor(worktreeId: string): number {
     let n = 0
     for (const held of this.pending.values()) {
-      if (held.req.sessionId === sessionId) n++
+      if (held.req.worktreeId === worktreeId) n++
     }
     for (const held of this.claimed.values()) {
-      if (held.req.sessionId === sessionId) n++
+      if (held.req.worktreeId === worktreeId) n++
     }
     return n
   }
 
   enqueue(
-    req: { sessionId: string; prompt: string; tool?: string; model?: string },
+    req: { worktreeId: string; prompt: string; tool?: string; model?: string },
     complete: SpawnCompleter,
     now: number = Date.now(),
   ): { ok: true; requestId: string } | { ok: false; status: number; error: string } {
     if (this.pending.size + this.claimed.size >= SPAWN_MAX_PENDING_TOTAL) {
       return { ok: false, status: 429, error: 'too many pending spawn requests' }
     }
-    if (this.pendingCountFor(req.sessionId) >= SPAWN_MAX_PENDING_PER_SESSION) {
-      return { ok: false, status: 429, error: 'too many pending spawn requests from this session' }
+    if (this.pendingCountFor(req.worktreeId) >= SPAWN_MAX_PENDING_PER_SESSION) {
+      return { ok: false, status: 429, error: 'too many pending spawn requests from this worktree' }
     }
     const requestId = crypto.randomUUID()
     this.pending.set(requestId, {
-      req: { requestId, sessionId: req.sessionId, prompt: req.prompt, tool: req.tool, model: req.model, enqueuedAtMs: now },
+      req: {
+        requestId,
+        worktreeId: req.worktreeId,
+        sessionId: req.worktreeId,
+        prompt: req.prompt,
+        tool: req.tool,
+        model: req.model,
+        enqueuedAtMs: now,
+      },
       complete,
     })
     return { ok: true, requestId }
@@ -135,8 +152,9 @@ export class SpawnQueue {
     if (!held) return false
     this.claimed.delete(result.requestId)
     this.pending.delete(result.requestId)
-    if (result.ok && result.sessionId) {
-      held.complete(200, result.sessionId)
+    const spawned = result.worktreeId ?? result.sessionId
+    if (result.ok && spawned) {
+      held.complete(200, spawned)
     } else {
       held.complete(422, result.error ?? 'spawn failed')
     }

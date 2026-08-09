@@ -9,7 +9,7 @@ import { AlertDialog } from '@base-ui/react/alert-dialog'
  * action and close on success. Pass `busy` to disable the buttons.
  *
  * The confirm button takes initial focus, so a bare Enter confirms —
- * keyboard flows like Alt+D Enter (delete session) complete without the
+ * keyboard flows like Alt+D Enter (delete worktree) complete without the
  * mouse. Esc still cancels, and Tab reaches Cancel.
  *
  * Pass `confirmText` to require typing that exact text before confirm

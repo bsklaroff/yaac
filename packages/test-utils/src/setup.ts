@@ -16,7 +16,7 @@ import {
   kubectlWithRetry,
   type KubectlExecOptions,
 } from '@yaac/server/platform/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '@yaac/server/platform/k8s/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
 import type { ProxyClientConfig } from '@yaac/server/features/egress/proxy-client'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
@@ -39,25 +39,25 @@ export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
  * Per-file kubernetes namespace (see TEST_RUN_ID for granularity). Every
- * yaac object a test file creates (session Jobs, the proxy
+ * yaac object a test file creates (worktree Jobs, the proxy
  * Deployment/Service, mock-remote pods) lands in this namespace, isolating
  * it from other files and from a real server's `yaac` namespace. Tests
  * WITHIN a file share it — their isolation comes from per-test data dirs
- * plus the data-dir-hash label (see cleanupSessionJobs). Leaked namespaces
+ * plus the data-dir-hash label (see cleanupWorktreeJobs). Leaked namespaces
  * are swept by test/global-setup.ts teardown.
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
 
 /**
- * True when the e2e suite runs inside a nested yaac session. Several
- * capabilities simply don't exist in a vcluster-backed inner session and
+ * True when the e2e suite runs inside a nested yaac worktree. Several
+ * capabilities simply don't exist in a vcluster-backed inner worktree and
  * cannot be exercised from in here, so the tests that depend on them are
  * `skipIf`'d on this flag:
  *  - node datapath assertions made from inside the cluster (egress is
- *    enforced host-side for a nested session — `yaac cluster check` reports
+ *    enforced host-side for a nested worktree — `yaac cluster check` reports
  *    `egress: skipped`) — transparent-egress, netd-datapath;
- *  - vcluster-in-vcluster (`createSession` refuses it outright);
+ *  - vcluster-in-vcluster (`createWorktree` refuses it outright);
  *  - the podman `kind` network (the inner podman has no host network
  *    topology).
  */
@@ -65,7 +65,7 @@ export const IS_NESTED_YAAC = process.env.YAAC_NESTED === '1'
 
 /**
  * Point the current test process at the per-run test namespace, so that
- * src helpers (listSessionPods, containerExec, ProxyClient, ...) target
+ * src helpers (listWorktreePods, containerExec, ProxyClient, ...) target
  * the same namespace a server spawned with `createYaacTestEnv().env`
  * uses. Returns a restore function.
  */
@@ -89,7 +89,7 @@ export const TEST_PROXY_CONFIG: ProxyClientConfig = {
 }
 
 /**
- * Run a command inside a session Job's pod:
+ * Run a command inside a worktree Job's pod:
  * `kubectl exec -n <ns> job/<jobName> -- <args>`. The k8s replacement for
  * the podman-era `podmanRetry(['exec', <container>, ...])` test helper.
  * argv is passed straight through execFile, so no shell quoting is needed.
@@ -106,19 +106,19 @@ export async function execInJob(
 }
 
 /**
- * Delete every session Job/pod this test's data dir created in the active
+ * Delete every worktree Job/pod this test's data dir created in the active
  * namespace, and wait for them to actually go away. The data-dir-hash
  * scoping matters within a file: sequential tests share TEST_NAMESPACE, so
- * the label keeps them out of each other's queries (listSessionPods, the
- * server's stale-session reconciler) and out of this delete. The k8s analog
+ * the label keeps them out of each other's queries (listWorktreePods, the
+ * server's stale-worktree reconciler) and out of this delete. The k8s analog
  * of the podman-era `podman rm -f $(podman ps -a --filter
  * label=yaac.data-dir=<dir>)`.
  *
  * The wait is the point. e2e files run one at a time, so returning while
  * pods are still terminating just moves the teardown cost onto the next
- * file's setup — and a session pod is not cheap to stop (a gVisor sandbox
+ * file's setup — and a worktree pod is not cheap to stop (a gVisor sandbox
  * running podman-in-pod). That is how a file that takes ~80s on its own
- * takes >300s straight after a session-heavy one and blows a hook budget
+ * takes >300s straight after a worktree-heavy one and blows a hook budget
  * that is plenty when it runs alone. Paying the drain here, where nothing
  * is racing a timeout, turns a variable cost into a fixed one.
  *
@@ -126,16 +126,16 @@ export async function execInJob(
  * that stopped reaping) must not hang the whole suite, and by the time the
  * budget is gone the next file's own namespace scoping is the backstop.
  */
-export async function cleanupSessionJobs(timeoutMs = 120_000): Promise<void> {
-  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`
+export async function cleanupWorktreeJobs(timeoutMs = 120_000): Promise<void> {
+  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID_LEGACY}`
   try {
     // Issue the deletes without waiting, then poll: `kubectl delete --wait`
-    // blocks per object, so a file with several sessions would serialize
+    // blocks per object, so a file with several worktrees would serialize
     // their terminations instead of overlapping them.
     await kubectlWithRetry([
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
-      // The session-id term keeps this scoped to session Jobs/pods: the
+      // The worktree-id term keeps this scoped to worktree Jobs/pods: the
       // test server's proxy pod carries the same data-dir-hash (install
       // identity) but is Deployment-managed, not ours to sweep.
       '-l', selector,
@@ -168,7 +168,7 @@ export async function cleanupSessionJobs(timeoutMs = 120_000): Promise<void> {
  * Returns the path for cleanup.
  *
  * NOTE: lives under testTmpBase(), which is the OS tmpdir for a hermetic
- * unit run and `<ambient data dir>/e2e-tmp` for api/e2e. Session pods
+ * unit run and `<ambient data dir>/e2e-tmp` for api/e2e. Worktree pods
  * hostPath-mount paths under the data dir, so the api/e2e base has to be
  * node-visible — that is why it hangs off the data dir, whose visibility
  * `yaac cluster check` proves on every setup.
@@ -233,7 +233,7 @@ let _podmanAlive = false
  *
  * Only a prior success is cached — failures always re-probe. No revive:
  * every engine yaac talks to is managed elsewhere (macOS machine, host
- * systemd socket, or the session-create-started in-pod engine).
+ * systemd socket, or the worktree-create-started in-pod engine).
  */
 export async function requirePodman(): Promise<void> {
   if (_podmanAlive) return
@@ -243,7 +243,7 @@ export async function requirePodman(): Promise<void> {
 }
 
 /**
- * Check if a kubernetes cluster (the session runtime) is reachable —
+ * Check if a kubernetes cluster (the worktree runtime) is reachable —
  * `kubectl version` round-trips to the API server with a short timeout.
  */
 export async function clusterAvailable(): Promise<boolean> {
@@ -259,7 +259,7 @@ let _clusterAlive = false
 
 /**
  * Throws if no kubernetes cluster is reachable. Use in beforeAll of every
- * e2e test that creates sessions or proxies so they fail with a pointed
+ * e2e test that creates worktrees or proxies so they fail with a pointed
  * message instead of timing out deep inside kubectl retries.
  */
 export async function requireCluster(): Promise<void> {

@@ -13,7 +13,7 @@ const SEEDED_MESSAGE: Record<FakeAuthKind, string> = {
  * Seed fake credentials into the data dir for local/dev testing — most useful
  * for yaac-in-yaac, where the inner yaac needs a credential it can chain
  * through the parent's MITM proxy. The server owns the write; the server and
- * proxy then read the seeded files fresh on the next session. Accepts one or
+ * proxy then read the seeded files fresh on the next worktree. Accepts one or
  * more kinds in a single call. The CLI's Argument.choices() rejects unknown
  * kinds before this runs, and the server route zod-validates the body.
  */

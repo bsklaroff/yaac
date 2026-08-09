@@ -7,7 +7,7 @@ import { usesRootfulPodman } from './runtime'
 /**
  * The CLIENT half of the main OCI registry — the one image bus between
  * host-side `podman build`, the sandboxed builder pods, and every node
- * pulling a session image. The registry itself is an in-cluster
+ * pulling a worktree image. The registry itself is an in-cluster
  * Deployment + Service stood up by `#features/cluster` (main-registry.ts);
  * nothing here creates or owns it.
  *
@@ -78,7 +78,7 @@ const PODMAN_VM_HOST_ALIAS = 'host.containers.internal'
 /**
  * Host:port that image refs are prefixed with — a cluster-DNS name, never
  * something only the host can resolve. A FULL `.svc.cluster.local` FQDN
- * for the same reason the per-project registries use one: sessions resolve
+ * for the same reason the per-project registries use one: worktrees resolve
  * it through the proxy's split-horizon DNS, which forwards only
  * `.cluster.local` to CoreDNS. Node containerd never resolves it at all —
  * it matches the string against the hosts.toml `#features/cluster` writes.
@@ -230,7 +230,7 @@ export async function registryHasTag(tag: string): Promise<boolean> {
  * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
  * pull from 65.6s to 40.4s (measured, docs/trust-split-builds.md) at
  * no meaningful host-side push cost. Node containerd pulls of zstd blobs
- * (the session-pod path) are validated — see the plan doc.
+ * (the worktree-pod path) are validated — see the plan doc.
  */
 export async function pushImageToRegistry(
   localTag: string,

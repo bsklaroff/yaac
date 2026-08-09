@@ -6,28 +6,28 @@ vi.mock('#platform/k8s/stream-relay', () => ({
 }))
 
 vi.mock('#features/forwarders/port-forwarders', () => ({
-  getSessionPorts: vi.fn().mockReturnValue([]),
+  getWorktreePorts: vi.fn().mockReturnValue([]),
 }))
 
-import { getSessionPorts } from '#features/forwarders/port-forwarders'
+import { getWorktreePorts } from '#features/forwarders/port-forwarders'
 import {
   PortDetectorManager,
   SENSITIVE_PORTS,
   _resetPortDetectorForTests,
   _setDetectedPortsForTests,
-  dismissSessionPort,
+  dismissWorktreePort,
   getUnforwardedPorts,
   isForwardablePort,
 } from '#features/forwarders/port-detector'
-import type { SessionPod } from '#platform/k8s/pods'
+import type { PodInfo } from '#platform/k8s/pods'
 
-const mockGetSessionPorts = vi.mocked(getSessionPorts)
+const mockGetSessionPorts = vi.mocked(getWorktreePorts)
 
-function pod(sessionId: string, over: Partial<SessionPod> = {}): SessionPod {
+function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {
-    jobName: `yaac-p-${sessionId}`,
-    podName: `yaac-p-${sessionId}-abc`,
-    sessionId,
+    jobName: `yaac-p-${worktreeId}`,
+    podName: `yaac-p-${worktreeId}-abc`,
+    worktreeId,
     projectSlug: 'p',
     tool: 'claude',
     phase: 'Running',
@@ -107,7 +107,7 @@ describe('getUnforwardedPorts', () => {
   it('subtracts dismissed ports per session', () => {
     _setDetectedPortsForTests('s1', [3000, 8080])
     _setDetectedPortsForTests('s2', [3000])
-    expect(dismissSessionPort('s1', 3000)).toBe(true)
+    expect(dismissWorktreePort('s1', 3000)).toBe(true)
     expect(getUnforwardedPorts('s1')).toEqual([8080])
     expect(getUnforwardedPorts('s2')).toEqual([3000])
   })
@@ -116,12 +116,12 @@ describe('getUnforwardedPorts', () => {
     // Un-detected session, un-detected port, an already-forwarded port,
     // and a filtered (sensitive) port are all refused — otherwise the
     // dismissed set could be grown for sessions the sync never cleans up.
-    expect(dismissSessionPort('nope', 8080)).toBe(false)
+    expect(dismissWorktreePort('nope', 8080)).toBe(false)
     _setDetectedPortsForTests('s1', [3000, 9229])
-    expect(dismissSessionPort('s1', 8080)).toBe(false)
-    expect(dismissSessionPort('s1', 9229)).toBe(false)
+    expect(dismissWorktreePort('s1', 8080)).toBe(false)
+    expect(dismissWorktreePort('s1', 9229)).toBe(false)
     mockGetSessionPorts.mockReturnValue([{ containerPort: 3000, hostPort: 3000 }])
-    expect(dismissSessionPort('s1', 3000)).toBe(false)
+    expect(dismissWorktreePort('s1', 3000)).toBe(false)
   })
 
   it('hides sensitive and infra ports fail-closed', () => {

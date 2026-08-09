@@ -1,9 +1,9 @@
-import { attachSessionPty } from '#commands/ws-terminal'
+import { attachWorktreePty } from '#commands/ws-terminal'
 
 /**
- * Open a raw zsh in the session container over the server's PTY
+ * Open a raw zsh in the worktree container over the server's PTY
  * WebSocket ('shell' target: no tmux; exiting the shell returns).
  */
 export async function worktreeShell(containerId: string): Promise<void> {
-  await attachSessionPty(containerId, 'shell')
+  await attachWorktreePty(containerId, 'shell')
 }

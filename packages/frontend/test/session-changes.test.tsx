@@ -2,20 +2,20 @@
 import { describe, it, expect, afterEach, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { SessionChanges as SessionChangesData } from '@yaac/shared/types'
+import type { WorktreeChanges as SessionChangesData } from '@yaac/shared/types'
 import type { ProjectBranches } from '#lib/projectApi'
 
-vi.mock('#lib/changesApi', () => ({ getSessionChanges: vi.fn() }))
+vi.mock('#lib/changesApi', () => ({ getWorktreeChanges: vi.fn() }))
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
   projectBranchesKey: (slug: string) => ['project-branches', slug],
 }))
-import { getSessionChanges } from '#lib/changesApi'
+import { getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches } from '#lib/projectApi'
-import { SessionChanges } from '#components/SessionChanges'
+import { WorktreeChanges } from '#components/WorktreeChanges'
 import { useUiStore } from '#store'
 
-const mock = vi.mocked(getSessionChanges)
+const mock = vi.mocked(getWorktreeChanges)
 
 const BRANCHES: ProjectBranches = {
   branches: ['main', 'dev', 'feature/x'],
@@ -53,7 +53,7 @@ function renderPane({ baseBranch = 'main' }: { baseBranch?: string } = {}): Retu
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <SessionChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} />
+      <WorktreeChanges worktreeId="s1" projectSlug="proj" baseBranch={baseBranch} />
     </QueryClientProvider>,
   )
 }
@@ -95,7 +95,7 @@ afterEach(() => {
   })
 })
 
-describe('SessionChanges', () => {
+describe('WorktreeChanges', () => {
   it('lists changed files and auto-expands the first file’s diff', async () => {
     mock.mockResolvedValue(PAYLOAD)
     renderPane()

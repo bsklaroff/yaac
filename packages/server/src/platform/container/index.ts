@@ -5,7 +5,7 @@
 //
 // Three modules, one per job the host's container engine does. runtime.ts is the
 // host side of the split runtime: the once-per-process check that podman (the
-// image build engine) and kubernetes (the session runtime) are both usable,
+// image build engine) and kubernetes (the worktree runtime) are both usable,
 // the CONTAINER_HOST lever that points every podman call at the rootful
 // engine, and the two image-store queries the image and cluster features make.
 // registry.ts is the CLIENT of the main OCI registry — the two addresses it

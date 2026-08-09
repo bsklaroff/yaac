@@ -46,9 +46,9 @@ export function setHermeticScratch(on: boolean): void {
  *
  * {@link ambientDataDir} rather than `getDataDir()` because this is called
  * BEFORE any data dir exists — each test's data dir is created *under* this
- * base, so the override would be circular. Inside a nested yaac session it
+ * base, so the override would be circular. Inside a nested yaac worktree it
  * resolves to `$YAAC_DATA_DIR` (node-shared virtiofs, removed with the
- * session dir on cleanup), the only path that works there: the pod's
+ * worktree dir on cleanup), the only path that works there: the pod's
  * `/tmp` and `$HOME` are overlay filesystems the node cannot see.
  */
 export function testTmpBase(): string {
@@ -127,12 +127,12 @@ async function salvageRemove(p: string): Promise<string[]> {
  *
  * e2e runs leave root-owned directories under their scratch dirs — observed
  * as `libpod/` (mode 0700, uid 0, holding podman's `tmp/pause.pid`) in the
- * worktree of assorted e2e sessions. Scratch is hostPath-mounted into pods,
+ * worktree of assorted e2e worktrees. Scratch is hostPath-mounted into pods,
  * so anything a pod writes as uid 0 lands on the host owned by root, and
  * emptying such a directory needs write+execute INSIDE it — which the test
  * user does not have. A plain recursive remove dies on EACCES.
  *
- * (What creates them is not established. It is NOT ordinary session
+ * (What creates them is not established. It is NOT ordinary worktree
  * behavior: a developer's real data dir here holds hundreds of worktrees
  * and none of them has a `libpod/`. So treat this as a property of the e2e
  * harness, not a documented product behavior, until someone traces it.)

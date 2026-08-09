@@ -4,7 +4,7 @@
  * `resolveImageChain` gives each project an ordered list of content-hash
  * tagged layers; this module realizes those layers (and registry pushes)
  * with at most one podman process per tag. Tags are content-addressed, so
- * two projects (or two concurrent session creates) that need the same step
+ * two projects (or two concurrent worktree creates) that need the same step
  * coalesce onto one build and fan out again on their distinct downstream
  * layers.
  *
@@ -58,7 +58,7 @@ const inflightPushes = new Map<string, Promise<string>>()
  * project rebuild` changes bytes under unchanged tags, so the rebuild path
  * invalidates before removing and re-verifies after. The residual staleness
  * (someone prunes the podman store or wipes the registry mid-run) surfaces
- * as a fail-fast ErrImagePull on the next session pod, same as any missing
+ * as a fail-fast ErrImagePull on the next worktree pod, same as any missing
  * immutable tag.
  */
 const realizedTags = new Set<string>()
@@ -270,7 +270,7 @@ export interface EnsureImageOpts {
  *   image is missing or stale. Used by e2e tests so parallel workers fail
  *   fast instead of racing to build the same image.
  * @param nestedContainers - Include the nestable layer (from the project's
- *   `nestedContainers` config, passed by createSession).
+ *   `nestedContainers` config, passed by createWorktree).
  */
 export async function ensureImage(
   projectSlug: string,

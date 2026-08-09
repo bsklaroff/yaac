@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, isNull } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions, worktrees } from '#platform/db'
 import { normalizeTitle } from '@yaac/shared/titles'
-import type { SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
+import type { WorktreeDeathCause, WorktreeDeathReason } from '@yaac/shared/types'
 
 /**
  * The worktree spine: one row per (project, worktree id) for every worktree
@@ -44,7 +44,7 @@ export interface WorktreeRow {
   baseBranch?: string
   background: boolean
   stoppedAt?: Date
-  deathReason?: SessionDeathReason
+  deathReason?: WorktreeDeathReason
   deathDetail?: string
   deathSeen: boolean
 }
@@ -74,7 +74,7 @@ function toRow(r: Row): WorktreeRow {
     ...(r.baseBranch !== null ? { baseBranch: r.baseBranch } : {}),
     background: r.background,
     ...(r.stoppedAt !== null ? { stoppedAt: r.stoppedAt } : {}),
-    ...(r.deathReason !== null ? { deathReason: r.deathReason as SessionDeathReason } : {}),
+    ...(r.deathReason !== null ? { deathReason: r.deathReason as WorktreeDeathReason } : {}),
     ...(r.deathDetail !== null ? { deathDetail: r.deathDetail } : {}),
     deathSeen: r.deathSeen,
   }
@@ -131,7 +131,7 @@ export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promis
 export async function recordWorktreeStopped(
   projectSlug: string,
   worktreeId: string,
-  cause?: SessionDeathCause,
+  cause?: WorktreeDeathCause,
 ): Promise<void> {
   try {
     const db = await getDb()
@@ -150,7 +150,7 @@ export async function recordWorktreeStopped(
  *  captured so a failed restart can put it back exactly as it was. */
 export interface PriorStop {
   stoppedAt: Date
-  deathReason?: SessionDeathReason
+  deathReason?: WorktreeDeathReason
   deathDetail?: string
   deathSeen: boolean
 }

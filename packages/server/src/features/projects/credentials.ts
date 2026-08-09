@@ -100,7 +100,7 @@ export async function saveCredentials(creds: GitCredentialsFile): Promise<void> 
 /**
  * Merge envSecretProxy values into the proxy-secrets credentials file.
  * The proxy resolves `secretRef` injection rules against this file per
- * request, so it must be written before the session registration that
+ * request, so it must be written before the worktree registration that
  * references it. Merge semantics (not replace): projects proxy different
  * env vars and must not clobber each other's entries.
  *
@@ -212,7 +212,7 @@ export async function resolveCredentialForUrl(
 
 /**
  * Return the first SSH entry's knownHostsEntry whose pattern's host matches.
- * Used by session-create to assemble the container's known_hosts file.
+ * Used by worktree-create to assemble the container's known_hosts file.
  */
 export async function loadKnownHostsEntryForHost(host: string): Promise<string | null> {
   const creds = await loadCredentials()

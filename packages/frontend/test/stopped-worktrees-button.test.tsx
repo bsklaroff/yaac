@@ -11,8 +11,8 @@ vi.mock('#lib/stoppedApi', () => ({
   markDeathSeen: vi.fn(),
   markAllDeathsSeen: vi.fn(),
 }))
-vi.mock('#lib/createSession', () => ({ restartSession: vi.fn() }))
-vi.mock('#lib/useProvisionSession', () => ({ useProvisionSession: () => provision }))
+vi.mock('#lib/createWorktree', () => ({ restartWorktree: vi.fn() }))
+vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => provision }))
 
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
@@ -64,7 +64,7 @@ function renderButton(): void {
 /** Render, wait for the (data-gated) sidebar entry point, and open the overlay. */
 async function open(): Promise<void> {
   renderButton()
-  fireEvent.click(await screen.findByRole('button', { name: 'Deleted sessions' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Deleted worktrees' }))
 }
 
 describe('StoppedWorktreesButton', () => {
@@ -78,15 +78,15 @@ describe('StoppedWorktreesButton', () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([])
     renderButton()
     await waitFor(() => expect(getStoppedWorktrees).toHaveBeenCalled())
-    expect(screen.queryByRole('button', { name: 'Deleted sessions' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Deleted worktrees' })).toBeNull()
   })
 
-  it('shows the entry point once deleted sessions exist', async () => {
+  it('shows the entry point once deleted worktrees exist', async () => {
     renderButton()
-    expect(await screen.findByRole('button', { name: 'Deleted sessions' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Deleted worktrees' })).toBeTruthy()
   })
 
-  it('lists deleted sessions and shows the selected one in the detail pane', async () => {
+  it('lists deleted worktrees and shows the selected one in the detail pane', async () => {
     await open()
     // First row auto-selected → its prompt (detail-only) is visible.
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
@@ -118,15 +118,15 @@ describe('StoppedWorktreesButton', () => {
     await open()
     // Row subtitle carries the short description (no detail).
     await waitFor(() => expect(
-      screen.getByText(/died .* — out of memory \(hit the session memory limit\)/)).toBeTruthy())
+      screen.getByText(/died .* — out of memory \(hit the worktree memory limit\)/)).toBeTruthy())
     // Detail pane: the timestamp row is labeled Died, and Cause carries the detail.
     expect(screen.getByText('Died')).toBeTruthy()
     expect(screen.getByText('Cause')).toBeTruthy()
-    expect(screen.getByText(/out of memory \(hit the session memory limit\) — exit code 137/)).toBeTruthy()
+    expect(screen.getByText(/out of memory \(hit the worktree memory limit\) — exit code 137/)).toBeTruthy()
     // Restart dialog mentions the death.
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
     const dialog = await screen.findByRole('alertdialog')
-    expect(within(dialog).getByText(/This session died: out of memory/)).toBeTruthy()
+    expect(within(dialog).getByText(/This worktree died: out of memory/)).toBeTruthy()
   })
 
   it('flags an unseen abnormal death with a notification dot on the entry point', async () => {
@@ -135,12 +135,12 @@ describe('StoppedWorktreesButton', () => {
     ])
     renderButton()
     // Dot shows without opening the overlay (title doubles as tooltip + hook).
-    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
   })
 
   it('shows no notification dot when every deletion was user-initiated', async () => {
     renderButton() // TWO are plain deletes (no deathReason)
-    await screen.findByRole('button', { name: 'Deleted sessions' })
+    await screen.findByRole('button', { name: 'Deleted worktrees' })
     expect(screen.queryByTitle(/died unexpectedly/)).toBeNull()
   })
 
@@ -161,7 +161,7 @@ describe('StoppedWorktreesButton', () => {
       entry({ worktreeId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
     await open() // top row (plain delete) auto-selected → the died row stays unseen
-    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
     expect(markDeathSeen).not.toHaveBeenCalled() // the plain delete isn't a death
     fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
     await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
@@ -175,7 +175,7 @@ describe('StoppedWorktreesButton', () => {
       entry({ worktreeId: 's4', title: 'Evicted run', deathReason: 'evicted' }),
     ])
     await open() // top row is the plain delete → both deaths stay unseen
-    expect(await screen.findByTitle('2 sessions died unexpectedly')).toBeTruthy()
+    expect(await screen.findByTitle('2 worktrees died unexpectedly')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Mark all as read' }))
     await waitFor(() => expect(markAllDeathsSeen).toHaveBeenCalledWith('proj'))
@@ -202,7 +202,7 @@ describe('StoppedWorktreesButton', () => {
     expect(screen.queryByText('Cause')).toBeNull()
   })
 
-  it('restarts a session and closes the overlay', async () => {
+  it('restarts a worktree and closes the overlay', async () => {
     await open()
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
     // Detail's Restart → confirm dialog → confirm.
@@ -218,10 +218,10 @@ describe('StoppedWorktreesButton', () => {
     expect(useUiStore.getState().stoppedOverlayOpen).toBe(false)
   })
 
-  it('re-lists a restarted session after it is deleted again', async () => {
-    // Bug: restarting a session left its id in a local mid-restart filter that
-    // was never cleared. Because a restart reuses the session id, removing that
-    // session again stayed hidden until a browser reload reset the component.
+  it('re-lists a restarted worktree after it is deleted again', async () => {
+    // Bug: restarting a worktree left its id in a local mid-restart filter that
+    // was never cleared. Because a restart reuses the worktree id, removing that
+    // worktree again stayed hidden until a browser reload reset the component.
     // Presence is observed here via the sidebar death dot, whose count is taken
     // from the merged (post-filter) list.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -235,10 +235,10 @@ describe('StoppedWorktreesButton', () => {
         <StoppedWorktreesButton projectSlug="proj" activeSignature="sig-a" />
       </QueryClientProvider>,
     )
-    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
 
     // Restart s1 from the overlay → records it mid-restart and closes the overlay.
-    fireEvent.click(await screen.findByRole('button', { name: 'Deleted sessions' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Deleted worktrees' }))
     fireEvent.click(await screen.findByRole('button', { name: /Restart/ }))
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restart' }))
     expect(provision).toHaveBeenCalledTimes(1)
@@ -253,7 +253,7 @@ describe('StoppedWorktreesButton', () => {
       </QueryClientProvider>,
     )
     await waitFor(() => expect(client.getQueryData(['deleted', 'proj', 'sig-b'])).toEqual([]))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleted sessions' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleted worktrees' })).toBeNull())
 
     // s1 dies again and re-enters the deleted list. With the stale filter pruned,
     // the death dot must reappear immediately — no browser reload needed.
@@ -265,6 +265,6 @@ describe('StoppedWorktreesButton', () => {
         <StoppedWorktreesButton projectSlug="proj" activeSignature="sig-c" />
       </QueryClientProvider>,
     )
-    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+    expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
   })
 })

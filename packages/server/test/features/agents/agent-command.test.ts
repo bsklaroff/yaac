@@ -9,7 +9,7 @@ import {
   verifyAgentWindowAlive,
   initWindowCommand,
 } from '#features/agents/agent-command'
-import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
+import { RelayExecError, podExec } from '#platform/k8s/stream-relay'
 import type * as streamRelayModule from '#platform/k8s/stream-relay'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -25,7 +25,7 @@ vi.mock('#platform/k8s/exec', () => ({
 // "the pod was never reached".
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
-  sessionExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
@@ -220,11 +220,11 @@ describe('buildPromptPasteBgCmd', () => {
 })
 
 describe('typeInitialPrompt', () => {
-  beforeEach(() => vi.mocked(sessionExec).mockClear())
+  beforeEach(() => vi.mocked(podExec).mockClear())
 
   it('relay-execs the detached paste command single-attempt (a retry could double-paste)', async () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
-    expect(sessionExec).toHaveBeenCalledWith(
+    expect(podExec).toHaveBeenCalledWith(
       'yaac-job-1',
       buildPromptPasteBgCmd('yaac:claude', 'hello there'),
       { maxAttempts: 1, timeout: 15_000 },
@@ -246,13 +246,13 @@ describe('verifyAgentWindowAlive', () => {
   // error, failing the test even though the assertion passes. Each case sets
   // its own implementation instead, which is all these need.
   it('relay-execs the window probe and passes when it exits 0', async () => {
-    vi.mocked(sessionExec).mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
+    vi.mocked(podExec).mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
     await expect(verifyAgentWindowAlive('yaac-job-1', 'codex')).resolves.toBeUndefined()
-    expect(sessionExec).toHaveBeenCalledWith('yaac-job-1', buildAgentWindowCheck('codex'))
+    expect(podExec).toHaveBeenCalledWith('yaac-job-1', buildAgentWindowCheck('codex'))
   })
 
   it('reports a missing window as a dead agent when the probe ran in the pod', async () => {
-    vi.mocked(sessionExec).mockImplementation(
+    vi.mocked(podExec).mockImplementation(
       () => Promise.reject(new RelayExecError('command exited 1', 1, '', 'no server running on /tmp/yaac.sock')),
     )
     // The probe is `list-windows | grep`, so a dead tmux server exits
@@ -264,7 +264,7 @@ describe('verifyAgentWindowAlive', () => {
   it('propagates a transport failure instead of blaming the agent', async () => {
     // The probe never reached the pod, so it says nothing about the window —
     // calling that a missing tool would send the user hunting the wrong bug.
-    vi.mocked(sessionExec).mockImplementation(
+    vi.mocked(podExec).mockImplementation(
       () => Promise.reject(new Error('stream relay dial: timeout')),
     )
     await expect(verifyAgentWindowAlive('yaac-job-1', 'codex'))

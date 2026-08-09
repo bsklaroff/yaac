@@ -16,7 +16,7 @@ import { NETD_APP_NAME } from '@yaac/server/platform/k8s/proxy-constants'
 import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/features/cluster/redirect-claims'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
-import { LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
+import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -86,9 +86,9 @@ async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<voi
   throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
 }
 
-async function startSessionPod(
+async function startWorktreePod(
   name: string,
-  sessionId: string,
+  worktreeId: string,
   proxyHost: string,
   opts: { netRaw?: boolean } = {},
 ): Promise<void> {
@@ -98,7 +98,7 @@ async function startSessionPod(
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { [LABEL_SESSION_ID]: sessionId, 'yaac.test': 'true' },
+      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -495,7 +495,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
   const podA = `yaac-netd-a-${suffix}`
   const podLate = `yaac-netd-late-${suffix}`
   const podRaw = `yaac-netd-raw-${suffix}`
-  const sessionA = `netd-a-${suffix}`
+  const worktreeA = `netd-a-${suffix}`
   const sessionLate = `netd-late-${suffix}`
   const sessionRaw = `netd-raw-${suffix}`
   let proxyHost = ''
@@ -503,19 +503,19 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
   beforeAll(async () => {
     await client.ensureRunning()
     proxyHost = await proxyServiceClusterIp()
-    await client.registerSession(sessionA, {
+    await client.registerWorktree(worktreeA, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-a',
     })
-    await client.registerSession(sessionLate, {
+    await client.registerWorktree(sessionLate, {
       rules: [], allowedHosts: [MITM_HOST], tool: 'claude', projectSlug: 'netd-late',
     })
     // The forger gets NOTHING on its allowlist, so any success in the
     // spoof case below is a real attribution failure rather than its own
     // legitimate egress.
-    await client.registerSession(sessionRaw, {
+    await client.registerWorktree(sessionRaw, {
       rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'netd-raw',
     })
-    await startSessionPod(podA, sessionA, proxyHost)
+    await startWorktreePod(podA, worktreeA, proxyHost)
     await waitForPodRunning(podA)
   }, 600_000)
 
@@ -525,9 +525,9 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     await setNetdScheduled(true).catch(() => { /* ok */ })
     await waitForNetdReady('all').catch(() => { /* ok */ })
     await Promise.all([deleteTestPod(podA), deleteTestPod(podLate), deleteTestPod(podRaw)])
-    try { await client.removeSession(sessionA) } catch { /* ok */ }
-    try { await client.removeSession(sessionLate) } catch { /* ok */ }
-    try { await client.removeSession(sessionRaw) } catch { /* ok */ }
+    try { await client.removeWorktree(worktreeA) } catch { /* ok */ }
+    try { await client.removeWorktree(sessionLate) } catch { /* ok */ }
+    try { await client.removeWorktree(sessionRaw) } catch { /* ok */ }
     try { await client.stop() } catch { /* ok */ }
   }, 300_000)
 
@@ -607,7 +607,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     await setNetdScheduled(false)
     await waitForNetdReady(0)
 
-    await startSessionPod(podLate, sessionLate, proxyHost)
+    await startWorktreePod(podLate, sessionLate, proxyHost)
     await waitForPodRunning(podLate)
 
     // Not the redirect target...
@@ -916,7 +916,7 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     // so any success here is a real attribution failure.
     // A dedicated pod: it needs NET_RAW/NET_ADMIN and the gvisor-nested
     // tier, and a pod spec cannot be patched into that after creation.
-    await startSessionPod(podRaw, sessionRaw, proxyHost, { netRaw: true })
+    await startWorktreePod(podRaw, sessionRaw, proxyHost, { netRaw: true })
     await waitForPodRunning(podRaw)
 
     // Sanity: the forger has no allowlist of its own, so it cannot reach

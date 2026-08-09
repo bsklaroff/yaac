@@ -28,9 +28,9 @@ describe('worktree death read-marks', () => {
   })
 
   const seen = async (
-    projectSlug: string, sessionId: string,
+    projectSlug: string, worktreeId: string,
   ): Promise<boolean | undefined> =>
-    (await listWorktreeRows(projectSlug)).find((r) => r.worktreeId === sessionId)?.deathSeen
+    (await listWorktreeRows(projectSlug)).find((r) => r.worktreeId === worktreeId)?.deathSeen
 
   it('marks a recorded death seen on its session row', async () => {
     // Seed an abnormal death (unseen by default).
@@ -59,7 +59,7 @@ describe('worktree death read-marks', () => {
   it('rejects a malformed body', async () => {
     const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.worktree['mark-death-seen'].$post({
-      // @ts-expect-error — sessionId is required
+      // @ts-expect-error — worktreeId is required
       json: { projectSlug: 'proj' },
     })
     expect(res.status).toBe(400)

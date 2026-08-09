@@ -1,6 +1,6 @@
 /**
  * Build the tray glyph in-code (no binary asset — keeps the whole shell
- * editable/testable from a headless yaac session). Returns a raw BGRA bitmap
+ * editable/testable from a headless yaac worktree). Returns a raw BGRA bitmap
  * of a black, antialiased rounded square: RGB=0, alpha=coverage, transparent
  * outside. Template images ignore RGB and use the alpha channel, so main.ts
  * recolors it to match the menu bar. Pure (no Electron) so it's unit-testable.

@@ -80,7 +80,7 @@ export function calicoManifestCachePath(version: string): string {
  * SHARED, reluctantly. Top-level directory for all host-side credential
  * files. Split into per-service files and bind-mounted RW into the proxy
  * sidecar so that credential updates (via `yaac auth update`) propagate to
- * every running container without needing to restart sessions.
+ * every running container without needing to restart worktrees.
  *
  * The server is the only writer, which would make this server-local — but
  * the proxy pod mounts it, and on a multi-node cluster that pod is not on
@@ -95,7 +95,7 @@ export function credentialsDir(): string {
 /**
  * Host directory backing the proxy's `/data` (CA key/cert, tor state).
  * Persisting it across pod replacements keeps the MITM CA stable, so
- * session pods' mounted CA stays valid through proxy image upgrades.
+ * worktree pods' mounted CA stays valid through proxy image upgrades.
  *
  * SHARED tier: the proxy pod mounts it and the server reads what the proxy
  * writes there (blocked-hosts, git-auth-failures), so both sides need the
@@ -132,7 +132,7 @@ export function piCredentialsPath(): string {
 
 /**
  * SHARED — see {@link credentialsDir}. File holding envSecretProxy values
- * (env var name -> secret), written by the server before each session
+ * (env var name -> secret), written by the server before each worktree
  * registration. Injection rules sent to the proxy reference these entries
  * by key (`secretRef`) instead of embedding the value, which keeps
  * registrations secret-free so the proxy can persist them across pod
@@ -143,7 +143,7 @@ export function proxySecretsCredentialsPath(): string {
 }
 
 /**
- * SHARED: the project's state tree — everything a session pod mounts
+ * SHARED: the project's state tree — everything a worktree pod mounts
  * hangs off it, plus the project metadata the server keeps beside it.
  * The node-local counterpart is {@link nodeLocalProjectPath}; the two are
  * the same directory today.
@@ -152,12 +152,12 @@ export function projectDir(slug: string): string {
   return sharedProjectPath(slug)
 }
 
-/** SHARED: the bare git repo. `repo/.git` is mounted into every session. */
+/** SHARED: the bare git repo. `repo/.git` is mounted into every worktree. */
 export function repoDir(slug: string): string {
   return sharedProjectPath(slug, 'repo')
 }
 
-/** SHARED: mounted at `/home/yaac/.claude` in every session of the project. */
+/** SHARED: mounted at `/home/yaac/.claude` in every worktree of the project. */
 export function claudeDir(slug: string): string {
   return sharedProjectPath(slug, 'claude')
 }
@@ -185,11 +185,11 @@ export function codexDir(slug: string): string {
 /**
  * SHARED. One worktree's ACP conversation logs — the verbatim `session/update`
  * stream acpd tees as it relays, one file per conversation, mounted read-write
- * at `/home/yaac/.yaac-acp` in that worktree's session.
+ * at `/home/yaac/.yaac-acp` in that worktree's worktree.
  *
  * Deliberately beside the tool homes rather than inside one: the log is a
  * property of the *protocol*, so a future codex or pi adapter writes to the
- * same place. Project-level rather than under the session dir because teardown
+ * same place. Project-level rather than under the worktree dir because teardown
  * prunes that, and a stopped worktree's conversation should still be readable —
  * the same reason a tool's transcripts outlive their pod.
  *
@@ -202,12 +202,12 @@ export function acpLogDir(slug: string, worktreeId: string): string {
 }
 
 /**
- * NODE-LOCAL. The project's pnpm store plus the per-session ephemeral
+ * NODE-LOCAL. The project's pnpm store plus the per-worktree ephemeral
  * module dirs under it, mounted at `/home/yaac/.cached-packages`. A store
  * on a network filesystem turns every `link(2)`/stat into a round trip,
  * and the hardlinks it hands out must stay on one filesystem
  * (multi-node-storage-plan.md: per-node store, duplicate downloads
- * accepted). Nothing outside the session's own node reads it — except the
+ * accepted). Nothing outside the worktree's own node reads it — except the
  * orphan-modules GC, which is the server-side sweep that has to learn to
  * enumerate per node.
  */
@@ -219,8 +219,8 @@ export function cachedPackagesDir(slug: string): string {
  * SHARED. Host directory backing a `cacheVolumes` entry. The podman
  * backend used named volumes (`yaac-cache-<slug>-<key>`); on kubernetes
  * these are plain per-project hostPath dirs with the same
- * persist-across-sessions semantics — and the point of persisting them is
- * that the NEXT session gets the warm cache, wherever it is scheduled.
+ * persist-across-worktrees semantics — and the point of persisting them is
+ * that the NEXT worktree gets the warm cache, wherever it is scheduled.
  */
 export function cacheVolumeDir(slug: string, key: string): string {
   return sharedProjectPath(slug, 'cache-volumes', key)
@@ -242,16 +242,16 @@ export function codexTranscriptDir(slug: string): string {
 }
 
 /** SHARED — see {@link codexTranscriptDir}. */
-export function codexTranscriptFile(slug: string, sessionId: string): string {
-  return path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
+export function codexTranscriptFile(slug: string, worktreeId: string): string {
+  return path.join(codexTranscriptDir(slug), `${worktreeId}.jsonl`)
 }
 
 /**
  * SHARED. Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across
- * sessions within the same project so that model selection, permissions,
+ * worktrees within the same project so that model selection, permissions,
  * and other opencode settings (written via `Config.updateGlobal()`)
- * persist across session restarts without affecting per-session data
+ * persist across worktree restarts without affecting per-worktree data
  * isolation (the SQLite DB in `~/.local/share/opencode/`).
  */
 export function opencodeConfigDir(slug: string): string {
@@ -261,28 +261,28 @@ export function opencodeConfigDir(slug: string): string {
 /**
  * NODE-LOCAL. Per-yaac-session opencode data root — the SQLite DB —
  * bind-mounted at `/home/yaac/.local/share/opencode/` inside the
- * container. Per-session isolation sidesteps opencode upstream concurrent-
+ * container. Per-worktree isolation sidesteps opencode upstream concurrent-
  * write issues (sst/opencode#5241) and makes `opencode --continue`
  * deterministic since each container's DB only ever contains its own
- * session.
+ * worktree.
  *
  * Node-local because SQLite forbids WAL on a network filesystem and
  * opencode has a confirmed NFS-corruption issue (anomalyco/opencode#14970).
  * The server never opens the file (opencode-status.ts probes the in-pod
- * HTTP API), so the only consequence is that resuming a session has to
+ * HTTP API), so the only consequence is that resuming a worktree has to
  * land back on the node holding this dir — the restart node-affinity in
  * multi-node-storage-plan.md.
  */
-export function opencodeDataDir(slug: string, sessionId: string): string {
-  return nodeLocalProjectPath(slug, 'opencode-data', sessionId)
+export function opencodeDataDir(slug: string, worktreeId: string): string {
+  return nodeLocalProjectPath(slug, 'opencode-data', worktreeId)
 }
 
 /**
  * SHARED. Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the
  * container (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every
- * session's settings, extensions, and JSONL session logs are shared across all
- * sessions of the project. Persists across container teardown, so a deleted
- * session's first message can still be parsed from its log on demand.
+ * worktree's settings, extensions, and JSONL session logs are shared across all
+ * worktrees of the project. Persists across container teardown, so a deleted
+ * worktree's first message can still be parsed from its log on demand.
  */
 export function piDir(slug: string): string {
   return sharedProjectPath(slug, 'pi')
@@ -290,10 +290,10 @@ export function piDir(slug: string): string {
 
 /**
  * SHARED. Directory holding pi's JSONL session logs (one
- * `<timestamp>_<sessionId>.jsonl` per session) under the mounted pi home. pi
+ * `<timestamp>_<worktreeId>.jsonl` per worktree) under the mounted pi home. pi
  * addresses each session by id via `--session-id`, so the server reads a
- * session's log by matching that id in the filename rather than isolating each
- * session in its own dir.
+ * worktree's log by matching that id in the filename rather than isolating each
+ * worktree in its own dir.
  */
 export function piSessionsDir(slug: string): string {
   return path.join(piDir(slug), 'agent', 'sessions')
@@ -324,7 +324,7 @@ export function worktreeMetaPath(slug: string, worktreeId: string): string {
  *
  * The hook is the only witness of a user-started agent session (`/clear`, a
  * hand-typed `claude --resume`), because it alone sees `TMUX_PANE` beside the
- * tool's session id. It cannot share the document above: two read-modify-writes
+ * tool's worktree id. It cannot share the document above: two read-modify-writes
  * lose one side's write, and coordinating them would mean a lock held across a
  * hostPath mount from inside a gVisor sandbox. Appending needs neither, and
  * mounting this as a `File` hostPath is safe precisely because nothing ever
@@ -340,63 +340,63 @@ export function worktreeMetaDir(slug: string): string {
 }
 
 /**
- * SHARED, deliberately. The session's `/workspace`. A worktree is hot,
- * per-session data that would rather be node-local, but its `.git` file
+ * SHARED, deliberately. The worktree's `/workspace`. A worktree is hot,
+ * per-worktree data that would rather be node-local, but its `.git` file
  * points into `repo/.git/worktrees/<sid>` and the server creates it with
  * `git worktree add` from its own filesystem: keeping both halves on the
- * shared root means the server and the session pod see the same object
+ * shared root means the server and the worktree pod see the same object
  * store with no new machinery. Moving it node-local needs worktree
- * creation to happen in an init container on the session's node.
+ * creation to happen in an init container on the worktree's node.
  */
-export function worktreeDir(slug: string, sessionId: string): string {
-  return path.join(worktreesDir(slug), sessionId)
+export function worktreeDir(slug: string, worktreeId: string): string {
+  return path.join(worktreesDir(slug), worktreeId)
 }
 
 /**
- * SHARED. Per-session directory rooting everything session-scoped that is
+ * SHARED. Per-worktree directory rooting everything worktree-scoped that is
  * not the worktree: the vcluster kubeconfig dir, the yaac-in-yaac data dir,
- * and the staged builtin-skills / session-bin copies. All of it is written
- * by the server and mounted into the session pod, so it has to be visible
- * from the pod's node. Its node-local twin is {@link nodeLocalSessionDir}.
+ * and the staged builtin-skills / worktree-bin copies. All of it is written
+ * by the server and mounted into the worktree pod, so it has to be visible
+ * from the pod's node. Its node-local twin is {@link nodeLocalWorktreeStateDir}.
  *
- * Removed wholesale by session cleanup and the orphan-session GC, which
+ * Removed wholesale by worktree cleanup and the orphan-worktree GC, which
  * sweep both roots.
  */
-export function sessionDir(slug: string, sessionId: string): string {
-  return sharedProjectPath(slug, 'sessions', sessionId)
+export function worktreeStateDir(slug: string, worktreeId: string): string {
+  return sharedProjectPath(slug, 'sessions', worktreeId)
 }
 
 /**
- * NODE-LOCAL twin of {@link sessionDir}: per-session scratch that only the
- * session's own node ever touches. Same directory as `sessionDir` today.
+ * NODE-LOCAL twin of {@link worktreeStateDir}: per-worktree scratch that only the
+ * worktree's own node ever touches. Same directory as `worktreeStateDir` today.
  *
  * Nothing writes under it right now — its last resident, the tmux socket
  * dir, is a pod-local emptyDir (see CONTAINER_TMUX_DIR). It stays because
- * it is the tier declaration the sweeps below are built on: session scratch
+ * it is the tier declaration the sweeps below are built on: worktree scratch
  * that has to survive the pod but not leave the node lands here, and
- * {@link sessionRoots} already reaches it.
+ * {@link worktreeStateRoots} already reaches it.
  */
-export function nodeLocalSessionDir(slug: string, sessionId: string): string {
-  return nodeLocalProjectPath(slug, 'sessions', sessionId)
+export function nodeLocalWorktreeStateDir(slug: string, worktreeId: string): string {
+  return nodeLocalProjectPath(slug, 'sessions', worktreeId)
 }
 
 /**
- * Both roots a session's state can live under, deduplicated. Anything that
- * must see ALL of a session — cleanup, the orphan GC — iterates this
+ * Both roots a worktree's state can live under, deduplicated. Anything that
+ * must see ALL of a worktree — cleanup, the orphan GC — iterates this
  * instead of re-stating the twin relationship, so a reclassification
  * (worktrees to node-local, say) is edited once, here.
  *
  * One entry on the single-node backend, where the tiers coincide.
  */
-export function sessionRoots(slug: string, sessionId: string): string[] {
+export function worktreeStateRoots(slug: string, worktreeId: string): string[] {
   return [...new Set([
-    sessionDir(slug, sessionId),
-    nodeLocalSessionDir(slug, sessionId),
+    worktreeStateDir(slug, worktreeId),
+    nodeLocalWorktreeStateDir(slug, worktreeId),
   ])]
 }
 
-/** The `sessions/` parents of {@link sessionRoots}, deduplicated. */
-export function sessionsRoots(slug: string): string[] {
+/** The `worktrees/` parents of {@link worktreeStateRoots}, deduplicated. */
+export function projectWorktreeStateRoots(slug: string): string[] {
   return [...new Set([
     sharedProjectPath(slug, 'sessions'),
     nodeLocalProjectPath(slug, 'sessions'),
@@ -419,24 +419,24 @@ export function projectsRoots(): string[] {
 }
 
 /**
- * SHARED. Per-session directory holding the vcluster kubeconfig, mounted
- * at /home/yaac/.kube inside the session container (virtualCluster
- * sessions only). Written by the server (including a background heal that
+ * SHARED. Per-worktree directory holding the vcluster kubeconfig, mounted
+ * at /home/yaac/.kube inside the worktree container (virtualCluster
+ * worktrees only). Written by the server (including a background heal that
  * rewrites the file in place) and read in-pod, so both sides must see it.
  * Dir-mounted (not the file) so the heal can rewrite without remounting.
  */
-export function sessionVclusterDir(slug: string, sessionId: string): string {
-  return path.join(sessionDir(slug, sessionId), 'vcluster')
+export function worktreeVclusterDir(slug: string, worktreeId: string): string {
+  return path.join(worktreeStateDir(slug, worktreeId), 'vcluster')
 }
 
 /**
- * SHARED. Per-session directory backing the yaac-in-yaac data dir
- * (YAAC_DATA_DIR inside the session). Mounted at the IDENTICAL absolute
+ * SHARED. Per-worktree directory backing the yaac-in-yaac data dir
+ * (YAAC_DATA_DIR inside the worktree). Mounted at the IDENTICAL absolute
  * path in the pod — the kind $HOME extraMount makes the node see it, so
  * inner synced-pod hostPaths resolve. Also the VAP guard's only allowed
- * hostPath prefix for the session's synced pods. The inner yaac splits
+ * hostPath prefix for the worktree's synced pods. The inner yaac splits
  * this dir into the same three tiers again, so it must be the shared kind.
  */
-export function nestedYaacDataDir(slug: string, sessionId: string): string {
-  return path.join(sessionDir(slug, sessionId), 'nested-yaac')
+export function nestedYaacDataDir(slug: string, worktreeId: string): string {
+  return path.join(worktreeStateDir(slug, worktreeId), 'nested-yaac')
 }

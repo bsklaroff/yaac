@@ -34,7 +34,7 @@ export interface ServerAppDeps {
   buildId: string
   /**
    * Token store (durable client tokens + one-time exchange tokens + web
-   * sessions). Optional so existing in-process tests can keep calling
+   * worktrees). Optional so existing in-process tests can keep calling
    * `buildApp({secret, buildId})`; a fresh empty store (nothing but the
    * lock secret authenticates) is created when omitted.
    */
@@ -89,7 +89,7 @@ export function buildApp(deps: ServerAppDeps) {
     404,
   ))
 
-  // Browser session mint. POST is public (allowlisted in
+  // Browser worktree mint. POST is public (allowlisted in
   // cookieOrBearerAuth): exchanges a token — one-time from `yaac open`,
   // or a pasted durable token — for an HttpOnly session cookie. Never
   // log the token value — only ok/fail.
@@ -100,15 +100,15 @@ export function buildApp(deps: ServerAppDeps) {
       serverLog('[server] web-session exchange fail')
       return c.json({ error: { code: 'BAD_REQUEST', message: 'missing token' } }, 400)
     }
-    const sessionId = tokens.consumeExchange(token)
-    if (!sessionId) {
+    const worktreeId = tokens.consumeExchange(token)
+    if (!worktreeId) {
       serverLog('[server] web-session exchange fail')
       return c.json(
         { error: { code: 'BAD_TOKEN', message: 'invalid or expired token' } },
         401,
       )
     }
-    setCookie(c, sessionCookieName(), sessionId, {
+    setCookie(c, sessionCookieName(), worktreeId, {
       httpOnly: true,
       sameSite: 'Strict',
       path: '/',

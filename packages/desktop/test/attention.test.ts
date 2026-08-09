@@ -34,7 +34,7 @@ const snap = (entries: Array<Partial<WorktreeListEntry>>): ServerSnapshot => ({
 })
 
 describe('selectWaiting', () => {
-  it('keeps only waiting sessions', () => {
+  it('keeps only waiting worktrees', () => {
     const out = selectWaiting(snap([
       { worktreeId: 'a', status: 'waiting' },
       { worktreeId: 'b', status: 'running' },
@@ -52,7 +52,7 @@ describe('selectWaiting', () => {
 })
 
 describe('waitingKey', () => {
-  it('encodes the session and the waiting spell', () => {
+  it('encodes the worktree and the waiting spell', () => {
     expect(waitingKey({ worktreeId: 'a', projectSlug: 'p', tool: 'claude', title: 't', waitingSinceMs: 5 }))
       .toBe('a#5')
   })
@@ -65,12 +65,12 @@ describe('diffNewlyWaiting', () => {
   const w = (id: string, since?: number): ReturnType<typeof selectWaiting>[number] =>
     ({ worktreeId: id, projectSlug: 'p', tool: 'claude', title: id, waitingSinceMs: since })
 
-  it('reports sessions absent from prevKeys as newly waiting', () => {
+  it('reports worktrees absent from prevKeys as newly waiting', () => {
     const { toNotify, nextKeys } = diffNewlyWaiting(new Set(['a#1']), [w('a', 1), w('b', 2)])
     expect(toNotify.map((s) => s.worktreeId)).toEqual(['b'])
     expect([...nextKeys].sort()).toEqual(['a#1', 'b#2'])
   })
-  it('re-notifies a new spell of the same session', () => {
+  it('re-notifies a new spell of the same worktree', () => {
     const { toNotify } = diffNewlyWaiting(new Set(['a#1']), [w('a', 2)])
     expect(toNotify.map((s) => s.worktreeId)).toEqual(['a'])
   })
@@ -82,9 +82,9 @@ describe('badgeText', () => {
 })
 
 describe('notificationFor', () => {
-  it('names the project and session', () => {
+  it('names the project and worktree', () => {
     expect(notificationFor({ worktreeId: 'a', projectSlug: 'proj', tool: 'claude', title: 'Fix bug' }))
-      .toEqual({ title: 'Session waiting for you', body: 'proj · Fix bug' })
+      .toEqual({ title: 'Worktree waiting for you', body: 'proj · Fix bug' })
   })
 })
 
@@ -108,7 +108,7 @@ describe('AttentionMonitor', () => {
     expect(r.waitingCount).toBe(1)
     expect(r.toNotify).toEqual([])
   })
-  it('notifies on a session that enters waiting after seeding', () => {
+  it('notifies on a worktree that enters waiting after seeding', () => {
     const m = new AttentionMonitor()
     m.update(snap([{ worktreeId: 'a', status: 'running' }]))
     const r = m.update(snap([{ worktreeId: 'a', status: 'waiting', waitingSinceMs: 1 }]))

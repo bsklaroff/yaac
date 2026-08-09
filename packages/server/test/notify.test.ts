@@ -1,34 +1,34 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   coalesceCalls,
-  onSessionListChanged,
-  notifySessionListChanged,
-  _resetSessionListChangedForTests,
+  onWorktreeListChanged,
+  notifyWorktreeListChanged,
+  _resetWorktreeListChangedForTests,
 } from '#notify'
 
 afterEach(() => {
-  _resetSessionListChangedForTests()
+  _resetWorktreeListChangedForTests()
 })
 
 describe('session-list-changed signal', () => {
   it('fires the registered listener on notify', () => {
     const fn = vi.fn()
-    onSessionListChanged(fn)
-    notifySessionListChanged()
-    notifySessionListChanged()
+    onWorktreeListChanged(fn)
+    notifyWorktreeListChanged()
+    notifyWorktreeListChanged()
     expect(fn).toHaveBeenCalledTimes(2)
   })
 
   it('is a no-op when nothing is registered', () => {
-    expect(() => notifySessionListChanged()).not.toThrow()
+    expect(() => notifyWorktreeListChanged()).not.toThrow()
   })
 
   it('keeps only the latest listener (last registration wins)', () => {
     const first = vi.fn()
     const second = vi.fn()
-    onSessionListChanged(first)
-    onSessionListChanged(second)
-    notifySessionListChanged()
+    onWorktreeListChanged(first)
+    onWorktreeListChanged(second)
+    notifyWorktreeListChanged()
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
   })

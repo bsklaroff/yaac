@@ -99,7 +99,7 @@ function SkillDetailPane(
 /**
  * Sidebar-header entry point to the project's skill viewer plus the full-screen
  * modal it opens. Skills (personal + plugin + project `SKILL.md` files the
- * agent can invoke) are a property of the project, not a session, so this lives
+ * agent can invoke) are a property of the project, not a worktree, so this lives
  * in the sidebar header and its open state lives in the store.
  *
  * The overlay is a search-filtered master/detail list grouped by source;
@@ -128,7 +128,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
     enabled: open && projectSlug !== '',
   })
   // Freshen the branch list from the remote in the background so a just-pushed
-  // branch appears, mirroring the changes/new-session pickers.
+  // branch appears, mirroring the changes/new-worktree pickers.
   useEffect(() => {
     if (!open || projectSlug === '') return
     let cancelled = false

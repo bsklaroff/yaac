@@ -7,8 +7,8 @@ import { cloneRepo } from '@yaac/server/platform/git'
 import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
-  listSessionPods,
-  type SessionPod,
+  listWorktreePods,
+  type PodInfo,
 } from '@yaac/server/platform/k8s/pods'
 import {
   k8sNamespace,
@@ -17,7 +17,7 @@ import {
   kubectlWithRetry,
 } from '@yaac/server/platform/k8s/kubectl'
 import {
-  removeSessionVcluster,
+  removeWorktreeVcluster,
   vclusterName,
   vclusterNamespace,
 } from '@yaac/server/features/cluster/vcluster'
@@ -41,7 +41,7 @@ import {
   requirePodman,
   requireCluster,
   execInJob,
-  cleanupSessionJobs,
+  cleanupWorktreeJobs,
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import {
@@ -74,7 +74,7 @@ const INNER_IMAGE = registryRef('library/alpine:3.20')
  * the tests below share these two rather than creating their own — a
  * test that needs a session torn down runs last.
  *
- * createSession refuses virtualCluster inside a nested yaac (no
+ * createWorktree refuses virtualCluster inside a nested yaac (no
  * vcluster-in-vcluster), so none of this can run from within a session.
  */
 describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server + real cluster)', () => {
@@ -89,8 +89,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
   const createdSlugs: string[] = []
   const createdVclusters: string[] = []
 
-  let primary: SessionPod
-  let sibling: SessionPod
+  let primary: PodInfo
+  let sibling: PodInfo
 
   async function seedCredentials(): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, '.credentials')
@@ -127,16 +127,16 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     createdSlugs.push(slug)
   }
 
-  async function createSession(slug: string): Promise<SessionPod> {
+  async function createWorktree(slug: string): Promise<PodInfo> {
     const { stdout, stderr, exitCode } = await runYaac(
       serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    const pods = (await listSessionPods(slug)).sort((a, b) => a.createdAtMs - b.createdAtMs)
+    const pods = (await listWorktreePods(slug)).sort((a, b) => a.createdAtMs - b.createdAtMs)
     if (!pods[0]) throw new Error(`no session pod found for project ${slug}`)
-    createdVclusters.push(vclusterName(pods[0].sessionId))
+    createdVclusters.push(vclusterName(pods[0].worktreeId))
     return pods[0]
   }
 
@@ -198,16 +198,16 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     // AlreadyExists. A throwing beforeAll surfaces as "file failed, every
     // test skipped" with no per-test error, which is near-undebuggable
     // from a CI log.
-    primary = await createSession(PRIMARY)
-    sibling = await createSession(SIBLING)
+    primary = await createWorktree(PRIMARY)
+    sibling = await createWorktree(SIBLING)
   }, 900_000)
 
   afterAll(async () => {
     if (server) await server.stop()
     server = null
-    await cleanupSessionJobs()
+    await cleanupWorktreeJobs()
     for (const name of createdVclusters.splice(0)) {
-      await removeSessionVcluster(name).catch(() => { /* already gone */ })
+      await removeWorktreeVcluster(name).catch(() => { /* already gone */ })
     }
     for (const slug of createdSlugs.splice(0)) {
       await removeProjectRegistry(slug).catch(() => { /* already gone */ })
@@ -221,7 +221,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
   it('brings two concurrent vclusters up, each in its own host namespace', async () => {
     // Regression for the one-vcluster-per-namespace constraint: each
     // session's vcluster gets its own host namespace, so two can coexist.
-    expect(primary.sessionId).not.toBe(sibling.sessionId)
+    expect(primary.worktreeId).not.toBe(sibling.worktreeId)
 
     // Both control planes must reach Ready (a crash on the second is the
     // failure mode this fixes). `kubectl get nodes` from each session only
@@ -238,12 +238,12 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     }
 
     // The two vclusters live in distinct host namespaces, each Ready.
-    expect(vclusterNamespace(vclusterName(primary.sessionId)))
-      .not.toBe(vclusterNamespace(vclusterName(sibling.sessionId)))
+    expect(vclusterNamespace(vclusterName(primary.worktreeId)))
+      .not.toBe(vclusterNamespace(vclusterName(sibling.worktreeId)))
     for (const s of [primary, sibling]) {
-      const vcNs = vclusterNamespace(vclusterName(s.sessionId))
+      const vcNs = vclusterNamespace(vclusterName(s.worktreeId))
       const dep = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
-        'get', 'deployment', vclusterName(s.sessionId), '-n', vcNs,
+        'get', 'deployment', vclusterName(s.worktreeId), '-n', vcNs,
       ])
       expect(dep?.status?.readyReplicas ?? 0).toBeGreaterThanOrEqual(1)
     }
@@ -255,7 +255,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     // to a vcluster API is its own per-session NetworkPolicy — the primary
     // dialing the sibling's API must be dropped (curl times out), even
     // though the sibling's API demonstrably serves (above).
-    const bName = vclusterName(sibling.sessionId)
+    const bName = vclusterName(sibling.worktreeId)
     const bApiHost = `${bName}.${vclusterNamespace(bName)}.svc.cluster.local`
     // Polled, not sampled once. NetworkPolicy programming is eventually
     // consistent, so a dial issued before the sibling's policy lands on
@@ -279,7 +279,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
 
   it('syncs an inner pod under a policy floor no tenant NetworkPolicy widens', async () => {
     const name = primary.jobName
-    const vcName = vclusterName(primary.sessionId)
+    const vcName = vclusterName(primary.worktreeId)
     // Synced pods + the vcluster control plane live in the vcluster's own
     // host namespace (one vcluster per namespace); the session pod stays
     // in the install namespace.
@@ -393,7 +393,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
 
   it('denies a hostPath escape and admits cap grants only behind the gvisor tier', async () => {
     const name = primary.jobName
-    const vcName = vclusterName(primary.sessionId)
+    const vcName = vclusterName(primary.worktreeId)
     const vcNs = vclusterNamespace(vcName)
 
     // VAP hostPath rejection: an inner pod mounting outside the session
@@ -581,7 +581,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
   // Runs last on purpose: it stops PRIMARY, which every test above needs
   // alive.
   it('sweeps the vcluster on session stop, while the project registry persists and GCs separately', async () => {
-    const vcName = vclusterName(primary.sessionId)
+    const vcName = vclusterName(primary.worktreeId)
     const vcNs = vclusterNamespace(vcName)
     const regName = projectRegistryName(PRIMARY)
 
@@ -589,16 +589,16 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     // namespace (sweeping the control plane, synced pods, policies, and
     // kubeconfig secret) plus the cluster-scoped objects and the session
     // NetworkPolicy. The namespace disappearing is the definitive signal.
-    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', primary.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', primary.worktreeId)
     expect(delExit).toBe(0)
     const deadline = Date.now() + 300_000
     for (;;) {
       const vcNamespace = await kubectlGetJson<{ metadata?: object }>(['get', 'namespace', vcNs])
-      const { stdout: sessionNp } = await kubectlWithRetry([
+      const { stdout: worktreeNp } = await kubectlWithRetry([
         'get', 'networkpolicy', '-l', `yaac.vcluster=${vcName}`,
         '-n', k8sNamespace(), '-o', 'name',
       ])
-      if (!vcNamespace && sessionNp.trim() === '') break
+      if (!vcNamespace && worktreeNp.trim() === '') break
       if (Date.now() > deadline) {
         throw new Error('vcluster namespace or session policy still present after delete')
       }

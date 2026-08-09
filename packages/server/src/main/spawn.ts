@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { registerProvisioning, runProvisioned } from '#features/sessions'
+import { registerProvisioning, runProvisioned } from '#features/worktrees'
 import { getDefaultTool } from '#features/records'
 import { herd } from '#herd'
 import { AGENT_TOOLS, MODEL_RE, type AgentTool } from '@yaac/shared/types'
@@ -9,7 +9,7 @@ import type { SpawnDecision, SpawnRequest } from '#server-link'
 /** Prompt character limit — mirrors the proxy's check. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000
 /**
- * Cap on sessions a single caller may have provisioning at once via spawn.
+ * Cap on worktrees a single caller may have provisioning at once via spawn.
  * The proxy already bounds queue depth; this bounds fan-out across ticks
  * while creates (which take tens of seconds) are still in flight.
  */
@@ -72,7 +72,7 @@ export async function decideSpawn(
   const projectSlug = request.callerProjectSlug
   inFlightByCaller.set(request.callerWorkspaceId, inFlight + 1)
   // Register the sidebar row before detaching, then run the create under the
-  // same row lifecycle as a user-initiated create — the spawned session shows
+  // same row lifecycle as a user-initiated create — the spawned worktree shows
   // provisioning progress in the webapp and a failed spawn leaves a failed
   // row (dismissable) instead of vanishing silently.
   registerProvisioning({ worktreeId: workspaceId, projectSlug, tool, kind: 'create' })
@@ -80,7 +80,7 @@ export async function decideSpawn(
     herd().workspaces.create(projectSlug, {
       tool,
       initialPrompt: request.prompt,
-      sessionId: workspaceId,
+      worktreeId: workspaceId,
       model: request.model,
       onProgress,
     })).then(

@@ -24,7 +24,7 @@ process, any DB read it still has is a crash.
 
 Two consequences do most of the design work:
 
-- **Discovery inverts.** `createSession` writes `worktrees` and
+- **Discovery inverts.** `createWorktree` writes `worktrees` and
   `agent_sessions` rows today; the registry reconciler imports what the in-pod
   hook reports; the prompt capture parses transcripts into rows. All three
   become *emitters*: the herd has the bytes, so it parses them and says what it
@@ -88,7 +88,7 @@ list of herd-side paths, seeded with the modules that are *already* clean:
 `#features/status`, `#features/terminals`, `#features/forwarders`,
 `#features/agents`.
 
-A module severed out of `#features/sessions` needs a second ban
+A module severed out of `#features/worktrees` needs a second ban
 (`NO_ROW_STORES`), because the row stores still live in that folder and are
 reached from it by relative path, where `NO_DATABASE` cannot see them. It
 retires in step 7, when they move out and get a specifier of their own.
@@ -135,7 +135,7 @@ rather than a design sketch.
 ### 3. Create and prewarm-claim emit events
 
 The worktree row, the resolved base branch, the launched conversations and the
-failure rollback all become events, in `createSession` and in
+failure rollback all become events, in `createWorktree` and in
 `tryClaimPrewarmed`. Emission keeps today's *timing* — the row appears before
 anything is provisioned, not at the end — so the webapp's provisioning
 behavior is unchanged.
@@ -240,7 +240,7 @@ open the database — so `NO_ROW_STORES` retires and `NO_DATABASE` bans that
 barrel instead. The sessions barrel's pass-through re-exports go with them: a
 second door onto records would let a herd module reach the database through it.
 
-`#features/sessions` ends up split down the middle rather than wholly
+`#features/worktrees` ends up split down the middle rather than wholly
 herd-side. Sixteen modules join the zone; the joins that read rows alongside a
 herd's report — list, detail, resolve, restart, changes, the stopped listing,
 project teardown — are the server's half and stay out. Separating them
@@ -289,7 +289,7 @@ exactly what `#features/projects` did, by housing `preferences.ts`.
   the remote-herd question (an ssh secret stores a *path* the herd would have
   to resolve), and that belongs with step 18, not here.
 
-`#features/projects` ends up split like `#features/sessions`: the disk half in
+`#features/projects` ends up split like `#features/worktrees`: the disk half in
 the zone, and `add` / `detail` / `list` — which answer "which projects exist"
 from rows — out of it.
 
@@ -339,7 +339,7 @@ change notification and the queued-spawn report become one interface at the
 package root, so the herd half is built against a link rather than against
 `#notify`, the provisioning registry and `applyHerdEvent`.
 
-`spawn-reconcile` stops calling `createSession` itself. It drains the proxy's
+`spawn-reconcile` stops calling `createWorktree` itself. It drains the proxy's
 queue and resolves who called from pod labels — the only two things on its
 side of the boundary — and reports; the server validates, applies the tool
 precedence and the fan-out cap, mints the id, registers the sidebar row and
@@ -427,7 +427,7 @@ create/restart progress travels as notifications correlated to the call id; the
 NDJSON route and the provisioning registry are fed from them.
 
 This is also where the last things the server holds *by reference* into the herd
-have to go: the `onProgress` callback handed into `createSession`, and the
+have to go: the `onProgress` callback handed into `createWorktree`, and the
 `AcpConversation` (and tmux control stream) a route borrows from a registry to
 deliver a prompt. A borrow is exactly what a socket cannot carry, so each
 becomes an addressed call — the registry stays herd-side and the server names

@@ -1,4 +1,4 @@
-import { listSessionJobs, listSessionPods, type SessionJob, type SessionPod } from './pods'
+import { listWorktreeJobs, listWorktreePods, type JobInfo, type PodInfo } from './pods'
 import {
   listVclusterConfigMaps,
   listVclusterNamespaces,
@@ -30,8 +30,8 @@ export interface TickSnapshot {
    * but must do their full heal when this is set.
    */
   resync: boolean
-  pods(): Promise<SessionPod[]>
-  jobs(): Promise<SessionJob[]>
+  pods(): Promise<PodInfo[]>
+  jobs(): Promise<JobInfo[]>
   vclusters(): Promise<VclusterNamespaceInfo[]>
   /** Pods inside one vcluster's host namespace. */
   vclusterPods(namespace: string): Promise<VclusterPod[]>
@@ -56,11 +56,11 @@ export function createTickSnapshot(resync = true): TickSnapshot {
   return {
     resync,
     pods: () => get('pods',
-      () => (cache?.healthy('session-pods') ? cache.sessionPods() : null),
-      () => listSessionPods()),
+      () => (cache?.healthy('worktree-pods') ? cache.worktreePods() : null),
+      () => listWorktreePods()),
     jobs: () => get('jobs',
-      () => (cache?.healthy('session-jobs') ? cache.sessionJobs() : null),
-      () => listSessionJobs()),
+      () => (cache?.healthy('worktree-jobs') ? cache.worktreeJobs() : null),
+      () => listWorktreeJobs()),
     vclusters: () => get('vclusters',
       () => (cache?.healthy('vcluster-namespaces') ? cache.vclusterNamespaces() : null),
       () => listVclusterNamespaces()),

@@ -38,7 +38,7 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  * Every project yaac has cloned, one row per slug.
  *
  * The clone itself, its config and its tool homes are bytes on the substrate
- * that runs sessions, and none of them can be reproduced from here. What is
+ * that runs worktrees, and none of them can be reproduced from here. What is
  * here is the ANSWER to "which projects exist" — so the server can list them,
  * refuse a duplicate add, and 404 an unknown slug without asking anything
  * that might be unreachable (docs/plans/herd-split.md).
@@ -57,13 +57,13 @@ export const projects = snakeCase.table('projects', {
  * Every worktree yaac has ever created, one row per (project, worktree id).
  * This is the spine: the cluster stays authoritative for "is it running",
  * and this table for "did it exist, and what is it". A row is inserted by
- * session create (and by a prewarmed spare's claim — spares themselves get
+ * worktree create (and by a prewarmed spare's claim — spares themselves get
  * no row, which is why teardown only ever UPDATEs), never deleted: a
  * `stoppedAt` row IS the stopped-worktree listing, and a restart clears the
  * column again because worktree ids are reused verbatim.
  *
  * A row is 1-1 with a git worktree, which is why stopping keeps it: teardown
- * prunes the session dir but never `worktreeDir`, so a stopped row is a
+ * prunes the worktree dir but never `worktreeDir`, so a stopped row is a
  * worktree still on disk, diff and all, waiting to be restarted.
  *
  * Neither the tool nor the founding ask lives here: both are read off the
@@ -72,7 +72,7 @@ export const projects = snakeCase.table('projects', {
  * conversation is a second row, so the first one's opening message stays the
  * worktree's label. Session create records that first conversation with this
  * row, so a worktree always has one. `deathReason` / `deathDetail` are set only when
- * the stale reaper — not the user — tore the session down, so a reused id
+ * the stale reaper — not the user — tore the worktree down, so a reused id
  * can't inherit a stale cause; `deathSeen` tracks whether the user has viewed
  * that detail (the "Stopped worktrees" notification dot), durable across
  * devices and daemon restarts. The death columns keep their name against

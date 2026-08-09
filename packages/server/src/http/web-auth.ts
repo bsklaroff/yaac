@@ -65,7 +65,7 @@ export function isLoopbackOnlyDeployment(): boolean {
  * CLI reaching it needs no token. Skipped when the server isn't deliberately
  * remote-fronted for direct external access:
  *   - a pure loopback deployment (`isLoopbackOnlyDeployment`), or
- *   - a nested yaac (`YAAC_NESTED`): it inherits the outer session's
+ *   - a nested yaac (`YAAC_NESTED`): it inherits the outer worktree's
  *     `allowedHosts`/`trustProxy` as ambient env, but its only path in is the
  *     outer server's port-forward — already tailnet-gated like any forwarded
  *     port, not a remote-fronting of this inner server.

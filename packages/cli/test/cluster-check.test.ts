@@ -47,7 +47,7 @@ describe('clusterCheck (CLI)', () => {
     const logged = logSpy.mock.calls.map((c) => c[0] as unknown)
     expect(logged).toContain('[pass] kubectl')
     expect(logged).toContain('[pass] cluster')
-    expect(logged).toContain('\nCluster is ready for yaac sessions.')
+    expect(logged).toContain('\nCluster is ready for yaac worktrees.')
     expect(errSpy).not.toHaveBeenCalled()
     expect(process.exitCode).toBeUndefined()
   })
@@ -66,7 +66,7 @@ describe('clusterCheck (CLI)', () => {
     const logged = logSpy.mock.calls.map((c) => c[0] as unknown)
     expect(logged).toContain('[fail] registry')
     expect(errSpy).toHaveBeenCalledWith(
-      '\nCluster is not ready for yaac sessions. Fix the failures above and re-run.',
+      '\nCluster is not ready for yaac worktrees. Fix the failures above and re-run.',
     )
     expect(process.exitCode).toBe(1)
   })

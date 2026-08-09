@@ -31,7 +31,7 @@ describe('ProxyClient.allowHost', () => {
     await expect(makeClient().allowHost('sess 1', 'evil.example.com')).resolves.toBe(true)
 
     const [url, init] = mock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('http://127.0.0.1:4444/sessions/sess%201/allow-host')
+    expect(url).toBe('http://127.0.0.1:4444/worktrees/sess%201/allow-host')
     expect(init.method).toBe('POST')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sekret')
     expect(JSON.parse(init.body as string)).toEqual({ host: 'evil.example.com' })

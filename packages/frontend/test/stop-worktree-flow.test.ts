@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
-import { stopWorktree } from '#lib/createSession'
+import { stopWorktree } from '#lib/createWorktree'
 import { useUiStore } from '#store'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 
-vi.mock('#lib/createSession', () => ({
+vi.mock('#lib/createWorktree', () => ({
   stopWorktree: vi.fn(() => Promise.resolve()),
 }))
 
@@ -30,7 +30,7 @@ const session = (over: Partial<WorktreeListEntry> = {}): WorktreeListEntry => ({
 
 describe('stopWorktreeOptimistic', () => {
   it('hides the session, clears a matching selection, and fires the delete', () => {
-    useUiStore.getState().selectSession('sid-1')
+    useUiStore.getState().selectWorktree('sid-1')
 
     stopWorktreeOptimistic(session())
 
@@ -40,7 +40,7 @@ describe('stopWorktreeOptimistic', () => {
   })
 
   it('leaves an unrelated selection alone', () => {
-    useUiStore.getState().selectSession('other')
+    useUiStore.getState().selectWorktree('other')
 
     stopWorktreeOptimistic(session())
 

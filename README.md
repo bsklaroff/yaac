@@ -19,7 +19,7 @@ The formula pulls in the whole toolchain: `node`, `kubectl`,
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
 and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
 stock krunkit's virtiofs reports every file as owned by whichever process
-asks, which breaks hostPath writes from gVisor session pods; see the
+asks, which breaks hostPath writes from gVisor worktree pods; see the
 [machine notes](docs/cluster-setup.md#macos-the-podman-machine) and
 [#27](https://github.com/bsklaroff/yaac/issues/27)).
 
@@ -85,9 +85,9 @@ calico-node DaemonSet hangs (see
 [Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
 Give the host **swap** before `yaac cluster setup` if `swapon --show` is
-empty. Session pods run under gVisor, which holds the sandboxed workload's
+empty. Worktree pods run under gVisor, which holds the sandboxed workload's
 memory in a memfd — shmem, which the kernel cannot reclaim at all without
-swap, so a session under pressure is OOM-killed where it would otherwise
+swap, so a worktree under pressure is OOM-killed where it would otherwise
 have paged out. Create it first: the cluster's kubelet picks up
 `swapBehavior: LimitedSwap` (`k8s/kind-config.yaml`) only when kind creates
 the node, and no `--repair` adds it later.
@@ -102,7 +102,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 A pod's share is `memoryRequest / nodeRAM × totalSwap`, so sizing swap at
-roughly node RAM gives a session about its memory request again. If you run
+roughly node RAM gives a worktree about its memory request again. If you run
 swap deep, check that `systemd-oomd` (`SwapUsedLimit=90%` by default) won't
 kill the kind node container first.
 
@@ -129,7 +129,7 @@ yaac open
 ```
 
 This starts the server if needed and opens your browser straight into the
-authenticated app: a live session sidebar, the project list, and an embedded
+authenticated app: a live worktree sidebar, the project list, and an embedded
 terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
 prints the URL instead of launching a browser.
 
@@ -163,7 +163,7 @@ hostname over HTTPS, not `ip:8787`), or point a client CLI at it with
 [docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
 and phone setup, forwarded-port reachability, and the security model.
 
-A session's forwarded ports (a dev server, or a nested yaac's own web UI)
+A worktree's forwarded ports (a dev server, or a nested yaac's own web UI)
 bind the server's loopback by default. To reach them from other tailnet
 devices, set `YAAC_FORWARD_BIND` to the server's tailnet IP (from `tailscale
 ip -4`) and restart; the webapp's port chips then link to
@@ -178,7 +178,7 @@ It has no bundled frontend of its own: the main process resolves the target
 server (remote if enabled, else the local daemon — starting one if none is
 up), mints the same one-time token `yaac open` does, and loads the server
 origin into a native window. It lives in the tray (close hides, Quit stops
-only the shell) and badges the dock for waiting sessions. It is not part of
+only the shell) and badges the dock for waiting worktrees. It is not part of
 `pnpm build` and never ships in the npm artifact.
 
 No extra prerequisites beyond the repo's `pnpm install` (the `electron` dev
@@ -280,7 +280,7 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 ## Authentication
 
-yaac centralizes credentials on the host and injects them into session traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
+yaac centralizes credentials on the host and injects them into worktree traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
 
 - `~/.yaac/.credentials/github.json` — GitHub tokens
 - `~/.yaac/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
@@ -294,11 +294,11 @@ worktree can spend any credential the host has signed in**. The proxy only
 rewrites requests carrying the placeholder sentinel it put in the container's
 env, so traffic you authenticate yourself passes through untouched.
 
-The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
+The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running worktree immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
 
 ### GitHub tokens
 
-yaac requires one or more GitHub Personal Access Tokens (PATs) for git operations and GitHub API access inside session containers. Multiple tokens can be scoped to different owners so you can use separate tokens for different orgs or personal repos.
+yaac requires one or more GitHub Personal Access Tokens (PATs) for git operations and GitHub API access inside worktree containers. Multiple tokens can be scoped to different owners so you can use separate tokens for different orgs or personal repos.
 
 Tokens are stored as an ordered list. When yaac needs a token for a given repo, it walks the list and uses the first matching entry:
 
@@ -322,7 +322,7 @@ First match wins, so put more specific patterns before broader ones. On first ru
 
 Tokens are used for:
 - **Host-side git operations** — clone and fetch use HTTPS with the matching token embedded in the request.
-- **Session-side GitHub requests** — the MITM proxy injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
+- **Worktree-side GitHub requests** — the MITM proxy injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each worktree uses the single token that matches its project's remote URL.
 
 Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
 
@@ -332,25 +332,25 @@ yaac also manages the API credentials for the agent tool itself, so Claude Code,
 
 For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode the proxy injects the key as an outbound header.
 
-## Session layout
+## Worktree layout
 
-Each session runs as a single-pod Kubernetes Job with the following hostPath mounts:
+Each worktree runs as a single-pod Kubernetes Job with the following hostPath mounts:
 
 | Host | Container | Description |
 |------|-----------|-------------|
-| `~/.yaac/projects/<project>/worktrees/<session-id>` | `/workspace` | Project code (working directory) |
+| `~/.yaac/projects/<project>/worktrees/<worktree-id>` | `/workspace` | Project code (working directory) |
 | `~/.yaac/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
 | `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
 | `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
 | `~/.yaac/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
-| `~/.yaac/projects/<project>/opencode-data/<session-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per session) |
-| `~/.yaac/projects/<project>/pi-sessions/<session-id>` | `/home/yaac/.pi/agent/sessions` | Pi session logs (per session) |
+| `~/.yaac/projects/<project>/opencode-data/<worktree-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per worktree) |
+| `~/.yaac/projects/<project>/pi-sessions/<worktree-id>` | `/home/yaac/.pi/agent/sessions` | Pi session logs (per worktree) |
 | `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
 
-The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode and Pi session data are per-session (OpenCode to avoid concurrent-write issues in its database, Pi so `pi --continue` resumes only that session's log). Each session gets its own git worktree.
+The worktree container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all worktrees within a project (but isolated between projects), so those worktrees can inspect each other's history; OpenCode and Pi session data are per-worktree (OpenCode to avoid concurrent-write issues in its database, Pi so `pi --continue` resumes only that worktree's log).
 
-The `.cached-packages` directory is shared by every session within the project, so package-manager caches survive session teardown and are reused across sessions. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
+The `.cached-packages` directory is shared by every worktree within the project, so package-manager caches survive worktree teardown and are reused across worktrees. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
 ## Project configuration
 
@@ -410,7 +410,7 @@ Example `yaac-config.json` with all options:
 ```
 
 - **envPassthrough** — environment variables passed directly from your host to the container.
-- **env** — environment variables hardcoded with literal values, baked into the container at session creation. Applied after `envPassthrough`, so a name listed in both takes the literal value here. Values are not expanded — `"$HOME"` is passed through as the literal string `$HOME`.
+- **env** — environment variables hardcoded with literal values, baked into the container at worktree creation. Applied after `envPassthrough`, so a name listed in both takes the literal value here. Values are not expanded — `"$HOME"` is passed through as the literal string `$HOME`.
 - **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests. The actual secret value never enters the container. Each entry specifies how the secret is injected:
   - **`hosts`** — hostnames to intercept (required).
   - **`header`** — inject as this HTTP header (default: `"authorization"`). When using the default header, the value is automatically prefixed with `"Bearer "`. Use `prefix` to override.
@@ -424,8 +424,8 @@ Example `yaac-config.json` with all options:
   - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
   - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
-- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
-- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first. Accepts two shapes (cannot be mixed):
+- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across worktrees. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across worktrees), so you don't need a `cacheVolumes` entry for pnpm's store.
+- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every worktree, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
     ```json
     "initCommands": ["pnpm install", "pnpm build"]
@@ -438,11 +438,11 @@ Example `yaac-config.json` with all options:
     ]
     ```
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a session's traffic reaches the proxy in the first place, and why it fails closed: [Session egress](docs/session-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
-- **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
-- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
-- **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
-- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new session worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-session popover (which can also pin a new default). Changing it affects new sessions only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
+- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a worktree's traffic reaches the proxy in the first place, and why it fails closed: [Worktree egress](docs/worktree-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
+- **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since worktrees require these to function.
+- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
+- **virtualCluster** — give each worktree its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
+- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new worktree worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-worktree popover (which can also pin a new default). Changing it affects new worktrees only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
 ## Environment variables
 
@@ -452,17 +452,17 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, sessions, and the server lock. |
+| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, worktrees, and the server lock. |
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
 | `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
-| `YAAC_K8S_REGISTRY` | the in-cluster registry Service | `host:port` of an externally managed OCI registry to use instead of the one this install runs in its cluster. Set for nested sessions (the outer project registry). |
+| `YAAC_K8S_REGISTRY` | the in-cluster registry Service | `host:port` of an externally managed OCI registry to use instead of the one this install runs in its cluster. Set for nested worktrees (the outer project registry). |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
-| `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
-| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) session — not something you set yourself. |
+| `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
+| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) worktree — not something you set yourself. |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
-| `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for session port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
+| `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for worktree port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
 
@@ -478,7 +478,7 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_IMAGE_PREFIX` | _(unset)_ | Prefix applied to built/pushed image names (test isolation). |
 | `YAAC_PROXY_IMAGE` | `yaac-proxy` | Proxy image tag override. |
 | `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
-| `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created session pods from the stale-session reaper. |
+| `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created worktree pods from the stale-worktree reaper. |
 | `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
 | `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
 | `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
@@ -514,18 +514,18 @@ Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project 
 
 ## Nested containers and virtual clusters
 
-**`nestedContainers: true`** runs a rootless podman inside the session pod and points the `docker` CLI (and compose) at its Docker-API socket:
+**`nestedContainers: true`** runs a rootless podman inside the worktree pod and points the `docker` CLI (and compose) at its Docker-API socket:
 
-- `docker build` / `docker run` / `docker compose up --build` work as-is. Image pulls ride the session's transparent egress to the MITM proxy: the upstream registries (docker.io, ghcr.io, quay.io and their CDNs) are auto-added to the session allowlist, and anything else is denied fail-closed. Build `RUN` steps and nested containers automatically trust the proxy CA.
+- `docker build` / `docker run` / `docker compose up --build` work as-is. Image pulls ride the worktree's transparent egress to the MITM proxy: the upstream registries (docker.io, ghcr.io, quay.io and their CDNs) are auto-added to the worktree allowlist, and anything else is denied fail-closed. Build `RUN` steps and nested containers automatically trust the proxy CA.
 - Nested containers share the pod's network namespace: a container's listener is reachable on `localhost:<port>` directly (`docker run -p` is a no-op — the app binds the port itself), and container-private networks are unsupported — use `network_mode: host` in compose files.
-- Built layers are promoted into a per-project shared store at session teardown, so an identical `docker build` in the next session is a pure cache hit.
+- Built layers are promoted into a per-project shared store at worktree teardown, so an identical `docker build` in the next worktree is a pure cache hit.
 
-**`virtualCluster: true`** additionally gives the session its own kubernetes cluster:
+**`virtualCluster: true`** additionally gives the worktree its own kubernetes cluster:
 
-- `kubectl` inside the session is preconfigured (`KUBECONFIG`) against a per-session [vcluster](https://www.vcluster.com/); `kubectl get nodes`, `kubectl run`, deployments, services, and inner NetworkPolicies all work. Pods created in the vcluster actually run on the host cluster, confined to the session: they can reach their own vcluster's API and each other, and nothing else (no host apiserver, no internet — in v1 synced pods have no upstream egress at all).
-- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the session's `nested-yaac` data dir, and requires the gVisor runtime tier (the sentry) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
-- Each project gets a plain-HTTP push registry (`registry:2`) reachable from its sessions as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own sessions can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
-- Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster sessions run at once.
+- `kubectl` inside the worktree is preconfigured (`KUBECONFIG`) against a per-worktree [vcluster](https://www.vcluster.com/); `kubectl get nodes`, `kubectl run`, deployments, services, and inner NetworkPolicies all work. Pods created in the vcluster actually run on the host cluster, confined to the worktree: they can reach their own vcluster's API and each other, and nothing else (no host apiserver, no internet — in v1 synced pods have no upstream egress at all).
+- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the worktree's `nested-yaac` data dir, and requires the gVisor runtime tier (the sentry) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
+- Each project gets a plain-HTTP push registry (`registry:2`) reachable from its worktrees as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own worktrees can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
+- Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster worktrees run at once.
 
-**yaac-in-yaac**: vcluster sessions are preset for running yaac itself inside the session — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-session dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
+**yaac-in-yaac**: vcluster worktrees are preset for running yaac itself inside the worktree — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-worktree dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
 

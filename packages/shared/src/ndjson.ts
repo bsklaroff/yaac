@@ -1,6 +1,6 @@
 /**
  * Consumer side of the server's NDJSON operation streams
- * (`POST /session/create`, `POST /session/restart`,
+ * (`POST /worktree/create`, `POST /worktree/restart`,
  * `POST /project/:slug/rebuild`): zero or more `{type:'progress'}` events
  * followed by exactly one terminal `{type:'result'}` or `{type:'error'}`.
  *

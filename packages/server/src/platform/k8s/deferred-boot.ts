@@ -1,14 +1,14 @@
 /**
  * Deferred cluster attach for a NESTED server
  * (docs/vcluster-scale-to-zero.md). An inner yaac's `server start` runs
- * from the session's initCommands, and its boot-time cluster work
+ * from the worktree's initCommands, and its boot-time cluster work
  * (namespace/registry ensure, informer caches, the reconciler) is
  * exactly what wakes a born-at-zero vcluster seconds after it was put
- * to sleep. A nested server that has no sessions yet therefore ARMS its
+ * to sleep. A nested server that has no worktrees yet therefore ARMS its
  * cluster boot instead of running it, and the first thing that actually
  * needs the cluster fires it:
  *
- *   - explicitly, awaited, from session create (which needs the
+ *   - explicitly, awaited, from worktree create (which needs the
  *     namespace to exist before it applies anything), and
  *   - as a backstop, fire-and-forget, from the kubectl runners — any
  *     cluster access at all means the vcluster is awake (or waking), so
@@ -54,8 +54,8 @@ export function awaitDeferredClusterBoot(): Promise<void> {
 
 /**
  * True while an armed boot has not finished — armed and unfired, or
- * fired and still in flight. In that window the server has zero session
- * pods by construction (session create awaits the boot), so cluster
+ * fired and still in flight. In that window the server has zero worktree
+ * pods by construction (worktree create awaits the boot), so cluster
  * reads may answer empty instead of blocking on a still-waking
  * vcluster. Always false on the outer server (never armed).
  */
@@ -76,13 +76,13 @@ export function _resetDeferredClusterBootForTests(): void {
 }
 
 /**
- * True when any project has a per-session dir — the eager-boot signal
+ * True when any project has a per-worktree dir — the eager-boot signal
  * for a RESTARTING nested server (the dev-loop `pnpm watch` restarts it
- * on every source change): live sessions need the caches, watchers, and
+ * on every source change): live worktrees need the caches, watchers, and
  * reconciler immediately, and their vcluster... is this vcluster, which
  * is already awake, so deferral would buy nothing anyway.
  */
-export async function anySessionDirsExist(
+export async function anyWorktreeDirsExist(
   projectsDir: string = getProjectsDir(),
 ): Promise<boolean> {
   let slugs: string[]
@@ -92,9 +92,10 @@ export async function anySessionDirsExist(
     return false
   }
   for (const slug of slugs) {
-    const sessions = await fs.readdir(path.join(projectsDir, slug, 'sessions'))
+    // `worktrees` is the on-disk directory name, which the rename leaves alone.
+    const worktrees = await fs.readdir(path.join(projectsDir, slug, 'sessions'))
       .catch(() => [] as string[])
-    if (sessions.length > 0) return true
+    if (worktrees.length > 0) return true
   }
   return false
 }

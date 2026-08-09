@@ -60,7 +60,7 @@ export interface VclusterRef {
 /**
  * Strict SNI → vcluster binding. The kubeconfig's server is
  * `<name>.<vc-ns>.svc.cluster.local`; both labels must agree on the same
- * session id AND belong to THIS install's namespace prefix, so a
+ * worktree id AND belong to THIS install's namespace prefix, so a
  * connection for vcluster X can never wake (or be answered under the
  * serving identity of) another install's vclusters.
  */

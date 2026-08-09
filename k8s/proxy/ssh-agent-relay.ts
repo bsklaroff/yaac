@@ -1,32 +1,32 @@
 /**
- * ssh-agent forwarding: the transport that lets a session pod use the
+ * ssh-agent forwarding: the transport that lets a worktree pod use the
  * proxy's in-memory agent without a shared filesystem.
  *
  * The agent runs in THIS pod, holding keys the server uploaded over PUT
  * /agent/keys — key bytes are never written to the proxy's disk and never
- * leave it at all. A session pod runs a small local forwarder that exposes
+ * leave it at all. A worktree pod runs a small local forwarder that exposes
  * this listener as the UNIX socket its SSH_AUTH_SOCK names, so an in-pod
  * `git push` gets signatures, never a key.
  *
- * TCP rather than a hostPath UNIX socket shared with the session pod: a
+ * TCP rather than a hostPath UNIX socket shared with the worktree pod: a
  * UNIX socket only rendezvous between pods on the SAME node, which was the
- * last hard single-node assumption in the session datapath. Everything else
- * a session pod needs from the proxy is already a network hop.
+ * last hard single-node assumption in the worktree datapath. Everything else
+ * a worktree pod needs from the proxy is already a network hop.
  *
  * Fail-closed, in three independent layers:
- *  1. NetworkPolicy admits this port from session pods only (the proxy
+ *  1. NetworkPolicy admits this port from worktree pods only (the proxy
  *     ingress policy), so nothing else in the cluster can even connect.
- *  2. The source pod IP must resolve to a session through the proxy's
+ *  2. The source pod IP must resolve to a worktree through the proxy's
  *     pod-watch — the same identity the transparent listeners trust, and one
  *     a sandboxed workload cannot forge (Calico policies the workload
  *     endpoint's source address). A source attributed only through the
  *     server-pushed vcluster map is refused: a nested install forwards its
- *     OWN inner proxy's agent to its sessions, and this agent holds keys
+ *     OWN inner proxy's agent to its worktrees, and this agent holds keys
  *     that install never uploaded.
- *  3. That session's registered remote must be an SSH one — exactly the
+ *  3. That worktree's registered remote must be an SSH one — exactly the
  *     condition under which the server provisions SSH_AUTH_SOCK in the pod.
  *     It is read from the registration the proxy already holds, so nothing
- *     new rides the wire and sessions registered by an older server are
+ *     new rides the wire and worktrees registered by an older server are
  *     gated identically.
  *
  * Even past all three, a connection is a signing oracle for one destination:
@@ -36,8 +36,8 @@
  * And it is an oracle for *only* that: the client→agent direction is parsed,
  * not spliced, and admits two message types — list identities, and sign.
  * Everything else (add, remove, lock, extension) is answered with the
- * agent's own SSH_AGENT_FAILURE and never reaches the agent, so one session
- * cannot lock or empty an agent every other session shares. The agent→client
+ * agent's own SSH_AGENT_FAILURE and never reaches the agent, so one worktree
+ * cannot lock or empty an agent every other worktree shares. The agent→client
  * direction stays a raw pipe: it carries only what the agent chose to answer.
  */
 
@@ -60,7 +60,7 @@ const FAILURE_MESSAGE = Buffer.from([0, 0, 0, 1, SSH_AGENT_FAILURE])
  */
 const AGENT_MAX_MESSAGE_BYTES = 256 * 1024
 /** In-flight connections the listener will hold; beyond it, new dials are
- *  dropped so one session cannot exhaust the proxy's fds. */
+ *  dropped so one worktree cannot exhaust the proxy's fds. */
 const DEFAULT_MAX_CONNECTIONS = 64
 /** Idle time after which a connection is reaped (both directions). An agent
  *  exchange is a sub-second request/response; anything quiet for this long
@@ -68,33 +68,33 @@ const DEFAULT_MAX_CONNECTIONS = 64
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
 /** What the proxy's pod-watch resolved a source IP to. */
-export interface AgentPeerSession {
-  sessionId: string
+export interface AgentPeerWorktree {
+  worktreeId: string
   /** Attributed via the server-pushed vcluster map, not a watched pod. */
   viaVclusterAttribution: boolean
 }
 
 export type AgentGateVerdict =
-  | { ok: true; sessionId: string }
+  | { ok: true; worktreeId: string }
   | { ok: false; reason: string }
 
 /**
- * Decide whether a connection from `session` may talk to the agent, given
- * the repo URL that session is registered with. Pure, so the policy is
+ * Decide whether a connection from `worktree` may talk to the agent, given
+ * the repo URL that worktree is registered with. Pure, so the policy is
  * testable without a socket; the listener below is the only caller.
  */
 export function sshAgentGate(
-  session: AgentPeerSession | undefined,
+  worktree: AgentPeerWorktree | undefined,
   repoUrl: string | undefined,
 ): AgentGateVerdict {
-  if (!session) return { ok: false, reason: 'source is not a known session pod' }
-  if (session.viaVclusterAttribution) {
+  if (!worktree) return { ok: false, reason: 'source is not a known worktree pod' }
+  if (worktree.viaVclusterAttribution) {
     return { ok: false, reason: 'nested workloads use their own install\'s agent' }
   }
   if (!isSshRemote(repoUrl)) {
-    return { ok: false, reason: 'session has no SSH remote registered' }
+    return { ok: false, reason: 'worktree has no SSH remote registered' }
   }
-  return { ok: true, sessionId: session.sessionId }
+  return { ok: true, worktreeId: worktree.worktreeId }
 }
 
 /**
@@ -113,10 +113,10 @@ export function isSshRemote(remoteUrl: string | undefined): boolean {
 export interface SshAgentServerDeps {
   /** Filesystem path of the pod-local ssh-agent socket. */
   agentSock: string
-  /** Source IP → session, via the proxy's pod-watch index. */
-  resolveSession: (ip: string) => Promise<AgentPeerSession | undefined>
-  /** The repo URL a session is registered with, if any. */
-  repoUrlFor: (sessionId: string) => string | undefined
+  /** Source IP → worktree, via the proxy's pod-watch index. */
+  resolveWorktree: (ip: string) => Promise<AgentPeerWorktree | undefined>
+  /** The repo URL a worktree is registered with, if any. */
+  repoUrlFor: (worktreeId: string) => string | undefined
   log?: (message: string) => void
   /** Overridable for tests; defaults above. */
   maxConnections?: number
@@ -195,10 +195,10 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
       }
     })
     void (async () => {
-      const resolved = peer ? await deps.resolveSession(peer) : undefined
+      const resolved = peer ? await deps.resolveWorktree(peer) : undefined
       const verdict = sshAgentGate(
         resolved,
-        resolved ? deps.repoUrlFor(resolved.sessionId) : undefined,
+        resolved ? deps.repoUrlFor(resolved.worktreeId) : undefined,
       )
       if (!verdict.ok) {
         log(`[proxy] BLOCKED ssh-agent from ${peer || '(unknown)'}: ${verdict.reason}`)
@@ -206,7 +206,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
         return
       }
       if (socket.destroyed) return
-      const session = verdict.sessionId.slice(0, 8)
+      const worktree = verdict.worktreeId.slice(0, 8)
       const agent = net.connect({ path: deps.agentSock, allowHalfOpen: true })
       agent.setTimeout(idleTimeoutMs, () => agent.destroy())
       let connected = false
@@ -217,11 +217,11 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
           if (!agent.write(message)) socket.pause()
         },
         refuse: (type) => {
-          log(`[proxy] ssh-agent: refused message type ${type} from session ${session}...`)
+          log(`[proxy] ssh-agent: refused message type ${type} from worktree ${worktree}...`)
           socket.write(FAILURE_MESSAGE)
         },
         fail: (reason) => {
-          log(`[proxy] ssh-agent: dropping session ${session}... — ${reason}`)
+          log(`[proxy] ssh-agent: dropping worktree ${worktree}... — ${reason}`)
           socket.destroy()
         },
       })
@@ -239,7 +239,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
       })
       agent.on('error', (err: NodeJS.ErrnoException) => {
         if (!connected) {
-          log(`[proxy] ssh-agent dial failed for session ${session}...: ${err.code ?? err.message}`)
+          log(`[proxy] ssh-agent dial failed for worktree ${worktree}...: ${err.code ?? err.message}`)
         }
         socket.destroy()
       })

@@ -9,18 +9,18 @@ vi.mock('#features/records', () => ({
   applyHerdEvent: vi.fn(),
   listActiveAgentSessions: vi.fn(),
 }))
-vi.mock('#notify', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
 vi.mock('#main/spawn', () => ({ decideSpawn: vi.fn() }))
 
 import { applyHerdEvent, listActiveAgentSessions } from '#features/records'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { decideSpawn } from '#main/spawn'
 import { createServerLink } from '#main/link'
 import type { HerdEvent } from '@yaac/shared/herd'
 
 const mockApply = vi.mocked(applyHerdEvent)
 const mockLinks = vi.mocked(listActiveAgentSessions)
-const mockNotify = vi.mocked(notifySessionListChanged)
+const mockNotify = vi.mocked(notifyWorktreeListChanged)
 const mockDecide = vi.mocked(decideSpawn)
 
 beforeEach(() => { vi.resetAllMocks() })

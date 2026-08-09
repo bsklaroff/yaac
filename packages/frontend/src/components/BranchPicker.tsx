@@ -3,11 +3,11 @@ import clsx from 'clsx'
 import { BranchIcon } from '#lib/icons'
 
 /**
- * The branch typeahead shared by the new-session popover and the Changes-view
+ * The branch typeahead shared by the new-worktree popover and the Changes-view
  * base picker: a bordered text input over a filtered suggestion list. Purely
  * presentational — the parent owns the `query` text, the branch list, and what
  * a selection does. `trailing` / `belowInput` are slots for caller-specific
- * chrome (e.g. the new-session "pin as default" button and its error line),
+ * chrome (e.g. the new-worktree "pin as default" button and its error line),
  * kept in the same DOM order the inline markup used to have.
  */
 export function BranchPicker({

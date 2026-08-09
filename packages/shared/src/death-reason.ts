@@ -1,12 +1,12 @@
-import type { SessionDeathReason } from '#types'
+import type { WorktreeDeathReason } from '#types'
 
 /**
- * The one human-copy mapping for session death reasons, shared by the
+ * The one human-copy mapping for worktree death reasons, shared by the
  * frontend and the CLI so both render identical text. `detail` (exit code,
  * eviction message, …) is appended after an em-dash when present.
  */
-const DEATH_REASON_COPY: Record<SessionDeathReason, string> = {
-  'oom': 'out of memory (hit the session memory limit)',
+const DEATH_REASON_COPY: Record<WorktreeDeathReason, string> = {
+  'oom': 'out of memory (hit the worktree memory limit)',
   'evicted': 'evicted by the node',
   'crashed': 'crashed',
   'pod-stopped': 'container stopped',
@@ -15,8 +15,8 @@ const DEATH_REASON_COPY: Record<SessionDeathReason, string> = {
   'orphaned': 'removed outside yaac',
 }
 
-export function describeSessionDeathReason(
-  reason: SessionDeathReason,
+export function describeWorktreeDeathReason(
+  reason: WorktreeDeathReason,
   detail?: string,
 ): string {
   const copy = DEATH_REASON_COPY[reason] ?? reason

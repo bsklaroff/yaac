@@ -37,14 +37,14 @@ export type AgentMode = 'tui' | 'acp'
 
 export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 
-/** Tools with an ACP adapter in the session image. */
+/** Tools with an ACP adapter in the worktree image. */
 export const ACP_TOOLS: readonly AgentTool[] = ['claude']
 
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
  * Credential kinds `yaac auth fake` can seed. Each seeds a proxy-placeholder
- * credential (never a real secret) so a session authenticates through a parent
+ * credential (never a real secret) so a worktree authenticates through a parent
  * yaac's MITM proxy — the yaac-in-yaac case (see lib/project/fake-auth.ts).
  * Single source of truth shared by the CLI's `Argument.choices()` and the
  * server route's zod validator, which must stay in lockstep.
@@ -161,7 +161,7 @@ export type PiCredentialsFile = {
 
 /**
  * Summary view over per-tool credential files. Consumers (`auth list`,
- * session-create's per-tool placeholder wiring) read only kind / apiKey /
+ * worktree-create's per-tool placeholder wiring) read only kind / apiKey /
  * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
  * credentials files.
  */
@@ -254,15 +254,15 @@ export interface YaacConfig {
   cacheVolumes?: Record<string, string>
   /**
    * Run an in-pod rootful podman so `docker build` / `docker run` /
-   * `docker compose` work inside sessions. Adds the nestable image layer and
+   * `docker compose` work inside worktrees. Adds the nestable image layer and
    * the nested pod-spec branch (gvisor-nested runtime, in-sandbox engine
    * caps, tmpfs graphroot, shared image store).
    */
   nestedContainers?: boolean
   /**
-   * Give each session its own virtual kubernetes cluster (vcluster) plus
+   * Give each worktree its own virtual kubernetes cluster (vcluster) plus
    * a per-project push registry the node can pull from. Implies
-   * `nestedContainers` (the in-pod podman is the session's only build
+   * `nestedContainers` (the in-pod podman is the worktree's only build
    * engine, so vcluster workflows that build images need it); the config
    * parser rejects an explicit `nestedContainers: false` alongside this.
    */
@@ -278,16 +278,16 @@ export interface YaacConfig {
   setAllowedUrls?: string[]
   /**
    * Paths (relative to /workspace) whose directory should be redirected
-   * to `.cached-packages/modules/<sessionId>/<slotKey>` via a symlink,
+   * to `.cached-packages/modules/<worktreeId>/<slotKey>` via a symlink,
    * so package-manager writes don't land on the host worktree. Sharing
-   * a filesystem with pnpm-store keeps hardlinks across sessions.
+   * a filesystem with pnpm-store keeps hardlinks across worktrees.
    * Unset → `["node_modules"]`. Empty array disables the feature.
    */
   ephemeralModulesPaths?: string[]
   /**
-   * Default reference branch for new sessions: the branch on `origin`
+   * Default reference branch for new worktrees: the branch on `origin`
    * (written without the `origin/` prefix, e.g. "develop") that fresh
-   * session worktrees are created from and set upstream to. A per-create
+   * worktree worktrees are created from and set upstream to. A per-create
    * `branch` option overrides it. Unset → the remote's default branch.
    */
   referenceBranch?: string
@@ -326,7 +326,7 @@ export interface GitCredentialsFile {
 // the Hono RPC client.
 // ---------------------------------------------------------------------------
 
-/** Host↔container port mapping returned by `/session/create`. */
+/** Host↔container port mapping returned by `/worktree/create`. */
 export interface PortMapping {
   containerPort: number
   hostPort: number
@@ -366,7 +366,9 @@ export interface AuthListResult {
  * Codex (ChatGPT's wham/usage primary/secondary windows).
  */
 export interface PlanUsageLimit {
-  /** Limit kind. Claude: 'session', 'weekly_all', 'weekly_scoped'. Codex:
+  /** Limit kind, verbatim from the provider. Claude: 'session' (its
+   *  five-hour usage window, not a yaac worktree), 'weekly_all',
+   *  'weekly_scoped'. Codex:
    *  'codex_primary' (the shorter window) and 'codex_secondary' (weekly). */
   kind: string
   /** Utilization of this limit, 0–100. */
@@ -439,15 +441,15 @@ export interface ToolInstallView {
   error?: string
 }
 
-// --- session/list ---
+// --- worktree/list ---
 
 /**
  * A git credential the proxy injected that the upstream rejected — the
  * stored token is bad (expired or revoked), as opposed to a blocked host.
  * Recorded per project by the proxy (the credential belongs to the
- * project's repo, so one bad token affects every session of the project);
+ * project's repo, so one bad token affects every worktree of the project);
  * cleared automatically when a later git request to the same host from any
- * of the project's sessions succeeds.
+ * of the project's worktrees succeeds.
  */
 export interface GitAuthFailure {
   host: string
@@ -459,7 +461,7 @@ export interface GitAuthFailure {
 
 /**
  * One agent conversation inside a worktree — a claude/codex/pi/opencode
- * session. Several can be live at once (a second terminal, or a `/clear`
+ * worktree. Several can be live at once (a second terminal, or a `/clear`
  * that left the old conversation's window open), and the ones that are not
  * live are the worktree's history.
  */
@@ -529,7 +531,7 @@ export interface WorktreeListEntry {
    *  self-clears when a port is forwarded or its listener stops. */
   unforwardedPorts: number[]
   /** The remote branch this worktree tracks (its reference branch), read
-   *  from the session branch's recorded upstream. Unset when the upstream
+   *  from the worktree branch's recorded upstream. Unset when the upstream
    *  record is missing or unreadable. */
   baseBranch?: string
   /** Pinned to the sidebar's "Background" section. Orthogonal to `status`
@@ -542,8 +544,8 @@ export interface WorktreeListEntry {
 /** How a file changed, mapped from git's name-status letters. */
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange'
 
-/** One changed file in a session's worktree, relative to the fork base. */
-export interface SessionChange {
+/** One changed file in a worktree's worktree, relative to the fork base. */
+export interface WorktreeChange {
   path: string
   status: ChangeStatus
   additions: number
@@ -556,12 +558,12 @@ export interface SessionChange {
 }
 
 /**
- * The review diff for a session — everything the agent changed since the
+ * The review diff for a worktree — everything the agent changed since the
  * worktree forked from its base branch (committed + staged + unstaged +
  * untracked), computed against an index of our own so it never disturbs the
  * agent's own git state.
  */
-export interface SessionChanges {
+export interface WorktreeChanges {
   /** The base commit the diff is taken against (merge-base with the fork
    *  point), or HEAD when no upstream is resolvable. */
   base: string
@@ -570,7 +572,7 @@ export interface SessionChanges {
    *  uncommitted", not "nothing changed" — say so rather than showing the
    *  ordinary no-changes state. */
   baseResolved: boolean
-  files: SessionChange[]
+  files: WorktreeChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
    *  Capped for size — see `truncated`. */
   diff: string
@@ -579,13 +581,13 @@ export interface SessionChanges {
 }
 
 /**
- * Why a session died, derived at reap time from the pod's terminal state
+ * Why a worktree died, derived at reap time from the pod's terminal state
  * and the reaper's own classification — the last chance to capture it,
  * since the reaper's teardown deletes the Job (and with it the pod's
  * `containerStatuses` and the Job's failure condition). Absent on a plain
  * user delete.
  */
-export type SessionDeathReason =
+export type WorktreeDeathReason =
   | 'oom'            // session container OOMKilled by the kernel
   | 'evicted'        // pod evicted by the kubelet (node pressure)
   | 'crashed'        // session container exited non-zero
@@ -594,8 +596,8 @@ export type SessionDeathReason =
   | 'never-started'  // session create was interrupted before the agent ran
   | 'orphaned'       // Job/pod deleted out-of-band
 
-export interface SessionDeathCause {
-  reason: SessionDeathReason
+export interface WorktreeDeathCause {
+  reason: WorktreeDeathReason
   /** Free-form evidence: exit code, eviction message, … */
   detail?: string
 }
@@ -605,7 +607,7 @@ export interface SessionDeathCause {
  * all loose `SKILL.md` files. `system` is a built-in tier: an agent's own
  * bundled skills (Codex's `.system/` under the host-mounted `~/.codex/skills/`,
  * or Claude's binary-bundled skills read list-only from its docs, `sourceLabel`
- * `bundled`), plus the skills yaac itself ships and injects into every session
+ * `bundled`), plus the skills yaac itself ships and injects into every worktree
  * (`sourceLabel` `yaac`; see the server's features/skills).
  */
 export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
@@ -648,21 +650,21 @@ export interface SkillDetail {
   body: string
 }
 
-export interface StaleSessionInfo {
+export interface StaleWorktreeInfo {
   jobName: string
   projectSlug: string
-  sessionId: string
+  worktreeId: string
   /** True when the pod is still running but tmux is gone. */
   zombie: boolean
   /** Terminal-state evidence for the reap, when the pod carried any. */
-  deathCause?: SessionDeathCause
+  deathCause?: WorktreeDeathCause
 }
 
-export interface ActiveSessionsResult {
+export interface ActiveWorktreesResult {
   worktrees: WorktreeListEntry[]
-  stale: StaleSessionInfo[]
+  stale: StaleWorktreeInfo[]
   /** Project slug -> git credentials the upstream rejected. Project-wide,
-   *  not per-session: one bad token affects every session of the project.
+   *  not per-worktree: one bad token affects every worktree of the project.
    *  Only projects with at least one failing host appear. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
@@ -690,8 +692,8 @@ export interface StoppedWorktreeEntry {
   /** Every conversation the worktree hosted, in restore order. The ones
    *  marked `active` are what a restart brings back. */
   agentSessions: AgentSessionEntry[]
-  /** Why the session died, when the reaper (not the user) stopped it. */
-  deathReason?: SessionDeathReason
+  /** Why the worktree died, when the reaper (not the user) stopped it. */
+  deathReason?: WorktreeDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
   /** Whether the user has viewed this death's detail — clears the "Stopped
@@ -705,10 +707,10 @@ export interface StoppedWorktreeEntry {
   background?: boolean
 }
 
-/** A webapp-attachable terminal inside a session's container (beyond the
- *  primary agent view): a `yaac`-session tmux window — an initCommands
+/** A webapp-attachable terminal inside a worktree's container (beyond the
+ *  primary agent view): a `yaac`-worktree tmux window — an initCommands
  *  window (dev server, watcher, …) or a scratch shell. */
-export interface SessionTerminalEntry {
+export interface WorktreeTerminalEntry {
   /** /pty/attach target: 'window:@<id>'. */
   target: string
   /** Display name (the tmux window name). */
@@ -731,7 +733,7 @@ export interface ProjectSummary {
   slug: string
   remoteUrl: string
   addedAt: string
-  sessionCount: number
+  worktreeCount: number
 }
 
 /**
@@ -806,11 +808,11 @@ export interface CheckResult {
  */
 export interface ServerSnapshot {
   worktrees: WorktreeListEntry[]
-  stale: StaleSessionInfo[]
+  stale: StaleWorktreeInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningWorktreeEntry[]
   /** Project slug -> git credentials the upstream rejected (project-wide;
-   *  see ActiveSessionsResult.gitAuthFailures). */
+   *  see ActiveWorktreesResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
   /** Claude subscription plan usage, refreshed server-side
@@ -821,7 +823,7 @@ export interface ServerSnapshot {
    *  same engine. Null until the first refresh lands, or when Codex isn't
    *  signed in with a ChatGPT (OAuth) account. */
   codexPlanUsage: PlanUsageResult | null
-  /** The host session port-forward listeners actually bind
+  /** The host worktree port-forward listeners actually bind
    *  (`YAAC_FORWARD_BIND`; loopback locally, the tailnet IP on a remote
    *  host). Server-reported so UI exposure claims state the real bind —
    *  the page origin can differ from it (e.g. an SSH tunnel). */

@@ -13,7 +13,7 @@ import { getDb, tokens as tokensTable } from '#platform/db'
  * - `one-time` — minted by `yaac open` (and the start banner), carried in
  *   the webapp URL. Exchange-only: never a valid bearer, consumed on its
  *   first successful exchange, expired after EXCHANGE_TTL_MS.
- * - `web` — a browser session, minted by the exchange and carried in the
+ * - `web` — a browser worktree, minted by the exchange and carried in the
  *   HttpOnly session cookie. Never a valid bearer either; listed and
  *   revocable like a durable token so a leaked cookie can be killed.
  *
@@ -47,7 +47,7 @@ export interface TokenStore {
   /**
    * Trade a token for a fresh web session. Accepts an unexpired one-time
    * token (consumed) or a durable token (kept — it's the client's own
-   * credential). Returns the new session's secret, or null on no match.
+   * credential). Returns the new worktree's secret, or null on no match.
    */
   consumeExchange(candidate: string): string | null
   list(): TokenSummary[]
@@ -75,7 +75,7 @@ export interface TokenStore {
 export const EXCHANGE_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
- * Web sessions are minted on every exchange and never explicitly ended,
+ * Web worktrees are minted on every exchange and never explicitly ended,
  * so cap them (oldest evicted first) to keep the persisted file bounded
  * across many `yaac open` invocations. Same bound for pending one-time
  * tokens — expiry prunes those anyway; the cap just stops a tight

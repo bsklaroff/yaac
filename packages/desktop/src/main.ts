@@ -7,7 +7,7 @@
  * it never owns the server: close hides to the tray, Quit quits the shell
  * only, and the server keeps running (it was never ours to stop). While in
  * the tray it follows the `/events` stream as a bearer client to surface
- * waiting sessions (dock badge, tray status, notifications). Each window
+ * waiting worktrees (dock badge, tray status, notifications). Each window
  * open also ensures the auth-daemon best-effort, like `yaac open` — and
  * like the server, Quit leaves it running (machine-scoped, shared with the
  * CLI; never ours to stop).
@@ -23,7 +23,7 @@ import {
   normalizeRemoteUrl, probeRemote, readRemote, withRemoteActivated, writeRemote,
 } from '@yaac/shared/remote'
 import { env } from '@yaac/shared/env'
-import { AttentionMonitor, badgeText, notificationFor, type WaitingSession } from '#attention'
+import { AttentionMonitor, badgeText, notificationFor, type WaitingWorktree } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
 import { runFlow } from '#flow'
 import { appMenuTemplate } from '#menu'
@@ -92,9 +92,9 @@ async function createWindow(): Promise<BrowserWindow> {
       sandbox: true,
       preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
       // Let the attention chime play without a prior click (it fires on a
-      // background event — a session flipping to waiting), not a user gesture.
+      // background event — a worktree flipping to waiting), not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
-      // Enable the <webview> the session preview embeds. Guests are hardened
+      // Enable the <webview> the worktree preview embeds. Guests are hardened
       // and pinned to loopback below (will-attach-webview + web-contents-created).
       webviewTag: true,
     },
@@ -206,7 +206,7 @@ function updateTray(waitingCount: number): void {
     { label: 'Open yaac', click: () => showWindow() },
     { type: 'separator' },
     {
-      label: waitingCount > 0 ? `${waitingCount} waiting for input` : 'No sessions waiting',
+      label: waitingCount > 0 ? `${waitingCount} waiting for input` : 'No worktrees waiting',
       enabled: false,
     },
     { type: 'separator' },
@@ -214,7 +214,7 @@ function updateTray(waitingCount: number): void {
   ]))
 }
 
-function applyAttention(waitingCount: number, toNotify: WaitingSession[]): void {
+function applyAttention(waitingCount: number, toNotify: WaitingWorktree[]): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
   updateTray(waitingCount)
   if (!Notification.isSupported()) return

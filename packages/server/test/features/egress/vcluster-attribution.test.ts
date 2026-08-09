@@ -20,7 +20,7 @@ import { serverLog } from '#log'
 const mockLog = vi.mocked(serverLog)
 
 const vc = (sid: string, ns: string): VclusterNamespaceInfo =>
-  ({ name: `yvc-${sid}`, sessionId: sid, namespace: ns, creationTimestamp: '' })
+  ({ name: `yvc-${sid}`, worktreeId: sid, namespace: ns, creationTimestamp: '' })
 
 /** Fake one pass's cluster view; only the vcluster getters matter here. */
 function snap(opts: {

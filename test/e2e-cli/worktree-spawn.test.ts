@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { listSessionPods, type SessionPod } from '@yaac/server/platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -15,7 +15,7 @@ import {
   requirePodman,
   requireCluster,
   execInJob,
-  cleanupSessionJobs,
+  cleanupWorktreeJobs,
 } from '@yaac/test-utils/setup'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
@@ -109,7 +109,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    const pods = await listSessionPods(SLUG)
+    const pods = await listWorktreePods(SLUG)
     if (pods.length !== 1) throw new Error(`expected 1 session pod, found ${pods.length}`)
     jobA = pods[0].jobName
   }, 300_000)
@@ -117,7 +117,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
   afterAll(async () => {
     if (server) await server.stop()
     server = null
-    await cleanupSessionJobs()
+    await cleanupWorktreeJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -165,13 +165,13 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     const PROMPT = 'hello from spawn e2e'
     const { exitCode, output } = await runSpawn(`--model claude-opus-4-8 "${PROMPT}"`)
     expect(exitCode).toBe(0)
-    const newSessionId = output.trim()
-    expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    const newWorktreeId = output.trim()
+    expect(newWorktreeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 
     // The provisioning row for the minted id shows while the create runs.
     let sawRow = false
     for (let i = 0; i < 150 && !sawRow; i++) {
-      const row = sub.latest()?.provisioning.find((p) => p.worktreeId === newSessionId)
+      const row = sub.latest()?.provisioning.find((p) => p.worktreeId === newWorktreeId)
       if (row) {
         expect(row.kind).toBe('create')
         expect(row.projectSlug).toBe(SLUG)
@@ -181,10 +181,10 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(sawRow).toBe(true)
 
     // The new pod appears in the same project under the minted session id.
-    let spawned: SessionPod | undefined
+    let spawned: PodInfo | undefined
     for (let i = 0; i < 120 && !spawned?.running; i++) {
-      const pods = await listSessionPods(SLUG)
-      spawned = pods.find((p) => p.sessionId === newSessionId)
+      const pods = await listWorktreePods(SLUG)
+      spawned = pods.find((p) => p.worktreeId === newWorktreeId)
       if (!spawned?.running) await sleep(1000)
     }
     expect(spawned?.running).toBe(true)
@@ -199,8 +199,8 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     for (let i = 0; i < 180 && !handedOff; i++) {
       const snap = sub.latest()
       handedOff = snap !== null
-        && snap.worktrees.some((s) => s.worktreeId === newSessionId)
-        && !snap.provisioning.some((p) => p.worktreeId === newSessionId)
+        && snap.worktrees.some((s) => s.worktreeId === newWorktreeId)
+        && !snap.provisioning.some((p) => p.worktreeId === newWorktreeId)
       if (!handedOff) await sleep(1000)
     }
     expect(handedOff).toBe(true)
@@ -271,7 +271,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     // the rest are not — and the baked catalog supplies claude's model ids.
     const { exitCode, output } = await runSpawn('--models')
     expect(exitCode).toBe(0)
-    expect(output).toContain('current session tool: claude')
+    expect(output).toContain('current worktree tool: claude')
     expect(output).toContain('claude-opus-4-8')
     // codex/opencode/pi have no creds in this env.
     expect(output).toContain('not configured')

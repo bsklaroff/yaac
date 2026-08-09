@@ -7,7 +7,7 @@ import {
   buildWorktreeLinkExec,
   validateInitWindows,
 } from '#features/agents/setup-commands'
-import { SESSION_INIT_SCRIPT, sessionBinDir } from '#features/sessions/spawn-script'
+import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#features/worktrees/spawn-script'
 import { PROXY_CA_BUNDLE_PATH } from '#features/egress/proxy-client'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -69,13 +69,13 @@ describe('buildWindowsExec', () => {
   })
 })
 
-// The pod-side half of session setup lives in the yaac-session-init script
+// The pod-side half of session setup lives in the yaac-worktree-init script
 // (the postStart hook). Pin the contracts the server relies on so a script
 // edit can't silently drift from the TypeScript side.
-describe('yaac-session-init script', () => {
-  const scriptPath = path.join(sessionBinDir(), SESSION_INIT_SCRIPT)
+describe('yaac-worktree-init script', () => {
+  const scriptPath = path.join(worktreeBinDir(), WORKTREE_INIT_SCRIPT)
 
-  it('ships in session-bin and is executable', async () => {
+  it('ships in worktree-bin and is executable', async () => {
     const st = await fs.stat(scriptPath)
     expect(st.isFile()).toBe(true)
     expect(st.mode & 0o111).not.toBe(0)

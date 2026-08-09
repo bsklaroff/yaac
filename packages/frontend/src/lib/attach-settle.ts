@@ -1,13 +1,13 @@
 /**
- * Reveal gate for a freshly mounted terminal pane (SessionTerminal).
+ * Reveal gate for a freshly mounted terminal pane (WorktreeTerminal).
  *
- * Attaching to a session's tmux repaints the whole screen at the client's
+ * Attaching to a worktree's tmux repaints the whole screen at the client's
  * size: the window is created oversized so TUIs shrink-then-render (see
- * session-create), and on attach tmux reflows it down to the browser's grid
+ * worktree-create), and on attach tmux reflows it down to the browser's grid
  * — a frame of rewrapped garbage — before the agent's SIGWINCH repaint
- * settles the screen. On cold (non-prewarmed) sessions the agent's own
+ * settles the screen. On cold (non-prewarmed) worktrees the agent's own
  * startup renders interleave too. Watching that settle live is the flash on
- * every new session, so the terminal stays invisible until the attach burst
+ * every new worktree, so the terminal stays invisible until the attach burst
  * goes quiet and only the settled frame is revealed.
  *
  * The gate settles exactly once, on the earliest of:
@@ -24,7 +24,7 @@
  * loop retries silently.
  *
  * Quiet-gap and cap reveals additionally require `hasContent()` (when
- * given): a cold session's attach can land before the agent has painted
+ * given): a cold worktree's attach can land before the agent has painted
  * anything, so the first burst is only tmux's attach preamble — revealing
  * on it would show a blank screen and then the agent's first paint as a
  * pop. A contentless quiet/cap fire defers instead; the next output re-arms

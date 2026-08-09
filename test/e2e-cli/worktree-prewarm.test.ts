@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/platform/git'
-import { listSessionPods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
-import { listActiveSessions } from '@yaac/server/features/sessions/list'
+import { listWorktreePods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
+import { listActiveWorktrees } from '@yaac/server/features/worktrees/list'
 import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import { listProjects } from '@yaac/server/features/projects/list'
 import { isTmuxSessionAlive } from '@yaac/server/features/status/liveness'
@@ -18,7 +18,7 @@ import {
 import {
   requirePodman,
   requireCluster,
-  cleanupSessionJobs,
+  cleanupWorktreeJobs,
   execInJob,
 } from '@yaac/test-utils/setup'
 import {
@@ -80,7 +80,7 @@ describe('yaac prewarmed sessions', () => {
     _resetHerdForTests()
     if (server) await server.stop()
     server = null
-    await cleanupSessionJobs()
+    await cleanupWorktreeJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -140,25 +140,25 @@ describe('yaac prewarmed sessions', () => {
     // 2. The background loop warms a spare. Wait until it is Running AND its
     //    tmux is alive (so the next create can actually claim it).
     const spare = await waitFor(async () => {
-      const pods = await listSessionPods('repo-demo')
+      const pods = await listWorktreePods('repo-demo')
       const s = pods.find((p) => isPrewarmed(p) && p.running)
-      if (s && await isTmuxSessionAlive('repo-demo', s.sessionId)) return s
+      if (s && await isTmuxSessionAlive('repo-demo', s.worktreeId)) return s
       return undefined
     }, 150_000)
     const spareJob = spare.jobName
 
     // 3. The spare is hidden from user-facing views: one active session, one
     //    project session-count — even though two pods exist.
-    const allPods = await listSessionPods('repo-demo')
+    const allPods = await listWorktreePods('repo-demo')
     expect(allPods.filter(isPrewarmed)).toHaveLength(1)
     expect(allPods.filter((p) => !isPrewarmed(p))).toHaveLength(1)
 
-    const active = await listActiveSessions('repo-demo')
+    const active = await listActiveWorktrees('repo-demo')
     expect(active.worktrees).toHaveLength(1)
-    expect(active.worktrees[0].worktreeId).not.toBe(spare.sessionId)
+    expect(active.worktrees[0].worktreeId).not.toBe(spare.worktreeId)
 
     const proj = (await listProjects()).find((p) => p.slug === 'repo-demo')
-    expect(proj?.sessionCount).toBe(1)
+    expect(proj?.worktreeCount).toBe(1)
 
     // 4. Spares are tool- AND branch-agnostic: a create for a different tool
     //    and a different reference branch claims the claude/main-warmed spare,
@@ -180,7 +180,7 @@ describe('yaac prewarmed sessions', () => {
 
     // Same pod as the spare — label gone, tool label flipped. Proves the
     // claim reused the warmed pod rather than minting one.
-    const retooled = (await listSessionPods('repo-demo')).find((p) => p.jobName === spareJob)
+    const retooled = (await listWorktreePods('repo-demo')).find((p) => p.jobName === spareJob)
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
     expect(retooled!.tool).toBe('codex')
@@ -195,7 +195,7 @@ describe('yaac prewarmed sessions', () => {
     expect(devFile).toBe('dev content\n')
     expect(await worktreeUpstreamBranch(
       path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'),
-      `agent/${retooled!.sessionId}`,
+      `agent/${retooled!.worktreeId}`,
     )).toBe('dev')
 
     // 5. The claim leaves the pool short, so a fresh spare is warmed to
@@ -203,7 +203,7 @@ describe('yaac prewarmed sessions', () => {
     //    retooled into. Running is enough here: nothing claims this one, and
     //    waiting on its tmux would just be waiting.
     const refilled = await waitFor(async () => {
-      const pods = await listSessionPods('repo-demo')
+      const pods = await listWorktreePods('repo-demo')
       return pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
     }, 150_000)
     expect(refilled.tool).toBe('claude')

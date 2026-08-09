@@ -108,7 +108,7 @@ export function parseSniFromClientHello(buf: Buffer): string | null {
 }
 
 /**
- * Normalize a socket remoteAddress for use as an `ipToSession` key:
+ * Normalize a socket remoteAddress for use as an `ipToWorktree` key:
  * unwrap IPv4-mapped IPv6 (`::ffff:10.0.0.1` → `10.0.0.1`) and map
  * absent/empty addresses to null so callers fail closed.
  */
@@ -139,7 +139,7 @@ function inCidr(ip: number, base: number, maskBits: number): boolean {
  * the USE_TOR paths: the transparent listeners widened what can reach
  * the tunnel/forward code, so internal destinations now go direct
  * instead of erroring inside Tor. Reaching such a host still requires it
- * to be on the session's allowlist — this changes routing, not policy.
+ * to be on the worktree's allowlist — this changes routing, not policy.
  */
 export function isInternalUpstream(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '')

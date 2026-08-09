@@ -6,7 +6,7 @@ export interface ClusterDeleteCliOptions {
 
 /**
  * `yaac cluster delete` — delete the local kind cluster and its registry,
- * keeping on-disk sessions and worktrees. Host-side like `cluster setup`:
+ * keeping on-disk worktrees and worktrees. Host-side like `cluster setup`:
  * talks to kind/podman directly, never the server. Exits 1 when a step
  * cannot proceed (ClusterDeleteError carries the fix instructions).
  */

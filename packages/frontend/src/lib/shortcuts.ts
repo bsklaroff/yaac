@@ -25,9 +25,9 @@ export interface Chord {
  * commands likewise split into left/right.
  */
 export type ShortcutId =
-  | 'new-session'
+  | 'new-worktree'
   | 'new-shell'
-  | 'delete-session'
+  | 'delete-worktree'
   | 'kill-terminal'
   | 'jump-attention'
   | 'open-changes'
@@ -35,8 +35,8 @@ export type ShortcutId =
   | 'open-preview'
   | 'view-tabs'
   | 'view-tiles'
-  | 'prev-session'
-  | 'next-session'
+  | 'prev-worktree'
+  | 'next-worktree'
   | 'prev-terminal'
   | 'next-terminal'
   | 'move-terminal-left'
@@ -70,16 +70,16 @@ function altShift(code: string): Chord {
  * terminal.
  */
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: 'new-session', label: 'New session',
-    description: 'Create a session in the active project.', defaultChord: alt('KeyN') },
+  { id: 'new-worktree', label: 'New worktree',
+    description: 'Create a worktree in the active project.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',
-    description: 'Open a scratch-shell terminal in the selected session.', defaultChord: alt('KeyS') },
-  { id: 'delete-session', label: 'Delete session',
-    description: 'Delete the selected session (asks to confirm).', defaultChord: alt('KeyD') },
+    description: 'Open a scratch-shell terminal in the selected worktree.', defaultChord: alt('KeyS') },
+  { id: 'delete-worktree', label: 'Delete worktree',
+    description: 'Delete the selected worktree (asks to confirm).', defaultChord: alt('KeyD') },
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'jump-attention', label: 'Jump to attention',
-    description: 'Select the session that most needs attention.', defaultChord: alt('KeyB') },
+    description: 'Select the worktree that most needs attention.', defaultChord: alt('KeyB') },
   { id: 'open-changes', label: 'Open changes',
     description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyC') },
   { id: 'find-changes', label: 'Find in changes',
@@ -90,10 +90,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'Show the workspace as one tab strip.', defaultChord: alt('Comma') },
   { id: 'view-tiles', label: 'Window view',
     description: 'Show the workspace as side-by-side windows.', defaultChord: alt('Period') },
-  { id: 'prev-session', label: 'Previous session',
-    description: 'Select the previous session in the sidebar.', defaultChord: alt('KeyK') },
-  { id: 'next-session', label: 'Next session',
-    description: 'Select the next session in the sidebar.', defaultChord: alt('KeyJ') },
+  { id: 'prev-worktree', label: 'Previous worktree',
+    description: 'Select the previous worktree in the sidebar.', defaultChord: alt('KeyK') },
+  { id: 'next-worktree', label: 'Next worktree',
+    description: 'Select the next worktree in the sidebar.', defaultChord: alt('KeyJ') },
   { id: 'prev-terminal', label: 'Previous terminal',
     description: 'Focus the previous terminal in the tab strip.', defaultChord: alt('KeyH') },
   { id: 'next-terminal', label: 'Next terminal',
@@ -120,7 +120,7 @@ export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
  * bytes to the PTY.
  */
 export const CYCLE_IDS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
-  'prev-session', 'next-session', 'prev-terminal', 'next-terminal',
+  'prev-worktree', 'next-worktree', 'prev-terminal', 'next-terminal',
 ])
 
 /** True when `id` is one of the known rebindable commands. */
@@ -171,14 +171,14 @@ export function matchShortcut(bindings: BindingMap, e: ShortcutKey): ShortcutId 
 
 /** The cycle direction a command implies, or null if it isn't a cycler. */
 export function cycleDeltaFor(id: ShortcutId): CycleDelta | null {
-  if (id === 'prev-session' || id === 'prev-terminal') return -1
-  if (id === 'next-session' || id === 'next-terminal') return 1
+  if (id === 'prev-worktree' || id === 'prev-terminal') return -1
+  if (id === 'next-worktree' || id === 'next-terminal') return 1
   return null
 }
 
 /**
  * The target a cycle lands on, given the candidates in display order (the
- * workspace's terminals in tab-strip order, or the sidebar's session rows
+ * workspace's terminals in tab-strip order, or the sidebar's worktree rows
  * top-to-bottom) and the currently active one. Wraps at both ends; with no
  * (valid) active target it enters the list from the end it's headed toward.
  * Null when there's nothing to switch to.

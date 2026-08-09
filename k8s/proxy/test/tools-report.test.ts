@@ -47,10 +47,10 @@ describe('baked model catalogs', () => {
   })
 
   // Invariants over whatever the generator currently emits, so a regen that
-  // reintroduces an unusable provider fails here rather than in a session.
+  // reintroduces an unusable provider fails here rather than in a worktree.
   it('offers no provider on a loopback host', () => {
     // A loopback host names a server on the user's own machine, which a
-    // session pod's localhost is not — and the proxy only intercepts egress,
+    // worktree pod's localhost is not — and the proxy only intercepts egress,
     // so it could never swap the placeholder key there.
     const loopback = (h: string): boolean =>
       h === 'localhost' || h === '0.0.0.0' || h.endsWith('.localhost') || /^127\./.test(h)
@@ -143,7 +143,7 @@ describe('formatToolsReport', () => {
       includeModels: true,
       creds: creds({ claude: { authed: true, kind: 'oauth' } }),
     }))
-    expect(text).toContain('current session tool: claude')
+    expect(text).toContain('current worktree tool: claude')
     expect(text).toContain('claude')
     // A catalog-derived id, so a models.dev refresh that retires any single
     // model can't redden this — what matters is that the ids get rendered.

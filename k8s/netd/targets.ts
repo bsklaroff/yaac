@@ -36,7 +36,7 @@
  * no NetworkPolicy applies.
  *
  * Note what the invariant is not: an authentication of the inner yaac.
- * Inside one session the inner yaac and the agent code are the same trust
+ * Inside one worktree the inner yaac and the agent code are the same trust
  * domain, so no claim can be attributed to "the real inner yaac". Every
  * expressible claim is made harmless instead.
  *
@@ -52,8 +52,12 @@ import {
   type RedirectClaim,
 } from 'yaac-netd/claims'
 
-/** Must match the server's constants (netd cannot import from src/). */
-export const LABEL_SESSION_ID = 'yaac.session-id'
+/**
+ * Must match the server's constants (netd cannot import from src/). This is
+ * LABEL_WORKTREE_ID_LEGACY: the key every live worktree pod carries, and the
+ * one the server keeps selecting on until the compatibility window closes.
+ */
+export const LABEL_WORKTREE_ID_LEGACY = 'yaac.session-id'
 export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /** Deployment/Service name of every yaac proxy, outer and inner. */
 export const PROXY_APP_NAME = 'yaac-proxy'
@@ -194,7 +198,7 @@ export interface SelectTargetsInput {
 }
 
 /**
- * The outer target — every install-namespace session pod's destination,
+ * The outer target — every install-namespace worktree pod's destination,
  * and the fallback for synced pods.
  */
 function outerTarget(input: SelectTargetsInput): EgressTarget | null {
@@ -205,7 +209,7 @@ function outerTarget(input: SelectTargetsInput): EgressTarget | null {
 /**
  * Resolve every redirectable pod to exactly one egress target.
  *
- * Pods with no target (no session label and not vcluster-synced; or a
+ * Pods with no target (no worktree label and not vcluster-synced; or a
  * proxy pod, which must never be redirected to itself) are simply absent
  * from the result — netd programs no rules for them, and their egress is
  * whatever their NetworkPolicy allows. That is why a missing target can
@@ -246,9 +250,9 @@ export function selectTargets(input: SelectTargetsInput): PodTarget[] {
 
     const managedBy = pod.labels[LABEL_VCLUSTER_MANAGED_BY]
     if (!managedBy) {
-      // Rule 1: an install-namespace session pod.
+      // Rule 1: an install-namespace worktree pod.
       if (pod.namespace !== input.installNamespace) continue
-      if (!pod.labels[LABEL_SESSION_ID]) continue
+      if (!pod.labels[LABEL_WORKTREE_ID_LEGACY]) continue
       if (outer) out.push({ pod, target: outer })
       continue
     }

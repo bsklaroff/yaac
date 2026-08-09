@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NamespaceClaims, RedirectClaim } from 'yaac-netd/claims'
 import {
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   LABEL_VCLUSTER_MANAGED_BY,
   PROXY_APP_NAME,
   distinctTargets,
@@ -68,15 +68,15 @@ describe('isOwnVclusterNamespace', () => {
 
 describe('validateClaims', () => {
   const proxyPod = synced('inner-proxy', INNER_POD_IP, { app: PROXY_APP_NAME })
-  const sessionPod = synced('inner-sess', '10.244.0.44', { [LABEL_SESSION_ID]: 'i1' })
+  const worktreePod = synced('inner-sess', '10.244.0.44', { [LABEL_WORKTREE_ID_LEGACY]: 'i1' })
   const claim: RedirectClaim = {
     install: 'hash1',
     proxyPodIp: INNER_POD_IP,
-    sources: [sessionPod.podIp],
+    sources: [worktreePod.podIp],
   }
   const validate = (
     entries: Map<string, NamespaceClaims>,
-    pods = [proxyPod, sessionPod],
+    pods = [proxyPod, worktreePod],
     podCidrs = POD_CIDRS,
   ) => validateClaims({ claims: entries, pods, installNamespace: INSTALL_NS, podCidrs })
 
@@ -100,7 +100,7 @@ describe('validateClaims', () => {
     // A pod in the namespace without the syncer's stamp (or with another
     // vcluster's) is not part of the population a claim may name.
     const unstamped = pod('bare', VC_NS, { app: PROXY_APP_NAME }, INNER_POD_IP)
-    expect(validate(claims([claim]), [unstamped, sessionPod]).size).toBe(0)
+    expect(validate(claims([claim]), [unstamped, worktreePod]).size).toBe(0)
   })
 
   it('rejects a claim for a namespace this install does not own', () => {
@@ -110,8 +110,8 @@ describe('validateClaims', () => {
   })
 
   it('drops sources that are not synced pods of that vcluster, keeping the rest', () => {
-    const withGhosts = { ...claim, sources: [sessionPod.podIp, '10.244.9.9', '203.0.113.7'] }
-    expect(validate(claims([withGhosts])).get(VC_NS)?.[0].sources).toEqual([sessionPod.podIp])
+    const withGhosts = { ...claim, sources: [worktreePod.podIp, '10.244.9.9', '203.0.113.7'] }
+    expect(validate(claims([withGhosts])).get(VC_NS)?.[0].sources).toEqual([worktreePod.podIp])
   })
 
   it('drops the claim entirely when no source survives', () => {
@@ -119,17 +119,17 @@ describe('validateClaims', () => {
   })
 
   it('never lets a claim redirect its own proxy (that would loop)', () => {
-    const selfClaim = { ...claim, sources: [sessionPod.podIp, INNER_POD_IP] }
-    expect(validate(claims([selfClaim])).get(VC_NS)?.[0].sources).toEqual([sessionPod.podIp])
+    const selfClaim = { ...claim, sources: [worktreePod.podIp, INNER_POD_IP] }
+    expect(validate(claims([selfClaim])).get(VC_NS)?.[0].sources).toEqual([worktreePod.podIp])
   })
 
   it('orders claims by install hash so a contested source resolves stably', () => {
     const second = synced('proxy-b', '10.244.0.32', { app: PROXY_APP_NAME })
     const entries = claims([
-      { install: 'zzz', proxyPodIp: second.podIp, sources: [sessionPod.podIp] },
-      { install: 'aaa', proxyPodIp: INNER_POD_IP, sources: [sessionPod.podIp] },
+      { install: 'zzz', proxyPodIp: second.podIp, sources: [worktreePod.podIp] },
+      { install: 'aaa', proxyPodIp: INNER_POD_IP, sources: [worktreePod.podIp] },
     ])
-    expect(validate(entries, [proxyPod, second, sessionPod]).get(VC_NS)?.map((c) => c.install))
+    expect(validate(entries, [proxyPod, second, worktreePod]).get(VC_NS)?.map((c) => c.install))
       .toEqual(['aaa', 'zzz'])
   })
 
@@ -144,7 +144,7 @@ describe('validateClaims', () => {
     const entries = Array.from({ length: 80 }, (_, i) => ({
       install: `h${String(i).padStart(3, '0')}`,
       proxyPodIp: INNER_POD_IP,
-      sources: [sessionPod.podIp],
+      sources: [worktreePod.podIp],
     }))
     expect(validate(claims(entries)).get(VC_NS)?.length).toBe(64)
   })
@@ -155,8 +155,8 @@ describe('validateClaims', () => {
 })
 
 describe('selectTargets', () => {
-  it('rule 1: an install-namespace session pod goes to the outer proxy', () => {
-    const p = pod('sess-1', INSTALL_NS, { [LABEL_SESSION_ID]: 's1' })
+  it('rule 1: an install-namespace worktree pod goes to the outer proxy', () => {
+    const p = pod('sess-1', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: 's1' })
     expect(select([p])).toEqual([{ pod: p, target: { key: `outer/${INSTALL_NS}`, ip: OUTER_IP } }])
   })
 
@@ -164,17 +164,17 @@ describe('selectTargets', () => {
     expect(select([pod('proxy', INSTALL_NS, { app: PROXY_APP_NAME })])).toEqual([])
   })
 
-  it('ignores non-session pods in the install namespace', () => {
+  it('ignores non-worktree pods in the install namespace', () => {
     expect(select([pod('registry', INSTALL_NS, { app: 'yaac-registry' })])).toEqual([])
   })
 
   it('ignores pods with no IP yet', () => {
-    expect(select([pod('sess', INSTALL_NS, { [LABEL_SESSION_ID]: 's' }, '')])).toEqual([])
+    expect(select([pod('sess', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: 's' }, '')])).toEqual([])
   })
 
   it('rule 2: a claimed synced pod is redirected to the claimed proxy pod IP', () => {
     const proxyPod = synced('inner-proxy', INNER_POD_IP, { app: PROXY_APP_NAME })
-    const p = synced('inner-sess', '10.244.0.44', { [LABEL_SESSION_ID]: 'i1' })
+    const p = synced('inner-sess', '10.244.0.44', { [LABEL_WORKTREE_ID_LEGACY]: 'i1' })
     const selected = select([proxyPod, p], claims([
       { install: 'hash1', proxyPodIp: INNER_POD_IP, sources: [p.podIp] },
     ]))
@@ -185,7 +185,7 @@ describe('selectTargets', () => {
 
   it('rule 3: the claimed proxy itself stays on the outer proxy, so chaining is loop-free', () => {
     const proxyPod = synced('inner-proxy', INNER_POD_IP, { app: PROXY_APP_NAME })
-    const p = synced('inner-sess', '10.244.0.44', { [LABEL_SESSION_ID]: 'i1' })
+    const p = synced('inner-sess', '10.244.0.44', { [LABEL_WORKTREE_ID_LEGACY]: 'i1' })
     const selected = select([proxyPod, p], claims([
       { install: 'hash1', proxyPodIp: INNER_POD_IP, sources: [p.podIp] },
     ]))
@@ -259,7 +259,7 @@ describe('selectTargets', () => {
 
   it('selects nothing at all when the outer proxy is not up yet', () => {
     expect(selectTargets({
-      pods: [pod('sess', INSTALL_NS, { [LABEL_SESSION_ID]: 's' })],
+      pods: [pod('sess', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: 's' })],
       installNamespace: INSTALL_NS,
       outerProxyClusterIp: null,
     })).toEqual([])
@@ -279,8 +279,8 @@ describe('selectTargets', () => {
   })
 
   it('is stably ordered so renderings are byte-stable between passes', () => {
-    const a = pod('a', INSTALL_NS, { [LABEL_SESSION_ID]: '1' })
-    const b = pod('b', INSTALL_NS, { [LABEL_SESSION_ID]: '2' })
+    const a = pod('a', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: '1' })
+    const b = pod('b', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: '2' })
     expect(select([b, a]).map((s) => s.pod.name)).toEqual(['a', 'b'])
   })
 })
@@ -288,7 +288,7 @@ describe('selectTargets', () => {
 describe('selectClaimProxyPodIp', () => {
   it('picks this install\'s proxy pod', () => {
     const pods = [
-      pod('sess', INSTALL_NS, { [LABEL_SESSION_ID]: 's' }, '10.244.0.9'),
+      pod('sess', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: 's' }, '10.244.0.9'),
       pod('proxy', INSTALL_NS, { app: PROXY_APP_NAME }, '10.244.0.31'),
     ]
     expect(selectClaimProxyPodIp(pods, INSTALL_NS)).toBe('10.244.0.31')
@@ -319,8 +319,8 @@ describe('distinctTargets', () => {
     const proxyPod = synced('inner-proxy', INNER_POD_IP, { app: PROXY_APP_NAME })
     const inner = synced('i1', '10.244.0.44')
     const selected = select([
-      pod('s1', INSTALL_NS, { [LABEL_SESSION_ID]: '1' }),
-      pod('s2', INSTALL_NS, { [LABEL_SESSION_ID]: '2' }),
+      pod('s1', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: '1' }),
+      pod('s2', INSTALL_NS, { [LABEL_WORKTREE_ID_LEGACY]: '2' }),
       proxyPod,
       inner,
     ], claims([{ install: 'hash1', proxyPodIp: INNER_POD_IP, sources: [inner.podIp] }]))

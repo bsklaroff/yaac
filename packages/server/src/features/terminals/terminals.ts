@@ -1,10 +1,10 @@
-import { sessionExec } from '#platform/k8s'
-import { sessionControlStreamSend } from '#features/status'
+import { podExec } from '#platform/k8s'
+import { worktreeControlStreamSend } from '#features/status'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
-import type { SessionTerminalEntry } from '@yaac/shared/types'
+import type { WorktreeTerminalEntry } from '@yaac/shared/types'
 
 /**
- * Enumerate and manage the terminals a session's pod offers the webapp —
+ * Enumerate and manage the terminals a worktree's pod offers the webapp —
  * the windows of the `yaac` tmux session. The first (lowest-index) window
  * is the agent itself: it's covered by the dedicated 'agent' target, so
  * listings skip it and kills refuse it. Scratch shells are plain windows
@@ -35,7 +35,7 @@ function parseWindows(stdout: string): WindowRow[] {
 
 /** Parse the window listing into webapp terminal entries — every window
  *  except the agent's (lowest index). */
-function parseWindowList(stdout: string): SessionTerminalEntry[] {
+function parseWindowList(stdout: string): WorktreeTerminalEntry[] {
   const rows = parseWindows(stdout)
   if (rows.length === 0) return []
   const agentIndex = Math.min(...rows.map((r) => r.index))
@@ -45,7 +45,7 @@ function parseWindowList(stdout: string): SessionTerminalEntry[] {
 }
 
 /** Next free scratch-shell window name: shell, shell-2, shell-3, … */
-function nextShellName(existing: SessionTerminalEntry[]): string {
+function nextShellName(existing: WorktreeTerminalEntry[]): string {
   const names = new Set(existing.filter((e) => SHELL_NAME.test(e.name)).map((e) => e.name))
   if (!names.has('shell')) return 'shell'
   for (let i = 2; ; i++) {
@@ -54,7 +54,7 @@ function nextShellName(existing: SessionTerminalEntry[]): string {
 }
 
 /**
- * Run a READ-ONLY tmux command against the session, preferring the
+ * Run a READ-ONLY tmux command against the worktree, preferring the
  * status watcher's persistent control-mode stream (no new stream dialed)
  * and falling back to a one-shot relay exec when no stream is up
  * (prewarmed spares, stream mid-respawn) or the stream send fails.
@@ -63,7 +63,7 @@ function nextShellName(existing: SessionTerminalEntry[]): string {
  * non-CMD_READONLY commands from it.
  */
 async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
-  const send = sessionControlStreamSend(jobName)
+  const send = worktreeControlStreamSend(jobName)
   if (send) {
     try {
       return await send(tmuxArgs)
@@ -73,7 +73,7 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
     }
   }
   try {
-    const { stdout } = await sessionExec(
+    const { stdout } = await podExec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
       { maxAttempts: 1 },
@@ -84,17 +84,17 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
   }
 }
 
-/** List a session's webapp-attachable terminals. */
-export async function listSessionTerminals(jobName: string): Promise<SessionTerminalEntry[]> {
+/** List a worktree's webapp-attachable terminals. */
+export async function listWorktreeTerminals(jobName: string): Promise<WorktreeTerminalEntry[]> {
   return parseWindowList(await tmuxOut(jobName, `list-windows -t yaac -F ${WINDOW_FORMAT}`))
 }
 
-/** Create a scratch-shell window in the `yaac` session and return its
+/** Create a scratch-shell window in the `yaac` tmux session and return its
  *  entry. `-P -F` prints the new window's id, so the caller can attach
  *  (and open a pane) without waiting for the next terminals poll. */
-export async function createShellWindow(jobName: string): Promise<SessionTerminalEntry> {
-  const name = nextShellName(await listSessionTerminals(jobName))
-  const { stdout } = await sessionExec(
+export async function createShellWindow(jobName: string): Promise<WorktreeTerminalEntry> {
+  const name = nextShellName(await listWorktreeTerminals(jobName))
+  const { stdout } = await podExec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} new-window -d -P -F '#{window_id}' -t yaac -n ${name} -c /workspace`,
     { maxAttempts: 1 },
@@ -116,7 +116,7 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
   if (rows.find((r) => r.index === agentIndex)?.id === id) {
     throw new Error('refusing to kill the agent window')
   }
-  await sessionExec(
+  await podExec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} kill-window -t ${id}`,
     { maxAttempts: 1 },

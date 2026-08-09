@@ -37,7 +37,7 @@ content. Untrusted layers build against their host-built, registry-pushed
 parent, so the sandbox only ever executes the untrusted suffix of a chain.
 
 Nested yaac installs (`YAAC_NESTED=1`) are the one exception: they build
-on their in-pod engine, already sandboxed by the outer session.
+on their in-pod engine, already sandboxed by the outer worktree.
 
 ## Why sandbox only the untrusted layers
 
@@ -140,7 +140,7 @@ for what that lock does and does not buy.
 Every party addresses it the same way — by its Service FQDN
 (`yaac-registry.<default-ns>.svc.cluster.local:5000`), which is the prefix
 every yaac image ref carries. Builder pods pull parents from it and push
-products back; session pods pull final images from it unchanged. The one
+products back; worktree pods pull final images from it unchanged. The one
 exception is the yaac SERVER, which is a host process with no route into
 the pod network: it reaches the registry over a long-lived `kubectl
 port-forward` (the same mechanism the stream relay uses) and pushes through
@@ -231,7 +231,7 @@ store. Step cache cannot remove this leg; it is bounded instead:
 
 - Trusted-layer pushes use `--compression-format zstd`. It is free on the
   host side and roughly halves the empty-graphroot pod pull (the remainder
-  is layer extraction, not decompression). Session pods pull the same
+  is layer extraction, not decompression). Worktree pods pull the same
   manifests, so node containerd zstd support was confirmed before this
   shipped.
 - The pull is paid once per pod, and the common no-op path never creates
@@ -322,7 +322,7 @@ and the trust split that keeps yaac-shipped layers off that path.
 - **Builder egress.** Builder pods are excluded from the world-deny
   NetworkPolicy and carry an explicit allow-all egress
   NetworkPolicy — strictly better than a host build's unfiltered
-  host-network egress. Optionally routable through the session proxy later
+  host-network egress. Optionally routable through the worktree proxy later
   with the combined CA bundle (see docs/nested-containers.md), the same
   mechanism nested builds already use.
 - **The `yaac.role=builder` label** (which carves builder pods out of the

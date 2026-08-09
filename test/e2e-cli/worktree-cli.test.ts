@@ -52,7 +52,7 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
  * Cluster/podman requirements (from the source files): session resolution
  * (attach/shell/delete/restart) lists pods/jobs via kubectl; session list —
  * and each monitor render — queries pods via kubectl even for empty states;
- * and `createSession` runs `ensureContainerRuntime()` (podman + kubernetes
+ * and `createWorktree` runs `ensureContainerRuntime()` (podman + kubernetes
  * round-trip) before
  * the credential checks the create tests target. So the shared beforeAll
  * requires both podman and a reachable cluster.
@@ -240,15 +240,15 @@ describe('provisioning sessions in the server snapshot (real server, no containe
   it('surfaces a create as a provisioning entry, survives a reconnect, then dismisses', async () => {
     const base = `http://127.0.0.1:${server.lock.port}`
     const auth: Record<string, string> = { authorization: `Bearer ${server.lock.secret}` }
-    const sessionId = crypto.randomUUID()
+    const worktreeId = crypto.randomUUID()
 
     // A create against a non-existent project: the route registers the
-    // provisioning entry up front, then createSession throws NOT_FOUND fast →
+    // provisioning entry up front, then createWorktree throws NOT_FOUND fast →
     // the entry is marked failed (kept until dismissed).
     const res = await fetch(`${base}/worktree/create`, {
       method: 'POST',
       headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ project: 'ghost-project', tool: 'claude', worktreeId: sessionId }),
+      body: JSON.stringify({ project: 'ghost-project', tool: 'claude', worktreeId }),
     })
     expect(res.status).toBe(200)
     const ndjson = await res.text()
@@ -258,12 +258,12 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     // Reconnect (as a reloaded browser would) — the snapshot must still carry
     // the provisioning entry, with its kind, a createdAt, and the error.
     let snap = await firstSnapshot(server.lock.port, server.lock.secret)
-    let entry = snap.provisioning.find((p) => p.worktreeId === sessionId)
+    let entry = snap.provisioning.find((p) => p.worktreeId === worktreeId)
     // Give the fail-after-reject a beat if the very first reconnect raced it.
     for (let i = 0; i < 20 && !entry?.error; i++) {
       await sleep(100)
       snap = await firstSnapshot(server.lock.port, server.lock.secret)
-      entry = snap.provisioning.find((p) => p.worktreeId === sessionId)
+      entry = snap.provisioning.find((p) => p.worktreeId === worktreeId)
     }
     expect(entry).toBeDefined()
     expect(entry?.kind).toBe('create')
@@ -272,14 +272,14 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     expect(entry?.error).toBeTruthy()
 
     // Dismiss drops it from the server registry → out of the snapshot.
-    const dismiss = await fetch(`${base}/worktree/provisioning/${sessionId}/dismiss`, {
+    const dismiss = await fetch(`${base}/worktree/provisioning/${worktreeId}/dismiss`, {
       method: 'POST',
       headers: auth,
     })
     expect(dismiss.status).toBe(204)
 
     const after = await firstSnapshot(server.lock.port, server.lock.secret)
-    expect(after.provisioning.some((p) => p.worktreeId === sessionId)).toBe(false)
+    expect(after.provisioning.some((p) => p.worktreeId === worktreeId)).toBe(false)
   }, 30_000)
 })
 
@@ -393,12 +393,12 @@ describe('with seeded projects', () => {
     )
     const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
 
-    async function seedTranscript(slug: string, sessionId: string, body: string): Promise<void> {
+    async function seedTranscript(slug: string, worktreeId: string, body: string): Promise<void> {
       const dir = path.join(
         testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
       )
       await fs.mkdir(dir, { recursive: true })
-      await fs.writeFile(path.join(dir, `${sessionId}.jsonl`), body)
+      await fs.writeFile(path.join(dir, `${worktreeId}.jsonl`), body)
     }
 
     beforeAll(async () => {
@@ -412,7 +412,7 @@ describe('with seeded projects', () => {
         message: { role: 'user', content: 'port the lexer to rust' },
       })
       await seedTranscript(DEL_SLUG, promptSessionId, [
-        `{"type":"permission-mode","sessionId":"${promptSessionId}"}`,
+        `{"type":"permission-mode","worktreeId":"${promptSessionId}"}`,
         firstMsg,
         '',
       ].join('\n'))

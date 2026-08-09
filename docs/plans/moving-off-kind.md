@@ -75,7 +75,7 @@ Probed by `src/lib/k8s/cluster-check.ts`:
   peer sees pod egress. Calico (iptables) satisfies both; kindnet's engine
   fails open, and eBPF CNIs that short-circuit the host stack (Cilium's
   default host-routing) consume the frame before netfilter — see
-  docs/session-egress.md. Policy itself is plain `networking.k8s.io/v1`
+  docs/worktree-egress.md. Policy itself is plain `networking.k8s.io/v1`
   NetworkPolicy only, which is what keeps managed-cloud ports cheap.
 - **An image registry the node's containerd can pull from.** No longer a
   host-side constraint: the registry is an in-cluster Service, reached by

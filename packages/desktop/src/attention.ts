@@ -6,7 +6,7 @@ import type { AgentTool, ServerSnapshot } from '@yaac/shared/types'
  * headless-unit-testable; main.ts owns the Electron side effects.
  */
 
-export interface WaitingSession {
+export interface WaitingWorktree {
   worktreeId: string
   projectSlug: string
   tool: AgentTool
@@ -15,8 +15,8 @@ export interface WaitingSession {
   waitingSinceMs?: number
 }
 
-/** The subset of a snapshot's sessions that are awaiting input. */
-export function selectWaiting(snapshot: ServerSnapshot): WaitingSession[] {
+/** The subset of a snapshot's worktrees that are awaiting input. */
+export function selectWaiting(snapshot: ServerSnapshot): WaitingWorktree[] {
   return snapshot.worktrees
     .filter((s) => s.status === 'waiting')
     .map((s) => ({
@@ -29,21 +29,21 @@ export function selectWaiting(snapshot: ServerSnapshot): WaitingSession[] {
 }
 
 /**
- * Identity for a single waiting *spell*: the session plus when the wait began.
+ * Identity for a single waiting *spell*: the worktree plus when the wait began.
  * A fresh spell (new `waitingSinceMs`) yields a new key so it re-notifies;
  * an ongoing wait keeps its key so it doesn't.
  */
-export function waitingKey(s: WaitingSession): string {
+export function waitingKey(s: WaitingWorktree): string {
   return `${s.worktreeId}#${s.waitingSinceMs ?? ''}`
 }
 
-/** Which waiting sessions are new since `prevKeys`, plus the next key set. */
+/** Which waiting worktrees are new since `prevKeys`, plus the next key set. */
 export function diffNewlyWaiting(
   prevKeys: ReadonlySet<string>,
-  waiting: readonly WaitingSession[],
-): { toNotify: WaitingSession[]; nextKeys: Set<string> } {
+  waiting: readonly WaitingWorktree[],
+): { toNotify: WaitingWorktree[]; nextKeys: Set<string> } {
   const nextKeys = new Set<string>()
-  const toNotify: WaitingSession[] = []
+  const toNotify: WaitingWorktree[] = []
   for (const s of waiting) {
     const k = waitingKey(s)
     nextKeys.add(k)
@@ -57,9 +57,9 @@ export function badgeText(waitingCount: number): string {
   return waitingCount > 0 ? String(waitingCount) : ''
 }
 
-/** Title + body for a "session is waiting" OS notification. */
-export function notificationFor(s: WaitingSession): { title: string; body: string } {
-  return { title: 'Session waiting for you', body: `${s.projectSlug} · ${s.title}` }
+/** Title + body for a "worktree is waiting" OS notification. */
+export function notificationFor(s: WaitingWorktree): { title: string; body: string } {
+  return { title: 'Worktree waiting for you', body: `${s.projectSlug} · ${s.title}` }
 }
 
 /**
@@ -79,7 +79,7 @@ export function parseSnapshotMessage(raw: string): ServerSnapshot | null {
 }
 
 /**
- * Folds successive snapshots into the current waiting count and the sessions
+ * Folds successive snapshots into the current waiting count and the worktrees
  * that *just* entered a wait. The first snapshot only seeds state (returns no
  * notifications), so connecting to a server with pre-existing waits doesn't
  * fire a burst — and reconnects reuse the same monitor, so they don't re-notify
@@ -89,7 +89,7 @@ export class AttentionMonitor {
   private prevKeys: Set<string> = new Set()
   private seeded = false
 
-  update(snapshot: ServerSnapshot): { waitingCount: number; toNotify: WaitingSession[] } {
+  update(snapshot: ServerSnapshot): { waitingCount: number; toNotify: WaitingWorktree[] } {
     const waiting = selectWaiting(snapshot)
     const { toNotify, nextKeys } = diffNewlyWaiting(this.prevKeys, waiting)
     this.prevKeys = nextKeys

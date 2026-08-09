@@ -22,11 +22,11 @@ import { podCidrSources } from './cluster-cidrs'
  * Calico policy-only over the AWS VPC CNI on EKS).
  *
  * **The gate is the point of the mode.** There is no datapath change here:
- * the netd redirect (docs/session-egress.md) works unmodified on any CNI
+ * the netd redirect (docs/worktree-egress.md) works unmodified on any CNI
  * that traverses host netfilter and leaves ClusterIP translation to
  * kube-proxy. What changes is that four things yaac otherwise ASSUMES
  * become things it DETECTS — and every one of them fails silently when the
- * assumption is wrong. An unverified adoption presents as "sessions have
+ * assumption is wrong. An unverified adoption presents as "worktrees have
  * no egress" or, worse, as a redirect chain that counts packets and never
  * fires. So each check below refuses with the specific reason rather than
  * warning and proceeding.
@@ -52,7 +52,7 @@ export const DEFAULT_VETH_PREFIX = 'cali'
  * The veth prefix netd is told to match on: the operator's configured
  * value, else Calico's. `--adopt-cni` verifies the result against the
  * node's real routing table, which is what turns a wrong value into a
- * refusal instead of a cluster whose sessions silently have no egress.
+ * refusal instead of a cluster whose worktrees silently have no egress.
  */
 export function cniVethPrefix(): string {
   return env.cniVethPrefix ?? DEFAULT_VETH_PREFIX
@@ -96,7 +96,7 @@ export interface CniFacts {
   }
   /**
    * kube-proxy, counted from its pods so a static-pod install still counts,
-   * and per-node because a node without one loses session egress on that
+   * and per-node because a node without one loses worktree egress on that
    * node alone. `external` is the operator's acknowledgement that it runs
    * where no pod can be found (k3s runs it in-process).
    */
@@ -108,7 +108,7 @@ export interface CniFacts {
     /** False when the read failed — "none running" was never established. */
     evaluated: boolean
   }
-  /** Every node a session could land on — the per-node coverage denominator. */
+  /** Every node a worktree could land on — the per-node coverage denominator. */
   schedulableNodes: string[]
   /** The three sources netd's redirect exclusion set unions, plus rejects. */
   podCidrs: {
@@ -198,7 +198,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
   // 2. The iptables dataplane, HARD. Calico's eBPF dataplane bypasses
   //    iptables for pod traffic exactly the way Cilium does: the redirect
   //    chain would be programmed, count nothing, and never fire — a
-  //    failure with no symptom but "sessions cannot reach the internet".
+  //    failure with no symptom but "worktrees cannot reach the internet".
   const bpf = facts.felix.bpfEnabled === true || facts.felix.bpfEnabledEnv === true
   if (bpf) {
     const where = facts.felix.bpfEnabled === true
@@ -262,7 +262,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
     )
   } else {
     // Per-node, not per-cluster. One running kube-proxy proves the cluster
-    // has one; it says nothing about the node a session actually lands on,
+    // has one; it says nothing about the node a worktree actually lands on,
     // and a node without one loses egress by itself while the rest work.
     const uncovered = facts.schedulableNodes.filter((n) => !facts.kubeProxy.nodes.includes(n))
     if (uncovered.length > 0) {
@@ -443,7 +443,7 @@ interface RawSchedulableNodeList {
  * the runtime is installed), which is the honest answer for a pod that
  * stamps none.
  */
-async function sessionTolerations(run: typeof execFileAsync): Promise<PodToleration[]> {
+async function worktreeTolerations(run: typeof execFileAsync): Promise<PodToleration[]> {
   const rc = valueOf(await readJson<{
     scheduling?: { tolerations?: PodToleration[] }
   }>(run, ['get', 'runtimeclass', RUNTIME_CLASS_GVISOR, '-o', 'json']))
@@ -535,7 +535,7 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       readJson<unknown>(run, ['get', 'priorityclass', 'system-node-critical', '-o', 'json']),
       readJson<RawSchedulableNodeList>(run, ['get', 'nodes', '-o', 'json']),
       podCidrSources(),
-      sessionTolerations(run),
+      worktreeTolerations(run),
     ])
 
   // An error is an UNKNOWN, not a fact. Named per check so the refusal says
@@ -604,16 +604,16 @@ export async function gatherCniFacts(run: typeof execFileAsync): Promise<CniFact
       external: env.kubeProxyExternal,
       evaluated: kubeProxyRead.kind !== 'error',
     },
-    // "Could a session land here?" — answered by the SAME per-taint
+    // "Could a worktree land here?" — answered by the SAME per-taint
     // matching `cluster check`'s node inventory uses, against the same
     // tolerations, because this is the population per-node kube-proxy
     // coverage is measured against and a second definition would drift.
     //
     // Real matching rather than "carries no taint at all": a dedicated
-    // sessions pool is built by tainting the pool and declaring the
+    // worktrees pool is built by tainting the pool and declaring the
     // matching toleration on the gvisor RuntimeClass, which the admission
     // controller merges into every pod naming the class. Under the blanket
-    // rule such a pool reads as zero session-capable nodes, so the
+    // rule such a pool reads as zero worktree-capable nodes, so the
     // kube-proxy coverage warning would silently check nothing at all —
     // the very shape it exists to catch.
     schedulableNodes: (valueOf(nodeRead)?.items ?? [])
@@ -685,7 +685,7 @@ export interface NodeVethOutcome {
  * which samples whichever pod kubectl picks: on a heterogeneous adopted
  * fleet (mixed node pools or AMIs — the realistic EKS shape) one node's
  * routing table says nothing about the others', and a node whose veths are
- * named differently is a node whose sessions get no redirect.
+ * named differently is a node whose worktrees get no redirect.
  */
 export async function probeWorkloadVeths(
   run: typeof execFileAsync,

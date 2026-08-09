@@ -4,7 +4,7 @@ import path from 'node:path'
 import YAML from 'yaml'
 import {
   buildInnerProxyIngressNpManifest,
-  buildInnerSessionIngressLockNpManifest,
+  buildInnerWorktreeIngressLockNpManifest,
   buildVclusterControlPlaneNpManifest,
   buildVclusterEgressFloorNpManifest,
 } from './policy-manifests'
@@ -17,7 +17,7 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
   LABEL_VCLUSTER_MANAGED_BY,
@@ -51,16 +51,16 @@ const HELM_VERSION = 'v3.16.4'
 /** Ownership labels stamped on every vendored object (cleanup/GC keys). */
 
 /**
- * Name prefix of the per-session ValidatingAdmissionPolicy gating
- * synced pods. Per-session (prefix + vcluster name), not a shared
- * static policy with per-session params: VAP paramRef resolution is
+ * Name prefix of the per-worktree ValidatingAdmissionPolicy gating
+ * synced pods. Per-worktree (prefix + vcluster name), not a shared
+ * static policy with per-worktree params: VAP paramRef resolution is
  * broken on current kind/k8s 1.36 ("no params found" even for a
  * minimal textbook policy), and the only parameter was one string —
  * the allowed hostPath prefix — which inlines into the CEL just fine.
  */
 export const VCLUSTER_POD_GUARD_POLICY = 'yaac-vcluster-pod-guard'
 
-/** Per-session pod-guard policy/binding name. */
+/** Per-worktree pod-guard policy/binding name. */
 export function vclusterGuardName(name: string): string {
   return `${VCLUSTER_POD_GUARD_POLICY}-${name}`
 }
@@ -71,14 +71,14 @@ function celString(s: string): string {
 }
 
 /**
- * Per-session vcluster name: `yvc-<sid8>`. Eight hex chars of the
- * session UUID — short enough that every chart-derived name
+ * Per-worktree vcluster name: `yvc-<sid8>`. Eight hex chars of the
+ * worktree UUID — short enough that every chart-derived name
  * (vc-config-<name>, ClusterRole <name>-v-<ns>, …) stays under the
  * 63-char label cap, unique enough across the handful of coexisting
  * vclusters the cap allows.
  */
-export function vclusterName(sessionId: string): string {
-  const sid8 = sessionId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8)
+export function vclusterName(worktreeId: string): string {
+  const sid8 = worktreeId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8)
   return `yvc-${sid8}`
 }
 
@@ -88,10 +88,10 @@ export function vclusterKubeconfigSecretName(name: string): string {
 }
 
 /**
- * Dedicated host namespace for one session's vcluster. vcluster enforces
+ * Dedicated host namespace for one worktree's vcluster. vcluster enforces
  * one vcluster per host namespace (it owns the namespace's resource-name
- * space), so each session gets its own `<install-ns>-vc-<sid8>` — this is
- * what lets two virtualCluster sessions run in parallel. Prefixed with
+ * space), so each worktree gets its own `<install-ns>-vc-<sid8>` — this is
+ * what lets two virtualCluster worktrees run in parallel. Prefixed with
  * the install namespace so coexisting installs don't collide and so e2e
  * per-run namespaces (yaac-test-*) sweep these too.
  */
@@ -100,7 +100,7 @@ export function vclusterNamespace(name: string): string {
 }
 
 export interface VclusterRenderParams {
-  sessionId: string
+  worktreeId: string
 }
 
 let helmPathCache: string | null = null
@@ -190,8 +190,8 @@ export function stripControlPlaneReplicas(manifestYaml: string, name: string): s
 }
 
 /**
- * Render one session's vcluster manifests by running `helm template`
- * against the vendored chart tarball (offline) with the per-session
+ * Render one worktree's vcluster manifests by running `helm template`
+ * against the vendored chart tarball (offline) with the per-worktree
  * values passed as `--set` overrides, then stamping the yaac ownership
  * labels. No vendored rendered manifest, no placeholder substitution —
  * the chart's own logic runs each time, so a chart bump only needs
@@ -203,8 +203,8 @@ export function stripControlPlaneReplicas(manifestYaml: string, name: string): s
  */
 export async function renderVclusterManifests(p: VclusterRenderParams): Promise<string> {
   const helm = await ensureHelm()
-  const name = vclusterName(p.sessionId)
-  // The session pod reaches the API by its in-cluster service-DNS name,
+  const name = vclusterName(p.worktreeId)
+  // The worktree pod reaches the API by its in-cluster service-DNS name,
   // resolved through the proxy's split-horizon DNS to the live (allocator-
   // assigned) ClusterIP — so the serving-cert SAN and the exported kubeconfig
   // server use that name, and the Service's ClusterIP is no longer pinned. A
@@ -216,14 +216,14 @@ export async function renderVclusterManifests(p: VclusterRenderParams): Promise<
     'template', name, chart,
     '--namespace', vclusterNamespace(name),
     '--values', path.join(VCLUSTER_DIR, 'values.yaml'),
-    // Per-session overrides. --set-string so an all-digits registry host
+    // Per-worktree overrides. --set-string so an all-digits registry host
     // is never coerced to a number.
     '--set-string', `controlPlane.advanced.defaultImageRegistry=${registryHost()}`,
     '--set-string', `controlPlane.proxy.extraSANs[0]=${apiHost}`,
     '--set-string', `exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`,
   ], { maxBuffer: 16 * 1024 * 1024 })
   return stripControlPlaneReplicas(
-    addYaacLabels(stdout, vclusterLabels(name, p.sessionId)),
+    addYaacLabels(stdout, vclusterLabels(name, p.worktreeId)),
     name,
   )
 }
@@ -261,10 +261,10 @@ export async function ensureVclusterImages(
 }
 
 /** Ownership labels stamped on every object a vcluster owns (GC keys). */
-export function vclusterLabels(name: string, sessionId: string): Record<string, string> {
+export function vclusterLabels(name: string, worktreeId: string): Record<string, string> {
   return {
     [LABEL_VCLUSTER]: name,
-    [LABEL_VCLUSTER_SESSION_ID]: sessionId,
+    [LABEL_VCLUSTER_SESSION_ID]: worktreeId,
     [LABEL_VCLUSTER_DATA_DIR_HASH]: dataDirHash(),
   }
 }
@@ -276,7 +276,7 @@ export function vclusterLabels(name: string, sessionId: string): Record<string, 
  */
 export function buildVclusterNamespaceManifest(
   name: string,
-  sessionId: string,
+  worktreeId: string,
 ): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -293,7 +293,7 @@ export function buildVclusterNamespaceManifest(
       // baseline/restricted default would reject them here instead —
       // loudly, but for the wrong reason.
       labels: {
-        ...vclusterLabels(name, sessionId),
+        ...vclusterLabels(name, worktreeId),
         [LABEL_VCLUSTER_NAMESPACE]: 'true',
         ...PRIVILEGED_PSS_LABELS,
       },
@@ -323,7 +323,7 @@ const NO_UNCONFINED = (cs: string): string =>
   `${cs}.all(c, !has(c.securityContext) || !(has(c.securityContext.seccompProfile) && c.securityContext.seccompProfile.type == 'Unconfined'))`
 
 /**
- * The per-session synced-pod guard: a ValidatingAdmissionPolicy whose
+ * The per-worktree synced-pod guard: a ValidatingAdmissionPolicy whose
  * binding (below) scopes it to one vcluster's synced pods. The allowed
  * hostPath prefix is inlined as a CEL literal (see
  * VCLUSTER_POD_GUARD_POLICY for why no paramRef).
@@ -335,7 +335,7 @@ const NO_UNCONFINED = (cs: string): string =>
  * netfilter. The boundary here is the gVisor sentry: the syncer stamps
  * `gvisor` on every synced pod (values.yaml), and in-sandbox caps carry no
  * host authority. So:
- *   - hostPath volumes only under the session's nested data dir (param)
+ *   - hostPath volumes only under the worktree's nested data dir (param)
  *   - no hostNetwork / hostPID / hostIPC / hostPorts / privileged
  *   - capabilities.add or an explicit allowPrivilegeEscalation: true require
  *     the gvisor runtime tier; seccomp Unconfined is denied outright
@@ -345,13 +345,13 @@ const NO_UNCONFINED = (cs: string): string =>
  * caps is the stock pod default (file caps cannot exceed the bounding set),
  * and `capabilities.add` is the load-bearing gate.
  *
- * The rule admits the nested-session securityContext (the rootful engine's
+ * The rule admits the nested-worktree securityContext (the rootful engine's
  * in-sandbox capability adds under the gvisor tier) that an inner yaac's
- * synced session pods carry.
+ * synced worktree pods carry.
  */
 export function buildVclusterPodGuardPolicyManifest(
   name: string,
-  sessionId: string,
+  worktreeId: string,
   allowedHostPathPrefix: string,
 ): Record<string, unknown> {
   return {
@@ -359,7 +359,7 @@ export function buildVclusterPodGuardPolicyManifest(
     kind: 'ValidatingAdmissionPolicy',
     metadata: {
       name: vclusterGuardName(name),
-      labels: vclusterLabels(name, sessionId),
+      labels: vclusterLabels(name, worktreeId),
     },
     spec: {
       failurePolicy: 'Fail',
@@ -440,20 +440,20 @@ export function buildVclusterPodGuardPolicyManifest(
 }
 
 /**
- * Per-session binding: scopes this vcluster's guard to its synced pods
+ * Per-worktree binding: scopes this vcluster's guard to its synced pods
  * via the syncer's managed-by label, restricted to the vcluster's own
  * host namespace.
  */
 export function buildVclusterPodGuardBindingManifest(
   name: string,
-  sessionId: string,
+  worktreeId: string,
 ): Record<string, unknown> {
   return {
     apiVersion: 'admissionregistration.k8s.io/v1',
     kind: 'ValidatingAdmissionPolicyBinding',
     metadata: {
       name: vclusterGuardName(name),
-      labels: vclusterLabels(name, sessionId),
+      labels: vclusterLabels(name, worktreeId),
     },
     spec: {
       policyName: vclusterGuardName(name),
@@ -471,21 +471,21 @@ export function buildVclusterPodGuardBindingManifest(
 }
 
 /**
- * Per-session NetworkPolicy `yaac-vc-<sid8>` for the SESSION pod. The
- * session pod lives in the install namespace, but its vcluster API and
+ * Per-worktree NetworkPolicy `yaac-vc-<sid8>` for the SESSION pod. The
+ * worktree pod lives in the install namespace, but its vcluster API and
  * synced pods are in the vcluster's own namespace — so the egress peers
  * are CROSS-NAMESPACE (namespaceSelector + podSelector). It admits the
- * session pod to reach ITS OWN vcluster API on 8443 and its synced pods
+ * worktree pod to reach ITS OWN vcluster API on 8443 and its synced pods
  * (managed-by label; the OSS syncer cannot stamp yaac.session-id, see
  * values.yaml). The SOLE egress hole for these flows: NetworkPolicy
- * unions allow rules, so this punches a per-session hole through the
- * install-wide session-egress policy's default-deny (which has no
+ * unions allow rules, so this punches a per-worktree hole through the
+ * install-wide worktree-egress policy's default-deny (which has no
  * in-cluster 8443 allowance — a blanket rule there would open every
- * session's vcluster API to every other session).
+ * worktree's vcluster API to every other worktree).
  */
-export function buildVclusterSessionNetworkPolicyManifest(
+export function buildVclusterWorktreeNetworkPolicyManifest(
   name: string,
-  sessionId: string,
+  worktreeId: string,
 ): Record<string, unknown> {
   const vcNsSelector = {
     namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': vclusterNamespace(name) } },
@@ -496,10 +496,10 @@ export function buildVclusterSessionNetworkPolicyManifest(
     metadata: {
       name: `yaac-vc-${name.replace(/^yvc-/, '')}`,
       namespace: k8sNamespace(),
-      labels: vclusterLabels(name, sessionId),
+      labels: vclusterLabels(name, worktreeId),
     },
     spec: {
-      podSelector: { matchLabels: { [LABEL_SESSION_ID]: sessionId } },
+      podSelector: { matchLabels: { [LABEL_WORKTREE_ID_LEGACY]: worktreeId } },
       policyTypes: ['Egress'],
       egress: [
         {
@@ -511,7 +511,7 @@ export function buildVclusterSessionNetworkPolicyManifest(
         },
         {
           // While the vcluster is asleep its API ClusterIP is intercepted
-          // by the activator (same install namespace as the session pod).
+          // by the activator (same install namespace as the worktree pod).
           // NetworkPolicy is evaluated on the post-DNAT destination, so
           // the wake-triggering first touch needs its own allowance — the
           // rule above matches only the real control-plane pod.
@@ -538,20 +538,20 @@ export async function vapAvailable(): Promise<boolean> {
 
 /**
  * Grace window protecting a freshly-created vcluster from the orphan GC.
- * createSession stands the vcluster up BEFORE the session Job (the Job
+ * createWorktree stands the vcluster up BEFORE the worktree Job (the Job
  * mounts the vcluster's kubeconfig, so the vcluster must exist first),
- * which leaves a window where the vcluster carries a session-id that no
+ * which leaves a window where the vcluster carries a worktree-id that no
  * live pod/Job advertises yet. The reconcile tick must not reap it
- * during that window — sized to comfortably cover a cold session create
+ * during that window — sized to comfortably cover a cold worktree create
  * (image pulls + vcluster rollout + worktree).
  */
 export const VCLUSTER_ORPHAN_GRACE_MS = 15 * 60 * 1000
 
 export interface EnsureVclusterParams {
-  sessionId: string
+  worktreeId: string
   /** VAP param: the only hostPath prefix synced pods may mount. */
   allowedHostPathPrefix: string
-  /** Progress hook (session-create's emit); called for slow waits. */
+  /** Progress hook (worktree-create's emit); called for slow waits. */
   onProgress?: (message: string) => void
 }
 
@@ -567,7 +567,7 @@ export interface WaitForVclusterNamespaceGoneOpts {
  * Wait for a Terminating same-named vcluster namespace to disappear.
  *
  * Teardown deletes the namespace with `--wait=false`, and a restart
- * re-ensures the SAME name seconds later (session ids are stable across
+ * re-ensures the SAME name seconds later (worktree ids are stable across
  * restarts) while termination — pod grace periods, endpoint
  * cleanup, finalizers — takes minutes. Applying into the Terminating
  * namespace does not fail: every old object still exists, so each apply
@@ -609,7 +609,7 @@ export async function waitForVclusterNamespaceGone(
 }
 
 /**
- * Stand up one session's vcluster: VAP guard first (no synced pod may
+ * Stand up one worktree's vcluster: VAP guard first (no synced pod may
  * ever be admitted unguarded), then the confinement policies, then the
  * chart. Fail-closed on a missing VAP API — synced-pod containment
  * rests on the guard, so there is no opt-out.
@@ -618,10 +618,10 @@ export async function waitForVclusterNamespaceGone(
  * the caller's born-at-zero sleep applies only then (re-ensuring an
  * existing vcluster must never discard its state by re-sleeping it).
  */
-export async function ensureSessionVcluster(
+export async function ensureWorktreeVcluster(
   p: EnsureVclusterParams,
 ): Promise<{ freshlyCreated: boolean }> {
-  const name = vclusterName(p.sessionId)
+  const name = vclusterName(p.worktreeId)
   const vcNs = vclusterNamespace(name)
 
   // VAP guard BEFORE the syncer exists: the first synced pod (CoreDNS)
@@ -654,18 +654,18 @@ export async function ensureSessionVcluster(
   ])
 
   // The vcluster's own namespace first (vcluster owns one per namespace).
-  await kubectlApply(buildVclusterNamespaceManifest(name, p.sessionId))
+  await kubectlApply(buildVclusterNamespaceManifest(name, p.worktreeId))
 
   await kubectlApply(
-    buildVclusterPodGuardPolicyManifest(name, p.sessionId, p.allowedHostPathPrefix),
+    buildVclusterPodGuardPolicyManifest(name, p.worktreeId, p.allowedHostPathPrefix),
   )
-  await kubectlApply(buildVclusterPodGuardBindingManifest(name, p.sessionId))
+  await kubectlApply(buildVclusterPodGuardBindingManifest(name, p.worktreeId))
 
   // The activator's per-vcluster grant (scale/certs/slice — see
   // buildActivatorVclusterRoleManifest), scoped to this namespace and
   // swept with it.
-  await kubectlApply(buildActivatorVclusterRoleManifest(name, vcNs, vclusterLabels(name, p.sessionId)))
-  await kubectlApply(buildActivatorVclusterRoleBindingManifest(vcNs, vclusterLabels(name, p.sessionId)))
+  await kubectlApply(buildActivatorVclusterRoleManifest(name, vcNs, vclusterLabels(name, p.worktreeId)))
+  await kubectlApply(buildActivatorVclusterRoleBindingManifest(vcNs, vclusterLabels(name, p.worktreeId)))
 
   // The API Service's ClusterIP is allocator-assigned (no longer pinned), so
   // there is no immutable-field migration: the chart apply below creates it
@@ -675,8 +675,8 @@ export async function ensureSessionVcluster(
   // synced-pod egress floor must be in place before the syncer creates its first
   // host pod (CoreDNS appears within seconds) — otherwise a pod with no policy
   // selecting it would get default-ALLOW egress, a cold-start window to raw
-  // world. The session policy lives in the install namespace (it selects the
-  // session pod); the synced-pod egress floor (default-deny + world→the node's
+  // world. The worktree policy lives in the install namespace (it selects the
+  // worktree pod); the synced-pod egress floor (default-deny + world→the node's
   // listener range + intracluster) and the control-plane policy live in the
   // vcluster namespace. Both are STATIC per-vcluster NetworkPolicies seeded
   // here and torn down with the namespace — nothing deletes them in between,
@@ -684,19 +684,26 @@ export async function ensureSessionVcluster(
   // not a policy object at all: netd programs it per synced-pod veth from
   // what it observes on the node, so creating a vcluster adds no listener.
   const [nodeCidrs, apiserverCidrs] = await Promise.all([nodeIpBlocks(), apiserverIpBlocks()])
-  await kubectlApply(buildVclusterSessionNetworkPolicyManifest(name, p.sessionId))
+  await kubectlApply(buildVclusterWorktreeNetworkPolicyManifest(name, p.worktreeId))
   await kubectlApply(buildVclusterEgressFloorNpManifest(vcNs, name, nodeCidrs))
   await kubectlApply(buildVclusterControlPlaneNpManifest(
-    vcNs, name, vclusterLabels(name, p.sessionId), apiserverCidrs,
+    vcNs, name, vclusterLabels(name, p.worktreeId), apiserverCidrs,
   ))
   // The inner locks are static per vcluster — they name only the vcluster
-  // and its owning session — so they ship with the namespace instead of
+  // and its owning worktree — so they ship with the namespace instead of
   // being projected on a reconcile pass. netd discovers inner proxies
   // itself, so no policy object here is dynamic.
-  await kubectlApply(buildInnerProxyIngressNpManifest(vcNs, name, p.sessionId, nodeCidrs))
-  await kubectlApply(buildInnerSessionIngressLockNpManifest(vcNs, name))
+  await kubectlApply(buildInnerProxyIngressNpManifest(vcNs, name, p.worktreeId, nodeCidrs))
+  await kubectlApply(buildInnerWorktreeIngressLockNpManifest(vcNs, name))
+  // Same apply-then-delete as the install-namespace pair (proxy-apply.ts):
+  // the name this policy had before the rename, swept only once its
+  // replacement exists so the lock is never briefly absent.
+  await kubectlWithRetry([
+    'delete', 'networkpolicy', 'yaac-inner-session-ingress-lock',
+    '-n', vcNs, '--ignore-not-found',
+  ]).catch(() => { /* best-effort; a leftover policy is a duplicate, not a hole */ })
   await kubectlWithRetry(['apply', '-f', '-'], {
-    input: await renderVclusterManifests({ sessionId: p.sessionId }),
+    input: await renderVclusterManifests({ worktreeId: p.worktreeId }),
   })
   return { freshlyCreated: priorDeployment === null }
 }
@@ -765,7 +772,7 @@ export interface SleepVclusterOpts {
  */
 export async function sleepVcluster(
   name: string,
-  sessionId: string,
+  worktreeId: string,
   opts: SleepVclusterOpts = {},
 ): Promise<void> {
   const { pollMs = 1000, timeoutMs = 120_000 } = opts
@@ -781,7 +788,7 @@ export async function sleepVcluster(
   const activatorIp = await getActivatorPodIp()
 
   await kubectlApply(buildVclusterSleepEndpointSliceManifest(
-    name, vcNs, vclusterLabels(name, sessionId), activatorIp,
+    name, vcNs, vclusterLabels(name, worktreeId), activatorIp,
   ))
   await kubectlWithRetry([
     'scale', 'deployment', name, '-n', vcNs, '--replicas=0',
@@ -817,8 +824,8 @@ export async function sleepVcluster(
  * policies, the inner ingress locks, the RBAC
  * Role/RoleBinding, and the kubeconfig Secret. Things that live outside it
  * are unaffected: the cluster-scoped objects (ClusterRole/Binding, the VAP
- * policy/binding — deleted by our ownership label), the session NetworkPolicy
- * in the install namespace (it selects the session pod, so it can't move —
+ * policy/binding — deleted by our ownership label), the worktree NetworkPolicy
+ * in the install namespace (it selects the worktree pod, so it can't move —
  * deleted by label there), and netd's node-level redirect state, which is
  * per-install rather than per-vcluster: it drops the departed pods' rules on
  * its next reconcile once the namespace's pods stop being observed.
@@ -851,7 +858,7 @@ export function buildVclusterCleanupShellCommand(name: string): string {
 }
 
 /** Best-effort in-process teardown of one vcluster (both cleanup paths). */
-export async function removeSessionVcluster(name: string): Promise<void> {
+export async function removeWorktreeVcluster(name: string): Promise<void> {
   for (const args of vclusterCleanupKubectlArgs(name)) {
     try {
       await kubectlWithRetry(args, { maxAttempts: 2, timeout: 30_000 })
@@ -881,9 +888,9 @@ export function vclusterPhase(spec: { replicas?: number } | undefined, readyRepl
   return readyReplicas >= 1 ? 'ready' : 'waking'
 }
 
-/** Status block for `SessionDetail`; null when the session has no vcluster. */
-export async function getVclusterStatus(sessionId: string): Promise<VclusterStatus | null> {
-  const name = vclusterName(sessionId)
+/** Status block for `WorktreeDetail`; null when the worktree has no vcluster. */
+export async function getVclusterStatus(worktreeId: string): Promise<VclusterStatus | null> {
+  const name = vclusterName(worktreeId)
   const dep = await kubectlGetJson<{
     spec?: { replicas?: number }
     status?: { readyReplicas?: number }

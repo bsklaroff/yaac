@@ -281,7 +281,7 @@ Keep hot per-session dirs off the shared FS regardless of which one wins.
       encode the wrong requirement.
 
       Sweeps that must see a whole session or project go through the
-      `sessionRoots` / `sessionsRoots` / `projectRoots` / `projectsRoots`
+      `worktreeStateRoots` / `projectWorktreeStateRoots` / `projectRoots` / `projectsRoots`
       pairings the path layer exports (deduplicated, so one pass today):
       session cleanup, the orphan GC — whose slug source is both
       `projects/` trees, not just the shared one — and `project remove`.

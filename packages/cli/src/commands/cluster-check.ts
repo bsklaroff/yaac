@@ -11,9 +11,9 @@ export async function clusterCheck(): Promise<void> {
     console.log(formatCheckResult(r))
   }
   if (!ok) {
-    console.error('\nCluster is not ready for yaac sessions. Fix the failures above and re-run.')
+    console.error('\nCluster is not ready for yaac worktrees. Fix the failures above and re-run.')
     process.exitCode = 1
   } else {
-    console.log('\nCluster is ready for yaac sessions.')
+    console.log('\nCluster is ready for yaac worktrees.')
   }
 }

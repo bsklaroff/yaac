@@ -7,7 +7,7 @@ import {
   loadCodexCredentialsFile,
   saveCodexOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
 
@@ -112,7 +112,7 @@ function kickRefresh(
     }
     // Deliver without waiting for the next background tick — the hub dedupes,
     // so an unchanged snapshot costs no traffic.
-    notifySessionListChanged()
+    notifyWorktreeListChanged()
   })()
 }
 

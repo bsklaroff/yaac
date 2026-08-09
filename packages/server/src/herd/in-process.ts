@@ -1,20 +1,20 @@
 import {
   countProjectWorkspaces,
   countWorkspaces,
-  createSession,
+  createWorktree,
   findWorkspace,
   listWorkspaces,
-  getSessionChanges,
+  getWorktreeChanges,
   observeWorkspaces,
   stopWorktree,
   teardownForRestart,
   tryClaimPrewarmed,
   purgeProjectBytes,
   worktreeForkFallback,
-} from '#features/sessions'
+} from '#features/worktrees'
 import { getVclusterStatus } from '#features/cluster'
-import { allowSessionHost, readBlockedHosts, proxyClient } from '#features/egress'
-import { dismissSessionPort, forwardSessionPort } from '#features/forwarders'
+import { allowWorktreeHost, readBlockedHosts, proxyClient } from '#features/egress'
+import { dismissWorktreePort, forwardWorktreePort } from '#features/forwarders'
 import {
   attachAcp,
   getAgentSessionFirstMessage,
@@ -22,7 +22,7 @@ import {
   transcriptLastActiveMs,
   typeInitialPrompt,
 } from '#features/agents'
-import { attachPty, createShellWindow, killWindowTerminal, listSessionTerminals } from '#features/terminals'
+import { attachPty, createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#features/terminals'
 import { pushImageShared, rebuildProjectImage, retryImageBuild } from '#features/images'
 import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#features/image-engine'
 import {
@@ -66,7 +66,7 @@ import type { HerdClient } from './contract'
  * vocabulary and today's functions, and that thinness is load-bearing rather
  * than tidiness: this is the file the RPC client REPLACES, so any behavior
  * left here silently vanishes at the swap. Substrate behavior belongs in a
- * feature, which moves with the herd (`#features/sessions/locate.ts` is
+ * feature, which moves with the herd (`#features/worktrees/locate.ts` is
  * where the resolve/count logic went for exactly this reason); server policy
  * belongs above the boundary (spawn went to `ServerLink.spawnRequested`, the
  * in-flight set to `DesiredWorkspaces`).
@@ -82,7 +82,7 @@ export function createInProcessHerd(): HerdClient {
     lifecycle: createLifecycle(runHerdPass),
 
     workspaces: {
-      create: (projectSlug, opts) => createSession(projectSlug, opts),
+      create: (projectSlug, opts) => createWorktree(projectSlug, opts),
 
       claimPrewarmed: ({ projectSlug, tool, gitUser, onProgress, branch, model }) =>
         tryClaimPrewarmed(projectSlug, tool, gitUser, onProgress ?? (() => {}), branch, model),
@@ -103,7 +103,7 @@ export function createInProcessHerd(): HerdClient {
 
       count: (projectSlug) => countProjectWorkspaces(projectSlug),
 
-      changes: (jobName, base, defaultBase) => getSessionChanges(jobName, base, defaultBase),
+      changes: (jobName, base, defaultBase) => getWorktreeChanges(jobName, base, defaultBase),
 
       worktreeForkFallback: (projectSlug, workspaceId) =>
         worktreeForkFallback(projectSlug, workspaceId),
@@ -125,7 +125,7 @@ export function createInProcessHerd(): HerdClient {
     },
 
     terminals: {
-      list: (jobName) => listSessionTerminals(jobName),
+      list: (jobName) => listWorktreeTerminals(jobName),
       createShell: (jobName) => createShellWindow(jobName),
       kill: (jobName, target) => killWindowTerminal(jobName, target),
       attachPty: (jobName, socket, query) => attachPty(jobName, socket, query),
@@ -133,14 +133,14 @@ export function createInProcessHerd(): HerdClient {
 
     ports: {
       forward: ({ workspaceId, projectSlug, jobName }, containerPort, opts) =>
-        forwardSessionPort({ sessionId: workspaceId, projectSlug, jobName }, containerPort, opts),
+        forwardWorktreePort({ worktreeId: workspaceId, projectSlug, jobName }, containerPort, opts),
       dismiss: (workspaceId, containerPort) =>
-        Promise.resolve(dismissSessionPort(workspaceId, containerPort)),
+        Promise.resolve(dismissWorktreePort(workspaceId, containerPort)),
     },
 
     hosts: {
       allow: ({ workspaceId, projectSlug }, host, opts) =>
-        allowSessionHost({ sessionId: workspaceId, projectSlug }, host, opts),
+        allowWorktreeHost({ worktreeId: workspaceId, projectSlug }, host, opts),
     },
 
     images: {

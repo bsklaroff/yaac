@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { listSessionPods, type SessionPod } from '@yaac/server/platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
 import { k8sNamespace, kubectlGetJson } from '@yaac/server/platform/k8s/kubectl'
 import {
   createYaacTestEnv,
@@ -19,7 +19,7 @@ import {
   requirePodman,
   requireCluster,
   execInJob,
-  cleanupSessionJobs,
+  cleanupWorktreeJobs,
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import {
@@ -176,22 +176,22 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     )
   }
 
-  async function findSessionPod(slug: string, exclude: Set<string> = new Set()): Promise<SessionPod> {
-    const pods = (await listSessionPods(slug))
-      .filter((p) => !exclude.has(p.sessionId))
+  async function findWorktreePod(slug: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
+    const pods = (await listWorktreePods(slug))
+      .filter((p) => !exclude.has(p.worktreeId))
       .sort((a, b) => a.createdAtMs - b.createdAtMs)
     if (!pods[0]) throw new Error(`no session pod found for project ${slug}`)
     return pods[0]
   }
 
-  async function createSession(slug: string): Promise<SessionPod> {
+  async function createWorktree(slug: string): Promise<PodInfo> {
     const { stdout, stderr, exitCode } = await runYaac(
       serverEnv, 'worktree', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    return findSessionPod(slug)
+    return findWorktreePod(slug)
   }
 
   /** Wait for the detached cleanup (image salvage → job delete) to finish. */
@@ -241,9 +241,9 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     server = await spawnYaacServer(serverEnv)
 
     await setupProject('nested-shared')
-    const shared = await createSession('nested-shared')
+    const shared = await createWorktree('nested-shared')
     sharedJob = shared.jobName
-    sharedSessionId = shared.sessionId
+    sharedSessionId = shared.worktreeId
   }, 900_000)
 
   afterAll(async () => {
@@ -252,7 +252,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     }
     if (server) await server.stop()
     server = null
-    await cleanupSessionJobs()
+    await cleanupWorktreeJobs()
     await cleanupMocks([mockLLM, mockGit, mockRegistry])
     mockLLM = null
     mockGit = null
@@ -265,7 +265,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     await setupProject(slug)
 
     // --- Session 1 ---
-    const session1 = await createSession(slug)
+    const session1 = await createWorktree(slug)
     const name1 = session1.jobName
 
     // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
@@ -329,13 +329,13 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     // Detached cleanup order: image salvage (in-pod survey → in-pod push to
     // the project registry) → job delete. Job absence proves the whole
     // pipeline ran.
-    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'worktree', 'stop', session1.worktreeId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
     // --- Session 2 ---
-    const session2 = await createSession(slug)
-    expect(session2.sessionId).not.toBe(session1.sessionId)
+    const session2 = await createWorktree(slug)
+    expect(session2.worktreeId).not.toBe(session1.worktreeId)
 
     // The salvage's product is visible in the project's registry: the image
     // under its own name, and its ancestor chain under bounded
@@ -408,7 +408,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(v3Out, `divergent rebuild reused no prefix:\n${v3Out}`).toContain('Using cache')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v3', 'Parent')).toBe(s2Parent)
 
-    await runYaac(serverEnv, 'worktree', 'stop', session2.sessionId)
+    await runYaac(serverEnv, 'worktree', 'stop', session2.worktreeId)
   }, 900_000)
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {

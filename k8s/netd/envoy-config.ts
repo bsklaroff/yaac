@@ -34,7 +34,7 @@
  * - `proxy_protocol` upstream transport (V2). Envoy stamps the downstream
  *   connection's real source and (post-`original_dst`) original
  *   destination. The proxy parses it with k8s/proxy/pp2.ts and resolves
- *   source IP → session. It stamps the address it OBSERVES, so a pod that
+ *   source IP → worktree. It stamps the address it OBSERVES, so a pod that
  *   dials a listener directly cannot claim to be another pod.
  * - `enable_reuse_port: false`. Envoy's default is true, and several
  *   installs run hostNetwork Envoys in one netns as the same uid — with

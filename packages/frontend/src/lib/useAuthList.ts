@@ -19,7 +19,7 @@ export function configuredTools(auth: AuthListResult | undefined): Set<AgentTool
  * Shared masked-credentials query. Fetched once (the query client never
  * auto-refetches — see main.tsx); consumers that change credentials
  * invalidate AUTH_LIST_KEY, and open-on-demand surfaces (settings, the
- * new-session menu) invalidate when shown to pick up CLI-side changes.
+ * new-worktree menu) invalidate when shown to pick up CLI-side changes.
  */
 export function useAuthList(): AuthListResult | undefined {
   const { data } = useQuery({ queryKey: AUTH_LIST_KEY, queryFn: getAuthList })

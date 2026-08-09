@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { agentDriver, type AgentObservation, type DrivenSession } from '#features/agents/drivers'
+import { agentDriver, type AgentObservation, type DrivenWorktree } from '#features/agents/drivers'
 // A bound, imported rather than duplicated: a test that hard-codes the budget
 // passes against a driver that changed it.
 import { MAX_FAST_ATTACH_ATTEMPTS } from '#features/agents/acp-driver'
@@ -8,7 +8,7 @@ import {
   acpConversation,
   acpConversationByHandle,
 } from '#features/agents/acp-registry'
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { podExec } from '#platform/k8s/stream-relay'
 import type * as streamRelayModule from '#platform/k8s/stream-relay'
 import type { StreamChild } from '#platform/k8s'
 import type { AcpConversation } from '#features/agents/acp-client'
@@ -27,7 +27,7 @@ import type { AcpEventInit } from '@yaac/shared/acp'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
-  sessionExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   dialCtrlStream: vi.fn(),
 }))
 
@@ -63,9 +63,9 @@ class FakeStream implements StreamChild {
   }
 }
 
-const session: DrivenSession = {
+const session: DrivenWorktree = {
   slug: 'demo',
-  sessionId: 'wt-1',
+  worktreeId: 'wt-1',
   jobName: 'yaac-demo-wt-1',
   tool: 'claude',
 }
@@ -85,8 +85,8 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
 
 beforeEach(() => {
   _resetAcpRegistryForTests()
-  vi.mocked(sessionExec).mockReset()
-  vi.mocked(sessionExec).mockResolvedValue({ stdout: '', stderr: '' } as never)
+  vi.mocked(podExec).mockReset()
+  vi.mocked(podExec).mockResolvedValue({ stdout: '', stderr: '' } as never)
 })
 
 afterEach(() => {
@@ -181,7 +181,7 @@ describe('agentDriver', () => {
 
   it('drives an acp conversation end to end: handshake, updates, status, prompt', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\ninit\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\ninit\n', stderr: '' } as never)
     const seen: AgentObservation[] = []
     const driver = agentDriver('acp')
     connections.push(driver.connect(session, (o) => seen.push(o), {
@@ -244,7 +244,7 @@ describe('agentDriver', () => {
 
   it('resumes a recorded acp conversation with session/load instead of a new one', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-old' }]),
@@ -265,7 +265,7 @@ describe('agentDriver', () => {
 
   it('skips the handshake when reattaching to an agent that is already running', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
@@ -284,7 +284,7 @@ describe('agentDriver', () => {
 
   it('grants tool permission rather than prompting, matching the sandbox posture', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
       // A reattach needs the recorded id: without one the conversation cannot
@@ -317,7 +317,7 @@ describe('agentDriver', () => {
 
   it('gives up on a reattach it cannot address rather than talking to the wrong session', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: () => stream, log: () => {},
@@ -335,7 +335,7 @@ describe('agentDriver', () => {
 
   it('re-dials a window whose acpd has not bound its socket yet', async () => {
     const streams: FakeStream[] = []
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       // The settled cadence, set far beyond this test's patience: a re-dial
       // that waited for it would leave a fresh ACP worktree showing acpd's
@@ -362,7 +362,7 @@ describe('agentDriver', () => {
 
   it('stops re-dialing a window that can never hold an attach', async () => {
     const streams: FakeStream[] = []
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     vi.useFakeTimers()
     try {
       connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -400,7 +400,7 @@ describe('agentDriver', () => {
     // because the split can only fall inside a JSON string, the line still
     // parses and the corruption is silent.
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
@@ -432,7 +432,7 @@ describe('agentDriver', () => {
     // corrupt its own bookkeeping: the FIRST reply would end the turn while
     // the second still streamed, reporting `waiting` for a working agent.
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: () => stream,
@@ -467,7 +467,7 @@ describe('agentDriver', () => {
     // duplicate of something already resolved, and reading it as a turn end
     // would mark a live turn finished while the agent keeps streaming.
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: () => stream,
@@ -496,7 +496,7 @@ describe('agentDriver', () => {
 
   it('survives a non-JSON line from the adapter instead of killing the conversation', async () => {
     const stream = new FakeStream()
-    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: () => stream,
       recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),

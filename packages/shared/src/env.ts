@@ -77,7 +77,7 @@ export const env = {
    * (the normal case) → the server's in-cluster registry Service, whose
    * name it resolves itself.
    *
-   * The one production setter is a nested (vcluster) session: its registry
+   * The one production setter is a nested (vcluster) worktree: its registry
    * is the OUTER install's per-project registry, which the inner server
    * dials directly by cluster DNS and must never try to stand up.
    */
@@ -142,7 +142,7 @@ export const env = {
    * This acknowledges the operator has verified ClusterIP translation is
    * still kube-proxy's job; it does not weaken anything else. Getting it
    * wrong costs egress rather than opening it: netd's Envoy simply fails to
-   * dial the proxy's ClusterIP, and the session NetworkPolicy still denies
+   * dial the proxy's ClusterIP, and the worktree NetworkPolicy still denies
    * every world-ward destination but the node's listener range.
    */
   get kubeProxyExternal(): boolean {
@@ -150,7 +150,7 @@ export const env = {
   },
 
   /**
-   * `YAAC_PREWARM_POOL_SIZE` — prewarmed sessions per active project (`0`
+   * `YAAC_PREWARM_POOL_SIZE` — prewarmed worktrees per active project (`0`
    * disables). Default 1; a non-integer or negative value falls back to 1.
    */
   get prewarmPoolSize(): number {
@@ -174,7 +174,7 @@ export const env = {
 
   /**
    * `YAAC_AUTO_TITLES` — background model-generated titles for untitled
-   * sessions. Unset → on; empty, "0", and "false" (case-insensitive) → off.
+   * worktrees. Unset → on; empty, "0", and "false" (case-insensitive) → off.
    */
   get autoTitles(): boolean {
     const raw = process.env.YAAC_AUTO_TITLES
@@ -184,7 +184,7 @@ export const env = {
     return true
   },
 
-  /** `YAAC_NESTED` — set to `1` by the server inside a nested (vcluster) session. */
+  /** `YAAC_NESTED` — set to `1` by the server inside a nested (vcluster) worktree. */
   get nested(): boolean {
     return process.env.YAAC_NESTED === '1'
   },
@@ -245,7 +245,7 @@ export const env = {
   },
 
   /**
-   * `YAAC_FORWARD_BIND` — bind address for session port-forward listeners.
+   * `YAAC_FORWARD_BIND` — bind address for worktree port-forward listeners.
    * Default loopback (today's behavior); a remote-hosting server sets its
    * tailnet IP so forwarded dev servers are reachable from other tailnet
    * devices. Deployment topology, not project config.
@@ -322,14 +322,14 @@ export const testEnv = {
 
 
   /**
-   * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created session
-   * pods from the stale-session reaper. session-create's retry loop recreates
+   * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created worktree
+   * pods from the stale-worktree reaper. worktree-create's retry loop recreates
    * the Job between attempts and does not start tmux until the last step, so
-   * without a grace period a concurrent reap pass (`reconcileStaleSessions`)
+   * without a grace period a concurrent reap pass (`reconcileStaleWorktrees`)
    * can classify the pod as a zombie — firing
-   * cleanupSessionDetached, which removes the session's allowedHosts from the
+   * cleanupWorktreeDetached, which removes the worktree's allowedHosts from the
    * proxy mid-creation. Default 60_000; a non-finite or negative value falls
-   * back to the default. Tests shrink it to provoke cleanup on sessions they
+   * back to the default. Tests shrink it to provoke cleanup on worktrees they
    * just created.
    */
   get startingGraceMs(): number {

@@ -35,7 +35,7 @@ export {
   agentDriver,
   type AgentConnectDeps,
   type AgentObservation,
-  type DrivenSession,
+  type DrivenWorktree,
   type LiveAgent,
 } from './drivers'
 export { acpAdapterFor } from './acp-driver'
@@ -50,7 +50,7 @@ export {
   classifyAgentObservation,
   getAgentSessionFirstMessage,
   normalizeTool,
-  type SessionAgentStatus,
+  type AgentPaneStatus,
 } from './agent-tools'
 export {
   TMUX,

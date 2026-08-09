@@ -1,10 +1,10 @@
 # Auto-detected port forwarding
 
-Port forwarding out of a session pod has two paths. Config-declared
+Port forwarding out of a worktree pod has two paths. Config-declared
 forwards (`portForward` in yaac-config.json) are provisioned at
-session-create and server-restart. This feature adds the reactive path:
+worktree-create and server-restart. This feature adds the reactive path:
 when a server starts listening on a loopback port inside a running
-session, the webapp offers to forward it — for just that session, or
+worktree, the webapp offers to forward it — for just that worktree, or
 permanently for the project — without editing config or restarting.
 
 ## Data flow
@@ -13,8 +13,8 @@ permanently for the project — without editing config or restarting.
 streamd `ports` stream (in-pod /proc/net poll → push on change)
   → server detector map (features/forwarders/port-detector.ts)
   → snapshot `unforwardedPorts[]` → /events WS
-  → UnforwardedPortsBadge (session toolbar popover)
-  → POST /session/:id/forward-port {containerPort, persist}
+  → UnforwardedPortsBadge (worktree toolbar popover)
+  → POST /worktree/:id/forward-port {containerPort, persist}
   → live single-port relay forward (+ persist: config write + fan-out)
   → fresh snapshot moves the port into `forwardedPorts`, clearing the row
 ```
@@ -29,16 +29,16 @@ dial could actually reach are reported — bound to loopback or wildcard —
 and streamd's own port is excluded at the source. There is no
 server-side poll and no per-tick process spawn.
 
-The server keeps one ports stream per running, non-prewarmed session
+The server keeps one ports stream per running, non-prewarmed worktree
 (`PortDetectorManager`, synced from informer pod deltas like the status
 watchers) feeding an in-memory map; a stream death leaves the last set
 sticky and redials with backoff, and the keepalive doubles as the wedge
 detector. A set change pushes a fresh snapshot immediately.
 
-`unforwardedPorts` on the session snapshot is the detected set minus:
+`unforwardedPorts` on the worktree snapshot is the detected set minus:
 
 - container ports already forwarded (the forwarder registry),
-- ports the user dismissed for this session (in-memory, resets with the
+- ports the user dismissed for this worktree (in-memory, resets with the
   server — "never forward this" is a legitimate lasting choice),
 - a sensitive-port denylist (node --inspect, sshd, common databases —
   exposing them one-click is a step toward RCE or data exposure),
@@ -48,31 +48,31 @@ capped to a small count so a hostile listener flood stays bounded.
 
 ## The forward action
 
-`POST /session/:id/forward-port {containerPort, persist}` mirrors
-allow-host. The port must be in the session's currently-surfaced
+`POST /worktree/:id/forward-port {containerPort, persist}` mirrors
+allow-host. The port must be in the worktree's currently-surfaced
 unforwarded set — the route cannot be driven to forward an arbitrary
-port. `forwardSessionPort`:
+port. `forwardWorktreePort`:
 
 - **persist: false** — reserve one host port (starting at the container
   port) and start one relay forward on the running pod, appended to the
-  session's existing forwarder-registry entry (`addSessionForwarder`,
+  worktree's existing forwarder-registry entry (`addWorktreeForwarder`,
   which also refreshes tmux status-right). Live-only: gone when the
-  session is recreated.
+  worktree is recreated.
 - **persist: true** — first write `{containerPort, hostPortStart:
   containerPort}` into the project's yaac-config.json
-  (`addPortForwardToProjectConfig`, de-duped) so future sessions inherit
-  it, then forward the target session and fan the live forward out to
-  the project's other running sessions best-effort (matching
+  (`addPortForwardToProjectConfig`, de-duped) so future worktrees inherit
+  it, then forward the target worktree and fan the live forward out to
+  the project's other running worktrees best-effort (matching
   allow-host's persist semantics).
 
-`POST /session/:id/dismiss-port` hides a port for the session, under the
+`POST /worktree/:id/dismiss-port` hides a port for the worktree, under the
 same surfaced-set guard as forward-port (so the dismissed set can't be
-grown for sessions the sync cleanup never tracked).
+grown for worktrees the sync cleanup never tracked).
 
-A forward that lands during the session-create window is safe: the
+A forward that lands during the worktree-create window is safe: the
 forwarder registry merges registrations (the create batch and reactive
 appends accumulate on one entry; teardown runs every stop), and
-`addSessionForwarder` re-checks after its reservation so concurrent
+`addWorktreeForwarder` re-checks after its reservation so concurrent
 requests for the same port converge on one forward.
 
 The forward listener binds `YAAC_FORWARD_BIND` like every other forward
@@ -91,7 +91,7 @@ streamd's parsing is bounded against hostile `/proc` content, the server
 re-validates every pushed port as an integer in range and bounds the
 stored set, the sensitive/infra filters are applied server-side
 fail-closed, the action is cross-checked against the surfaced set, and
-forwards are capped per session (`MAX_FORWARDS_PER_SESSION`, under
+forwards are capped per worktree (`MAX_FORWARDS_PER_SESSION`, under
 streamd's concurrent-stream cap). An injected agent can still stand up a
 plausible-looking listener and hope for a click — which is why
 `persist: true` stays a distinct, explicitly-labeled action and the
@@ -103,7 +103,7 @@ and forward the agent can rebind the port to a different service
 
 ## Compatibility
 
-A session whose pod runs a streamd predating the `ports` kind refuses
+A worktree whose pod runs a streamd predating the `ports` kind refuses
 the stream handshake; its watcher just keeps retrying with backoff and
-the session shows no detected ports (everything else about it works).
-Restarting the session picks up the current image.
+the worktree shows no detected ports (everything else about it works).
+Restarting the worktree picks up the current image.

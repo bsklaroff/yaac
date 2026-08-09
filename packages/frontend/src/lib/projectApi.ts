@@ -7,7 +7,7 @@ export async function addProject(remoteUrl: string): Promise<{ slug: string }> {
   return project
 }
 
-/** Remove a project (and its sessions/worktrees). */
+/** Remove a project (and its worktrees/worktrees). */
 export async function removeProject(slug: string): Promise<void> {
   await api.project[':slug'].$delete({ param: { slug } })
 }
@@ -33,13 +33,13 @@ export interface ProjectBranches {
 }
 
 /** React Query key for a project's branch list — shared by every branch picker
- *  (new-session popover, Changes-view base picker) so they hit one cache. */
+ *  (new-worktree popover, Changes-view base picker) so they hit one cache. */
 export function projectBranchesKey(slug: string): readonly [string, string] {
   return ['project-branches', slug] as const
 }
 
 /**
- * Branch data for the new-session picker. Without `refresh` this reads the
+ * Branch data for the new-worktree picker. Without `refresh` this reads the
  * local remote-tracking refs (instant); with it the server fetches from the
  * remote first so a just-pushed branch appears.
  */

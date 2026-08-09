@@ -15,7 +15,7 @@ describe('persistSelection', () => {
     })
     const params = new URLSearchParams(window.location.search)
     expect(params.get('project')).toBe('proj')
-    expect(params.get('session')).toBe('sess')
+    expect(params.get('worktree')).toBe('sess')
   })
 
   it('drops the query params (and stores nulls) when both values are null', () => {
@@ -27,12 +27,12 @@ describe('persistSelection', () => {
     })
   })
 
-  it('keeps the project but clears the session when only the session is null', () => {
+  it('keeps the project but clears the worktree when only the worktree is null', () => {
     persistSelection('proj', 'sess')
     persistSelection('proj', null)
     const params = new URLSearchParams(window.location.search)
     expect(params.get('project')).toBe('proj')
-    expect(params.has('session')).toBe(false)
+    expect(params.has('worktree')).toBe(false)
   })
 
   it('preserves unrelated query params such as token', () => {
@@ -41,7 +41,7 @@ describe('persistSelection', () => {
     const params = new URLSearchParams(window.location.search)
     expect(params.get('token')).toBe('abc')
     expect(params.get('project')).toBe('proj')
-    expect(params.get('session')).toBe('sess')
+    expect(params.get('worktree')).toBe('sess')
   })
 
   it('is a no-op without localStorage', () => {
@@ -57,14 +57,14 @@ describe('persistSelection', () => {
 
 describe('loadSelection', () => {
   it('reads the URL query first, ignoring localStorage', () => {
-    window.history.replaceState({}, '', '/?project=urlproj&session=urlsess')
+    window.history.replaceState({}, '', '/?project=urlproj&worktree=urlsess')
     localStorage.setItem('yaac.selection.v1', JSON.stringify({
       projectSlug: 'lsproj', worktreeId: 'lssess',
     }))
     expect(loadSelection()).toEqual({ projectSlug: 'urlproj', worktreeId: 'urlsess' })
   })
 
-  it('treats a URL project with no session as a null session', () => {
+  it('treats a URL project with no worktree as a null worktree', () => {
     window.history.replaceState({}, '', '/?project=urlproj')
     expect(loadSelection()).toEqual({ projectSlug: 'urlproj', worktreeId: null })
   })

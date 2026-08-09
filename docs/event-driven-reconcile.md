@@ -3,7 +3,7 @@
 The server consumes cluster state through watch-fed informer caches and
 reconciles on events, not on a polling clock. Reads ride
 `@kubernetes/client-node`; writes (`kubectlApply`/delete) and the bounded
-provisioning execs stay on `kubectl`. Steady-state session streams (PTYs,
+provisioning execs stay on `kubectl`. Steady-state worktree streams (PTYs,
 status, port forwards, one-shot pod commands) ride the stream relay
 instead — see docs/stream-relay.md.
 
@@ -13,7 +13,7 @@ instead — see docs/stream-relay.md.
 `loadFromDefault()` resolves the same kubeconfig kubectl does (`KUBECONFIG`
 env included), so the typed client and the kubectl write/exec paths always
 address the same cluster — nested yaac's default context points at the
-session's vcluster apiserver and needs nothing extra.
+worktree's vcluster apiserver and needs nothing extra.
 
 `informer-cache.ts` wraps one client-node informer per resource kind into
 an `InformerCache<T>`: a mapped in-memory cache with `onChange`
@@ -41,12 +41,12 @@ treat absence in the cache as absence in the cluster.
 `cluster-cache.ts` is the registry of every informer the server runs,
 exposed to the rest of the server as a set-active singleton (the display
 path and reconcile steps read it; unit tests leave it null and fall back
-to one-shot kubectl lists). Fixed informers: session pods (the
-`sessionPodSelector` set), session Jobs, and vcluster namespaces. From
+to one-shot kubectl lists). Fixed informers: worktree pods (the
+`worktreePodSelector` set), worktree Jobs, and vcluster namespaces. From
 the namespaces cache it derives a dynamic pods+services informer pair per
 live vcluster namespace — pods unselected (attribution needs every pod
 IP), services selected by `vcluster.loft.sh/managed-by`. Deltas fan out
-via `onDelta(source)` with sources `session-pods` / `session-jobs` /
+via `onDelta(source)` with sources `worktree-pods` / `worktree-jobs` /
 `vcluster-namespaces` / `vcluster-pods` / `vcluster-services`.
 
 `tick-snapshot.ts` keeps the per-pass point-in-time view: each getter
@@ -84,9 +84,9 @@ step order; step errors are isolated; after each pass the event hub
 publishes a state snapshot (deduped by serialized compare). Idle cost is
 the poll lane's cache reads plus one proxy HTTP call — no kubectl forks.
 
-The server also reacts to `session-pods` deltas outside the reconciler:
-syncing the per-session status watchers and firing the debounced
-sessions-changed push (`main/server-run.ts`).
+The server also reacts to `worktree-pods` deltas outside the reconciler:
+syncing the per-worktree status watchers and firing the debounced
+worktrees-changed push (`main/server-run.ts`).
 
 ## Why writes and streams stay on kubectl
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { sessionExec } from '#platform/k8s'
+import { podExec } from '#platform/k8s'
 
 /**
  * Status markers + first-message lookup for opencode sessions.
@@ -47,7 +47,7 @@ async function probeOpencode(jobName: string): Promise<OpencodeProbe | null> {
   // below and return null.
   let stdout: string
   try {
-    const result = await sessionExec(
+    const result = await podExec(
       jobName,
       'curl -sf http://127.0.0.1:4096/session',
       { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
@@ -68,7 +68,7 @@ async function probeOpencode(jobName: string): Promise<OpencodeProbe | null> {
 }
 
 /**
- * Pick "this container's" session from the probe. With per-yaac-session
+ * Pick "this container's" session from the probe. With per-yaac-worktree
  * data dir isolation there should only ever be one (plus optional forks
  * with non-null parentID), but we still pick the most-recently-updated
  * root session defensively.

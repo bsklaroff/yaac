@@ -43,8 +43,8 @@ import {
   invalidateRelayAddr,
   relayDial,
   relayTcpFactory,
-  sessionExec,
-  sessionStreamToken,
+  podExec,
+  podStreamToken,
   waitForStreamd,
   RELAY_PORT,
 } from '#platform/k8s'
@@ -108,7 +108,7 @@ function fakePortForward(port: number): FakeChild {
 }
 
 interface Received {
-  auth: { token?: string; sessionId?: string }
+  auth: { token?: string; worktreeId?: string; sessionId?: string }
   handshake: Record<string, unknown>
   socket: net.Socket
   leftover: Buffer
@@ -178,10 +178,10 @@ const okThen = (r: Received, body?: Buffer): void => {
   if (body) r.socket.write(body)
 }
 
-describe('sessionStreamToken', () => {
+describe('podStreamToken', () => {
   it('derives a stable HMAC of the proxy secret and session id', async () => {
-    const a = await sessionStreamToken(SID)
-    const b = await sessionStreamToken(SID)
+    const a = await podStreamToken(SID)
+    const b = await podStreamToken(SID)
     expect(a).toBe(b)
     expect(a).toBe(crypto.createHmac('sha256', SECRET).update(SID).digest('hex'))
   })
@@ -196,9 +196,10 @@ describe('relayDial', () => {
     })
     const socket = await relayDial(SID, { kind: 'ctrl', cmd: ['tmux'] })
     const r = received!
-    expect(r.auth).toEqual({ token: SECRET, sessionId: SID })
+    // Both names — see relayDial: this path has no currency gate.
+    expect(r.auth).toEqual({ token: SECRET, worktreeId: SID, sessionId: SID })
     expect(r.handshake).toEqual({
-      token: await sessionStreamToken(SID),
+      token: await podStreamToken(SID),
       kind: 'ctrl',
       cmd: ['tmux'],
     })
@@ -294,14 +295,14 @@ describe('relayDial', () => {
   })
 })
 
-describe('sessionExec', () => {
+describe('podExec', () => {
   it('wraps the command in sh -c, and resolves stdout/stderr on exit 0', async () => {
     let handshake: Record<string, unknown> = {}
     await withRelay((r) => {
       handshake = r.handshake
       r.socket.end('{"ok":true}\n' + JSON.stringify({ exitCode: 0, stdout: 'hi', stderr: '' }) + '\n')
     })
-    const result = await sessionExec(JOB, 'echo hi')
+    const result = await podExec(JOB, 'echo hi')
     expect(result).toEqual({ stdout: 'hi', stderr: '' })
     expect(handshake.kind).toBe('exec')
     expect(handshake.cmd).toEqual(['sh', '-c', 'echo hi'])
@@ -313,7 +314,7 @@ describe('sessionExec', () => {
       dials++
       r.socket.end('{"ok":true}\n' + JSON.stringify({ exitCode: 1, stdout: '', stderr: 'no such session' }) + '\n')
     })
-    const err = await sessionExec(JOB, 'tmux has-session -t yaac').catch((e: unknown) => e)
+    const err = await podExec(JOB, 'tmux has-session -t yaac').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RelayExecError)
     expect((err as RelayExecError).code).toBe(1)
     expect((err as RelayExecError).stderr).toBe('no such session')
@@ -326,7 +327,7 @@ describe('sessionExec', () => {
       dials++
       r.socket.destroy()
     })
-    await expect(sessionExec(JOB, 'true', { maxAttempts: 3, timeout: 2_000 }))
+    await expect(podExec(JOB, 'true', { maxAttempts: 3, timeout: 2_000 }))
       .rejects.toBeInstanceOf(RelayDialError)
     expect(dials).toBe(3)
   })
@@ -341,7 +342,7 @@ describe('sessionExec', () => {
         '{"ok":true}\n' + JSON.stringify({ exitCode: 0, stdout: 'late', stderr: '' }) + '\n',
       ), 600)
     })
-    const result = await sessionExec(JOB, 'true', { timeout: 200, maxAttempts: 1 })
+    const result = await podExec(JOB, 'true', { timeout: 200, maxAttempts: 1 })
     expect(result.stdout).toBe('late')
   })
 
@@ -355,7 +356,7 @@ describe('sessionExec', () => {
       r.socket.write('{"ok":true}\n')
       setTimeout(() => r.socket.destroy(), 10)
     })
-    const err = await sessionExec(JOB, 'tmux new-window', { maxAttempts: 3, timeout: 2_000 })
+    const err = await podExec(JOB, 'tmux new-window', { maxAttempts: 3, timeout: 2_000 })
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(RelayDialError)
     expect((err as RelayDialError).afterDispatch).toBe(true)

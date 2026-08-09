@@ -112,7 +112,7 @@ describe('createAcpd', () => {
   it('still reports firstAttach when the previous client died before speaking', async () => {
     // An adapter's cold start takes seconds, so a client can attach and be
     // gone before it writes anything. Nothing handshook, so its successor must
-    // still run one — telling it otherwise sends it to address a session that
+    // still run one — telling it otherwise sends it to address a worktree that
     // was never created, and no later attach could ever repair that.
     const { sock } = await start(['cat'])
 
@@ -188,7 +188,7 @@ describe('createAcpd', () => {
     // Content reaches a pane through the record alone, so an agent that keeps
     // running with a broken record is answering into a view that will never
     // change again. Restarting is what makes that recoverable: the client
-    // reattaches, is told firstAttach, and its session/load refills the file.
+    // reattaches, is told firstAttach, and its worktree/load refills the file.
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
     tmpDirs.push(path.dirname(logPath))
     const { sock, daemon } = await start(['cat'], { logPath })
@@ -330,7 +330,7 @@ describe('createAcpd', () => {
     fs.writeFileSync(sock, '')
 
     // cwd like every other case here: acpd defaults to /workspace, which
-    // exists inside a session container but not on a plain host, and a spawn
+    // exists inside a worktree container but not on a plain host, and a spawn
     // that fails there races shutdown() against listen() instead of failing.
     const daemon = createAcpd({
       sockPath: sock, argv: ['cat'], cwd: process.cwd(), logStream: quiet,

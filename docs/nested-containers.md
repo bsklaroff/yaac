@@ -1,19 +1,19 @@
 # Nested containers on the Kubernetes backend
 
 How in-pod podman, the combined CA bundle, per-project push registries,
-per-session vclusters, and yaac-in-yaac work on yaac's Kubernetes backend.
+per-worktree vclusters, and yaac-in-yaac work on yaac's Kubernetes backend.
 This is a current-state reference for the shipped subsystem.
 
 Two opt-in capabilities are layered here:
 
 - **`nestedContainers`** — an in-pod rootful podman (real root inside the
   gVisor sentry, the upstream docker-in-gvisor shape) so `docker build` /
-  `docker run` / `docker compose up --build` work inside a session exactly
+  `docker run` / `docker compose up --build` work inside a worktree exactly
   as a project README instructs (the `docker` CLI talks to podman's
-  Docker-API socket). Non-nested sessions are byte-for-byte unchanged.
-- **`virtualCluster`** — each session also gets its own vcluster plus a
+  Docker-API socket). Non-nested worktrees are byte-for-byte unchanged.
+- **`virtualCluster`** — each worktree also gets its own vcluster plus a
   per-project push registry. Implies `nestedContainers` (the in-pod podman
-  is the session's only build engine).
+  is the worktree's only build engine).
 
 Both are config-only, set in `yaac-config.json`; there is no `--vcluster`
 CLI flag. `virtualCluster: true` forces `nestedContainers: true`, and an
@@ -33,7 +33,7 @@ change. This image also carries the proxy-CA trust wiring below.
 The engine runs as **real root inside the gVisor sentry** (the
 `gvisor-nested` RuntimeClass). In-sandbox root is a sentry fiction with no
 host authority, so none of the rootless apparatus (subuid maps, id-map
-helper caps, keyring/pivot_root workarounds) is needed. When a session is
+helper caps, keyring/pivot_root workarounds) is needed. When a worktree is
 nested, its pod gains:
 
 - **securityContext**: `seccompProfile: RuntimeDefault` plus
@@ -49,34 +49,34 @@ nested, its pod gains:
   data out of pod memory (reclaimable node page cache, not cgroup-pinned
   tmpfs pages). Root-owned, so no fsGroup/chown. The sentry's `size=` cap
   ENOSPCs oversized builds before kubelet eviction can fire.
-- **cross-session image cache**: no extra mount — the project's registry
-  is the cache (below), so a nested session can be scheduled on any node.
+- **cross-worktree image cache**: no extra mount — the project's registry
+  is the cache (below), so a nested worktree can be scheduled on any node.
 
-The pod's postStart setup script (`session-bin/yaac-session-init`) starts
+The pod's postStart setup script (`worktree-bin/yaac-worktree-init`) starts
 the engine in the background with one sudo'd shell: `podman system
 service` as root, a socket wait with a log-tail diagnostic on timeout,
 then handing the socket to the `yaac` user so both CLIs
 (`DOCKER_HOST`/`CONTAINER_HOST` → `/run/podman/podman.sock`) drive it;
-session-create gates on `docker version` over the stream relay before
-handing the session over. The service exports `BUILDAH_ISOLATION=chroot`:
+worktree-create gates on `docker version` over the stream relay before
+handing the worktree over. The service exports `BUILDAH_ISOLATION=chroot`:
 under buildah's default OCI isolation the sentry breaks the `RUN`-step
 stdio relay after tens of KB of output (EPIPE kills chatty steps like
 `apt-get`), while chroot isolation streams fine, keeps `RUN` on the pod
 netns, and holds setcap file caps on the tmpfs graphroot. Nothing
-supervises the engine: if it dies mid-session, the session is degraded
+supervises the engine: if it dies mid-worktree, the worktree is degraded
 until recreated.
 
-### Image cache (cross-session build cache)
+### Image cache (cross-worktree build cache)
 
-A session's built and pulled images are salvaged into the **project's own
-registry**, and pulled back into the next session's engine, so `docker
-build` gets real layer-cache hits across a project's sessions. The registry
+A worktree's built and pulled images are salvaged into the **project's own
+registry**, and pulled back into the next worktree's engine, so `docker
+build` gets real layer-cache hits across a project's worktrees. The registry
 is the only distribution mechanism: there is no node-local store, so
-nothing ties a session to the node its predecessor ran on. Every nested
-session therefore ensures the per-project registry, not just
+nothing ties a worktree to the node its predecessor ran on. Every nested
+worktree therefore ensures the per-project registry, not just
 `virtualCluster` ones — an inner yaac is the exception (its vcluster denies
 the node hostPath the registry's `hosts.toml` writer pods need), and its
-sessions run uncached.
+worktrees run uncached.
 
 The push runs **inside the sandbox**, and the constraint it respects is
 that no layer may be extracted file-by-file through the gVisor gofer
@@ -90,7 +90,7 @@ their products with.
 The push compresses with **gzip**, and that is a correctness constraint
 rather than a tuning choice. buildah only considers a cache candidate
 whose manifest type equals the format the running build emits, and the
-store holds both types: the session's `docker` is the real Docker CLI
+store holds both types: the worktree's `docker` is the real Docker CLI
 against podman's Docker-compatible API, so `docker build` emits
 docker-schema2, while a bare `podman build` emits OCI. A push must
 therefore hand each image back as what it was, and the compression format
@@ -99,7 +99,7 @@ silently rewrites a schema2 image as OCI and every later `docker build`
 skips the whole primed cache. gzip has media types in both schemas, so it
 leaves either in place and the image id survives the round trip
 unchanged. Level 1 within gzip, because this compression runs inside the
-session sandbox where CPU is the scarce resource and the bytes land in a
+worktree sandbox where CPU is the scarce resource and the bytes land in a
 node-local registry.
 
 One salvage is two sudo-gated execs:
@@ -121,13 +121,13 @@ One salvage is two sudo-gated execs:
    only. Successful pushes append to the ledger, so the 10-minute
    reconciler never re-compresses what it already sent.
 
-The pull side (`primeSessionImages`) runs once during session setup, right
+The pull side (`primeWorktreeImages`) runs once during worktree setup, right
 after the engine-ready gate: it walks the registry catalog, pulls each
 tag, restores each named image's original name, and untags the
 `yaac-cache-` entries so they sit in the store as dangling cache entries
 exactly like a local `--layers` build's. It stops early once the graphroot
-passes half full — pulled layers live in the session's 12GiB sentry tmpfs,
-which the session's own builds have to share, so an oversized project
+passes half full — pulled layers live in the worktree's 12GiB sentry tmpfs,
+which the worktree's own builds have to share, so an oversized project
 cache degrades to a partial warm-up instead of ENOSPC'ing the engine.
 
 Stopping at half full bounds what the prime *spends*; a second rule bounds
@@ -138,31 +138,31 @@ newest-first — by the build time in each image's own config, the same
 "content-hash tags are write-once, so creation order is generation order"
 the retention pass leans on — and keeps only the newest
 `PRIME_GENERATIONS_KEPT`, dropping the chain slots of the generations it
-drops with them. Without it a session can spend its whole budget on
+drops with them. Without it a worktree can spend its whole budget on
 generations no build will cache-hit and then ENOSPC building the one it
 needs.
 
 What counts as a generation is the retention pass's guard, both halves:
 a yaac-built repo (optionally under a push prefix) carrying a content-hash
-tag. The upstream mirrors and a session's own repo are left alone even
+tag. The upstream mirrors and a worktree's own repo are left alone even
 when their tags happen to have the content-hash shape — a repo retention
 has no say over is not one the prime narrows either. A generation whose
 config will not scrape ranks NEWEST rather than oldest: ranking is
 best-effort, and one transient fetch failure must not be what costs a
-session the generation its next build would have cache-hit.
+worktree the generation its next build would have cache-hit.
 
 Both directions are best-effort and self-gating (no podman, no sudo, or no
 registry ⇒ a single cheap exec that does nothing); a cold cache only ever
-costs a rebuild. Salvage runs **mid-session** (a periodic reconciler, so a
-project's large first salvage lands during the run) and at **session
+costs a rebuild. Salvage runs **mid-worktree** (a periodic reconciler, so a
+project's large first salvage lands during the run) and at **worktree
 cleanup**, before the Job is deleted.
 
 Destinations carry no content hash: they are name-for-name, and the chain
 tags are slots keyed by (repo, tag, depth). That is what bounds the tag
-set, and it makes concurrent sessions of one project last-salvage-wins on
+set, and it makes concurrent worktrees of one project last-salvage-wins on
 a shared name — the same semantics the node-local store's tag restore had.
 Nothing corrupts (layers are content-addressed and a manifest PUT is
-atomic), and a chain left interleaved between two sessions costs a wasted
+atomic), and a chain left interleaved between two worktrees costs a wasted
 pull, never a wrong cache hit: buildah matches a cache candidate on layer
 parentage *and* history, so a foreign intermediate never matches.
 
@@ -186,22 +186,22 @@ host engine — and letting `--delete-untagged` reclaim the rest. It is the
 only thing here that drops a name someone could still pull, so it is
 doubly guarded: the repo must be yaac-built (mirroring image-gc's
 `YAAC_IMAGE_REPO`), and the tag must have the content-hash shape, so a
-session's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
+worktree's own `myapp:v1` and the cache's `yaac-cache-…` slots can never
 match. Everything else tagged is left alone: a tag in this registry is a
 promise to whoever pulls it.
 
-Retention is age-based, not liveness-based: a session pinned to a
+Retention is age-based, not liveness-based: a worktree pinned to a
 generation that has since been passed by `REGISTRY_GENERATIONS_KEPT` newer
 ones loses pullability, and its vcluster's synced pods would
 ImagePullBackOff on a restart. The budget is sized to make that rare — it
 is the width of the concurrently-live fleet, not a rebuild depth — but
-closing it properly would mean checking the tags live sessions actually
+closing it properly would mean checking the tags live worktrees actually
 reference before retiring.
 
 `garbage-collect` is only safe when nothing can be pushing — a push that
 has uploaded blobs but not yet its manifest is indistinguishable from
 garbage. Upstream's answer is "read-only mode, or not running at all", and
-not-running is unusable here: an active project's session count never
+not-running is unusable here: an active project's worktree count never
 reaches zero, so a collect gated on idleness would never run for the
 registries that actually grow. The collect therefore takes a **read-only
 maintenance window** — the Deployment is rolled with
@@ -209,12 +209,12 @@ maintenance window** — the Deployment is rolled with
 catalog serving while pushes and deletes answer 405. A salvage push or
 retire that lands in the window fails best-effort and is retried next
 cycle (the ledger and the retired-shape memo only record what succeeded),
-while pulls — what a live session and its synced pods depend on — keep
+while pulls — what a live worktree and its synced pods depend on — keep
 working. The cost is two `Recreate` rollouts, a few seconds of
 unavailability at each edge of the window.
 
 It holds the same per-project mutex `ensureProjectRegistry` takes, so a
-session create cannot start mid-collect; it is throttled per project, runs
+worktree create cannot start mid-collect; it is throttled per project, runs
 one project per pass, detaches (reconcile steps run sequentially), and the
 restore to serving mode is unconditional so a failed collect never strands
 a registry in maintenance mode.
@@ -224,7 +224,7 @@ form collapses the key to a scalar and registry 2.8 panics at boot.
 
 ## CA trust: the combined bundle
 
-Nested containers must trust the session's MITM proxy on the hosts it
+Nested containers must trust the worktree's MITM proxy on the hosts it
 intercepts **without** losing trust in the real public roots for the hosts
 it tunnels. CA-trust config splits into two incompatible shapes:
 
@@ -297,21 +297,21 @@ nested `docker pull` goes through the MITM proxy, not this registry.
 - Plain HTTP on **:5000**, blobs on a per-project RWO PVC, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
   and mirrored into the yaac registry.
-- Ensured for every **nested** session (it also carries their cross-session
+- Ensured for every **nested** worktree (it also carries their cross-worktree
   image cache), not only `virtualCluster` ones — except inside an inner
   yaac, whose vcluster pod guard denies the node hostPath the `hosts.toml`
-  writer pods mount, so the ensure could not finish; those sessions simply
-  run without a cross-session cache.
+  writer pods mount, so the ensure could not finish; those worktrees simply
+  run without a cross-worktree cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
-- Three policies: a sessions→registry allow k8s NetworkPolicy (podSelector
+- Three policies: a worktrees→registry allow k8s NetworkPolicy (podSelector
   requires the project label *and* a `yaac.session-id`, keeping it off the
   registry pod itself), a deny-all egress k8s NetworkPolicy on the registry
   pod, and a NetworkPolicy ingress lock confining the registry pod's
-  ingress to same-project sessions plus the host/remote-node entities.
+  ingress to same-project worktrees plus the host/remote-node entities.
 - Node containerd reaches it via a `hosts.toml` under
   `/etc/containerd/certs.d/` (see Service addressing below).
-- Lifecycle: created from session-create when `virtualCluster` is on,
+- Lifecycle: created from worktree-create when `virtualCluster` is on,
   removed on project removal, orphan-GC'd at server start.
 
 ### Service addressing
@@ -323,7 +323,7 @@ so the immutable ClusterIP is allocated once and never migrates. The
 server reads the live IP whenever it needs one (at pod-create, and when
 writing the node `hosts.toml`).
 
-- **In-cluster clients** (session pods, synced pods) reach these Services
+- **In-cluster clients** (worktree pods, synced pods) reach these Services
   by their service-DNS names, resolved through the proxy's split-horizon
   DNS: the proxy forwards `*.cluster.local` to cluster CoreDNS and
   sinkholes bare `.svc` to avoid a DNS-exfil channel. No `hostAliases`,
@@ -333,13 +333,13 @@ writing the node `hosts.toml`).
   live ClusterIP, rewritten on every ensure (read per-pull, no containerd
   restart) so it always tracks the allocator-assigned IP.
 
-## Per-session vclusters (`virtualCluster`)
+## Per-worktree vclusters (`virtualCluster`)
 
 An OSS vcluster (k8s distro, embedded SQLite on an emptyDir, no PVC) per
-session:
+worktree:
 
 - **Render**: `helm template` against a vendored, pinned chart tarball
-  (`k8s/vcluster/`) with per-session `--set` overrides; helm is fetched on
+  (`k8s/vcluster/`) with per-worktree `--set` overrides; helm is fetched on
   demand. The API Service exposes the API on **8443**, reached by its
   service-DNS name (see Service addressing); the serving-cert SAN and the
   exported kubeconfig use that name, so the ClusterIP need not be pinned.
@@ -347,27 +347,27 @@ session:
   digest-pinned and mirrored. Every synced pod is stamped with
   `yaac.session-id` so the egress backstop confines it for free.
 - **VAP guard** (synced-pod containment): a ValidatingAdmissionPolicy +
-  per-session binding restricts hostPath volumes to the session's
+  per-worktree binding restricts hostPath volumes to the worktree's
   nested-yaac dir and denies hostNetwork/hostPID/hostIPC/hostPorts/
   privileged; added capabilities are allowed only behind the gVisor sentry
   tier (except `NET_BIND_SERVICE`). It is applied **before** the syncer
   exists (so the first synced
   pod, CoreDNS, is already covered) and fails closed when the VAP API is
   missing.
-- **Policies**: a per-session NetworkPolicy admitting the session pod to
-  the vcluster API and intra-session traffic, plus a NetworkPolicy
+- **Policies**: a per-worktree NetworkPolicy admitting the worktree pod to
+  the vcluster API and intra-worktree traffic, plus a NetworkPolicy
   locking the control-plane pod's egress (it holds host-API creds).
-- **Wiring**: created from session-create; the kubeconfig is polled out of
+- **Wiring**: created from worktree-create; the kubeconfig is polled out of
   the `vc-<name>` Secret and dir-mounted at `~/.kube`. Orphan GC +
-  kubeconfig heal run as a background-loop tick; `SessionDetail` carries a
+  kubeconfig heal run as a background-loop tick; `WorktreeDetail` carries a
   `virtualCluster` status block. The tmux-keyed reaper is untouched, so a
-  vcluster pod OOM never kills the session.
+  vcluster pod OOM never kills the worktree.
 
 ## yaac-in-yaac
 
-A `virtualCluster` session can run an **inner yaac** (`YAAC_NESTED=1`)
-against its vcluster, creating inner sessions with their own proxy and
-allowlist. session-create mounts the nested-yaac data dir at the identical
+A `virtualCluster` worktree can run an **inner yaac** (`YAAC_NESTED=1`)
+against its vcluster, creating inner worktrees with their own proxy and
+allowlist. worktree-create mounts the nested-yaac data dir at the identical
 absolute path in the pod (so inner synced-pod hostPaths resolve and match
 the VAP allowlist prefix) and sets `YAAC_NESTED=1` plus the registry
 override. The recursion cap rejects `virtualCluster && YAAC_NESTED` — no
@@ -375,12 +375,12 @@ vcluster-in-vcluster, so there is exactly one nesting level.
 
 ### Inner egress: the inner install claims, the host programs
 
-Each inner session's egress is **transparently** redirected to the inner
+Each inner worktree's egress is **transparently** redirected to the inner
 proxy, and chains through the outer proxy for anything the inner allowlist
 doesn't specially handle. Allowlists compose by intersection (inner ∩
 outer), fail-closed at both layers. "Transparent" means the inner yaac runs
 the **same** code path as a top-level yaac (one API target, its vcluster)
-with **no host-cluster credentials in the session pod**.
+with **no host-cluster credentials in the worktree pod**.
 
 The redirect itself is netfilter on a node, which a vcluster does not have
 and whose tenant must never be given authority over. So the decision and the
@@ -404,7 +404,7 @@ enforcement are split, and the inner install owns the decision:
 - The **host netd** re-validates and programs. It picks one egress target
   per pod, recomputed on every relevant event:
 
-1. A session pod in the install namespace → that install's **outer** proxy.
+1. A worktree pod in the install namespace → that install's **outer** proxy.
 2. A vcluster-synced pod whose pod IP a validated claim names → the claiming
    install's proxy **pod**.
 3. Any other synced pod — including a claimed proxy itself, and every pod no
@@ -428,14 +428,14 @@ namespace and publishes its own claim, identified by the `install` field
 (its data-dir hash); when two claims name the same pod, the lowest hash wins
 so the rendering never flaps.
 
-Data path for an inner-session pod's outbound request:
+Data path for an inner-worktree pod's outbound request:
 
 1. netd's per-pod DNAT rule sends it to the install's node-local Envoy
    listener trio, where a filter chain matching the pod's source IP picks
    the **inner** proxy's cluster (rule 2 above).
 2. Envoy recovers the original destination, stamps PROXY-protocol-v2 with
    the pod's real source IP, and forwards to the claimed inner proxy pod.
-   The inner proxy resolves that IP to an inner session via its stock
+   The inner proxy resolves that IP to an inner worktree via its stock
    pod-watch on the vcluster API (a vcluster pod's `status.podIP` is its
    host IP) → inner allowlist → MITM/judge.
 3. The inner proxy dials the upstream. Its own egress rides rule 3 →
@@ -446,8 +446,8 @@ Data path for an inner-session pod's outbound request:
 The vcluster namespace still carries its own **NetworkPolicy** objects,
 applied by the outer server at vcluster-creation time: the synced-pod
 egress floor (the unforgeable containment boundary), the inner-proxy
-ingress lock, and the synced session-pod ingress lock. These are static —
-they name only the vcluster and its owning session — so they ship with the
+ingress lock, and the synced worktree-pod ingress lock. These are static —
+they name only the vcluster and its owning worktree — so they ship with the
 namespace rather than being reconciled per pass. A claim-mode netd needs no
 policy object of its own: the egress floor already admits the vcluster API.
 
@@ -456,8 +456,8 @@ policy object of its own: the egress floor already admits the vcluster API.
 A netd that programs netfilter needs the node: `hostNetwork`, `NET_ADMIN`,
 the node's route table. A synced pod asking for any of that is denied by the
 vcluster's own ValidatingAdmissionPolicy, and must be — a netd driven by an
-API whose tenant is cluster-admin could be told a sibling session's pod IP
-(pod `status` is writable inside a vcluster) and would DNAT that session's
+API whose tenant is cluster-admin could be told a sibling worktree's pod IP
+(pod `status` is writable inside a vcluster) and would DNAT that worktree's
 veth. Claim mode asks for nothing the guard would have to except.
 
 Choosing exactly one target per pod also means there is no precedence to
@@ -468,7 +468,7 @@ core-API ConfigMap, so its vcluster needs no CRD schemas of any kind.
 
 ### Trust model
 
-- The inner yaac/session pod holds **no host credential**
+- The inner yaac/worktree pod holds **no host credential**
   (`automountServiceAccountToken: false`, vcluster-only kubeconfig); it can
   only write to its vcluster. Tenant-authored NetworkPolicies inside the
   vcluster stay unsynced, so they never reach the host.
@@ -480,7 +480,7 @@ core-API ConfigMap, so its vcluster needs no CRD schemas of any kind.
   on the syncer-stamped `managed-by` label a tenant can neither forge nor
   shed. It admits only the node's netd listener range, the vcluster API,
   sibling synced pods, and the outer DNS stub — never raw world.
-- **A claim is not authenticated, it is confined.** Inside one session the
+- **A claim is not authenticated, it is confined.** Inside one worktree the
   inner yaac and the agent code are the same trust domain, so no claim can
   be attributed to "the real inner yaac"; the claim document is
   tenant-writable and treated as such. What makes that harmless is the
@@ -500,20 +500,20 @@ core-API ConfigMap, so its vcluster needs no CRD schemas of any kind.
 
 ## Egress integration
 
-Session egress is the netd / pod-watch model, not in-pod iptables. netd
-DNATs a session pod's outbound 443/80/ssh-sentinel at its veth to a
+Worktree egress is the netd / pod-watch model, not in-pod iptables. netd
+DNATs a worktree pod's outbound 443/80/ssh-sentinel at its veth to a
 node-local Envoy, which stamps the source IP into a PROXY-protocol
 preamble and forwards to the proxy's transparent listeners; the proxy
-resolves source-IP → session by reading the pod's `yaac.session-id` label
-off a pod-watch. Nested containers share the session pod's netns, so their
+resolves source-IP → worktree by reading the pod's `yaac.session-id` label
+off a pod-watch. Nested containers share the worktree pod's netns, so their
 `docker pull`/build traffic rides the same path with zero extra wiring;
 the proxy auto-appends the upstream registry + CDN hosts (docker.io,
-ghcr.io, quay.io and their CDNs) to the allowlist for nested sessions, and
+ghcr.io, quay.io and their CDNs) to the allowlist for nested worktrees, and
 anything else is denied fail-closed. A vcluster's synced pods are confined by their
 namespace's own synced-pod egress floor (they carry the syncer's
 `managed-by` label, which no tenant can shed). In-cluster destinations (registry :5000, vcluster API :8443) are
 reached by their service-DNS names (Service addressing above) and admitted
-by the per-project / per-session NetworkPolicies.
+by the per-project / per-worktree NetworkPolicies.
 
 ## cluster-check probes
 
@@ -524,6 +524,6 @@ prerequisite for the rootful engine) and a `vap` row, on top of the
 cluster-check skips the host-only gates — except `datapath`, which becomes
 the inner install's own half of it: its claim-mode netd must be publishing.
 That is warn-level while nothing is deployed (netd lands with the inner
-proxy on first session create) and a failure once a deployed one is not
+proxy on first worktree create) and a failure once a deployed one is not
 Ready, which is the silent case — the install believes it governs its
-sessions' egress and does not.
+worktrees' egress and does not.

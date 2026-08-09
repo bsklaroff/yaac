@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  anySessionDirsExist,
+  anyWorktreeDirsExist,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
   isDeferredClusterBootPending,
@@ -107,7 +107,7 @@ describe('isDeferredClusterBootPending', () => {
   })
 })
 
-describe('anySessionDirsExist', () => {
+describe('anyWorktreeDirsExist', () => {
   let tmp: string
 
   beforeEach(async () => {
@@ -119,19 +119,19 @@ describe('anySessionDirsExist', () => {
   })
 
   it('is false for a missing or empty projects dir', async () => {
-    await expect(anySessionDirsExist(path.join(tmp, 'nope'))).resolves.toBe(false)
-    await expect(anySessionDirsExist(tmp)).resolves.toBe(false)
+    await expect(anyWorktreeDirsExist(path.join(tmp, 'nope'))).resolves.toBe(false)
+    await expect(anyWorktreeDirsExist(tmp)).resolves.toBe(false)
   })
 
   it('is false for projects with no session dirs', async () => {
     await fs.mkdir(path.join(tmp, 'proj-a', 'sessions'), { recursive: true })
     await fs.mkdir(path.join(tmp, 'proj-b', 'repo'), { recursive: true })
-    await expect(anySessionDirsExist(tmp)).resolves.toBe(false)
+    await expect(anyWorktreeDirsExist(tmp)).resolves.toBe(false)
   })
 
   it('is true once any project has a session dir', async () => {
     await fs.mkdir(path.join(tmp, 'proj-a', 'sessions'), { recursive: true })
     await fs.mkdir(path.join(tmp, 'proj-b', 'sessions', 'sid-1'), { recursive: true })
-    await expect(anySessionDirsExist(tmp)).resolves.toBe(true)
+    await expect(anyWorktreeDirsExist(tmp)).resolves.toBe(true)
   })
 })

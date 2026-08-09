@@ -59,7 +59,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 
   // Container registries
   // The docker.io image-pull hosts live in NESTED_PULL_HOSTS below — a
-  // non-nested session never runs `docker pull`, so they are appended to
+  // non-nested worktree never runs `docker pull`, so they are appended to
   // the allowlist only when `nestedContainers` is on.
   'hub.docker.com',
   'www.docker.com',
@@ -307,11 +307,11 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 
 /**
  * Upstream container-registry + CDN hosts that a `nestedContainers`
- * session's in-pod `docker pull` reaches, appended to the session
- * allowlist when `nestedContainers` is on (see `buildSessionRegistration`)
+ * worktree's in-pod `docker pull` reaches, appended to the worktree
+ * allowlist when `nestedContainers` is on (see `buildWorktreeRegistration`)
  * so the pull rides the pod-netns redirect → relay → proxy transparent
  * listener and is judged, fail-closed, by SNI. Kept out of
- * DEFAULT_ALLOWED_HOSTS because a non-nested session never pulls images;
+ * DEFAULT_ALLOWED_HOSTS because a non-nested worktree never pulls images;
  * `setAllowedUrls` fully overrides the allowlist and these are NOT
  * re-appended under it (the user takes complete control). ghcr.io and
  * pkg-containers.githubusercontent.com are already in the base list, so

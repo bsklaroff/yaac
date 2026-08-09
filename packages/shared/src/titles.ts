@@ -1,9 +1,9 @@
 /**
- * Session-title normalization, shared by the rename route, the session store
+ * Worktree-title normalization, shared by the rename route, the worktree store
  * that persists the result, and the titles feature that generates one from a
- * session's first message. Titles are
+ * worktree's first message. Titles are
  * display-only: the captured first message stays the fallback label
- * everywhere, and both live on the session row.
+ * everywhere, and both live on the worktree row.
  */
 
 export const MAX_TITLE_LENGTH = 120

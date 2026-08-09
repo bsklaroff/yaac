@@ -92,7 +92,7 @@ function renderGitAuthFailures(failuresByProject: Record<string, GitAuthFailure[
       console.log(`  ${slug}  ${f.host} returned HTTP ${f.status}`)
     }
   }
-  console.log('Run "yaac auth update" to refresh it; the fix reaches running sessions immediately.')
+  console.log('Run "yaac auth update" to refresh it; the fix reaches running worktrees immediately.')
   console.log('')
 }
 

@@ -5,7 +5,7 @@ import { writeProxySecrets } from '#features/projects'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
- * Payload of `PUT /sessions/:id` on the proxy. Registered by session-create
+ * Payload of `PUT /worktrees/:id` on the proxy. Registered by worktree-create
  * (and re-registered when a prewarmed spare is retooled at claim time); the
  * proxy write-throughs it to /data and reloads it at boot, so it survives
  * proxy pod replacements (image upgrade, crash, eviction) without server
@@ -16,7 +16,7 @@ import type { AgentTool, YaacConfig } from '@yaac/shared/types'
  * without them): all agent-credential injection is gated on the registered
  * tool, and git-auth-failure records are keyed by the owning project.
  */
-export interface SessionRegistration {
+export interface WorktreeRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
@@ -59,22 +59,22 @@ export function parseUpstreamRedirectsEnv(
 }
 
 /**
- * Assemble a session's proxy registration from already-loaded inputs.
+ * Assemble a worktree's proxy registration from already-loaded inputs.
  * Pure given (config, remoteUrl, tool, env).
  */
-export function buildSessionRegistration(input: {
+export function buildWorktreeRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
   projectSlug: string
   env?: NodeJS.ProcessEnv
-}): SessionRegistration {
+}): WorktreeRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
   // Copy: resolveAllowedHosts may return the shared DEFAULT_ALLOWED_HOSTS
   // array itself, which must never be mutated.
   const allowedHosts = [...resolveAllowedHosts(input.config)]
-  // Auto-append the registry pull hosts for nested sessions — unless the
+  // Auto-append the registry pull hosts for nested worktrees — unless the
   // user pinned an exact allowlist with setAllowedUrls, which is a full
   // override the user owns completely (addAllowedUrls and the default list
   // still get them).
@@ -96,7 +96,7 @@ export function buildSessionRegistration(input: {
 /**
  * Write the config's envSecretProxy values into the proxy-secrets
  * credentials file so the proxy can resolve the registration's secretRef
- * rules. Must complete before the matching `registerSession` call —
+ * rules. Must complete before the matching `registerWorktree` call —
  * otherwise the proxy would drop the injections as unresolvable until
  * the file lands.
  */

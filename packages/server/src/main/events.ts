@@ -1,4 +1,4 @@
-import { listActiveSessions, listProvisioning } from '#features/sessions'
+import { listActiveWorktrees, listProvisioning } from '#features/worktrees'
 import { listProjects } from '#features/projects'
 import { herd } from '#herd'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
@@ -18,7 +18,7 @@ export interface WsLike {
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
   const [active, projects, planUsage, codexPlanUsage, imageBuilds] = await Promise.all([
-    listActiveSessions(),
+    listActiveWorktrees(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
@@ -37,7 +37,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   return {
     worktrees: active.worktrees.filter((w) => !provisioningIds.has(w.worktreeId)),
     stale: active.stale,
-    projects,
+    // `worktreeCount` is what ProjectSummary still calls it on the wire.
+    projects: projects.map(({ worktreeCount, ...p }) => ({ ...p, worktreeCount: worktreeCount })),
     provisioning,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,

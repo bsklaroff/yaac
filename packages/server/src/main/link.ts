@@ -1,5 +1,5 @@
 import { applyHerdEvent, listActiveAgentSessions } from '#features/records'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { decideSpawn } from '#main/spawn'
 import type { ServerLink } from '#server-link'
 
@@ -20,7 +20,7 @@ export function createServerLink(): ServerLink {
   return {
     workspaceEvent: (event) => applyHerdEvent(event),
 
-    workspacesChanged: () => notifySessionListChanged(),
+    workspacesChanged: () => notifyWorktreeListChanged(),
 
     spawnRequested: (request) => decideSpawn(request),
 

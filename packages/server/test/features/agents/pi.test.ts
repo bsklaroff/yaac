@@ -31,7 +31,7 @@ describe('pi first-message + session records', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-status-test-'))
     setDataDir(tmpDir)
     // All of a project's pi logs share one dir (mirroring ~/.claude); pi names
-    // each `<timestamp>_<sessionId>.jsonl` and the server keys off that id.
+    // each `<timestamp>_<worktreeId>.jsonl` and the server keys off that id.
     await fs.mkdir(piSessionsDir(slug), { recursive: true })
   })
 
@@ -39,11 +39,11 @@ describe('pi first-message + session records', () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  // `ts` (the timestamp prefix) orders logs chronologically; `sessionId` is the
+  // `ts` (the timestamp prefix) orders logs chronologically; `worktreeId` is the
   // id pi embeds so the server can tell one session's logs from another's.
-  function writeLog(ts: string, sessionId: string, entries: Record<string, unknown>[]): Promise<void> {
+  function writeLog(ts: string, worktreeId: string, entries: Record<string, unknown>[]): Promise<void> {
     const body = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
-    return fs.writeFile(path.join(piSessionsDir(slug), `${ts}_${sessionId}.jsonl`), body)
+    return fs.writeFile(path.join(piSessionsDir(slug), `${ts}_${worktreeId}.jsonl`), body)
   }
 
   it('returns the first user message (string content)', async () => {

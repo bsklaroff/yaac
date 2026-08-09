@@ -5,11 +5,11 @@ import { env as yaacEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
 /**
- * Cross-session image cache for nested sessions, carried by the project's
- * in-cluster registry: a session PUSHES the images its in-pod engine built
- * or pulled, and a later session PULLS them back into its own engine before
+ * Cross-worktree image cache for nested worktrees, carried by the project's
+ * in-cluster registry: a worktree PUSHES the images its in-pod engine built
+ * or pulled, and a later worktree PULLS them back into its own engine before
  * the agent starts. The registry is the only distribution mechanism — there
- * is no node-local store and no node affinity, so a session scheduled on a
+ * is no node-local store and no node affinity, so a worktree scheduled on a
  * different node than the one that built the images still gets the cache.
  *
  * WHY THE PUSH RUNS INSIDE THE SANDBOX (measured, 2026-07): the salvage's
@@ -25,7 +25,7 @@ import { serverLog } from '#log'
  *
  * What travels:
  *  - every NAMED image, under its own name (`<registry>/<repo>:<tag>`), so
- *    the pull side can restore the name a session referred to it by —
+ *    the pull side can restore the name a worktree referred to it by —
  *    canonicalized first, see LOCAL_REGISTRY_PREFIX;
  *  - each named image's ANCESTOR chain, under `<repo>:yaac-cache-<tag>-<n>`
  *    in the SAME repo (so its blobs are already there and only manifests
@@ -39,15 +39,15 @@ import { serverLog } from '#log'
  *
  * Destinations carry NO content hash — they are name-for-name, and the
  * chain tags are slots keyed by (repo, tag, depth). That is what bounds
- * the tag set, and it means concurrent sessions of one project are
+ * the tag set, and it means concurrent worktrees of one project are
  * last-salvage-wins on a shared name. Nothing corrupts (layers are content-addressed blobs
  * and a manifest PUT is atomic), and a chain left interleaved between two
- * sessions costs a wasted pull, never a wrong cache hit: buildah matches a
+ * worktrees costs a wasted pull, never a wrong cache hit: buildah matches a
  * candidate on layer parentage AND history, so a foreign intermediate
  * never matches. Clobbered manifests become untagged, which is what
  * reconcileProjectRegistryGc reclaims.
  *
- * Both directions are self-gating: a non-nested session pod has no podman,
+ * Both directions are self-gating: a non-nested worktree pod has no podman,
  * so each is a single cheap exec that reports nothing.
  */
 
@@ -62,7 +62,7 @@ export const CACHE_TAG_PREFIX = 'yaac-cache-'
  * What the pull side counts as a generation, in the two halves the
  * registry's retention pass (buildRegistryRetentionScript) uses: a
  * yaac-built repo, optionally under a push prefix, carrying a content-hash
- * tag. Both must be mirrored — the repo glob is what keeps a session's own
+ * tag. Both must be mirrored — the repo glob is what keeps a worktree's own
  * repo out of a policy only yaac's chain is subject to, and the tag shape
  * is what tells a generation from a hand-written `v1` or `latest`.
  *
@@ -103,8 +103,8 @@ export const MAX_CHAIN_DEPTH = 64
 
 /**
  * Graphroot fill level at which the pull side stops. Pulled images land in
- * the session's sentry tmpfs (NESTED_GRAPHROOT_TMPFS_BYTES), so a project
- * registry holding more cache than the session can carry degrades to a
+ * the worktree's sentry tmpfs (NESTED_GRAPHROOT_TMPFS_BYTES), so a project
+ * registry holding more cache than the worktree can carry degrades to a
  * partial warm-up rather than ENOSPC'ing the engine before the agent has
  * built anything.
  */
@@ -116,9 +116,9 @@ export const PRIME_MAX_GRAPHROOT_PERCENT = 50
  * The cap above bounds how much the prime spends; this bounds what it
  * spends it ON. A repo carries up to REGISTRY_GENERATIONS_KEPT
  * generations, and the catalog walk has no inherent reason to reach the
- * current one first — so without this a session could fill its whole
+ * current one first — so without this a worktree could fill its whole
  * budget with generations no build will cache-hit, and then ENOSPC
- * building the one it actually needs. Two, not one: a session on a branch
+ * building the one it actually needs. Two, not one: a worktree on a branch
  * that has since moved still wants its own generation, and the second slot
  * is what keeps the newest push from evicting it.
  */
@@ -128,9 +128,9 @@ export const PRIME_GENERATIONS_KEPT = 2
  * Whether this install can host a project registry at all. An INNER yaac
  * runs against its vcluster, whose synced-pod admission policy refuses the
  * node hostPath the registry's storage needs — so an inner install has no
- * registry to push to, and its sessions simply run without a cross-session
+ * registry to push to, and its worktrees simply run without a cross-worktree
  * cache (as they did before the cache moved off the node-local store).
- * Session-create skips the registry ensure on the same condition.
+ * Worktree-create skips the registry ensure on the same condition.
  */
 function registryAvailable(): boolean {
   return !yaacEnv.nested
@@ -139,7 +139,7 @@ function registryAvailable(): boolean {
 const IMAGE_ID = /^[0-9a-f]{64}$/
 /**
  * Conservative image-ref shape (`host[:port]/path…:tag`, the
- * podman-normalized form). Refs come from the session engine —
+ * podman-normalized form). Refs come from the worktree engine —
  * agent-influenced — so anything outside this set is dropped rather than
  * quoted into a push command. The optional `:port` is recognized so that
  * refs pointing INTO this registry parse and can be filtered by name;
@@ -155,7 +155,7 @@ const IMAGE_REF_MAX = 255
  * destination. Every name the engine holds that is not registry-qualified
  * is stored under it — `podman tag x foo:v1` reads back as
  * `localhost/foo:v1` — while everything the SERVER pushes into this same
- * registry (`registryRef`, and inside a nested session that is this very
+ * registry (`registryRef`, and inside a nested worktree that is this very
  * registry) uses the bare tag. Same image, two repo paths, and the ledger
  * keys on the destination string, so leaving the prefix on puts every
  * image the two sides share in the catalog twice: `<repo>` and
@@ -180,7 +180,7 @@ const IMAGE_REF_MAX = 255
  * again would rename it, so the planner drops it instead.
  *
  * Only this prefix: `docker.io/…`, `quay.io/…` and friends are real
- * upstream refs whose host is part of the name a session pulls them by.
+ * upstream refs whose host is part of the name a worktree pulls them by.
  */
 const LOCAL_REGISTRY_PREFIX = 'localhost/'
 
@@ -211,7 +211,7 @@ export interface ChainRetire {
   depth: number
 }
 
-/** What one salvage hands the session pod. */
+/** What one salvage hands the worktree pod. */
 export interface SalvagePlan {
   pairs: PushPair[]
   retire: ChainRetire[]
@@ -255,7 +255,7 @@ export function parseSurveyReport(stdout: string): SurveyReport {
       parent: IMAGE_ID.test(parent) ? parent : null,
       // Canonicalized before the sort, so a multi-named image's PRIMARY
       // name — the one its chain slots hang off — is the same in every
-      // session that sees it, whichever side put the image there.
+      // worktree that sees it, whichever side put the image there.
       refs: rawRefs.split(',').map((r) => r.trim()).filter(validRef).map(canonicalRef).sort(),
     })
   }
@@ -288,7 +288,7 @@ export function buildSurveyScript(): string {
  * A push MUST NOT change an image's MANIFEST TYPE. buildah only considers
  * a cache candidate whose manifest type equals the format the running
  * build emits, so an image that changed type on the way through the
- * registry is invisible to the build it was salvaged for. The session's
+ * registry is invisible to the build it was salvaged for. The worktree's
  * `docker` is the real Docker CLI against podman's Docker-compatible API,
  * which emits docker-schema2, while a bare `podman build` emits OCI — the
  * store holds both, and each has to come back as what it was.
@@ -296,15 +296,15 @@ export function buildSurveyScript(): string {
  * zstd forces exactly that conversion: schema2 has no zstd layer media
  * type, so a zstd push rewrites a schema2 image as OCI (silently — the
  * push succeeds and the layers are intact), and every `docker build` in
- * the next session then skips the entire primed cache. gzip has media types
+ * the next worktree then skips the entire primed cache. gzip has media types
  * in both schemas, so it preserves either one in place, and the image id
  * survives the round trip unchanged with it.
  *
  * Level 1 within gzip: CPU is the scarce resource here, not disk. The
- * compression runs INSIDE the session sandbox, competing with the agent's
+ * compression runs INSIDE the worktree sandbox, competing with the agent's
  * own work under the sentry, whereas the bytes land in a node-local
  * registry — so the cheapest gzip is the right one. (For scale, measured
- * in a session pod on a 576MB layer of real binaries, default-level gzip
+ * in a worktree pod on a 576MB layer of real binaries, default-level gzip
  * costs 20.6s of CPU to push and 15.2s wall to pull back.)
  *
  * The consequence to know: a level-1 blob does not dedupe against the
@@ -328,7 +328,7 @@ export const SALVAGE_COMPRESSION_LEVEL = 1
  *
  * `nice -n 19` because this is background work sharing a sandbox with an
  * interactive agent: the sentry honors nice in its own scheduling, so the
- * session's foreground work wins the CPU, and the host sees the softened
+ * worktree's foreground work wins the CPU, and the host sees the softened
  * priority too since the sandbox threads carry it.
  */
 export function buildPushScript(): string {
@@ -379,7 +379,7 @@ export const PRIME_DECOMPRESSION_FACTOR = 3
  * which drops every tag in the repo pointing at it. Two names in one repo
  * share their prefix intermediates, so retiring `app:v1`'s tail can untag
  * a slot `app:v2` still fills. That costs the next prime a cold slot — a
- * rebuild, never a wrong hit — and a later session refills it; the pod
+ * rebuild, never a wrong hit — and a later worktree refills it; the pod
  * that pushed it will not, since its ledger already lists the pair.
  *
  * Failures are counted, not swallowed. The registry refuses DELETE with a
@@ -421,7 +421,7 @@ export function buildRetireScript(registryHost: string): string {
  * into the engine, restoring each named image's original name and leaving
  * the `yaac-cache-` chain entries dangling (their layers are the point,
  * not their names). Every ref pulled is recorded in the ledger, with its
- * id, so this session's own salvage does not push it straight back.
+ * id, so this worktree's own salvage does not push it straight back.
  *
  * Two budgets keep a fat registry from filling the sentry tmpfs before the
  * agent has built anything: the store must stay under
@@ -436,7 +436,7 @@ export function buildRetireScript(registryHost: string): string {
  * chain slots of the generations dropped — an old generation's
  * intermediates cache-hit nothing once its named image is gone. And within
  * what survives, the named tag is pulled before its chain slots, so the
- * image a session actually refers to wins over the intermediates that only
+ * image a worktree actually refers to wins over the intermediates that only
  * accelerate a rebuild.
  *
  * Catalog/tag JSON is scraped with `tr`/`sed` rather than a JSON parser:
@@ -471,7 +471,7 @@ export function buildPrimeScript(registryHost: string): string {
     //
     // Gated on BOTH halves of that pass's guard, repo shape and tag shape,
     // so the two agree on what a generation is. Tag shape alone would rank
-    // a session's own `myapp:$(git rev-parse --short=16 HEAD)` as
+    // a worktree's own `myapp:$(git rev-parse --short=16 HEAD)` as
     // generations and leave its older tags cold — the prime deletes
     // nothing, so that costs a warm-up, but it is a repo retention has no
     // say over either.
@@ -486,7 +486,7 @@ export function buildPrimeScript(registryHost: string): string {
     `      c=$(${curl} "http://$REG/v2/$repo/blobs/$cfg" 2>/dev/null`
     + ` | grep -o '"created":"[^"]*"' | cut -d'"' -f4 | sort -r | head -1)`,
     // A config that would not scrape sorts NEWEST, not oldest. Ranking is
-    // best-effort and one transient curl error must not cost the session
+    // best-effort and one transient curl error must not cost the worktree
     // the generation its next build would have cache-hit — which sorting
     // the unrankable last does exactly, and silently. Erring the other way
     // costs at worst a slot spent on a candidate whose pull then fails,
@@ -504,7 +504,7 @@ export function buildPrimeScript(registryHost: string): string {
     + `printf '%s\\n' $tags | grep "^${CACHE_TAG_PREFIX}")`,
     '  for tag in $ordered; do',
     "    case \"$tag\" in ''|*[!A-Za-z0-9._-]*) continue;; esac",
-    // Leave headroom for the session's own builds: the graphroot is a
+    // Leave headroom for the worktree's own builds: the graphroot is a
     // capped sentry tmpfs, not a free node-local store.
     "    used=$(df -P /var/lib/containers 2>/dev/null | awk 'NR==2{print $5+0}')",
     `    [ "\${used:-0}" -lt ${PRIME_MAX_GRAPHROOT_PERCENT} ] || { echo "primed-full"; break 2; }`,
@@ -568,11 +568,11 @@ export function sudoExecCommand(script: string, argv: string[] = []): string {
  * only canonical destination is a repo path the registry GC treats as a
  * stale alias and deletes.
  *
- * Canonicalizing lands a session's local names on the same repos the
- * server's own pushes use, so a session that locally tags a mirror's name
+ * Canonicalizing lands a worktree's local names on the same repos the
+ * server's own pushes use, so a worktree that locally tags a mirror's name
  * can now overwrite that repo. Bounded to the project's own registry and
  * already the documented semantic (last salvage wins on a shared name);
- * a session could always push those repos directly, so this grants no
+ * a worktree could always push those repos directly, so this grants no
  * authority it did not have.
  */
 export function planSalvagePushes(report: SurveyReport, registryHost: string): SalvagePlan {
@@ -628,12 +628,12 @@ export function parsePushReport(stdout: string): { pushed: number; failed: numbe
   return { pushed: Number(m?.[1] ?? 0), failed: Number(m?.[2] ?? 0) }
 }
 
-/** Per-session in-flight guard so the background reconciler and a teardown
- *  never run two salvages for one session concurrently. */
+/** Per-worktree in-flight guard so the background reconciler and a teardown
+ *  never run two salvages for one worktree concurrently. */
 const salvageInflight = new Map<string, Promise<boolean>>()
 
-/** Per-session chain shape whose stale slots have already been retired —
- *  one short string per session this process has salvaged. */
+/** Per-worktree chain shape whose stale slots have already been retired —
+ *  one short string per worktree this process has salvaged. */
 const lastRetiredShape = new Map<string, string>()
 
 /** Test hook: forget which chain shapes have been retired. */
@@ -654,36 +654,36 @@ export interface SalvageOptions {
 }
 
 /**
- * Run one salvage for a session: survey in-pod, plan, push the new images
+ * Run one salvage for a worktree: survey in-pod, plan, push the new images
  * into the project registry. Best-effort — any failure is logged and
  * swallowed, because teardown must never be blocked on cache salvage.
  * Returns true when the salvage ran cleanly (including the no-op cases).
- * Concurrent calls for the same session coalesce.
+ * Concurrent calls for the same worktree coalesce.
  */
-export async function salvageSessionImages(params: {
+export async function salvageWorktreeImages(params: {
   jobName: string
   projectSlug: string
-  sessionId: string
+  worktreeId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
-  const { sessionId } = params
+  const { worktreeId } = params
   if (!registryAvailable()) return true
-  const existing = salvageInflight.get(sessionId)
+  const existing = salvageInflight.get(worktreeId)
   if (existing) return existing
-  const run = salvageSessionImagesUncoalesced(params).finally(() => {
-    salvageInflight.delete(sessionId)
+  const run = salvageWorktreeImagesUncoalesced(params).finally(() => {
+    salvageInflight.delete(worktreeId)
   })
-  salvageInflight.set(sessionId, run)
+  salvageInflight.set(worktreeId, run)
   return run
 }
 
-async function salvageSessionImagesUncoalesced(params: {
+async function salvageWorktreeImagesUncoalesced(params: {
   jobName: string
   projectSlug: string
-  sessionId: string
+  worktreeId: string
   opts?: SalvageOptions
 }): Promise<boolean> {
-  const { jobName, projectSlug, sessionId, opts } = params
+  const { jobName, projectSlug, worktreeId, opts } = params
   const registryHost = projectRegistryHost(projectSlug)
 
   let report: SurveyReport
@@ -704,7 +704,7 @@ async function salvageSessionImagesUncoalesced(params: {
   // salvage no-ops before reaching it. Gating on the shape instead keeps
   // the steady-state no-op cycle at one exec.
   const shape = retire.map((r) => `${r.repo}:${r.tag}=${r.depth}`).sort().join(',')
-  const retireNeeded = retire.length > 0 && lastRetiredShape.get(sessionId) !== shape
+  const retireNeeded = retire.length > 0 && lastRetiredShape.get(worktreeId) !== shape
   if (pairs.length === 0 && !retireNeeded) return true
 
   let pushed = 0
@@ -744,12 +744,12 @@ async function salvageSessionImagesUncoalesced(params: {
       // project's own blob-collect window gets 405 on every DELETE, and
       // recording the shape then would strand those slots until the chain
       // changed shape on its own.
-      if (report.failed === 0) lastRetiredShape.set(sessionId, shape)
+      if (report.failed === 0) lastRetiredShape.set(worktreeId, shape)
     }
   }
 
   serverLog(
-    `[server] image salvage: session=${sessionId} planned=${pairs.length} `
+    `[server] image salvage: session=${worktreeId} planned=${pairs.length} `
     + `pushed=${pushed} failed=${failed} retired=${retired} registry=${registryHost}`,
   )
   return true
@@ -762,19 +762,19 @@ export function parsePrimeReport(stdout: string): { primed: number; full: boolea
 }
 
 /**
- * Warm a fresh nested session's engine from the project registry — the
- * pull half of the salvage. Runs once during session setup, after the
+ * Warm a fresh nested worktree's engine from the project registry — the
+ * pull half of the salvage. Runs once during worktree setup, after the
  * engine is up: an agent's first `docker build` then hits the same layers
- * the project's earlier sessions built. Best-effort and bounded; a cold
+ * the project's earlier worktrees built. Best-effort and bounded; a cold
  * cache only costs a rebuild.
  */
-export async function primeSessionImages(params: {
+export async function primeWorktreeImages(params: {
   jobName: string
   projectSlug: string
-  sessionId: string
+  worktreeId: string
   timeoutMs?: number
 }): Promise<boolean> {
-  const { jobName, projectSlug, sessionId } = params
+  const { jobName, projectSlug, worktreeId } = params
   if (!registryAvailable()) return true
   const registryHost = projectRegistryHost(projectSlug)
   try {
@@ -785,7 +785,7 @@ export async function primeSessionImages(params: {
     )
     const { primed, full } = parsePrimeReport(stdout)
     serverLog(
-      `[server] image prime: session=${sessionId} pulled=${primed}`
+      `[server] image prime: session=${worktreeId} pulled=${primed}`
       + `${full ? ' (stopped — graphroot budget)' : ''} registry=${registryHost}`,
     )
     return true

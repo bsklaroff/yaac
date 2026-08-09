@@ -32,7 +32,7 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * `yaac-netd` — the per-node DaemonSet that steers session egress into the
+ * `yaac-netd` — the per-node DaemonSet that steers worktree egress into the
  * proxy. Two containers in the host network namespace:
  *
  *  - **netd** watches pods/Services, resolves each pod to the veth its
@@ -47,7 +47,7 @@ const execFileAsync = promisify(execFile)
  * netd owns the redirect ONLY. Every allow/deny is a plain Kubernetes
  * NetworkPolicy enforced by Calico's Felix, so netd can never be the
  * reason something is permitted — and a netd that is down, late, or wrong
- * costs sessions their egress rather than opening it (their NetworkPolicy
+ * costs worktrees their egress rather than opening it (their NetworkPolicy
  * admits the node's listener ports and nothing world-ward).
  *
  * A NESTED install applies the same DaemonSet in **claim mode** into its own
@@ -172,7 +172,7 @@ export function buildNetdServiceAccountManifest(): Record<string, unknown> {
 
 /**
  * Cluster-scoped read-only access to PODS, and nothing else — netd must see
- * session pods in the install namespace and synced pods in every vcluster
+ * worktree pods in the install namespace and synced pods in every vcluster
  * namespace, because a pod's veth is what it programs. Everything else it
  * reads (the proxy Service, the redirect claims) lives in its own namespace
  * and comes from the Role below.
@@ -285,7 +285,7 @@ export interface NetdDaemonSetOptions {
    * Interface-name prefix this cluster's CNI gives every workload veth.
    * `cali` wherever Calico does the IPAM; an adopted CNI may differ (see
    * cni-adopt.ts), and `--adopt-cni` verifies the value against a node's
-   * real routing table before any session depends on it.
+   * real routing table before any worktree depends on it.
    */
   vethPrefix: string
 }
@@ -307,7 +307,7 @@ export interface NetdDaemonSetOptions {
  * - The proxy-side port numbers, the ssh sentinel and the listener range
  *   come from proxy-constants.ts via env, so they have one definition
  *   shared with the proxy and the policy builders. The range especially:
- *   the session NetworkPolicy admits exactly those ports, so a netd
+ *   the worktree NetworkPolicy admits exactly those ports, so a netd
  *   binding outside them would be unreachable by the pods it serves.
  * - Only netd carries a readiness probe. Its marker is written after the
  *   pass that confirmed Envoy is serving the current listener config on
@@ -336,7 +336,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
           enableServiceLinks: false,
           // Trusted yaac infra: runc, like the proxy (see gvisor.ts).
           // Must also run on a control-plane-only cluster, hence the
-          // blanket toleration — a node with no netd has no session
+          // blanket toleration — a node with no netd has no worktree
           // egress at all.
           tolerations: [{ operator: 'Exists' }],
           priorityClassName: 'system-node-critical',
@@ -378,7 +378,7 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
               // reconcile reaches the dataplane and removes it on failure.
               // Without that distinction a netd failing every pass still
               // reports Ready and the cluster-check datapath gate passes on
-              // a cluster with no working session egress.
+              // a cluster with no working worktree egress.
               readinessProbe: {
                 exec: { command: ['test', '-f', `${envoyDir}/.ready`] },
                 periodSeconds: 5,
@@ -434,7 +434,7 @@ export interface NetdClaimDaemonSetOptions {
  * `hostNetwork` or added capabilities is denied by the vcluster's own
  * ValidatingAdmissionPolicy (buildVclusterPodGuardPolicyManifest), and it
  * should be: a netd with real host authority, driven by an API whose tenant
- * is cluster-admin, could DNAT a sibling session's veth. So claim mode asks
+ * is cluster-admin, could DNAT a sibling worktree's veth. So claim mode asks
  * for nothing the guard would have to make an exception for, and needs no
  * new NetworkPolicy either — the synced-pod egress floor already admits the
  * vcluster API.
@@ -515,7 +515,7 @@ export function buildNetdClaimDaemonSetManifest(
  * Stand up (or converge) netd.
  *
  * Called from `ensureProxyResources`, so the redirect layer exists before any
- * session pod can be scheduled. Both modes run the same builder set; which
+ * worktree pod can be scheduled. Both modes run the same builder set; which
  * one applies is the only nesting-aware branch in the redirect layer.
  */
 export async function ensureNetd(opts: { nested?: boolean } = {}): Promise<void> {

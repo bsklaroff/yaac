@@ -127,7 +127,7 @@ export function attachImageBuildProject(id: string, projectSlug: string): void {
 /**
  * Append one podman output line to the entry's log tail. Broadcasts only
  * when the parsed `STEP N/M` progress advances — never per raw line, since
- * every snapshot rebuild re-lists active sessions.
+ * every snapshot rebuild re-lists active worktrees.
  */
 export function ingestImageBuildLine(id: string, line: string): void {
   const e = entries.get(id)

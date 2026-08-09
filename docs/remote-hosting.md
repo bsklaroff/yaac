@@ -1,7 +1,7 @@
 # Remote hosting: yaac on an always-on server
 
 One developer, an always-on server, thin clients. The server runs the whole
-stack — cluster, podman, server — so sessions keep running when every client
+stack — cluster, podman, server — so worktrees keep running when every client
 disconnects. The laptop and phone talk to it over a private
 [Tailscale](https://tailscale.com) tailnet.
 
@@ -53,7 +53,7 @@ devices (they bind the server's loopback by default):
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
 ```
 
-With that set, a session's forwarded port `19500` is
+With that set, a worktree's forwarded port `19500` is
 `http://srv.<tailnet>.ts.net:19500/` from any tailnet device, and the
 webapp's port chips link there automatically. Two caveats: the port is
 reachable by any tailnet device (not yaac-token-gated), and it is no longer
@@ -81,7 +81,7 @@ fresh one any time with another `yaac open`).
 Everything goes through the server, so the CLI and webapp behave the same
 against a local or remote server:
 
-- Sessions: create, list, attach, shell, stream, restart, delete — the
+- Worktrees: create, list, attach, shell, stream, restart, delete — the
   terminal rides the server's PTY WebSocket (`C-b d` detaches, exactly like
   a local attach).
 - Config editing: `yaac config edit*` fetches the file from the server,
@@ -131,14 +131,14 @@ Semantics to keep in mind:
   or to exercise the auth path. Configuring remote hosting (either var above)
   re-enables the credential automatically.
 - **A nested yaac (`YAAC_NESTED`) also skips the credential**, even though it
-  inherits the outer session's `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`. Those
+  inherits the outer worktree's `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`. Those
   are ambient env, not a remote-fronting of the inner server: a yaac-in-yaac
   server is reachable only through the outer server's port-forward, already
   tailnet-gated like any forwarded port (and never token-gated). `YAAC_REQUIRE_AUTH=1`
   forces it on if you want the inner server independently gated.
 - **Tokens are durable and revocable** per device: a lost laptop is
   `yaac auth token revoke laptop` on the server — no restart, no effect on
-  other clients or browser sessions. Browser sessions are tokens too
+  other clients or browser worktrees. Browser worktrees are tokens too
   (`kind: web` in `yaac auth token list`), so a leaked cookie is revoked
   the same way.
 - Credentials always travel over the authenticated RPC channel (`PUT

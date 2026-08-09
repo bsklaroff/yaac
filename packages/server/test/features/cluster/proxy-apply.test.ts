@@ -81,14 +81,14 @@ import {
   PROXY_SA_NAME,
   RELAY_PORT,
   ROLE_INNER_PROXY,
-  SESSION_EGRESS_NP_NAME,
-  SESSION_INGRESS_LOCK_NP_NAME,
+  WORKTREE_EGRESS_NP_NAME,
+  WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
 } from '#platform/k8s/proxy-constants'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '#platform/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { imageExists } from '#platform/container/runtime'
 import { registryHasTag } from '#platform/container/registry'
@@ -409,7 +409,7 @@ describe('ensureProxyResources', () => {
     // Session egress: the node's netd listener range is the only world-ward
     // path a session pod gets, which is what makes a missing redirect fail
     // closed rather than open.
-    const egress = specOf(byName(SESSION_EGRESS_NP_NAME)) as { egress: Rule[] }
+    const egress = specOf(byName(WORKTREE_EGRESS_NP_NAME)) as { egress: Rule[] }
     const nodeRule = egress.egress.find((r) =>
       r.to?.some((p) => JSON.stringify(p).includes(NODE_IP)))
     expect(nodeRule).toBeDefined()
@@ -418,7 +418,7 @@ describe('ensureProxyResources', () => {
     expect(rangePorts?.endPort).toBe(NETD_LISTENER_PORT_END)
 
     // Session ingress lock: only the proxy's relay dials reach streamd.
-    const lock = specOf(byName(SESSION_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
+    const lock = specOf(byName(WORKTREE_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
     expect(lock.ingress.flatMap((r) => (r.ports ?? []).map((p) => p.port)))
       .toContain(POD_STREAM_PORT)
 
@@ -439,7 +439,7 @@ describe('ensureProxyResources', () => {
     const agentIngress = proxyIngress.ingress.filter((r) =>
       (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
     expect(agentIngress).toHaveLength(1)
-    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_SESSION_ID)
+    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKTREE_ID_LEGACY)
     expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
 
     // World default-deny over everything that is not the proxy, a session,

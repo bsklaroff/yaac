@@ -10,7 +10,7 @@ Autopilot, AKS "Azure CNI powered by Cilium", DOKS) — if that ever becomes
 a requirement, this is the design to start from rather than re-derive.
 
 Everything here is an alternative to the shipped datapath in
-docs/session-egress.md, not a change to it. The proxy, the allowlist, and
+docs/worktree-egress.md, not a change to it. The proxy, the allowlist, and
 the policy plane are untouched in both.
 
 ## Why Cilium defeats the shipped redirect

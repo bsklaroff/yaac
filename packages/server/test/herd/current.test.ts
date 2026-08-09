@@ -40,7 +40,7 @@ describe('setHerd', () => {
   it('replaces the previous herd', async () => {
     setHerd(fake(empty))
     setHerd(fake(() => Promise.resolve({
-      workspaces: [], stale: [{ jobName: 'j', projectSlug: 'p', sessionId: 's', zombie: false }], gitAuthFailures: {},
+      workspaces: [], stale: [{ jobName: 'j', projectSlug: 'p', worktreeId: 's', zombie: false }], gitAuthFailures: {},
     })))
     expect((await herd().workspaces.observe()).stale).toHaveLength(1)
   })

@@ -13,7 +13,7 @@ import { PI_PROVIDER_HOSTS } from 'yaac-proxy-sidecar/tool-providers.generated'
  * varies by provider (Anthropic-style uses `x-api-key`, the rest use
  * `Authorization: Bearer`), so the proxy substitutes the placeholder wherever
  * it appears rather than tracking the header per provider. Injection fires when
- * the session is registered as tool=pi AND the request host matches the
+ * the worktree is registered as tool=pi AND the request host matches the
  * credential's provider host AND the placeholder is present. Every other
  * combination passes through unchanged.
  */
@@ -52,12 +52,12 @@ function swapApiKeyHeader(reqHeaders: http.IncomingHttpHeaders, apiKey: string):
 }
 
 function buildPiRules(
-  sessionTool: string | undefined,
+  worktreeTool: string | undefined,
   creds: PiCreds | null,
   hostname: string,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
-  if (sessionTool !== 'pi') return []
+  if (worktreeTool !== 'pi') return []
   if (!creds) return []
   if (hostname !== PI_PROVIDER_HOSTS[creds.provider]) return []
   return swapApiKeyHeader(reqHeaders, creds.apiKey)
@@ -132,7 +132,7 @@ describe('pi credential injection gating', () => {
     })).toEqual([])
   })
 
-  it('does not inject when the session tool is not pi', () => {
+  it('does not inject when the worktree tool is not pi', () => {
     expect(buildPiRules('claude', anthCreds, ANTHROPIC_API_HOST, { 'x-api-key': PLACEHOLDER_API_KEY })).toEqual([])
     expect(buildPiRules('opencode', orCreds, OPENROUTER_API_HOST, {
       authorization: 'Bearer ' + PLACEHOLDER_API_KEY,

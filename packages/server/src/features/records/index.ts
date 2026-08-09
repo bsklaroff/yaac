@@ -18,8 +18,8 @@
 // query — a herd never looks a row up.
 //
 // The join paths that read these rows alongside a herd's report
-// (`listActiveSessions`, restart, the stopped listing) deliberately live in
-// `#features/sessions` next to the verbs they orchestrate, and reach in
+// (`listActiveWorktrees`, restart, the stopped listing) deliberately live in
+// `#features/worktrees` next to the verbs they orchestrate, and reach in
 // through this barrel like anything else.
 //
 // Adding a name here widens the interface and obliges a unit test in

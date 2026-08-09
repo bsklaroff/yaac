@@ -1,6 +1,6 @@
 /**
  * Redirect claims — the document an INNER yaac publishes to ask that its
- * own session pods be redirected to its own proxy, and the document the
+ * own worktree pods be redirected to its own proxy, and the document the
  * outer server republishes for netd once it has validated one.
  *
  * Why a claim at all: a nested install's cluster is a vcluster with no
@@ -43,7 +43,7 @@ export const CLAIM_KEY = 'claim'
  * Bounds, enforced on both hops. The inner document is tenant-writable, so
  * without them a claim could inflate netd's rule count and the republished
  * ConfigMap without bound. Generous enough that no real install notices:
- * one claim per inner install in a vcluster, one source per session pod.
+ * one claim per inner install in a vcluster, one source per worktree pod.
  */
 export const MAX_CLAIMS_PER_NAMESPACE = 64
 export const MAX_SOURCES_PER_CLAIM = 512

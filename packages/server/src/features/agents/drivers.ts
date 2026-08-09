@@ -22,7 +22,7 @@
  *
  * Retry policy is not here either. A connection reports that it went down and
  * the caller decides what to do about it, so both modes get one respawn
- * strategy (`SessionStatusWatcher`) rather than two that drift.
+ * strategy (`WorktreeStatusWatcher`) rather than two that drift.
  */
 
 import { acpDriver } from './acp-driver'
@@ -30,13 +30,13 @@ import { tuiDriver } from './tui-driver'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 import type { StreamChild } from '#platform/k8s'
-import type { SessionAgentStatus } from './agent-tools'
+import type { AgentPaneStatus } from './agent-tools'
 
 /** The session a driver is connected to. */
-export interface DrivenSession {
+export interface DrivenWorktree {
   slug: string
   /** The worktree id — what the relay addresses streams by. */
-  sessionId: string
+  worktreeId: string
   jobName: string
   tool: AgentTool
 }
@@ -75,7 +75,7 @@ export type AgentObservation =
    *  that simply has not started its agent yet — an empty set means "every
    *  agent exited", which deactivates the worktree's conversations. */
   | { kind: 'live-agents'; agents: LiveAgent[] }
-  | { kind: 'status'; handle: string; status: SessionAgentStatus }
+  | { kind: 'status'; handle: string; status: AgentPaneStatus }
   /**
    * A read-only command channel into the pod, or null when it goes away.
    * `tui` publishes its tmux control-mode client here so unrelated read-only
@@ -107,7 +107,7 @@ export interface AgentConnectDeps {
   recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   /** Injected by tests — replaces the real relay ctrl-stream dial, which is
    *  the process boundary both drivers are mocked at. */
-  dial?: (session: DrivenSession, argv: string[]) => StreamChild
+  dial?: (session: DrivenWorktree, argv: string[]) => StreamChild
   /** Heartbeat cadence over the open connection. */
   heartbeatIntervalMs?: number
   /** Reply deadline for a command sent over the connection. */
@@ -150,7 +150,7 @@ export interface AgentDriver {
   /** Open the observation stream. Never throws — a failed dial is reported
    *  as a `down` observation so the caller's backoff owns it. */
   connect(
-    session: DrivenSession,
+    session: DrivenWorktree,
     sink: (obs: AgentObservation) => void,
     deps?: AgentConnectDeps,
   ): AgentConnection
@@ -158,5 +158,5 @@ export interface AgentDriver {
    * Deliver a user message to a live conversation, addressed by handle.
    * `tui` pastes it into the pane and submits; `acp` sends `session/prompt`.
    */
-  deliverPrompt(session: DrivenSession, handle: string, text: string): Promise<void>
+  deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void>
 }

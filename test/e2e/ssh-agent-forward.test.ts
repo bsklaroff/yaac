@@ -19,7 +19,7 @@ import { ProxyClient } from '@yaac/server/features/egress/proxy-client'
 import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/platform/k8s/pod-spec'
-import { LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
+import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'
 import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/platform/k8s/proxy-constants'
 import {
   k8sNamespace,
@@ -84,18 +84,18 @@ async function makeTestKey(dir: string): Promise<{ keyPath: string; fingerprint:
 
 /**
  * A session-shaped pod carrying exactly the ssh-agent wiring
- * `buildSessionJobManifest` + session-create give a real session: the
+ * `buildPodJobManifest` + session-create give a real session: the
  * pod-local emptyDir at SSH_AGENT_MOUNT, SSH_AUTH_SOCK, and the forwarder's
- * upstream. `sessionId` is what the proxy's pod-watch attributes it to.
+ * upstream. `worktreeId` is what the proxy's pod-watch attributes it to.
  */
-async function startSessionPod(name: string, sessionId: string): Promise<void> {
+async function startWorktreePod(name: string, worktreeId: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { [LABEL_SESSION_ID]: sessionId, 'yaac.test': 'true' },
+      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -199,7 +199,7 @@ async function diagnose(pod: string): Promise<string> {
 }
 
 /**
- * Start the in-pod forwarder — the same socat line `yaac-session-init`
+ * Start the in-pod forwarder — the same socat line `yaac-worktree-init`
  * runs from the pod's postStart hook, off the same two env vars.
  */
 async function startForwarder(pod: string): Promise<void> {
@@ -231,18 +231,18 @@ beforeAll(async () => {
 
   // The entitlement the proxy gates on is the session's registered remote:
   // an SSH one is exactly when session-create provisions SSH_AUTH_SOCK.
-  await client.registerSession(sshSession, {
+  await client.registerWorktree(sshSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
   })
-  await client.registerSession(httpsSession, {
+  await client.registerWorktree(httpsSession, {
     rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
     repoUrl: 'https://github.com/acme/app.git',
   })
 
   await Promise.all([
-    startSessionPod(sshPod, sshSession),
-    startSessionPod(httpsPod, httpsSession),
+    startWorktreePod(sshPod, sshSession),
+    startWorktreePod(httpsPod, httpsSession),
   ])
   await Promise.all([waitForPodRunning(sshPod), waitForPodRunning(httpsPod)])
 }, 900_000)
@@ -255,8 +255,8 @@ afterAll(async () => {
       '--ignore-not-found', '--wait=false', '--grace-period=1',
     ]).catch(() => { /* ok */ })
   }
-  try { await client.removeSession(sshSession) } catch { /* ok */ }
-  try { await client.removeSession(httpsSession) } catch { /* ok */ }
+  try { await client.removeWorktree(sshSession) } catch { /* ok */ }
+  try { await client.removeWorktree(httpsSession) } catch { /* ok */ }
   try { await client.clearSshKeys() } catch { /* ok */ }
   try { await client.stop() } catch { /* ok */ }
   restoreNamespace?.()

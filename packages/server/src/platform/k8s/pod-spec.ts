@@ -13,7 +13,7 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
  * upstreams on tunnelled hosts. See docs/nested-containers.md.
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
-/** Directory inside session pods where the CA ConfigMap is mounted. */
+/** Directory inside worktree pods where the CA ConfigMap is mounted. */
 export const CA_MOUNT_DIR = '/etc/yaac/certs'
 /** Full in-container path of the proxy CA cert. */
 export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
@@ -21,18 +21,18 @@ export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 export const CA_BUNDLE_PATH = `${CA_MOUNT_DIR}/${CA_BUNDLE_KEY}`
 
 /**
- * Directory inside session pods holding the forwarded ssh-agent socket, and
+ * Directory inside worktree pods holding the forwarded ssh-agent socket, and
  * the socket path SSH_AUTH_SOCK names. Pod-local scratch (an emptyDir, see
- * buildSessionJobManifest): the agent itself lives in the proxy pod and is
+ * buildPodJobManifest): the agent itself lives in the proxy pod and is
  * reached over TCP (SSH_AGENT_PORT), so nothing here is shared between pods
- * — only the in-pod forwarder writes it, and only the session's own ssh
+ * — only the in-pod forwarder writes it, and only the worktree's own ssh
  * client reads it.
  */
 export const SSH_AGENT_MOUNT = '/ssh-agent'
 export const SSH_AGENT_SOCKET_PATH = `${SSH_AGENT_MOUNT}/socket`
 
 /**
- * In-container path of the per-session ROOTFUL podman graphroot — podman's
+ * In-container path of the per-worktree ROOTFUL podman graphroot — podman's
  * default `/var/lib/containers/storage` lives under this dir (the image's
  * storage.conf sets graphroot there). Backed by a sentry-internal tmpfs
  * (see NESTED_GRAPHROOT_ANNOTATIONS): gVisor's gofer filesystem refuses
@@ -60,16 +60,16 @@ export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
  * so this is an ephemeral-storage budget, not pod memory — independent of
  * memoryLimitBytes.
  *
- * Sized so a session can hold the yaac image chain (base, tools, nestable —
+ * Sized so a worktree can hold the yaac image chain (base, tools, nestable —
  * layer-shared, but ~6.5GiB unique) plus the upstream mirrors its cluster
  * pulls AND still build on top of them. At 8GiB that fit had no slack at
  * all: a warm image cache left the e2e image builds ENOSPC'ing.
  *
  * Only the pod's ephemeral-storage LIMIT clears this; the request does
  * not, so raising it does not cost scheduling density — but it does raise
- * each nested session's unaccounted worst case by the same amount. At node
+ * each nested worktree's unaccounted worst case by the same amount. At node
  * disk saturation kubelet ranks eviction by usage-over-request, so the fat
- * nested sessions go first, which is fatal to them (backoffLimit 0) and is
+ * nested worktrees go first, which is fatal to them (backoffLimit 0) and is
  * the ordering the PriorityClass split already intends.
  */
 export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
@@ -78,7 +78,7 @@ export const NESTED_GRAPHROOT_TMPFS_BYTES = 12 * 1024 ** 3
  * emptyDir sizeLimit for the graphroot volume: the sentry's `size=` cap
  * plus slack. The filestore file kubelet sees can carry sentry metadata
  * beyond the byte cap it enforces; a sizeLimit at exactly the cap would
- * race kubelet's du-based eviction (which kills the whole session) against
+ * race kubelet's du-based eviction (which kills the whole worktree) against
  * the sentry's ENOSPC (which fails just the write). The slack makes
  * eviction unreachable while still bounding a runaway volume.
  */
@@ -109,7 +109,7 @@ export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
  * The annotation set above, parameterized on the sentry tmpfs size cap so
  * other podman-in-gvisor pods (the ephemeral builder pods of
  * docs/trust-split-builds.md) can size their graphroot independently
- * of session pods. Keys on NESTED_GRAPHROOT_VOLUME — the pod must mount
+ * of worktree pods. Keys on NESTED_GRAPHROOT_VOLUME — the pod must mount
  * its graphroot emptyDir under that volume name.
  */
 export function graphrootMountAnnotations(sizeBytes: number): Record<string, string> {
@@ -148,7 +148,7 @@ export const NESTED_ENGINE_CAPS = [
 export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 
 /**
- * Where a session mount's bytes come from. The mount's container-side path
+ * Where a worktree mount's bytes come from. The mount's container-side path
  * is fixed by the mount itself, never by the source, so re-sourcing a mount
  * is invisible inside the pod — which is the whole point: the storage tier
  * a path declares (SHARED / NODE-LOCAL, see packages/shared/src/paths.ts)
@@ -157,7 +157,7 @@ export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrC
  *  - `hostPath` — what every tier renders as on the local backend, whose
  *    single node and server process share one filesystem.
  *  - `pvc` — a subPath of a claim: the RWX volume that carries the SHARED
- *    tier on a multi-node cluster, where the server pod and the session pod
+ *    tier on a multi-node cluster, where the server pod and the worktree pod
  *    mount the same claim. Rendered here, but nothing selects it yet — the
  *    claims and the in-cluster server that provisions them are
  *    docs/plans/stock-k8s-multi-node.md §1–2.
@@ -181,8 +181,8 @@ export type MountSource =
   | { kind: 'pvc'; claimName: string; subPath?: string }
   | { kind: 'emptyDir'; sizeLimit?: number }
 
-/** One volume mounted into the session container, plus where it comes from. */
-export interface SessionMount {
+/** One volume mounted into the worktree container, plus where it comes from. */
+export interface PodMount {
   source: MountSource
   mountPath: string
   readOnly?: boolean
@@ -215,28 +215,28 @@ function volumeSourceSpec(source: MountSource): Record<string, unknown> {
   }
 }
 
-export interface SessionJobParams {
+export interface PodJobParams {
   jobName: string
   namespace: string
-  /** Applied to the Job and its pod template (project, session-id, …). */
+  /** Applied to the Job and its pod template (project, worktree-id, …). */
   labels: Record<string, string>
   image: string
-  /** `NAME=VALUE` entries — same shape session-create builds today. */
+  /** `NAME=VALUE` entries — same shape worktree-create builds today. */
   env: string[]
-  /** Session mounts in render order, each declaring its own source. */
-  mounts: SessionMount[]
+  /** Worktree mounts in render order, each declaring its own source. */
+  mounts: PodMount[]
   /**
    * Scheduler reservation (the guaranteed floor). Kept well below
-   * memoryLimitBytes so many idle sessions pack onto one node — memory is
+   * memoryLimitBytes so many idle worktrees pack onto one node — memory is
    * overcommitted the way the kernel already allows for limits. Omitting it
    * would make Kubernetes default the request up to the limit, hard-reserving
-   * the full ceiling per session and starving new sessions of node memory.
+   * the full ceiling per worktree and starving new worktrees of node memory.
    */
   memoryRequestBytes: number
   /** Hard cgroup cap; exceeding it OOM-kills the container. */
   memoryLimitBytes: number
   /**
-   * CPU floor in millicores. Without a request a session pod is invisible to
+   * CPU floor in millicores. Without a request a worktree pod is invisible to
    * the scheduler's bin-packing — it costs a node nothing, which is
    * survivable on one local node and wrong anywhere capacity is planned or
    * autoscaled. Under contention this is also the weight: cpu is
@@ -246,7 +246,7 @@ export interface SessionJobParams {
   /**
    * CPU ceiling in millicores. On a runc pod a limit would be the wrong
    * default — it lands as a CFS quota that throttles inside every 100ms
-   * period, stalling an interactive session on an otherwise idle node. Under
+   * period, stalling an interactive worktree on an otherwise idle node. Under
    * gVisor it does double duty, and that second job is why it is set.
    *
    * runsc sizes the sandbox's virtual CPU count from the container's cpu
@@ -254,11 +254,11 @@ export interface SessionJobParams {
    * there is no quota, so it falls back to the HOST's core count and the
    * systrap platform spawns one stub process per core — every sandbox
    * carries as many stubs as the node has cores no matter how small its
-   * share. A session that then does syscall-heavy work (an e2e run: image
+   * share. A worktree that then does syscall-heavy work (an e2e run: image
    * builds, container starts) drives all of them at once and takes the whole
    * node with it, since e2e traps every syscall through the sentry.
    *
-   * So the ceiling bounds one session's blast radius rather than its
+   * So the ceiling bounds one worktree's blast radius rather than its
    * ordinary latency. Keep it well ABOVE the request — the CFS-throttling
    * concern is real for a limit near the request, but a ceiling set many
    * multiples above it is never reached by interactive work (an agent
@@ -270,22 +270,22 @@ export interface SessionJobParams {
    * Node-disk floor: the container's writable layer, its logs, and its
    * emptyDir volumes (hostPath and PVC mounts are not ephemeral storage, so
    * the repo, worktrees and caches don't count). Same overcommit shape as
-   * memory — a request far below the limit, since most sessions never come
+   * memory — a request far below the limit, since most worktrees never come
    * near it.
    */
   ephemeralStorageRequestBytes: number
   /**
    * Ephemeral-storage ceiling; kubelet evicts the pod when the pod's total
    * usage exceeds it. Unlike cpu this limit earns its keep: node disk is
-   * incompressible and shared, and one session filling it takes down every
+   * incompressible and shared, and one worktree filling it takes down every
    * pod on the node, so bounding the blast radius to the offender is worth
-   * the eviction risk. Nested sessions get the graphroot emptyDir's own
+   * the eviction risk. Nested worktrees get the graphroot emptyDir's own
    * sizeLimit added on top (see the resources block) — kubelet counts that
    * volume against this number.
    */
   ephemeralStorageLimitBytes: number
   /**
-   * Pinned proxy Service ClusterIP. Session pods point their resolver at it
+   * Pinned proxy Service ClusterIP. Worktree pods point their resolver at it
    * (dnsConfig below) so the proxy's DNS stub answers, and their 443/80
    * egress is redirected to it by netd's per-pod DNAT rules
    * (buildEgressRedirectCecManifest) — no per-pod redirect-init/relay sidecar.
@@ -294,18 +294,18 @@ export interface SessionJobParams {
   /**
    * In-pod podman: the rootful-engine graphroot, cap set, and gVisor
    * handler. False (or absent) leaves the pod spec byte-identical to one
-   * built without the field. The engine's cross-session image cache needs
+   * built without the field. The engine's cross-worktree image cache needs
    * nothing here — it rides the project registry (image-promoter.ts), not
    * a mount.
    */
   nested?: boolean
   /**
-   * postStart lifecycle hook command (argv). Session pods run
-   * `yaac-session-init` here — the kubelet holds the container's Ready
+   * postStart lifecycle hook command (argv). Worktree pods run
+   * `yaac-worktree-init` here — the kubelet holds the container's Ready
    * transition until the hook exits, so "pod Ready" implies the in-pod
    * setup (git config, tmux server, streamd) is done. A hook that exits
    * nonzero kills the container (restartPolicy Never → Job failure), which
-   * session-create's retry loop surfaces.
+   * worktree-create's retry loop surfaces.
    */
   postStartExec?: string[]
   /**
@@ -328,14 +328,14 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
 }
 
 /**
- * Build the Job manifest for one session: a single-pod Job
+ * Build the Job manifest for one worktree: a single-pod Job
  * (`backoffLimit: 0`, `restartPolicy: Never`) whose pod carries the
- * session container plus every caller-declared mount (each rendered from
+ * worktree container plus every caller-declared mount (each rendered from
  * its own source) and the proxy-CA ConfigMap.
  *
  * Pure — no cluster access — so the full spec shape is unit-testable.
  */
-export function buildSessionJobManifest(p: SessionJobParams): Record<string, unknown> {
+export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   const volumes: Array<Record<string, unknown>> = []
   const volumeMounts: Array<Record<string, unknown>> = []
 
@@ -367,7 +367,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   volumeMounts.push({ name: 'ssh-agent', mountPath: SSH_AGENT_MOUNT })
 
   if (p.nested) {
-    // Per-session ROOTFUL graphroot: a disk emptyDir promoted to a
+    // Per-worktree ROOTFUL graphroot: a disk emptyDir promoted to a
     // disk-backed sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so
     // `docker build` setcap steps work (goferfs refuses security.* xattr
     // writes) without layer data pinning pod memory. Owned by root — the
@@ -400,11 +400,11 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
-          // The bottom scheduling tier: a full node sheds a session before
-          // it sheds the proxy every session's network runs through. Inner
+          // The bottom scheduling tier: a full node sheds a worktree before
+          // it sheds the proxy every worktree's network runs through. Inner
           // (vcluster) pods stamp none — see priorityClassSpec.
           ...priorityClassSpec({ inner: p.innerYaac }),
-          // Session pods host untrusted agent workloads: no cluster API
+          // Worktree pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -417,11 +417,11 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           },
           // Containment for in-container root (reachable via the image's
           // passwordless sudo, a feature — agents install packages
-          // mid-session) is the sentry: in-sandbox root is a fiction with no
+          // mid-worktree) is the sentry: in-sandbox root is a fiction with no
           // host authority. No user namespace anywhere — see runtimeClassSpec
           // for the tier policy (gvisor / gvisor-nested / inner stamps none).
           ...runtimeClassSpec({ inner: p.innerYaac, nested: !!p.nested }),
-          // DNS: session pods resolve against the proxy's UDP/53 stub, which is
+          // DNS: worktree pods resolve against the proxy's UDP/53 stub, which is
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
           // its vcluster API), while external names get a sinkhole IP since
@@ -432,7 +432,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           dnsConfig: { nameservers: [p.proxyHost] },
           containers: [
             {
-              name: 'session',
+              name: 'worktree',
               image: p.image,
               // Content-hash tags are immutable — a tag hit in the node's
               // image store is always the right bytes.
@@ -468,7 +468,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
                   // kubelet charges a pod's emptyDir volumes to its
                   // ephemeral-storage limit, so a nested pod's limit must
                   // clear the graphroot volume's own sizeLimit or the first
-                  // real `docker build` evicts the session — which is fatal
+                  // real `docker build` evicts the worktree — which is fatal
                   // (backoffLimit 0). Adding it here rather than at the call
                   // site keeps that accounting next to the constant.
                   'ephemeral-storage': String(
@@ -487,7 +487,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
 }
 
 /**
- * The uid session pods run as (`runAsUser`), and the uid baked into session
+ * The uid worktree pods run as (`runAsUser`), and the uid baked into worktree
  * images as the `yaac` user (YAAC_UID build arg) so the two agree. Under
  * gVisor there is no userns and no idmap, so numeric uids pass through raw:
  * a hostPath file owned by host uid N appears in-container as uid N.
@@ -496,7 +496,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
  * them. Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
  * server runs as root (uid 0 is taken inside the image).
  */
-export function sessionUid(): number {
+export function podUid(): number {
   const uid = process.getuid?.() ?? 1000
   return uid > 0 ? uid : 1000
 }

@@ -5,19 +5,19 @@
  * tmux attach argv, the per-client view lifecycle (register, ghost sweep,
  * window resize, kill-session) and the wire protocol all run for real, and
  * the fakes start at the relay — `dialPtyStream` for the in-pod PTY and
- * `sessionExec` for every tmux command. The internals are covered by the
+ * `podExec` for every tmux command. The internals are covered by the
  * targets, sizes and frames these tests drive rather than by tests of their
  * own.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as relayModule from '#platform/k8s/stream-relay'
-import { dialPtyStream, sessionExec } from '#platform/k8s/stream-relay'
+import { dialPtyStream, podExec } from '#platform/k8s/stream-relay'
 import { attachPty, type SocketLike } from '#features/terminals'
 import { DETACH_GRACE_MS } from '#features/terminals/pty-bridge'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
-  sessionExec: vi.fn(),
+  podExec: vi.fn(),
   dialPtyStream: vi.fn(),
 }))
 
@@ -85,7 +85,7 @@ let execImpl: (cmd: string) => Promise<{ stdout: string; stderr: string }>
 beforeEach(() => {
   execCalls.length = 0
   execImpl = () => Promise.resolve({ stdout: '', stderr: '' })
-  vi.mocked(sessionExec).mockImplementation((_job, cmd) => {
+  vi.mocked(podExec).mockImplementation((_job, cmd) => {
     execCalls.push(cmd)
     return execImpl(cmd)
   })
@@ -101,7 +101,7 @@ const flush = async (): Promise<void> => {
 interface Attached {
   pty: FakePty
   sock: FakeSock
-  sessionId: string
+  worktreeId: string
   argv: string[]
   size: { cols?: number; rows?: number }
   /** The in-pod command line, for non-'shell' targets. */
@@ -117,10 +117,10 @@ function attach(
   const sock = new FakeSock()
   attachPty(jobName, sock, query)
   const dial = vi.mocked(dialPtyStream)
-  const [sessionId, argv, size] = dial.mock.calls[dial.mock.calls.length - 1]
+  const [worktreeId, argv, size] = dial.mock.calls[dial.mock.calls.length - 1]
   const pty = dial.mock.results[dial.mock.results.length - 1].value as unknown as FakePty
   const cmd = argv[2] ?? ''
-  return { pty, sock, sessionId, argv, size, cmd, view: /-s (view-[0-9a-f]{8}) /.exec(cmd)?.[1] ?? '' }
+  return { pty, sock, worktreeId, argv, size, cmd, view: /-s (view-[0-9a-f]{8}) /.exec(cmd)?.[1] ?? '' }
 }
 
 describe('attachPty', () => {
@@ -130,7 +130,7 @@ describe('attachPty', () => {
 
     // The relay dials the pod by the session id in the Job name, and the PTY
     // is spawned at the browser's grid so no cold-start reflow is needed.
-    expect(a.sessionId).toBe(sid(1))
+    expect(a.worktreeId).toBe(sid(1))
     expect(a.size).toEqual({ cols: 150, rows: 40 })
     expect(a.argv.slice(0, 2)).toEqual(['sh', '-c'])
     expect(a.view).toMatch(/^view-[0-9a-f]{8}$/)

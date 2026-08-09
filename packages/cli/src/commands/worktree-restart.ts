@@ -1,6 +1,6 @@
 import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
-import { attachSessionPty } from '#commands/ws-terminal'
+import { attachWorktreePty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentMode } from '@yaac/shared/types'
@@ -52,7 +52,7 @@ export async function worktreeRestart(worktreeId: string): Promise<string | unde
 
   if (!testEnv.e2eNoAttach) {
     try {
-      await attachSessionPty(restartedId, 'native')
+      await attachWorktreePty(restartedId, 'native')
     } catch {
       // Job or tmux session was killed — reaper will clean up.
     }

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // drifts is invisible to any test that stubs the herd.
 vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
-  listSessionPods: vi.fn(),
+  listWorktreePods: vi.fn(),
 }))
 vi.mock('#platform/k8s/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
 vi.mock('#features/image-engine/image-builds', () => ({
@@ -22,11 +22,11 @@ vi.mock('#features/images/image-prewarm', () => ({
 // One reconcile step per module, faked so a pass can be driven without a
 // substrate. Which steps a pass owes is the thing under test, so what each
 // one does is beside the point — that it ran, and in what order, is not.
-vi.mock('#features/sessions/stale-sessions', () => ({ reconcileStaleSessions: vi.fn() }))
-vi.mock('#features/sessions/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
-vi.mock('#features/sessions/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#features/sessions/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
-vi.mock('#features/sessions/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
+vi.mock('#features/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
+vi.mock('#features/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
+vi.mock('#features/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
+vi.mock('#features/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
+vi.mock('#features/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
 vi.mock('#features/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
 vi.mock('#features/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
 vi.mock('#features/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
@@ -44,7 +44,7 @@ const { ensureRunning } = vi.hoisted(() => ({
 }))
 vi.mock('#features/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
 
-import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
+import { LABEL_PREWARMED, listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import {
@@ -54,15 +54,15 @@ import {
 } from '#platform/k8s/deferred-boot'
 import { retryImageBuild, reconcileImagePrewarm } from '#features/images/image-prewarm'
 import type * as projectRegistryModule from '#features/cluster/project-registry'
-import { reconcileStaleSessions } from '#features/sessions/stale-sessions'
-import { reconcileSpawnRequests } from '#features/sessions/spawn-reconcile'
-import { reconcilePrewarmPool } from '#features/sessions/prewarm-reconcile'
-import { reconcileAgentSessions } from '#features/sessions/agent-session-registry'
+import { reconcileStaleWorktrees } from '#features/worktrees/stale-worktrees'
+import { reconcileSpawnRequests } from '#features/worktrees/spawn-reconcile'
+import { reconcilePrewarmPool } from '#features/worktrees/prewarm-reconcile'
+import { reconcileAgentSessions } from '#features/worktrees/agent-session-registry'
 import { reconcileBuilderPodGc } from '#features/images/builder-pod'
 import { reconcileHostImageGc } from '#features/image-engine/image-gc'
 import { reconcileProxySshKeys } from '#features/egress/proxy-reconcile'
 import { reconcileVclusters } from '#features/cluster/vcluster-reconcile'
-import { reconcileImageSalvage } from '#features/sessions/salvage-reconcile'
+import { reconcileImageSalvage } from '#features/worktrees/salvage-reconcile'
 import { reconcileBuildCacheGc } from '#features/images/build-cache-gc'
 import { reconcileProjectRegistryGc } from '#features/cluster/project-registry'
 import { reconcileRedirectClaims } from '#features/cluster/redirect-claim-reconcile'
@@ -70,15 +70,15 @@ import { reconcileVclusterAttribution } from '#features/egress/vcluster-attribut
 import { createInProcessHerd } from '#herd'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-const mockList = vi.mocked(listSessionPods)
+const mockList = vi.mocked(listWorktreePods)
 const mockCache = vi.mocked(getActiveClusterCache)
 const mockRetry = vi.mocked(retryImageBuild)
 
-function pod(over: Partial<SessionPod> = {}): SessionPod {
+function pod(over: Partial<PodInfo> = {}): PodInfo {
   return {
     podName: 'yaac-proj-abc123-xyz',
     jobName: 'yaac-proj-abc123',
-    sessionId: 'abc123def456',
+    worktreeId: 'abc123def456',
     projectSlug: 'proj',
     tool: 'claude',
     phase: 'Running',
@@ -87,14 +87,14 @@ function pod(over: Partial<SessionPod> = {}): SessionPod {
     createdAtMs: 1_700_000_000_000,
     labels: {},
     ...over,
-  } as SessionPod
+  } as PodInfo
 }
 
 /** A cluster cache whose session-pods informer is connected and seeded. */
-function healthyCache(pods: SessionPod[]): ReturnType<typeof getActiveClusterCache> {
+function healthyCache(pods: PodInfo[]): ReturnType<typeof getActiveClusterCache> {
   return {
-    healthy: (source: string) => source === 'session-pods',
-    sessionPods: () => pods,
+    healthy: (source: string) => source === 'worktree-pods',
+    worktreePods: () => pods,
   } as unknown as ReturnType<typeof getActiveClusterCache>
 }
 
@@ -169,7 +169,7 @@ describe('createInProcessHerd', () => {
     it('ignores an unhealthy cache and lists live', async () => {
       mockCache.mockReturnValue({
         healthy: () => false,
-        sessionPods: () => { throw new Error('must not read an unhealthy cache') },
+        worktreePods: () => { throw new Error('must not read an unhealthy cache') },
       } as unknown as ReturnType<typeof getActiveClusterCache>)
       mockList.mockResolvedValue([pod()])
       const found = await createInProcessHerd().workspaces.find('abc123', { preferCache: true })
@@ -197,7 +197,7 @@ describe('createInProcessHerd', () => {
 
   describe('workspaces.list', () => {
     it('scopes to one project and maps each pod', async () => {
-      mockList.mockResolvedValue([pod(), pod({ sessionId: 'other', jobName: 'yaac-proj-other' })])
+      mockList.mockResolvedValue([pod(), pod({ worktreeId: 'other', jobName: 'yaac-proj-other' })])
       const listed = await createInProcessHerd().workspaces.list('proj')
       expect(mockList).toHaveBeenCalledWith('proj')
       expect(listed.map((w) => w.workspaceId)).toEqual(['abc123def456', 'other'])
@@ -286,7 +286,7 @@ describe('createInProcessHerd', () => {
   describe('lifecycle.reconcile', () => {
     beforeEach(() => {
       for (const step of [
-        reconcileStaleSessions, reconcileSpawnRequests, reconcilePrewarmPool,
+        reconcileStaleWorktrees, reconcileSpawnRequests, reconcilePrewarmPool,
         reconcileAgentSessions, reconcileBuilderPodGc, reconcileImagePrewarm,
         reconcileHostImageGc, reconcileProxySshKeys, reconcileVclusters,
         reconcileImageSalvage, reconcileBuildCacheGc, reconcileProjectRegistryGc,
@@ -301,7 +301,7 @@ describe('createInProcessHerd', () => {
       await createInProcessHerd().lifecycle.reconcile({
         triggers: new Set(['poll']), resync: false,
       })
-      expect(reconcileStaleSessions).toHaveBeenCalledTimes(1)
+      expect(reconcileStaleWorktrees).toHaveBeenCalledTimes(1)
       expect(reconcileSpawnRequests).toHaveBeenCalledTimes(1)
       expect(reconcileProxySshKeys).toHaveBeenCalledTimes(1)
       // Not owed by a poll: a pod delta drives the sweep, and the hygiene
@@ -324,7 +324,7 @@ describe('createInProcessHerd', () => {
       // `live-agents` fails here rather than shipping. A set change says
       // nothing about pods, and the reaper and the vcluster GC both delete.
       for (const step of [
-        reconcileStaleSessions, reconcileSpawnRequests, reconcilePrewarmPool,
+        reconcileStaleWorktrees, reconcileSpawnRequests, reconcilePrewarmPool,
         reconcileBuilderPodGc, reconcileImagePrewarm, reconcileHostImageGc,
         reconcileProxySshKeys, reconcileVclusters, reconcileImageSalvage,
         reconcileBuildCacheGc, reconcileProjectRegistryGc, reconcileRedirectClaims,
@@ -337,7 +337,7 @@ describe('createInProcessHerd', () => {
         triggers: new Set(), resync: true,
       })
       for (const step of [
-        reconcileStaleSessions, reconcileSpawnRequests, reconcileAgentSessions,
+        reconcileStaleWorktrees, reconcileSpawnRequests, reconcileAgentSessions,
         reconcileBuilderPodGc, reconcileImagePrewarm, reconcileHostImageGc,
         reconcileVclusters,
       ]) expect(step).toHaveBeenCalledTimes(1)
@@ -367,7 +367,7 @@ describe('createInProcessHerd', () => {
     // A herd that stopped converging on one bad GC would be worse than one
     // that logs and carries on.
     it('isolates a step failure from the rest of the pass', async () => {
-      vi.mocked(reconcileStaleSessions).mockRejectedValue(new Error('apiserver down'))
+      vi.mocked(reconcileStaleWorktrees).mockRejectedValue(new Error('apiserver down'))
       await expect(createInProcessHerd().lifecycle.reconcile({
         triggers: new Set(), resync: true,
       })).resolves.toBeUndefined()

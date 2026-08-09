@@ -60,7 +60,7 @@ function openShortcuts(): void {
 describe('Settings → Shortcuts', () => {
   it('lists every shortcut with its current chord', () => {
     openShortcuts()
-    expect(screen.getByText('New session')).toBeTruthy()
+    expect(screen.getByText('New worktree')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+N' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+B' })).toBeTruthy()
   })
@@ -73,20 +73,20 @@ describe('Settings → Shortcuts', () => {
     fireEvent.keyDown(window, { code: 'KeyG', altKey: true })
 
     const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
-    await waitFor(() => expect(setShortcutOverride).toHaveBeenCalledWith('new-session', chord))
-    expect(useUiStore.getState().bindings['new-session']).toEqual(chord)
+    await waitFor(() => expect(setShortcutOverride).toHaveBeenCalledWith('new-worktree', chord))
+    expect(useUiStore.getState().bindings['new-worktree']).toEqual(chord)
     expect(screen.getByRole('button', { name: 'Alt+G' })).toBeTruthy()
   })
 
   it('rejects a chord already bound to another command', () => {
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: 'Alt+N' }))
-    // Alt+D is the delete-session default.
+    // Alt+D is the delete-worktree default.
     fireEvent.keyDown(window, { code: 'KeyD', altKey: true })
 
     expect(screen.getByText(/Already bound to/)).toBeTruthy()
     expect(setShortcutOverride).not.toHaveBeenCalled()
-    expect(useUiStore.getState().bindings['new-session']).toEqual(DEFAULT_BINDINGS['new-session'])
+    expect(useUiStore.getState().bindings['new-worktree']).toEqual(DEFAULT_BINDINGS['new-worktree'])
   })
 
   it('ignores a chord without a real modifier', () => {
@@ -100,12 +100,12 @@ describe('Settings → Shortcuts', () => {
 
   it('reset all restores defaults and clears overrides on the server', () => {
     useUiStore.setState({
-      bindings: { ...DEFAULT_BINDINGS, 'new-session': { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false } },
+      bindings: { ...DEFAULT_BINDINGS, 'new-worktree': { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false } },
     })
     openShortcuts()
     fireEvent.click(screen.getByRole('button', { name: /Reset all/ }))
 
     expect(resetShortcuts).toHaveBeenCalledTimes(1)
-    expect(useUiStore.getState().bindings['new-session']).toEqual(DEFAULT_BINDINGS['new-session'])
+    expect(useUiStore.getState().bindings['new-worktree']).toEqual(DEFAULT_BINDINGS['new-worktree'])
   })
 })

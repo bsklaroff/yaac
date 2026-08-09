@@ -1,20 +1,20 @@
 # vcluster scale-to-zero (born-at-zero, wake-on-access)
 
-A `virtualCluster` session's per-session vcluster runs zero control-plane
+A `virtualCluster` worktree's per-worktree vcluster runs zero control-plane
 pods — and so consumes ~no memory — from the moment it is created until the
 first thing accesses its API, then cold-starts on demand and stays up for the
-rest of the session. An idle control-plane pod (kube-apiserver + KCM +
+rest of the worktree. An idle control-plane pod (kube-apiserver + KCM +
 kine/SQLite + syncer) plus its synced CoreDNS pod cost 350–600 MB of pure
 overhead per vcluster; born-at-zero reclaims all of it for every vcluster
 created but not yet used. Only a **fresh, unused** vcluster is ever slept
 ("Tier A") — re-sleeping one that has done work would need a quiescence
 detector and is not implemented.
 
-## Sleep (`sleepVcluster`, called from session create)
+## Sleep (`sleepVcluster`, called from worktree create)
 
 The control plane renders as a Deployment (embedded-SQLite, no PVC), so sleep
 is a scale to 0. Right after `waitForVclusterKubeconfig` captures the exported
-kubeconfig, the create flow — only when `ensureSessionVcluster` reports the
+kubeconfig, the create flow — only when `ensureWorktreeVcluster` reports the
 vcluster was freshly created, never on a re-ensure over a live one:
 
 1. **Intercepts the API Service**: applies a `yaac-sleep-<vc>` EndpointSlice
@@ -59,9 +59,9 @@ against one file.)
 One always-on install-wide pod (in `k8s/proxy/activator.ts`, shipped in the
 proxy sidecar image under a separate entrypoint — no second image pipeline)
 fronts every asleep vcluster, so the per-idle-vcluster footprint stays zero.
-On a session pod's first connection to its API ClusterIP:8443, the activator
+On a worktree pod's first connection to its API ClusterIP:8443, the activator
 scales the control plane back to 1 itself (no dependency on the yaac server
-process, which may not be running while sessions live), parks the request
+process, which may not be running while worktrees live), parks the request
 until the apiserver answers, deletes the EndpointSlice, and responds **307
 to the same URL** with `Connection: close`. The client re-dials — a fresh
 connection, which now routes to the real endpoint — and authenticates itself
@@ -93,7 +93,7 @@ FQDN reject. The server CA's key IS in the `<vc>-certs` Secret, so the
 activator mints a short-lived leaf for the SNI host exactly as the syncer
 does at boot; clients pin that CA in their kubeconfig, so the chain
 validates. The SNI→vcluster binding is strict (name and namespace must agree
-on the session id and carry this install's namespace prefix), and there is
+on the worktree id and carry this install's namespace prefix), and there is
 no default cert: any other servername fails its handshake. The wake's
 readiness probe dials the control-plane **pod IP** (found by chart labels
 minus `managed-by`, so a tenant pod forging `app=vcluster` is never
@@ -115,23 +115,23 @@ narrow:
 
 - Trusted yaac infra on runc in the install namespace (like the proxy and the
   control plane, the sentry buys no containment for yaac-shipped code).
-- **RBAC is per-vcluster, not standing**: `ensureSessionVcluster` applies a
+- **RBAC is per-vcluster, not standing**: `ensureWorktreeVcluster` applies a
   Role + RoleBinding in each vcluster's namespace (get on the one certs
   Secret, get/patch on the one Deployment's scale, pod reads, delete on the
   one slice), torn down with the namespace. No cluster-wide grant exists.
-- Its NetworkPolicy locks ingress to session pods + the node (kubelet probe) on 8443,
+- Its NetworkPolicy locks ingress to worktree pods + the node (kubelet probe) on 8443,
   and egress to exactly the wake surface: the host apiserver and control-plane
   pods on 8443. The explicit egress allow is also load-bearing: the
   install-wide world-deny policy selects the activator, and any policy with
   an Egress type flips a pod into egress default-deny.
-- The per-session vcluster NetworkPolicy admits the session pod to the
+- The per-worktree vcluster NetworkPolicy admits the worktree pod to the
   activator on 8443 — required because NetworkPolicy is evaluated on the
   **post-DNAT** endpoint identity, so while the ClusterIP is intercepted the
   first touch lands on the activator's identity, not the control plane's.
 
 ## Status, reconcile, teardown
 
-- `getVclusterStatus` derives a `phase` for `SessionDetail.virtualCluster`:
+- `getVclusterStatus` derives a `phase` for `WorktreeDetail.virtualCluster`:
   `asleep` (replicas 0), `waking` (scaled up, not serving — a wake that fails
   surfaces as persistent `waking` rather than a hang), `ready`.
 - `healVclusterSleepState` (in the vcluster reconcile) converges the slice
@@ -140,29 +140,29 @@ narrow:
   asleep vcluster); awake and serving → a leftover slice is deleted (covers a
   failed activator delete); waking → left alone, the activator still needs it.
 - Everything sleep-related lives in the vcluster's namespace and dies with it;
-  session teardown needs no extra steps. Sleeping a vcluster that still has
+  worktree teardown needs no extra steps. Sleeping a vcluster that still has
   live API clients is self-healing rather than destructive: their reconnects
   hit the interception slice and wake it right back (the sleep's pods-gone
   wait then times out harmlessly).
 
 ## The nested server defers its cluster attach
 
-A `yaac server start` run from a session's initCommands would otherwise wake
+A `yaac server start` run from a worktree's initCommands would otherwise wake
 the vcluster seconds after the create-time sleep: server boot ensures the
 namespace/registry, starts the informer caches, and runs the reconciler —
-all API touches. A NESTED server with no sessions of its own therefore arms
+all API touches. A NESTED server with no worktrees of its own therefore arms
 its cluster boot instead of running it (the deferred-boot latch in
 `#platform/k8s`), and
-the first real use fires it: session create awaits it explicitly (the
+the first real use fires it: worktree create awaits it explicitly (the
 namespace must exist before anything is applied into it), and any kubectl
 call kicks it as a fire-and-forget backstop. While the attach is pending the
 cluster reads feeding the web app's first snapshot answer without touching
-the cluster — the session list answers empty and the project list reports
-zero session counts, both true by construction since there are no session
+the cluster — the worktree list answers empty and the project list reports
+zero worktree counts, both true by construction since there are no worktree
 pods yet, and blocking either would hold the whole snapshot on the vcluster
 wake — while still kicking the attach, so connecting the web app wakes the
 cluster in the background but renders instantly. A restarting nested server that
-already has session dirs attaches eagerly — its sessions need the caches and
+already has worktree dirs attaches eagerly — its worktrees need the caches and
 reconciler, and its vcluster is already awake. The outer server never arms
 the latch, so every hook is a no-op there. Server readiness is DB-gated, not
 cluster-gated, so a deferred server still reports healthy.

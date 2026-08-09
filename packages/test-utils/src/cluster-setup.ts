@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile)
  *
  * Drops this file's test namespace as soon as the file finishes instead
  * of leaving every one of them to the global teardown. The namespace is
- * per FILE (see `TEST_NAMESPACE`), and a session-backed file leaves a
+ * per FILE (see `TEST_NAMESPACE`), and a worktree-backed file leaves a
  * netd DaemonSet and a proxy Deployment running in it. Held to the end of
  * the run, a full suite accumulates a dozen-odd netd pods — each running
  * an Envoy and reconciling the SAME single node's iptables — competing

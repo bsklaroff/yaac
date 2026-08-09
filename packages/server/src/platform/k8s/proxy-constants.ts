@@ -13,7 +13,7 @@ export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
 export const PROXY_PORT = 10255
 /**
- * Transparent egress listeners: session pods' outbound 443/80 is DNAT'd
+ * Transparent egress listeners: worktree pods' outbound 443/80 is DNAT'd
  * here by their redirect init container (TLS-SNI / Host-header routing,
  * source-pod-IP identity — see k8s/proxy/proxy.ts).
  */
@@ -24,7 +24,7 @@ export const TRANSPARENT_HTTP_PORT = 10257
  * ProxyCommand, pointed at the relay's loopback CONNECT port) here behind
  * a PP2 identity header. The listener verifies the token, parses the
  * `CONNECT host:port`, and tunnels — so SSH authenticates with the same
- * per-connection credential as HTTP(S), with no `x:<sessionId>` in the
+ * per-connection credential as HTTP(S), with no `x:<worktreeId>` in the
  * workload's env.
  */
 export const TRANSPARENT_TUNNEL_PORT = 10258
@@ -48,24 +48,24 @@ export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
 export const DNS_STUB_PORT = 53
 /**
  * ssh-agent forwarding listener: the proxy speaks the ssh-agent protocol
- * here, spliced to its own in-memory agent. Session pods run a local
+ * here, spliced to its own in-memory agent. Worktree pods run a local
  * forwarder (socat) that re-exposes it as the UNIX socket SSH_AUTH_SOCK
  * names, so a pod's ssh client is unchanged while the rendezvous becomes a
  * TCP hop the two pods can make from different nodes — a hostPath UNIX
  * socket only meets on one.
  *
- * Reachable only by session pods (buildProxyIngressNpManifest admits this
- * port from the session selector alone), and the proxy re-checks the source
+ * Reachable only by worktree pods (buildProxyIngressNpManifest admits this
+ * port from the worktree selector alone), and the proxy re-checks the source
  * pod IP against its pod-watch before splicing. Key bytes stay in the proxy,
  * and the client→agent direction is filtered to identity listings and
  * signature requests — an add/remove/lock never reaches an agent every
- * session shares (k8s/proxy/ssh-agent-relay.ts).
+ * worktree shares (k8s/proxy/ssh-agent-relay.ts).
  */
 export const SSH_AGENT_PORT = 10261
 /**
- * Relay listener: the proxy's authenticated CONNECT into session pods'
+ * Relay listener: the proxy's authenticated CONNECT into worktree pods'
  * streamd (docs/stream-relay.md). The server dials it, sends one auth
- * line ({token: proxyAuthSecret, sessionId}), and the proxy splices the
+ * line ({token: proxyAuthSecret, worktreeId}), and the proxy splices the
  * rest of the stream to `podIP:POD_STREAM_PORT`. Present in every proxy,
  * outer and inner (same image); only the addressing differs — a
  * top-level server reaches it through one long-lived kubectl
@@ -74,24 +74,24 @@ export const SSH_AGENT_PORT = 10261
  */
 export const RELAY_PORT = 10260
 /**
- * TCP port of streamd, the in-pod stream daemon session pods run
+ * TCP port of streamd, the in-pod stream daemon worktree pods run
  * (dockerfiles/streamd). In gVisor this is the sentry netstack, reachable
  * via the pod IP like any Service backend; only the proxy may dial it
- * (buildSessionIngressLockNpManifest).
+ * (buildWorktreeIngressLockNpManifest).
  */
 export const POD_STREAM_PORT = 10300
 /**
  * Reserved node-local port range netd's Envoy binds its listener trio
  * in — one trio per install, not per target (see k8s/netd/ports.ts, which
  * takes the base and slot count from the DaemonSet env so the range has
- * one definition). Session pods' NetworkPolicy admits egress to
+ * one definition). Worktree pods' NetworkPolicy admits egress to
  * the node on exactly this range — that is the ONLY world-ward egress they
  * get, which is what makes a missing redirect fail closed rather than open.
  *
  * Reaching a listener directly is not an escalation: it only reaches
  * Envoy, which always stamps the connection's real peer address into the
  * PROXY-protocol header, so a pod cannot use it to impersonate another
- * session. The proxy's transparent ports stay unreachable from pods.
+ * worktree. The proxy's transparent ports stay unreachable from pods.
  */
 export const NETD_LISTENER_PORT_BASE = 15100
 export const NETD_LISTENER_PORT_END = 15999
@@ -100,18 +100,18 @@ export const NETD_LISTENER_SLOTS = 300
 
 /** NetworkPolicy default-denying world egress across the install namespace. */
 export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
-/** NetworkPolicy granting session pods their redirect egress. */
-export const SESSION_EGRESS_NP_NAME = 'yaac-session-egress'
+/** NetworkPolicy granting worktree pods their redirect egress. */
+export const WORKTREE_EGRESS_NP_NAME = 'yaac-worktree-egress'
 /** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
-/** NetworkPolicy locking session-pod ingress to the proxy's relay dials. */
-export const SESSION_INGRESS_LOCK_NP_NAME = 'yaac-session-ingress-lock'
+/** NetworkPolicy locking worktree-pod ingress to the proxy's relay dials. */
+export const WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-worktree-ingress-lock'
 /** Per-vcluster NetworkPolicy: the synced-pod egress floor. */
 export const VCLUSTER_EGRESS_FLOOR_NP_NAME = 'yaac-vcluster-egress-floor'
 /** Per-vcluster NetworkPolicy: inner-proxy ingress. */
 export const INNER_PROXY_INGRESS_NP_NAME = 'yaac-inner-proxy-ingress'
-/** Per-vcluster NetworkPolicy: synced session-pod ingress lock. */
-export const INNER_SESSION_INGRESS_LOCK_NP_NAME = 'yaac-inner-session-ingress-lock'
+/** Per-vcluster NetworkPolicy: synced worktree-pod ingress lock. */
+export const INNER_WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-inner-worktree-ingress-lock'
 /**
  * Label the server stamps on every vcluster namespace. Plain NetworkPolicy
  * selects peer namespaces by label, so cross-namespace rules (a
@@ -137,19 +137,19 @@ export const ROLE_INNER_PROXY = 'inner-proxy'
 export const ROLE_BUILDER = 'builder'
 /**
  * Nested (inner) proxy only. The inner proxy's chained upstream dial
- * (inner session -> inner proxy -> OUTER proxy -> internet) terminates TLS at
+ * (inner worktree -> inner proxy -> OUTER proxy -> internet) terminates TLS at
  * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
  * The stock proxy dials upstream with Node's default trust store, so without
  * the outer CA that dial fails with "self-signed certificate in certificate
- * chain" and the inner session has no internet. The server projects the outer
+ * chain" and the inner worktree has no internet. The server projects the outer
  * CA into the vcluster as this ConfigMap; the inner proxy mounts it and points
  * NODE_EXTRA_CA_CERTS at it (additive trust — the real roots still apply). The
- * inner yaac reads the outer CA from its own session-pod trust mount
+ * inner yaac reads the outer CA from its own worktree-pod trust mount
  * (pod-spec CA_CERT_PATH).
  */
 export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 
-/** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
+/** ServiceAccount the proxy uses to watch pods (source-IP -> worktree). */
 export const PROXY_SA_NAME = 'yaac-proxy'
 
 

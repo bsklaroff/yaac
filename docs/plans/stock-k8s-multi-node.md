@@ -43,7 +43,7 @@ non-replaceable Cilium (BYO-CNI unsupported), which defeats the §4 veth-peer
 redirect; DigitalOcean stays reachable via self-managed droplets + k3s.
 "Runs on any stock managed cluster" is not achievable; EKS-AL is the
 reference *managed* port, not a universal guarantee. The §4 datapath has
-shipped on the current backend: docs/session-egress.md.
+shipped on the current backend: docs/worktree-egress.md.
 
 This is the third track alongside two existing plans, and it subsumes parts
 of both:
@@ -129,7 +129,7 @@ the PV; no node automount units, no "mount before kubelet" ordering.
   **ssh-agent socket** was the real break, and is **done**: the proxy
   serves the agent protocol on its own port, session pods run a local
   forwarder that re-exposes it at the unchanged `SSH_AUTH_SOCK` path, and
-  the socket dir is a pod-local emptyDir (docs/session-egress.md, "The two
+  the socket dir is a pod-local emptyDir (docs/worktree-egress.md, "The two
   direct pod→proxy dials").
 - e2e scratch (`testTmpBase`) hostPath fixtures become PVC-backed on the
   stock backend.
@@ -195,7 +195,7 @@ docs/cluster-setup.md §4:
 
 **This section has shipped** on the current backend, in a different shape
 than originally planned — the current-state reference is
-docs/session-egress.md. Summary of what it settled, because the rest of
+docs/worktree-egress.md. Summary of what it settled, because the rest of
 this plan leans on it:
 
 - **Calico is the CNI and the policy engine**, enforcing plain
@@ -225,7 +225,7 @@ this plan leans on it:
 per-node and recomputed statelessly from cluster state, and the redirect
 target is the pod's own node. Nothing in the datapath assumes one node.
 
-**Portability envelope** (docs/session-egress.md has the full table): any
+**Portability envelope** (docs/worktree-egress.md has the full table): any
 CNI that traverses host netfilter and leaves ClusterIP translation to
 kube-proxy. That covers self-managed Calico, EKS's VPC CNI with Calico in
 policy-only mode, GKE Standard on Dataplane V1, and AKS with the
@@ -369,7 +369,7 @@ shaped.
 
 1. **Spikes (kill-order):**
    - ~~Node agent owns the redirect at the veth peer~~ — **done and
-     shipped** (§4, docs/session-egress.md), forgery e2e included, and so
+     shipped** (§4, docs/worktree-egress.md), forgery e2e included, and so
      is adopting a Calico we did not install (`--adopt-cni`,
      docs/cluster-setup.md). What is left is running that gate against a
      real provider-managed Calico rather than a kind cluster.
