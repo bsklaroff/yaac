@@ -153,6 +153,13 @@ hook appends a sighting and the reconciler joins recorded handles against the li
 pane set. An `acp` conversation is authored: `session/new` hands the server the
 id directly. No hook, no session-starts log, no join.
 
+The row is still written by the reconciler's conversation sweep, and the
+handshake that mints the id moves nothing the informers watch — so the id
+landing in the live agent set is itself a reconcile trigger (`live-agents`,
+docs/event-driven-reconcile.md). That is what the webapp waits on: until the
+row exists, an ACP worktree has no chat pane to show and falls back to the
+raw agent window, which is acpd's log rather than a conversation.
+
 The pod carries `yaac.mode` as a label (stamped only for `acp`) so the status
 watcher can pick a driver from an informer delta without a database read on the
 pod-event hot path. Every pod without it — every TUI pod, and every pod

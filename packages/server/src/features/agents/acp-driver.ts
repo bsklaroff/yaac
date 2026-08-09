@@ -63,14 +63,46 @@ const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = {
 const DEFAULT_SWEEP_MS = 20_000
 
 /**
- * Sweep cadence while nothing is attached yet. A session's agent window is
+ * Sweep cadence while some window this connection knows about is not attached.
+ *
+ * Two states need it, and they are the same state. A session's agent window is
  * created by the host *after* the pod is Ready, so a connection that opened
- * first would otherwise sit out a full sweep before noticing — and session
- * create waits on that attach to deliver the initial prompt. Once a
- * conversation is attached the cadence drops to `DEFAULT_SWEEP_MS`; an idle
- * worktree costs one cheap exec every 20s, not one per second.
+ * first would otherwise sit out a full sweep before noticing it — and session
+ * create waits on that attach to deliver the initial prompt. And a window that
+ * exists is not yet a socket to connect to: acpd binds a moment after tmux
+ * spawns it, so the first dial into a brand-new window usually finds nothing
+ * listening and drops straight back off. Both are "a conversation is coming
+ * up", and both are resolved by looking again in a second.
+ *
+ * The cadence rises to `DEFAULT_SWEEP_MS` once every enumerated window is
+ * attached — or has spent its `MAX_FAST_ATTACH_ATTEMPTS` — so an idle worktree
+ * costs one cheap exec every 20s rather than one per second. The cost of
+ * getting this wrong is not a slow log line: until the dial lands there is no
+ * handshake, so no conversation id, no row, and no chat pane — a fresh ACP
+ * worktree stares at acpd's own output for the length of one sweep.
  */
 const EMPTY_SWEEP_MS = 1_000
+
+/**
+ * How many times a window may fail to hold an attach before it stops earning
+ * the fast cadence and is only retried on the settled one.
+ *
+ * A window that has bounced this many times is not starting — acpd crashed or
+ * wedged and tmux left the window behind, or its socket is gone — and retrying
+ * it every second forever costs an exec and a dial per second, per broken
+ * window, for as long as the pod lives. It still gets re-dialed every
+ * `DEFAULT_SWEEP_MS`, so a window that heals is picked up; it just stops
+ * holding its worktree's whole connection at the fast cadence while it does
+ * not.
+ *
+ * Ten rather than a snug two or three, because the two sides of this budget
+ * are not symmetric. Spending it costs ten dials, once — trivial. Running out
+ * of it early costs a real conversation a full settled sweep, which is the
+ * pane delay this whole path exists to remove. acpd binds before it spawns the
+ * adapter, so a healthy window is attachable in milliseconds; ten seconds is
+ * headroom for a gVisor pod on a loaded node, not the expected cost.
+ */
+export const MAX_FAST_ATTACH_ATTEMPTS = 10
 
 /** How long `deliverPrompt` waits for a conversation to finish its handshake
  *  before giving up. Generous: it covers an adapter's cold start. */
@@ -134,6 +166,11 @@ class AcpConnection implements AgentConnection {
   private sweeping = false
   private done = false
   private up = false
+  /** The last enumeration's handles — what the cadence is judged against. */
+  private lastWindows: string[] = []
+  /** Consecutive attaches that did not survive a sweep, per handle. Bounds
+   *  the fast cadence — see `MAX_FAST_ATTACH_ATTEMPTS`. */
+  private readonly attachFailures = new Map<string, number>()
   private readonly sweepMs: number
   private readonly commandTimeoutMs: number
   private readonly log: (msg: string) => void
@@ -156,9 +193,22 @@ class AcpConnection implements AgentConnection {
   /** (Re)schedule the sweep at the cadence the current state calls for. */
   private rearm(): void {
     if (this.done) return
-    const every = this.attached.size === 0 ? EMPTY_SWEEP_MS : this.sweepMs
+    const every = this.fastSweepWanted() ? EMPTY_SWEEP_MS : this.sweepMs
     if (this.sweepTimer) clearInterval(this.sweepTimer)
     this.sweepTimer = setInterval(() => void this.sweep().then(() => this.rearm()), every)
+  }
+
+  /**
+   * Whether some conversation is still on its way up — the state
+   * `EMPTY_SWEEP_MS` exists for. Either no window has appeared yet, or one has
+   * and this connection is not holding it, having not yet spent its fast
+   * attempts on it.
+   */
+  private fastSweepWanted(): boolean {
+    if (this.lastWindows.length === 0) return true
+    return this.lastWindows.some((handle) =>
+      !this.attached.has(handle)
+      && (this.attachFailures.get(handle) ?? 0) < MAX_FAST_ATTACH_ATTEMPTS)
   }
 
   /**
@@ -201,6 +251,11 @@ class AcpConnection implements AgentConnection {
       this.sink({ kind: 'up' })
     }
 
+    // Anything still attached a whole sweep later held: that is what separates
+    // a real attach from a dial that bounced off a socket acpd had not bound
+    // yet, which is gone again within milliseconds.
+    for (const handle of this.attached.keys()) this.attachFailures.delete(handle)
+
     const live = new Set(windows.map((w) => w.handle))
     for (const [handle, entry] of [...this.attached]) {
       if (live.has(handle)) continue
@@ -213,6 +268,15 @@ class AcpConnection implements AgentConnection {
     for (const w of windows) {
       if (this.attached.has(w.handle)) continue
       this.attach(w.handle, w.tool, recorded.get(w.handle))
+    }
+
+    // What the cadence is judged against, recorded after the attach loop so a
+    // dial that failed synchronously already counts as unattached. A window
+    // that has gone keeps no failure tally: the next one to use that name is
+    // a new conversation, not the broken one continued.
+    this.lastWindows = windows.map((w) => w.handle)
+    for (const handle of [...this.attachFailures.keys()]) {
+      if (!live.has(handle)) this.attachFailures.delete(handle)
     }
 
     if (windows.length === 0) {
@@ -301,6 +365,14 @@ class AcpConnection implements AgentConnection {
     })
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.sessionId}/${entry.handle}: detached (${reason})`)
+    // A conversation that dropped is one this connection owes a re-attach, and
+    // the drop can land between sweeps — the dial into a window whose acpd is
+    // still binding fails milliseconds after a sweep armed the settled
+    // cadence. Recompute now rather than waiting out an interval armed for a
+    // state this connection is no longer in; the tally is what keeps a window
+    // that can never hold an attach from doing this forever.
+    this.attachFailures.set(entry.handle, (this.attachFailures.get(entry.handle) ?? 0) + 1)
+    this.rearm()
   }
 
   private publishAgents(): void {

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { agentDriver, type AgentObservation, type DrivenSession } from '#features/agents/drivers'
+// A bound, imported rather than duplicated: a test that hard-codes the budget
+// passes against a driver that changed it.
+import { MAX_FAST_ATTACH_ATTEMPTS } from '#features/agents/acp-driver'
 import {
   _resetAcpRegistryForTests,
   acpConversation,
@@ -328,6 +331,66 @@ describe('agentDriver', () => {
     await vi.waitFor(() => {
       expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
     })
+  })
+
+  it('re-dials a window whose acpd has not bound its socket yet', async () => {
+    const streams: FakeStream[] = []
+    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      // The settled cadence, set far beyond this test's patience: a re-dial
+      // that waited for it would leave a fresh ACP worktree showing acpd's
+      // log instead of a chat pane for a full sweep, which is the bug this
+      // covers. The first sweep DOES lower the cadence to this — the window
+      // is there and the dial did not throw — so nothing but the drop itself
+      // can put the connection back on the fast one.
+      heartbeatIntervalMs: 60_000,
+      log: () => {},
+      dial: () => {
+        const stream = new FakeStream()
+        streams.push(stream)
+        // tmux spawns acpd a moment before acpd binds, so the first dial into
+        // a brand-new window usually finds nothing listening: socat exits and
+        // the stream closes. The second finds a live socket.
+        if (streams.length === 1) setTimeout(() => stream.emitExit(), 0)
+        return stream
+      },
+    }))
+
+    await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+  })
+
+  it('stops re-dialing a window that can never hold an attach', async () => {
+    const streams: FakeStream[] = []
+    vi.mocked(sessionExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    vi.useFakeTimers()
+    try {
+      connections.push(agentDriver('acp').connect(session, () => {}, {
+        // Far apart, so the two cadences are unambiguous in the counts below.
+        heartbeatIntervalMs: 600_000,
+        log: () => {},
+        dial: () => {
+          // acpd is gone but tmux kept its window: every dial finds nothing
+          // and exits, forever. Fast retries must not be forever with it.
+          const stream = new FakeStream()
+          streams.push(stream)
+          setTimeout(() => stream.emitExit(), 0)
+          return stream
+        },
+      }))
+
+      // The fast attempts are spent and then stop, rather than costing an exec
+      // and a dial every second for the life of the pod.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(streams.length).toBe(MAX_FAST_ATTACH_ATTEMPTS)
+
+      // Given up on the fast cadence, NOT on the window: a settled sweep still
+      // re-dials it, so an acpd that comes back is picked up.
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(streams.length).toBe(MAX_FAST_ATTACH_ATTEMPTS + 1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('decodes a multi-byte character split across two socket reads', async () => {

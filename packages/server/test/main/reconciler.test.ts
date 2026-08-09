@@ -225,11 +225,21 @@ describe('defaultReconcileSteps', () => {
       .toEqual(['desired-workspaces', 'herd', 'generated-titles'])
   })
 
+  // Titles run after the conversation sweep so a just-captured opening message
+  // is eligible in the same pass — which only holds if they run on the passes
+  // that sweep. An ACP worktree's first message is captured on the pass its
+  // handshake triggers, and nothing else dirties that one.
+  it('generates titles on whatever dirties the conversation sweep', () => {
+    const titles = defaultReconcileSteps().find((s) => s.name === 'generated-titles')!
+    expect([...titles.triggers].sort()).toEqual(['live-agents', 'session-pods'])
+  })
+
   // Which of its own steps a pass owes is the herd's business, so its step
   // takes every source rather than being triggered on a subset.
   it('owes the herd a pass on any source', () => {
     const herdStep = defaultReconcileSteps().find((s) => s.name === 'herd')!
     expect([...herdStep.triggers].sort()).toEqual([
+      'live-agents',
       'poll',
       'session-jobs',
       'session-pods',

@@ -7,6 +7,8 @@ import {
   setAgentStatus,
   setSessionStreamHealth,
   evictSessionStatus,
+  setLiveAgents,
+  onLiveAgentsChanged,
   onSessionStatusChanged,
   _resetSessionStatusStoreForTests,
 } from '#features/status/status-store'
@@ -197,5 +199,38 @@ describe('onSessionStatusChanged', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('onLiveAgentsChanged', () => {
+  // This is what marks the reconciler dirty, and the whole reason an `acp`
+  // conversation's row does not wait out the 60s resync: its id arrives from
+  // the in-pod handshake, which no cluster watch can see.
+  it('fires when a conversation appears, goes, or learns its id', () => {
+    const listener = vi.fn()
+    onLiveAgentsChanged(listener)
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude' }])
+    expect(listener).toHaveBeenCalledTimes(1)
+    // The handshake answering: same handle, now addressable.
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    expect(listener).toHaveBeenCalledTimes(2)
+    setLiveAgents('demo', 's1', [])
+    expect(listener).toHaveBeenCalledTimes(3)
+  })
+
+  // A driver republishes the same set on every sweep, and every turn boundary
+  // writes a status — neither is a reason to sweep the pods again.
+  it('does not fire for a re-publish of the same set, or for a status flip', () => {
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    const listener = vi.fn()
+    onLiveAgentsChanged(listener)
+    // Fresh literals, not a copy of the array: both drivers rebuild their
+    // agent objects on every publish, so a `changed` computed by reference
+    // equality would pass a copied-array test and then fire once per sweep
+    // per worktree in production.
+    setLiveAgents('demo', 's1', [{ handle: 'claude-1', tool: 'claude', agentSessionId: 'conv-a' }])
+    setAgentStatus('demo', 's1', 'claude-1', 'running')
+    setAgentStatus('demo', 's1', 'claude-1', 'waiting')
+    expect(listener).not.toHaveBeenCalled()
   })
 })

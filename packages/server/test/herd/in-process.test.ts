@@ -62,6 +62,11 @@ import { reconcileBuilderPodGc } from '#features/images/builder-pod'
 import { reconcileHostImageGc } from '#features/image-engine/image-gc'
 import { reconcileProxySshKeys } from '#features/egress/proxy-reconcile'
 import { reconcileVclusters } from '#features/cluster/vcluster-reconcile'
+import { reconcileImageSalvage } from '#features/sessions/salvage-reconcile'
+import { reconcileBuildCacheGc } from '#features/images/build-cache-gc'
+import { reconcileProjectRegistryGc } from '#features/cluster/project-registry'
+import { reconcileRedirectClaims } from '#features/cluster/redirect-claim-reconcile'
+import { reconcileVclusterAttribution } from '#features/egress/vcluster-attribution'
 import { createInProcessHerd } from '#herd'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -284,6 +289,8 @@ describe('createInProcessHerd', () => {
         reconcileStaleSessions, reconcileSpawnRequests, reconcilePrewarmPool,
         reconcileAgentSessions, reconcileBuilderPodGc, reconcileImagePrewarm,
         reconcileHostImageGc, reconcileProxySshKeys, reconcileVclusters,
+        reconcileImageSalvage, reconcileBuildCacheGc, reconcileProjectRegistryGc,
+        reconcileRedirectClaims, reconcileVclusterAttribution,
       ]) vi.mocked(step).mockReset().mockResolvedValue(undefined)
     })
 
@@ -301,6 +308,28 @@ describe('createInProcessHerd', () => {
       // steps are throttled internally off the resync.
       expect(reconcileAgentSessions).not.toHaveBeenCalled()
       expect(reconcileBuilderPodGc).not.toHaveBeenCalled()
+    })
+
+    // The conversation sweep is the only step that reads the watcher's live
+    // set, and for `acp` that set is where a conversation's id first appears —
+    // out of an in-pod handshake no informer can see. Without this trigger the
+    // row (and the webapp's chat pane) waits for the next resync.
+    it('runs the conversation sweep when the live agent set changes', async () => {
+      await createInProcessHerd().lifecycle.reconcile({
+        triggers: new Set(['live-agents']), resync: false,
+      })
+      expect(reconcileAgentSessions).toHaveBeenCalledTimes(1)
+      // And nothing else — asserted over every step this file mocks, not just
+      // the destructive ones, so a future edit that hangs another step off
+      // `live-agents` fails here rather than shipping. A set change says
+      // nothing about pods, and the reaper and the vcluster GC both delete.
+      for (const step of [
+        reconcileStaleSessions, reconcileSpawnRequests, reconcilePrewarmPool,
+        reconcileBuilderPodGc, reconcileImagePrewarm, reconcileHostImageGc,
+        reconcileProxySshKeys, reconcileVclusters, reconcileImageSalvage,
+        reconcileBuildCacheGc, reconcileProjectRegistryGc, reconcileRedirectClaims,
+        reconcileVclusterAttribution,
+      ]) expect(step).not.toHaveBeenCalled()
     })
 
     it('runs every step on a resync, whatever dirtied the pass', async () => {

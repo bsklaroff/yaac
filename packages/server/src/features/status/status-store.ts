@@ -75,6 +75,7 @@ export interface SessionStatusEntry {
 const store = new Map<string, SessionStatusEntry>()
 
 let listener: (() => void) | null = null
+let liveAgentsListener: (() => void) | null = null
 
 function key(slug: string, worktreeId: string): string {
   return `${slug}/${worktreeId}`
@@ -92,6 +93,24 @@ export function onSessionStatusChanged(fn: () => void): void {
 
 function notifyChanged(): void {
   listener?.()
+}
+
+/**
+ * Register the handler fired when a worktree's *set* of live conversations
+ * changes — one appeared, one went, or one finally learned its id. Separate
+ * from `onSessionStatusChanged` on purpose: that one fires on every turn
+ * boundary, and its consumer only pushes a snapshot. This one drives a
+ * reconcile pass, and a pass per turn would be a pod sweep per turn.
+ *
+ * The signal matters most for `acp`, where the conversation id arrives from
+ * the handshake rather than from a substrate event: nothing else would mark
+ * the reconciler dirty, so the conversation's row — and the chat pane that
+ * waits on it — would sit out the rest of the 60s resync interval.
+ *
+ * Single-listener, same convention as above.
+ */
+export function onLiveAgentsChanged(fn: () => void): void {
+  liveAgentsListener = fn
 }
 
 function entry(k: string): SessionStatusEntry {
@@ -225,6 +244,11 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()
+  // A membership or id change is what the agent-session registry joins
+  // against, so it gets its own notification: the reconcile pass it kicks is
+  // how a just-handshaken ACP conversation becomes a row without waiting for
+  // the resync.
+  if (changed) liveAgentsListener?.()
   if (changed || readSessionStatus(slug, worktreeId) !== before) notifyChanged()
 }
 
@@ -264,4 +288,5 @@ export function evictSessionStatus(slug: string, worktreeId: string): void {
 export function _resetSessionStatusStoreForTests(): void {
   store.clear()
   listener = null
+  liveAgentsListener = null
 }
