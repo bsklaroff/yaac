@@ -34,8 +34,11 @@ Never use `git -C`, always just use `git` commands from the working directory.
 4. Check if the current HEAD commit exists on origin/main:
    - Run: `git merge-base --is-ancestor HEAD origin/main && echo "on-main" || echo "not-on-main"`
 5. Commit changes:
+   - `git add` any untracked files that belong in the commit (`-a` alone will
+     not pick them up); leave scratch and build output out.
    - If HEAD is on origin/main: use `git diff` to show the changes, generate a
-     one-line commit message, and run `git commit -am "<generated message>"`.
+     commit message — a one-line subject, plus a `-m "<body>"` paragraph when
+     the change needs a why — and run `git commit -am "<subject>" [-m "<body>"]`.
    - If HEAD is NOT on origin/main: `git commit -a --amend --date=now`.
 6. Fetch latest main: `git fetch origin main`.
 7. Rebase current branch on origin/main: `git rebase origin/main`.
@@ -95,9 +98,10 @@ For each notification:
    needs no code change, reply with an answer via
    `gh pr comment <pr-number> --body "<reply>"` and keep watching.
 3. If it asks for a change, make the edit, run `pnpm lint` (and any relevant
-   tests) to confirm it's sound, then commit with a generated one-line message
-   and `git push` (plain push works — the upstream and `push.default upstream`
-   were set above). Never add AI attribution to the commit.
+   tests) to confirm it's sound, then commit with a generated message (adding
+   any new untracked files first) and `git push` (plain push works — the
+   upstream and `push.default upstream` were set above). Never add AI
+   attribution to the commit.
 4. Reply on the PR summarizing what you changed
    (`gh pr comment <pr-number> --body "…"`), then continue watching.
 
