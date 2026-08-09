@@ -158,10 +158,10 @@ describe('tryClaimPrewarmed', () => {
         type: 'worktree-created', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'main',
       },
       {
-        type: 'conversations-launched',
+        type: 'sessions-launched',
         projectSlug: 'p',
         worktreeId: 'spare1',
-        conversations: [{ tool: 'claude', agentSessionId: 'spare1' }],
+        sessions: [{ tool: 'claude', agentSessionId: 'spare1' }],
       },
     ])
   })

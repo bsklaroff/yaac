@@ -73,6 +73,7 @@ import {
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_ACP_LOG_DIR,
+  CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import {
@@ -103,7 +104,6 @@ import {
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
-  clearPanePointers,
   ensureClaudeHooks,
   ensureOpencodeConfigJson,
   removeLegacyCodexHook,
@@ -112,6 +112,13 @@ import {
 } from '#features/agents'
 import { serverLink } from '#server-link'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
+import {
+  ensureSessionStartsLog,
+  mergeSessions,
+  newWorktreeMeta,
+  recordWorktreeLife,
+  updateWorktreeMeta,
+} from './worktree-meta'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
   SESSION_INIT_SCRIPT,
@@ -659,6 +666,27 @@ export async function createSession(
     resolveEphemeralModulesPaths(config),
   )
 
+  // The herd's own record, written for a prewarmed spare too — unlike a row,
+  // which a spare only gets when it is claimed. A spare is a checkout, a branch
+  // and a pod from the moment it is warmed, and this document is what the delete
+  // path reads to take all of it away again if it is reaped unclaimed.
+  await updateWorktreeMeta(projectSlug, sessionId, (current) =>
+    current !== undefined && options.resume === true
+      ? current
+      : newWorktreeMeta({
+        projectSlug,
+        worktreeId: sessionId,
+        branch: `agent/${sessionId}`,
+        createdAtMs: Date.now(),
+        spare: options.prewarm === true,
+      }))
+  // Stamped before any handle is recorded, because a life is exactly the
+  // boundary that invalidates the previous one's handles: tmux pane ids
+  // restart at %0, so last life's handle would otherwise name this life's
+  // pane. Removing the pane pointers from three tool homes is what session
+  // create used to do here instead.
+  const lifeId = await recordWorktreeLife(projectSlug, sessionId, jobName, Date.now())
+
   // Report the session BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
   // reads recorded state (titles, background, the deleted listing, restart)
@@ -671,6 +699,7 @@ export async function createSession(
   // `baseBranch` is deliberately not here: it comes from the worktree leg
   // that runs concurrently with the pod boot, and waiting for it would undo
   // that overlap. It is reported at the end.
+
   if (!options.prewarm) {
     await serverLink().workspaceEvent({
       type: 'worktree-created',
@@ -698,10 +727,10 @@ export async function createSession(
       // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
       // pane exists, so that stays for the registry to fill in.
       await serverLink().workspaceEvent({
-        type: 'conversations-launched',
+        type: 'sessions-launched',
         projectSlug,
         worktreeId: sessionId,
-        conversations: launching.map((a, i) => ({
+        sessions: launching.map((a, i) => ({
           tool: a.tool,
           agentSessionId: a.agentSessionId,
           mode,
@@ -711,6 +740,20 @@ export async function createSession(
             : {}),
         })),
       })
+      await updateWorktreeMeta(projectSlug, sessionId, (current) =>
+        current === undefined ? undefined : mergeSessions(current, launching.map((a, i) => ({
+          tool: a.tool,
+          agentSessionId: a.agentSessionId,
+          mode,
+          // Only `acp` knows its handle this early: it is the window name the
+          // driver addresses the session by. A tmux pane does not exist yet.
+          ...(mode === 'acp'
+            ? { handle: agentWindowName(a.tool, i), handleLifeId: lifeId }
+            : {}),
+          ...(i === 0 && options.initialPrompt !== undefined
+            ? { firstPrompt: options.initialPrompt }
+            : {}),
+        })), Date.now()))
     }
   }
 
@@ -978,6 +1021,11 @@ export async function createSession(
     // carries neither the directory nor the mount.
     const acpLogs = mode === 'acp' ? acpLogDir(projectSlug, sessionId) : undefined
     if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
+    // Pre-created so the pod's `File` hostPath mount resolves on the first
+    // attempt, the same reason the worktree dir is. The hook appends to it;
+    // nothing renames it, which is what keeps the mount valid for the pod's
+    // whole life.
+    const sessionStarts = await ensureSessionStartsLog(projectSlug, sessionId)
 
     // SSH provisioning: when the project's remote is SSH, forward the proxy's
     // ssh-agent into the pod (no private key inside the container) and
@@ -1080,12 +1128,6 @@ export async function createSession(
       await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
     }
 
-    // Forget which agent session sat on which pane in the *previous* life:
-    // tmux pane ids restart from %0, so a stale pointer would attribute this
-    // life's pane to the conversation the last one ran there. The linked
-    // conversation history under `sessions/` is deliberately kept.
-    await clearPanePointers(projectSlug, sessionId)
-
     // yaac's own bundled skills: stage a fresh copy under the session dir and
     // mount them read-only into every tool's personal skills root below. Copied
     // per session so they track the installed yaac version, and never written
@@ -1129,7 +1171,7 @@ export async function createSession(
       toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
       claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-      cachedPackages, acpLogs,
+      cachedPackages, acpLogs, sessionStarts,
     }
   })()
 
@@ -1138,7 +1180,7 @@ export async function createSession(
     toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
     claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
-    cachedPackages, acpLogs,
+    cachedPackages, acpLogs, sessionStarts,
   } = prep
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1352,6 +1394,14 @@ export async function createSession(
       source: { kind: 'hostPath', path: claudeJson, type: 'File' },
       mountPath: '/home/yaac/.claude.json',
     },
+    // SHARED, and the one file the pod writes that the herd reads back. A
+    // `File` mount is safe here precisely because both ends only ever append
+    // — the metadata document beside it is rewritten whole, which is why that
+    // one is never mounted anywhere.
+    {
+      source: { kind: 'hostPath', path: sessionStarts, type: 'File' },
+      mountPath: CONTAINER_SESSION_STARTS_LOG,
+    },
     { source: { kind: 'hostPath', path: codex }, mountPath: '/home/yaac/.codex' },
     // NODE-LOCAL: opencode's sqlite DB — WAL is unusable on a network
     // filesystem, and only this pod's node ever reads it.
@@ -1468,6 +1518,16 @@ export async function createSession(
         worktreeId: sessionId,
         baseBranch: upstreamStartPoint.replace(/^origin\//, ''),
       })
+    }
+  }
+  // Mirrored into the herd's document for the same reason it is reported: it
+  // is only knowable once the concurrent checkout resolves it.
+  {
+    const { upstreamStartPoint } = await worktreeTask
+    if (upstreamStartPoint !== undefined) {
+      const baseBranch = upstreamStartPoint.replace(/^origin\//, '')
+      await updateWorktreeMeta(projectSlug, sessionId, (current) =>
+        current === undefined ? undefined : { ...current, baseBranch })
     }
   }
 

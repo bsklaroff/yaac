@@ -25,10 +25,17 @@ import {
 } from '#features/cluster'
 import {
   cachedPackagesDir,
+  opencodeDataDir,
   projectsRoots,
+  repoDir,
   sessionRoots,
   sessionsRoots,
+  worktreeDir,
+  worktreeMetaDir,
+  worktreeMetaPath,
+  worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
+import { deleteWorktreeMeta, readWorktreeMeta } from './worktree-meta'
 import { shellQuote } from '#platform/shell'
 import type { SessionDeathCause } from '@yaac/shared/types'
 import { stopSessionForwarders } from '#features/forwarders'
@@ -42,6 +49,49 @@ import { serverLog } from '#log'
  */
 export function sessionModulesDir(projectSlug: string, sessionId: string): string {
   return path.join(cachedPackagesDir(projectSlug), 'modules', sessionId)
+}
+
+/**
+ * Remove everything on disk that belongs to one worktree, in one call.
+ *
+ * The counterpart to a create: the checkout, git's admin dir for it, the
+ * herd's metadata document and the in-pod hook's log beside it, and the
+ * per-worktree opencode database. Every one of them is keyed by the worktree
+ * id, which is what makes this a single function rather than a list each
+ * caller has to remember — and `opencode-data` is here because until now
+ * nothing removed it at all.
+ *
+ * NOT called by an ordinary stop. A stopped worktree is a checkout still on
+ * disk, diff and all, waiting to be restarted; this is for the cases where the
+ * worktree itself goes away — an unclaimed spare being reaped, and a project
+ * being removed.
+ *
+ * The admin dir needs its `locked` file cleared first: session setup writes it
+ * precisely so `git worktree prune` can never reap a live worktree from
+ * outside its own pod (see buildWorktreeLinkExec), and it would otherwise
+ * outlive the checkout it protects.
+ *
+ * Transcripts are deliberately left. The tool homes are shared across a
+ * project, so a session resumed into a second worktree would lose its history
+ * to the first one's deletion — and the document that names them is going
+ * away, so nothing would be able to find them to finish the job later either.
+ */
+export async function deleteWorktreeState(
+  projectSlug: string,
+  worktreeId: string,
+): Promise<void> {
+  const adminDir = path.join(repoDir(projectSlug), '.git', 'worktrees', worktreeId)
+  await Promise.all([
+    fs.rm(worktreeDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    fs.rm(path.join(adminDir, 'locked'), { force: true })
+      .then(() => fs.rm(adminDir, { recursive: true, force: true })),
+    fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    deleteWorktreeMeta(projectSlug, worktreeId),
+  ].map((p) => p.catch((err: unknown) => {
+    // Best-effort per path: a worktree that half-goes-away is better than a
+    // reap that aborts and leaves the rest behind for nobody to collect.
+    serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)
+  })))
 }
 
 /**
@@ -272,6 +322,67 @@ export function _resetOrphanModulesSweepForTests(): void {
   orphanModulesSwept = false
 }
 
+/**
+ * Collect the worktree state of prewarmed spares whose pod is gone.
+ *
+ * The reap path removes both together, but only while it is running: its plan
+ * is derived from live pods, so a spare whose pod died out from under it — a
+ * crash, a reboot, the server down in that window — leaves a checkout, a git
+ * admin dir and a metadata document that nothing else can even see. A spare
+ * has no row, which is exactly what makes it invisible to every other sweep.
+ *
+ * The document's `spare` flag is what makes this answerable after the fact:
+ * the pod that carried the label is gone, so the flag is the only surviving
+ * record that this checkout was never a worktree. A real worktree is never
+ * touched here — its document says `spare: false`, and a stopped one is a
+ * checkout the user is expected to restart into.
+ */
+/** Suffix of the in-pod hook's log, as `worktreeSessionStartsPath` names it. */
+const SESSION_STARTS_SUFFIX = '.session-starts.jsonl'
+
+async function gcOrphanSpares(
+  slug: string,
+  liveSessionIds: Set<string>,
+  sweepStartedAtMs: number,
+): Promise<void> {
+  let entries: string[] = []
+  try {
+    entries = await fs.readdir(worktreeMetaDir(slug))
+  } catch {
+    return // no meta dir → nothing to sweep
+  }
+  for (const name of entries) {
+    // A `.tmp-*` file is a rewrite that died between write and rename. It
+    // belongs to no worktree and nothing else will ever collect it.
+    if (name.includes('.tmp-')) {
+      const tmp = path.join(worktreeMetaDir(slug), name)
+      if (await inUseBySweep(tmp, '', sweepStartedAtMs)) continue
+      await fs.rm(tmp, { force: true }).catch(() => { /* next sweep */ })
+      continue
+    }
+    // A log whose document is gone is a delete that got half way — the pair
+    // is removed together, so the survivor answers to nothing and no `.json`
+    // entry will ever name it again.
+    if (name.endsWith(SESSION_STARTS_SUFFIX)) {
+      const sid = name.slice(0, -SESSION_STARTS_SUFFIX.length)
+      if (liveSessionIds.has(sid)) continue
+      if (await readWorktreeMeta(slug, sid) !== undefined) continue
+      const log = worktreeSessionStartsPath(slug, sid)
+      if (await inUseBySweep(log, sid, sweepStartedAtMs)) continue
+      await fs.rm(log, { force: true }).catch(() => { /* next sweep */ })
+      continue
+    }
+    if (!name.endsWith('.json')) continue
+    const sid = name.slice(0, -'.json'.length)
+    if (liveSessionIds.has(sid)) continue
+    const meta = await readWorktreeMeta(slug, sid)
+    if (meta?.spare !== true) continue
+    if (await inUseBySweep(worktreeMetaPath(slug, sid), sid, sweepStartedAtMs)) continue
+    await deleteWorktreeState(slug, sid)
+    console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
+  }
+}
+
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   // Once per herd life: this collects what a previous process left behind,
   // so a second pass has nothing new to find.
@@ -335,6 +446,8 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
         console.warn(`Orphan modules GC: failed to remove ${dir}: ${(err as Error).message}`)
       }
     }
+
+    await gcOrphanSpares(slug, liveSessionIds, sweepStartedAtMs)
 
     // Per-session dirs live under `<slug>/sessions/<sid>` on both roots —
     // shared (vcluster kubeconfig, nested-yaac data, staged skills) and

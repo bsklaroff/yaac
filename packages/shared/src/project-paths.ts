@@ -247,49 +247,6 @@ export function codexTranscriptFile(slug: string, sessionId: string): string {
 }
 
 /**
- * SHARED, inheriting the tool home it selects. The tools whose home is
- * shared across a project's sessions (`.claude`, `.codex`, `.pi`) are the
- * ones that can hold agent-session links; opencode keeps its history in a
- * per-session sqlite DB inside the container and has no host home to link
- * into, so it has no entry here (its conversations are enumerated over
- * HTTP while the pod runs).
- */
-export function toolHomeDir(slug: string, tool: 'claude' | 'codex' | 'pi'): string {
-  if (tool === 'claude') return claudeDir(slug)
-  if (tool === 'codex') return codexDir(slug)
-  return piDir(slug)
-}
-
-/**
- * SHARED. Root of the agent-session link tree a tool's SessionStart hook maintains
- * inside its host-mounted home. One subtree per worktree (the hook keys it by
- * `$YAAC_SESSION_ID`, which is the worktree id) — see `worktreeLinksDir`.
- */
-export function agentLinksDir(slug: string, tool: 'claude' | 'codex' | 'pi'): string {
-  return path.join(toolHomeDir(slug, tool), '.yaac-links')
-}
-
-/**
- * SHARED. One worktree's link subtree, holding:
- *   `sessions/<agentSessionId>.jsonl` — symlink to the live transcript, one
- *      per agent session the worktree has ever hosted (its history);
- *   `panes/<paneId>` — a pointer file naming the agent session currently on
- *      that tmux pane (its live set).
- *
- * Written by the in-pod hook, read host-side by the agent-session registry.
- * Both are needed: the symlinks survive the pod (so a stopped worktree can
- * still list its history) while the pane pointers are what make "active"
- * knowable.
- */
-export function worktreeLinksDir(
-  slug: string,
-  tool: 'claude' | 'codex' | 'pi',
-  worktreeId: string,
-): string {
-  return path.join(agentLinksDir(slug, tool), worktreeId)
-}
-
-/**
  * SHARED. Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across
  * sessions within the same project so that model selection, permissions,
@@ -345,6 +302,41 @@ export function piSessionsDir(slug: string): string {
 /** SHARED — see {@link worktreeDir}. */
 export function worktreesDir(slug: string): string {
   return sharedProjectPath(slug, 'worktrees')
+}
+
+/**
+ * SHARED. One worktree's metadata document — the herd's own durable index of
+ * what a worktree is and which agent sessions it has hosted
+ * (docs/worktree-storage.md).
+ *
+ * Written only by the herd, and rewritten whole (tmp + rename), so it is
+ * deliberately NOT mounted into the pod: a rename replaces the inode a `File`
+ * hostPath mount pins, and the pod would read a stale document forever. What
+ * the pod writes is {@link worktreeSessionStartsPath} instead.
+ */
+export function worktreeMetaPath(slug: string, worktreeId: string): string {
+  return sharedProjectPath(slug, 'meta', `${worktreeId}.json`)
+}
+
+/**
+ * SHARED. What the in-pod `SessionStart` hook appends to — one JSON line per
+ * firing, named for the only thing that ever writes it.
+ *
+ * The hook is the only witness of a user-started agent session (`/clear`, a
+ * hand-typed `claude --resume`), because it alone sees `TMUX_PANE` beside the
+ * tool's session id. It cannot share the document above: two read-modify-writes
+ * lose one side's write, and coordinating them would mean a lock held across a
+ * hostPath mount from inside a gVisor sandbox. Appending needs neither, and
+ * mounting this as a `File` hostPath is safe precisely because nothing ever
+ * renames it.
+ */
+export function worktreeSessionStartsPath(slug: string, worktreeId: string): string {
+  return sharedProjectPath(slug, 'meta', `${worktreeId}.session-starts.jsonl`)
+}
+
+/** SHARED. The `meta/` directory both of the above live in. */
+export function worktreeMetaDir(slug: string): string {
+  return sharedProjectPath(slug, 'meta')
 }
 
 /**

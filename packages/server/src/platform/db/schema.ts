@@ -127,9 +127,9 @@ export const agentSessions = snakeCase.table('agent_sessions', {
    * writes, so it needs no storage here.
    */
   mode: text().notNull().default('tui'),
-  /** The conversation's transcript, *relative to the tool home* — never
+  /** The session's transcript, *relative to the project directory* — never
    *  absolute, so the row survives the data dir moving (see
-   *  `toStoredTranscriptPath`). Null when the tool leaves no transcript, or
+   *  `toProjectRelative`). Null when the tool leaves no transcript, or
    *  when the path has no home-relative form. */
   transcriptPath: text(),
   /** This conversation's own first user message (the worktree keeps the

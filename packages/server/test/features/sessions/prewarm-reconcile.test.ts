@@ -8,7 +8,10 @@ vi.mock('#features/sessions/spare-pool', () => ({
   rebranchSpare: vi.fn(),
 }))
 vi.mock('#features/sessions/cleanup', () => ({
-  cleanupSessionDetached: vi.fn(),
+  // The AWAITED teardown: the reap removes the spare's checkout off the back
+  // of it, so it must not resolve before the Job is actually gone.
+  cleanupSession: vi.fn().mockResolvedValue(undefined),
+  deleteWorktreeState: vi.fn().mockResolvedValue(undefined),
   isTmuxSessionAlive: vi.fn(),
 }))
 vi.mock('#features/records/preferences', () => ({ getDefaultTool: vi.fn() }))
@@ -25,12 +28,13 @@ import { claiming, inFlight, clearPrewarmStateForTests } from '#features/session
 import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { createSession } from '#features/sessions/create'
-import { cleanupSessionDetached } from '#features/sessions/cleanup'
+import { cleanupSession, deleteWorktreeState } from '#features/sessions/cleanup'
 import { getDefaultTool } from '#features/records/preferences'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockCreate = vi.mocked(createSession)
-const mockCleanup = vi.mocked(cleanupSessionDetached)
+const mockCleanup = vi.mocked(cleanupSession)
+const mockDeleteState = vi.mocked(deleteWorktreeState)
 const mockDefaultTool = vi.mocked(getDefaultTool)
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
@@ -75,6 +79,34 @@ describe('reconcilePrewarmPool', () => {
     await reconcilePrewarmPool('claude')
     expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectSlug: 'p', sessionId: 's2' })
     expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('removes the reaped spare\'s worktree state only once its pod is gone', async () => {
+    // The order is the point. A spare's checkout is deleted off the back of
+    // its teardown, and the detached teardown resolves before its Job delete
+    // has even started — so doing this off THAT would remove /workspace from
+    // under a pod still mounting it, and a crash in the window would leave a
+    // claimable labeled spare with no checkout at all.
+    const order: string[] = []
+    let releaseTeardown = (): void => { /* replaced below */ }
+    mockCleanup.mockImplementation(async () => {
+      order.push('teardown-started')
+      await new Promise<void>((r) => { releaseTeardown = r })
+      order.push('teardown-done')
+    })
+    mockDeleteState.mockImplementation(() => { order.push('state-deleted'); return Promise.resolve() })
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-spare', sessionId: 's2', prewarmed: true })])
+
+    await reconcilePrewarmPool('claude')
+    await flush()
+    // The tick does not wait on the teardown, so a slow one never stalls the
+    // pool — but nothing has been deleted yet either.
+    expect(order).toEqual(['teardown-started'])
+
+    releaseTeardown()
+    await flush()
+    expect(order).toEqual(['teardown-started', 'teardown-done', 'state-deleted'])
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
   })
 
   it('is a no-op when the pool size is 0', async () => {

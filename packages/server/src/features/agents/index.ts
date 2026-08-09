@@ -62,11 +62,6 @@ export {
   verifyAgentWindowAlive,
   type InitWindow,
 } from './agent-command'
-export {
-  clearPanePointers,
-  readAllWorktreeLinks,
-  type AgentSessionLink,
-} from './agent-links'
 export { ensureClaudeHooks } from './claude'
 export { removeLegacyCodexHook } from './codex'
 export { ensureOpencodeConfigJson } from './opencode'
@@ -78,11 +73,10 @@ export {
   type AgentWindowSpec,
 } from './setup-commands'
 export {
-  fromStoredTranscriptPath,
-  rehomeTranscriptPath,
+  resolveProjectPath,
   scanProjectTranscripts,
   sessionTranscriptPath,
-  toStoredTranscriptPath,
+  toProjectRelative,
   transcriptLastActiveMs,
   type TranscriptRecord,
 } from './transcripts'

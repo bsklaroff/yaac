@@ -1,10 +1,7 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions } from '#platform/db'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
-import {
-  fromStoredTranscriptPath,
-  toStoredTranscriptPath,
-} from '#features/agents'
+import { resolveProjectPath, toProjectRelative } from '#features/agents'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 
@@ -55,8 +52,8 @@ export interface AgentSessionRow {
   /** Which protocol drives it — see the `mode` column. */
   mode: AgentMode
   createdAt: Date
-  /** Absolute — the column stores it home-relative, and this layer is where
-   *  the two forms meet (see `toStoredTranscriptPath`). */
+  /** Absolute — the column stores it project-relative, and this layer is
+   *  where the two forms meet (see `resolveProjectPath`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
@@ -80,6 +77,9 @@ export interface DiscoveredAgentSession {
    *  protocol mid-life, and a later sighting that guessed wrong must not
    *  rewrite what the create path recorded. */
   mode?: AgentMode
+  /** Project-relative, as the herd reports it and the column stores it —
+   *  the one form that survives the data dir moving and means the same thing
+   *  on both sides of the link (see `toProjectRelative`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveMs?: number
@@ -122,12 +122,12 @@ export async function recordAgentSessions(
 
     for (const d of discovered) {
       const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
-      // Null means "no home-relative form", which is not the same as "no
-      // path": it must not overwrite a good stored value, so the fill branch
-      // below omits the column entirely rather than clearing it.
-      const stored = d.transcriptPath !== undefined
-        ? await toStoredTranscriptPath(projectSlug, d.tool, d.transcriptPath)
-        : null
+      // Stored exactly as reported — the herd already speaks the column's
+      // form (project-relative, see `toProjectRelative`). Absent is not the
+      // same as empty: a conversation whose path the herd could not express
+      // must not overwrite a good stored value, so the fill branch below
+      // omits the column entirely rather than clearing it.
+      const stored = d.transcriptPath ?? null
       // Only ever fill in — a resumed conversation is rediscovered from a
       // second worktree and must not lose what the first one learned. Built
       // first because an empty `set` is an error, not a no-op: a conversation
@@ -282,10 +282,10 @@ type LinkedSelect = {
 }
 
 function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
-  // The column is home-relative; every consumer wants an absolute path, and
-  // this is the one projection they all come through.
+  // The column is project-relative; every consumer wants an absolute path,
+  // and this is the one projection they all come through.
   const transcriptPath = r.transcriptPath !== null
-    ? fromStoredTranscriptPath(r.projectSlug, r.tool as AgentTool, r.transcriptPath)
+    ? resolveProjectPath(r.projectSlug, r.transcriptPath)
     : undefined
   return {
     projectSlug: r.projectSlug,
@@ -412,10 +412,17 @@ export async function setAgentSessionCapture(
   agentSessionId: string,
   capture: { firstPrompt?: string; transcriptPath?: string },
 ): Promise<void> {
+  // The last write before the column, and the one place a caller still hands
+  // in an absolute path: the stopped listing resolves a transcript to read it,
+  // then reports what it read. Converting here is what keeps "absolute appears
+  // nowhere" true for rows captured on demand — otherwise every founding-ask
+  // capture would quietly undo the relativize migration for its row, and only
+  // a moved data dir would ever reveal it.
+  //
   // As in recordAgentSessions: an unexpressible path leaves the column alone
   // rather than clearing what an earlier pass managed to record.
   const stored = capture.transcriptPath !== undefined
-    ? await toStoredTranscriptPath(projectSlug, tool, capture.transcriptPath)
+    ? await toProjectRelative(projectSlug, capture.transcriptPath)
     : null
   const values = {
     ...(capture.firstPrompt !== undefined

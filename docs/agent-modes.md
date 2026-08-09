@@ -9,7 +9,7 @@ its **mode**, and there are two:
 | Server sees | tmux control-mode notifications | `session/update` notifications |
 | Browser sees | PTY bytes in xterm.js | structured messages in a chat pane |
 | Status from | pane titles / rendered content | prompt-turn boundaries |
-| Conversation ids from | the in-pod hook's link tree | `session/new`'s reply |
+| Conversation ids from | the in-pod hook's session-starts log | `session/new`'s reply |
 
 Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
 runs. Only tools with an adapter in the session image can use `acp`
@@ -149,9 +149,9 @@ a conversation back the way it was started, and nothing else on disk says which
 that was.
 
 It *removes* more than it adds. A `tui` conversation is discovered — an in-pod
-hook writes a link tree and the reconciler joins pane pointers against the live
+hook appends a sighting and the reconciler joins recorded handles against the live
 pane set. An `acp` conversation is authored: `session/new` hands the server the
-id directly. No hook, no link tree, no join.
+id directly. No hook, no session-starts log, no join.
 
 The pod carries `yaac.mode` as a label (stamped only for `acp`) so the status
 watcher can pick a driver from an informer delta without a database read on the

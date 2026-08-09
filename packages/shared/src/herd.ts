@@ -16,7 +16,7 @@ import type {
  *
  * Everything here is runtime — what the substrate can see this instant, and
  * nothing that survives it. The durable half of a listing (a title, a pin,
- * the recorded creation time, the conversations and their opening messages)
+ * the recorded creation time, the sessions and their opening messages)
  * is the server's, and joining the two is what produces a session list.
  */
 export interface HerdReport {
@@ -45,7 +45,7 @@ export interface WorkspaceReport {
   waitingSinceMs?: number
   /** Per-agent liveness, keyed by the driver's handle — a tmux pane id under
    *  `tui`, the acpd window name under `acp`. The server joins its
-   *  conversations onto these by the handle each was last seen on; a handle
+   *  sessions onto these by the handle each was last seen on; a handle
    *  with no conversation is one whose id has not landed yet. */
   agents: AgentLiveness[]
   blockedHosts: string[]
@@ -150,16 +150,16 @@ export interface DesiredWorkspace {
  *
  * The union grows one variant per severed call site, so its membership is a
  * statement about which discoveries have already stopped writing rows
- * directly. Still to come: conversations found by the registry sweep, and
+ * directly. Still to come: sessions found by the registry sweep, and
  * first prompts read out of transcripts and ACP records.
  */
 export type HerdEvent =
   | WorktreeCreated
   | WorktreeCreateFailed
   | BaseBranchResolved
-  | ConversationsLaunched
-  | ConversationsDiscovered
-  | ConversationsActive
+  | SessionsLaunched
+  | SessionsDiscovered
+  | SessionsActive
   | WorktreeStopped
 
 /**
@@ -206,23 +206,23 @@ export interface BaseBranchResolved {
 }
 
 /**
- * The conversations a create started, in the order their windows were laid
+ * The sessions a create started, in the order their windows were laid
  * out — index 0 is the worktree's original agent, the one a restart brings up
  * first and whose opening message becomes the worktree's founding ask.
  *
  * The list is complete and every entry is live, which is what lets one event
- * carry both halves of the record: which conversations this worktree has, and
+ * carry both halves of the record: which sessions this worktree has, and
  * which of them are running. Discovery reports the two separately, because a
- * sweep finds conversations that ended long ago.
+ * sweep finds sessions that ended long ago.
  */
-export interface ConversationsLaunched {
-  type: 'conversations-launched'
+export interface SessionsLaunched {
+  type: 'sessions-launched'
   projectSlug: string
   worktreeId: string
-  conversations: LaunchedConversation[]
+  sessions: LaunchedSession[]
 }
 
-export interface LaunchedConversation {
+export interface LaunchedSession {
   agentSessionId: string
   tool: AgentTool
   /** Absent where the create cannot know it: a `tui` conversation's handle is
@@ -235,8 +235,8 @@ export interface LaunchedConversation {
 }
 
 /**
- * The conversations a sweep found in a worktree — its whole history, since a
- * conversation the herd can still see is one the worktree has hosted. Only
+ * The sessions a sweep found in a worktree — its whole history, since a
+ * session the herd can still see is one the worktree has hosted. Only
  * ever adds: the server fills in what it did not know and keeps what it did,
  * so a sweep that reads a compacted transcript cannot rewrite an opening
  * message.
@@ -246,14 +246,14 @@ export interface LaunchedConversation {
  * discover, because the server is the ACP client and the handshake handed it
  * the id.
  */
-export interface ConversationsDiscovered {
-  type: 'conversations-discovered'
+export interface SessionsDiscovered {
+  type: 'sessions-discovered'
   projectSlug: string
   worktreeId: string
-  conversations: DiscoveredConversation[]
+  sessions: DiscoveredSession[]
 }
 
-export interface DiscoveredConversation {
+export interface DiscoveredSession {
   agentSessionId: string
   tool: AgentTool
   /** Only ever recorded on first sighting: a conversation cannot change
@@ -264,6 +264,12 @@ export interface DiscoveredConversation {
   paneId?: string
   /** Its opening message, read out of the transcript or the ACP record. */
   firstPrompt?: string
+  /** The transcript, **relative to the project directory** — never absolute.
+   *  An absolute path names a path on the herd's machine, which the server can
+   *  neither resolve nor meaningfully store once the two are separate
+   *  processes; project-relative means the same thing on both sides and
+   *  survives the data dir moving. Absent when the tool leaves no transcript,
+   *  or wrote one outside the project directory. */
   transcriptPath?: string
   lastActiveMs?: number
   /** When the herd first saw it, used as its birth if it is new. */
@@ -271,7 +277,7 @@ export interface DiscoveredConversation {
 }
 
 /**
- * Which of a worktree's conversations are running right now — the complete
+ * Which of a worktree's sessions are running right now — the complete
  * live set, so anything linked and unnamed here has stopped.
  *
  * Absence of this event is emphatically NOT an empty set. A herd that cannot
@@ -279,14 +285,14 @@ export interface DiscoveredConversation {
  * transient gap would look like "every agent exited" — and the frozen set is
  * exactly what a restart brings back up.
  */
-export interface ConversationsActive {
-  type: 'conversations-active'
+export interface SessionsActive {
+  type: 'sessions-active'
   projectSlug: string
   worktreeId: string
-  active: ActiveConversation[]
+  active: ActiveSession[]
 }
 
-export interface ActiveConversation {
+export interface ActiveSession {
   agentSessionId: string
   tool: AgentTool
   paneId?: string

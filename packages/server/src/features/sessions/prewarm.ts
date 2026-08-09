@@ -41,6 +41,7 @@ import {
 import { cleanupSessionDetached } from './cleanup'
 import { serverLink } from '#server-link'
 import { rebranchSpare, retoolSpare } from './spare-pool'
+import { clearSpareFlag, mergeSessions, updateWorktreeMeta } from './worktree-meta'
 import type { SessionCreateResult } from './create'
 import { isTmuxSessionAlive } from '#features/status'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
@@ -281,11 +282,32 @@ export async function tryClaimPrewarmed(
     // as the worktree's first conversation, since that is where the
     // worktree's tool is read from.
     await serverLink().workspaceEvent({
-      type: 'conversations-launched',
+      type: 'sessions-launched',
       projectSlug,
       worktreeId: chosen.sessionId,
-      conversations: [{ tool, agentSessionId: chosen.sessionId }],
+      sessions: [{ tool, agentSessionId: chosen.sessionId }],
     })
+    // The spare's document already exists — warming wrote it. Claiming makes
+    // it a worktree, which is the one thing it was not.
+    //
+    // This write is CHECKED, unlike every other one to the document: the
+    // startup sweep deletes a checkout on the strength of `spare: true`, so a
+    // flip that failed silently would leave the worktree the user is about to
+    // be handed looking like a spare, and their work would go with it the next
+    // time the server started. Still before any mutation of the spare, so
+    // failing here costs nothing but a cold create — the spare stays a spare
+    // and the ordinary reap collects it.
+    const claimedId = chosen.sessionId
+    if (!await clearSpareFlag(projectSlug, claimedId,
+      spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {})) {
+      throw new Error(`could not clear the spare flag for ${claimedId}`)
+    }
+    // The agent already running in it, recorded best-effort like every other
+    // sighting: a missed one is re-discovered on the next reconcile tick.
+    await updateWorktreeMeta(projectSlug, claimedId, (current) =>
+      current === undefined
+        ? undefined
+        : mergeSessions(current, [{ tool, agentSessionId: claimedId }], Date.now()))
 
     if (rebranchTo !== null) {
       // The claim path is otherwise zero-network; a re-branch must fetch so

@@ -66,10 +66,10 @@ describe('applyHerdEvent', () => {
   // moment when the conversation list is complete and all of it is live.
   it('links launched conversations and marks them active, in launch order', async () => {
     await applyHerdEvent({
-      type: 'conversations-launched',
+      type: 'sessions-launched',
       projectSlug: 'proj',
       worktreeId: 'wt-1',
-      conversations: [
+      sessions: [
         { tool: 'claude', agentSessionId: 'conv-a', mode: 'acp', paneId: 'claude', firstPrompt: 'do the thing' },
         { tool: 'claude', agentSessionId: 'conv-b', mode: 'acp', paneId: 'claude-2' },
       ],
@@ -133,10 +133,10 @@ describe('applyHerdEvent', () => {
   it('erases a failed fresh worktree, links and all', async () => {
     await created('wt-fresh')
     await applyHerdEvent({
-      type: 'conversations-launched',
+      type: 'sessions-launched',
       projectSlug: 'proj',
       worktreeId: 'wt-fresh',
-      conversations: [{ tool: 'claude', agentSessionId: 'conv-x' }],
+      sessions: [{ tool: 'claude', agentSessionId: 'conv-x' }],
     })
 
     await failed('wt-fresh')
