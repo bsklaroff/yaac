@@ -16,6 +16,8 @@ vi.mock('#features/auth/plan-usage', () => ({
 }))
 
 import { EventHub, buildSnapshot, serializeEvent } from '#main/events'
+import { _resetHerdForTests, _setHerdForTests } from '#herd'
+import { listImageBuilds } from '#features/image-engine/image-builds'
 import type { WsLike } from '#main/events'
 import { listActiveSessions } from '#features/sessions/list'
 import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
@@ -124,6 +126,12 @@ describe('EventHub', () => {
     expect(good.sent).toHaveLength(1)
   })
 })
+
+// The build registry is the herd's, so the snapshot asks for it across the
+// boundary; the real listing stands behind the stub so the entries a case
+// registers are the ones it asserts on.
+beforeEach(() => { _setHerdForTests({ images: { listBuilds: () => Promise.resolve(listImageBuilds()) } }) })
+afterEach(() => { _resetHerdForTests() })
 
 describe('buildSnapshot', () => {
   it('returns all state slices', async () => {

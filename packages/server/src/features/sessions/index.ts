@@ -22,8 +22,12 @@
 // internal: the seed/spawn-script staging is covered through `createSession`.
 
 export { reconcileAgentSessions } from './agent-session-registry'
-export { getSessionChanges, sessionForkBranch } from './changes'
-export { cleanupSessionDetached, gcOrphanEphemeralModuleDirs } from './cleanup'
+export { getSessionChanges, worktreeForkFallback } from './changes'
+export {
+  cleanupSessionDetached,
+  gcOrphanEphemeralModuleDirs,
+  teardownForRestart,
+} from './cleanup'
 export {
   createSession,
   type SessionCreateOptions,
@@ -35,11 +39,21 @@ export {
   getSessionPrompt,
   type SessionDetail,
 } from './detail'
+export { sessionForkBranch } from './fork-branch'
+export {
+  countProjectWorkspaces,
+  countWorkspaces,
+  findWorkspace,
+  listWorkspaces,
+} from './locate'
 export { ensureProjectExists, listActiveSessions } from './list'
+export { observeWorkspaces } from './observe'
+export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'
 export { tryClaimPrewarmed } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {
+  inFlightWorktreeIds,
   listProvisioning,
   registerProvisioning,
   removeProvisioning,
@@ -51,5 +65,5 @@ export { reconcileImageSalvage } from './salvage-reconcile'
 export { rebranchSpare, retoolSpare } from './spare-pool'
 export { reconcileSpawnRequests } from './spawn-reconcile'
 export { reconcileStaleSessions } from './stale-sessions'
-export { stopWorktree } from './stop'
+export { stopWorktree, type StoppedWorktreeInfo } from './stop'
 export { listStoppedWorktrees } from './stopped-list'

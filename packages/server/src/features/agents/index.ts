@@ -39,7 +39,7 @@ export {
   type LiveAgent,
 } from './drivers'
 export { acpAdapterFor } from './acp-driver'
-export { attachAcp } from './acp-bridge'
+export { attachAcp, type AcpSocket } from './acp-bridge'
 export { acpConversation } from './acp-registry'
 export { readAcpFirstPrompt } from './acp-log'
 export type { AcpConversation } from './acp-client'
@@ -53,7 +53,6 @@ export {
   type SessionAgentStatus,
 } from './agent-tools'
 export {
-  MODEL_RE,
   TMUX,
   agentWindowTarget,
   buildAgentCmd,

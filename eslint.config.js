@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|sessions|skills|status|terminals|titles)|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|sessions|skills|status|terminals|titles)|herd|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 
@@ -53,7 +53,9 @@ const SEALED_FOLDERS = {
 //
 // This list is the split's progress bar. It is seeded with the paths that
 // are ALREADY clean, and every step of the plan's phase 1 severs one more
-// module and adds it here. Paths are only ever added.
+// module and adds it here. A path leaves it only by turning out to be the
+// SERVER's — as the provisioning registry did in step 11, being a sidebar
+// row rather than anything on a substrate — never to dodge the ban.
 const HERD_SRC = [
   'packages/server/src/platform/container/**/*.ts',
   'packages/server/src/platform/k8s/**/*.ts',
@@ -89,15 +91,23 @@ const HERD_SRC = [
   'packages/server/src/features/sessions/observe.ts',
   'packages/server/src/features/sessions/prewarm.ts',
   'packages/server/src/features/sessions/prewarm-reconcile.ts',
+  'packages/server/src/features/sessions/changes.ts',
+  'packages/server/src/features/sessions/project-purge.ts',
   'packages/server/src/features/sessions/prompt-capture.ts',
-  'packages/server/src/features/sessions/provisioning.ts',
   'packages/server/src/features/sessions/salvage-reconcile.ts',
   'packages/server/src/features/sessions/seed.ts',
   'packages/server/src/features/sessions/spare-pool.ts',
   'packages/server/src/features/sessions/spawn-reconcile.ts',
   'packages/server/src/features/sessions/spawn-script.ts',
+  'packages/server/src/features/sessions/locate.ts',
   'packages/server/src/features/sessions/stale-sessions.ts',
   'packages/server/src/features/sessions/stop.ts',
+  // The herd's own half of the boundary folder. `contract.ts`/`current.ts`
+  // are shared vocabulary and `in-process.ts` is the seam itself, but these
+  // two are herd code that moves into the herd package with everything else,
+  // so they answer to the herd's bans like any other herd module.
+  'packages/server/src/herd/lifecycle.ts',
+  'packages/server/src/herd/reconcile.ts',
 ]
 
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
@@ -110,6 +120,68 @@ const HERD_SRC = [
 const NO_DATABASE = {
   regex: '^(#features/records|#platform/db|@electric-sql/pglite|drizzle-orm)',
   message: 'The herd must not read the database (docs/plans/herd-split.md): emit a HerdEvent for the server to persist, or take the value as an argument.',
+}
+
+// The other half of the same boundary. A herd reports upward through
+// `#server-link` and knows nothing else about the server: not its HTTP
+// layer, not its routes, not its startup, and not the snapshot hub behind
+// `#notify`. `#herd` is banned too — that is the SERVER's handle on a herd,
+// and a herd reaching for it would be calling itself through the boundary.
+const NO_SERVER = {
+  regex: '^(#main|#routes|#http|#notify|#herd)(/|$)',
+  message: 'The herd must not import the server (docs/plans/herd-split.md): report it through #server-link instead.',
+}
+
+// The server half, and the mirror of HERD_SRC: these paths may not reach
+// into a herd feature except through `#herd`. Exactly one module in the
+// package does — `src/herd/in-process.ts`, the in-process implementation —
+// which is what makes swapping in a remote herd a one-file change.
+//
+// Neither zone's regex can see a RELATIVE import, so a herd module reaching
+// a server module inside the same feature folder would pass both. There is
+// no such reach left: the one that existed — the reaper and the orphan-dir
+// sweep importing `./provisioning` for the in-flight set — was closed by
+// delivering that set on `DesiredWorkspaces` instead, which is what it has
+// to be anyway once the herd is a package that cannot see the registry.
+//
+// Like HERD_SRC this list only ever grows, and what is missing from it is a
+// statement rather than an oversight. Still outside:
+//   - `#features/records/agent-session-store.ts` and `#platform/db`, which
+//     expand a stored transcript path against a tool home — a herd-side
+//     path shape the server should not know, and a schema change to fix;
+//   - `#platform/db/legacy-import.ts`, a one-shot migration that reads the
+//     legacy JSON stores off the herd's disk.
+const SERVER_SRC = [
+  'packages/server/src/main/**/*.ts',
+  'packages/server/src/routes/**/*.ts',
+  'packages/server/src/http/**/*.ts',
+  'packages/server/src/features/titles/**/*.ts',
+  // The JOIN halves: what reads the server's rows alongside a herd's report.
+  // Their herd-side siblings are in HERD_SRC above.
+  'packages/server/src/features/sessions/detail.ts',
+  'packages/server/src/features/sessions/fork-branch.ts',
+  'packages/server/src/features/sessions/list.ts',
+  'packages/server/src/features/sessions/project-teardown.ts',
+  'packages/server/src/features/sessions/provisioning.ts',
+  'packages/server/src/features/sessions/resolve.ts',
+  'packages/server/src/features/sessions/restart.ts',
+  'packages/server/src/features/sessions/stopped-list.ts',
+  'packages/server/src/features/projects/detail.ts',
+  'packages/server/src/features/projects/list.ts',
+  'packages/server/src/features/records/desired-workspaces.ts',
+]
+
+// Type-only imports are allowed on purpose: a type costs nothing at runtime
+// and crosses no boundary, so the contract in `#herd` is free to describe a
+// herd's answers with the shapes the features already declare.
+// `#herd-desired` is in here because it is the HERD's end of a push: the
+// server publishes through `HerdClient.workspaces.publishDesired`, and
+// reaching for the store directly would bypass the never-empty discipline
+// that makes an absent set safe.
+const NO_HERD_FEATURES = {
+  regex: '^(#features/(agents|cluster|egress|forwarders|image-engine|images|status|terminals)|#platform/(container|k8s)|#herd-desired)(/|$)',
+  allowTypeImports: true,
+  message: 'The server must not call a herd feature directly (docs/plans/herd-split.md): add it to HerdClient and go through #herd.',
 }
 
 export default tseslint.config(
@@ -207,6 +279,32 @@ export default tseslint.config(
             RELATIVE_PARENT,
             SEALED_FOLDERS,
             NO_DATABASE,
+            NO_SERVER,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The server half of the same boundary (see SERVER_SRC): the base server
+  // zone, plus the ban on calling a herd feature. Later than that zone on
+  // purpose — flat-config rule options replace rather than merge, so this
+  // re-states every pattern it inherits.
+  {
+    files: SERVER_SRC,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_HERD_FEATURES,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

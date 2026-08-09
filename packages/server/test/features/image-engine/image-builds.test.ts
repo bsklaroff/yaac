@@ -11,7 +11,7 @@ import {
   listImageBuilds,
   registerImageBuild,
 } from '#features/image-engine/image-builds'
-import { onSessionListChanged, _resetSessionListChangedForTests } from '#notify'
+import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
 
 function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> = {}): string {
   return registerImageBuild({
@@ -27,7 +27,7 @@ function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> =
 beforeEach(() => { clearAllImageBuildsForTests() })
 afterEach(() => {
   clearAllImageBuildsForTests()
-  _resetSessionListChangedForTests()
+  _resetServerLinkForTests()
   vi.useRealTimers()
 })
 
@@ -130,7 +130,7 @@ describe('ingestImageBuildLine', () => {
   it('publishes podman STEP progress, broadcasting only when it advances', () => {
     const id = register()
     const notify = vi.fn()
-    onSessionListChanged(notify)
+    _setServerLinkForTests({ workspacesChanged: notify })
 
     // Lines that aren't STEP progress leave the entry's step untouched —
     // including near-misses, so a changed podman format degrades to

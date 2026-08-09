@@ -5,6 +5,7 @@ import simpleGit from 'simple-git'
 import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/platform/git'
 import { listSessionPods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
 import { listActiveSessions } from '@yaac/server/features/sessions/list'
+import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import { listProjects } from '@yaac/server/features/projects/list'
 import { isTmuxSessionAlive } from '@yaac/server/features/status/liveness'
 import {
@@ -60,6 +61,11 @@ describe('yaac prewarmed sessions', () => {
   })
 
   beforeEach(async () => {
+    // The listing and the project count are JOINS: the rows are read here,
+    // and what a substrate is running comes back across the boundary. This
+    // file asserts on both in-process, so it needs a herd of its own — the
+    // spawned server under test has its own (docs/plans/herd-split.md).
+    setHerd(createInProcessHerd())
     testEnv = await createYaacTestEnv()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
@@ -71,6 +77,7 @@ describe('yaac prewarmed sessions', () => {
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     if (server) await server.stop()
     server = null
     await cleanupSessionJobs()

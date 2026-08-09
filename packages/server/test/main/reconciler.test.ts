@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { startReconciler, type ReconcileStep } from '#main/reconciler'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import {
+  defaultReconcileSteps,
+  startReconciler,
+  type PassContext,
+  type ReconcileStep,
+} from '#main/reconciler'
 import type { DeltaSource } from '#platform/k8s/cluster-cache'
 
 type StepRuns = Array<{ name: string; resync: boolean }>
@@ -16,14 +20,14 @@ function makeStep(
   runs: StepRuns,
   name: string,
   triggers: ReconcileStep['triggers'],
-  impl?: (snapshot: TickSnapshot) => void | Promise<void>,
+  impl?: (ctx: PassContext) => void | Promise<void>,
 ): ReconcileStep {
   return {
     name,
     triggers,
-    run: async (snapshot) => {
-      runs.push({ name, resync: snapshot.resync })
-      await impl?.(snapshot)
+    run: async (ctx) => {
+      runs.push({ name, resync: ctx.resync })
+      await impl?.(ctx)
     },
   }
 }
@@ -207,5 +211,32 @@ describe('startReconciler', () => {
     await flush()
     h.abort()
     await expect(h.done).resolves.toBeUndefined()
+  })
+})
+
+describe('defaultReconcileSteps', () => {
+  // The substrate half of a pass is one step, and what is left brackets it:
+  // the desired set has to be published before the reaper inside the herd's
+  // pass can judge an absence against it, and titles are generated after the
+  // conversation sweep so a just-captured opening message is eligible in the
+  // same pass.
+  it('brackets the herd’s pass with the two steps that touch rows', () => {
+    expect(defaultReconcileSteps().map((s) => s.name))
+      .toEqual(['desired-workspaces', 'herd', 'generated-titles'])
+  })
+
+  // Which of its own steps a pass owes is the herd's business, so its step
+  // takes every source rather than being triggered on a subset.
+  it('owes the herd a pass on any source', () => {
+    const herdStep = defaultReconcileSteps().find((s) => s.name === 'herd')!
+    expect([...herdStep.triggers].sort()).toEqual([
+      'poll',
+      'session-jobs',
+      'session-pods',
+      'vcluster-configmaps',
+      'vcluster-namespaces',
+      'vcluster-pods',
+      'vcluster-services',
+    ])
   })
 })

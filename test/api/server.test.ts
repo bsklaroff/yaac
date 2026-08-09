@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
+import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -10,10 +11,12 @@ describe('buildApp', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    setHerd(createInProcessHerd())
     consoleErrorSpy.mockClear()
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
     vi.unstubAllEnvs()
   })

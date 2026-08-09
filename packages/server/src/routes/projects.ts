@@ -5,25 +5,15 @@ import { z } from 'zod'
 import {
   addProject,
   assertProjectExists,
-  getProjectBranches,
   getProjectDetail,
   listProjects,
-  readProjectConfigRaw,
-  readProjectDockerfile,
-  removeProjectConfig,
-  resolveProjectBuildDir,
   resolveProjectConfigWithSource,
-  setProjectReferenceBranch,
-  writeProjectConfig,
-  writeProjectDockerfile,
 } from '#features/projects'
 import { removeProject } from '#features/sessions'
 import { getProjectSkills, getSkillDetail } from '#features/skills'
-import { remoteBranchExists } from '#platform/git'
-import { repoDir } from '@yaac/shared/project-paths'
+import { herd } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
-import { pushImageShared, rebuildProjectImage } from '#features/images'
 import { toErrorBody } from '#http'
 import { testEnv } from '@yaac/shared/env'
 
@@ -50,7 +40,7 @@ export const projectApp = new Hono()
   // Raw text for the CLI's $EDITOR flow: unlike the parsed GET above it
   // returns malformed content verbatim so it can be repaired.
   .get('/:slug/config/raw', async (c) =>
-    c.json({ content: await readProjectConfigRaw(c.req.param('slug')) }))
+    c.json({ content: await herd().projects.readConfigRaw(c.req.param('slug')) }))
   .put(
     '/:slug/config',
     zv('json', z.object({ config: z.unknown() }).refine(
@@ -59,12 +49,12 @@ export const projectApp = new Hono()
     )),
     async (c) => {
       const { config } = c.req.valid('json')
-      const saved = await writeProjectConfig(c.req.param('slug'), config)
+      const saved = await herd().projects.writeConfig(c.req.param('slug'), config)
       return c.json({ config: saved })
     },
   )
   .delete('/:slug/config', async (c) => {
-    await removeProjectConfig(c.req.param('slug'))
+    await herd().projects.removeConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
   // Branch data for the new-session picker: local remote-tracking refs
@@ -74,7 +64,7 @@ export const projectApp = new Hono()
     zv('query', z.object({ refresh: z.string().optional() })),
     async (c) => {
       const refresh = c.req.valid('query').refresh === '1'
-      return c.json(await getProjectBranches(c.req.param('slug'), { refresh }))
+      return c.json(await herd().projects.branches(c.req.param('slug'), { refresh }))
     },
   )
   // Set (or clear, with null) the project's default reference branch —
@@ -90,10 +80,10 @@ export const projectApp = new Hono()
       // Unknown project must surface as NOT_FOUND, not a bogus "branch not
       // found" from probing a repo dir that isn't there.
       await assertProjectExists(slug)
-      if (branch !== null && !(await remoteBranchExists(repoDir(slug), branch))) {
+      if (branch !== null && !(await herd().projects.remoteBranchExists(slug, branch))) {
         throw new ServerError('VALIDATION', `branch "${branch}" not found on origin.`)
       }
-      const config = await setProjectReferenceBranch(slug, branch)
+      const config = await herd().projects.setReferenceBranch(slug, branch)
       return c.json({ referenceBranch: config.referenceBranch ?? null })
     },
   )
@@ -137,16 +127,16 @@ export const projectApp = new Hono()
     // string | undefined here; the mount guarantees it exists.
     const slug = c.req.param('slug') ?? ''
     await assertProjectExists(slug)
-    return resolveProjectBuildDir(slug)
+    return herd().projects.projectBuildDir(slug)
   }))
   .get('/:slug/dockerfile', async (c) =>
-    c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
+    c.json({ content: await herd().projects.readProjectDockerfile(c.req.param('slug')) }))
   .put(
     '/:slug/dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
       const { content } = c.req.valid('json')
-      await writeProjectDockerfile(c.req.param('slug'), content)
+      await herd().projects.writeProjectDockerfile(c.req.param('slug'), content)
       return c.json({ content })
     },
   )
@@ -162,7 +152,7 @@ export const projectApp = new Hono()
       try {
         // Resolve project first (throws NOT_FOUND if missing).
         await getProjectDetail(slug)
-        const finalTag = await rebuildProjectImage(slug, {
+        const finalTag = await herd().images.rebuildProject(slug, {
           imagePrefix: testEnv.imagePrefix,
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
@@ -171,7 +161,7 @@ export const projectApp = new Hono()
         await write({ type: 'progress', message: 'Pushing rebuilt image to the local registry...' })
         // force: the rebuild changed image bytes under an unchanged
         // content-hash tag, so the has-tag no-op would skip the real push.
-        await pushImageShared(finalTag, { projectSlug: slug, reason: 'rebuild' }, { force: true })
+        await herd().images.pushShared(finalTag, { projectSlug: slug, reason: 'rebuild' }, { force: true })
         await write({ type: 'result', result: { projectSlug: slug, finalTag } })
       } catch (err) {
         const { body: errBody } = toErrorBody(err)

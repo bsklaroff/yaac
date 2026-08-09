@@ -15,9 +15,17 @@
 // through the entry points below.
 
 export { addProject } from './add'
-export { getProjectBranches } from './branches'
+export { getProjectBranches, type ProjectBranches } from './branches'
 export { PROJECT_DOCKERFILE, USER_DOCKERFILE, resolveProjectBuildDir, resolveUserBuildDir } from './build-dirs'
-export { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from './build-files'
+export {
+  deleteBuildFile,
+  listBuildFiles,
+  readBuildFile,
+  renameBuildFile,
+  writeBuildFile,
+  type BuildFileContent,
+  type BuildFileEntry,
+} from './build-files'
 export { ephemeralModulesSlotKey, resolveEphemeralModulesPaths, resolveProjectConfig } from './config'
 export {
   addEntry,

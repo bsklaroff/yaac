@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -240,6 +240,8 @@ vi.mock('@yaac/server/features/sessions/cleanup', () => ({
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createSession } from '@yaac/server/features/sessions/create'
+import { applyHerdEvent } from '@yaac/server/features/records/apply-herd-event'
+import { _resetServerLinkForTests, _setServerLinkForTests } from '@yaac/server/server-link'
 import {
   deleteWorktreeRow,
   getWorktreeRow,
@@ -341,6 +343,11 @@ describe('createSession', () => {
   beforeEach(() => {
     vi.resetAllMocks()
 
+    // A create reports what it recorded rather than writing rows itself, so
+    // the server's end of the link stands behind the boundary here — the
+    // mocked stores below are what those reports land in.
+    _setServerLinkForTests({ workspaceEvent: applyHerdEvent })
+
     // Async store reads must resolve, not return undefined: createSession
     // awaits and `.catch()`es them.
     vi.mocked(getWorktreeRow).mockResolvedValue(undefined)
@@ -394,6 +401,8 @@ describe('createSession', () => {
       server: { close: vi.fn() },
     } as never)
   })
+
+  afterEach(() => { _resetServerLinkForTests() })
 
   it('creates the worktree from an explicitly requested branch and tracks it', async () => {
     const result = await createSession('demo', { tool: 'claude', branch: 'dev' })

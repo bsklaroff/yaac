@@ -130,6 +130,20 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
     }))
 }
 
+/**
+ * The ids a sweep must not touch: workspaces this server is still creating
+ * or restarting, so it owns their whole lifecycle. Delivered to the herd with
+ * the desired set — it never reads this registry.
+ *
+ * A FAILED entry is excluded and that exclusion is the point: its row lingers
+ * with no TTL until the user dismisses it, and its own rollback has already
+ * torn down whatever it left, so it is not still running and must shield
+ * nothing from the reaper.
+ */
+export function inFlightWorktreeIds(): string[] {
+  return [...entries.values()].filter((e) => e.error === undefined).map((e) => e.worktreeId)
+}
+
 /** Test helper: drop all tracked entries. */
 export function clearAllProvisioningForTests(): void {
   entries.clear()

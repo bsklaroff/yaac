@@ -1,43 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-
-// No cluster in unit tests — resolveSessionContainer's pod listing is
-// mocked to an empty cluster so the NOT_FOUND paths are exercised.
-vi.mock('#platform/k8s/pods', async () => {
-  const actual = await vi.importActual<typeof podsModule>('#platform/k8s/pods')
-  return { ...actual, listSessionPods: vi.fn().mockResolvedValue([]) }
-})
-vi.mock('#platform/k8s/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
-
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { _resetHerdForTests, _setHerdForTests, type WorkspaceHandle } from '#herd'
 import { resolveSessionContainer } from '#features/sessions/resolve'
-import { listSessionPods } from '#platform/k8s/pods'
-import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { ServerError } from '@yaac/shared/errors'
-import type * as podsModule from '#platform/k8s/pods'
-import type { SessionPod } from '#platform/k8s/pods'
 
-const mockList = vi.mocked(listSessionPods)
-const mockCache = vi.mocked(getActiveClusterCache)
+/**
+ * The herd is the boundary here: which workspace an id names, and whether it
+ * is running, is the substrate's answer (asserted in test/herd/), and what
+ * this module adds is the error vocabulary the routes above it rely on.
+ */
+const find = vi.fn<
+  (idOrName: string, opts?: { preferCache?: boolean }) => Promise<WorkspaceHandle | undefined>
+>()
 
-function pod(over: Partial<SessionPod> = {}): SessionPod {
+function handle(over: Partial<WorkspaceHandle> = {}): WorkspaceHandle {
   return {
-    podName: 'yaac-proj-abc123-xyz',
-    jobName: 'yaac-proj-abc123',
-    sessionId: 'abc123def456',
+    workspaceId: 'abc123def456',
     projectSlug: 'proj',
-    phase: 'Running',
+    jobName: 'yaac-proj-abc123',
+    tool: 'claude',
     running: true,
+    state: 'running',
     labels: {},
+    createdAtMs: 0,
+    prewarmed: false,
     ...over,
-  } as SessionPod
-}
-
-/** A cluster cache whose session-pods informer is connected and seeded. */
-function healthyCache(pods: SessionPod[]): ReturnType<typeof getActiveClusterCache> {
-  return {
-    healthy: (source: string) => source === 'session-pods',
-    sessionPods: () => pods,
-  } as unknown as ReturnType<typeof getActiveClusterCache>
+  }
 }
 
 describe('resolveSessionContainer', () => {
@@ -45,72 +33,52 @@ describe('resolveSessionContainer', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    mockList.mockReset().mockResolvedValue([])
-    mockCache.mockReset().mockReturnValue(null)
+    find.mockReset().mockResolvedValue(undefined)
+    _setHerdForTests({ workspaces: { find } })
   })
 
   afterEach(async () => {
+    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 
-  it('throws NOT_FOUND when no container matches the id', async () => {
+  it('throws NOT_FOUND when no workspace matches the id', async () => {
     await expect(resolveSessionContainer('nope')).rejects.toBeInstanceOf(ServerError)
     await expect(resolveSessionContainer('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('throws NOT_FOUND for any id in a fresh data dir, regardless of requireRunning', async () => {
+  it('throws NOT_FOUND for an unknown id regardless of requireRunning', async () => {
     await expect(
       resolveSessionContainer('nope', { requireRunning: true }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  // The whole point of the cache: a session endpoint resolves without paying
-  // for a `kubectl get pods` subprocess.
-  it('resolves from the informer cache without listing the cluster', async () => {
-    mockCache.mockReturnValue(healthyCache([pod()]))
-    const out = await resolveSessionContainer('abc123', { requireRunning: true })
-    expect(out).toMatchObject({
-      jobName: 'yaac-proj-abc123', sessionId: 'abc123def456', projectSlug: 'proj', state: 'running',
+  // Every session endpoint resolves through here and several are polled, so
+  // the cache-preferring lookup is what keeps them off a subprocess.
+  it('asks for the cache-preferred match and returns the container', async () => {
+    find.mockResolvedValue(handle())
+    expect(await resolveSessionContainer('abc123', { requireRunning: true })).toEqual({
+      jobName: 'yaac-proj-abc123',
+      sessionId: 'abc123def456',
+      projectSlug: 'proj',
+      state: 'running',
     })
-    expect(mockList).not.toHaveBeenCalled()
+    expect(find).toHaveBeenCalledWith('abc123', { preferCache: true })
   })
 
-  // A pod reaches the cache via a watch event, so a just-created session can be
-  // missing from it for a moment. Concluding NOT_FOUND there would break the
-  // PTY attach that runs immediately after create.
-  it('falls back to a live list when the cache does not have the session yet', async () => {
-    mockCache.mockReturnValue(healthyCache([]))
-    mockList.mockResolvedValue([pod()])
-    const out = await resolveSessionContainer('abc123')
-    expect(out.jobName).toBe('yaac-proj-abc123')
-    expect(mockList).toHaveBeenCalledTimes(1)
-  })
-
-  // An unseeded or disconnected informer cannot be trusted for presence
-  // either, so it is bypassed entirely rather than consulted.
-  it('ignores an unhealthy cache and lists live', async () => {
-    const unhealthy = {
-      healthy: () => false,
-      sessionPods: () => { throw new Error('must not read an unhealthy cache') },
-    } as unknown as ReturnType<typeof getActiveClusterCache>
-    mockCache.mockReturnValue(unhealthy)
-    mockList.mockResolvedValue([pod()])
-    const out = await resolveSessionContainer('abc123')
-    expect(out.jobName).toBe('yaac-proj-abc123')
-    expect(mockList).toHaveBeenCalledTimes(1)
-  })
-
-  it('reports a non-running pod as CONFLICT only when the caller requires running', async () => {
-    mockCache.mockReturnValue(healthyCache([pod({ phase: 'Pending', running: false })]))
+  it('reports a non-running workspace as CONFLICT only when the caller requires running', async () => {
+    find.mockResolvedValue(handle({ running: false, state: 'pending' }))
     await expect(
       resolveSessionContainer('abc123', { requireRunning: true }),
     ).rejects.toMatchObject({ code: 'CONFLICT' })
-    // Without the flag the same pod resolves, carrying its phase as state.
+    // Without the flag the same workspace resolves, carrying its state.
     expect(await resolveSessionContainer('abc123')).toMatchObject({ state: 'pending' })
   })
 
-  it('surfaces a cluster listing failure as RUNTIME_UNAVAILABLE', async () => {
-    mockList.mockRejectedValue(new Error('connection refused'))
+  // The herd distinguishes "no match" from "could not ask"; this path must
+  // not flatten the second into a NOT_FOUND the client would act on.
+  it('lets a substrate failure through', async () => {
+    find.mockRejectedValue(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused'))
     await expect(resolveSessionContainer('abc123')).rejects.toMatchObject({
       code: 'RUNTIME_UNAVAILABLE',
     })

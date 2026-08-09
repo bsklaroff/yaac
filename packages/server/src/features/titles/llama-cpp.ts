@@ -13,7 +13,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileAsync } from '#platform/k8s'
+import { execFileAsync } from '#platform/shell'
 import { serverLocalPath } from '@yaac/shared/paths'
 
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */

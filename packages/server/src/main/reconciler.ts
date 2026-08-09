@@ -1,33 +1,16 @@
-import {
-  reconcilePrewarmPool,
-  reconcileAgentSessions,
-  reconcileImageSalvage,
-  reconcileSpawnRequests,
-  reconcileStaleSessions,
-} from '#features/sessions'
-import {
-  getDefaultTool,
-  pushDesiredWorkspaces,
-} from '#features/records'
-import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
-import {
-  reconcileProjectRegistryGc,
-  reconcileRedirectClaims,
-  reconcileVclusters,
-} from '#features/cluster'
-import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#features/images'
-import { reconcileHostImageGc } from '#features/image-engine'
+import { getDefaultTool, pushDesiredWorkspaces } from '#features/records'
+import { inFlightWorktreeIds } from '#features/sessions'
 import { reconcileGeneratedTitles } from '#features/titles'
-import { type DeltaSource, type TickSnapshot, createTickSnapshot, getActiveClusterCache } from '#platform/k8s'
+import { DESIRED_SET_TRIGGERS, herd, type HerdChangeSource } from '#herd'
 import { serverLog } from '#log'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — three lanes feed one serialized pass executor:
  *
- * - deltas: ClusterCache informer events (session pods/Jobs, vcluster
- *   namespaces and their pods/services) mark their sources dirty; a pass
- *   runs after a short debounce so event storms coalesce.
+ * - changes: the herd's watches (session pods/Jobs, vcluster namespaces and
+ *   their pods/services) mark their sources dirty; a pass runs after a short
+ *   debounce so event storms coalesce.
  * - poll: a 5s mark for the state no watch can see — the proxy's queued
  *   spawn requests and in-pod tmux death (the stale reaper). These are
  *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
@@ -37,88 +20,75 @@ import { serverLog } from '#log'
  *   (image prewarm/GC, salvage, builder-pod GC).
  *
  * Passes never overlap (steps share module state) and preserve the step
- * order below; each pass shares one TickSnapshot and isolates step errors.
+ * order below; each pass isolates step errors.
+ *
+ * There are only three steps, because the substrate half of a pass is one of
+ * them: the herd runs its own ordered steps over its own view of the
+ * substrate (docs/plans/herd-split.md). What is left here is what reads or
+ * writes rows, and it brackets the herd's pass — the desired set has to be
+ * published before the reaper can judge an absence against it, and titles
+ * are generated after the conversation sweep so a just-captured opening
+ * message is eligible in the same pass.
  */
-export type ReconcileTrigger = DeltaSource | 'poll'
+export type ReconcileTrigger = HerdChangeSource | 'poll'
 
 export interface ReconcileStep {
   name: string
   /** Sources that dirty this step; every step also runs on resync. */
   triggers: readonly ReconcileTrigger[]
-  run: (snapshot: TickSnapshot) => Promise<void>
+  run: (ctx: PassContext) => Promise<void>
 }
+
+export interface PassContext {
+  /** Which sources dirtied this pass. */
+  triggers: ReadonlySet<ReconcileTrigger>
+  /** Whether this is the periodic run-everything pass. */
+  resync: boolean
+  /** Aborts the pass. Handed down so a step that fans out into many of its
+   *  own can stop starting them the moment shutdown signals. */
+  signal: AbortSignal
+}
+
+/** Every source there is: the herd's pass owes work on any of them, and
+ *  decides internally which of its own steps a given one dirties. */
+const HERD_TRIGGERS: readonly ReconcileTrigger[] = [
+  'session-pods',
+  'session-jobs',
+  'vcluster-namespaces',
+  'vcluster-pods',
+  'vcluster-services',
+  'vcluster-configmaps',
+  'poll',
+]
 
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
-    // Tell the herd what the server records as existing. Before the reaper,
-    // which is the step that needs it: absence only means something against
-    // a set from this pass, not the last one.
-    { name: 'desired-workspaces', triggers: ['session-pods', 'session-jobs', 'poll'],
-      run: () => pushDesiredWorkspaces() },
-    // Poll keeps dead-tmux detection at today's cadence (not a k8s event).
-    { name: 'stale-sessions', triggers: ['session-pods', 'session-jobs', 'poll'],
-      run: (s) => reconcileStaleSessions(s) },
-    // Service in-session `yaac-spawn` requests queued at the egress proxy.
-    { name: 'spawn-requests', triggers: ['poll'],
-      run: async (s) => reconcileSpawnRequests({ defaultTool: await getDefaultTool() }, s) },
-    // Leaked trust-split builder pods (server restarted mid-build) — the
-    // label sweep backstop. Throttled internally. Ahead of image-prewarm on
-    // purpose: a leaked builder's memory reservation is what stops the next
-    // build from scheduling, so it has to go before builds are launched.
-    { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
-    // Keep every project's image chain built and pushed (detached tasks).
-    // Before the prewarm pool: a spare's createSession then joins the
-    // already-running builds. Throttled internally.
-    { name: 'image-prewarm', triggers: [], run: () => reconcileImagePrewarm() },
-    // Keep one prewarmed spare per active project (after the stale sweep so
-    // counts reflect just-reaped sessions). No-op when the pool size is 0.
-    { name: 'prewarm-pool', triggers: ['session-pods'],
-      run: async (s) => reconcilePrewarmPool((await getDefaultTool()) ?? 'claude', s) },
-    // Mid-session image salvage (nested engines → project registry). Throttled
-    // internally per session; salvages run detached.
-    { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
-    // Blob reclaim in one project registry per pass. It cannot wait for a
-    // project to go idle — an active one never does — so it takes a
-    // read-only maintenance window instead, and detaches. Throttled
-    // internally; after the salvage, so a just-pushed generation is the
-    // one that survives the collect.
-    { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
-    // Which agent sessions each worktree holds, which are live, and what each
-    // opened with — read from the in-pod hook's link tree (or the ACP
-    // handshake) crossed with the watcher's live agent set. The opening
-    // message rides along because the sweep has just resolved the transcript
-    // it would be read from.
-    { name: 'agent-sessions', triggers: ['session-pods'],
-      run: (s) => reconcileAgentSessions(s) },
-    // Model-generated titles for untitled sessions (right after the sweep, so
-    // a freshly captured prompt is eligible the same pass).
+    // Tell the herd what the server records as existing, and which of those
+    // it is still creating. Before the herd's pass, which is where the reaper
+    // runs: absence only means something against a set from this pass, not
+    // the last one — and the reaper's own triggers are this same shared
+    // constant, so the two can't drift apart.
+    { name: 'desired-workspaces', triggers: DESIRED_SET_TRIGGERS,
+      run: () => pushDesiredWorkspaces(inFlightWorktreeIds()) },
+    // Everything that touches the substrate, in the herd's own order. It
+    // takes the whole trigger set rather than being triggered itself: which
+    // of its steps a pass owes is its business, and a resync owes all of
+    // them. The configured default tool goes down as an argument — it is a
+    // preference row, and a herd never looks one up.
+    { name: 'herd', triggers: HERD_TRIGGERS, run: async ({ triggers, resync, signal }) => {
+      const defaultTool = await getDefaultTool()
+      await herd().lifecycle.reconcile({
+        triggers,
+        resync,
+        signal,
+        ...(defaultTool !== undefined ? { defaultTool } : {}),
+      })
+    } },
+    // Model-generated titles for untitled sessions, after the herd's
+    // conversation sweep so a freshly captured prompt is eligible the same
+    // pass.
     { name: 'generated-titles', triggers: ['session-pods'],
       run: () => reconcileGeneratedTitles() },
-    // ssh-agent heal only (attach-only probe, never bootstraps): agent
-    // identities are memory-only by design and need the server to re-upload
-    // them after a proxy pod replacement.
-    { name: 'proxy-ssh-keys', triggers: ['poll'], run: () => reconcileProxySshKeys() },
-    // Per-session vclusters: orphan GC + host-side kubeconfig heal.
-    { name: 'vclusters', triggers: ['vcluster-namespaces', 'session-pods', 'session-jobs'],
-      run: (s) => reconcileVclusters(Date.now(), s) },
-    // yaac-in-yaac: tell the outer proxy which outer session owns each
-    // vcluster's pods. Poll re-pushes cover outer-proxy restarts.
-    { name: 'vcluster-attribution',
-      triggers: ['vcluster-namespaces', 'vcluster-pods', 'poll'],
-      run: (s) => reconcileVclusterAttribution(s) },
-    // yaac-in-yaac: validate each vcluster's redirect claims and republish
-    // them for netd. Claim documents arrive through the vcluster syncer, so
-    // a ConfigMap delta is the signal; pod deltas matter too, since a claim
-    // is only as valid as the pod IPs it names.
-    { name: 'redirect-claims',
-      triggers: ['vcluster-namespaces', 'vcluster-configmaps', 'vcluster-pods'],
-      run: (s) => reconcileRedirectClaims(s) },
-    // Host podman image GC. Throttled internally to every few hours.
-    { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
-    // Registry-side counterpart: retire step-cache tags no build has used
-    // in a cache-ttl and collect their blobs. Throttled internally, and it
-    // stands down while anything is pushing.
-    { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
   ]
 }
 
@@ -126,8 +96,8 @@ export interface ReconcilerDeps {
   signal: AbortSignal
   /** Injected for tests — overrides the real step list. */
   steps?: ReconcileStep[]
-  /** Delta subscription; defaults to the active ClusterCache. */
-  onDelta?: (fn: (source: DeltaSource) => void) => void
+  /** Change subscription; defaults to the herd's own watches. */
+  onDelta?: (fn: (source: HerdChangeSource) => void) => void
   pollIntervalMs?: number
   resyncIntervalMs?: number
   debounceMs?: number
@@ -174,7 +144,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     dirty.add(source)
     wake?.()
   }
-  ;(deps.onDelta ?? ((fn) => getActiveClusterCache()?.onDelta(fn)))(mark)
+  ;(deps.onDelta ?? ((fn) => { herd().lifecycle.onChange(fn) }))(mark)
   const pollTimer = setInterval(() => mark('poll'), deps.pollIntervalMs ?? 5_000)
   const resyncTimer = setInterval(() => mark('resync'), deps.resyncIntervalMs ?? 60_000)
   const onAbort = (): void => wake?.()
@@ -195,15 +165,17 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       const taken = new Set(dirty)
       dirty.clear()
       const resync = taken.has('resync')
-      const snapshot = createTickSnapshot(resync)
+      const triggers = new Set<ReconcileTrigger>(
+        [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
+      )
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight
         // step still completes (the shutdown path bounds the drain), but we
         // don't pile more work behind a signal the server has already seen.
         if (signal.aborted) return
-        if (!resync && !step.triggers.some((t) => taken.has(t))) continue
+        if (!resync && !step.triggers.some((t) => triggers.has(t))) continue
         try {
-          await step.run(snapshot)
+          await step.run({ triggers, resync, signal })
         } catch (err) {
           serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
         }

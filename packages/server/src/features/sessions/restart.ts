@@ -1,14 +1,11 @@
-import { findSessionPod, listSessionPods } from '#platform/k8s'
-import { cleanupSession } from './cleanup'
+import { herd } from '#herd'
 import { clearWorktreeStopped, findWorktreeRow } from '#features/records'
 import {
   firstAgentSession,
   listActiveAgentSessions,
 } from '#features/records'
-import { normalizeTool } from '#features/agents'
-import { clearSessionTerminating } from '#features/status'
-import { createSession, type SessionCreateResult } from './create'
 import { ServerError } from '@yaac/shared/errors'
+import type { SessionCreateResult } from './create'
 import type { AgentTool } from '@yaac/shared/types'
 
 export interface RestartResolution {
@@ -26,21 +23,20 @@ export interface RestartResolution {
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
-    const pods = await listSessionPods()
-    const match = findSessionPod(pods, idOrName)
+    const match = await herd().workspaces.find(idOrName)
     if (match) {
       return {
         projectSlug: match.projectSlug,
-        worktreeId: match.sessionId,
-        tool: normalizeTool(match.tool),
+        worktreeId: match.workspaceId,
+        tool: match.tool,
         jobName: match.jobName,
       }
     }
   } catch {
-    // Cluster unreachable — try the recorded row. If both paths fail we
+    // Substrate unreachable — try the recorded row. If both paths fail we
     // surface NOT_FOUND below; RUNTIME_UNAVAILABLE would be misleading
-    // since the restart may still succeed when the cluster recovers by the
-    // time createSession runs.
+    // since the restart may still succeed when the substrate recovers by
+    // the time the create runs.
   }
 
   const row = await findWorktreeRow(idOrName)
@@ -87,15 +83,10 @@ export async function restartWorktree(
 ): Promise<SessionCreateResult> {
   const { projectSlug, worktreeId, tool, jobName } = await resolveRestartTarget(idOrName)
 
-  if (jobName) {
-    opts.onProgress?.(`Stopping session job ${jobName}...`)
-    await cleanupSession({ jobName, projectSlug, sessionId: worktreeId })
-  }
-
-  // A restart reuses the worktree id, so drop any terminating mark left by the
-  // cleanup above (or an earlier teardown) before the fresh pod comes up —
-  // otherwise the new session would render as "stopping…".
-  clearSessionTerminating(worktreeId)
+  if (jobName) opts.onProgress?.(`Stopping session job ${jobName}...`)
+  // Always, not just when there was a Job: a terminating mark left by an
+  // earlier teardown would render the fresh session as "stopping…".
+  await herd().workspaces.teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
 
   // Each conversation resumes under its OWN tool: a worktree can hold a
   // codex conversation next to claude ones, and launching the wrong binary
@@ -111,7 +102,7 @@ export async function restartWorktree(
   // with nothing recorded (an older row, or a create that never got an id)
   // falls back to tui, the mode every pre-ACP worktree ran.
 
-  const result = await createSession(projectSlug, {
+  const result = await herd().workspaces.create(projectSlug, {
     // Always reuse the checkout — that is what a restart *is*. Clearing this
     // would send the create down `git worktree add` against a checkout that
     // is still there, fail, and roll the worktree row away with it.

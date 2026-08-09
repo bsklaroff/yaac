@@ -23,20 +23,19 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The reaper reads session rows to tell a yaac-issued delete (whose
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
-vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState } from '#features/status/liveness'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { markSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
-import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
-import { onHerdEvent, _resetHerdEventsForTests } from '#herd-events'
+import { _setServerLinkForTests } from '#server-link'
 import { publishDesiredWorkspaces, _resetDesiredWorkspacesForTests } from '#herd-desired'
 import type { DesiredWorkspaces, HerdEvent } from '@yaac/shared/herd'
 import {
   reconcileStaleSessions,
   _clearMissingPodTimersForTests,
+  _resetStaleReaperForTests,
 } from '#features/sessions/stale-sessions'
 
 const mockListPods = vi.mocked(listSessionPods)
@@ -51,9 +50,16 @@ const herdEvents: HerdEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => herdEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
-const setDesired = (d: Partial<DesiredWorkspaces>): void =>
-  publishDesiredWorkspaces({ live: [], stopped: [], ...d })
-const mockListProvisioning = vi.mocked(listProvisioning)
+// Every real pass publishes a desired set before the reaper runs, and the
+// reaper stands down on a pass whose publish did not land — so a test that
+// ticks twice has to publish twice, exactly as the loop does.
+let lastDesired: DesiredWorkspaces = { live: [], stopped: [], provisioning: [] }
+const setDesired = (d: Partial<DesiredWorkspaces>): void => {
+  lastDesired = { live: [], stopped: [], provisioning: [], ...d }
+  publishDesiredWorkspaces(lastDesired)
+}
+/** The next pass, with the same set republished. */
+const republish = (): void => publishDesiredWorkspaces(lastDesired)
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -78,18 +84,21 @@ function loggedLines(): string {
 
 describe('reconcileStaleSessions', () => {
   beforeEach(() => {
+    _resetDesiredWorkspacesForTests()
+    _resetStaleReaperForTests()
     mockListPods.mockReset()
     mockListJobs.mockReset().mockResolvedValue([])
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
     herdEvents.length = 0
-    onHerdEvent((event) => {
-      herdEvents.push(event)
-      return Promise.resolve()
+    _setServerLinkForTests({
+      workspaceEvent: (event) => {
+        herdEvents.push(event)
+        return Promise.resolve()
+      },
     })
     setDesired({})
-    mockListProvisioning.mockReset().mockReturnValue([])
     mockLog.mockClear()
     _clearTerminatingForTests()
   })
@@ -138,9 +147,7 @@ describe('reconcileStaleSessions', () => {
     mockListJobs.mockResolvedValue([
       { jobName: 'yaac-proj-starting-1', sessionId: 'starting-1', projectSlug: 'proj', createdAtMs: 1 },
     ])
-    mockListProvisioning.mockReturnValue([
-      { worktreeId: 'starting-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
-    ])
+    setDesired({ provisioning: ['starting-1'] })
 
     await reconcileStaleSessions()
 
@@ -151,9 +158,9 @@ describe('reconcileStaleSessions', () => {
     // A failed row lingers until dismissed, so it must not shield the
     // session the create already rolled back.
     mockListPods.mockResolvedValue([pod('failed-1', false)])
-    mockListProvisioning.mockReturnValue([
-      { worktreeId: 'failed-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', error: 'pod never started', createdAt: '2026-08-01 00:00:00' },
-    ])
+    // A failed create is not reported as in flight (see inFlightWorktreeIds),
+    // so nothing shields 'failed-1'.
+    setDesired({ provisioning: [] })
 
     await reconcileStaleSessions()
 
@@ -167,9 +174,7 @@ describe('reconcileStaleSessions', () => {
     mockListJobs.mockResolvedValue([
       { jobName: 'yaac-proj-pending-1', sessionId: 'pending-1', projectSlug: 'proj', createdAtMs: 1 },
     ])
-    mockListProvisioning.mockReturnValue([
-      { worktreeId: 'pending-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
-    ])
+    setDesired({ provisioning: ['pending-1'] })
 
     await reconcileStaleSessions()
 
@@ -220,31 +225,41 @@ describe('reconcileStaleSessions', () => {
     // create's own retry loop deletes the Job between attempts; the pod it
     // is about to recreate must not be torn down underneath it.
     mockListPods.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
-    mockListProvisioning.mockReturnValue([
-      { worktreeId: 'retrying-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00' },
-    ])
+    setDesired({ provisioning: ['retrying-1'] })
 
     await reconcileStaleSessions()
 
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // The split cannot be made without a published set, and the safe side is
-  // "ours": restamping would overwrite a plain user delete or an earlier
-  // reaped death with "removed outside yaac". Silence preserves.
-  it('preserves the recorded cause when nothing has been published', async () => {
+  // Every sweep here needs the set — the cause split would restamp a plain
+  // user delete as "removed outside yaac" without it, and the exemption set
+  // would be empty — so a pass with no publish reaps nothing at all rather
+  // than reaping on the half of the set it can still read.
+  it('stands down entirely when nothing has been published', async () => {
     _resetDesiredWorkspacesForTests()
+    _resetStaleReaperForTests()
     mockListPods.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
 
     await reconcileStaleSessions()
 
-    expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: 'term-unknown',
-        preserveDeletedRecord: true,
-      }),
-    )
-    expect(loggedLines()).not.toContain('terminating out-of-band past grace')
+    expect(mockCleanup).not.toHaveBeenCalled()
+    expect(stopsReported()).toEqual([])
+  })
+
+  // A set the LAST pass published is no better: an exemption one pass old
+  // can miss a create started since, and that set is the only thing between
+  // these sweeps and a workspace being built right now.
+  it('stands down on a pass whose publish did not land', async () => {
+    mockListPods.mockResolvedValue([{ ...pod('term-stuck'), terminating: true }])
+    setDesired({})
+    await reconcileStaleSessions()
+    mockCleanup.mockClear()
+
+    // Second pass, no publish (the step threw): same pods, no reaping.
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
@@ -301,9 +316,7 @@ describe('reconcileStaleSessions', () => {
     mockListPods.mockResolvedValue([pod('warming-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
-    mockListProvisioning.mockReturnValue([
-      { worktreeId: 'warming-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Warming…', createdAt: '2026-08-01 00:00:00' },
-    ])
+    setDesired({ provisioning: ['warming-1'] })
 
     await reconcileStaleSessions()
 
@@ -395,6 +408,7 @@ describe('reconcileStaleSessions', () => {
     /** Advance the clock past the grace and tick again. */
     async function tickPastGrace(): Promise<void> {
       vi.setSystemTime(Date.now() + 31 * 60_000)
+      republish()
       await reconcileStaleSessions()
     }
 
@@ -455,10 +469,7 @@ describe('reconcileStaleSessions', () => {
 
     it('exempts a session this process is still provisioning', async () => {
       mockListPods.mockResolvedValue([])
-      setDesired({ live: [row('slow-build')] })
-      mockListProvisioning.mockReturnValue([
-        { worktreeId: 'slow-build', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Building…', createdAt: '2026-08-01 00:00:00' },
-      ])
+      setDesired({ live: [row('slow-build')], provisioning: ['slow-build'] })
 
       await reconcileStaleSessions()
       await tickPastGrace()

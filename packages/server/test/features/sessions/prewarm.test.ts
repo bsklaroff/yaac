@@ -63,7 +63,7 @@ import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
 import { ServerError } from '@yaac/shared/errors'
-import { onHerdEvent } from '#herd-events'
+import { _setServerLinkForTests } from '#server-link'
 import type { HerdEvent } from '@yaac/shared/herd'
 
 const mockListPods = vi.mocked(listSessionPods)
@@ -105,13 +105,15 @@ describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
-    // The claim reports what it recorded rather than writing rows, so the
-    // sink stands in for the server: no DB is opened, and what a claim tells
+    // The claim reports what it recorded rather than writing rows, so a stub
+    // link stands in for the server: no DB is opened, and what a claim tells
     // it is asserted directly.
     herdEvents.length = 0
-    onHerdEvent((event) => {
-      herdEvents.push(event)
-      return Promise.resolve()
+    _setServerLinkForTests({
+      workspaceEvent: (event) => {
+        herdEvents.push(event)
+        return Promise.resolve()
+      },
     })
     mockTmuxAlive.mockResolvedValue(true)
     mockKubectl.mockResolvedValue(undefined as never)

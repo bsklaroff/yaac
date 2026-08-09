@@ -7,9 +7,14 @@ import {
   listSessionJobs,
   listSessionPods,
 } from '#platform/k8s'
-import { emitHerdEvent } from '#herd-events'
-import { listProvisioning } from './provisioning'
-import { evictSessionStatus, forgetLiveness, markSessionTerminating } from '#features/status'
+import { desiredWorkspaces } from '#herd-desired'
+import { serverLink } from '#server-link'
+import {
+  clearSessionTerminating,
+  evictSessionStatus,
+  forgetLiveness,
+  markSessionTerminating,
+} from '#features/status'
 import { proxyClient } from '#features/egress'
 import { salvageSessionImages } from '#features/images'
 import {
@@ -74,7 +79,7 @@ export async function cleanupSession(params: {
   // Report the stop (and death cause, when a reaper supplied one) so the
   // deleted-session view can order by recency and say why the session went
   // away (best-effort; falls back to transcript mtime if unrecorded).
-  await emitHerdEvent({
+  await serverLink().workspaceEvent({
     type: 'worktree-stopped', projectSlug, worktreeId: sessionId, cause,
   })
 
@@ -178,7 +183,7 @@ export async function cleanupSessionDetached(params: {
   // when resuming a teardown yaac already recorded, so the existing cause
   // survives (see `preserveDeletedRecord`).
   if (!preserveDeletedRecord) {
-    await emitHerdEvent({
+    await serverLink().workspaceEvent({
       type: 'worktree-stopped', projectSlug, worktreeId: sessionId, cause,
     })
   }
@@ -235,16 +240,18 @@ export async function cleanupSessionDetached(params: {
 const RECENT_WRITE_SLACK_MS = 10_000
 
 /**
- * Is this session dir off-limits to the orphan sweep? Either the process is
+ * Is this session dir off-limits to the orphan sweep? Either the server is
  * still provisioning that session — its Job may not be applied yet, so no
- * cluster listing can vouch for it — or the directory has been written since
+ * cluster listing can vouch for it, and the in-flight set is delivered with
+ * the desired set rather than read out of the server's registry — or the
+ * directory has been written since
  * the sweep took its listing, which is what a create staging into it looks
  * like. Both mean "in use", and the sweep only ever wants genuine leftovers.
  * Unreadable stat is treated as in-use: refusing to delete costs a stale dir
  * the next sweep collects, deleting wrongly costs a live session.
  */
 async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number): Promise<boolean> {
-  if (listProvisioning().some((p) => p.worktreeId === sid)) return true
+  if (desiredWorkspaces()?.provisioning.includes(sid) === true) return true
   try {
     const st = await fs.stat(dir)
     return st.mtimeMs >= sweepStartedAtMs - RECENT_WRITE_SLACK_MS
@@ -258,7 +265,23 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
  * directories whose session is no longer alive. Catches leftovers from
  * crashes, killed servers, and host reboots.
  */
+let orphanModulesSwept = false
+
+/** Test helper: let the once-per-herd-life sweep run again. */
+export function _resetOrphanModulesSweepForTests(): void {
+  orphanModulesSwept = false
+}
+
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
+  // Once per herd life: this collects what a previous process left behind,
+  // so a second pass has nothing new to find.
+  if (orphanModulesSwept) return
+  // Nothing published means nothing is known to be mid-create, and this
+  // sweep deletes directories a create may be staging into — so it stands
+  // down entirely rather than guessing, and runs on the next pass instead.
+  if (desiredWorkspaces() === undefined) return
+  orphanModulesSwept = true
+
   // Everything this sweep deletes belongs to a session that no longer
   // exists — and "no longer exists" is read from a cluster listing taken
   // here, seconds before the removals below. A create that stages its dirs
@@ -336,4 +359,27 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * Tear a workspace's runtime down and make its id reusable — the whole of
+ * what a restart needs before bringing the same workspace back up.
+ *
+ * Awaited rather than detached: a restart re-creates against this very id, so
+ * the old Job has to be gone before the new one is applied. `jobName: null`
+ * means nothing was running (a stopped workspace being restarted), and only
+ * the marks are cleared — which still has to happen, because a terminating
+ * mark left by an earlier teardown would render the fresh session as
+ * "stopping…".
+ */
+export async function teardownForRestart(params: {
+  jobName: string | null
+  projectSlug: string
+  workspaceId: string
+}): Promise<void> {
+  const { jobName, projectSlug, workspaceId } = params
+  if (jobName) {
+    await cleanupSession({ jobName, projectSlug, sessionId: workspaceId })
+  }
+  clearSessionTerminating(workspaceId)
 }

@@ -64,7 +64,6 @@ vi.mock('node:child_process', async () => {
 // Audit logging is a vi.fn so the teardown line can be asserted without a
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
-vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
 import { salvageSessionImages } from '#features/images/image-promoter'
 import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
@@ -72,16 +71,20 @@ import type * as relayModule from '#platform/k8s/stream-relay'
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import {
+  _resetOrphanModulesSweepForTests,
   cleanupSession,
   cleanupSessionDetached,
   gcOrphanEphemeralModuleDirs,
   sessionModulesDir,
 } from '#features/sessions/cleanup'
-import { listProvisioning } from '#features/sessions/provisioning'
+import {
+  _resetDesiredWorkspacesForTests,
+  publishDesiredWorkspaces,
+} from '#herd-desired'
 import { isSessionTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/status/liveness'
 import { _resetSessionStatusStoreForTests } from '#features/status/status-store'
-import { onHerdEvent } from '#herd-events'
+import { _setServerLinkForTests } from '#server-link'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 import type { HerdEvent } from '@yaac/shared/herd'
@@ -89,13 +92,15 @@ import type { HerdEvent } from '@yaac/shared/herd'
 const sessionExecMock = vi.mocked(sessionExec)
 const mockServerLog = vi.mocked(serverLog)
 
-// Cleanup reports the stop rather than writing the row itself, so the sink
-// stands in for the server: these tests never open a DB, and what the herd
-// half says about a teardown is asserted directly.
+// Cleanup reports the stop rather than writing the row itself, so a stub
+// link stands in for the server: these tests never open a DB, and what the
+// herd half says about a teardown is asserted directly.
 const herdEvents: HerdEvent[] = []
-onHerdEvent((event) => {
-  herdEvents.push(event)
-  return Promise.resolve()
+_setServerLinkForTests({
+  workspaceEvent: (event) => {
+    herdEvents.push(event)
+    return Promise.resolve()
+  },
 })
 const clearHerdEvents = (): void => { herdEvents.length = 0 }
 const stopsReported = (): Array<[string, string, unknown]> => herdEvents
@@ -337,15 +342,25 @@ describe('sessionModulesDir', () => {
 describe('gcOrphanEphemeralModuleDirs', () => {
   let dataDir: string
 
+  /** Publish a desired set with the given in-flight ids. The sweep stands
+   *  down until the server has published one, so every case that expects it
+   *  to act publishes first. */
+  const publishInFlight = (provisioning: string[] = []): void =>
+    publishDesiredWorkspaces({ live: [], stopped: [], provisioning })
+
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
     setDataDir(dataDir)
     mockListPods.mockReset()
     mockListJobs.mockReset()
     mockListJobs.mockResolvedValue([])
+    _resetOrphanModulesSweepForTests()
+    _resetDesiredWorkspacesForTests()
+    publishInFlight()
   })
 
   afterEach(async () => {
+    _resetDesiredWorkspacesForTests()
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
@@ -431,16 +446,41 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     const staging = await seedSessionsDir('proj-a', 'creating-1')
     const modules = await seedModulesDir('proj-a', 'creating-1')
     mockListPods.mockResolvedValue([])
-    vi.mocked(listProvisioning).mockReturnValue([{
-      worktreeId: 'creating-1', projectSlug: 'proj-a', tool: 'claude',
-      kind: 'create', message: 'Creating session job…', createdAt: '2026-08-01 00:00:00',
-    }])
+    // Delivered with the desired set — the sweep never reads the server's
+    // provisioning registry.
+    publishInFlight(['creating-1'])
 
     await gcOrphanEphemeralModuleDirs()
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
     await expect(fs.access(modules)).resolves.toBeUndefined()
-    vi.mocked(listProvisioning).mockReturnValue([])
+  })
+
+  // The in-flight set is the only thing standing between this sweep and a
+  // create's staged dirs, so with no set published it must not run at all —
+  // it runs on the next pass, once the server has said what exists.
+  it('stands down entirely until the server has published a set', async () => {
+    const dead = await seedSessionsDir('proj-a', 'dead-1')
+    _resetDesiredWorkspacesForTests()
+    mockListPods.mockResolvedValue([])
+
+    await gcOrphanEphemeralModuleDirs()
+
+    await expect(fs.access(dead)).resolves.toBeUndefined()
+  })
+
+  // It collects what a PREVIOUS process left behind, so a second pass has
+  // nothing new to find — and it runs from the reconcile loop, which would
+  // otherwise re-walk the tree on every tick forever.
+  it('sweeps once per herd life', async () => {
+    await seedSessionsDir('proj-a', 'dead-1')
+    mockListPods.mockResolvedValue([])
+
+    await gcOrphanEphemeralModuleDirs()
+    const listings = mockListPods.mock.calls.length
+    await gcOrphanEphemeralModuleDirs()
+
+    expect(mockListPods.mock.calls.length).toBe(listings)
   })
 
   it('spares a dir written since the sweep took its listing', async () => {

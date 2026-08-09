@@ -1,6 +1,6 @@
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow } from '#features/records'
-import { listSessionPods } from '#platform/k8s'
+import { herd } from '#herd'
 import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
@@ -42,19 +42,10 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
   return { config: await loadProjectConfig(projectConfigDir(slug)) }
 }
 
-async function countSessionsForProject(slug: string): Promise<number> {
-  try {
-    const pods = await listSessionPods(slug)
-    return pods.length
-  } catch {
-    return 0
-  }
-}
-
 export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(slug)
   const [sessionCount, configResult] = await Promise.all([
-    countSessionsForProject(slug),
+    herd().workspaces.count(slug),
     resolveProjectConfigWithSource(slug),
   ])
   return {

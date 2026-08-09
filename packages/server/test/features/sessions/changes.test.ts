@@ -3,7 +3,6 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#platform/k8s/stream-relay', () => ({
   sessionExec: vi.fn(),
@@ -14,8 +13,6 @@ vi.mock('#platform/git', () => ({
 
 import { sessionExec } from '#platform/k8s/stream-relay'
 import { worktreeUpstreamBranch } from '#platform/git'
-import { closeDb } from '#platform/db/client'
-import { recordWorktreeCreated } from '#features/records/worktree-store'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   statusFromCode,
@@ -25,7 +22,7 @@ import {
   parseChangesOutput,
   buildChangesScript,
   getSessionChanges,
-  sessionForkBranch,
+  worktreeForkFallback,
 } from '#features/sessions/changes'
 
 const mockExec = vi.mocked(sessionExec)
@@ -532,63 +529,21 @@ describe('getSessionChanges', () => {
   })
 })
 
-describe('sessionForkBranch', () => {
-  let tmpDir: string
+describe('worktreeForkFallback', () => {
+  beforeEach(() => { mockUpstream.mockReset() })
 
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-    mockUpstream.mockReset()
-  })
-
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  // THE bug this ordering exists for. `branch.agent/<id>.merge` lives in the
-  // shared repo config the session's own git writes to, so a `git push -u` for
-  // a PR repoints it at the branch just pushed — whose fork point is HEAD, so
-  // the pane reports a session with a whole PR in it as having no changes. The
-  // row is ours and says `main`.
-  it('prefers the session row’s recorded base over the worktree’s upstream', async () => {
-    await recordWorktreeCreated({
-      projectSlug: 'demo', worktreeId: 'sid-pushed', baseBranch: 'main',
-    })
-    mockUpstream.mockResolvedValue('feature/pushed-pr')
-    expect(await sessionForkBranch('demo', 'sid-pushed')).toBe('main')
-    expect(mockUpstream).not.toHaveBeenCalled()
-  })
-
-  // A session with no row (created by an older yaac) still has to resolve one.
-  it('falls back to the session branch’s upstream when no row records a base', async () => {
+  // The checkout's own idea of its fork point, which the server only asks for
+  // when no row records one (see fork-branch.ts for why that order).
+  it('reads the session branch’s upstream out of the checkout', async () => {
     mockUpstream.mockResolvedValue('main')
-    expect(await sessionForkBranch('demo', 'sid-a')).toBe('main')
+    expect(await worktreeForkFallback('demo', 'sid-a')).toBe('main')
     expect(mockUpstream).toHaveBeenCalledWith(repoDir('demo'), 'agent/sid-a')
   })
 
-  // The changes endpoint is polled every few seconds and the fallback spawns
-  // host git, so repeat reads inside the window must not hit git again.
-  it('caches per session so polling does not respawn host git', async () => {
-    mockUpstream.mockResolvedValue('main')
-    await sessionForkBranch('demo', 'sid-b')
-    await sessionForkBranch('demo', 'sid-b')
-    await sessionForkBranch('demo', 'sid-b')
-    expect(mockUpstream).toHaveBeenCalledTimes(1)
-    // A different session is a different entry, not a cache hit.
-    await sessionForkBranch('demo', 'sid-other')
-    expect(mockUpstream).toHaveBeenCalledTimes(2)
-  })
-
-  // No recorded base anywhere is a normal state (the pod script then falls back
-  // on its own), and it must be cached too — otherwise the miss respawns git on
-  // every poll for exactly the sessions that are slowest to resolve.
-  it('caches a missing base and survives a git failure', async () => {
-    mockUpstream.mockResolvedValue(null)
-    expect(await sessionForkBranch('demo', 'sid-c')).toBeNull()
-    expect(await sessionForkBranch('demo', 'sid-c')).toBeNull()
-    expect(mockUpstream).toHaveBeenCalledTimes(1)
-
+  // Not fatal: the pod script has its own fallback, and a worktree whose git
+  // config cannot be read must not fail the whole changes request.
+  it('answers null when the checkout cannot be read', async () => {
     mockUpstream.mockRejectedValue(new Error('not a git repo'))
-    expect(await sessionForkBranch('demo', 'sid-d')).toBeNull()
+    expect(await worktreeForkFallback('demo', 'sid-b')).toBeNull()
   })
 })

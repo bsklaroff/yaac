@@ -7,35 +7,13 @@ import { authAgentHub } from '#features/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, getDb, importLegacyJsonStores } from '#platform/db'
 import { EventHub } from '#main/events'
-import { attachPty, type SocketLike } from '#features/terminals'
-import {
-  ClusterCache,
-  anySessionDirsExist,
-  armDeferredClusterBoot,
-  ensurePriorityClasses,
-  invalidateRelayAddr,
-  listSessionPods,
-  setActiveClusterCache,
-} from '#platform/k8s'
-import {
-  gcOrphanEphemeralModuleDirs,
-  resolveSessionContainer,
-} from '#features/sessions'
-import {
-  applyHerdEvent,
-  listActiveAgentSessions,
-} from '#features/records'
-import { onHerdEvent } from '#herd-events'
-import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#notify'
-import { StatusWatcherManager, isTmuxSessionAlive, onSessionStatusChanged } from '#features/status'
-import {
-  PortDetectorManager,
-  hasSessionForwarders,
-  provisionSessionForwarders,
-  stopAllSessionForwarders,
-} from '#features/forwarders'
-import { attachAcp } from '#features/agents'
+import { resolveSessionContainer } from '#features/sessions'
+import { createServerLink } from '#main/link'
+import { createInProcessHerd, herd, setHerd } from '#herd'
+import { setServerLink } from '#server-link'
+import { coalesceCalls, onSessionListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#features/skills'
+import type { SocketLike } from '#features/terminals'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -47,18 +25,6 @@ import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import {
-  ensureMainRegistry,
-  ensureNamespace,
-  gcOrphanProjectRegistries,
-  sweepLegacyNodeStores,
-} from '#features/cluster'
-import {
-  killTrackedPodmanProcs,
-  reapOrphanedPodmanProcs,
-} from '#platform/container'
-import { proxyClient } from '#features/egress'
-import { resolveProjectConfig } from '#features/projects'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -298,7 +264,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          attachPty(jobName, sock, query)
+          herd().terminals.attachPty(jobName, sock, query)
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },
@@ -338,7 +304,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          attachAcp(projectSlug, id, agentSessionId, {
+          herd().agents.attachAcp(projectSlug, id, agentSessionId, {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
             onMessage: (cb) => raw.on('message', (data, isBinary) =>
@@ -385,11 +351,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(process.pid)
     process.exit(1)
   }
-  // Take the server's end of the herd's report channel. Registered here
-  // rather than beside the other listeners above because the sink writes
-  // rows: it cannot exist before the DB it writes to is open, and nothing
-  // can emit until the reconcile loop and the routes below are live.
-  onHerdEvent(applyHerdEvent)
+  // Both ends of the boundary, wired now rather than beside the listeners
+  // above because the link's handlers write rows: they cannot exist before
+  // the DB is open, and nothing can report until the reconcile loop and the
+  // routes below are live (docs/plans/herd-split.md).
+  setServerLink(createServerLink())
+  setHerd(createInProcessHerd())
 
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
@@ -410,28 +377,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // still running would otherwise leak the lock file.
   const abortCtrl = new AbortController()
   let loopDone: Promise<void> | null = null
-  let clusterCache: ClusterCache | null = null
-  let statusWatchers: StatusWatcherManager | null = null
-  let portDetector: PortDetectorManager | null = null
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
-    // Stop the push-fed state layer first: the informer watches hold open
-    // apiserver connections, and every per-session control-mode exec is a
-    // long-lived kubectl process that would otherwise outlive the server
-    // (orphaned to PID 1).
-    setActiveClusterCache(null)
-    clusterCache?.stop()
-    statusWatchers?.stopAll()
-    portDetector?.stopAll()
-    // Abort in-flight host builds/pushes. Podman commits an image tag only
-    // when the build finishes, so an orphaned `podman build` is invisible
-    // to the next server's exists check — it would start a second build of
-    // the same tag and the two would fight over the layer cache.
-    killTrackedPodmanProcs()
+    // Stop the herd's push-fed state layer first, before the loop drain
+    // below: its watches hold open substrate connections and a long-lived
+    // process per workspace, which would otherwise outlive the server.
+    await herd().lifecycle.stopConvergence()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -443,18 +398,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ])
     }
-    // Tear down every active port-forwarder before closing the server.
-    // Each forwarder owns a listener server and a set of live relay
-    // streams; without this the listeners survive the server (orphaned
-    // to PID 1) and the next server stacks new ones on top via
-    // restoreAllSessionForwarders.
-    stopAllSessionForwarders()
-
-    // Same for the proxy control tunnel and the stream relay's
-    // `kubectl port-forward` child — the deployed proxy itself stays up
-    // for the next server to adopt.
-    proxyClient.disconnect()
-    invalidateRelayAddr()
+    // Then let the herd go of what it borrowed from the host — port
+    // forwarders, the proxy control tunnel, the relay's port-forward child.
+    // After the drain, because a reap tick still tears its workspace's
+    // forwards down.
+    await herd().lifecycle.release()
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -486,188 +434,23 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // an in-memory best-effort fetch, so it never blocks startup or fails it.
   void refreshClaudeBundledSkills()
 
-  // Everything below touches the cluster — grouped so a NESTED server
-  // can defer it (see below).
-  const startClusterWork = async (): Promise<void> => {
-    // Kill any podman build/push a previous server left running before the
-    // first thing that could duplicate it (the registry bootstrap's own
-    // podman calls, then the reconciler's prewarm sweep). The graceful path
-    // above already SIGTERMs them, so this only fires after a crash, a
-    // SIGKILL, or a host reboot — the cases builder-pod GC covers on the
-    // cluster side via SERVER_START_MS.
-    try {
-      await reapOrphanedPodmanProcs()
-    } catch (err) {
-      serverLog(`[server] orphan podman reap failed: ${String(err)}`)
-    }
-
-    // Best-effort cluster bootstrap: the yaac namespace and the in-cluster
-    // registry are cheap to ensure and needed by the first session.
-    // Failures are logged, not fatal — the server can serve project/auth
-    // RPCs without a cluster, and session creation surfaces its own
-    // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
-    // (unlike the fire-and-forget GCs) so a deferred boot's trigger —
-    // the first session create — sees the namespace exist before it
-    // applies anything into it.
-    await (async () => {
-      await ensureNamespace()
-      // Cluster-scoped and idempotent, like the RuntimeClasses `cluster
-      // setup` installs — re-ensured here because every pod yaac creates
-      // names one, and a cluster set up by an older yaac has neither.
-      //
-      // STRICTLY before the registry: its Deployment's pod names the infra
-      // class, and a pod naming a class the apiserver does not have is
-      // rejected — so on the very cluster this re-ensure exists for, the
-      // rollout would wait out its full timeout, throw, and abort this
-      // chain before ever installing the classes. `cluster setup` orders
-      // these the same way.
-      await ensurePriorityClasses()
-      // The registry stands itself up only when it isn't already answering,
-      // so a healthy install pays one HTTP ping here.
-      await ensureMainRegistry()
-    })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
-
-    // A server restart loses the in-memory forwarder registry while
-    // running containers keep their tmux `status-right` advertising
-    // ports that aren't actually forwarded anymore. Rebuild forwarders
-    // for every live session container before we process RPCs so the
-    // displayed port mapping matches reality.
-    try {
-      await restoreAllSessionForwarders()
-    } catch (err) {
-      serverLog(`[server] restore forwarders failed: ${String(err)}`)
-    }
-
-    // Push-fed session state: the informer caches keep the display path's
-    // pod cache current, drive the per-session status watchers (tmux
-    // control-mode streams feeding the status store), and feed the
-    // reconciler's delta triggers. Pod deltas fire sessions-changed, so
-    // snapshots push the moment state changes.
-    const cache = new ClusterCache()
-    // `recordedSessions` is injected here rather than read inside the status
-    // feature: the ACP driver needs a worktree's already-recorded
-    // conversations to re-address a live agent (and to `session/load` after a
-    // restart), but that is a database read, and `#features/status` importing
-    // `#features/sessions` would invert the one-directional dependency the two
-    // are built on. `main` is the one place allowed to know both.
-    const manager = new StatusWatcherManager({
-      recordedSessions: async (session) =>
-        (await listActiveAgentSessions(session.slug, session.sessionId).catch(() => []))
-          .flatMap((l) => (l.paneId === undefined
-            ? []
-            : [{ handle: l.paneId, agentSessionId: l.agentSessionId }])),
-    })
-    // Detected-listener streams (streamd `ports` pushes) feeding the
-    // snapshot's unforwardedPorts; a set change pushes a fresh snapshot.
-    const detector = new PortDetectorManager(() => notifySessionListChanged())
-    clusterCache = cache
-    statusWatchers = manager
-    portDetector = detector
-    cache.onDelta((source) => {
-      if (source !== 'session-pods') return
-      manager.sync(cache.sessionPods())
-      detector.sync(cache.sessionPods())
-      notifySessionListChanged()
-    })
-    onSessionStatusChanged(() => notifySessionListChanged())
-    cache.start()
-    setActiveClusterCache(cache)
-
-    // Start the reconciler before running orphan GC. The GC pass hits the
-    // cluster API, and during a frozen cluster (saturated VM, user
-    // restarting repeatedly) it can take minutes — blocking the first
-    // reconcile pass that whole time. Running it concurrently lets the
-    // server serve the reconcile path right away while the GC drains in
-    // the background.
-    loopDone = startReconciler({
-      signal: abortCtrl.signal,
-      // After each reconcile pass, push a fresh snapshot to any connected
-      // webapp clients (no-op when none are connected, and only broadcasts
-      // when the state actually changed).
-      onPass: () => hub.publishSnapshot(),
-    })
-
-    // Remove per-session `.cached-packages/modules/<sid>` dirs whose
-    // session container is gone — catches leftovers from crashes and host
-    // reboots.
-    void gcOrphanEphemeralModuleDirs()
-      .catch((err) => serverLog(`[server] orphan modules GC failed: ${String(err)}`))
-
-    // Remove per-project push registries whose project dir is gone —
-    // catches `project remove` runs that raced an unavailable cluster.
-    void gcOrphanProjectRegistries()
-      .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
-
-    // Reclaim the retired node-local stores: the old image store (the
-    // cross-session cache is the project registry now) and both registries'
-    // blob stores (their storage is a PVC now). Multi-GB on a machine that
-    // ran an older yaac, and nothing mounts any of them any more. Ordered
-    // after the awaited `ensureMainRegistry` above, which is what converts
-    // the main registry off the hostPath this then deletes.
-    void sweepLegacyNodeStores()
-      .catch((err) => serverLog(`[server] legacy node-store sweep failed: ${String(err)}`))
-  }
-
-  // A NESTED server's cluster is its session's born-at-zero vcluster
-  // (docs/vcluster-scale-to-zero.md) — attaching at boot is exactly what
-  // would wake it seconds after the create-time sleep, since `yaac
-  // server start` runs from the session's initCommands. With no
-  // sessions of its own yet, defer every cluster touch until the first
-  // real use (session create awaits it; any kubectl call kicks it). A
-  // RESTARTING nested server with live sessions attaches eagerly: those
-  // sessions need the caches and reconciler, and their vcluster — this
-  // vcluster — is already awake.
-  if (env.nested && !(await anySessionDirsExist())) {
-    armDeferredClusterBoot(async () => {
-      serverLog('[server] nested: first cluster use — attaching (caches, reconciler)')
-      await startClusterWork()
-    })
-    serverLog('[server] nested: cluster attach deferred until first use (vcluster stays asleep)')
-  } else {
-    await startClusterWork()
-  }
-}
-
-interface RestoreCandidate {
-  jobName: string
-  projectSlug: string
-  sessionId: string
-}
-
-/**
- * Server-startup pass that rebuilds port forwarders for every live yaac
- * session pod. A server restart loses the in-memory forwarder registry
- * while session pods keep running with stale `status-right` info, so
- * without this pass the tmux bars lie about which ports are
- * actually forwarded.
- */
-export async function restoreAllSessionForwarders(): Promise<void> {
-  let pods
-  try {
-    pods = await listSessionPods()
-  } catch (err) {
-    console.error('[server] restore forwarders: list session pods failed:', err)
-    return
-  }
-
-  const candidates: RestoreCandidate[] = []
-  for (const p of pods) {
-    if (!p.running) continue
-    if (!p.sessionId || !p.projectSlug || !p.jobName) continue
-    if (hasSessionForwarders(p.sessionId)) continue
-    if (!(await isTmuxSessionAlive(p.projectSlug, p.sessionId))) continue
-    candidates.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId })
-  }
-
-  await Promise.allSettled(candidates.map(async ({ jobName, projectSlug, sessionId }) => {
-    try {
-      const config = await resolveProjectConfig(projectSlug) ?? {}
-      await provisionSessionForwarders(projectSlug, sessionId, jobName, config.portForward)
-    } catch (err) {
-      console.error(
-        `[server] restore forwarders for ${sessionId.slice(0, 8)}: `
-        + (err instanceof Error ? err.message : String(err)),
-      )
-    }
-  }))
+  // Hand the herd its substrate. Everything convergence-owning starts on
+  // that side — informer caches, status watchers, the port detector — and
+  // the server's own reconcile loop starts from `onAttached` rather than
+  // from the return, because a nested server defers the whole attach until
+  // first use to keep its born-at-zero vcluster asleep, and a loop running
+  // against a sleeping vcluster is exactly what would wake it.
+  await herd().lifecycle.attach({
+    onAttached: () => {
+      // Started before the herd's own startup GCs drain (they run detached
+      // on that side), so the server serves the reconcile path right away.
+      loopDone = startReconciler({
+        signal: abortCtrl.signal,
+        // After each reconcile pass, push a fresh snapshot to any connected
+        // webapp clients (no-op when none are connected, and only broadcasts
+        // when the state actually changed).
+        onPass: () => hub.publishSnapshot(),
+      })
+    },
+  })
 }
