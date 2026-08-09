@@ -10,17 +10,15 @@ import {
   worktreeAgentSessions,
   worktrees,
 } from './schema'
-import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, TRANSCRIPT_PATHS_RELATIVE_KEY, TRANSCRIPT_PATHS_RESOLVED_KEY, isFlagSet, isSerializedChord, isValidTool, setFlag } from '#features/records'
+import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, TRANSCRIPT_PATHS_PROJECT_KEY, TRANSCRIPT_PATHS_RELATIVE_KEY, TRANSCRIPT_PATHS_RESOLVED_KEY, isFlagSet, isSerializedChord, isValidTool, setFlag } from '#features/records'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
 import { normalizeTitle } from '@yaac/shared/titles'
-import type { AgentTool } from '@yaac/shared/types'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
-  fromStoredTranscriptPath,
-  rehomeTranscriptPath,
+  resolveProjectPath,
   scanProjectTranscripts,
-  toStoredTranscriptPath,
+  toProjectRelative,
 } from '#features/agents'
 import { serverLog } from '#log'
 import { getProjectsDir, serverLocalPath } from '@yaac/shared/paths'
@@ -264,9 +262,9 @@ async function linkPreUpgradeAgentSession(
   tool: string,
   fields: { createdAt: Date; transcriptPath?: string | undefined; firstPrompt?: string | null },
 ): Promise<void> {
-  // The scan hands back absolute paths; the column is home-relative.
+  // The scan hands back absolute paths; the column is project-relative.
   const stored = fields.transcriptPath !== undefined
-    ? await toStoredTranscriptPath(slug, tool as AgentTool, fields.transcriptPath)
+    ? await toProjectRelative(slug, fields.transcriptPath)
     : null
   await db.insert(agentSessions).values({
     projectSlug: slug,
@@ -295,24 +293,93 @@ async function linkPreUpgradeAgentSession(
 }
 
 /**
- * Rewrite absolute recorded transcript paths to the home-relative form the
- * column now stores (`toStoredTranscriptPath`).
+ * One-shot: rewrite transcript paths from the tool-home-relative form the
+ * column used to store to the project-relative form it stores now.
+ *
+ * Purely textual, and that is the whole point: every tool home is
+ * `<projectDir>/<tool>`, so the conversion is the row's own `tool` prepended.
+ * The passes it runs beside cannot say that — theirs depend on `getDataDir()`
+ * and on the disk — which is why this one could have been a `migration.sql`
+ * and they could not. It is a startup pass anyway, because migrations run in
+ * `getDb()` *before* this sweep: a row still holding an absolute path would be
+ * skipped by the migration, then relativized by the sweep into the old form,
+ * and nothing would ever convert it.
+ *
+ * Idempotent, so a lost flag costs a scan and nothing else: a path already in
+ * the new form starts with its row's tool segment, and no tool-home-relative
+ * path does — claude's start `projects/`, pi's `agent/`, codex's with the
+ * rollout's own directory.
+ */
+async function projectRelativeTranscriptPaths(db: Db): Promise<void> {
+  if (await isFlagSet(TRANSCRIPT_PATHS_PROJECT_KEY)) return
+  const rows = await db.select({
+    projectSlug: agentSessions.projectSlug,
+    tool: agentSessions.tool,
+    agentSessionId: agentSessions.agentSessionId,
+    transcriptPath: agentSessions.transcriptPath,
+  }).from(agentSessions).where(isNotNull(agentSessions.transcriptPath))
+
+  let rewritten = 0
+  for (const r of rows) {
+    // Absolute rows belong to the pass below, which has the data dir and the
+    // re-home fallback this one deliberately lacks.
+    if (r.transcriptPath === null || path.isAbsolute(r.transcriptPath)) continue
+    if (r.transcriptPath.startsWith(`${r.tool}${path.sep}`)) continue
+    await db.update(agentSessions)
+      .set({ transcriptPath: path.join(r.tool, r.transcriptPath) })
+      .where(and(
+        eq(agentSessions.projectSlug, r.projectSlug),
+        eq(agentSessions.tool, r.tool),
+        eq(agentSessions.agentSessionId, r.agentSessionId),
+      ))
+    rewritten++
+  }
+  await setFlag(TRANSCRIPT_PATHS_PROJECT_KEY)
+  if (rewritten > 0) {
+    serverLog(`[db] rewrote ${rewritten} transcript path(s) to project-relative`)
+  }
+}
+
+/**
+ * The project-relative tail of an absolute path that a *different* data dir
+ * wrote — the restored-backup case, where the path names a project tree this
+ * install does not have and so `toProjectRelative` cannot express it.
+ *
+ * Every project tree is `<root>/projects/<slug>`, so that boundary is enough
+ * to recover the tail without the old root existing. The *last* occurrence
+ * wins: a path from inside a yaac-in-yaac data dir repeats the marker, and the
+ * innermost one is the real tree.
+ *
+ * Lives here rather than beside the encoders because it is migration-only —
+ * nothing that runs in the steady state has an absolute path to re-home.
+ */
+function rehomeProjectPath(slug: string, absolute: string): string | null {
+  const marker = `${path.sep}${path.join('projects', slug)}${path.sep}`
+  const at = absolute.lastIndexOf(marker)
+  if (at < 0) return null
+  const rel = absolute.slice(at + marker.length)
+  return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? null : rel
+}
+
+/**
+ * Rewrite absolute recorded transcript paths to the project-relative form the
+ * column now stores (`toProjectRelative`).
  *
  * Every path written before this existed carried the data dir, so the rows
  * only resolved on the machine and in the directory that wrote them.
  *
- * A path that is not inside this install's tool home is one the data dir has
- * *moved* out from under (a restored backup, a changed `YAAC_DATA_DIR`).
- * Those are re-homed rather than dropped: the row names its project and tool,
- * and every home is `<root>/projects/<slug>/<tool>`, so the tail survives the
- * move on its own. Waiting for the reconciler instead would strand them —
- * it visits only *running* worktrees, and after a restore nothing is running,
- * so a stopped worktree that never restarts would lose the pointer for good
- * while its transcript and link tree sat intact in the new data dir. Only a
- * path with no recoverable tail at all becomes NULL.
+ * A path that is not inside this install's project tree is one the data dir
+ * has *moved* out from under (a restored backup, a changed `YAAC_DATA_DIR`).
+ * Those are re-homed rather than dropped: the row names its project, and
+ * every tree is `<root>/projects/<slug>`, so the tail survives the move on
+ * its own. Waiting for the reconciler instead would strand them — it visits
+ * only *running* worktrees, and after a restore nothing is running, so a
+ * stopped worktree that never restarts would lose the pointer for good while
+ * its transcript sat intact in the new data dir. Only a path with no
+ * recoverable tail at all becomes NULL.
  *
- * Not a `migration.sql`: the relative form depends on `getDataDir()` and on
- * the row's per-project tool home, neither of which SQL can see.
+ * Not a `migration.sql`: the relative form depends on `getDataDir()`, which
+ * SQL cannot see. (The pass above it can be, and says why it is not.)
  */
 async function relativizeTranscriptPaths(db: Db): Promise<void> {
   if (await isFlagSet(TRANSCRIPT_PATHS_RELATIVE_KEY)) return
@@ -329,21 +396,20 @@ async function relativizeTranscriptPaths(db: Db): Promise<void> {
   for (const r of rows) {
     // Already relative — a row written since the change, or a re-run.
     if (r.transcriptPath === null || !path.isAbsolute(r.transcriptPath)) continue
-    const tool = r.tool as AgentTool
-    const inHome = await toStoredTranscriptPath(r.projectSlug, tool, r.transcriptPath)
-    // Not under this install's home means the data dir moved. The row still
-    // names its project and tool, and every home is
-    // `<root>/projects/<slug>/<tool>`, so the tail is recoverable outright —
-    // no waiting for the worktree to run again, which for a stopped one may
-    // be never.
-    const stored = inHome ?? rehomeTranscriptPath(r.projectSlug, tool, r.transcriptPath)
+    const inProject = await toProjectRelative(r.projectSlug, r.transcriptPath)
+    // Not under this install's project dir means the data dir moved. The row
+    // still names its project, and every project tree is
+    // `<root>/projects/<slug>`, so the tail is recoverable outright — no
+    // waiting for the worktree to run again, which for a stopped one may be
+    // never.
+    const stored = inProject ?? rehomeProjectPath(r.projectSlug, r.transcriptPath)
     await db.update(agentSessions).set({ transcriptPath: stored }).where(and(
       eq(agentSessions.projectSlug, r.projectSlug),
       eq(agentSessions.tool, r.tool),
       eq(agentSessions.agentSessionId, r.agentSessionId),
     ))
     if (stored === null) dropped++
-    else if (inHome === null) rehomed++
+    else if (inProject === null) rehomed++
     else rewritten++
   }
   await setFlag(TRANSCRIPT_PATHS_RELATIVE_KEY)
@@ -419,11 +485,21 @@ export async function importLegacyJsonStores(): Promise<void> {
     await importOpencodeMeta(db, slug)
   }
   if (!backfilled) await setFlag(SESSIONS_BACKFILLED_KEY)
-  // Strictly before the symlink resolve. This step is pure re-encoding of
-  // the column and never touches the disk; that one interprets the stored
-  // path against it, and reads an unstattable path as a symlink someone
-  // deleted. Run the other way round, every row from a moved data dir would
-  // be nulled as a dead symlink before it could be re-homed.
+  // The three transcript-path steps run in this order for one reason each,
+  // and none of them commutes.
+  //
+  // The project-relative rewrite goes first because it is the only one that
+  // can recognize the OLD relative form: once the other two have run, every
+  // row is either absolute or project-relative, and a tool-home-relative row
+  // reaching them would be read against the wrong root.
+  //
+  // The absolute rewrite goes before the symlink resolve because it is pure
+  // re-encoding of the column and never touches the disk, while that one
+  // interprets the stored path against the disk and reads an unstattable path
+  // as a symlink someone deleted. Run the other way round, every row from a
+  // moved data dir would be nulled as a dead symlink before it could be
+  // re-homed.
+  await projectRelativeTranscriptPaths(db)
   await relativizeTranscriptPaths(db)
   await resolveSymlinkedTranscripts(db)
   await importTokens(db)
@@ -463,18 +539,17 @@ async function resolveSymlinkedTranscripts(db: Db): Promise<void> {
   let resolved = 0
   for (const r of rows) {
     if (r.transcriptPath === null) continue
-    // Work in absolute space: the column is home-relative, and a relative
+    // Work in absolute space: the column is project-relative, and a relative
     // path handed to lstat would resolve against the cwd — every row would
     // look like a symlink someone deleted and be nulled.
-    const tool = r.tool as AgentTool
-    const abs = fromStoredTranscriptPath(r.projectSlug, tool, r.transcriptPath)
+    const abs = resolveProjectPath(r.projectSlug, r.transcriptPath)
     if (abs === undefined) continue
     const link = await fs.lstat(abs).catch(() => null)
     if (link !== null && !link.isSymbolicLink()) continue
     const target = await fs.realpath(abs).catch(() => null)
     const stored = target === null
       ? null
-      : await toStoredTranscriptPath(r.projectSlug, tool, target)
+      : await toProjectRelative(r.projectSlug, target)
     await db.update(agentSessions).set({ transcriptPath: stored }).where(and(
       eq(agentSessions.projectSlug, r.projectSlug),
       eq(agentSessions.tool, r.tool),

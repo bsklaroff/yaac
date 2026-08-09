@@ -7,7 +7,7 @@
  * this wrapper just lists pods and drives the side effects.
  */
 import { type TickSnapshot, listSessionPods } from '#platform/k8s'
-import { cleanupSessionDetached } from './cleanup'
+import { cleanupSession, deleteWorktreeState } from './cleanup'
 import { createSession } from './create'
 import {
   claiming,
@@ -55,7 +55,23 @@ export async function reconcilePrewarmPool(
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, defaultTool, inFlight, claiming)
 
   for (const target of toReap) {
-    cleanupSessionDetached(target).catch(() => { /* best-effort; reaper retries */ })
+    // A spare that is reaped unclaimed never became a worktree, so nothing
+    // else would ever collect its checkout, its git admin dir or the herd's
+    // document for it — there is no row to make any of it visible.
+    //
+    // The AWAITED teardown, not the detached one: the detached variant
+    // resolves before its `kubectl delete job` has even started, so removing
+    // the checkout off the back of it would race a pod still mounting
+    // /workspace — and a crash in that window would leave a claimable
+    // labeled spare whose checkout is gone. `cleanupSession` returns only
+    // once the Job is deleted.
+    //
+    // Not awaited by the tick, so a slow teardown never stalls the pool; a
+    // failure here is collected by the startup sweep instead, since once the
+    // pod is gone the planner (which sees only pods) can never retry it.
+    void cleanupSession(target)
+      .then(() => deleteWorktreeState(target.projectSlug, target.sessionId))
+      .catch(() => { /* swept at startup — see gcOrphanWorktreeState */ })
   }
 
   for (const spawn of toSpawn) {

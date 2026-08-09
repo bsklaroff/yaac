@@ -12,10 +12,16 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { claudeDir, codexDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexDir, codexTranscriptDir, piSessionsDir, projectDir } from '@yaac/shared/project-paths'
 import { eq } from 'drizzle-orm'
 import { _freshDbForTests, agentSessions, closeDb, getDb, importLegacyJsonStores } from '#platform/db'
-import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/records/preferences'
+import {
+  TRANSCRIPT_PATHS_PROJECT_KEY,
+  clearFlag,
+  getDefaultTool,
+  getShortcutOverrides,
+  setDefaultTool,
+} from '#features/records/preferences'
 import {
   getProjectWorktreeRows,
   listWorktreeRows,
@@ -273,7 +279,38 @@ describe('importLegacyJsonStores', () => {
     expect(unlinked?.transcriptPath).toBeUndefined()
   })
 
-  it('rewrites an absolute recorded path to its home-relative form', async () => {
+  it('rewrites a tool-home-relative recorded path to its project-relative form', async () => {
+    // The form the column stored between the two relative schemes. Purely
+    // textual to convert — the tool segment is what the old form dropped —
+    // and idempotent, so a second sweep must not prepend it twice.
+    const real = path.join(piSessionsDir('proj'), '20260101-120000_conv-pi.jsonl')
+    await fs.mkdir(path.dirname(real), { recursive: true })
+    await fs.writeFile(real, '{}\n')
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-home' })
+    await recordAgentSessions('proj', 'wt-home', [
+      { tool: 'pi', agentSessionId: 'conv-pi', transcriptPath: real },
+    ])
+    // Back to the pre-change on-disk state: relative to the pi home, so
+    // without the leading `pi/` the project-relative form carries.
+    const db = await getDb()
+    await db.update(agentSessions)
+      .set({ transcriptPath: path.join('agent', 'sessions', '20260101-120000_conv-pi.jsonl') })
+      .where(eq(agentSessions.agentSessionId, 'conv-pi'))
+
+    await importLegacyJsonStores()
+    await clearFlag(TRANSCRIPT_PATHS_PROJECT_KEY)
+    await importLegacyJsonStores()
+
+    const [stored] = await db.select({ p: agentSessions.transcriptPath }).from(agentSessions)
+      .where(eq(agentSessions.agentSessionId, 'conv-pi'))
+    expect(stored?.p)
+      .toBe(path.join('pi', 'agent', 'sessions', '20260101-120000_conv-pi.jsonl'))
+    // The store still hands back an absolute path, so no reader notices.
+    const [row] = await listWorktreeAgentSessions('proj', 'wt-home')
+    expect(row?.transcriptPath).toBe(real)
+  })
+
+  it('rewrites an absolute recorded path to its project-relative form', async () => {
     // Every path recorded before the column went relative is absolute, so it
     // only resolved in the data dir that wrote it. The sweep re-homes them;
     // the store still hands back an absolute path, so no reader notices.
@@ -293,18 +330,18 @@ describe('importLegacyJsonStores', () => {
 
     const [stored] = await db.select({ p: agentSessions.transcriptPath }).from(agentSessions)
       .where(eq(agentSessions.agentSessionId, 'conv-abs'))
-    expect(stored?.p).toBe(path.join('projects', '-workspace', 'conv-abs.jsonl'))
+    expect(stored?.p).toBe(path.join('claude', 'projects', '-workspace', 'conv-abs.jsonl'))
     const [row] = await listWorktreeAgentSessions('proj', 'wt-abs')
     expect(row?.transcriptPath).toBe(real)
   })
 
   it('re-homes an absolute path that a moved data dir stranded', async () => {
-    // The restored-backup case: the row names a home this install does not
-    // have. Waiting for the reconciler would strand it — that visits only
+    // The restored-backup case: the row names a project tree this install
+    // does not have. Waiting for the reconciler would strand it — that visits only
     // running worktrees, and after a restore nothing is running — so the
-    // sweep recovers the tail from the /projects/<slug>/<tool>/ boundary.
-    // The transcript itself came across in the backup, at the same
-    // home-relative spot under the new data dir.
+    // sweep recovers the tail from the /projects/<slug>/ boundary. The
+    // transcript itself came across in the backup, at the same
+    // project-relative spot under the new data dir.
     const moved = path.join(claudeDir('proj'), 'projects', '-workspace', 'c.jsonl')
     await fs.mkdir(path.dirname(moved), { recursive: true })
     await fs.writeFile(moved, '{}\n')

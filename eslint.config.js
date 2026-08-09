@@ -102,6 +102,7 @@ const HERD_SRC = [
   'packages/server/src/features/sessions/locate.ts',
   'packages/server/src/features/sessions/stale-sessions.ts',
   'packages/server/src/features/sessions/stop.ts',
+  'packages/server/src/features/sessions/worktree-meta.ts',
   // The herd's own half of the boundary folder. `contract.ts`/`current.ts`
   // are shared vocabulary and `in-process.ts` is the seam itself, but these
   // two are herd code that moves into the herd package with everything else,

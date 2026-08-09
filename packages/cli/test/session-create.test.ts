@@ -140,8 +140,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
   // The agent-session link tree lives under each tool's mounted home; create
   // wipes the worktree's pane pointers before the pod starts.
-  worktreeLinksDir: vi.fn((slug: string, tool: string, worktreeId: string) =>
-    `/tmp/${slug}/${tool}/.yaac-links/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   sessionDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),

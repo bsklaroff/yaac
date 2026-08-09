@@ -110,7 +110,7 @@ definition.
 
 Define `HerdEvent` in `@yaac/shared/herd` — a union over
 `worktree-created`, `worktree-create-failed`, `base-branch-resolved`,
-`conversations-launched`, `conversations-discovered`, `conversations-active`
+`sessions-launched`, `sessions-discovered`, `sessions-active`
 and `worktree-stopped` — and a server-side `applyHerdEvent(event)` that performs exactly the writes those call
 sites perform today. Discrete and past-tense on purpose: this is what the herd
 *found*, applied once to a row, as against `#features/status`, which is the

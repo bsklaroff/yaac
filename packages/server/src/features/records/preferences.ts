@@ -38,9 +38,14 @@ export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
  *  to the file it resolves to. See `resolveSymlinkedTranscripts`. */
 export const TRANSCRIPT_PATHS_RESOLVED_KEY = 'transcript_paths_resolved'
 
-/** One-shot: rewrite absolute recorded transcript paths to the tool-home
- *  relative form the column stores. See `relativizeTranscriptPaths`. */
+/** One-shot: rewrite absolute recorded transcript paths to the relative form
+ *  the column stores. See `relativizeTranscriptPaths`. */
 export const TRANSCRIPT_PATHS_RELATIVE_KEY = 'transcript_paths_relative'
+
+/** One-shot: rewrite tool-home-relative transcript paths to the
+ *  project-relative form the column stores now. See
+ *  `projectRelativeTranscriptPaths`. */
+export const TRANSCRIPT_PATHS_PROJECT_KEY = 'transcript_paths_project_relative'
 
 /** Whether a one-shot migration step has already run. */
 export async function isFlagSet(key: string): Promise<boolean> {

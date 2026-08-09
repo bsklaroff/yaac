@@ -45,6 +45,7 @@ export { pushDesiredWorkspaces } from './desired-workspaces'
 export {
   DEFAULT_TOOL_KEY,
   SESSIONS_BACKFILLED_KEY,
+  TRANSCRIPT_PATHS_PROJECT_KEY,
   TRANSCRIPT_PATHS_RELATIVE_KEY,
   TRANSCRIPT_PATHS_RESOLVED_KEY,
   clearFlag,

@@ -213,7 +213,7 @@ describe('ensureClaudeHooks', () => {
     ])
     // The command points at the image-baked script with claude's home as its
     // argument — nothing is copied into the (session-writable) claude dir.
-    expect(CLAUDE_HOOK_COMMAND).toBe('/etc/yaac/agent-links.sh /home/yaac/.claude')
+    expect(CLAUDE_HOOK_COMMAND).toBe('/etc/yaac/agent-links.sh /home/yaac/.claude claude')
   })
 
   it('is idempotent across the session creates that re-run it', async () => {

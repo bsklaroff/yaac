@@ -72,7 +72,7 @@ RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
 # skips codex's startup update probe (against api.github.com) and drops
 # straight to the agent input instead of stalling on a version check — which
 # matters for yaac-spawn's unattended sessions. The script text is exercised by
-# packages/server/test/features/sessions/agent-links.test.ts, which extracts it
+# packages/server/test/features/sessions/session-start-hook.test.ts, which extracts it
 # from the heredoc below and runs it. Verified against codex-cli
 # 0.144.5.
 USER root
@@ -80,55 +80,61 @@ RUN mkdir -p /etc/yaac && cat <<'HOOK' > /etc/yaac/agent-links.sh
 #!/bin/sh
 # yaac agent-session discovery hook, shared by every tool that has a
 # SessionStart hook and a host-mounted home. $1 is that home
-# (/home/yaac/.claude, /home/yaac/.codex); the hook payload is on stdin.
+# (/home/yaac/.claude, /home/yaac/.codex); $2 is that home's name under the
+# project directory (claude, codex, pi). The hook payload is on stdin.
 #
-# Writes two plain files under the home, both keyed by $YAAC_SESSION_ID (the
-# worktree id, injected into the pod env by session create):
-#   .yaac-links/<worktreeId>/sessions/<agentSessionId> — the conversation's
-#       transcript, as a path RELATIVE to this home; one per agent session
-#       the worktree has hosted (its history, and it survives the pod)
-#   .yaac-links/<worktreeId>/panes/<paneId> — the agent session currently on
-#       that tmux pane (its live set; what makes "active" knowable)
+# Appends ONE JSON line per firing to /home/yaac/.yaac/session-starts.jsonl,
+# which the host mounts and the herd folds into the worktree's metadata
+# document. Append-only and never renamed, which is what makes it safe to
+# share with a host-side writer: a single-line append needs no lock, where the
+# document itself is rewritten whole and so is never mounted in here at all.
 #
-# Relative, because the payload's path is the in-pod one (/home/yaac/.claude/…)
-# and the server reads this same tree through the host mount, where that
-# prefix does not exist. Stripping the home is the whole translation, so it
-# is plain parameter expansion — no interpreter, and nothing to escape.
+# The transcript is recorded RELATIVE TO THE PROJECT DIRECTORY, because the
+# payload's path is the in-pod one (/home/yaac/.claude/...) and the herd reads
+# the same file through the host mount, where that prefix does not exist.
+# Swapping the home for its project-relative name is the whole translation, so
+# it stays parameter expansion — no interpreter, and nothing to escape.
 #
 # Fires on startup/resume/clear/compact, so /clear and `claude --resume` are
-# what add rows to the history and repoint a pane. Always exits 0: a broken
-# write must never take the agent down with it.
+# what add sessions and repoint a pane. Always exits 0: a broken write must
+# never take the agent down with it.
 HOME_DIR="$1"
+HOME_NAME="$2"
 INPUT=$(cat)
-[ -n "$YAAC_SESSION_ID" ] || exit 0
 [ -n "$HOME_DIR" ] || exit 0
+[ -n "$HOME_NAME" ] || exit 0
 TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 SID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-# codex names its rollout files after the conversation; if a tool ever omits
+# codex names its rollout files after the session; if a tool ever omits
 # session_id from the payload the transcript basename still identifies it.
 [ -n "$SID" ] || SID=$(basename "${TRANSCRIPT:-}" .jsonl)
 [ -n "$SID" ] || exit 0
-WT_DIR="$HOME_DIR/.yaac-links/$YAAC_SESSION_ID"
-mkdir -p "$WT_DIR/sessions" "$WT_DIR/panes" || exit 0
-# The record is always written, so the conversation is known even when its
-# transcript is not: a path outside this home has no host-side form we can
-# express, and one the payload omitted has none yet. Either way the body is
-# empty rather than a path that resolves nowhere.
+# A path outside this home has no project-relative form we can express, and
+# one the payload omitted has none yet. Either way the field is empty rather
+# than a path that resolves nowhere — the session is still real.
 case "$TRANSCRIPT" in
-  "$HOME_DIR"/*) REL="${TRANSCRIPT#"$HOME_DIR"/}" ;;
+  "$HOME_DIR"/*) REL="$HOME_NAME/${TRANSCRIPT#"$HOME_DIR"/}" ;;
   *) REL='' ;;
 esac
-printf '%s\n' "$REL" > "$WT_DIR/sessions/$SID"
+# The line has to be valid JSON or the reader drops it, silently — this hook
+# cannot report a failure. A backslash or a quote in a path is legal on every
+# filesystem yaac runs on, so escape both rather than emit something that
+# parses nowhere. The extraction above does NOT decode the payload's own JSON
+# escapes (sed, not a parser), so such a path may still come out mangled; what
+# this buys is that the SESSION is still recorded rather than the whole line
+# being lost.
+esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # tmux exports TMUX_PANE into every pane, and hooks inherit the agent's env,
-# so this is how a conversation is attributed to the pane running it. Strip
-# the leading '%' so the pointer is a plain filename.
-if [ -n "$TMUX_PANE" ]; then
-  printf '%s\n' "$SID" > "$WT_DIR/panes/${TMUX_PANE#%}"
-fi
+# so this is how a session is attributed to the pane running it. Strip the
+# leading '%' so the value is a plain token.
+mkdir -p /home/yaac/.yaac || exit 0
+printf '{"id":"%s","tool":"%s","pane":"%s","path":"%s"}\n' \
+  "$(esc "$SID")" "$HOME_NAME" "${TMUX_PANE#%}" "$(esc "$REL")" \
+  >> /home/yaac/.yaac/session-starts.jsonl
 exit 0
 HOOK
 RUN chmod 755 /etc/yaac/agent-links.sh && mkdir -p /etc/codex/hooks \
-  && printf '#!/bin/sh\nexec /etc/yaac/agent-links.sh /home/yaac/.codex\n' \
+  && printf '#!/bin/sh\nexec /etc/yaac/agent-links.sh /home/yaac/.codex codex\n' \
      > /etc/codex/hooks/yaac-session-start.sh
 RUN printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml
 RUN chmod 755 /etc/codex/hooks/yaac-session-start.sh && cat <<'REQ' > /etc/codex/requirements.toml

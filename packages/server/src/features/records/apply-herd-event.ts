@@ -34,16 +34,16 @@ export async function applyHerdEvent(event: HerdEvent): Promise<void> {
     case 'base-branch-resolved':
       await setWorktreeBaseBranch(event.projectSlug, event.worktreeId, event.baseBranch)
       return
-    case 'conversations-launched': {
-      const { projectSlug, worktreeId, conversations } = event
-      await recordAgentSessions(projectSlug, worktreeId, conversations)
-      await setActiveAgentSessions(projectSlug, worktreeId, conversations)
+    case 'sessions-launched': {
+      const { projectSlug, worktreeId, sessions } = event
+      await recordAgentSessions(projectSlug, worktreeId, sessions)
+      await setActiveAgentSessions(projectSlug, worktreeId, sessions)
       return
     }
-    case 'conversations-discovered':
-      await recordAgentSessions(event.projectSlug, event.worktreeId, event.conversations)
+    case 'sessions-discovered':
+      await recordAgentSessions(event.projectSlug, event.worktreeId, event.sessions)
       return
-    case 'conversations-active':
+    case 'sessions-active':
       await setActiveAgentSessions(event.projectSlug, event.worktreeId, event.active)
       return
     case 'worktree-stopped':

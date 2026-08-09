@@ -89,9 +89,15 @@ export const AGENT_LINKS_HOOK = '/etc/yaac/agent-links.sh'
 /** Claude's host-mounted home, as the pod sees it. */
 export const CONTAINER_CLAUDE_HOME = '/home/yaac/.claude'
 
-/** The command claude runs. The home travels as an argument because one
- *  script body serves every tool (see the Dockerfile comment). */
-export const CLAUDE_HOOK_COMMAND = `${AGENT_LINKS_HOOK} ${CONTAINER_CLAUDE_HOME}`
+/** Claude's home under the project directory — the prefix a transcript path
+ *  recorded by the hook carries, so the herd can resolve it host-side. */
+const CLAUDE_HOME_NAME = 'claude'
+
+/** The command claude runs. The home and its project-relative name travel as
+ *  arguments because one script body serves every tool (see the Dockerfile
+ *  comment). */
+export const CLAUDE_HOOK_COMMAND =
+  `${AGENT_LINKS_HOOK} ${CONTAINER_CLAUDE_HOME} ${CLAUDE_HOME_NAME}`
 
 interface HookEntry {
   type?: string

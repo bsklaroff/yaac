@@ -17,7 +17,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   listSessionPods: vi.fn().mockResolvedValue([]),
 }))
 import { closeDb } from '#platform/db/client'
-import { claudeDir, worktreeLinksDir } from '@yaac/shared/project-paths'
+import { claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   reconcileAgentSessions,
   reconcileWorktreeAgentSessions,
@@ -29,6 +29,11 @@ import {
 import { applyHerdEvent } from '#features/records/apply-herd-event'
 import { _resetPromptCaptureForTests } from '#features/sessions/prompt-capture'
 import { recordWorktreeCreated } from '#features/records/worktree-store'
+import {
+  newWorktreeMeta,
+  recordWorktreeLife,
+  updateWorktreeMeta,
+} from '#features/sessions/worktree-meta'
 import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
 import { listSessionPods } from '#platform/k8s/pods'
 import { sessionExec } from '#platform/k8s/stream-relay'
@@ -40,14 +45,14 @@ import {
 } from '#features/status/status-store'
 
 /**
- * The registry is the join: the hook's link tree says which conversations a
- * worktree has hosted and which pane each sat on; the status watcher says
- * which panes are alive right now. Only their intersection is "active", and
+ * The registry is the join: the worktree's metadata document says which agent
+ * sessions it has hosted and which handle each sat on; the status watcher says
+ * which handles are alive right now. Only their intersection is "active", and
  * only `active` survives teardown to drive a restart.
  *
- * The link tree is written here directly rather than by running the hook —
- * `agent-links.test.ts` covers the hook→tree half end to end, so this file can
- * stay about the join.
+ * Sightings are appended to the session-starts log here rather than by running
+ * the in-pod hook — its line format is covered by
+ * session-start-hook.test.ts, which extracts and runs the real script — so this file can stay about the join.
  *
  * The sweep reports what it found rather than writing rows, so the real
  * `applyHerdEvent` is wired as the sink: every assertion below is on the rows
@@ -62,6 +67,15 @@ describe('reconcileWorktreeAgentSessions', () => {
     _resetPromptCaptureForTests()
     _setServerLinkForTests({ workspaceEvent: applyHerdEvent })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    // The document create would have written, plus the life whose id every
+    // handle below is stamped with.
+    await updateWorktreeMeta('demo', 'wt-1', () => newWorktreeMeta({
+      projectSlug: 'demo',
+      worktreeId: 'wt-1',
+      branch: 'agent/wt-1',
+      createdAtMs: Date.now(),
+    }))
+    await recordWorktreeLife('demo', 'wt-1', 'job-1', Date.now())
   })
 
   afterEach(async () => {
@@ -86,24 +100,22 @@ describe('reconcileWorktreeAgentSessions', () => {
   const foundingAsk = async (): Promise<string | undefined> =>
     (await listWorktreeAgentSessions('demo', 'wt-1'))[0]?.firstPrompt
 
-  /** Link a conversation, optionally pinning it to a pane, as the hook would. */
+  /** Append a sighting, optionally on a pane, exactly as the in-pod hook does. */
   async function link(agentSessionId: string, paneId?: string): Promise<void> {
-    const dir = worktreeLinksDir('demo', 'claude', 'wt-1')
-    await fs.mkdir(path.join(dir, 'sessions'), { recursive: true })
-    await fs.mkdir(path.join(dir, 'panes'), { recursive: true })
     const transcripts = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(transcripts, { recursive: true })
     const transcript = path.join(transcripts, `${agentSessionId}.jsonl`)
     await fs.writeFile(transcript, '{"type":"user"}\n')
-    // A record file naming the transcript relative to the tool home, which is
-    // exactly what the hook writes; `agent-links.test.ts` owns both formats.
-    await fs.writeFile(
-      path.join(dir, 'sessions', agentSessionId),
-      `${path.relative(claudeDir('demo'), transcript)}\n`,
-    )
-    if (paneId !== undefined) {
-      await fs.writeFile(path.join(dir, 'panes', paneId.slice(1)), `${agentSessionId}\n`)
-    }
+    const log = worktreeSessionStartsPath('demo', 'wt-1')
+    await fs.mkdir(path.dirname(log), { recursive: true })
+    // Project-relative, which is the form the hook records and every layer
+    // above stores.
+    await fs.appendFile(log, `${JSON.stringify({
+      id: agentSessionId,
+      tool: 'claude',
+      pane: paneId?.slice(1) ?? '',
+      path: path.join('claude', 'projects', '-workspace', `${agentSessionId}.jsonl`),
+    })}\n`)
   }
 
   const states = async (): Promise<Array<[string, boolean]>> =>
