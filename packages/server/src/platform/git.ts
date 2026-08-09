@@ -304,7 +304,22 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
       await fs.mkdir(worktreePath, { recursive: true })
       await fs.rename(path.join(staged, '.git'), path.join(worktreePath, '.git'))
       movedGit = true
-      await simpleGit(repoPath).raw(['worktree', 'repair', worktreePath])
+      // Point the admin dir back at where the worktree actually is. The
+      // moved `.git` already names the admin dir, so this one line is the
+      // whole of the repair — and it is written directly rather than with
+      // `git worktree repair`, which is NOT scoped to the path it is given:
+      // it walks every worktree registered in the repo and, for any whose
+      // `gitdir` no longer resolves, writes a fresh `.git` file at whatever
+      // path that file names.
+      //
+      // Every worktree yaac has ever started has exactly such a `gitdir`,
+      // because the in-pod setup rewrites it to the container's own view
+      // (`/workspace/.git`, see buildWorktreeLinkExec). So a repair run
+      // anywhere that /workspace is a real directory — a nested yaac, or an
+      // e2e suite inside a session, both supported — resolves those pod
+      // paths in the CURRENT namespace and overwrites the live worktree
+      // sitting there, pointing it at an unrelated repo's admin dir.
+      await fs.writeFile(path.join(adminDir, 'gitdir'), `${worktreePath}/.git\n`)
       // `--no-checkout` leaves the index empty, so a bare `checkout` (the
       // documented way to finish a deferred worktree add) populates the
       // tree. Forced because an empty index treats everything already in
