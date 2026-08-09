@@ -7,11 +7,11 @@ import { authAgentHub } from '#features/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, getDb, importLegacyJsonStores } from '#platform/db'
 import { EventHub } from '#main/events'
-import { resolveSessionContainer } from '#features/sessions'
+import { resolveWorktreeContainer } from '#features/worktrees'
 import { createServerLink } from '#main/link'
 import { createInProcessHerd, herd, setHerd } from '#herd'
 import { setServerLink } from '#server-link'
-import { coalesceCalls, onSessionListChanged } from '#notify'
+import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#features/skills'
 import type { SocketLike } from '#features/terminals'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -153,11 +153,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // `/health` as `ready` so `yaac server start` waits for genuine readiness
   // instead of the pre-init responsive window (see waitForReadyLock).
   let ready = false
-  // Push a fresh snapshot the moment session state changes — a create /
+  // Push a fresh snapshot the moment worktree state changes — a create /
   // restart from a route handler, an informer delta, or a watcher-fed
   // status flip. The first notification publishes immediately; bursts
   // (server start seeding N pods) coalesce into one trailing rebuild.
-  onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
+  onWorktreeListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
   const app = buildApp({ secret, buildId, tokens, isReady: () => ready })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
@@ -224,8 +224,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   })))
 
   // PTY bridge: one embedded terminal per connection, attached to the
-  // session's tmux. Path is /pty/attach (not /session/...) to avoid
-  // colliding with the GET /session/:id route. Auth rides the upgrade.
+  // worktree's tmux. Path is /pty/attach (not /worktree/...) to avoid
+  // colliding with the GET /worktree/:id route. Auth rides the upgrade.
   app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
     // Which window to attach and the browser's reported grid — validated by
@@ -241,7 +241,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         void (async () => {
           let jobName: string
           try {
-            const resolved = await resolveSessionContainer(id, { requireRunning: true })
+            const resolved = await resolveWorktreeContainer(id, { requireRunning: true })
             jobName = resolved.jobName
           } catch {
             try {
@@ -294,7 +294,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let projectSlug: string
           try {
-            projectSlug = (await resolveSessionContainer(id, { requireRunning: true })).projectSlug
+            projectSlug = (await resolveWorktreeContainer(id, { requireRunning: true })).projectSlug
           } catch {
             fail('session not found or not running')
             return

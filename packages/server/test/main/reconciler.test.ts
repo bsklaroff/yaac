@@ -66,7 +66,7 @@ describe('startReconciler', () => {
   it('runs an immediate full pass (every step, resync snapshot)', async () => {
     const runs: StepRuns = []
     const h = start([
-      makeStep(runs, 'a', ['session-pods']),
+      makeStep(runs, 'a', ['worktree-pods']),
       makeStep(runs, 'b', []),
       makeStep(runs, 'c', ['poll']),
     ])
@@ -84,14 +84,14 @@ describe('startReconciler', () => {
   it('a delta runs only the steps it triggers, in list order', async () => {
     const runs: StepRuns = []
     const h = start([
-      makeStep(runs, 'pods-a', ['session-pods']),
+      makeStep(runs, 'pods-a', ['worktree-pods']),
       makeStep(runs, 'vc', ['vcluster-namespaces']),
-      makeStep(runs, 'pods-b', ['session-pods', 'poll']),
+      makeStep(runs, 'pods-b', ['worktree-pods', 'poll']),
     ])
     await flush()
     runs.length = 0
 
-    h.emit('session-pods')
+    h.emit('worktree-pods')
     await flush()
     expect(runs).toEqual([
       { name: 'pods-a', resync: false },
@@ -103,13 +103,13 @@ describe('startReconciler', () => {
 
   it('coalesces a burst of deltas into one pass', async () => {
     const runs: StepRuns = []
-    const h = start([makeStep(runs, 'pods', ['session-pods'])])
+    const h = start([makeStep(runs, 'pods', ['worktree-pods'])])
     await flush()
     runs.length = 0
 
-    h.emit('session-pods')
-    h.emit('session-pods')
-    h.emit('session-pods')
+    h.emit('worktree-pods')
+    h.emit('worktree-pods')
+    h.emit('worktree-pods')
     await flush()
     expect(runs).toHaveLength(1)
     h.abort()
@@ -120,10 +120,10 @@ describe('startReconciler', () => {
     const runs: StepRuns = []
     let emitted = false
     const h = start([
-      makeStep(runs, 'pods', ['session-pods'], () => {
+      makeStep(runs, 'pods', ['worktree-pods'], () => {
         if (!emitted) {
           emitted = true
-          h.emit('session-pods')
+          h.emit('worktree-pods')
         }
       }),
     ])
@@ -180,11 +180,11 @@ describe('startReconciler', () => {
 
   it('swallows onPass errors', async () => {
     const runs: StepRuns = []
-    const h = start([makeStep(runs, 'a', ['session-pods'])], {
+    const h = start([makeStep(runs, 'a', ['worktree-pods'])], {
       onPass: () => { throw new Error('listener broke') },
     })
     await flush()
-    h.emit('session-pods')
+    h.emit('worktree-pods')
     await flush()
     expect(runs).toHaveLength(2)
     h.abort()
@@ -201,7 +201,7 @@ describe('startReconciler', () => {
     expect(runs).toEqual([{ name: 'first', resync: true }])
 
     // Deltas after abort never wake it again.
-    h.emit('session-pods')
+    h.emit('worktree-pods')
     await flush()
     expect(runs).toHaveLength(1)
   })
@@ -231,7 +231,7 @@ describe('defaultReconcileSteps', () => {
   // handshake triggers, and nothing else dirties that one.
   it('generates titles on whatever dirties the conversation sweep', () => {
     const titles = defaultReconcileSteps().find((s) => s.name === 'generated-titles')!
-    expect([...titles.triggers].sort()).toEqual(['live-agents', 'session-pods'])
+    expect([...titles.triggers].sort()).toEqual(['live-agents', 'worktree-pods'])
   })
 
   // Which of its own steps a pass owes is the herd's business, so its step
@@ -241,12 +241,12 @@ describe('defaultReconcileSteps', () => {
     expect([...herdStep.triggers].sort()).toEqual([
       'live-agents',
       'poll',
-      'session-jobs',
-      'session-pods',
       'vcluster-configmaps',
       'vcluster-namespaces',
       'vcluster-pods',
       'vcluster-services',
+      'worktree-jobs',
+      'worktree-pods',
     ])
   })
 })

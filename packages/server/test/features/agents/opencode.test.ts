@@ -5,10 +5,10 @@ import os from 'node:os'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
-  sessionExec: vi.fn(),
+  podExec: vi.fn(),
 }))
 
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
 import {
   pickOpencodeSession,
@@ -17,7 +17,7 @@ import {
   ensureOpencodeConfigJson,
 } from '#features/agents/opencode'
 
-const mockedExec = vi.mocked(sessionExec)
+const mockedExec = vi.mocked(podExec)
 
 /**
  * The HTTP probe (`curl /session`) goes through `containerExec`; the

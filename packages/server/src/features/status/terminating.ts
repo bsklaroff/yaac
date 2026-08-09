@@ -1,7 +1,7 @@
 /**
- * Sessions whose teardown has been issued but whose pod may not yet carry a
- * Kubernetes deletionTimestamp — the gap between `cleanupSession*` starting
- * and the `kubectl delete` landing. Marking a session here lets the display
+ * Worktrees whose teardown has been issued but whose pod may not yet carry a
+ * Kubernetes deletionTimestamp — the gap between `cleanupWorktree*` starting
+ * and the `kubectl delete` landing. Marking a worktree here lets the display
  * path render it as "terminating…" across that gap and for deletes that
  * originate outside the UI (CLI, the stale reaper), instead of the row
  * flashing a stray `waiting` spell on its way out.
@@ -11,7 +11,7 @@
  * and `pruneTerminating` clears anything stale.
  */
 
-/** sessionId -> epoch ms when the teardown was marked. */
+/** worktreeId -> epoch ms when the teardown was marked. */
 const marks = new Map<string, number>()
 
 /**
@@ -22,22 +22,22 @@ const marks = new Map<string, number>()
  */
 export const TERMINATING_TTL_MS = 60_000
 
-/** Mark a session as terminating (idempotent; does not reset the timestamp so
+/** Mark a worktree as terminating (idempotent; does not reset the timestamp so
  *  the TTL measures from the first mark). */
-export function markSessionTerminating(sessionId: string, nowMs = Date.now()): void {
-  if (!sessionId) return
-  if (!marks.has(sessionId)) marks.set(sessionId, nowMs)
+export function markWorktreeTerminating(worktreeId: string, nowMs = Date.now()): void {
+  if (!worktreeId) return
+  if (!marks.has(worktreeId)) marks.set(worktreeId, nowMs)
 }
 
-/** Whether a session is currently marked terminating. */
-export function isSessionTerminating(sessionId: string): boolean {
-  return marks.has(sessionId)
+/** Whether a worktree is currently marked terminating. */
+export function isWorktreeTerminating(worktreeId: string): boolean {
+  return marks.has(worktreeId)
 }
 
-/** Drop a session's mark — called when its id is reused (restart) so a fresh
+/** Drop a worktree's mark — called when its id is reused (restart) so a fresh
  *  incarnation isn't rendered as terminating. */
-export function clearSessionTerminating(sessionId: string): void {
-  marks.delete(sessionId)
+export function clearWorktreeTerminating(worktreeId: string): void {
+  marks.delete(worktreeId)
 }
 
 /**
@@ -47,9 +47,9 @@ export function clearSessionTerminating(sessionId: string): void {
  * display-list build.
  */
 export function pruneTerminating(livePodIds: Set<string>, nowMs = Date.now()): void {
-  for (const [sessionId, markedAt] of marks) {
-    if (!livePodIds.has(sessionId) || nowMs - markedAt > TERMINATING_TTL_MS) {
-      marks.delete(sessionId)
+  for (const [worktreeId, markedAt] of marks) {
+    if (!livePodIds.has(worktreeId) || nowMs - markedAt > TERMINATING_TTL_MS) {
+      marks.delete(worktreeId)
     }
   }
 }

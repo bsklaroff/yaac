@@ -25,7 +25,7 @@ has already committed to, so it is the boundary regardless of what surrounds it
 — `platform/` holds both loose files and sealed subfolders, and comes out as
 four modules. Everything else falls back to the shallowest directory under
 `src/` that holds source files directly, which makes pure namespace directories
-transparent: `features/` is not a module, `features/sessions` is.
+transparent: `features/` is not a module, `features/worktrees` is.
 
 The dependency graph is collapsed to that granularity. Imports that resolve
 through a package's `imports` map are re-resolved by the script:

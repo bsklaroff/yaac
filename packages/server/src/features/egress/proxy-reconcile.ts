@@ -2,18 +2,18 @@ import { proxyClient } from './proxy-client'
 import { serverLog } from '#log'
 
 /**
- * Heal the proxy's ssh-agent after a pod replacement. Session
+ * Heal the proxy's ssh-agent after a pod replacement. Worktree
  * registrations survive churn on their own (the proxy write-throughs
  * them to /data and reloads at boot), but agent identities are
  * deliberately memory-only — key bytes never touch the proxy filesystem
  * — so a replaced pod always boots with an empty agent and only the
  * server can re-upload the keys. This is the one proxy heal left on the
- * background tick: session identity is now a per-connection relay token
+ * background tick: worktree identity is now a per-connection relay token
  * the proxy verifies statelessly, so it needs no healing.
  */
 export async function reconcileProxySshKeys(): Promise<void> {
   // attachIfRunning, not ensureRunning: this step must never bootstrap
-  // the proxy (it deploys lazily on the first session create), and
+  // the proxy (it deploys lazily on the first worktree create), and
   // cleanup paths rely on the same no-side-effects contract.
   if (!(await proxyClient.attachIfRunning())) return
   try {

@@ -1,7 +1,7 @@
 /**
  * The nested-session image cache, exercised through its two barrel entries:
- * `salvageSessionImages` (push into the project registry) and
- * `primeSessionImages` (pull back into a fresh session's engine).
+ * `salvageWorktreeImages` (push into the project registry) and
+ * `primeWorktreeImages` (pull back into a fresh session's engine).
  *
  * The survey script, its sudo wrapper, the report parser, the push planner
  * and the two in-pod scripts are all things the salvage hands to a session
@@ -34,7 +34,7 @@ vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
-import { primeSessionImages, salvageSessionImages } from '#features/images'
+import { primeWorktreeImages, salvageWorktreeImages } from '#features/images'
 // The registry the cache rides is the project's own — resolved for real
 // here (not stubbed), so a change to its host shape shows up as a broken
 // push destination rather than a passing test against a stale constant.
@@ -52,7 +52,7 @@ const HEX = 'a'.repeat(64)
 const HEX2 = 'b'.repeat(64)
 const HEX3 = 'c'.repeat(64)
 
-const PARAMS = { jobName: 'yaac-demo-job', projectSlug: 'demo', sessionId: SID }
+const PARAMS = { jobName: 'yaac-demo-job', projectSlug: 'demo', worktreeId: SID }
 const REG = projectRegistryHost('demo')
 
 /** A three-image engine: a named leaf on two unnamed ancestors. */
@@ -67,7 +67,7 @@ async function salvageReporting(stdout: string): Promise<boolean> {
     Promise.resolve(cmd.includes('image inspect')
       ? { stdout, stderr: '' }
       : { stdout: 'pushed 1 failed 0\n', stderr: '' }))
-  return salvageSessionImages(PARAMS)
+  return salvageWorktreeImages(PARAMS)
 }
 
 /**
@@ -210,7 +210,7 @@ beforeEach(() => {
   _resetSalvageMemoForTests()
 })
 
-describe('salvageSessionImages', () => {
+describe('salvageWorktreeImages', () => {
   it('gates on podman and passwordless sudo, and stays one exec with nothing to push', async () => {
     await expect(salvageReporting('')).resolves.toBe(true)
     const cmd = surveyCommand()
@@ -330,9 +330,9 @@ describe('salvageSessionImages', () => {
       Promise.resolve(cmd.includes('image inspect')
         ? { stdout: have + CHAIN, stderr: '' }
         : { stdout: 'retired 0 failed 2\n', stderr: '' }))
-    await salvageSessionImages(PARAMS)
+    await salvageWorktreeImages(PARAMS)
     mockContainerExec.mockClear()
-    await salvageSessionImages(PARAMS)
+    await salvageWorktreeImages(PARAMS)
     // Second cycle tries again instead of treating the shape as retired.
     expect(mockContainerExec).toHaveBeenCalledTimes(2)
   })
@@ -380,24 +380,24 @@ describe('salvageSessionImages', () => {
 
   it('swallows failures — teardown is never blocked on cache salvage', async () => {
     mockContainerExec.mockRejectedValue(new Error('pod is gone'))
-    await expect(salvageSessionImages(PARAMS)).resolves.toBe(false)
+    await expect(salvageWorktreeImages(PARAMS)).resolves.toBe(false)
   })
 
   it('coalesces concurrent salvages for the same session', async () => {
     let resolveExec: (v: { stdout: string; stderr: string }) => void = () => {}
     mockContainerExec.mockReturnValue(new Promise((r) => { resolveExec = r }))
-    const a = salvageSessionImages(PARAMS)
-    const b = salvageSessionImages(PARAMS)
+    const a = salvageWorktreeImages(PARAMS)
+    const b = salvageWorktreeImages(PARAMS)
     resolveExec({ stdout: '', stderr: '' })
     await expect(Promise.all([a, b])).resolves.toEqual([true, true])
     expect(mockContainerExec).toHaveBeenCalledOnce()
   })
 })
 
-describe('primeSessionImages', () => {
+describe('primeWorktreeImages', () => {
   it('pulls the project catalog back, restoring names and leaving cache tags dangling', async () => {
     mockContainerExec.mockResolvedValue({ stdout: 'primed 3\n', stderr: '' })
-    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    await expect(primeWorktreeImages(PARAMS)).resolves.toBe(true)
     const cmd = commands()[0]
     expect(cmd).toContain(`REG=${REG}`)
     expect(cmd).toContain('/v2/_catalog?n=1000')
@@ -423,7 +423,7 @@ describe('primeSessionImages', () => {
 
   it('stops before filling the session graphroot', async () => {
     mockContainerExec.mockResolvedValue({ stdout: 'primed-full\nprimed 2\n', stderr: '' })
-    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    await expect(primeWorktreeImages(PARAMS)).resolves.toBe(true)
     const cmd = commands()[0]
     // Pulled layers land in the session's sentry tmpfs, so a project
     // registry holding more than the session can carry degrades to a
@@ -434,7 +434,7 @@ describe('primeSessionImages', () => {
 
   it('spends the budget on the newest generations, not on whatever the catalog lists first', async () => {
     mockContainerExec.mockResolvedValue({ stdout: 'primed 0\n', stderr: '' })
-    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    await expect(primeWorktreeImages(PARAMS)).resolves.toBe(true)
     // The real script, run against a stub registry and a stub engine whose
     // pull always fails: every ref it ASKS for is one the ranking chose,
     // and a failing pull is a path the script already handles (`|| continue`),
@@ -475,7 +475,7 @@ describe('primeSessionImages', () => {
 
   it('ranks what it cannot read toward inclusion, and breaks a tie the same way twice', async () => {
     mockContainerExec.mockResolvedValue({ stdout: 'primed 0\n', stderr: '' })
-    await expect(primeSessionImages(PARAMS)).resolves.toBe(true)
+    await expect(primeWorktreeImages(PARAMS)).resolves.toBe(true)
     const cmd = commands()[0]
     const pulled = await runPrimeScript(cmd, CATALOG)
     const gen = (repo: string, which: keyof typeof GENERATIONS) =>
@@ -498,6 +498,6 @@ describe('primeSessionImages', () => {
 
   it('swallows failures — a cold cache only costs a rebuild', async () => {
     mockContainerExec.mockRejectedValue(new Error('engine not up'))
-    await expect(primeSessionImages(PARAMS)).resolves.toBe(false)
+    await expect(primeWorktreeImages(PARAMS)).resolves.toBe(false)
   })
 })

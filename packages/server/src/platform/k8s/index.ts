@@ -3,7 +3,7 @@
 // from reaching past this file. Modules in here import each other by relative
 // path, which is why they are unaffected by that rule.
 //
-// This is not a feature: nothing here decides anything about sessions,
+// This is not a feature: nothing here decides anything about worktrees,
 // images or projects. It is the vocabulary every feature uses to talk to the
 // cluster — run a kubectl, name a Job, read the pods, exec into one, open a
 // stream, wait for readiness — plus the datapath's names and ports, which
@@ -18,7 +18,7 @@
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
 export type { DeltaSource } from './cluster-cache'
 export {
-  anySessionDirsExist,
+  anyWorktreeDirsExist,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
   isDeferredClusterBootPending,
@@ -61,11 +61,11 @@ export {
   NESTED_GRAPHROOT_VOLUME,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
-  buildSessionJobManifest,
+  buildPodJobManifest,
   graphrootMountAnnotations,
-  sessionUid,
+  podUid,
 } from './pod-spec'
-export type { HostPathType, MountSource, SessionMount } from './pod-spec'
+export type { HostPathType, MountSource, PodMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
@@ -78,26 +78,29 @@ export {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
   LABEL_PROJECT,
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   LABEL_MODE,
   LABEL_TOOL,
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
-  findSessionPod,
+  findWorktreePod,
   isPrewarmed,
-  listSessionJobs,
-  listSessionPods,
+  labelWorktreeId,
+  listWorktreeJobs,
+  listWorktreePods,
   runPodToCompletion,
-  sessionIdFromJobName,
-  sessionJobName,
+  worktreeIdFromJobName,
+  worktreeJobName,
+  worktreeIdLabels,
 } from './pods'
-export type { SessionPod } from './pods'
+export type { PodInfo } from './pods'
 export {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   INNER_PROXY_INGRESS_NP_NAME,
-  INNER_SESSION_INGRESS_LOCK_NP_NAME,
+  INNER_WORKTREE_INGRESS_LOCK_NP_NAME,
   LABEL_ROLE,
   LABEL_VCLUSTER_NAMESPACE,
   NETD_APP_NAME,
@@ -115,8 +118,8 @@ export {
   RELAY_PORT,
   ROLE_BUILDER,
   ROLE_INNER_PROXY,
-  SESSION_EGRESS_NP_NAME,
-  SESSION_INGRESS_LOCK_NP_NAME,
+  WORKTREE_EGRESS_NP_NAME,
+  WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
@@ -133,8 +136,8 @@ export {
   invalidateRelayAddr,
   relayDial,
   relayTcpFactory,
-  sessionExec,
-  sessionStreamToken,
+  podExec,
+  podStreamToken,
   waitForStreamd,
   type StreamChild,
 } from './stream-relay'

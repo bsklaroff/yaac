@@ -31,7 +31,7 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
 export const DEFAULT_TOOL_KEY = 'default_tool'
 
 /** `preferences` row key marking that pre-existing sessions have been
- *  adopted into `agent_sessions` (see backfillSessions). */
+ *  adopted into `agent_sessions` (see backfillWorktrees). */
 export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
 
 /** One-shot: rewrite recorded transcript paths that point at a yaac symlink

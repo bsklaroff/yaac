@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { waitingKey, waitingSpellKeys, newlyWaitingSessions, shouldChime } from '#lib/attentionChime'
+import { waitingKey, waitingSpellKeys, newlyWaitingWorktrees, shouldChime } from '#lib/attentionChime'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 
 type W = Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>
@@ -18,14 +18,14 @@ describe('waitingSpellKeys', () => {
   })
 })
 
-describe('newlyWaitingSessions', () => {
+describe('newlyWaitingWorktrees', () => {
   it('returns waiting sessions whose spell key is new', () => {
-    const fresh = newlyWaitingSessions(new Set(['a:100']), [s('a', 'waiting', 100), s('b', 'waiting', 50)])
+    const fresh = newlyWaitingWorktrees(new Set(['a:100']), [s('a', 'waiting', 100), s('b', 'waiting', 50)])
     expect(fresh.map((x) => x.worktreeId)).toEqual(['b'])
   })
 
   it('counts a re-waiting session (new spell start) as new', () => {
-    const fresh = newlyWaitingSessions(new Set(['a:100']), [s('a', 'waiting', 250)])
+    const fresh = newlyWaitingWorktrees(new Set(['a:100']), [s('a', 'waiting', 250)])
     expect(fresh.map((x) => x.worktreeId)).toEqual(['a'])
   })
 })

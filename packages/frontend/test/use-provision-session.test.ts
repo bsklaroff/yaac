@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
-import { useProvisionSession } from '#lib/useProvisionSession'
+import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useUiStore } from '#store'
 
 const initial = useUiStore.getState()
 beforeEach(() => { useUiStore.setState(initial, true) })
 
-describe('useProvisionSession', () => {
+describe('useProvisionWorktree', () => {
   it('adds an optimistic provisioning row with the given id and auto-opens it', () => {
-    const { result } = renderHook(() => useProvisionSession())
+    const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
       result.current('proj', 'claude', 'create', 'sid-1', () => Promise.resolve({ worktreeId: 'sid-1' }))
@@ -24,7 +24,7 @@ describe('useProvisionSession', () => {
   })
 
   it('streams progress into the optimistic row message', async () => {
-    const { result } = renderHook(() => useProvisionSession())
+    const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
       result.current('proj', 'claude', 'create', 'sid-2', (_sid, onProgress) => {
@@ -40,7 +40,7 @@ describe('useProvisionSession', () => {
   })
 
   it('follows the real id when a create claims a prewarmed spare (id swap)', async () => {
-    const { result } = renderHook(() => useProvisionSession())
+    const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
       // op resolves with a DIFFERENT id than requested — a claimed spare.
@@ -62,7 +62,7 @@ describe('useProvisionSession', () => {
   })
 
   it('keeps the row and selection when the result id matches (cold create)', async () => {
-    const { result } = renderHook(() => useProvisionSession())
+    const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
       result.current('proj', 'claude', 'create', 'same-id', () => Promise.resolve({ worktreeId: 'same-id' }))
@@ -75,7 +75,7 @@ describe('useProvisionSession', () => {
   })
 
   it('surfaces an error on the optimistic row when the op rejects', async () => {
-    const { result } = renderHook(() => useProvisionSession())
+    const { result } = renderHook(() => useProvisionWorktree())
 
     act(() => {
       result.current('proj', 'codex', 'restart', 'sid-3', () => Promise.reject(new Error('boom')))

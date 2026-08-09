@@ -7,9 +7,9 @@ import type { Terminal } from '@xterm/xterm'
  *
  * Why gate on visibility: each terminal that turns on the WebGL renderer holds
  * its own live WebGL2 context, and browsers cap how many contexts a page may
- * keep (~16 in Chrome, fewer in Safari). This app keeps every session/pane
+ * keep (~16 in Chrome, fewer in Safari). This app keeps every worktree/pane
  * ever opened mounted — hidden ones held invisible at a frozen rect for
- * instant, resize-free switch-back and a live PTY — so a handful of sessions'
+ * instant, resize-free switch-back and a live PTY — so a handful of worktrees'
  * worth of agent + shell panes pile up past the cap. The browser then force-evicts the least-recently-used
  * context (`webglcontextlost`), leaving that terminal a blank canvas that
  * reads as a black box until it's poked back to life — the "scroll up and down

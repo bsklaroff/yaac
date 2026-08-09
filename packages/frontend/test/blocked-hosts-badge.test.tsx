@@ -56,19 +56,19 @@ describe('BlockedHostsBadge', () => {
     openPopover()
 
     // Collapsed by default — no actions shown.
-    expect(screen.queryByText('Allow for this session')).toBeNull()
+    expect(screen.queryByText('Allow for this worktree')).toBeNull()
 
     fireEvent.click(screen.getByText('registry.npmjs.org'))
 
-    expect(screen.getByText('Allow for this session')).toBeTruthy()
+    expect(screen.getByText('Allow for this worktree')).toBeTruthy()
     expect(screen.getByText('Allow permanently for this project')).toBeTruthy()
   })
 
-  it('allows a host for just this session (persist:false)', async () => {
+  it('allows a host for just this worktree (persist:false)', async () => {
     render(<BlockedHostsBadge hosts={HOSTS} worktreeId="sess-1" iconSize={12} />)
     openPopover()
     fireEvent.click(screen.getByText('registry.npmjs.org'))
-    fireEvent.click(screen.getByText('Allow for this session'))
+    fireEvent.click(screen.getByText('Allow for this worktree'))
 
     await waitFor(() => {
       expect(allowBlockedHost).toHaveBeenCalledWith('sess-1', 'registry.npmjs.org', { persist: false })

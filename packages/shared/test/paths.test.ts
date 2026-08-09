@@ -35,13 +35,13 @@ import {
   sharedProjectPath,
   nodeLocalProjectPath,
   serverLocalPath,
-  nodeLocalSessionDir,
-  sessionRoots,
-  sessionsRoots,
+  nodeLocalWorktreeStateDir,
+  worktreeStateRoots,
+  projectWorktreeStateRoots,
   projectRoots,
   projectsRoots,
-  sessionDir,
-  sessionVclusterDir,
+  worktreeStateDir,
+  worktreeVclusterDir,
   nestedYaacDataDir,
   opencodeDataDir,
   cacheVolumeDir,
@@ -210,16 +210,16 @@ describe('storage tiers', () => {
     const proj = '/tmp/yaac-test/projects/my-repo'
     expect(cachedPackagesDir('my-repo')).toBe(`${proj}/.cached-packages`)
     expect(opencodeDataDir('my-repo', 'abc123')).toBe(`${proj}/opencode-data/abc123`)
-    expect(nodeLocalSessionDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123`)
+    expect(nodeLocalWorktreeStateDir('my-repo', 'abc123')).toBe(`${proj}/sessions/abc123`)
   })
 
   it('pairs both roots for whole-session, whole-project, and all-project sweeps', () => {
     setDataDir('/tmp/yaac-test')
     // One entry each while the tiers coincide — the dedup is what keeps
     // cleanup from rm-ing (and the GC from reading) the same dir twice.
-    expect(sessionRoots('my-repo', 'abc123'))
+    expect(worktreeStateRoots('my-repo', 'abc123'))
       .toEqual(['/tmp/yaac-test/projects/my-repo/sessions/abc123'])
-    expect(sessionsRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo/sessions'])
+    expect(projectWorktreeStateRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo/sessions'])
     expect(projectRoots('my-repo')).toEqual(['/tmp/yaac-test/projects/my-repo'])
     expect(projectsRoots()).toEqual(['/tmp/yaac-test/projects'])
   })
@@ -227,8 +227,8 @@ describe('storage tiers', () => {
   it('keeps the shared half of a session dir beside the node-local half', () => {
     setDataDir('/tmp/yaac-test')
     const sess = '/tmp/yaac-test/projects/my-repo/sessions/abc123'
-    expect(sessionDir('my-repo', 'abc123')).toBe(sess)
-    expect(sessionVclusterDir('my-repo', 'abc123')).toBe(`${sess}/vcluster`)
+    expect(worktreeStateDir('my-repo', 'abc123')).toBe(sess)
+    expect(worktreeVclusterDir('my-repo', 'abc123')).toBe(`${sess}/vcluster`)
     expect(nestedYaacDataDir('my-repo', 'abc123')).toBe(`${sess}/nested-yaac`)
     expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/projects/my-repo/cache-volumes/pnpm')
   })

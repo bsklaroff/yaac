@@ -30,7 +30,7 @@ import {
   hasBlockingFailure,
   registerImageBuild,
 } from '#features/image-engine/image-builds'
-import { _resetSessionListChangedForTests } from '#notify'
+import { _resetWorktreeListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
 const mockListProjects = vi.mocked(listProjects)
@@ -42,7 +42,7 @@ const mockPush = vi.mocked(pushImageShared)
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 function project(slug: string) {
-  return { slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', sessionCount: 0 }
+  return { slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0 }
 }
 
 describe('reconcileImagePrewarm', () => {
@@ -64,7 +64,7 @@ describe('reconcileImagePrewarm', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
     clearAllImageBuildsForTests()
-    _resetSessionListChangedForTests()
+    _resetWorktreeListChangedForTests()
   })
 
   it('runs inside a nested yaac session (in-pod dockerfile edits are the hot path)', async () => {
@@ -215,7 +215,7 @@ describe('retryImageBuild', () => {
   })
   afterEach(() => {
     clearAllImageBuildsForTests()
-    _resetSessionListChangedForTests()
+    _resetWorktreeListChangedForTests()
   })
 
   it('forgets a failed project build and re-triggers its chain', () => {

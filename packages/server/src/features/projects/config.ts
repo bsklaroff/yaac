@@ -24,7 +24,7 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
 }
 
 /**
- * Derive the per-path subdirectory name under `modules/<sessionId>/`.
+ * Derive the per-path subdirectory name under `modules/<worktreeId>/`.
  * Root "node_modules" → "root" (keeps the backing dir cleanly named
  * and avoids node_modules-inside-node_modules on disk). Nested paths
  * collapse slashes to underscores, e.g. "packages/web/node_modules" →
@@ -37,7 +37,7 @@ export function ephemeralModulesSlotKey(relPath: string): string {
 
 /** tmux window names tagged 'reserved' across every supported agent tool —
  *  we reject these so an `initCommands` entry can never clobber the agent
- *  pane on a session whose tool is set to that name. */
+ *  pane on a worktree whose tool is set to that name. */
 const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
   [...AGENT_TOOLS, 'init', 'yaac'],
 )
@@ -53,7 +53,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  *   - string[]              → collapses into a single `init` tmux window
  *   - InitCommandSpec[]     → one tmux window per entry (parallel execution)
  *
- * A mixed array is rejected so each session has a predictable window layout.
+ * A mixed array is rejected so each worktree has a predictable window layout.
  */
 export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
   if (!Array.isArray(raw)) {
@@ -119,7 +119,7 @@ export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
 /**
  * Parse the `referenceBranch` field: the name of a branch on `origin`,
  * written without the `origin/` prefix. Only cheap shape checks live here —
- * existence on the remote is validated where the value is used (session
+ * existence on the remote is validated where the value is used (worktree
  * create) or set (the reference-branch route), since the parser has no
  * repo access.
  */
@@ -339,7 +339,7 @@ export function parseProjectConfig(raw: string): YaacConfig {
   }
 
   // virtualCluster implies nestedContainers: the in-pod podman is the
-  // session's only build engine, so a vcluster session without it could
+  // worktree's only build engine, so a vcluster worktree without it could
   // never build images for its own pods. An explicit opt-out alongside
   // virtualCluster is a contradiction — reject it rather than silently
   // picking a side.

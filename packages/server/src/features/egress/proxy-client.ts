@@ -67,7 +67,7 @@ export interface UpstreamRedirect {
  * Rules carry the env var name as a `secretRef`, never the value — the
  * proxy resolves it per request from the proxy-secrets credentials file
  * (see `collectProxySecrets`), so registrations stay secret-free and a
- * value updated on disk applies to live sessions immediately.
+ * value updated on disk applies to live worktrees immediately.
  */
 export function buildRulesFromConfig(
   envSecretProxy: Record<string, SecretProxyRule>,
@@ -124,17 +124,20 @@ export function collectProxySecrets(
 }
 
 /**
- * A queued in-session `yaac-spawn` request, as drained from the proxy.
+ * A queued in-worktree `yaac-spawn` request, as drained from the proxy.
  * Wire shape mirrors k8s/proxy/spawn-queue.ts (SpawnRequest sans
  * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
  */
 export interface PendingSpawn {
   requestId: string
-  /** The CALLING session (attributed by the proxy from the pod source IP). */
-  sessionId: string
+  /** The CALLING worktree (attributed by the proxy from the pod source IP).
+   *  Absent from a proxy predating the rename, which sends `sessionId`. */
+  worktreeId?: string
+  /** `worktreeId` under the name it had before the rename. */
+  sessionId?: string
   prompt: string
   tool?: string
-  /** Model override for the spawned session's agent. */
+  /** Model override for the spawned worktree's agent. */
   model?: string
 }
 
@@ -142,9 +145,16 @@ export interface PendingSpawn {
 export interface SpawnResultWire {
   requestId: string
   ok: boolean
-  /** New session id when ok. */
+  /** New worktree id when ok. Sent under both names — a proxy predating the
+   *  rename reads only `sessionId`, and completes the waiting pod with it. */
+  worktreeId?: string
   sessionId?: string
   error?: string
+}
+
+/** The calling worktree of a drained spawn, under whichever name it arrived. */
+export function pendingSpawnWorktreeId(p: PendingSpawn): string | undefined {
+  return p.worktreeId ?? p.sessionId
 }
 
 // --- ProxyClient ---
@@ -199,7 +209,7 @@ export class ProxyClient {
   private authSecret: string | null = null
   private readonly forward = new ExecTunnel(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
-  // callers (e.g. two parallel session creates) don't race into two
+  // callers (e.g. two parallel worktree creates) don't race into two
   // parallel bootstrap passes.
   private ensureInflight: Promise<void> | null = null
 
@@ -222,7 +232,7 @@ export class ProxyClient {
   }
 
   /**
-   * CA-trust (and prompt-suppression) env for session containers. No
+   * CA-trust (and prompt-suppression) env for worktree containers. No
    * routing vars: egress interception is transparent — the pod's
    * redirect init container DNATs outbound 443/80 to the proxy at the
    * network layer, so `HTTP(S)_PROXY`/`NO_PROXY` cooperation is gone and
@@ -262,7 +272,7 @@ export class ProxyClient {
   /**
    * The combined trust bundle `{public roots} ∪ {proxy CA}`, built by the
    * proxy from its own ca-certificates plus the MITM CA. Mounted into nested
-   * containers (and the session pod) so the own-bundle tools that ignore
+   * containers (and the worktree pod) so the own-bundle tools that ignore
    * SSL_CERT_FILE (curl / requests / cargo / git-libcurl) can REPLACE their
    * trust set with a superset. See docs/nested-containers.md.
    */
@@ -272,22 +282,22 @@ export class ProxyClient {
     return res.text()
   }
 
-  async registerSession(
-    sessionId: string,
+  async registerWorktree(
+    worktreeId: string,
     state: {
       rules: InjectionRule[]
       allowedHosts: string[]
       repoUrl?: string
       // Required: the proxy gates all agent-credential injection on the
-      // registered tool — a session registered without one gets none.
+      // registered tool — a worktree registered without one gets none.
       tool: AgentTool
       // Required: the proxy keys its git-auth-failure records by the
-      // session's owning project.
+      // worktree's owning project.
       projectSlug: string
       upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {
-    const res = await tunnelFetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+    const res = await this.worktreeFetch(worktreeId, '', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -309,22 +319,22 @@ export class ProxyClient {
   }
 
   /**
-   * Push the full `{ podIP: outerSessionId }` attribution map for every managed
+   * Push the full `{ podIP: outerWorktreeId }` attribution map for every managed
    * vcluster's pods (yaac-in-yaac). The outer proxy can't resolve these
-   * cross-namespace source pods to a session itself, so chained egress (an inner
+   * cross-namespace source pods to a worktree itself, so chained egress (an inner
    * proxy's upstream dials, and synced pods before an inner yaac opts in) would
    * otherwise fail closed. Full-replace each call — the server sends the
    * complete current set each background tick, so a torn-down pod's IP is
    * evicted on the next push.
    */
-  async registerVclusterAttribution(podSessions: Record<string, string>): Promise<void> {
+  async registerVclusterAttribution(podWorktrees: Record<string, string>): Promise<void> {
     const res = await tunnelFetch(`${this.baseUrl}/vcluster-attribution`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.requireAuthSecret()}`,
       },
-      body: JSON.stringify(podSessions),
+      body: JSON.stringify(podWorktrees),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -332,29 +342,54 @@ export class ProxyClient {
     }
   }
 
-  async removeSession(sessionId: string): Promise<void> {
-    const res = await tunnelFetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+  /**
+   * A worktree-scoped proxy call, retried against the path this surface had
+   * before the rename when the deployed proxy 404s it.
+   *
+   * The redeploy-on-image-mismatch check only runs inside `ensureRunning`,
+   * which is reached from worktree create — not from server start, and not
+   * from the `attachIfRunning` callers (allow-host, worktree stop, the spawn
+   * drain). So a server restarted onto new code talks to the OLD proxy until
+   * the first create, and the old proxy serves only `/sessions/:id`.
+   *
+   * A 404 from BOTH paths is the caller's to interpret: for allow-host it
+   * means the proxy holds no registration for that worktree.
+   */
+  private async worktreeFetch(
+    worktreeId: string,
+    suffix: string,
+    init: Parameters<typeof tunnelFetch>[1],
+  ): Promise<Response> {
+    const id = encodeURIComponent(worktreeId)
+    const res = await tunnelFetch(`${this.baseUrl}/worktrees/${id}${suffix}`, init)
+    if (res.status !== 404) return res
+    return await tunnelFetch(`${this.baseUrl}/sessions/${id}${suffix}`, init)
+  }
+
+  async removeWorktree(worktreeId: string): Promise<void> {
+    const res = await this.worktreeFetch(worktreeId, '', {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(`Failed to remove session: ${res.status} ${text}`)
+      throw new Error(`Failed to remove worktree: ${res.status} ${text}`)
     }
   }
 
   /**
-   * Live-widen a running session's egress allowlist by one host (the webapp
+   * Live-widen a running worktree's egress allowlist by one host (the webapp
    * "allow blocked host" action). Takes effect immediately — the proxy pushes
    * the host into its in-memory allowlist and prunes it from the recorded
    * blocked set. Returns false when the proxy has no registration for the
-   * session (its 404) — the caller decides whether that matters: a project-wide
-   * fan-out tolerates it, a single-session allow should surface it. Any other
+   * worktree (its 404) — the caller decides whether that matters: a project-wide
+   * fan-out tolerates it, a single-worktree allow should surface it. Any other
    * non-OK status throws.
    */
-  async allowHost(sessionId: string, host: string): Promise<boolean> {
-    const res = await tunnelFetch(
-      `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/allow-host`,
+  async allowHost(worktreeId: string, host: string): Promise<boolean> {
+    const res = await this.worktreeFetch(
+      worktreeId,
+      '/allow-host',
       {
         method: 'POST',
         headers: {
@@ -373,16 +408,16 @@ export class ProxyClient {
   }
 
   /**
-   * Drain the proxy's queued in-session `yaac-spawn` requests. A drain is a
+   * Drain the proxy's queued in-worktree `yaac-spawn` requests. A drain is a
    * claim — the proxy hands each request out exactly once and holds the
-   * session's HTTP response open until `postSpawnResults` (or its TTL).
+   * worktree's HTTP response open until `postSpawnResults` (or its TTL).
    */
   async fetchPendingSpawns(): Promise<PendingSpawn[]> {
     const res = await tunnelFetch(`${this.baseUrl}/spawn/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     // A proxy pod predating the spawn feature has no such route. Quietly
-    // nothing-pending: it redeploys on the next ensureRunning (session
+    // nothing-pending: it redeploys on the next ensureRunning (worktree
     // create), and logging would recur every background tick until then.
     if (res.status === 404) return []
     if (!res.ok) {
@@ -510,7 +545,7 @@ export class ProxyClient {
 
   /**
    * Heal ssh-agent identity loss after a proxy pod replacement. Unlike
-   * session registrations (which the proxy reloads from /data on its
+   * worktree registrations (which the proxy reloads from /data on its
    * own), agent identities are memory-only by design — key bytes never
    * touch the proxy filesystem — and nothing re-uploads them unless
    * ensureRunning()'s bootstrap path runs; attachIfRunning() can quietly
@@ -529,18 +564,19 @@ export class ProxyClient {
   }
 
   /**
-   * List the session ids the proxy currently has state for. Diagnostic
+   * List the worktree ids the proxy currently has state for. Diagnostic
    * surface: e2e tests use it to assert a replaced proxy pod actually
    * reloaded its registrations from /data (registrations are
    * write-through persisted, so nothing re-registers them at runtime).
    */
-  async listSessions(): Promise<string[]> {
-    const res = await tunnelFetch(`${this.baseUrl}/sessions`, {
-      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
-    })
+  async listWorktrees(): Promise<string[]> {
+    const headers = { 'Authorization': `Bearer ${this.requireAuthSecret()}` }
+    let res = await tunnelFetch(`${this.baseUrl}/worktrees`, { headers })
+    // The path this listing had before the rename (see worktreeFetch).
+    if (res.status === 404) res = await tunnelFetch(`${this.baseUrl}/sessions`, { headers })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(`Failed to list proxy sessions: ${res.status} ${text}`)
+      throw new Error(`Failed to list proxy worktrees: ${res.status} ${text}`)
     }
     return res.json() as Promise<string[]>
   }
@@ -595,7 +631,7 @@ export class ProxyClient {
     // needed until the next process.
     this.deployVerifiedCurrent = true
 
-    // Distribute the proxy's CA to session pods via the ConfigMap: the bare
+    // Distribute the proxy's CA to worktree pods via the ConfigMap: the bare
     // CA (additive trust) plus the combined bundle (roots + CA) the
     // own-bundle tools point CURL_CA_BUNDLE & friends at. Cheap no-op when
     // both stored values already match.

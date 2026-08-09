@@ -1,4 +1,4 @@
-import { attachSessionPty } from '#commands/ws-terminal'
+import { attachWorktreePty } from '#commands/ws-terminal'
 
 /**
  * Attach the user's terminal to a worktree's tmux over the server's PTY
@@ -7,5 +7,5 @@ import { attachSessionPty } from '#commands/ws-terminal'
  * socket, so no separate lookup round-trip is needed.
  */
 export async function worktreeAttach(containerId: string): Promise<void> {
-  await attachSessionPty(containerId, 'native')
+  await attachWorktreePty(containerId, 'native')
 }

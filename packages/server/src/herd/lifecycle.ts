@@ -1,6 +1,6 @@
 import {
   ClusterCache,
-  anySessionDirsExist,
+  anyWorktreeDirsExist,
   armDeferredClusterBoot,
   ensurePriorityClasses,
   invalidateRelayAddr,
@@ -13,11 +13,11 @@ import {
   sweepLegacyNodeStores,
 } from '#features/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
-import { StatusWatcherManager, onLiveAgentsChanged, onSessionStatusChanged } from '#features/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onWorktreeStatusChanged } from '#features/status'
 import {
   PortDetectorManager,
-  restoreAllSessionForwarders,
-  stopAllSessionForwarders,
+  restoreAllWorktreeForwarders,
+  stopAllWorktreeForwarders,
 } from '#features/forwarders'
 import { proxyClient } from '#features/egress'
 import { serverLink } from '#server-link'
@@ -58,12 +58,12 @@ export function createLifecycle(
     }
 
     // Best-effort cluster bootstrap: the yaac namespace and the in-cluster
-    // registry are cheap to ensure and needed by the first session.
+    // registry are cheap to ensure and needed by the first worktree.
     // Failures are logged, not fatal — the server can serve project/auth
-    // RPCs without a cluster, and session creation surfaces its own
+    // RPCs without a cluster, and worktree creation surfaces its own
     // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
     // (unlike the fire-and-forget GCs) so a deferred boot's trigger —
-    // the first session create — sees the namespace exist before it
+    // the first worktree create — sees the namespace exist before it
     // applies anything into it.
     await (async () => {
       await ensureNamespace()
@@ -86,16 +86,16 @@ export function createLifecycle(
     // A server restart loses the in-memory forwarder registry while
     // running containers keep their tmux `status-right` advertising
     // ports that aren't actually forwarded anymore. Rebuild forwarders
-    // for every live session container before we process RPCs so the
+    // for every live worktree container before we process RPCs so the
     // displayed port mapping matches reality.
     try {
-      await restoreAllSessionForwarders()
+      await restoreAllWorktreeForwarders()
     } catch (err) {
       serverLog(`[server] restore forwarders failed: ${String(err)}`)
     }
 
-    // Push-fed session state: the informer caches keep the display path's
-    // pod cache current, drive the per-session status watchers (tmux
+    // Push-fed worktree state: the informer caches keep the display path's
+    // pod cache current, drive the per-worktree status watchers (tmux
     // control-mode streams feeding the status store), and feed the
     // reconciler's delta triggers. Pod deltas fire a change notification, so
     // snapshots push the moment state changes.
@@ -109,7 +109,7 @@ export function createLifecycle(
       recordedSessions: (session) =>
         serverLink().recordedConversations({
           projectSlug: session.slug,
-          workspaceId: session.sessionId,
+          workspaceId: session.worktreeId,
         }),
     })
     // Detected-listener streams (streamd `ports` pushes) feeding the
@@ -119,14 +119,14 @@ export function createLifecycle(
     statusWatchers = manager
     portDetector = detector
     cache.onDelta((source) => {
-      if (source === 'session-pods') {
-        manager.sync(cache.sessionPods())
-        detector.sync(cache.sessionPods())
+      if (source === 'worktree-pods') {
+        manager.sync(cache.worktreePods())
+        detector.sync(cache.worktreePods())
         serverLink().workspacesChanged()
       }
       for (const fn of changeListeners) fn(source)
     })
-    onSessionStatusChanged(() => serverLink().workspacesChanged())
+    onWorktreeStatusChanged(() => serverLink().workspacesChanged())
     // A conversation appearing, going, or learning its id is a change the
     // reconcile steps owe work on, and no watch above can see it: for `acp`
     // the id comes from the in-pod handshake, well after the pod deltas
@@ -145,7 +145,7 @@ export function createLifecycle(
       .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 
     // Reclaim the retired node-local stores: the old image store (the
-    // cross-session cache is the project registry now) and both registries'
+    // cross-worktree cache is the project registry now) and both registries'
     // blob stores (their storage is a PVC now). Multi-GB on a machine that
     // ran an older yaac, and nothing mounts any of them any more. Ordered
     // after the awaited `ensureMainRegistry` above, which is what converts
@@ -156,20 +156,20 @@ export function createLifecycle(
 
   return {
     attach: async ({ onAttached }) => {
-      // A NESTED server's cluster is its session's born-at-zero vcluster
+      // A NESTED server's cluster is its worktree's born-at-zero vcluster
       // (docs/vcluster-scale-to-zero.md) — attaching at boot is exactly what
       // would wake it seconds after the create-time sleep, since `yaac
-      // server start` runs from the session's initCommands. With no
-      // sessions of its own yet, defer every cluster touch until the first
-      // real use (session create awaits it; any kubectl call kicks it). A
-      // RESTARTING nested server with live sessions attaches eagerly: those
-      // sessions need the caches and reconciler, and their vcluster — this
+      // server start` runs from the worktree's initCommands. With no
+      // worktrees of its own yet, defer every cluster touch until the first
+      // real use (worktree create awaits it; any kubectl call kicks it). A
+      // RESTARTING nested server with live worktrees attaches eagerly: those
+      // worktrees need the caches and reconciler, and their vcluster — this
       // vcluster — is already awake.
       //
       // `onAttached` fires with the attach, not with this call: the server's
       // reconcile loop is convergence too, and starting it against a
       // sleeping vcluster is the same mistake as starting the caches.
-      if (env.nested && !(await anySessionDirsExist())) {
+      if (env.nested && !(await anyWorktreeDirsExist())) {
         armDeferredClusterBoot(async () => {
           serverLog('[server] nested: first cluster use — attaching (caches, reconciler)')
           await attachNow()
@@ -186,7 +186,7 @@ export function createLifecycle(
       // Async in the contract because a remote herd's would be; nothing here
       // needs to await, and the server awaits it either way.
       // The informer watches hold open apiserver connections, and every
-      // per-session control-mode exec is a long-lived kubectl process that
+      // per-worktree control-mode exec is a long-lived kubectl process that
       // would otherwise outlive the server (orphaned to PID 1).
       setActiveClusterCache(null)
       clusterCache?.stop()
@@ -204,9 +204,9 @@ export function createLifecycle(
       // Every active port-forwarder owns a listener server and a set of live
       // relay streams; without this the listeners survive the server
       // (orphaned to PID 1) and the next server stacks new ones on top via
-      // restoreAllSessionForwarders. After the reconcile drain, because a
+      // restoreAllWorktreeForwarders. After the reconcile drain, because a
       // reap tick still tears its workspace's forwards down.
-      stopAllSessionForwarders()
+      stopAllWorktreeForwarders()
       // Same for the proxy control tunnel and the stream relay's
       // `kubectl port-forward` child — the deployed proxy itself stays up
       // for the next server to adopt.

@@ -10,9 +10,9 @@
  * `attempted` set covers in-flight dedup, failure memory, and
  * don't-regenerate after a user deliberately clears a generated title.
  */
-import { listActiveSessions } from '#features/sessions'
+import { listActiveWorktrees } from '#features/worktrees'
 import { setWorktreeTitle } from '#features/records'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -27,7 +27,7 @@ export async function reconcileGeneratedTitles(): Promise<void> {
 
   let worktrees
   try {
-    worktrees = (await listActiveSessions()).worktrees
+    worktrees = (await listActiveWorktrees()).worktrees
   } catch {
     return
   }
@@ -47,7 +47,7 @@ async function generateOne(slug: string, worktreeId: string, prompt: string): Pr
     const title = await summarizeTitle(prompt)
     if (title === undefined) return
     await setWorktreeTitle(slug, worktreeId, title)
-    notifySessionListChanged()
+    notifyWorktreeListChanged()
   } catch (err) {
     serverLog(`[titles] ${slug}/${worktreeId}: ${String(err)}`)
   }

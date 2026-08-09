@@ -7,7 +7,7 @@ import type { GitAuthFailure } from '@yaac/shared/types'
 /**
  * Loud project-wide indicator that the upstream rejected the git credential
  * the proxy injected (expired or revoked token) — git fetch/push is failing
- * in every one of the project's sessions. Clicking opens a popover naming
+ * in every one of the project's worktrees. Clicking opens a popover naming
  * the host and the fix. Renders its own <button>, so inside clickable rows
  * mount it as an overlaid sibling (like BlockedHostsBadge), never nested in
  * the row button.
@@ -52,7 +52,7 @@ export function GitAuthFailureBadge({
             <p className="px-2 pb-1 pt-0.5 text-xs text-text-dim">
               The stored token was rejected — it is likely expired or revoked. Run{' '}
               <code className="font-mono text-text">yaac auth update</code> to replace it
-              (running sessions pick it up immediately), then retry the git command.
+              (running worktrees pick it up immediately), then retry the git command.
             </p>
           </Popover.Popup>
         </Popover.Positioner>

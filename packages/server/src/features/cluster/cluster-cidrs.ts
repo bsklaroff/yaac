@@ -69,7 +69,7 @@ export function resetClusterCidrCache(): void {
  *
  * Throws when no address resolves rather than returning an empty list: an
  * empty `ipBlock` set would render a policy that silently denies the
- * redirect delivery path, which presents as "all sessions lost egress"
+ * redirect delivery path, which presents as "all worktrees lost egress"
  * with no obvious cause.
  */
 export async function nodeIpBlocks(): Promise<string[]> {

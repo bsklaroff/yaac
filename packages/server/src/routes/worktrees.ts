@@ -3,19 +3,19 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
-  getSessionBlockedHosts,
-  getSessionDetail,
-  getSessionPrompt,
-  listActiveSessions,
+  getWorktreeBlockedHosts,
+  getWorktreeDetail,
+  getWorktreePrompt,
+  listActiveWorktrees,
   listStoppedWorktrees,
   registerProvisioning,
   removeProvisioning,
-  resolveSessionContainer,
+  resolveWorktreeContainer,
   resolveWorktreeRecord,
   restartWorktree,
-  sessionForkBranch,
-  type SessionCreateOptions,
-} from '#features/sessions'
+  worktreeForkBranch,
+  type WorktreeCreateOptions,
+} from '#features/worktrees'
 import { herd } from '#herd'
 import {
   listWorktreeAgentSessions,
@@ -25,7 +25,7 @@ import {
   setWorktreeTitle,
   toAgentSessionEntry,
 } from '#features/records'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { getDefaultTool } from '#features/records'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
@@ -37,7 +37,7 @@ export const worktreeApp = new Hono()
     zv('query', z.object({ project: z.string().optional() })),
     async (c) => {
       const { project } = c.req.valid('query')
-      return c.json(await listActiveSessions(project || undefined))
+      return c.json(await listActiveWorktrees(project || undefined))
     },
   )
   .get(
@@ -61,7 +61,7 @@ export const worktreeApp = new Hono()
       worktreeId: z.string().uuid().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // Which protocol drives the agent. `acp` needs a tool with an adapter
-      // in the image; createSession rejects the combination before it
+      // in the image; createWorktree rejects the combination before it
       // provisions anything.
       mode: z.enum(['tui', 'acp']).optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
@@ -78,8 +78,8 @@ export const worktreeApp = new Hono()
     })),
     (c) => {
       const body = c.req.valid('json')
-      const sessionId = body.worktreeId ?? randomUUID()
-      return streamProvisioned(c, sessionId, async (onProgress) => {
+      const worktreeId = body.worktreeId ?? randomUUID()
+      return streamProvisioned(c, worktreeId, async (onProgress) => {
         // Resolve the tool server-side: explicit --tool wins, else the
         // configured default (yaac tool set), else claude. This is the tool the
         // prewarm pool warms, so a bare create matches its spare.
@@ -87,7 +87,7 @@ export const worktreeApp = new Hono()
 
         // Fast path: claim a prewarmed spare for this project + tool. A claim
         // returns the spare's own id and registers no provisioning row — the
-        // unhidden session lists in the very next snapshot. A spare warmed
+        // unhidden worktree lists in the very next snapshot. A spare warmed
         // from a different branch is re-branched inside the claim.
         // Spares are warmed in tui mode, so an acp create can never claim one
         // — the spare's agent window already runs a TUI. Skipping the claim is
@@ -111,8 +111,8 @@ export const worktreeApp = new Hono()
           return claimed
         }
 
-        const opts: SessionCreateOptions = {
-          sessionId,
+        const opts: WorktreeCreateOptions = {
+          worktreeId,
           onProgress,
           tool, // resolved default applies when --tool was omitted
         }
@@ -123,7 +123,7 @@ export const worktreeApp = new Hono()
         if (body.mode !== undefined) opts.mode = body.mode
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
-        registerProvisioning({ worktreeId: sessionId, projectSlug: body.project, tool, kind: 'create' })
+        registerProvisioning({ worktreeId, projectSlug: body.project, tool, kind: 'create' })
         return await herd().workspaces.create(body.project, opts)
       })
     },
@@ -206,13 +206,13 @@ export const worktreeApp = new Hono()
       const { projectSlug, worktreeId, background } = c.req.valid('json')
       await setWorktreeBackground(projectSlug, worktreeId, background)
       // Push a fresh snapshot so the sidebar regroups immediately.
-      notifySessionListChanged()
+      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
   .post('/provisioning/:id/dismiss', (c) => {
     // Drop a provisioning entry (only meaningful for a failed one — successful
-    // ones self-clean once the real session lists). Idempotent for any id.
+    // ones self-clean once the real worktree lists). Idempotent for any id.
     removeProvisioning(c.req.param('id'))
     return c.body(null, 204)
   })
@@ -220,12 +220,12 @@ export const worktreeApp = new Hono()
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),
     async (c) => {
-      // Resolve in any state — renaming a waiting or just-stopped session is
+      // Resolve in any state — renaming a waiting or just-stopped worktree is
       // fine; the title lives on the host, not in the container.
-      const { projectSlug, sessionId } = await resolveSessionContainer(c.req.param('id'))
-      await setWorktreeTitle(projectSlug, sessionId, c.req.valid('json').title)
+      const { projectSlug, worktreeId } = await resolveWorktreeContainer(c.req.param('id'))
+      await setWorktreeTitle(projectSlug, worktreeId, c.req.valid('json').title)
       // Push a fresh snapshot so the sidebar reflects the rename immediately.
-      notifySessionListChanged()
+      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
@@ -239,26 +239,26 @@ export const worktreeApp = new Hono()
     return c.json(links.map((l) => toAgentSessionEntry(l)))
   })
   .get('/:id/terminals', async (c) => {
-    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await herd().terminals.list(jobName))
   })
-  // The session's review diff — everything changed in the worktree since it
+  // The worktree's review diff — everything changed in the worktree since it
   // forked from the base branch (committed + working + untracked). An optional
   // `base` overrides the branch it's diffed against (fork point vs origin/<base>).
   .get(
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => {
-      const { jobName, sessionId, projectSlug } = await resolveSessionContainer(
+      const { jobName, worktreeId, projectSlug } = await resolveWorktreeContainer(
         c.req.param('id'), { requireRunning: true },
       )
-      // The branch the session forked from (its recorded base, e.g. main) —
+      // The branch the worktree forked from (its recorded base, e.g. main) —
       // the same source as the sidebar base label. Passed as the DEFAULT diff
       // base so committed work stays visible even after the agent renames and
       // pushes its branch, which makes the current branch's own @{upstream}
       // collapse the merge-base to HEAD. Cached, because this endpoint is
       // polled.
-      const forkBranch = await sessionForkBranch(projectSlug, sessionId)
+      const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
       return c.json(await herd().workspaces.changes(
         jobName, c.req.valid('query').base, forkBranch ?? undefined,
       ))
@@ -267,14 +267,14 @@ export const worktreeApp = new Hono()
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
   .post('/:id/terminals', async (c) => {
-    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await herd().terminals.createShell(jobName))
   })
   .post(
     '/:id/terminals/close',
     zv('json', z.object({ target: z.string().min(1) })),
     async (c) => {
-      const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
       const { target } = c.req.valid('json')
       try {
         await herd().terminals.kill(jobName, target)
@@ -284,11 +284,11 @@ export const worktreeApp = new Hono()
       return c.body(null, 204)
     },
   )
-  .get('/:id', async (c) => c.json(await getSessionDetail(c.req.param('id'))))
-  .get('/:id/blocked-hosts', async (c) => c.json(await getSessionBlockedHosts(c.req.param('id'))))
+  .get('/:id', async (c) => c.json(await getWorktreeDetail(c.req.param('id'))))
+  .get('/:id/blocked-hosts', async (c) => c.json(await getWorktreeBlockedHosts(c.req.param('id'))))
   // Allow a previously-blocked host (webapp click-to-allow). The proxy prunes
   // the host from its recorded blocked set, so the snapshot we push clears the
-  // badge. Persist/fan-out policy lives in allowSessionHost.
+  // badge. Persist/fan-out policy lives in allowWorktreeHost.
   .post(
     '/:id/allow-host',
     zv('json', z.object({
@@ -299,20 +299,20 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { host, persist } = c.req.valid('json')
-      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
       await herd().hosts.allow(
-        { workspaceId: target.sessionId, projectSlug: target.projectSlug },
+        { workspaceId: target.worktreeId, projectSlug: target.projectSlug },
         host,
         { persist: persist ?? false },
       )
-      notifySessionListChanged()
+      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
   // Forward a detected-but-unforwarded port (webapp click-to-forward). The
-  // port must be in the session's surfaced unforwarded set — forwardSessionPort
+  // port must be in the worktree's surfaced unforwarded set — forwardWorktreePort
   // rejects anything else, so the route can't be driven to open an arbitrary
-  // port. Persist/fan-out policy lives in forwardSessionPort.
+  // port. Persist/fan-out policy lives in forwardWorktreePort.
   .post(
     '/:id/forward-port',
     zv('json', z.object({
@@ -321,19 +321,19 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { containerPort, persist } = c.req.valid('json')
-      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
       const mapping = await herd().ports.forward(
-        { workspaceId: target.sessionId, projectSlug: target.projectSlug, jobName: target.jobName },
+        { workspaceId: target.worktreeId, projectSlug: target.projectSlug, jobName: target.jobName },
         containerPort,
         { persist: persist ?? false },
       )
       // Fresh snapshot moves the port from unforwardedPorts into
       // forwardedPorts, self-clearing the popover row.
-      notifySessionListChanged()
+      notifyWorktreeListChanged()
       return c.json(mapping)
     },
   )
-  // Hide a detected port for this session (in-memory; resets with the server).
+  // Hide a detected port for this worktree (in-memory; resets with the server).
   // Same guard as forward-port: only a currently-surfaced port is
   // dismissable, so the dismissed set can't be grown arbitrarily.
   .post(
@@ -341,18 +341,18 @@ export const worktreeApp = new Hono()
     zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
     async (c) => {
       const { containerPort } = c.req.valid('json')
-      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-      if (!(await herd().ports.dismiss(target.sessionId, containerPort))) {
+      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
+      if (!(await herd().ports.dismiss(target.worktreeId, containerPort))) {
         throw new ServerError(
           'CONFLICT',
-          `port ${containerPort} is not an unforwarded listener in session ${target.sessionId.slice(0, 8)}`,
+          `port ${containerPort} is not an unforwarded listener in session ${target.worktreeId.slice(0, 8)}`,
         )
       }
-      notifySessionListChanged()
+      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
   .get('/:id/prompt', async (c) => {
-    const prompt = await getSessionPrompt(c.req.param('id'))
+    const prompt = await getWorktreePrompt(c.req.param('id'))
     return c.json({ prompt: prompt ?? '' })
   })

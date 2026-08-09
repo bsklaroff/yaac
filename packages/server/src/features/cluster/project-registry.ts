@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
   LABEL_ROLE,
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   execFileAsync,
@@ -33,7 +33,7 @@ import { serverLog } from '#log'
 export const REGISTRY_APP_LABEL = 'yaac-registry'
 /**
  * GC scope label: ties registry objects to this yaac install without
- * making them visible to the session reaper/list paths (which filter on
+ * making them visible to the worktree reaper/list paths (which filter on
  * `yaac.data-dir-hash` + `yaac.session-id`).
  */
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
@@ -48,7 +48,7 @@ export const LABEL_NODE_WRITE = 'yaac.node-write'
 /**
  * In-cluster port of the per-project registry. Deliberately not 443/80:
  * netd redirects those to the proxy, whereas 5000 rides the per-project
- * sessions NetworkPolicy straight to the registry, un-MITM'd.
+ * worktrees NetworkPolicy straight to the registry, un-MITM'd.
  */
 export const PROJECT_REGISTRY_PORT = 5000
 
@@ -86,7 +86,7 @@ export function projectRegistryName(projectSlug: string): string {
 
 /**
  * The in-cluster service-DNS name of the registry. A FULL `.svc.cluster.local`
- * FQDN, not the `.svc` shorthand: sessions resolve it through the proxy's
+ * FQDN, not the `.svc` shorthand: worktrees resolve it through the proxy's
  * split-horizon DNS, which forwards ONLY `.cluster.local` to CoreDNS (a bare
  * `.svc` would be sinkholed, since CoreDNS forwards anything outside its zone
  * to the remote resolver — a DNS-exfil channel). The node's containerd matches
@@ -115,7 +115,7 @@ export function projectRegistryPvcName(projectSlug: string): string {
 }
 
 /**
- * Requested capacity — one project's image chain and its sessions' salvaged
+ * Requested capacity — one project's image chain and its worktrees' salvaged
  * layers, so a fraction of the main registry's. As with that one it is a
  * request, not a cap anything here enforces: kind's local-path provisioner
  * ignores the number, and the real bound on the local backend is the
@@ -132,7 +132,7 @@ export const PROJECT_REGISTRY_STORAGE_SIZE = '50Gi'
 
 /**
  * registries.conf.d drop-in making user-driven `docker push` from a
- * session accept the registry's plain HTTP. Written into the session at
+ * worktree accept the registry's plain HTTP. Written into the worktree at
  * setup time (the host is per-project, so it cannot be baked into the
  * shared nestable layer). Scoped to the exact registry host — every
  * other registry keeps full TLS verification.
@@ -180,8 +180,8 @@ function registrySelector(projectSlug: string): string {
  * A project upgrading from the node-hostPath store pays the same trade the
  * main registry's module doc spells out, on the first ensure after the
  * upgrade rather than at server start: the claim comes up EMPTY, nothing
- * migrates blobs, and the cross-session layer cache refills by rebuild. The
- * part that is not merely a rebuild is anything a session `docker push`ed
+ * migrates blobs, and the cross-worktree layer cache refills by rebuild. The
+ * part that is not merely a rebuild is anything a worktree `docker push`ed
  * here under a name yaac never mints — that becomes unreachable at the same
  * moment, and unlike the cache it is not regenerable. It is not lost: the
  * old store stays on the node until `sweepLegacyNodeStores` reclaims it, and
@@ -218,7 +218,7 @@ export function buildProjectRegistryPvcManifest(projectSlug: string): Record<str
  * enforces without anything here having to name a node.
  *
  * Declaring no `tolerations` is load-bearing, not an omission, and it is
- * what keeps this off a tainted sessions pool. That used to be hand-computed
+ * what keeps this off a tainted worktrees pool. That used to be hand-computed
  * by the node-resolver this replaced (matching each node's taints against an
  * empty toleration set); with the pin gone the scheduler does the same
  * matching natively, and for the same reason: the pool's toleration lives on
@@ -251,8 +251,8 @@ export function buildProjectRegistryDeploymentManifest(
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: the project's sessions pull their images from here,
-          // so evicting it to make room for a session is backwards.
+          // Infra tier: the project's worktrees pull their images from here,
+          // so evicting it to make room for a worktree is backwards.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
@@ -263,7 +263,7 @@ export function buildProjectRegistryDeploymentManifest(
               // drop chain slots a shorter rebuild no longer fills, and
               // which is what leaves their blobs collectable. Scoped by the
               // same policies as every other write to this registry: only
-              // this project's own sessions can reach it.
+              // this project's own worktrees can reach it.
               //
               // `readOnly` is the maintenance window a blob collect runs in
               // (reconcileProjectRegistryGc): pulls and the catalog keep
@@ -313,7 +313,7 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned (no longer pinned): sessions resolve the live
+      // Allocator-assigned (no longer pinned): worktrees resolve the live
       // ClusterIP through the proxy's split-horizon DNS, and the node's
       // hosts.toml is rewritten with the live IP on every ensure.
       selector: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
@@ -329,19 +329,19 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
 }
 
 /**
- * NetworkPolicy admitting this project's sessions to this project's
- * registry — the SOLE egress hole for session→registry traffic:
+ * NetworkPolicy admitting this project's worktrees to this project's
+ * registry — the SOLE egress hole for worktree→registry traffic:
  * NetworkPolicy unions allow rules, so this punches an exactly-scoped
- * hole through the session-egress policy's default-deny (which itself has
+ * hole through the worktree-egress policy's default-deny (which itself has
  * no in-cluster registry allowance — an install-wide rule there could
  * not express "same project only"; see that builder's comment).
  * Per-project rather than shared because registry:2 has no path ACLs: a
  * shared writable registry
- * would let any session overwrite another project's (or the infra) tags.
- * The session-id Exists term keeps the policy off the registry pod
+ * would let any worktree overwrite another project's (or the infra) tags.
+ * The worktree-id Exists term keeps the policy off the registry pod
  * itself (it carries the project label too).
  */
-export function buildRegistrySessionsNetworkPolicyManifest(
+export function buildRegistryWorktreesNetworkPolicyManifest(
   projectSlug: string,
 ): Record<string, unknown> {
   return {
@@ -355,7 +355,7 @@ export function buildRegistrySessionsNetworkPolicyManifest(
     spec: {
       podSelector: {
         matchLabels: { [LABEL_PROJECT]: projectSlug },
-        matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+        matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
       },
       policyTypes: ['Egress'],
       egress: [
@@ -374,10 +374,10 @@ export function buildRegistrySessionsNetworkPolicyManifest(
 
 /**
  * NetworkPolicy locking the registry pod's INGRESS to exactly its two
- * legitimate clients: same-project session pods pushing on 5000, and the
+ * legitimate clients: same-project worktree pods pushing on 5000, and the
  * NODE — the kubelet readiness probe plus containerd pulling pushed refs
- * from the host netns via hosts.toml. The sessions policy above already
- * stops other projects' sessions at their source; this is the
+ * from the host netns via hosts.toml. The worktrees policy above already
+ * stops other projects' worktrees at their source; this is the
  * receiving-side lock, so no future egress loosening can silently reopen
  * cross-project tag reads or overwrites (registry:2 has no path ACLs).
  *
@@ -408,7 +408,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
           from: [{
             podSelector: {
               matchLabels: { [LABEL_PROJECT]: projectSlug },
-              matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+              matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
             },
           }],
           ports: [registryPort],
@@ -425,7 +425,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
 /**
  * Deny-all egress on the registry pod: it only ever serves pushes and
  * pulls — there is nothing for it to fetch (no pull-through, no proxy
- * pseudo-session). Ingress is locked separately by
+ * pseudo-worktree). Ingress is locked separately by
  * buildRegistryIngressNetworkPolicyManifest.
  */
 export function buildRegistryEgressNetworkPolicyManifest(
@@ -506,13 +506,13 @@ function buildNodeWritePodManifest(
       // bypasses the SCHEDULER, so NoSchedule never mattered — but kubelet
       // admits and the taint manager evicts, so a NoExecute taint would
       // refuse this pod on the very nodes it exists to write to: a tainted
-      // sessions pool would get no hosts.toml, and its sessions could not
+      // worktrees pool would get no hosts.toml, and its worktrees could not
       // pull. Free in scheduling terms — the pod is pinned to one named node
       // and lives for seconds.
       tolerations: [{ operator: 'Exists' }],
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      // Infra tier: a session pod filling the one node this can land on
+      // Infra tier: a worktree pod filling the one node this can land on
       // must not keep the registry wiring from landing.
       priorityClassName: PRIORITY_CLASS_INFRA,
       containers: [{
@@ -606,10 +606,10 @@ const GC_REPOS_PATH = `${GC_STORAGE_PATH}/docker/registry/v2/repositories`
  * Content-hash generations kept per yaac-built repo. Deliberately far
  * above the host engine's HOST_GENERATIONS_KEPT of 2: the host's
  * generations are sequential rebuilds of ONE chain, so "current + one
- * rollback" covers it, whereas a project registry serves every session at
- * once and each session on its own branch mints its own hash. The live set
+ * rollback" covers it, whereas a project registry serves every worktree at
+ * once and each worktree on its own branch mints its own hash. The live set
  * is therefore as wide as the fleet, not one deep — keep enough that a
- * parallel session's image is never the thing retention evicts.
+ * parallel worktree's image is never the thing retention evicts.
  */
 export const REGISTRY_GENERATIONS_KEPT = 8
 
@@ -629,7 +629,7 @@ export const REGISTRY_GENERATIONS_KEPT = 8
  *  - the repo must be yaac-built (`yaac-…`) — every push into this
  *    registry names one, and the alias cleanup above has already dropped
  *    the `localhost/`-prefixed spellings by the time this runs — so a
- *    session's own `myapp` repo is never touched;
+ *    worktree's own `myapp` repo is never touched;
  *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
  *    and the cache's `yaac-cache-…` slots can never match.
  * Retiring a tag only unlinks the name; the manifest it pointed at and its
@@ -689,9 +689,9 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
  * Scoped to exactly this prefix, and a no-op once the subtree is gone: no
  * producer writes `localhost/…` any more — the salvage canonicalizes,
  * host-side pushes use bare mirror tags, prime reads and retire only
- * DELETEs. A session can still `docker push <registry>/localhost/…` by
+ * DELETEs. A worktree can still `docker push <registry>/localhost/…` by
  * hand (the registry has no path ACLs), which this drops again on the next
- * pass, costing that session the cache entry it minted.
+ * pass, costing that worktree the cache entry it minted.
  */
 function buildAliasRepoCleanupScript(): string {
   return [
@@ -728,7 +728,7 @@ function buildAliasRepoCleanupScript(): string {
  * `--delete-untagged` is what makes this worth running at all. Both image
  * flows into this registry REUSE tags — the image cache pushes
  * `<repo>:<tag>` and `<repo>:yaac-cache-<tag>-<n>` under the names the
- * session already had, and a rebuilt tag re-points at fresh bytes — so
+ * worktree already had, and a rebuilt tag re-points at fresh bytes — so
  * every rebuild leaves the previous manifest referenced by no tag at all.
  * Those are exactly the manifests this deletes, and their blobs go with
  * them. The retention pass above is what feeds it the one class of
@@ -872,7 +872,7 @@ const registryEnsureMutex = createKeyedMutex()
 /**
  * Idempotently stand up the project's registry (PVC + Deployment + Service
  * + the network policies + node hosts.toml) and wait for it to serve. Called from
- * session-create only for `virtualCluster` sessions — nested-only sessions
+ * worktree-create only for `virtualCluster` worktrees — nested-only worktrees
  * need no registry. The Service's ClusterIP is allocator-assigned and never
  * deleted, so `apply` is a no-op on it after first creation (the pin and its
  * immutable-field migration are gone).
@@ -896,7 +896,7 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
     await kubectlApply(buildProjectRegistryPvcManifest(projectSlug))
     await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
     await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
-    await kubectlApply(buildRegistrySessionsNetworkPolicyManifest(projectSlug))
+    await kubectlApply(buildRegistryWorktreesNetworkPolicyManifest(projectSlug))
     await kubectlApply(buildRegistryIngressNetworkPolicyManifest(projectSlug, await nodeIpBlocks()))
     await kubectlApply(buildRegistryEgressNetworkPolicyManifest(projectSlug))
     try {
@@ -904,7 +904,7 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
         'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
       ], { timeout: 130_000, maxAttempts: 2 })
     } catch (err) {
-      // Session create is where a storage misconfiguration surfaces first,
+      // Worktree create is where a storage misconfiguration surfaces first,
       // and kubectl reports only a timeout. An unbindable claim — no default
       // StorageClass, or an exhausted provisioner quota — presents as a
       // Pending pod with no scheduling reason of its own, so the PVC has to
@@ -935,7 +935,7 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   // hosts.toml dir is written by the hosts writer). Probe before deleting
   // and skip the cleanup pods for registry-less projects: their cleanup pod
   // can't even start — the mirror image was never pushed, and a nested
-  // session's vcluster pod guard denies the node hostPath mount — so each
+  // worktree's vcluster pod guard denies the node hostPath mount — so each
   // one would sit Pending for runNodeWritePod's full 60s deadline, stalling
   // every project remove.
   const existing = await kubectlGetJson<{ items?: unknown[] }>([
@@ -966,7 +966,7 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
 /**
  * Node-local roots retired yaac versions left blob stores in, each keyed by
  * install one level down. Nothing mounts any of them now — the
- * cross-session image cache is the project registry, and both registries'
+ * cross-worktree image cache is the project registry, and both registries'
  * storage is a PVC — so on a machine that ran an older yaac they are
  * multi-GB of dead weight (the image store measured 25GB after a day of e2e
  * churn, and a registry store is the same order).
@@ -1047,7 +1047,7 @@ export function buildLegacyStoreSweepPodManifest(
  * the same directory this install's sweep would remove.
  *
  * The main registry's own conversion cannot answer this. Project registries
- * convert LAZILY — `ensureProjectRegistry` on the next session create for
+ * convert LAZILY — `ensureProjectRegistry` on the next worktree create for
  * that project, or the 6h collect's roll, whichever comes first — so a
  * server restart can easily fall between the main registry converting and
  * project B's registry ever being ensured, with B still serving out of the
@@ -1145,7 +1145,7 @@ export function _registryGcSettledForTests(): Promise<void> {
  * push that has uploaded blobs but not yet its manifest looks exactly like
  * garbage, so a concurrent push can have its layers deleted underneath it.
  * Upstream's answer is "read-only mode, or not running at all" — and NOT
- * RUNNING is not an option here, because an active project's session count
+ * RUNNING is not an option here, because an active project's worktree count
  * never reaches zero, so a collect gated on idleness would never run for
  * the registries that actually grow.
  *
@@ -1154,7 +1154,7 @@ export function _registryGcSettledForTests(): Promise<void> {
  * serving while pushes and deletes answer 405 (verified against this pin).
  * A salvage push or retire that lands in the window fails best-effort and
  * is retried on its next cycle — the ledger and the retired-shape memo
- * only record what actually succeeded — while pulls, which a live session
+ * only record what actually succeeded — while pulls, which a live worktree
  * and its synced pods depend on, never stop working. The cost is two
  * `Recreate` rollouts: a few seconds of unavailability at each edge.
  *
@@ -1192,7 +1192,7 @@ export async function reconcileProjectRegistryGc(now = Date.now()): Promise<void
 
 /**
  * The collect itself, under the project's ensure mutex. That mutex is what
- * makes a session create safe against a running collect — and also the one
+ * makes a worktree create safe against a running collect — and also the one
  * place a create can wait on one: worst case it blocks for the two
  * rollouts plus REGISTRY_GC_TIMEOUT_MS. At the 6h cadence that is rare,
  * but it is where the latency comes from.

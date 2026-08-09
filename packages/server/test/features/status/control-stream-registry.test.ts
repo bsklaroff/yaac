@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  registerSessionControlStream,
-  unregisterSessionControlStream,
-  sessionControlStreamSend,
+  registerWorktreeControlStream,
+  unregisterWorktreeControlStream,
+  worktreeControlStreamSend,
   _clearControlStreamRegistryForTests,
   type ControlStreamSend,
 } from '#features/status/control-stream-registry'
@@ -16,29 +16,29 @@ beforeEach(() => {
 describe('session control-stream registry', () => {
   it('returns the registered channel and undefined for unknown jobs', async () => {
     const a = send('a')
-    registerSessionControlStream('job-a', a)
-    expect(sessionControlStreamSend('job-a')).toBe(a)
-    await expect(sessionControlStreamSend('job-a')!('x')).resolves.toBe('a')
-    expect(sessionControlStreamSend('job-b')).toBeUndefined()
+    registerWorktreeControlStream('job-a', a)
+    expect(worktreeControlStreamSend('job-a')).toBe(a)
+    await expect(worktreeControlStreamSend('job-a')!('x')).resolves.toBe('a')
+    expect(worktreeControlStreamSend('job-b')).toBeUndefined()
   })
 
   it('a re-registration replaces the earlier channel for the same job', () => {
     const gen1 = send('1')
     const gen2 = send('2')
-    registerSessionControlStream('job', gen1)
-    registerSessionControlStream('job', gen2)
-    expect(sessionControlStreamSend('job')).toBe(gen2)
+    registerWorktreeControlStream('job', gen1)
+    registerWorktreeControlStream('job', gen2)
+    expect(worktreeControlStreamSend('job')).toBe(gen2)
   })
 
   it('unregister only removes the exact channel it is given', () => {
     const gen1 = send('1')
     const gen2 = send('2')
-    registerSessionControlStream('job', gen1)
-    registerSessionControlStream('job', gen2)
+    registerWorktreeControlStream('job', gen1)
+    registerWorktreeControlStream('job', gen2)
     // Generation 1's late teardown must not evict generation 2.
-    unregisterSessionControlStream('job', gen1)
-    expect(sessionControlStreamSend('job')).toBe(gen2)
-    unregisterSessionControlStream('job', gen2)
-    expect(sessionControlStreamSend('job')).toBeUndefined()
+    unregisterWorktreeControlStream('job', gen1)
+    expect(worktreeControlStreamSend('job')).toBe(gen2)
+    unregisterWorktreeControlStream('job', gen2)
+    expect(worktreeControlStreamSend('job')).toBeUndefined()
   })
 })

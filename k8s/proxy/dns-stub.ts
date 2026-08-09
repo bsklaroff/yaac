@@ -1,6 +1,6 @@
 /**
  * Minimal DNS wire-format helpers for the proxy's UDP/53 stub — pure (no
- * deps, no I/O). Session pods point their resolver (dnsConfig.nameservers) at
+ * deps, no I/O). Worktree pods point their resolver (dnsConfig.nameservers) at
  * the proxy; the proxy's UDP handler (proxy.ts) is split-horizon:
  *
  *   - EXTERNAL names get a fixed sinkhole IP. That answer is decorative —
@@ -49,7 +49,7 @@ export interface DnsQuery {
  * emits every in-cluster name it needs resolved as a `.svc.cluster.local` FQDN
  * (project registry, vcluster API) to match. The host API server
  * (`kubernetes.default.svc.cluster.local`) is deliberately EXCLUDED — no outer
- * session has business reaching it by name — so it stays sinkholed in-zone.
+ * worktree has business reaching it by name — so it stays sinkholed in-zone.
  */
 export function isInternalName(name: string): boolean {
   const n = name.toLowerCase().replace(/\.$/, '')

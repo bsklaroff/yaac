@@ -6,7 +6,7 @@ import { BatchV1Api, CoreV1Api, KubeConfig } from '@kubernetes/client-node'
  * `loadFromDefault()` resolves the same kubeconfig kubectl does (KUBECONFIG
  * env included), so the client and the kubectl paths always talk to the
  * same cluster — including nested yaac, where the default context points at
- * the session's vcluster apiserver.
+ * the worktree's vcluster apiserver.
  */
 let kubeConfig: KubeConfig | null = null
 let coreApi: CoreV1Api | null = null

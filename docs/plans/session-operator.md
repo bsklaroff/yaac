@@ -5,7 +5,7 @@
 Today the Node server is simultaneously the UX API, the data plane, and
 the thing that makes the cluster match intent — where intent lives only in
 that process's memory and the imperative call stacks of
-`src/features/sessions/create.ts`. This plan moves the third role
+`src/features/worktrees/create.ts`. This plan moves the third role
 in-cluster: a
 `Session` custom resource becomes the persisted source of truth and a Go
 controller (client-go/controller-runtime) converges the cluster to it.
@@ -83,7 +83,7 @@ and death cause. Standard machinery replaces hand-rolled code:
 - **Level-based reconciliation** deletes the half-provisioned-state
   cleanup class: a crash mid-create just means the next reconcile
   continues converging (the placeholder-pane zombie sweep in
-  `reconcileStaleSessions` exists precisely because "tmux opened, agent
+  `reconcileStaleWorktrees` exists precisely because "tmux opened, agent
   never respawned" is reachable today).
 
 ## The server boundary
@@ -246,7 +246,7 @@ snapshots) is exactly the one we already flagged as unavailable.
 | ownerReferences / cascading GC / finalizers (replace `reconcileVclusters` GC, orphan-Job & stuck-terminating sweeps) | built into the controller for its own children | reuse for the pod; still hand-write for yaac children |
 | workqueues / leader election / `/metrics` | controller-runtime, wired | **free** |
 | `Project` CR prewarm pool | `SandboxWarmPool` + `SandboxClaim` | partial — see rebrand caveat |
-| Reaping / TTL (`reconcileStaleSessions`) | `lifecycle.shutdownTime`/`shutdownPolicy` | **yes** for time-based; death-cause reaping stays yaac |
+| Reaping / TTL (`reconcileStaleWorktrees`) | `lifecycle.shutdownTime`/`shutdownPolicy` | **yes** for time-based; death-cause reaping stays yaac |
 | gVisor isolation | roadmap first-class | already have it |
 | "governed while no server runs" | resident controller + suspend/resume | **yes**, modulo state model (below) |
 | Job-per-session (`buildSessionJobManifest`) | Sandbox → bare **Pod** | **migration point** |
@@ -268,7 +268,7 @@ yaac controller reconciles a `Session` into:
    per-session vcluster namespace (`features/cluster/vcluster.ts`), the
    per-project registry (`features/cluster/project-registry.ts`), the
    inner-redirect/attribution CEC+CNP projections
-   (the reconcile steps behind `#features/sessions`), and image salvage
+   (the reconcile steps behind `#features/worktrees`), and image salvage
    (`features/images/image-promoter.ts`).
 
 This deletes most of Phases 1–2's generic machinery (pod lifecycle, TTL,
@@ -285,13 +285,13 @@ controller (the `agent-sandbox-system` Deployment) alongside ours.
   ever GC'd it **would** be resurrected. Mitigation: on detected death the
   yaac controller flips the child `Sandbox` to `operatingMode: Suspended`,
   making death sticky. yaac's death taxonomy
-  (`features/sessions/death-reason.ts`: `oom`/`evicted`/`crashed`/
+  (`features/worktrees/death-reason.ts`: `oom`/`evicted`/`crashed`/
   `agent-exited`/`never-started`/`orphaned`) is far richer than the
   `Finished` condition's `PodSucceeded`/`PodFailed`, so `deriveDeathCause`
   and its pod-terminal-state reads stay ours and stamp `Session.status`.
 - **Egress must stay yaac-owned.** agent-sandbox's `networkPolicy` is a
   vanilla `NetworkPolicy`, which is also the dialect our own policies use
-  (docs/session-egress.md) — so the risk is not a schema mismatch but a
+  (docs/worktree-egress.md) — so the risk is not a schema mismatch but a
   second author writing the same objects. Set
   `networkPolicyManagement: Unmanaged` (or bypass `SandboxTemplate`
   entirely) so the controller never overwrites the session egress floor,

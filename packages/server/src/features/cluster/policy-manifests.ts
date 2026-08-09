@@ -2,9 +2,9 @@ import {
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   INNER_PROXY_INGRESS_NP_NAME,
-  INNER_SESSION_INGRESS_LOCK_NP_NAME,
+  INNER_WORKTREE_INGRESS_LOCK_NP_NAME,
   LABEL_ROLE,
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   LABEL_VCLUSTER_MANAGED_BY,
   LABEL_VCLUSTER_NAMESPACE,
   NETD_LISTENER_PORT_BASE,
@@ -16,8 +16,8 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   ROLE_INNER_PROXY,
-  SESSION_EGRESS_NP_NAME,
-  SESSION_INGRESS_LOCK_NP_NAME,
+  WORKTREE_EGRESS_NP_NAME,
+  WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
@@ -30,7 +30,7 @@ import {
 
 /**
  * Every yaac egress/ingress policy, as plain `networking.k8s.io/v1`
- * NetworkPolicy. The datapath these police is docs/session-egress.md.
+ * NetworkPolicy. The datapath these police is docs/worktree-egress.md.
  *
  * Plain NP only, deliberately: it is the one policy dialect every
  * enforcement backend speaks. Locally that is the Calico `yaac cluster
@@ -76,17 +76,17 @@ function np(
   }
 }
 
-/** Selector matching every session pod (the label the session builder stamps). */
-const sessionPodSelector = {
-  matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+/** Selector matching every worktree pod (the label the worktree builder stamps). */
+const worktreePodSelector = {
+  matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
 }
 
 /**
- * Session-pod EGRESS.
+ * Worktree-pod EGRESS.
  *
- * This is the containment floor for every session, and its shape is the
+ * This is the containment floor for every worktree, and its shape is the
  * whole fail-closed story: the ONLY world-ward rule is "the node, on
- * netd's reserved listener range". A session pod cannot address the
+ * netd's reserved listener range". A worktree pod cannot address the
  * internet at all — 443/80 to world matches nothing here, so if netd has
  * not installed that pod's redirect (it is starting, restarting, or
  * broken), the pod's traffic keeps its original destination, takes the
@@ -97,30 +97,30 @@ const sessionPodSelector = {
  * Envoy, which stamps the connection's real peer address into the
  * PROXY-protocol header regardless of how the connection arrived. A pod
  * dialing a listener directly therefore gets exactly the treatment its own
- * redirected traffic would get — it cannot impersonate another session,
+ * redirected traffic would get — it cannot impersonate another worktree,
  * and it still cannot reach the proxy's transparent ports (those are
  * node-only, see buildProxyIngressNpManifest).
  *
  * Two direct dials to the proxy, both to the pod itself rather than the
- * world: its DNS stub on 53/udp (which session pods point `dnsPolicy: None`
+ * world: its DNS stub on 53/udp (which worktree pods point `dnsPolicy: None`
  * at) and its ssh-agent listener on SSH_AGENT_PORT, which the in-pod
  * forwarder re-exposes as SSH_AUTH_SOCK's UNIX socket. Neither reaches
  * anything outside the cluster, and the agent port is a signing oracle for
  * destination-constrained keys only — the proxy re-checks that the source
- * pod IP resolves to a session whose registered remote is SSH, and admits
+ * pod IP resolves to a worktree whose registered remote is SSH, and admits
  * only list/sign messages onto the shared agent.
  *
  * Deliberately NO in-cluster allowance for the per-project registry (5000)
  * or the vcluster API (8443): this policy is install-wide, so it cannot
- * express "the session's OWN project/vcluster" — a blanket rule would open
- * every registry and every vcluster API to every session (cross-project
+ * express "the worktree's OWN project/vcluster" — a blanket rule would open
+ * every registry and every vcluster API to every worktree (cross-project
  * image overwrite, issue #17). NetworkPolicy unions allow rules, so those
  * flows are admitted instead by the exactly-scoped per-project and
- * per-session policies applied at create time.
+ * per-worktree policies applied at create time.
  */
-export function buildSessionEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
-  return np(SESSION_EGRESS_NP_NAME, k8sNamespace(), {
-    podSelector: sessionPodSelector,
+export function buildWorktreeEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
+  return np(WORKTREE_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: worktreePodSelector,
     policyTypes: ['Egress'],
     egress: [
       {
@@ -140,14 +140,14 @@ export function buildSessionEgressNpManifest(nodeCidrs: string[]): Record<string
 }
 
 /**
- * Session-pod INGRESS: only the proxy's relay dials into streamd. Before
- * the relay nothing dialed session pods at all, so their ingress was
+ * Worktree-pod INGRESS: only the proxy's relay dials into streamd. Before
+ * the relay nothing dialed worktree pods at all, so their ingress was
  * default-allow by omission; selecting them with any ingress rule makes it
  * default-deny, which is the point.
  */
-export function buildSessionIngressLockNpManifest(): Record<string, unknown> {
-  return np(SESSION_INGRESS_LOCK_NP_NAME, k8sNamespace(), {
-    podSelector: sessionPodSelector,
+export function buildWorktreeIngressLockNpManifest(): Record<string, unknown> {
+  return np(WORKTREE_INGRESS_LOCK_NP_NAME, k8sNamespace(), {
+    podSelector: worktreePodSelector,
     policyTypes: ['Ingress'],
     ingress: [
       {
@@ -172,11 +172,11 @@ export function buildSessionIngressLockNpManifest(): Record<string, unknown> {
  * pod netns and never traverses this policy at all — the network-side
  * allowance exists for a node-local server using the direct-TCP override.
  *
- * Two pod-facing ports, and only for session pods in this namespace (DNS
+ * Two pod-facing ports, and only for worktree pods in this namespace (DNS
  * additionally for vcluster-synced pods in labeled vcluster namespaces):
  * the DNS stub, and the ssh-agent listener. The agent port is deliberately
  * NOT open to vcluster-synced pods — a nested install forwards its OWN
- * inner proxy's agent to its own sessions, and the outer agent holds keys
+ * inner proxy's agent to its own worktrees, and the outer agent holds keys
  * that install never had.
  */
 export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
@@ -185,7 +185,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
     policyTypes: ['Ingress'],
     ingress: [
       {
-        // netd's Envoy (host netns) delivering redirected session egress,
+        // netd's Envoy (host netns) delivering redirected worktree egress,
         // plus the kubelet readiness probe and any node-local server.
         from: ipBlocks(nodeCidrs),
         ports: [
@@ -197,7 +197,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
         ],
       },
       {
-        from: [{ podSelector: sessionPodSelector }],
+        from: [{ podSelector: worktreePodSelector }],
         ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
       },
       {
@@ -215,7 +215,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 
 /**
  * Install-namespace world-egress default-deny for everything that is
- * neither the proxy nor a session pod nor a builder.
+ * neither the proxy nor a worktree pod nor a builder.
  *
  * Plain NP has no deny verb, so this is expressed the way NP does it: an
  * empty `egress` list over a selector, which default-denies every selected
@@ -225,7 +225,7 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
  * deny.
  *
  *  - the proxy: the one pod that legitimately reaches the internet.
- *  - session pods: governed by buildSessionEgressNpManifest.
+ *  - worktree pods: governed by buildWorktreeEgressNpManifest.
  *  - builder pods: trust-split image builds fetch upstream packages and
  *    push to a registry (docs/trust-split-builds.md); their own scoped
  *    policy governs them.
@@ -238,7 +238,7 @@ export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
     podSelector: {
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
-        { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
+        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
       ],
     },
@@ -249,7 +249,7 @@ export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
 
 /**
  * The vcluster's synced-pod egress floor — the single containment policy
- * for everything running inside a per-session vcluster, and the one a
+ * for everything running inside a per-worktree vcluster, and the one a
  * tenant cannot escape: it selects on `managed-by`, stamped by the syncer
  * on every synced pod, which a tenant inside the vcluster can neither
  * forge nor shed.
@@ -311,13 +311,13 @@ export function buildVclusterEgressFloorNpManifest(
  * Inner-proxy INGRESS inside a vcluster namespace. Same trust model as the
  * outer proxy's: transparent ports and the control API from the node only
  * (netd's Envoy is the sole legitimate caller), streamd relay from the
- * OWNING outer session pod, DNS from the vcluster's own synced pods.
+ * OWNING outer worktree pod, DNS from the vcluster's own synced pods.
  */
 export function buildInnerProxyIngressNpManifest(
   vcNamespace: string,
   vcName: string,
-  /** The OWNING outer session id — the only pod admitted to the relay. */
-  ownerSessionId: string,
+  /** The OWNING outer worktree id — the only pod admitted to the relay. */
+  ownerWorktreeId: string,
   nodeCidrs: string[],
 ): Record<string, unknown> {
   return np(INNER_PROXY_INGRESS_NP_NAME, vcNamespace, {
@@ -334,12 +334,12 @@ export function buildInnerProxyIngressNpManifest(
         ],
       },
       {
-        // The nested server (the owning outer session pod, in the install
+        // The nested server (the owning outer worktree pod, in the install
         // namespace) dials the inner proxy's pod IP directly. Other
-        // sessions stay locked out; the bearer auth line is the second gate.
+        // worktrees stay locked out; the bearer auth line is the second gate.
         from: [{
           namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': k8sNamespace() } },
-          podSelector: { matchLabels: { [LABEL_SESSION_ID]: ownerSessionId } },
+          podSelector: { matchLabels: { [LABEL_WORKTREE_ID_LEGACY]: ownerWorktreeId } },
         }],
         ports: [tcp(RELAY)],
       },
@@ -348,15 +348,15 @@ export function buildInnerProxyIngressNpManifest(
         ports: [udp(DNS_STUB_PORT)],
       },
       {
-        // ssh-agent forwarding for the inner install's OWN sessions: the
-        // synced session pods of this vcluster reach the inner proxy's
+        // ssh-agent forwarding for the inner install's OWN worktrees: the
+        // synced worktree pods of this vcluster reach the inner proxy's
         // agent, which holds only the keys that install uploaded. Scoped to
-        // synced pods carrying a session id, so the vcluster's other
+        // synced pods carrying a worktree id, so the vcluster's other
         // workloads (its control plane, a tenant's own pods) get nothing.
         from: [{
           podSelector: {
             matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: vcName },
-            matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+            matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
           },
         }],
         ports: [tcp(SSH_AGENT_PORT)],
@@ -366,19 +366,19 @@ export function buildInnerProxyIngressNpManifest(
 }
 
 /**
- * Synced session-pod INGRESS lock — the inner counterpart of
- * buildSessionIngressLockNpManifest. Synced session pods accept streamd
+ * Synced worktree-pod INGRESS lock — the inner counterpart of
+ * buildWorktreeIngressLockNpManifest. Synced worktree pods accept streamd
  * dials from their own vcluster's inner proxies only.
  */
-export function buildInnerSessionIngressLockNpManifest(
+export function buildInnerWorktreeIngressLockNpManifest(
   vcNamespace: string,
   vcName: string,
 ): Record<string, unknown> {
-  return np(INNER_SESSION_INGRESS_LOCK_NP_NAME, vcNamespace, {
+  return np(INNER_WORKTREE_INGRESS_LOCK_NP_NAME, vcNamespace, {
     podSelector: {
       matchExpressions: [
         { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
-        { key: LABEL_SESSION_ID, operator: 'Exists' },
+        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' },
       ],
     },
     policyTypes: ['Ingress'],

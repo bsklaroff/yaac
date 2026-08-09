@@ -5,13 +5,13 @@ import { env } from '@yaac/shared/env'
 
 /**
  * `yaac cluster delete` — tear down the local kind cluster `yaac cluster
- * setup` created, leaving on-disk sessions and worktrees untouched.
+ * setup` created, leaving on-disk worktrees and worktrees untouched.
  *
  * One `kind delete` is now the whole teardown: every yaac workload lives
  * inside the cluster (Calico, netd, every vcluster, the main and
  * per-project registries) and so does all of their node-local storage,
  * including the registries' image blobs — the node's filesystem goes with
- * the node. Nothing under the yaac data dir (projects, sessions, worktrees)
+ * the node. Nothing under the yaac data dir (projects, worktrees, worktrees)
  * is touched, so a later `yaac cluster setup` recreates the cluster and
  * re-pushes the images.
  *
@@ -58,7 +58,7 @@ async function listKindClusters(): Promise<string[]> {
 }
 
 /**
- * Delete the kind cluster. Refuses inside a nested yaac session (the
+ * Delete the kind cluster. Refuses inside a nested yaac worktree (the
  * cluster is the outer install's infrastructure), confirms first unless
  * `yes`, and is idempotent: an absent cluster is a no-op. Throws
  * ClusterDeleteError with a user-actionable message when a step cannot

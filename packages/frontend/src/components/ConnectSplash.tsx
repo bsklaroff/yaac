@@ -4,7 +4,7 @@ import { Field } from '@base-ui/react/field'
 import { postWebSession } from '#lib/webSession'
 
 /**
- * First-open / expired-session screen. `yaac open` prints a one-time
+ * First-open / expired-worktree screen. `yaac open` prints a one-time
  * URL (so does the server start banner — `yaac server logs`); the user
  * can open it directly or paste a token here. One-time and durable
  * tokens (`yaac auth token create`) both work — the exchange is the

@@ -32,10 +32,10 @@ vi.mock('#platform/container/runtime', () => ({
 
 import {
   buildVclusterCleanupShellCommand,
-  ensureSessionVcluster,
+  ensureWorktreeVcluster,
   ensureVclusterImages,
   getVclusterStatus,
-  removeSessionVcluster,
+  removeWorktreeVcluster,
   sleepVcluster,
   vapAvailable,
   vclusterLabels,
@@ -193,7 +193,7 @@ describe('ensureVclusterImages', () => {
   })
 })
 
-describe('ensureSessionVcluster', () => {
+describe('ensureWorktreeVcluster', () => {
   beforeEach(() => {
     // get service → absent; get deployments (cap check) → none.
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
@@ -214,7 +214,7 @@ describe('ensureSessionVcluster', () => {
   })
 
   it('applies namespace → guard → policies → vendored manifests, in that order', async () => {
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
 
     // The dedicated namespace first, then the VAP guard + every policy
     // (session NP, the synced-pod egress floor, the control-plane lock, and
@@ -268,7 +268,7 @@ describe('ensureSessionVcluster', () => {
     // Fake timers so the wait's poll sleep doesn't cost real seconds.
     vi.useFakeTimers()
     try {
-      const done = ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x', onProgress })
+      const done = ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x', onProgress })
       await vi.advanceTimersByTimeAsync(2500)
       await done
     } finally {
@@ -291,7 +291,7 @@ describe('ensureSessionVcluster', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     })
-    await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
+    await expect(ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' }))
       .rejects.toThrow(/ValidatingAdmissionPolicy/)
     // Nothing is applied — not the guard, not the policies, not the chart.
     expect(mockApply).not.toHaveBeenCalled()
@@ -302,14 +302,14 @@ describe('ensureSessionVcluster', () => {
       return cidrRead(args)
         ?? (args[1] === 'deployments' ? Promise.resolve({ items: [] }) : Promise.resolve(null))
     })
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),
     )
   })
 
   it('reports freshness from the prior control-plane Deployment (born-at-zero gate)', async () => {
-    await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
+    await expect(ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' }))
       .resolves.toEqual({ freshlyCreated: true })
 
     // A pre-existing Deployment means re-ensure over a live vcluster —
@@ -323,12 +323,12 @@ describe('ensureSessionVcluster', () => {
       if (args[1] === 'deployments') return Promise.resolve({ items: [] })
       return Promise.resolve(null)
     })
-    await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
+    await expect(ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' }))
       .resolves.toEqual({ freshlyCreated: false })
   })
 
   it('guards synced pods with a Fail-closed per-session policy naming the hostPath prefix', async () => {
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: "/we'ird/pa\\th" })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: "/we'ird/pa\\th" })
 
     const vap = applied('ValidatingAdmissionPolicy') as unknown as {
       metadata: { name: string; labels: Record<string, string> }
@@ -389,7 +389,7 @@ describe('ensureSessionVcluster', () => {
   })
 
   it('confines it: labeled namespace, a session egress hole, and a control-plane lock', async () => {
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
 
     // The dedicated per-session namespace, labeled for GC and install scope.
     const ns = applied('Namespace')!
@@ -407,22 +407,22 @@ describe('ensureSessionVcluster', () => {
     const nps = appliedAll('NetworkPolicy')
     // The session policy lives in the INSTALL namespace (it selects the
     // session pod) and reaches the vcluster namespace cross-namespace.
-    const sessionNp = nps.find((m) => m.metadata.namespace === 'test-ns')! as unknown as NetPol
-    expect(sessionNp.spec.podSelector.matchLabels).toEqual({ 'yaac.session-id': SID })
-    expect(sessionNp.spec.policyTypes).toEqual(['Egress'])
-    expect(sessionNp.spec.egress[0].to[0].namespaceSelector?.matchLabels)
+    const worktreeNp = nps.find((m) => m.metadata.namespace === 'test-ns')! as unknown as NetPol
+    expect(worktreeNp.spec.podSelector.matchLabels).toEqual({ 'yaac.session-id': SID })
+    expect(worktreeNp.spec.policyTypes).toEqual(['Egress'])
+    expect(worktreeNp.spec.egress[0].to[0].namespaceSelector?.matchLabels)
       .toEqual({ 'kubernetes.io/metadata.name': VCNS })
-    expect(sessionNp.spec.egress[0].to[0].podSelector.matchLabels)
+    expect(worktreeNp.spec.egress[0].to[0].podSelector.matchLabels)
       .toEqual({ app: 'vcluster', release: VC })
-    expect(sessionNp.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
-    expect(sessionNp.spec.egress[1].to[0].podSelector.matchLabels)
+    expect(worktreeNp.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
+    expect(worktreeNp.spec.egress[1].to[0].podSelector.matchLabels)
       .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
     // The activator hole: while asleep the API ClusterIP DNATs to the
     // activator pod (same install namespace), and NetworkPolicy matches the
     // post-DNAT destination — without this rule the wake-triggering first
     // touch would be dropped.
-    expect(sessionNp.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
-    expect(sessionNp.spec.egress[2].to[0].podSelector.matchLabels)
+    expect(worktreeNp.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
+    expect(worktreeNp.spec.egress[2].to[0].podSelector.matchLabels)
       .toEqual({ app: 'yaac-vc-activator' })
 
     // The control-plane lock, in the vcluster namespace.
@@ -470,7 +470,7 @@ describe('ensureSessionVcluster', () => {
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as never)
 
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
 
     const applyCall = mockRetry.mock.calls.find((c) => c[0][0] === 'apply')!
     const docs = parseDocs((applyCall[1] as { input: string }).input)
@@ -499,7 +499,7 @@ describe('ensureSessionVcluster', () => {
       mockGetJson.mock.calls.filter((c) => (c[0])[1] === 'namespace').length
 
     // Absent: one probe, straight through.
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
     expect(probes()).toBe(1)
 
     // Present without a deletionTimestamp — the ensure-over-existing path;
@@ -513,7 +513,7 @@ describe('ensureSessionVcluster', () => {
       if (args[1] === 'deployments') return Promise.resolve({ items: [] })
       return Promise.resolve(null)
     })
-    await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
+    await ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' })
     expect(probes()).toBe(1)
     expect(mockApply).toHaveBeenCalled()
   })
@@ -531,7 +531,7 @@ describe('ensureSessionVcluster', () => {
     vi.useFakeTimers()
     try {
       const settled = expect(
-        ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }),
+        ensureWorktreeVcluster({ worktreeId: SID, allowedHostPathPrefix: '/x' }),
       ).rejects.toThrow(new RegExp(`still Terminating.*kubectl get namespace ${VCNS}`))
       await vi.advanceTimersByTimeAsync(11 * 60 * 1000)
       await settled
@@ -620,9 +620,9 @@ describe('sleepVcluster', () => {
   })
 })
 
-describe('removeSessionVcluster', () => {
+describe('removeWorktreeVcluster', () => {
   it('deletes the namespace, the cluster-scoped leftovers, and the session policy', async () => {
-    await removeSessionVcluster(VC)
+    await removeWorktreeVcluster(VC)
 
     const argvs = mockRetry.mock.calls.map((c) => c[0])
     expect(argvs).toHaveLength(3)
@@ -646,7 +646,7 @@ describe('removeSessionVcluster', () => {
   it('logs and continues when one delete fails — teardown is best-effort', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     mockRetry.mockRejectedValueOnce(new Error('apiserver down'))
-    await expect(removeSessionVcluster(VC)).resolves.toBeUndefined()
+    await expect(removeWorktreeVcluster(VC)).resolves.toBeUndefined()
     // The remaining two still ran.
     expect(mockRetry).toHaveBeenCalledTimes(3)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('apiserver down'))
@@ -656,7 +656,7 @@ describe('removeSessionVcluster', () => {
 
 describe('buildVclusterCleanupShellCommand', () => {
   it('renders the detached-script form with per-line error tolerance', () => {
-    // Same three steps as removeSessionVcluster, as one shell string: the
+    // Same three steps as removeWorktreeVcluster, as one shell string: the
     // session pod's own teardown runs it detached, where a failed line must
     // not abort the rest.
     const cmd = buildVclusterCleanupShellCommand(VC)

@@ -35,7 +35,7 @@ export const TEST_CLI_DIR = path.join(REPO_ROOT, 'dist-test')
  * bundle. It also means these suites exercise the artifact users actually
  * run — including its bundled-mode paths, where PACKAGE_ROOT is the
  * directory holding cli.js and the migrations, k8s manifests, builtin skills
- * and session-bin scripts are read from the copies beside it. That is why
+ * and worktree-bin scripts are read from the copies beside it. That is why
  * the snapshot is the whole of dist/ and not just cli.js.
  */
 export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
@@ -155,7 +155,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   await fs.writeFile(gitConfigPath, '')
   setDataDir(dataDir)
   // Mirror the namespace into the test process so src helpers used by
-  // assertions (listSessionPods, containerExec, ...) hit the same
+  // assertions (listWorktreePods, containerExec, ...) hit the same
   // namespace as the server subprocess.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
@@ -185,7 +185,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // prebuilt by the global setup and workers must never race a podman build.
     YAAC_IMAGE_PREWARM: '0',
     // Auto-titling would pull the llama.cpp binary + a ~114MB model under
-    // every e2e server (and retitle sessions mid-assertion); the feature is
+    // every e2e server (and retitle worktrees mid-assertion); the feature is
     // unit-tested with a stubbed runner instead.
     YAAC_AUTO_TITLES: '0',
     // Keep the credential gate on for spawned servers. A loopback server is
@@ -207,10 +207,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     }
     // removeScratchTree retries the teardown RACE — `force` swallows a
     // missing path but not ENOTEMPTY, and the scratch dir is still live when
-    // this runs. A session's worktree is hostPath-mounted into its pod as
+    // this runs. A worktree's worktree is hostPath-mounted into its pod as
     // /workspace, so a container that has not finished terminating can create
     // a file in a directory the walk just emptied; the detached teardown
-    // script (cleanupSessionDetached) outlives the server it was spawned from
+    // script (cleanupWorktreeDetached) outlives the server it was spawned from
     // and is deleting under the same tree. Both settle in well under a second.
     //
     // What it does NOT retry is a root-owned leftover, which no amount of
@@ -304,7 +304,7 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
         killGroup(child, 'SIGTERM')
         await new Promise<void>((resolve) => {
           // Give the server up to 15s to finish its current background-loop
-          // tick (session reconcile, blocked-host persist) before we
+          // tick (worktree reconcile, blocked-host persist) before we
           // force-kill. SIGKILL bypasses the shutdown handler's
           // `removeLock()` call, so a too-short timeout leaves stale lock
           // files and flakes tests that assert on lock cleanup.
@@ -379,7 +379,7 @@ export interface RunYaacOptions {
    * As a single string, the whole payload is written and stdin is
    * closed immediately. That works for commands that use a single
    * readline interface, but fails for `auth update` / `auth clear` /
-   * `session stream` which open a fresh readline per prompt: once the
+   * `worktree stream` which open a fresh readline per prompt: once the
    * stream ends, the first readline's flowing-mode reader eats all
    * remaining bytes before the next interface can see them.
    *

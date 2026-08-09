@@ -130,7 +130,7 @@ function resolveSpec(fromFile: string, spec: string): string | undefined {
 // parent directory also holds loose files (platform/ is both). Everything else
 // falls back to the shallowest directory under src/ that holds source files
 // directly, which makes pure namespace directories transparent -- features/ is
-// not a module, features/sessions is.
+// not a module, features/worktrees is.
 
 /** Directories whose index.ts is published through a package's imports map. */
 const sealedDirs = new Set<string>()

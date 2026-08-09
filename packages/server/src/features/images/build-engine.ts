@@ -18,7 +18,7 @@
  * `user`, regardless of their content.
  *
  * The one exception is a nested install (`YAAC_NESTED=1`): its engine is
- * the session's in-pod podman, which IS the outer sandbox — an inner
+ * the worktree's in-pod podman, which IS the outer sandbox — an inner
  * builder pod would be a vcluster pod, unvalidated and strictly worse.
  *
  * The seam is build/imageExists/remove. Pushes are deliberately NOT routed
@@ -45,7 +45,7 @@ export function isTrustedLayer(name: ImageLayerName): boolean {
 /**
  * Which engine realizes a layer: whitelisted trusted layers on host
  * podman; everything else in a runsc builder pod (except nested installs,
- * whose in-pod engine is already the outer session's sandbox).
+ * whose in-pod engine is already the outer worktree's sandbox).
  */
 export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
   if (isTrustedLayer(name) || env.nested) return 'host-podman'
@@ -103,7 +103,7 @@ export function engineForLayer(name: ImageLayerName): BuildEngine {
 /**
  * Compression for trusted-layer pushes feeding builder-pod parent pulls:
  * zstd cuts the pod's empty-graphroot parent pull from 65.6s to 40.4s
- * (measured). Node containerd zstd pulls are validated live (session pods
+ * (measured). Node containerd zstd pulls are validated live (worktree pods
  * pull product manifests referencing these blobs) — see the plan doc's
  * validation notes.
  */

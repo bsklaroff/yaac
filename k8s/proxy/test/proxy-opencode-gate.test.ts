@@ -10,7 +10,7 @@ import { OPENCODE_PROVIDER_HOSTS } from 'yaac-proxy-sidecar/tool-providers.gener
  * generated one (imported), so a regen that drops/moves a host is caught here.
  *
  * opencode is api-key only, against any provider in the generated registry.
- * Injection fires when the session is registered as tool=opencode AND the
+ * Injection fires when the worktree is registered as tool=opencode AND the
  * request host matches the credential's provider host AND the inbound request
  * carries the api-key placeholder (in whichever auth header the tool used).
  * Every other combination passes through unchanged.
@@ -50,12 +50,12 @@ function swapApiKeyHeader(reqHeaders: http.IncomingHttpHeaders, apiKey: string):
 }
 
 function buildOpencodeRules(
-  sessionTool: string | undefined,
+  worktreeTool: string | undefined,
   creds: OpencodeCreds | null,
   hostname: string,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
-  if (sessionTool !== 'opencode') return []
+  if (worktreeTool !== 'opencode') return []
   if (!creds) return []
   if (hostname !== OPENCODE_PROVIDER_HOSTS[creds.provider]) return []
   return swapApiKeyHeader(reqHeaders, creds.apiKey)
@@ -117,7 +117,7 @@ describe('opencode credential injection gating', () => {
     })).toEqual([])
   })
 
-  it('does not inject when the session tool is not opencode', () => {
+  it('does not inject when the worktree tool is not opencode', () => {
     expect(buildOpencodeRules('claude', creds, OPENROUTER_API_HOST, {
       authorization: 'Bearer ' + PLACEHOLDER_API_KEY,
     })).toEqual([])

@@ -200,7 +200,7 @@ export interface ClusterSetupDeps {
   /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
    *  Injectable for the same reason as the two above. */
   ensureGvisorRuntime: () => Promise<void>
-  /** Installs the infra/session PriorityClasses. Injectable for the same
+  /** Installs the infra/worktree PriorityClasses. Injectable for the same
    *  reason as the two above. */
   ensurePriorityClasses: () => Promise<void>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
@@ -419,7 +419,7 @@ export async function runClusterSetup(
   // means rather than leaving it to be inferred from a red line.
   //
   // The `egress` gate is the one where it really bites: it is the positive
-  // NetworkPolicy probe, and a cluster that fails it runs sessions whose
+  // NetworkPolicy probe, and a cluster that fails it runs worktrees whose
   // egress lockdown is ADVISORY — they still work, and the proxy allowlist
   // silently covers only what the redirect steers (443/80/the sentinel).
   // That is a containment weakening with no symptom, which is exactly the
@@ -447,7 +447,7 @@ const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
  * swapped, which is the whole trick behind the multi-node rehearsal: the
  * copy carries the `$HOME → $HOME` extraMount, and since every kind node
  * container shares this one host's filesystem, hostPath keeps resolving to
- * the same bytes on whichever node a session lands. Everything else in the
+ * the same bytes on whichever node a worktree lands. Everything else in the
  * file is cluster-scoped (containerd registry patch, kubelet swap patch,
  * disableDefaultCNI), and kind applies those to every node itself.
  */
@@ -673,7 +673,7 @@ async function recreateKindCluster(
 /**
  * Install Calico (pinned by checksum) as the CNI and policy engine. kindnet's
  * NetworkPolicy engine fails OPEN — a new pod's first packets flow before
- * its IP reaches the engine's nftables set — and session egress lockdown
+ * its IP reaches the engine's nftables set — and worktree egress lockdown
  * needs fail CLOSED. Calico's Felix gives that off the shelf: until it has
  * programmed a workload's endpoint, traffic on that veth falls through the
  * dispatch chain's "Unknown interface" DROP.
@@ -718,16 +718,16 @@ async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<v
  *
  * Refuses rather than warns, because every one of these fails SILENTLY.
  * Calico in its eBPF dataplane, a replaced kube-proxy, an empty pod-CIDR
- * exclusion set — none of them stops a session from starting; they show up
- * as "sessions have no egress" or, worse, as a redirect chain that counts
+ * exclusion set — none of them stops a worktree from starting; they show up
+ * as "worktrees have no egress" or, worse, as a redirect chain that counts
  * packets and never fires. The full reasoning per check is in cni-adopt.ts.
  *
  * The NetworkPolicy half is deliberately not decided here: "Calico is
  * installed" does not mean policy is enforced (policy-only Calico over a
  * foreign IPAM is a supported topology and a misconfigured one looks
- * identical until a session escapes), so it is left to the `egress` gate of
+ * identical until a worktree escapes), so it is left to the `egress` gate of
  * the cluster check that finishes every setup — a positive probe from a
- * session-labeled pod, whose failure makes this command exit non-zero.
+ * worktree-labeled pod, whose failure makes this command exit non-zero.
  */
 async function verifyAdoptedCni(deps: ClusterSetupDeps): Promise<void> {
   deps.log('Verifying the CNI this cluster already runs (--adopt-cni)...')
@@ -749,7 +749,7 @@ async function verifyAdoptedCni(deps: ClusterSetupDeps): Promise<void> {
  * where Calico does the IPAM — policy-only Calico over the AWS VPC CNI
  * gives `eni*` — and a prefix that matches nothing renders a redirect chain
  * with no per-pod rules in it, which is indistinguishable from a healthy
- * netd until a session tries to reach the internet.
+ * netd until a worktree tries to reach the internet.
  *
  * Fail-soft on an unreachable netd (the cluster check's datapath gate owns
  * that verdict), fail-hard on a node that has the routes but not under this
@@ -891,9 +891,9 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
  * container, and its pod names the infra class.
  *
  * Deliberately NOT fail-soft: the registry is the only image bus, so
- * without it no session image can be pushed, no node can pull one, and no
+ * without it no worktree image can be pushed, no node can pull one, and no
  * builder pod can fetch a parent. Finishing setup without it would trade a
- * clear error here for an opaque ImagePullBackOff at the first session
+ * clear error here for an opaque ImagePullBackOff at the first worktree
  * create.
  */
 async function installRegistry(deps: ClusterSetupDeps): Promise<void> {
@@ -921,7 +921,7 @@ async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
 }
 
 /**
- * Install the infra/session PriorityClasses. Runs in `--repair` too: like
+ * Install the infra/worktree PriorityClasses. Runs in `--repair` too: like
  * the gVisor RuntimeClasses, these are cluster-scoped objects the manifest
  * builders name, so this is how a cluster created by an older yaac gets
  * them on upgrade (the server re-ensures them at boot as well).
@@ -929,7 +929,7 @@ async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
  * Deliberately NOT fail-soft: a pod naming a class the apiserver doesn't
  * have is rejected, and a Job whose pod is rejected hangs rather than
  * failing, so finishing setup without them would trade a clear error here
- * for a mystifying one at the next session create.
+ * for a mystifying one at the next worktree create.
  */
 async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
@@ -939,15 +939,15 @@ async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
 /**
  * Apply the gVisor installer DaemonSet and, once it has converged, the
  * RuntimeClasses — so a freshly-set-up cluster can run sandboxed pods
- * before any session exists, and so `check`'s gvisor gate has something to
+ * before any worktree exists, and so `check`'s gvisor gate has something to
  * verify. Runs in `--repair` too: it is how a cluster created by an older
  * yaac picks up a runsc version bump.
  *
  * Deliberately NOT fail-soft, unlike netd below. Nothing else installs the
- * runtime (there is no lazy re-ensure on the session-create path), and
- * every session pod names a RuntimeClass whose nodeSelector only matches an
+ * runtime (there is no lazy re-ensure on the worktree-create path), and
+ * every worktree pod names a RuntimeClass whose nodeSelector only matches an
  * installed node — so finishing setup with this broken would trade a clear
- * error here for every session sitting Pending later.
+ * error here for every worktree sitting Pending later.
  */
 async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
   deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
@@ -965,7 +965,7 @@ async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
 
 /**
  * Build/push the netd + Envoy images and apply the DaemonSet, so a
- * freshly-set-up cluster can redirect session egress before any session
+ * freshly-set-up cluster can redirect worktree egress before any worktree
  * exists — and so `check`'s datapath gate has something to verify.
  *
  * Runs in `--repair` too: like the gVisor install, this is how an existing
@@ -973,7 +973,7 @@ async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
  *
  * Fails soft. The server re-ensures netd on every proxy bootstrap
  * (ensureProxyResources), so a transient registry or build hiccup here
- * self-heals on first session create rather than aborting the whole setup;
+ * self-heals on first worktree create rather than aborting the whole setup;
  * the cluster check that follows reports it either way.
  */
 async function deployNetd(deps: ClusterSetupDeps): Promise<void> {
@@ -1025,7 +1025,7 @@ export function isLegacyMachineError(stderr: string): boolean {
 /**
  * VM sizing for `podman machine init`. The README's canonical numbers are
  * 8 cpus / 32 GiB; scale down for smaller hosts (half the host RAM, capped
- * at the canonical values, floored at something sessions can survive on).
+ * at the canonical values, floored at something worktrees can survive on).
  */
 export function defaultMachineResources(
   totalmemBytes: number,
@@ -1084,10 +1084,10 @@ async function initMachine(deps: ClusterSetupDeps): Promise<void> {
  * settings the README used to describe by hand, plus migration traps from
  * pre-brew installs:
  *   - provider = libkrun (virtiofs that reports real file ownership, which
- *     gVisor session pods need: the runsc gofer does hostPath I/O as node
+ *     gVisor worktree pods need: the runsc gofer does hostPath I/O as node
  *     root while the sentry enforces DAC on the ownership the gofer sees.
  *     applehv/vz virtiofs reports the accessing process as every file's
- *     owner — the root gofer sees root-owned files, so non-root session
+ *     owner — the root gofer sees root-owned files, so non-root worktree
  *     uids can never write hostPath mounts) — written as a
  *     containers.conf.d drop-in;
  *   - rootful (kind's podman provider requires it);

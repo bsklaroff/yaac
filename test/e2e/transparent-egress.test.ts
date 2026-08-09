@@ -24,7 +24,7 @@ import {
 } from '@yaac/server/platform/k8s/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
-import { LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
+import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'
 import {
   k8sNamespace,
   kubectlApply,
@@ -218,14 +218,14 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
  * VIP DNS stub. No sidecars, no proxy env vars — egress is redirected at the
  * cluster level.
  */
-async function startSessionPod(name: string, sessionId: string, proxyHost: string): Promise<void> {
+async function startWorktreePod(name: string, worktreeId: string, proxyHost: string): Promise<void> {
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: { [LABEL_SESSION_ID]: sessionId, 'yaac.test': 'true' },
+      labels: { ...worktreeIdLabels(worktreeId), 'yaac.test': 'true' },
     },
     spec: {
       restartPolicy: 'Never',
@@ -281,8 +281,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
   const podA = `yaac-tegress-a-${suffix}`
   const podB = `yaac-tegress-b-${suffix}`
 
-  const sessionA = crypto.randomUUID()
-  const sessionB = crypto.randomUUID()
+  const worktreeA = crypto.randomUUID()
+  const worktreeB = crypto.randomUUID()
 
   let echoHost = ''
   let tlsHost = ''
@@ -301,20 +301,20 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
     // Session A: MITM api.anthropic.com → the HTTP echo, plus plain HTTP to
     // the echo host. Session B: only the TLS echo (for the tunnel test).
-    await client.registerSession(sessionA, {
+    await client.registerWorktree(worktreeA, {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
       tool: 'claude',
       projectSlug: 'egress-a',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     })
-    await client.registerSession(sessionB, {
+    await client.registerWorktree(worktreeB, {
       rules: [], allowedHosts: [tlsHost], tool: 'claude', projectSlug: 'egress-b',
     })
 
     await Promise.all([
-      startSessionPod(podA, sessionA, proxyHost),
-      startSessionPod(podB, sessionB, proxyHost),
+      startWorktreePod(podA, worktreeA, proxyHost),
+      startWorktreePod(podB, worktreeB, proxyHost),
     ])
     await Promise.all([waitForPodRunning(podA), waitForPodRunning(podB)])
   }, 300_000)
@@ -323,8 +323,8 @@ describe('node-level transparent egress (source-IP identity)', () => {
     await Promise.all(
       [echoName, tlsEchoName, podA, podB].map((n) => deleteTestPod(n)),
     )
-    try { await client.removeSession(sessionA) } catch { /* ok */ }
-    try { await client.removeSession(sessionB) } catch { /* ok */ }
+    try { await client.removeWorktree(worktreeA) } catch { /* ok */ }
+    try { await client.removeWorktree(worktreeB) } catch { /* ok */ }
     try { await client.stop() } catch { /* ok */ }
   })
 
@@ -379,7 +379,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(before.out, before.out).toContain('Blocked by URL allowlist')
 
     // Widen the running session's allowlist in place (no re-create, no restart).
-    expect(await client.allowHost(sessionB, echoHost)).toBe(true)
+    expect(await client.allowHost(worktreeB, echoHost)).toBe(true)
 
     const after = await curlUntilSuccess(
       podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/after"`,

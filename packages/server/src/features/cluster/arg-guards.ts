@@ -82,9 +82,9 @@ export function resolveNodeCount(opts: ClusterSetupArgs): number {
 }
 
 /**
- * The nested-session guard both commands share: inside a yaac session the
+ * The nested-worktree guard both commands share: inside a yaac worktree the
  * cluster is the outer install's infrastructure, so neither creating nor
- * deleting it is this session's call.
+ * deleting it is this worktree's call.
  */
 export function assertNotNested(command: 'setup' | 'delete'): void {
   if (!env.nested) return
@@ -102,7 +102,7 @@ export function assertNotNested(command: 'setup' | 'delete'): void {
  * (or anything else) from the command it is about to skip loading.
  *
  * Guard order matches the command entry points: nested first, then the flag
- * combinations, so an invocation inside a session reports the session
+ * combinations, so an invocation inside a worktree reports the worktree
  * rather than a flag it was never going to reach.
  */
 export function clusterArgError(

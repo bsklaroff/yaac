@@ -24,8 +24,8 @@ const slug = 'demo'
 
 /** Host path of a claude transcript — the layout the module owns, spelled
  *  out here so the test would catch a change to it. */
-function claudeLog(sessionId: string): string {
-  return path.join(claudeDir(slug), 'projects', '-workspace', `${sessionId}.jsonl`)
+function claudeLog(worktreeId: string): string {
+  return path.join(claudeDir(slug), 'projects', '-workspace', `${worktreeId}.jsonl`)
 }
 
 async function write(file: string, body = '{}\n'): Promise<string> {
@@ -121,7 +121,7 @@ describe('transcripts', () => {
       await write(path.join(claudeDir(slug), 'projects', '-workspace', 'cl-1', 'subagents', 'agent-a.jsonl'))
 
       const records = await scanProjectTranscripts(slug)
-      expect(records.map((r) => [r.sessionId, r.tool]).sort())
+      expect(records.map((r) => [r.worktreeId, r.tool]).sort())
         .toEqual([['cl-1', 'claude'], ['cx-1', 'codex'], ['pi-1', 'pi']])
       for (const r of records) {
         expect(r.createdAtMs).toBeGreaterThan(0)

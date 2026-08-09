@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, resolveAttentionTarget,
-  resolveNewSessionTool, unreadWaitingBySlug, useUiStore,
+  resolveNewWorktreeTool, unreadWaitingBySlug, useUiStore,
 } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
@@ -188,32 +188,32 @@ describe('resolveAttentionTarget', () => {
 })
 
 describe('selection + project switching', () => {
-  it('selectSession sets the selected id', () => {
-    useUiStore.getState().selectSession('s1')
+  it('selectWorktree sets the selected id', () => {
+    useUiStore.getState().selectWorktree('s1')
     expect(useUiStore.getState().selectedWorktreeId).toBe('s1')
   })
 
   it('setActiveProject clears the open session', () => {
-    useUiStore.getState().selectSession('s1')
+    useUiStore.getState().selectWorktree('s1')
     useUiStore.getState().setActiveProject('proj')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
     expect(useUiStore.getState().selectedWorktreeId).toBeNull()
   })
 
-  it('openSession sets both project and session', () => {
-    useUiStore.getState().openSession('proj', 's2')
+  it('openWorktree sets both project and session', () => {
+    useUiStore.getState().openWorktree('proj', 's2')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
     expect(useUiStore.getState().selectedWorktreeId).toBe('s2')
   })
 
-  it('selectSession and openSession each bump focusNonce', () => {
+  it('selectWorktree and openWorktree each bump focusNonce', () => {
     expect(useUiStore.getState().focusNonce).toBe(0)
-    useUiStore.getState().selectSession('s1')
+    useUiStore.getState().selectWorktree('s1')
     expect(useUiStore.getState().focusNonce).toBe(1)
     // Re-selecting the same session still bumps — clicking it re-focuses.
-    useUiStore.getState().selectSession('s1')
+    useUiStore.getState().selectWorktree('s1')
     expect(useUiStore.getState().focusNonce).toBe(2)
-    useUiStore.getState().openSession('proj', 's2')
+    useUiStore.getState().openWorktree('proj', 's2')
     expect(useUiStore.getState().focusNonce).toBe(3)
   })
 
@@ -224,13 +224,13 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
 
-  it('setSessionLayout stores per-session workspaces (null = emptied)', () => {
+  it('setWorktreeLayout stores per-session workspaces (null = emptied)', () => {
     const ws = [
       { tabs: ['agent'], active: 'agent' },
       { tabs: ['shell:shell'], active: 'shell:shell' },
     ]
-    useUiStore.getState().setSessionLayout('s1', ws)
-    useUiStore.getState().setSessionLayout('s2', null)
+    useUiStore.getState().setWorktreeLayout('s1', ws)
+    useUiStore.getState().setWorktreeLayout('s2', null)
     expect(useUiStore.getState().layouts).toEqual({ s1: ws, s2: null })
   })
 })
@@ -454,27 +454,27 @@ describe('settings modal state', () => {
   })
 })
 
-describe('resolveNewSessionTool', () => {
+describe('resolveNewWorktreeTool', () => {
   const sessions = [
     { worktreeId: 's-claude', tool: 'claude' as const },
     { worktreeId: 's-codex', tool: 'codex' as const },
   ]
 
   it("uses the selected session's tool when its credentials are configured", () => {
-    expect(resolveNewSessionTool(sessions, 's-codex', new Set(['claude', 'codex'])))
+    expect(resolveNewWorktreeTool(sessions, 's-codex', new Set(['claude', 'codex'])))
       .toBe('codex')
   })
 
   it('falls back to claude when nothing is selected', () => {
-    expect(resolveNewSessionTool(sessions, null, new Set(['claude']))).toBe('claude')
+    expect(resolveNewWorktreeTool(sessions, null, new Set(['claude']))).toBe('claude')
   })
 
   it('returns null when the target tool has no credentials', () => {
-    expect(resolveNewSessionTool(sessions, 's-codex', new Set(['claude']))).toBeNull()
-    expect(resolveNewSessionTool(sessions, null, new Set(['codex']))).toBeNull()
+    expect(resolveNewWorktreeTool(sessions, 's-codex', new Set(['claude']))).toBeNull()
+    expect(resolveNewWorktreeTool(sessions, null, new Set(['codex']))).toBeNull()
   })
 
   it('returns null while the auth list is still unknown (empty set)', () => {
-    expect(resolveNewSessionTool(sessions, 's-claude', new Set())).toBeNull()
+    expect(resolveNewWorktreeTool(sessions, 's-claude', new Set())).toBeNull()
   })
 })

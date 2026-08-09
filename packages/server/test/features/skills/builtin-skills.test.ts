@@ -69,7 +69,7 @@ describe('push-pr skill', () => {
 })
 
 describe('yaac-spawn skill', () => {
-  it('is discoverable and documents the session-bin usage shape', async () => {
+  it('is discoverable and documents the worktree-bin usage shape', async () => {
     expectShipped('yaac-spawn')
     expect(await bodyOf('yaac-spawn'))
       .toContain('yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"')
@@ -77,7 +77,7 @@ describe('yaac-spawn skill', () => {
 })
 
 describe('yaac-watch-prs skill', () => {
-  it('is discoverable and documents the session-bin usage shape', async () => {
+  it('is discoverable and documents the worktree-bin usage shape', async () => {
     expectShipped('yaac-watch-prs')
     expect(await bodyOf('yaac-watch-prs'))
       .toContain('yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]')
@@ -85,7 +85,7 @@ describe('yaac-watch-prs skill', () => {
 })
 
 describe('spawn-pr-reviewers skill', () => {
-  it('is discoverable and drives both halves through the session-bin commands', async () => {
+  it('is discoverable and drives both halves through the worktree-bin commands', async () => {
     expectShipped('spawn-pr-reviewers')
     const body = await bodyOf('spawn-pr-reviewers')
     // The watch half scopes the generalized watcher to newly opened PRs, and

@@ -10,7 +10,7 @@ export interface ReservedPort extends PortMapping {
 /**
  * The per-connection relay a forwarder spawns: a child-process-shaped
  * object bridging stdin/stdout to a TCP endpoint. Real implementations are
- * the stream-relay's `relayTcpFactory` (session port forwards — a `tcp`
+ * the stream-relay's `relayTcpFactory` (worktree port forwards — a `tcp`
  * stream into the pod's streamd) and ExecTunnel's kubectl+socat child (the
  * proxy control API), which both satisfy this shape.
  */

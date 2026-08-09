@@ -1,5 +1,5 @@
 import { getDefaultTool, pushDesiredWorkspaces } from '#features/records'
-import { inFlightWorktreeIds } from '#features/sessions'
+import { inFlightWorktreeIds } from '#features/worktrees'
 import { reconcileGeneratedTitles } from '#features/titles'
 import { DESIRED_SET_TRIGGERS, herd, type HerdChangeSource } from '#herd'
 import { serverLog } from '#log'
@@ -8,7 +8,7 @@ import { serverLog } from '#log'
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — three lanes feed one serialized pass executor:
  *
- * - changes: the herd's watches (session pods/Jobs, vcluster namespaces and
+ * - changes: the herd's watches (worktree pods/Jobs, vcluster namespaces and
  *   their pods/services, and the set of live conversations) mark their
  *   sources dirty; a pass runs after a short debounce so event storms
  *   coalesce.
@@ -53,8 +53,8 @@ export interface PassContext {
 /** Every source there is: the herd's pass owes work on any of them, and
  *  decides internally which of its own steps a given one dirties. */
 const HERD_TRIGGERS: readonly ReconcileTrigger[] = [
-  'session-pods',
-  'session-jobs',
+  'worktree-pods',
+  'worktree-jobs',
   'vcluster-namespaces',
   'vcluster-pods',
   'vcluster-services',
@@ -86,14 +86,14 @@ export function defaultReconcileSteps(): ReconcileStep[] {
         ...(defaultTool !== undefined ? { defaultTool } : {}),
       })
     } },
-    // Model-generated titles for untitled sessions, after the herd's
+    // Model-generated titles for untitled worktrees, after the herd's
     // conversation sweep so a freshly captured prompt is eligible the same
     // pass. Which means it owes a pass on whatever dirties that sweep: an ACP
     // worktree's opening message is captured on the pass its handshake
     // triggers, and same-pass eligibility is the whole point of the ordering.
     // Cheap when there is nothing to do — a row listing against a set of
     // worktrees already attempted.
-    { name: 'generated-titles', triggers: ['session-pods', 'live-agents'],
+    { name: 'generated-titles', triggers: ['worktree-pods', 'live-agents'],
       run: () => reconcileGeneratedTitles() },
   ]
 }

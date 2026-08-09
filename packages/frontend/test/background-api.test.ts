@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { setWorktreeBackground } from '#lib/createSession'
+import { setWorktreeBackground } from '#lib/createWorktree'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })

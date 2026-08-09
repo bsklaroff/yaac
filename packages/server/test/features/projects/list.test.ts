@@ -53,7 +53,7 @@ describe('listProjects', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
     })
     // A project the herd said nothing about counts 0, not undefined.
-    expect(typeof foo?.sessionCount).toBe('number')
+    expect(typeof foo?.worktreeCount).toBe('number')
   })
 
   it('joins the herd’s counts onto the recorded projects', async () => {
@@ -61,7 +61,7 @@ describe('listProjects', () => {
     await writeProject('bar', { slug: 'bar', remoteUrl: 'https://example/bar', addedAt: '2026-01-02T00:00:00.000Z' })
     counts.mockResolvedValue({ foo: 2, bar: 1 })
 
-    const joined = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.sessionCount]))
+    const joined = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.worktreeCount]))
     expect(joined).toEqual({ foo: 2, bar: 1 })
   })
 
@@ -70,7 +70,7 @@ describe('listProjects', () => {
   it('still lists a project the herd said nothing about', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})
-    expect((await listProjects())[0]?.sessionCount).toBe(0)
+    expect((await listProjects())[0]?.worktreeCount).toBe(0)
   })
 
   it('skips entries with malformed project.json', async () => {

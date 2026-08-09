@@ -27,7 +27,7 @@ import { env } from '@yaac/shared/env'
 import { proxyDataHostDir } from '@yaac/shared/project-paths'
 
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
- * dedicated dir (not the session CA mount) so it never collides with the
+ * dedicated dir (not the worktree CA mount) so it never collides with the
  * inner proxy's own CA material. */
 const OUTER_CA_MOUNT_DIR = '/etc/yaac/outer-ca'
 const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
@@ -75,7 +75,7 @@ export function buildProxyDeploymentManifest(
   opts: { nested?: boolean } = {},
 ): Record<string, unknown> {
   // Every proxy pod carries the install identity (the same data-dir-hash
-  // label session pods carry): tenant pod labels survive vcluster sync
+  // label worktree pods carry): tenant pod labels survive vcluster sync
   // verbatim, so the outer projection can group a vcluster's synced pods by
   // owning inner install. Nested (inner) proxy: additionally stamp the role
   // so netd can exclude it from its own claim (loop-free) and both hops can
@@ -98,21 +98,21 @@ export function buildProxyDeploymentManifest(
       // Recreate, not RollingUpdate: proxy state that is memory-only by
       // design (the ssh-agent's identities) lives in whichever pod the
       // Service happens to pick, so an overlap window would hand some
-      // sessions an agent the server has not loaded keys into.
+      // worktrees an agent the server has not loaded keys into.
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
         metadata: { labels: podLabels },
         spec: {
-          // The proxy watches pods (source-IP → session) via the in-cluster
+          // The proxy watches pods (source-IP → worktree) via the in-cluster
           // API, so it needs its SA token mounted — read-only pods access
           // granted by buildProxyRoleManifest.
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
-          // Infra tier: losing the proxy costs every session on the cluster
+          // Infra tier: losing the proxy costs every worktree on the cluster
           // its DNS and its entire route to the world, so it outranks the
-          // sessions under node pressure and can preempt one when a full
+          // worktrees under node pressure and can preempt one when a full
           // node leaves it nowhere to run.
           priorityClassName: PRIORITY_CLASS_INFRA,
           // No runtimeClassName: the proxy is trusted yaac infra and runs on
@@ -160,14 +160,14 @@ export function buildProxyDeploymentManifest(
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
                 // Stream relay (docs/stream-relay.md): the authenticated
-                // CONNECT into session pods' streamd. Same env for outer and
+                // CONNECT into worktree pods' streamd. Same env for outer and
                 // inner proxies — only the addressing differs (NodePort vs
                 // pod-IP dial).
                 { name: 'RELAY_PORT', value: String(RELAY_PORT) },
                 { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 // ssh-agent forwarding: the proxy splices this port to its
-                // own in-memory agent for entitled session pods, which
+                // own in-memory agent for entitled worktree pods, which
                 // re-expose it as SSH_AUTH_SOCK's UNIX socket in-pod.
                 { name: 'SSH_AGENT_PORT', value: String(SSH_AGENT_PORT) },
                 {
@@ -188,7 +188,7 @@ export function buildProxyDeploymentManifest(
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
                 // Split-horizon DNS: the top-level proxy resolves internal
-                // names (`*.svc`) against the cluster CoreDNS so session pods
+                // names (`*.svc`) against the cluster CoreDNS so worktree pods
                 // learn live ClusterIPs (no IP pinning). OFF when nested — the
                 // inner proxy is firewalled from the vcluster CoreDNS and must
                 // sinkhole every name (its upstream dial chains to the outer
@@ -229,7 +229,7 @@ export function buildProxyDeploymentManifest(
             // known_hosts. emptyDir (not hostPath) so fsGroup can make it
             // group-writable by the non-root proxy uid, and so nothing the
             // proxy writes under HOME persists onto the host. The agent
-            // socket is pod-local now that session pods reach the agent
+            // socket is pod-local now that worktree pods reach the agent
             // over SSH_AGENT_PORT instead of a shared host directory.
             { name: 'home', emptyDir: {} },
             // Nested (inner) proxy: the outer CA, projected by the server into
@@ -264,8 +264,8 @@ export function buildOuterProxyCaConfigMapManifest(caPem: string): Record<string
  * Admission guard making `yaac.role=builder` unfakeable: the label is
  * policy-bearing (the world-deny exclusion above), so nothing untrusted
  * may mint it. The only API identities untrusted code can ever hold are
- * ServiceAccounts — session pods carry no token at all, and the one
- * session-reachable pod-create path (a vcluster's syncer materializing
+ * ServiceAccounts — worktree pods carry no token at all, and the one
+ * worktree-reachable pod-create path (a vcluster's syncer materializing
  * virtual pods on the host) authenticates as its SA. The trusted server
  * and operators act as cert users. So: builder-labeled pods must not be
  * created or updated by any ServiceAccount, and must run under the
@@ -314,7 +314,7 @@ export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
 }
 
 /** Cluster-wide binding (no matchResources): the label is reserved in
- *  every namespace, including vcluster session namespaces. */
+ *  every namespace, including vcluster worktree namespaces. */
 export function buildBuilderRoleGuardBindingManifest(): Record<string, unknown> {
   return {
     apiVersion: 'admissionregistration.k8s.io/v1',
@@ -327,7 +327,7 @@ export function buildBuilderRoleGuardBindingManifest(): Record<string, unknown> 
   }
 }
 
-/** ServiceAccount the proxy runs as so it can watch pods (source-IP→session). */
+/** ServiceAccount the proxy runs as so it can watch pods (source-IP→worktree). */
 export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -336,7 +336,7 @@ export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   }
 }
 
-/** Read-only Role: the proxy lists/watches pods to resolve source IP→session. */
+/** Read-only Role: the proxy lists/watches pods to resolve source IP→worktree. */
 export function buildProxyRoleManifest(): Record<string, unknown> {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
@@ -367,7 +367,7 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      // Allocator-assigned ClusterIP (no longer pinned): session-create reads
+      // Allocator-assigned ClusterIP (no longer pinned): worktree-create reads
       // it live at pod-create (proxyServiceClusterIp) for the pod's dnsConfig.
       // The Service is never deleted/recreated, so its ClusterIP is stable for
       // the cluster's lifetime; the egress redirect is EDS-backed (endpoints,
@@ -384,7 +384,7 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-        // ssh-agent forwarding: session pods dial this on the Service
+        // ssh-agent forwarding: worktree pods dial this on the Service
         // ClusterIP (the address they already carry as their resolver), so
         // the agent moves with the proxy pod, node and all.
         { name: 'ssh-agent', port: SSH_AGENT_PORT, targetPort: SSH_AGENT_PORT },

@@ -3,8 +3,8 @@ import type {
   AgentTool,
   GitAuthFailure,
   PortMapping,
-  SessionDeathCause,
-  StaleSessionInfo,
+  WorktreeDeathCause,
+  StaleWorktreeInfo,
 } from '#types'
 
 /**
@@ -22,7 +22,7 @@ import type {
 export interface HerdReport {
   workspaces: WorkspaceReport[]
   /** Recorded workspaces whose runtime is gone, for the caller to tear down. */
-  stale: StaleSessionInfo[]
+  stale: StaleWorktreeInfo[]
   /** Project slug → git credentials the upstream rejected. Project-wide and
    *  independent of the workspace set: a bad token persists with nothing
    *  running and blocks new work. */
@@ -308,5 +308,5 @@ export interface WorktreeStopped {
   type: 'worktree-stopped'
   projectSlug: string
   worktreeId: string
-  cause?: SessionDeathCause
+  cause?: WorktreeDeathCause
 }

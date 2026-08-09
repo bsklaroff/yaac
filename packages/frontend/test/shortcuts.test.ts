@@ -42,14 +42,14 @@ describe('SHORTCUTS registry', () => {
 
   it('marks the four directional cyclers, and only those, as CYCLE_IDS', () => {
     expect([...CYCLE_IDS].sort()).toEqual(
-      ['next-session', 'next-terminal', 'prev-session', 'prev-terminal'],
+      ['next-terminal', 'next-worktree', 'prev-terminal', 'prev-worktree'],
     )
   })
 })
 
 describe('isShortcutId', () => {
   it('accepts known ids and rejects others', () => {
-    expect(isShortcutId('new-session')).toBe(true)
+    expect(isShortcutId('new-worktree')).toBe(true)
     expect(isShortcutId('next-terminal')).toBe(true)
     expect(isShortcutId('nope')).toBe(false)
     expect(isShortcutId('')).toBe(false)
@@ -88,9 +88,9 @@ describe('chordMatches', () => {
 
 describe('matchShortcut', () => {
   it('maps each default chord to its command', () => {
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-session')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-worktree')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyS'))).toBe('new-shell')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-session')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-worktree')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyB'))).toBe('jump-attention')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyC'))).toBe('open-changes')
@@ -98,8 +98,8 @@ describe('matchShortcut', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyP'))).toBe('open-preview')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Comma'))).toBe('view-tabs')
     expect(matchShortcut(DEFAULT_BINDINGS, key('Period'))).toBe('view-tiles')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyK'))).toBe('prev-session')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyJ'))).toBe('next-session')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyK'))).toBe('prev-worktree')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyJ'))).toBe('next-worktree')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH'))).toBe('prev-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyL'))).toBe('next-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH', { shiftKey: true }))).toBe('move-terminal-left')
@@ -118,19 +118,19 @@ describe('matchShortcut', () => {
   })
 
   it('honors a rebind', () => {
-    const bindings = { ...DEFAULT_BINDINGS, 'new-session': chord('KeyG') }
-    expect(matchShortcut(bindings, key('KeyG'))).toBe('new-session')
+    const bindings = { ...DEFAULT_BINDINGS, 'new-worktree': chord('KeyG') }
+    expect(matchShortcut(bindings, key('KeyG'))).toBe('new-worktree')
     expect(matchShortcut(bindings, key('KeyN'))).toBeNull()
   })
 })
 
 describe('cycleDeltaFor', () => {
   it('maps prev/next cyclers to -1/1 and non-cyclers to null', () => {
-    expect(cycleDeltaFor('prev-session')).toBe(-1)
+    expect(cycleDeltaFor('prev-worktree')).toBe(-1)
     expect(cycleDeltaFor('prev-terminal')).toBe(-1)
-    expect(cycleDeltaFor('next-session')).toBe(1)
+    expect(cycleDeltaFor('next-worktree')).toBe(1)
     expect(cycleDeltaFor('next-terminal')).toBe(1)
-    expect(cycleDeltaFor('new-session')).toBeNull()
+    expect(cycleDeltaFor('new-worktree')).toBeNull()
     expect(cycleDeltaFor('jump-attention')).toBeNull()
   })
 })
@@ -169,26 +169,26 @@ describe('isModifierCode', () => {
 
 describe('validateChord', () => {
   it('rejects a lone modifier keypress', () => {
-    const r = validateChord(chord('AltLeft'), DEFAULT_BINDINGS, 'new-session')
+    const r = validateChord(chord('AltLeft'), DEFAULT_BINDINGS, 'new-worktree')
     expect(r.ok).toBe(false)
   })
 
   it('requires a real modifier — Alt, Ctrl, or Meta', () => {
-    expect(validateChord(chord('KeyG', { alt: false }), DEFAULT_BINDINGS, 'new-session').ok).toBe(false)
+    expect(validateChord(chord('KeyG', { alt: false }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
     // Shift alone is not enough.
-    expect(validateChord(chord('KeyG', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-session').ok).toBe(false)
-    expect(validateChord(chord('KeyG'), DEFAULT_BINDINGS, 'new-session').ok).toBe(true)
-    expect(validateChord(chord('KeyG', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-session').ok).toBe(true)
+    expect(validateChord(chord('KeyG', { alt: false, shift: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(false)
+    expect(validateChord(chord('KeyG'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
+    expect(validateChord(chord('KeyG', { alt: false, ctrl: true }), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
   })
 
   it('rejects a chord already bound to a different command, with its label', () => {
-    const r = validateChord(chord('KeyD'), DEFAULT_BINDINGS, 'new-session')
+    const r = validateChord(chord('KeyD'), DEFAULT_BINDINGS, 'new-worktree')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toContain('Delete session')
+    if (!r.ok) expect(r.reason).toContain('Delete worktree')
   })
 
   it('allows rebinding a command to its own current chord', () => {
-    expect(validateChord(chord('KeyN'), DEFAULT_BINDINGS, 'new-session').ok).toBe(true)
+    expect(validateChord(chord('KeyN'), DEFAULT_BINDINGS, 'new-worktree').ok).toBe(true)
   })
 })
 
@@ -204,11 +204,11 @@ describe('isChord', () => {
 describe('mergeBindings', () => {
   it('overlays known ids and ignores unknown ids and malformed chords', () => {
     const merged = mergeBindings({
-      'new-session': chord('KeyG'),
+      'new-worktree': chord('KeyG'),
       'bogus-id': chord('KeyZ'),
       'kill-terminal': { code: 'KeyW' }, // malformed — dropped
     })
-    expect(merged['new-session']).toEqual(chord('KeyG'))
+    expect(merged['new-worktree']).toEqual(chord('KeyG'))
     expect(merged['kill-terminal']).toEqual(DEFAULT_BINDINGS['kill-terminal'])
     expect((merged as Record<string, unknown>)['bogus-id']).toBeUndefined()
   })

@@ -80,7 +80,7 @@ export function setDataDir(dir: string): void {
  * Every yaac path hangs off one of three roots, chosen by ONE question:
  * who has to be able to read these bytes?
  *
- *  - SHARED (`sharedRoot`)       the server AND session pods — which on a
+ *  - SHARED (`sharedRoot`)       the server AND worktree pods — which on a
  *                                multi-node cluster may land on any node.
  *                                Becomes an RWX volume (PVC + subPath):
  *                                docs/plans/stock-k8s-multi-node.md §2.
@@ -154,8 +154,8 @@ export function getNodeLocalProjectsDir(): string {
 }
 
 /**
- * Path inside the session container where the tmux server socket lives.
- * Backed by a pod-local emptyDir (see the session Job's mount list): a UNIX
+ * Path inside the worktree container where the tmux server socket lives.
+ * Backed by a pod-local emptyDir (see the worktree Job's mount list): a UNIX
  * socket only rendezvouses within the kernel that bound it, and every
  * consumer — attach, the `tmux -C` status stream, the liveness and
  * pane-content probes — reaches tmux through `kubectl exec` in the pod, so
@@ -172,7 +172,7 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
  * status store keys that conversation by.
  *
  * Pod-local on purpose, unlike the tmux dir: nothing on the host connects to
- * it. The server reaches it the way it reaches everything else in a session
+ * it. The server reaches it the way it reaches everything else in a worktree
  * pod, over a streamd `ctrl` stream (`socat - UNIX-CONNECT:<path>`), so the
  * socket needs no host mount and no port — which also keeps it out of the
  * auto-forward port scan a TCP listener would land in.
@@ -225,7 +225,7 @@ export function serverLogPath(): string {
 
 /**
  * Create the shared project tree. Node-local per-project dirs are created
- * lazily by whoever mounts them (session-create's `mkdir -p`s), so there
+ * lazily by whoever mounts them (worktree-create's `mkdir -p`s), so there
  * is nothing to pre-create on that root.
  */
 export async function ensureDataDir(): Promise<void> {

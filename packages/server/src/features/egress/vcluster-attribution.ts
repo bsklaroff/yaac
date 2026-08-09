@@ -3,16 +3,16 @@ import { type TickSnapshot, createTickSnapshot } from '#platform/k8s'
 import { serverLog } from '#log'
 
 /**
- * Build `{ podIP: outerSessionId }` for every managed vcluster's host pods.
+ * Build `{ podIP: outerWorktreeId }` for every managed vcluster's host pods.
  *
  * yaac-in-yaac chains a vcluster's egress through the OUTER proxy (the inner
  * proxy's upstream dials, and any synced pod before an inner yaac opts in). That
  * traffic arrives at the outer proxy with the source pod's *host* IP, but those
  * pods live in the vcluster's own namespace with no `yaac.session-id` the
  * proxy's pod-watch can resolve — so the outer proxy fail-closes on it. The
- * server (host cluster-admin) knows each vcluster namespace's owning session
+ * server (host cluster-admin) knows each vcluster namespace's owning worktree
  * and can read the host pod IPs, so it supplies the mapping; the proxy then
- * judges chained egress against the OWNING outer session's allowlist.
+ * judges chained egress against the OWNING outer worktree's allowlist.
  */
 export async function buildVclusterAttribution(
   snapshot: TickSnapshot,
@@ -20,7 +20,7 @@ export async function buildVclusterAttribution(
   const map: Record<string, string> = {}
   for (const vc of await snapshot.vclusters()) {
     for (const pod of await snapshot.vclusterPods(vc.namespace)) {
-      if (pod.podIP) map[pod.podIP] = vc.sessionId
+      if (pod.podIP) map[pod.podIP] = vc.worktreeId
     }
   }
   return map

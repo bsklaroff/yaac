@@ -17,7 +17,7 @@ export interface ProjectBranches {
 }
 
 /**
- * Branch data for the new-session picker. Reads local remote-tracking refs
+ * Branch data for the new-worktree picker. Reads local remote-tracking refs
  * (instant); `refresh` runs a credentialed fetch first so a just-pushed
  * branch appears — the frontend shows the instant list and re-fetches with
  * refresh in the background. Free-typed branches that aren't listed still

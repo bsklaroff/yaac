@@ -35,14 +35,14 @@ function headerValue(
 }
 
 function buildAnthropicRules(
-  sessionTool: string | undefined,
+  worktreeTool: string | undefined,
   creds: ClaudeCreds | null,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
-  // Tool gate: only a session registered as tool=claude may spend the
-  // claude credential (mirrors `sessionTool.get(sessionId) === 'claude'`).
-  if (sessionTool !== 'claude') return rules
+  // Tool gate: only a worktree registered as tool=claude may spend the
+  // claude credential (mirrors `worktreeTool.get(worktreeId) === 'claude'`).
+  if (worktreeTool !== 'claude') return rules
   const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
   const incomingAuth = headerValue(reqHeaders, 'authorization')
   if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
@@ -143,20 +143,20 @@ describe('Anthropic credential injection gating', () => {
     })
   })
 
-  describe('session tool gating', () => {
+  describe('worktree tool gating', () => {
     const creds: ClaudeCreds = { kind: 'api-key', apiKey: 'sk-ant-real' }
 
-    it('does not inject for a codex session, even with the placeholder', () => {
+    it('does not inject for a codex worktree, even with the placeholder', () => {
       const rules = buildAnthropicRules('codex', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
 
-    it('does not inject for an opencode session', () => {
+    it('does not inject for an opencode worktree', () => {
       const rules = buildAnthropicRules('opencode', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
 
-    it('does not inject when the session has no registered tool', () => {
+    it('does not inject when the worktree has no registered tool', () => {
       const rules = buildAnthropicRules(undefined, creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })

@@ -1,12 +1,12 @@
 /**
  * Preview panes live in the same tiling layout tree as terminals, keyed by a
- * `target` string. There is at most one preview pane per session — the single
+ * `target` string. There is at most one preview pane per worktree — the single
  * `preview` target — and which forwarded port it shows lives in the store
  * (so a port switch is a state change, not a leaf swap, and never a new split).
- * SessionView branches on `isPreviewTarget` to render a browser pane.
+ * WorktreeView branches on `isPreviewTarget` to render a browser pane.
  */
 
-/** The one layout target a session's preview pane uses. */
+/** The one layout target a worktree's preview pane uses. */
 export const PREVIEW_TARGET = 'preview'
 
 /** Whether a layout target is the preview pane (vs a terminal). */

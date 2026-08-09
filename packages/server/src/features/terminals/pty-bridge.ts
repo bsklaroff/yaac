@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { dialPtyStream, sessionExec, sessionIdFromJobName } from '#platform/k8s'
+import { dialPtyStream, podExec, worktreeIdFromJobName } from '#platform/k8s'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const DEFAULT_COLS = 80
@@ -8,7 +8,7 @@ const DEFAULT_ROWS = 24
 /**
  * What a terminal attaches to inside the container:
  *  - 'agent'          — the `yaac` tmux session's agent window (the CLI).
- *  - 'window:@<id>'   — any other window of the `yaac` session (an
+ *  - 'window:@<id>'   — any other window of the `yaac` tmux session (an
  *    initCommands dev server, a scratch shell, …), viewed through a
  *    per-client grouped session so the active window of other viewers
  *    (and the CLI) is never touched.
@@ -19,7 +19,7 @@ const DEFAULT_ROWS = 24
  *    raw attach so each client keeps its own size/current-window and
  *    `destroy-unattached` cleans up on disconnect.
  *  - 'shell'          — a raw `zsh` exec with no tmux at all (the CLI's
- *    `session shell`): exiting the shell ends the connection.
+ *    `worktree shell`): exiting the shell ends the connection.
  */
 type PtyTarget = string
 
@@ -35,8 +35,8 @@ function parsePtyTarget(raw: string | undefined): PtyTarget {
 }
 
 /** Name for a per-client tmux view session. Host-generated (rather than the
- *  container's $$) so the server can address the session later — the detach
- *  on socket close is an explicit `kill-session -t <view>`. */
+ *  container's $$) so the server can address the worktree later — the detach
+ *  on socket close is an explicit `kill-worktree -t <view>`. */
 function newViewName(): string {
   return `view-${randomBytes(4).toString('hex')}`
 }
@@ -44,9 +44,9 @@ function newViewName(): string {
 /**
  * In-pod argv for attaching a tab's PTY, spawned under a real PTY by the
  * pod's streamd (a relay `pty` stream) — the same transport the CLI's
- * `session attach` uses via the server's /pty/attach WebSocket.
+ * `worktree attach` uses via the server's /pty/attach WebSocket.
  *
- * Every target attaches through a per-client grouped *view* session pinned
+ * Every target attaches through a per-client grouped *view* worktree pinned
  * to a single window, so a webapp tab and a tmux window are the same thing:
  *  - `destroy-unattached on` — the throwaway view session dies on detach
  *    (the windows belong to the group and live on);
@@ -61,7 +61,7 @@ function newViewName(): string {
  * after the attach so nothing can reap the view in the created-but-not-yet-
  * attached gap.
  *
- * WINDOW SIZING — a fresh session used to start "scrolled down a little with
+ * WINDOW SIZING — a fresh worktree used to start "scrolled down a little with
  * the right-hand columns cut off". The windows are shared across every grouped
  * view, so under tmux's default (`window-size latest`) each window follows
  * whichever *client viewing it* was most recently active — and there are often
@@ -89,10 +89,10 @@ function attachArgs(
   const cols = size.cols ?? DEFAULT_COLS
   const rows = size.rows ?? DEFAULT_ROWS
   // The has-session guard is load-bearing: `new-session -t yaac` against a
-  // pod where session-create hasn't yet built the `yaac` session doesn't
-  // fail — tmux silently mints a NEW group named `yaac` whose one window is
-  // a bare shell, and every later view resolves `-t yaac` to that stale
-  // group instead of the real session's windows, permanently. Failing here
+  // pod where worktree-create hasn't yet built the `yaac` tmux session
+  // doesn't fail — tmux silently mints a NEW group named `yaac` whose one
+  // window is a bare shell, and every later view resolves `-t yaac` to that
+  // stale group instead of the real session's windows, permanently. Failing
   // instead lets the client's reconnect loop retry until setup finishes.
   const create = `${tmux} has-session -t =yaac 2>/dev/null`
     + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${cols} -y ${rows}`
@@ -109,7 +109,7 @@ function attachArgs(
     ]
   }
 
-  // Agent = the yaac session's lowest-index window (`^`): the agent window is
+  // Agent = the yaac worktree's lowest-index window (`^`): the agent window is
   // created first, and other windows only ever append after it. Same
   // convention as the terminals enumeration.
   const window = target.startsWith('window:')
@@ -173,7 +173,7 @@ function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
       inFlight = false
       pump()
     }
-    sessionExec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
+    podExec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
       .then(done, done)
   }
   return {
@@ -188,12 +188,12 @@ function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
 }
 
 /** Command listing every tmux session name in the pod, one per line. */
-function listSessionsCmd(): string {
+function listTmuxSessionsCmd(): string {
   return `tmux -S ${CONTAINER_TMUX_SOCK} list-sessions -F '#{session_name}'`
 }
 
 /** Ghost views among `names`: view sessions no live connection owns. The
- *  name-shape check keeps arbitrary session names (yaac, user-created) out
+ *  name-shape check keeps arbitrary worktree names (yaac, user-created) out
  *  of the kill list even if they happen to start with "view-". */
 function ghostViews(names: string[], live: ReadonlySet<string>): string[] {
   return names.filter((n) => /^view-[0-9a-f]{8}$/.test(n) && !live.has(n))
@@ -206,8 +206,8 @@ function killViewsCmd(views: string[]): string {
 }
 
 /**
- * Reap ghost view sessions in a session pod. A view is per-connection and
- * dies with it (kill-session on socket close, destroy-unattached as the
+ * Reap ghost view sessions in a worktree pod. A view is per-connection and
+ * dies with it (kill-worktree on socket close, destroy-unattached as the
  * backstop) — but an ungraceful end (server restart or crash, kubectl killed
  * mid-attach, a laptop sleep dropping the exec stream) strands the in-pod
  * tmux client, which pins its view session "attached" forever; pods have
@@ -219,7 +219,7 @@ function killViewsCmd(views: string[]): string {
 async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Promise<void> {
   let listed: { stdout: string }
   try {
-    listed = await sessionExec(jobName, listSessionsCmd(), { maxAttempts: 1 })
+    listed = await podExec(jobName, listTmuxSessionsCmd(), { maxAttempts: 1 })
   } catch {
     return // pod gone or tmux not up yet — nothing to sweep
   }
@@ -227,7 +227,7 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
   const ghosts = ghostViews(names, live)
   if (ghosts.length === 0) return
   try {
-    await sessionExec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
+    await podExec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
   } catch {
     // raced away (view self-destroyed, pod terminating) — fine
   }
@@ -237,14 +237,14 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
  * Detach a webapp client by destroying its per-client view session. With
  * `prefix None` on view sessions there is no detach keystroke to write, and
  * dropping the PTY stream does not always beat the in-pod tmux client to
- * the punch — kill-session works from outside the client and
- * `destroy-unattached` can't save a session that no longer exists.
- * Best-effort: "no such session" (closed before the attach landed, or
+ * the punch — kill-worktree works from outside the client and
+ * `destroy-unattached` can't save a worktree that no longer exists.
+ * Best-effort: "no such worktree" (closed before the attach landed, or
  * already reaped) and a gone pod are both fine.
  */
 async function killViewSession(jobName: string, viewName: string): Promise<void> {
   try {
-    await sessionExec(
+    await podExec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${viewName}`,
       { maxAttempts: 1 },
@@ -311,10 +311,10 @@ export const DETACH_GRACE_MS = 400
  * The detach-first matters: killing the host-side exec process does not
  * reliably terminate the exec'd tmux client inside the container, so a
  * plain kill can leak a zombie attached client — which, for a view session,
- * also pins the session alive forever (destroy-unattached never fires).
- * `detach` runs the container-side kill-session; it runs again at the grace
+ * also pins the worktree alive forever (destroy-unattached never fires).
+ * `detach` runs the container-side kill-worktree; it runs again at the grace
  * deadline to catch the attach race (socket closed while kubectl was still
- * connecting, so the first kill found no session to kill), right before the
+ * connecting, so the first kill found no worktree to kill), right before the
  * host-side PTY is force-killed as the final fallback.
  */
 function bridge(
@@ -396,7 +396,7 @@ function parsePtySize(
 
 /**
  * Live tmux view sessions per Job, for the ghost sweep every attach runs:
- * every `view-*` session in a pod that isn't in here belongs to a dead
+ * every `view-*` worktree in a pod that isn't in here belongs to a dead
  * connection (crashed server, killed kubectl, sleep-dropped exec) and gets
  * reaped. Server-wide rather than per-connection precisely because a sweep
  * must be able to tell another live tab's view from a corpse.
@@ -404,14 +404,14 @@ function parsePtySize(
 const liveViews = new Map<string, Set<string>>()
 
 /**
- * Attach one webapp/CLI terminal connection to a session pod: open the PTY
+ * Attach one webapp/CLI terminal connection to a worktree pod: open the PTY
  * stream for the requested target and wire it to `socket` for the life of the
  * connection. `query` is the raw /pty/attach query string — the target and
  * the client's grid — validated here rather than by the route.
  *
  * Everything the connection owns in the pod is created and reclaimed here:
  * its per-client tmux view session, the window-resize driver that keeps that
- * view's window pinned to the client's grid, and the kill-session on close.
+ * view's window pinned to the client's grid, and the kill-worktree on close.
  */
 export function attachPty(
   jobName: string,
@@ -420,12 +420,12 @@ export function attachPty(
 ): void {
   const target = parsePtyTarget(query.target)
   const size = parsePtySize(query.cols, query.rows)
-  const sessionId = sessionIdFromJobName(jobName)
+  const worktreeId = worktreeIdFromJobName(jobName)
 
   // 'shell' is a raw zsh exec — no tmux, so there is no view session to
   // register, sweep, resize or kill; exiting the shell ends the connection.
   if (target === 'shell') {
-    bridge(dialPtyStream(sessionId, ['zsh'], size), socket, {})
+    bridge(dialPtyStream(worktreeId, ['zsh'], size), socket, {})
     return
   }
 
@@ -437,7 +437,7 @@ export function attachPty(
   liveViews.set(jobName, views)
   void sweepGhostViews(jobName, views)
 
-  const ptyProc = dialPtyStream(sessionId, attachArgs(target, viewName, size), size)
+  const ptyProc = dialPtyStream(worktreeId, attachArgs(target, viewName, size), size)
   // Webapp views (agent / window:@) pin their tmux window to this client via
   // `window-size manual` + resize-window (see attachArgs), so their resizes
   // must drive resize-window; the resizer serializes those execs. 'native'
@@ -457,7 +457,7 @@ export function attachPty(
       // which reaps its view as a corpse; the client reconnects, wipes the
       // registry the same way on close, and the two attaches proceed to kill
       // each other's views on every retry — a permanent reconnect flicker in
-      // every terminal on the session.
+      // every terminal on the worktree.
       if (views.size === 0 && liveViews.get(jobName) === views) liveViews.delete(jobName)
       void killViewSession(jobName, viewName)
     },

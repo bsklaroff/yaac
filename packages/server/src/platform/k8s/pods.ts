@@ -7,13 +7,29 @@ import {
   kubectlWithRetry,
 } from './kubectl'
 
-/** Label keys attached to every session Job and its Pod. */
+/** Label keys attached to every worktree Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
-export const LABEL_SESSION_ID = 'yaac.session-id'
+/**
+ * The worktree a pod runs. Stamped alongside the legacy key below, which is
+ * what every selector still matches on — see LABEL_WORKTREE_ID_LEGACY.
+ */
+export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
+/**
+ * The key this label had when a worktree was called a session. Every pod
+ * that predates the rename carries ONLY this one, and a label selector
+ * cannot express "either key" — so writers stamp both and every selector
+ * (list queries, informers, and the cluster-side NetworkPolicy podSelectors
+ * in `#features/cluster`) keeps matching on this one until the compatibility
+ * window closes. Dropping it strands every worktree that was already running
+ * at upgrade time, and it fails silently: a stale selector finds no pods, it
+ * does not error. Code-level readers go through `labelWorktreeId`, which
+ * accepts either key.
+ */
+export const LABEL_WORKTREE_ID_LEGACY = 'yaac.session-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
 /**
- * Which protocol drives the session's agents — `tui` or `acp` (AgentMode).
+ * Which protocol drives the worktree's agents — `tui` or `acp` (AgentMode).
  * Stamped only for `acp`, so every pod that predates modes (and every TUI pod)
  * simply lacks it and reads as `tui`. It rides a label rather than a DB lookup
  * because the status watcher picks its driver from informer deltas, where a
@@ -30,9 +46,9 @@ export const LABEL_MODE = 'yaac.mode'
 export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /**
  * Host-Service port the SESSION pod uses to reach the vcluster API.
- * Deliberately NOT 443: netd redirects session 443/80 egress to the proxy,
- * so the API the session dials lives on a port that rides the per-session
- * NetworkPolicy (buildVclusterSessionNetworkPolicyManifest) straight to the
+ * Deliberately NOT 443: netd redirects worktree 443/80 egress to the proxy,
+ * so the API the worktree dials lives on a port that rides the per-worktree
+ * NetworkPolicy (buildVclusterWorktreeNetworkPolicyManifest) straight to the
  * control plane instead. values.yaml exposes it as the `yaac-api` Service
  * port (alongside the chart's 443, which synced pods use — their egress is
  * not redirected to the proxy). Same cycle-free home as
@@ -40,67 +56,93 @@ export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
  */
 export const VCLUSTER_API_PORT = 8443
 /**
- * Marks a session pod as a prewarmed spare — fully provisioned with its
+ * Marks a worktree pod as a prewarmed spare — fully provisioned with its
  * agent booted and waiting, but not yet handed to a user. Spares are hidden
- * from user-facing views and claimed on `session create` by removing this
+ * from user-facing views and claimed on `worktree create` by removing this
  * label (see `src/server/prewarm.ts`). Stamped only when present, so a
- * normal session pod simply lacks the label.
+ * normal worktree pod simply lacks the label.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
+
+/**
+ * The worktree id a set of labels carries, under either key. The only way
+ * code should read it — a bare `labels[LABEL_WORKTREE_ID]` misses every pod
+ * that was already running when the new key shipped.
+ */
+export function labelWorktreeId(
+  labels: Record<string, string | undefined>,
+): string | undefined {
+  return labels[LABEL_WORKTREE_ID] ?? labels[LABEL_WORKTREE_ID_LEGACY]
+}
+
+/** Both keys, for a writer stamping a worktree Job or Pod. */
+export function worktreeIdLabels(worktreeId: string): Record<string, string> {
+  return { [LABEL_WORKTREE_ID]: worktreeId, [LABEL_WORKTREE_ID_LEGACY]: worktreeId }
+}
+
+/**
+ * `labelWorktreeId` for labels a schema has already refined to carry one —
+ * the throw is unreachable, and stands in for a narrowing zod cannot express.
+ */
+function requireLabelWorktreeId(labels: Record<string, string | undefined>): string {
+  const id = labelWorktreeId(labels)
+  if (id === undefined) throw new Error('pod labels carry no worktree id')
+  return id
+}
 
 /**
  * Kubernetes object names must be lowercase DNS-1123 and the `job-name`
  * label on pods caps the Job name at 63 chars. `yaac-` (5) + UUID (36) +
  * separator (1) leaves 21 chars for the slug, so long project names are
- * truncated. Uniqueness comes from the session UUID, and the full slug
+ * truncated. Uniqueness comes from the worktree UUID, and the full slug
  * always travels in the `yaac.project` label.
  */
-export function sessionJobName(projectSlug: string, sessionId: string): string {
+export function worktreeJobName(projectSlug: string, worktreeId: string): string {
   const safeSlug = projectSlug
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 21)
-  return `yaac-${safeSlug}-${sessionId}`.replace(/--+/g, '-')
+  return `yaac-${safeSlug}-${worktreeId}`.replace(/--+/g, '-')
 }
 
 /**
- * Recover the session id from a session Job name — always its last 36
- * chars: the UUID tail survives `sessionJobName`'s collapsing untouched (a
+ * Recover the worktree id from a worktree Job name — always its last 36
+ * chars: the UUID tail survives `worktreeJobName`'s collapsing untouched (a
  * UUID has no consecutive dashes, and the slug part is trimmed before the
  * join). Lets jobName-keyed call sites reach the relay, which addresses
- * streams by session id.
+ * streams by worktree id.
  */
-export function sessionIdFromJobName(jobName: string): string {
-  if (jobName.length < 36) throw new Error(`not a session job name: ${jobName}`)
+export function worktreeIdFromJobName(jobName: string): string {
+  if (jobName.length < 36) throw new Error(`not a worktree job name: ${jobName}`)
   return jobName.slice(-36)
 }
 
 /**
  * Terminal-state evidence from a dead or dying pod — what the stale reaper
- * reads to derive a session death reason before its own teardown deletes
- * the pod (and with it, the only record of why the session died). Absent
+ * reads to derive a worktree death reason before its own teardown deletes
+ * the pod (and with it, the only record of why the worktree died). Absent
  * on healthy pods.
  */
-export interface SessionPodTerminalState {
+export interface PodTerminalState {
   /** Pod-level `status.reason`, e.g. `Evicted`. */
   podReason?: string
   /** Pod-level `status.message` accompanying `podReason`. */
   podMessage?: string
-  /** Session container's terminated exit code. */
+  /** Worktree container's terminated exit code. */
   exitCode?: number
-  /** Session container's terminated reason, e.g. `OOMKilled`. */
+  /** Worktree container's terminated reason, e.g. `OOMKilled`. */
   containerReason?: string
-  /** Session container's terminated `finishedAt` as epoch ms. */
+  /** Worktree container's terminated `finishedAt` as epoch ms. */
   finishedAtMs?: number
 }
 
-export interface SessionPod {
-  /** Job name (`yaac-<slug>-<sessionId>`) — the stable session handle. */
+export interface PodInfo {
+  /** Job name (`yaac-<slug>-<worktreeId>`) — the stable worktree handle. */
   jobName: string
   /** Concrete Pod name (Job name + random suffix); needed for logs etc. */
   podName: string
-  sessionId: string
+  worktreeId: string
   projectSlug: string
   tool: string
   /** `yaac.mode` when stamped; absent on every TUI pod (see LABEL_MODE). */
@@ -111,18 +153,18 @@ export interface SessionPod {
   running: boolean
   /** The pod has a deletionTimestamp — Kubernetes is tearing it down. Kept
    *  distinct from `running` (which folds it in) so the display path can
-   *  render the session as a "terminating…" placeholder instead of dropping
+   *  render the worktree as a "terminating…" placeholder instead of dropping
    *  it or misreading it as stale. */
   terminating: boolean
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
   /** Set only when the pod carries terminal-state evidence. */
-  terminal?: SessionPodTerminalState
+  terminal?: PodTerminalState
 }
 
 /** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
-export function isPrewarmed(pod: SessionPod): boolean {
+export function isPrewarmed(pod: PodInfo): boolean {
   return pod.labels[LABEL_PREWARMED] === 'true'
 }
 
@@ -147,23 +189,27 @@ export function toEpochMs(ts: string | Date): number {
 
 /**
  * Every field below is guaranteed: name/creationTimestamp/phase by the
- * API server, the yaac labels by session-create (the label selector
- * admits only yaac-created session objects). A validation failure is
+ * API server, the yaac labels by worktree-create (the label selector
+ * admits only yaac-created worktree objects). A validation failure is
  * therefore a yaac bug or a hand-edited object — fail the whole list
  * loudly up-front rather than mapping rows with silently empty fields.
  *
- * Exported (with `mapSessionPodItem`) so the informer cache can validate
+ * Exported (with `mapPodItem`) so the informer cache can validate
  * and map individual watch-event objects with the same rules.
  */
-export const sessionPodItemSchema = z.object({
+export const podItemSchema = z.object({
   metadata: z.object({
     name: z.string().min(1),
     labels: z.object({
       [JOB_NAME_LABEL]: z.string().min(1),
-      [LABEL_SESSION_ID]: z.string().min(1),
+      [LABEL_WORKTREE_ID]: z.string().min(1).optional(),
+      [LABEL_WORKTREE_ID_LEGACY]: z.string().min(1).optional(),
       [LABEL_PROJECT]: z.string().min(1),
       [LABEL_TOOL]: z.string().min(1),
-    }).catchall(z.string()),
+    }).catchall(z.string()).refine(
+      (labels) => labelWorktreeId(labels) !== undefined,
+      { message: `missing ${LABEL_WORKTREE_ID} (or legacy ${LABEL_WORKTREE_ID_LEGACY})` },
+    ),
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
   }),
@@ -171,8 +217,8 @@ export const sessionPodItemSchema = z.object({
     phase: z.string().min(1),
     // Terminal-state evidence (all optional — absent on healthy pods):
     // pod-level reason/message cover evictions, the first container status
-    // covers the session container's exit (index 0 is the session container,
-    // the same invariant session-create's waitForJobPodReady relies on).
+    // covers the worktree container's exit (index 0 is the worktree container,
+    // the same invariant worktree-create's waitForJobPodReady relies on).
     reason: z.string().optional(),
     message: z.string().optional(),
     containerStatuses: z.array(z.object({
@@ -187,13 +233,13 @@ export const sessionPodItemSchema = z.object({
   }),
 })
 
-export type SessionPodItem = z.infer<typeof sessionPodItemSchema>
+export type PodItem = z.infer<typeof podItemSchema>
 
-/** Map a validated pod object to the SessionPod row the rest of yaac uses. */
-export function mapSessionPodItem({ metadata, status }: SessionPodItem): SessionPod {
+/** Map a validated pod object to the PodInfo row the rest of yaac uses. */
+export function mapPodItem({ metadata, status }: PodItem): PodInfo {
   const terminating = metadata.deletionTimestamp !== undefined
   const terminated = status.containerStatuses?.[0]?.state?.terminated
-  const terminal: SessionPodTerminalState | undefined =
+  const terminal: PodTerminalState | undefined =
     terminated || status.reason
       ? {
           podReason: status.reason,
@@ -208,7 +254,7 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
   return {
     jobName: metadata.labels[JOB_NAME_LABEL],
     podName: metadata.name,
-    sessionId: metadata.labels[LABEL_SESSION_ID],
+    worktreeId: requireLabelWorktreeId(metadata.labels),
     projectSlug: metadata.labels[LABEL_PROJECT],
     tool: metadata.labels[LABEL_TOOL],
     ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
@@ -222,94 +268,102 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
 }
 
 /** Validate+map one raw pod object (informer events); null = malformed. */
-export function mapSessionPodObject(obj: unknown): SessionPod | null {
-  const res = sessionPodItemSchema.safeParse(obj)
-  return res.success ? mapSessionPodItem(res.data) : null
+export function mapPodObject(obj: unknown): PodInfo | null {
+  const res = podItemSchema.safeParse(obj)
+  return res.success ? mapPodItem(res.data) : null
 }
 
-const sessionPodListSchema = z.object({
-  items: z.array(sessionPodItemSchema),
+const podListSchema = z.object({
+  items: z.array(podItemSchema),
 })
 
-const sessionJobItemSchema = z.object({
+const jobItemSchema = z.object({
   metadata: z.object({
     name: z.string().min(1),
     labels: z.object({
-      [LABEL_SESSION_ID]: z.string().min(1),
+      [LABEL_WORKTREE_ID]: z.string().min(1).optional(),
+      [LABEL_WORKTREE_ID_LEGACY]: z.string().min(1).optional(),
       [LABEL_PROJECT]: z.string().min(1),
-    }).catchall(z.string()),
+    }).catchall(z.string()).refine(
+      (labels) => labelWorktreeId(labels) !== undefined,
+      { message: `missing ${LABEL_WORKTREE_ID} (or legacy ${LABEL_WORKTREE_ID_LEGACY})` },
+    ),
     creationTimestamp: timestampSchema,
   }),
 })
 
 /** Validate+map one raw Job object (informer events); null = malformed. */
-export function mapSessionJobObject(obj: unknown): SessionJob | null {
-  const res = sessionJobItemSchema.safeParse(obj)
+export function mapJobObject(obj: unknown): JobInfo | null {
+  const res = jobItemSchema.safeParse(obj)
   if (!res.success) return null
   const { metadata } = res.data
   return {
     jobName: metadata.name,
-    sessionId: metadata.labels[LABEL_SESSION_ID],
+    worktreeId: requireLabelWorktreeId(metadata.labels),
     projectSlug: metadata.labels[LABEL_PROJECT],
     createdAtMs: toEpochMs(metadata.creationTimestamp),
   }
 }
 
-const sessionJobListSchema = z.object({
-  items: z.array(sessionJobItemSchema),
+const jobListSchema = z.object({
+  items: z.array(jobItemSchema),
 })
 
 /** Validate a kubectl list payload, naming the object kind in the error. */
 function parseListPayload<T>(schema: z.ZodType<T>, payload: unknown, kind: string): T {
   const res = schema.safeParse(payload)
   if (!res.success) {
-    throw new Error(`malformed session ${kind} list from kubectl: ${z.prettifyError(res.error)}`)
+    throw new Error(`malformed worktree ${kind} list from kubectl: ${z.prettifyError(res.error)}`)
   }
   return res.data
 }
 
 /**
- * List session pods for this yaac install (scoped by the data-dir-hash
+ * List worktree pods for this yaac install (scoped by the data-dir-hash
  * label), optionally filtered to one project. The k8s replacement for
  * `podman.listContainers({filters: {label: ['yaac.data-dir=...']}})`.
- * Throws when the payload fails sessionPodListSchema validation.
+ * Throws when the payload fails podListSchema validation.
  */
-export async function listSessionPods(projectFilter?: string): Promise<SessionPod[]> {
+export async function listWorktreePods(projectFilter?: string): Promise<PodInfo[]> {
   const list = await kubectlGetJson<unknown>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', sessionPodSelector(projectFilter),
+    'get', 'pods', '-n', k8sNamespace(), '-l', worktreePodSelector(projectFilter),
   ])
   if (!list) return []
-  const { items } = parseListPayload(sessionPodListSchema, list, 'pod')
-  return items.map(mapSessionPodItem)
+  const { items } = parseListPayload(podListSchema, list, 'pod')
+  return items.map(mapPodItem)
 }
 
-/** The label selector `listSessionPods` and the pod watcher share. */
-export function sessionPodSelector(projectFilter?: string): string {
+/**
+ * The label selector `listWorktreePods` and the pod watcher share. Keyed on
+ * the legacy worktree-id label, the one key every live pod carries — see
+ * LABEL_WORKTREE_ID_LEGACY.
+ */
+export function worktreePodSelector(projectFilter?: string): string {
   return [
     `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-    `${LABEL_SESSION_ID}`,
+    `${LABEL_WORKTREE_ID_LEGACY}`,
     ...(projectFilter ? [`${LABEL_PROJECT}=${projectFilter}`] : []),
   ].join(',')
 }
 
 /**
- * Match a session pod by session-ID prefix or exact Job/Pod name —
- * mirrors the podman-era matching (session-id prefix, container name
+ * Match a worktree pod by worktree-id prefix or exact Job/Pod name —
+ * mirrors the podman-era matching (worktree-id prefix, container name
  * exact). Names are deliberately NOT prefix-matched: every Job name
  * starts with `yaac-`, so a short name prefix would resolve to an
- * arbitrary session.
+ * arbitrary worktree.
  */
-export function findSessionPod(pods: SessionPod[], idOrName: string): SessionPod | undefined {
+export function findWorktreePod(pods: PodInfo[], idOrName: string): PodInfo | undefined {
   return pods.find((p) =>
     p.jobName === idOrName
     || p.podName === idOrName
-    || p.sessionId.startsWith(idOrName),
+    || p.worktreeId.startsWith(idOrName),
   )
 }
 
-export interface SessionJob {
+export interface JobInfo {
   jobName: string
-  sessionId: string
+  worktreeId: string
   projectSlug: string
   createdAtMs: number
 }
@@ -383,21 +437,21 @@ export async function runPodToCompletion(
 }
 
 /**
- * List session Jobs for this install. Used by the orphan-Job sweep: a Job
+ * List worktree Jobs for this install. Used by the orphan-Job sweep: a Job
  * whose pod was evicted/deleted out-of-band is invisible to the pod-based
  * reaper, so the reconciler cross-references this list.
- * Throws when the payload fails sessionJobListSchema validation.
+ * Throws when the payload fails jobListSchema validation.
  */
-export async function listSessionJobs(): Promise<SessionJob[]> {
+export async function listWorktreeJobs(): Promise<JobInfo[]> {
   const list = await kubectlGetJson<unknown>([
-    'get', 'jobs', '-n', k8sNamespace(), '-l', sessionJobSelector(),
+    'get', 'jobs', '-n', k8sNamespace(), '-l', worktreeJobSelector(),
   ])
   if (!list) return []
-  const { items } = parseListPayload(sessionJobListSchema, list, 'job')
-  return items.flatMap((item) => mapSessionJobObject(item) ?? [])
+  const { items } = parseListPayload(jobListSchema, list, 'job')
+  return items.flatMap((item) => mapJobObject(item) ?? [])
 }
 
-/** The label selector `listSessionJobs` and the Jobs informer share. */
-export function sessionJobSelector(): string {
-  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`
+/** The label selector `listWorktreeJobs` and the Jobs informer share. */
+export function worktreeJobSelector(): string {
+  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID_LEGACY}`
 }

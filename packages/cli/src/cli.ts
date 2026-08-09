@@ -181,7 +181,7 @@ cluster
   .command('setup')
   .description('Create the kind cluster, registry, and CNI wiring yaac needs (destructive: recreates the cluster)')
   .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
-  .option('--nodes <count>', 'Number of kind nodes to create (default 1; sessions run on the workers, so 3 is the smallest real multi-node rehearsal)')
+  .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal)')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
   .action(async (options: { repair?: boolean; nodes?: string; adoptCni?: boolean }) => {
     if (rejectClusterArgs('setup', options)) return
@@ -385,7 +385,7 @@ auth
 
 auth
   .command('fake')
-  .description('Seed fake credentials so sessions authenticate via a parent proxy (local/dev + yaac-in-yaac)')
+  .description('Seed fake credentials so worktrees authenticate via a parent proxy (local/dev + yaac-in-yaac)')
   .addArgument(
     new Argument(
       '<kinds...>',

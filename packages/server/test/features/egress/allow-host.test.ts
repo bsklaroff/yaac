@@ -12,62 +12,62 @@ vi.mock('#features/projects/local-config', () => ({
 }))
 vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
-  listSessionPods: vi.fn(() => Promise.resolve([])),
+  listWorktreePods: vi.fn(() => Promise.resolve([])),
 }))
 
 import { proxyClient } from '#features/egress/proxy-client'
 import { addAllowedHostToProjectConfig } from '#features/projects/local-config'
-import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '#platform/k8s/pods'
-import { allowSessionHost } from '#features/egress/allow-host'
+import { listWorktreePods, LABEL_PREWARMED, type PodInfo } from '#platform/k8s/pods'
+import { allowWorktreeHost } from '#features/egress/allow-host'
 
-function pod(over: Partial<SessionPod>): SessionPod {
+function pod(over: Partial<PodInfo>): PodInfo {
   return {
-    jobName: 'yaac-proj-x', podName: 'yaac-proj-x-abc', sessionId: 'sid',
+    jobName: 'yaac-proj-x', podName: 'yaac-proj-x-abc', worktreeId: 'sid',
     projectSlug: 'proj', tool: 'claude', phase: 'Running', running: true,
     terminating: false, createdAtMs: 0, labels: {}, ...over,
   }
 }
 
-const TARGET = { sessionId: 'sid-1', projectSlug: 'proj' }
+const TARGET = { worktreeId: 'sid-1', projectSlug: 'proj' }
 
 beforeEach(() => {
   vi.clearAllMocks()
 })
 
-describe('allowSessionHost', () => {
+describe('allowWorktreeHost', () => {
   it('persist:false widens only the target session, touching neither config nor pods', async () => {
-    await allowSessionHost(TARGET, 'h.com', { persist: false })
+    await allowWorktreeHost(TARGET, 'h.com', { persist: false })
 
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(proxyClient.allowHost).toHaveBeenCalledExactlyOnceWith('sid-1', 'h.com')
     expect(addAllowedHostToProjectConfig).not.toHaveBeenCalled()
-    expect(listSessionPods).not.toHaveBeenCalled()
+    expect(listWorktreePods).not.toHaveBeenCalled()
   })
 
   it('persist:false surfaces a proxy miss on the target session as an error', async () => {
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.allowHost).mockResolvedValueOnce(false)
 
-    await expect(allowSessionHost(TARGET, 'h.com', { persist: false }))
+    await expect(allowWorktreeHost(TARGET, 'h.com', { persist: false }))
       .rejects.toThrow('not registered with the egress proxy')
   })
 
   it('persist:true writes config and fans out to running, non-prewarmed project sessions', async () => {
-    vi.mocked(listSessionPods).mockResolvedValue([
-      pod({ sessionId: 'sid-1' }),
-      pod({ sessionId: 'sid-2' }),
-      pod({ sessionId: 'sid-stopped', running: false }),
-      pod({ sessionId: 'sid-spare', labels: { [LABEL_PREWARMED]: 'true' } }),
-      pod({ sessionId: '' }),
+    vi.mocked(listWorktreePods).mockResolvedValue([
+      pod({ worktreeId: 'sid-1' }),
+      pod({ worktreeId: 'sid-2' }),
+      pod({ worktreeId: 'sid-stopped', running: false }),
+      pod({ worktreeId: 'sid-spare', labels: { [LABEL_PREWARMED]: 'true' } }),
+      pod({ worktreeId: '' }),
     ])
     // One sibling unknown to the proxy — tolerated, not an error.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.allowHost).mockResolvedValueOnce(true).mockResolvedValueOnce(false)
 
-    await allowSessionHost(TARGET, 'h.com', { persist: true })
+    await allowWorktreeHost(TARGET, 'h.com', { persist: true })
 
     expect(addAllowedHostToProjectConfig).toHaveBeenCalledExactlyOnceWith('proj', 'h.com')
-    expect(listSessionPods).toHaveBeenCalledWith('proj')
+    expect(listWorktreePods).toHaveBeenCalledWith('proj')
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(vi.mocked(proxyClient.allowHost).mock.calls)
       .toEqual([['sid-1', 'h.com'], ['sid-2', 'h.com']])

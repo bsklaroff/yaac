@@ -5,8 +5,8 @@ import {
   reconcileImageSalvage,
   reconcilePrewarmPool,
   reconcileSpawnRequests,
-  reconcileStaleSessions,
-} from '#features/sessions'
+  reconcileStaleWorktrees,
+} from '#features/worktrees'
 import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
 import {
   reconcileProjectRegistryGc,
@@ -45,9 +45,9 @@ function herdSteps(): HerdStep[] {
     // the constant rather than repeating the list: absence only means
     // something against a set from THIS pass. Poll is in there because
     // in-pod tmux death is not a substrate event.
-    { name: 'stale-sessions', triggers: DESIRED_SET_TRIGGERS,
-      run: (s) => reconcileStaleSessions(s) },
-    // Service in-session `yaac-spawn` requests queued at the egress proxy.
+    { name: 'stale-worktrees', triggers: DESIRED_SET_TRIGGERS,
+      run: (s) => reconcileStaleWorktrees(s) },
+    // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
     // The drain is a herd job — the queue is at the proxy and the caller is
     // resolved from pod labels — but what a request MEANS is the server's,
     // so each one is reported up rather than created here.
@@ -63,11 +63,11 @@ function herdSteps(): HerdStep[] {
     // already-running builds. Throttled internally.
     { name: 'image-prewarm', triggers: [], run: () => reconcileImagePrewarm() },
     // Keep one prewarmed spare per active project (after the stale sweep so
-    // counts reflect just-reaped sessions). No-op when the pool size is 0.
-    { name: 'prewarm-pool', triggers: ['session-pods'],
+    // counts reflect just-reaped worktrees). No-op when the pool size is 0.
+    { name: 'prewarm-pool', triggers: ['worktree-pods'],
       run: (s, defaultTool) => reconcilePrewarmPool(defaultTool ?? 'claude', s) },
-    // Mid-session image salvage (nested engines → project registry). Throttled
-    // internally per session; salvages run detached.
+    // Mid-worktree image salvage (nested engines → project registry). Throttled
+    // internally per worktree; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
     // Blob reclaim in one project registry per pass. It cannot wait for a
     // project to go idle — an active one never does — so it takes a
@@ -85,16 +85,16 @@ function herdSteps(): HerdStep[] {
     // `live-agents` is here and nowhere else: it is the only step that reads
     // the watcher's live set, and it is what turns a fresh ACP handshake into
     // a conversation row within a debounce instead of within a resync.
-    { name: 'agent-sessions', triggers: ['session-pods', 'live-agents'],
+    { name: 'agent-sessions', triggers: ['worktree-pods', 'live-agents'],
       run: (s) => reconcileAgentSessions(s) },
     // ssh-agent heal only (attach-only probe, never bootstraps): agent
     // identities are memory-only by design and need the server to re-upload
     // them after a proxy pod replacement.
     { name: 'proxy-ssh-keys', triggers: ['poll'], run: () => reconcileProxySshKeys() },
-    // Per-session vclusters: orphan GC + host-side kubeconfig heal.
-    { name: 'vclusters', triggers: ['vcluster-namespaces', 'session-pods', 'session-jobs'],
+    // Per-worktree vclusters: orphan GC + host-side kubeconfig heal.
+    { name: 'vclusters', triggers: ['vcluster-namespaces', 'worktree-pods', 'worktree-jobs'],
       run: (s) => reconcileVclusters(Date.now(), s) },
-    // yaac-in-yaac: tell the outer proxy which outer session owns each
+    // yaac-in-yaac: tell the outer proxy which outer worktree owns each
     // vcluster's pods. Poll re-pushes cover outer-proxy restarts.
     { name: 'vcluster-attribution',
       triggers: ['vcluster-namespaces', 'vcluster-pods', 'poll'],

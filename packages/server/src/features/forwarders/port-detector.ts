@@ -1,14 +1,14 @@
 import type net from 'node:net'
-import { type SessionPod, isPrewarmed, relayDial } from '#platform/k8s'
-import { getSessionPorts } from './port-forwarders'
+import { type PodInfo, isPrewarmed, relayDial } from '#platform/k8s'
+import { getWorktreePorts } from './port-forwarders'
 import { serverLog } from '#log'
 
 /**
- * Detected in-pod listeners, per session: streamd's `ports` stream pushes
+ * Detected in-pod listeners, per worktree: streamd's `ports` stream pushes
  * the pod's localhost-reachable LISTEN set (one JSON line on connect, on
  * every change, and as a periodic keepalive), and this module holds the
  * result in memory — the source of the snapshot's `unforwardedPorts`.
- * There is no server-side poll: the per-session watcher just keeps one
+ * There is no server-side poll: the per-worktree watcher just keeps one
  * relay stream open, mirroring (in miniature) the status watcher's
  * lifecycle — informer-driven sync, respawn with backoff, and a silence
  * deadline standing in for its heartbeat.
@@ -39,11 +39,11 @@ export const SENSITIVE_PORTS: ReadonlySet<number> = new Set([
 const INFRA_PORT_MIN = 10250
 const INFRA_PORT_MAX = 10350
 
-/** Cap on ports surfaced per session — a hostile listener flood shows a
+/** Cap on ports surfaced per worktree — a hostile listener flood shows a
  *  bounded badge, not an unbounded snapshot. */
 const MAX_SURFACED_PORTS = 10
 
-/** Cap on ports stored per session from a single push. */
+/** Cap on ports stored per worktree from a single push. */
 const MAX_DETECTED_PORTS = 100
 
 /** Line-buffer cap for the ports stream (each line is a small JSON set). */
@@ -72,42 +72,42 @@ export function isForwardablePort(port: number): boolean {
   return true
 }
 
-/** Test-only: seed a session's detected set directly. */
-export function _setDetectedPortsForTests(sessionId: string, ports: number[]): void {
-  detected.set(sessionId, ports)
+/** Test-only: seed a worktree's detected set directly. */
+export function _setDetectedPortsForTests(worktreeId: string, ports: number[]): void {
+  detected.set(worktreeId, ports)
 }
 
 /**
- * The ports the webapp should offer to forward for a session: detected
+ * The ports the webapp should offer to forward for a worktree: detected
  * listeners minus already-forwarded container ports, user-dismissed
  * ports, and the sensitive/infra exclusions — capped, ascending. Feeds
- * `unforwardedPorts` on the session snapshot.
+ * `unforwardedPorts` on the worktree snapshot.
  */
-export function getUnforwardedPorts(sessionId: string): number[] {
-  const raw = detected.get(sessionId)
+export function getUnforwardedPorts(worktreeId: string): number[] {
+  const raw = detected.get(worktreeId)
   if (!raw?.length) return []
-  const forwarded = new Set(getSessionPorts(sessionId).map((p) => p.containerPort))
-  const hidden = dismissed.get(sessionId)
+  const forwarded = new Set(getWorktreePorts(worktreeId).map((p) => p.containerPort))
+  const hidden = dismissed.get(worktreeId)
   return raw
     .filter((p) => isForwardablePort(p) && !forwarded.has(p) && !hidden?.has(p))
     .slice(0, MAX_SURFACED_PORTS)
 }
 
 /**
- * Hide a detected port for this session (in-memory — resets with the
- * server, and clears when the session goes away). Unlike allow-host,
+ * Hide a detected port for this worktree (in-memory — resets with the
+ * server, and clears when the worktree goes away). Unlike allow-host,
  * "never forward this" is a legitimate lasting choice, so the badge
  * needs a way to stop offering. Only currently-surfaced ports can be
  * dismissed (returns false otherwise) — anything else would let an
- * arbitrary-port dismissal grow the set for sessions the sync cleanup
+ * arbitrary-port dismissal grow the set for worktrees the sync cleanup
  * never tracked.
  */
-export function dismissSessionPort(sessionId: string, port: number): boolean {
-  if (!getUnforwardedPorts(sessionId).includes(port)) return false
-  let set = dismissed.get(sessionId)
+export function dismissWorktreePort(worktreeId: string, port: number): boolean {
+  if (!getUnforwardedPorts(worktreeId).includes(port)) return false
+  let set = dismissed.get(worktreeId)
   if (!set) {
     set = new Set()
-    dismissed.set(sessionId, set)
+    dismissed.set(worktreeId, set)
   }
   set.add(port)
   return true
@@ -125,7 +125,7 @@ function normalizePorts(value: unknown): number[] | null {
 
 export interface PortDetectorDeps {
   /** Injected for tests — replaces the real relay `ports`-stream dial. */
-  dialPorts?: (sessionId: string) => Promise<net.Socket>
+  dialPorts?: (worktreeId: string) => Promise<net.Socket>
   /** First respawn delay after a stream death; doubles to the max. */
   respawnDelayMs?: number
   maxRespawnDelayMs?: number
@@ -135,11 +135,11 @@ export interface PortDetectorDeps {
   log?: (msg: string) => void
 }
 
-function dialRelayPorts(sessionId: string): Promise<net.Socket> {
-  return relayDial(sessionId, { kind: 'ports' })
+function dialRelayPorts(worktreeId: string): Promise<net.Socket> {
+  return relayDial(worktreeId, { kind: 'ports' })
 }
 
-class SessionPortsWatcher {
+class WorktreePortsWatcher {
   private sock: net.Socket | null = null
   private stopped = false
   private generation = 0
@@ -147,14 +147,14 @@ class SessionPortsWatcher {
   private respawnTimer: NodeJS.Timeout | null = null
   private silenceTimer: NodeJS.Timeout | null = null
 
-  private readonly dialPorts: (sessionId: string) => Promise<net.Socket>
+  private readonly dialPorts: (worktreeId: string) => Promise<net.Socket>
   private readonly respawnDelayMs: number
   private readonly maxRespawnDelayMs: number
   private readonly silenceTimeoutMs: number
   private readonly log: (msg: string) => void
 
   constructor(
-    readonly sessionId: string,
+    readonly worktreeId: string,
     private readonly onPorts: (ports: number[]) => void,
     deps: PortDetectorDeps = {},
   ) {
@@ -183,10 +183,10 @@ class SessionPortsWatcher {
     const generation = ++this.generation
     let socket: net.Socket
     try {
-      socket = await this.dialPorts(this.sessionId)
+      socket = await this.dialPorts(this.worktreeId)
     } catch (err) {
       if (this.stopped || generation !== this.generation) return
-      this.log(`[server] port-detector ${this.sessionId.slice(0, 8)}: dial failed: ${String(err)}`)
+      this.log(`[server] port-detector ${this.worktreeId.slice(0, 8)}: dial failed: ${String(err)}`)
       // A streamd predating the `ports` kind refuses the handshake with
       // "unknown kind" — permanent for this pod, so retry only rarely.
       if (String(err).includes('unknown kind')) this.backoffMs = UNSUPPORTED_KIND_RETRY_MS
@@ -244,7 +244,7 @@ class SessionPortsWatcher {
   private onStreamDown(generation: number, reason: string): void {
     if (generation !== this.generation || this.stopped) return
     this.generation++
-    this.log(`[server] port-detector ${this.sessionId.slice(0, 8)}: ${reason}`)
+    this.log(`[server] port-detector ${this.worktreeId.slice(0, 8)}: ${reason}`)
     this.teardownStream()
     this.scheduleRespawn()
   }
@@ -267,13 +267,13 @@ class SessionPortsWatcher {
 }
 
 /**
- * Keeps one ports stream per running, non-prewarmed session pod, synced
+ * Keeps one ports stream per running, non-prewarmed worktree pod, synced
  * from informer pod deltas exactly like the StatusWatcherManager it sits
- * next to. `onChange` fires when any session's detected set actually
+ * next to. `onChange` fires when any worktree's detected set actually
  * changes, so the events hub can push a fresh snapshot.
  */
 export class PortDetectorManager {
-  private readonly watchers = new Map<string, SessionPortsWatcher>()
+  private readonly watchers = new Map<string, WorktreePortsWatcher>()
 
   constructor(
     private readonly onChange: () => void,
@@ -284,31 +284,31 @@ export class PortDetectorManager {
     return this.watchers.size
   }
 
-  sync(pods: SessionPod[]): void {
+  sync(pods: PodInfo[]): void {
     const wanted = new Set<string>()
     for (const p of pods) {
-      if (!p.running || !p.sessionId || isPrewarmed(p)) continue
-      wanted.add(p.sessionId)
+      if (!p.running || !p.worktreeId || isPrewarmed(p)) continue
+      wanted.add(p.worktreeId)
     }
-    for (const [sessionId, watcher] of this.watchers) {
-      if (wanted.has(sessionId)) continue
+    for (const [worktreeId, watcher] of this.watchers) {
+      if (wanted.has(worktreeId)) continue
       watcher.stop()
-      this.watchers.delete(sessionId)
-      const hadPorts = (detected.get(sessionId)?.length ?? 0) > 0
-      detected.delete(sessionId)
-      dismissed.delete(sessionId)
+      this.watchers.delete(worktreeId)
+      const hadPorts = (detected.get(worktreeId)?.length ?? 0) > 0
+      detected.delete(worktreeId)
+      dismissed.delete(worktreeId)
       if (hadPorts) this.onChange()
     }
-    for (const sessionId of wanted) {
-      if (this.watchers.has(sessionId)) continue
-      const watcher = new SessionPortsWatcher(sessionId, (ports) => {
-        const prev = detected.get(sessionId)
+    for (const worktreeId of wanted) {
+      if (this.watchers.has(worktreeId)) continue
+      const watcher = new WorktreePortsWatcher(worktreeId, (ports) => {
+        const prev = detected.get(worktreeId)
         if (prev && prev.length === ports.length && prev.every((p, i) => p === ports[i])) return
-        detected.set(sessionId, ports)
+        detected.set(worktreeId, ports)
         this.onChange()
       }, this.deps)
       watcher.start()
-      this.watchers.set(sessionId, watcher)
+      this.watchers.set(worktreeId, watcher)
     }
   }
 

@@ -10,7 +10,7 @@ import {
 } from '#features/projects'
 import { imageExists, runTrackedPodman } from '#platform/container'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#platform/build-context'
-import { sessionUid } from '#platform/k8s'
+import { podUid } from '#platform/k8s'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -24,7 +24,7 @@ export async function fileHash(filePath: string): Promise<string> {
 }
 
 /**
- * Content hash for a root (FROM-scratch) session image layer: the
+ * Content hash for a root (FROM-scratch) worktree image layer: the
  * Dockerfile content plus the YAAC_UID build arg. Shared by the server's
  * layer resolution and the test global setup so both derive identical
  * tags.
@@ -37,7 +37,7 @@ export async function baseImageHash(dockerfilePath: string): Promise<string> {
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
   const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
   return stringHash(
-    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${sessionUid()}`,
+    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${podUid()}`,
   )
 }
 
@@ -210,10 +210,10 @@ export async function resolveImageChain(
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
   const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  // The server uid is a build input (YAAC_UID arg, see sessionUid), so it
+  // The server uid is a build input (YAAC_UID arg, see podUid), so it
   // is folded into the root layer's content hash — a uid change must
   // invalidate the tag just like a Dockerfile edit.
-  const uid = sessionUid()
+  const uid = podUid()
   const defaultHash = await baseImageHash(defaultDockerfile)
   const defaultTag = `${prefix}-base:${defaultHash}`
 
@@ -255,7 +255,7 @@ export async function resolveImageChain(
 
   // Layer 1b (optional): <prefix>-nestable (Dockerfile.nestable) — in-pod
   // rootless podman + docker CLI + compose for `nestedContainers`
-  // sessions. Sits on tools so a layered Dockerfile.yaac inherits it; a
+  // worktrees. Sits on tools so a layered Dockerfile.yaac inherits it; a
   // standalone Dockerfile.yaac skips it (it owns its toolchain). The uid
   // shapes the layer's subuid ranges and socket path, but it is already
   // folded into the chain through the base hash.

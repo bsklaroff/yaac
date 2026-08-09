@@ -22,7 +22,7 @@ import type { HerdEvent } from '@yaac/shared/herd'
 export interface ServerLink {
   /**
    * A discovery to persist. Resolves only once the row is written — that is
-   * what a caller tearing a session down needs, since a listing between the
+   * what a caller tearing a worktree down needs, since a listing between the
    * report and the write would show a worktree as neither running nor
    * stopped, and it is why this is a call rather than a fire-and-forget
    * notification. Over a link it stays one; an event whose ordering does not
@@ -31,14 +31,14 @@ export interface ServerLink {
   workspaceEvent(event: HerdEvent): Promise<void>
 
   /**
-   * Something the session list shows has changed — a build row, a port that
+   * Something the worktree list shows has changed — a build row, a port that
    * came up, a workspace that went away. Fire-and-forget: the server decides
    * whether that is worth a snapshot, and how many of them to coalesce.
    */
   workspacesChanged(): void
 
   /**
-   * An in-session `yaac-spawn` reached the proxy and the herd drained it.
+   * An in-worktree `yaac-spawn` reached the proxy and the herd drained it.
    *
    * The herd resolves only what the substrate can answer — which workspace
    * called, in which project, running which tool — and reports it. Deciding

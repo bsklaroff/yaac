@@ -1,6 +1,6 @@
 /**
- * Lockdown helpers for the session-preview `<webview>`. The preview embeds a
- * dev server running inside a session pod, reached over a forwarded port on
+ * Lockdown helpers for the worktree-preview `<webview>`. The preview embeds a
+ * dev server running inside a worktree pod, reached over a forwarded port on
  * the server host — loopback for a local server, the tailnet name for a
  * remote one. These keep the guest constrained to that: no Node access, no
  * rogue preload, and pinned to loopback or the attached server's host —

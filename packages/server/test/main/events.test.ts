@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('#features/sessions/list', () => ({
-  listActiveSessions: vi.fn().mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} }),
+vi.mock('#features/worktrees/list', () => ({
+  listActiveWorktrees: vi.fn().mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} }),
 }))
 
 vi.mock('#features/projects/list', () => ({
@@ -19,8 +19,8 @@ import { EventHub, buildSnapshot, serializeEvent } from '#main/events'
 import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { listImageBuilds } from '#features/image-engine/image-builds'
 import type { WsLike } from '#main/events'
-import { listActiveSessions } from '#features/sessions/list'
-import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
+import { listActiveWorktrees } from '#features/worktrees/list'
+import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#features/worktrees/provisioning'
 import { registerImageBuild, clearAllImageBuildsForTests } from '#features/image-engine/image-builds'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
@@ -36,7 +36,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(slug: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', sessionCount: 0 }],
+    projects: [{ slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0 }],
   }
 }
 
@@ -174,7 +174,7 @@ describe('buildSnapshot provisioning', () => {
     // A pod lists as an active session mid-setup (Running + tmux up, but no
     // agent/init windows yet) — the provisioning row must win until the
     // create route removes it, or clients attach to a half-built session.
-    vi.mocked(listActiveSessions).mockResolvedValueOnce({
+    vi.mocked(listActiveWorktrees).mockResolvedValueOnce({
       worktrees: [{
         worktreeId: 'prov-2', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
@@ -190,7 +190,7 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
-    vi.mocked(listActiveSessions).mockResolvedValue({
+    vi.mocked(listActiveWorktrees).mockResolvedValue({
       worktrees: [{
         worktreeId: 'prov-3', projectSlug: 'p', tool: 'claude',
         status: 'waiting', createdAt: '2026-01-01 00:00:00', agentSessions: [],
@@ -204,6 +204,6 @@ describe('buildSnapshot provisioning', () => {
     const snap = await buildSnapshot()
     expect(snap.worktrees.map((s) => s.worktreeId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
-    vi.mocked(listActiveSessions).mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} })
+    vi.mocked(listActiveWorktrees).mockResolvedValue({ worktrees: [], stale: [], gitAuthFailures: {} })
   })
 })

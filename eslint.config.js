@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|sessions|skills|status|terminals|titles)|herd|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|skills|status|terminals|titles|worktrees)|herd|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 
@@ -80,29 +80,29 @@ const HERD_SRC = [
   'packages/server/src/features/images/**/*.ts',
   'packages/server/src/features/status/**/*.ts',
   'packages/server/src/features/terminals/**/*.ts',
-  // #features/sessions is split down the middle. Everything that acts on the
+  // #features/worktrees is split down the middle. Everything that acts on the
   // substrate is herd-side and named here; what is left — the JOIN paths that
   // read the server's rows alongside a herd's report (list, detail, resolve,
   // restart, changes, the stopped listing, project teardown) — is the
   // server's half, and stays out until the herd becomes a package of its own.
-  'packages/server/src/features/sessions/agent-session-registry.ts',
-  'packages/server/src/features/sessions/cleanup.ts',
-  'packages/server/src/features/sessions/create.ts',
-  'packages/server/src/features/sessions/observe.ts',
-  'packages/server/src/features/sessions/prewarm.ts',
-  'packages/server/src/features/sessions/prewarm-reconcile.ts',
-  'packages/server/src/features/sessions/changes.ts',
-  'packages/server/src/features/sessions/project-purge.ts',
-  'packages/server/src/features/sessions/prompt-capture.ts',
-  'packages/server/src/features/sessions/salvage-reconcile.ts',
-  'packages/server/src/features/sessions/seed.ts',
-  'packages/server/src/features/sessions/spare-pool.ts',
-  'packages/server/src/features/sessions/spawn-reconcile.ts',
-  'packages/server/src/features/sessions/spawn-script.ts',
-  'packages/server/src/features/sessions/locate.ts',
-  'packages/server/src/features/sessions/stale-sessions.ts',
-  'packages/server/src/features/sessions/stop.ts',
-  'packages/server/src/features/sessions/worktree-meta.ts',
+  'packages/server/src/features/worktrees/agent-session-registry.ts',
+  'packages/server/src/features/worktrees/cleanup.ts',
+  'packages/server/src/features/worktrees/create.ts',
+  'packages/server/src/features/worktrees/observe.ts',
+  'packages/server/src/features/worktrees/prewarm.ts',
+  'packages/server/src/features/worktrees/prewarm-reconcile.ts',
+  'packages/server/src/features/worktrees/changes.ts',
+  'packages/server/src/features/worktrees/project-purge.ts',
+  'packages/server/src/features/worktrees/prompt-capture.ts',
+  'packages/server/src/features/worktrees/salvage-reconcile.ts',
+  'packages/server/src/features/worktrees/seed.ts',
+  'packages/server/src/features/worktrees/spare-pool.ts',
+  'packages/server/src/features/worktrees/spawn-reconcile.ts',
+  'packages/server/src/features/worktrees/spawn-script.ts',
+  'packages/server/src/features/worktrees/locate.ts',
+  'packages/server/src/features/worktrees/stale-worktrees.ts',
+  'packages/server/src/features/worktrees/stop.ts',
+  'packages/server/src/features/worktrees/worktree-meta.ts',
   // The herd's own half of the boundary folder. `contract.ts`/`current.ts`
   // are shared vocabulary and `in-process.ts` is the seam itself, but these
   // two are herd code that moves into the herd package with everything else,
@@ -159,14 +159,14 @@ const SERVER_SRC = [
   'packages/server/src/features/titles/**/*.ts',
   // The JOIN halves: what reads the server's rows alongside a herd's report.
   // Their herd-side siblings are in HERD_SRC above.
-  'packages/server/src/features/sessions/detail.ts',
-  'packages/server/src/features/sessions/fork-branch.ts',
-  'packages/server/src/features/sessions/list.ts',
-  'packages/server/src/features/sessions/project-teardown.ts',
-  'packages/server/src/features/sessions/provisioning.ts',
-  'packages/server/src/features/sessions/resolve.ts',
-  'packages/server/src/features/sessions/restart.ts',
-  'packages/server/src/features/sessions/stopped-list.ts',
+  'packages/server/src/features/worktrees/detail.ts',
+  'packages/server/src/features/worktrees/fork-branch.ts',
+  'packages/server/src/features/worktrees/list.ts',
+  'packages/server/src/features/worktrees/project-teardown.ts',
+  'packages/server/src/features/worktrees/provisioning.ts',
+  'packages/server/src/features/worktrees/resolve.ts',
+  'packages/server/src/features/worktrees/restart.ts',
+  'packages/server/src/features/worktrees/stopped-list.ts',
   'packages/server/src/features/projects/detail.ts',
   'packages/server/src/features/projects/list.ts',
   'packages/server/src/features/records/desired-workspaces.ts',

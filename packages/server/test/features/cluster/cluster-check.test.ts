@@ -38,7 +38,7 @@ import {
   armDeferredClusterBoot,
   _resetDeferredClusterBootForTests,
 } from '#platform/k8s/deferred-boot'
-import { sessionUid } from '#platform/k8s'
+import { podUid } from '#platform/k8s'
 import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#platform/k8s'
 import type { NodeTaint, PodToleration } from '#platform/k8s'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
@@ -473,7 +473,7 @@ describe('runClusterCheck', () => {
     // The probe writes through the mount at the session-image uid, so it
     // must run at that uid with a read-write mount.
     expect(podManifest.spec.containers[0].securityContext).toEqual({
-      runAsUser: sessionUid(),
+      runAsUser: podUid(),
     })
     expect(podManifest.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined()
     // The nonce and write-marker files are cleaned up afterwards.
@@ -682,7 +682,7 @@ describe('runClusterCheck', () => {
       // Always, so a layer already on the node cannot mask an unreachable
       // registry.
       expect(pod.spec?.containers[0].imagePullPolicy).toBe('Always')
-      expect(pod.spec?.containers[0].securityContext?.runAsUser).toBe(sessionUid())
+      expect(pod.spec?.containers[0].securityContext?.runAsUser).toBe(podUid())
       expect(pod.spec?.volumes[0].hostPath?.path).toBe(getDataDir())
     }
 
@@ -1025,7 +1025,7 @@ describe('runClusterCheck', () => {
     const run = happyRun()
     run.mockImplementation((file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'get' && args[1] === 'priorityclass') {
-        const items = livePriorityClasses().filter((c) => c.metadata.name !== 'yaac-session')
+        const items = livePriorityClasses().filter((c) => c.metadata.name !== 'yaac-worktree')
         return Promise.resolve({ stdout: JSON.stringify({ items }), stderr: '' })
       }
       return happyResponses(file, args)
@@ -1035,7 +1035,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     const pcs = byName(results, 'priority-classes')
     expect(pcs).toMatchObject({ status: 'fail' })
-    expect(pcs?.detail).toContain('yaac-session')
+    expect(pcs?.detail).toContain('yaac-worktree')
     expect(pcs?.fix).toContain('yaac cluster setup --repair')
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
   })

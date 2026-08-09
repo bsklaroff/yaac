@@ -51,7 +51,7 @@ export function withAllowedHost(config: YaacConfig, host: string): YaacConfig {
 
 /**
  * Persist a new allowed host into a project's stored config overlay so every
- * future session of the project inherits it. Read-modify-write of
+ * future worktree of the project inherits it. Read-modify-write of
  * config/yaac-config.json, re-validated by writeProjectConfig (which also
  * re-runs the same parse the read did, so a stored-and-reloaded overlay
  * round-trips unchanged).
@@ -80,7 +80,7 @@ export function withPortForward(config: YaacConfig, containerPort: number): Yaac
 
 /**
  * Persist a new port forward into a project's stored config overlay so every
- * future session of the project inherits it — the `persist: true` half of the
+ * future worktree of the project inherits it — the `persist: true` half of the
  * webapp's "forward this port" action. Same read-modify-write as
  * addAllowedHostToProjectConfig.
  */

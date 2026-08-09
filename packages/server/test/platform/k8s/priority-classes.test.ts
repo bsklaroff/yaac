@@ -27,7 +27,7 @@ import {
 } from '#platform/k8s'
 // Internal, for the name only: the session tier is stamped inside
 // pod-spec (priorityClassSpec) and covered through the Job manifest.
-import { PRIORITY_CLASS_SESSION } from '#platform/k8s/priority-classes'
+import { PRIORITY_CLASS_WORKTREE } from '#platform/k8s/priority-classes'
 import { kubectlApply } from '#platform/k8s/kubectl'
 
 interface PriorityClass {
@@ -54,7 +54,7 @@ describe('buildPriorityClassManifests', () => {
   it('emits scheduling.k8s.io/v1 PriorityClasses, none of them the global default', () => {
     const all = classes()
     expect(all.map((c) => c.metadata.name))
-      .toEqual([PRIORITY_CLASS_INFRA, PRIORITY_CLASS_BUILDER, PRIORITY_CLASS_SESSION])
+      .toEqual([PRIORITY_CLASS_INFRA, PRIORITY_CLASS_BUILDER, PRIORITY_CLASS_WORKTREE])
     for (const c of all) {
       expect(c.apiVersion).toBe('scheduling.k8s.io/v1')
       expect(c.kind).toBe('PriorityClass')
@@ -69,13 +69,13 @@ describe('buildPriorityClassManifests', () => {
     expect(byName(PRIORITY_CLASS_INFRA).value)
       .toBeGreaterThan(byName(PRIORITY_CLASS_BUILDER).value)
     expect(byName(PRIORITY_CLASS_BUILDER).value)
-      .toBeGreaterThan(byName(PRIORITY_CLASS_SESSION).value)
+      .toBeGreaterThan(byName(PRIORITY_CLASS_WORKTREE).value)
     // Kubernetes reserves values above 1e9 for its own system-* classes;
     // exceeding it makes the apiserver reject the object.
     expect(byName(PRIORITY_CLASS_INFRA).value).toBeLessThanOrEqual(1_000_000_000)
     // Above the unstamped default so a live session outranks whatever else
     // shares the cluster.
-    expect(byName(PRIORITY_CLASS_SESSION).value).toBeGreaterThan(0)
+    expect(byName(PRIORITY_CLASS_WORKTREE).value).toBeGreaterThan(0)
   })
 
   it('lets infra preempt, and nothing below it', () => {
@@ -83,7 +83,7 @@ describe('buildPriorityClassManifests', () => {
     // restartPolicy Never) does not replace it. So nothing under the infra
     // tier may buy its own scheduling with a session's life — a builder
     // outranks sessions for eviction while still waiting for room.
-    expect(byName(PRIORITY_CLASS_SESSION).preemptionPolicy).toBe('Never')
+    expect(byName(PRIORITY_CLASS_WORKTREE).preemptionPolicy).toBe('Never')
     expect(byName(PRIORITY_CLASS_BUILDER).preemptionPolicy).toBe('Never')
     // Infra keeps the default. Nested installs depend on that: the syncer
     // copies preemptionPolicy to the host while dropping the class name, and

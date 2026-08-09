@@ -3,32 +3,32 @@
 // src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// This feature answers two questions about a running session, and only
+// This feature answers two questions about a running worktree, and only
 // those: *is it still there* (the tmux/pane liveness probes and the
 // terminating marks) and *what is its agent doing* (the watcher-fed status
 // store). It reads pods and talks to tmux; it never creates, restarts or
-// tears anything down. Session teardown calls in here to evict what it
+// tears anything down. Worktree teardown calls in here to evict what it
 // cached — never the other way round — which is what keeps the dependency
-// on `#features/sessions` one-directional.
+// on `#features/worktrees` one-directional.
 //
 // The tri-state liveness verdicts are the reason this is worth sealing.
 // `unknown` must never be flattened into `dead` by a caller: the stale
 // reaper acts on the verdict, so a cluster blip read as death reaps a
-// healthy session, Job and vcluster and all, with no recovery. Callers get
+// healthy worktree, Job and vcluster and all, with no recovery. Callers get
 // the tri-state or the deliberately-safe boolean, never the probe itself.
 //
 // What this feature does NOT own is how an agent is observed. That is an
-// `AgentDriver` (`#features/agents`), picked per session from its mode, so
+// `AgentDriver` (`#features/agents`), picked per worktree from its mode, so
 // the watcher's respawn/backoff/self-heal is written once and both `tui`
-// and `acp` sessions run through it. The store keys statuses by the
+// and `acp` worktrees run through it. The store keys statuses by the
 // driver's opaque handle for a conversation, never by anything
 // tmux-shaped.
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/status/.
 
-export { classifySessionPods, watcherDisplayLiveness } from './classify'
-export { sessionControlStreamSend, type ControlStreamSend } from './control-stream-registry'
+export { classifyWorktreePods, watcherDisplayLiveness } from './classify'
+export { worktreeControlStreamSend, type ControlStreamSend } from './control-stream-registry'
 export {
   forgetLiveness,
   isTmuxSessionAlive,
@@ -38,23 +38,23 @@ export {
   type TmuxLiveness,
 } from './liveness'
 export {
-  evictSessionStatus,
+  evictWorktreeStatus,
   liveAgents,
   onLiveAgentsChanged,
-  onSessionStatusChanged,
+  onWorktreeStatusChanged,
   readAgentStatus,
-  readSessionStatus,
-  readSessionWaitingSince,
+  readWorktreeStatus,
+  readWorktreeWaitingSince,
 } from './status-store'
 export {
   StatusWatcherManager,
   podAgentMode,
   type StatusWatcherDeps,
-  type WatchedSession,
+  type WatchedWorktree,
 } from './status-watcher'
 export {
-  clearSessionTerminating,
-  isSessionTerminating,
-  markSessionTerminating,
+  clearWorktreeTerminating,
+  isWorktreeTerminating,
+  markWorktreeTerminating,
   pruneTerminating,
 } from './terminating'

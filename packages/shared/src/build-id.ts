@@ -13,7 +13,7 @@ const BUILD_ID_FILENAME = '.build-id'
  * edits to them with no restart. Excluded from the buildId so a
  * dockerfile-only rebuild doesn't read as a version mismatch — `pnpm
  * watch` would otherwise bounce the server on every Dockerfile save,
- * severing in-flight session creates (each one's k8s Job survives as a
+ * severing in-flight worktree creates (each one's k8s Job survives as a
  * half-provisioned zombie pod).
  */
 const RUNTIME_DATA_DIRS = new Set(['dockerfiles', 'k8s'])

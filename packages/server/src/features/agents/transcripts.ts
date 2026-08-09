@@ -15,7 +15,7 @@ import type { AgentTool } from '@yaac/shared/types'
  * simply carry no path (their first message is captured over HTTP instead).
  */
 
-/** Claude writes `<claudeDir>/projects/-workspace/<sessionId>.jsonl` — the
+/** Claude writes `<claudeDir>/projects/-workspace/<worktreeId>.jsonl` — the
  *  agent's cwd is always /workspace, so the project dir name is fixed. */
 function claudeTranscriptDir(slug: string): string {
   return path.join(claudeDir(slug), 'projects', '-workspace')
@@ -137,7 +137,7 @@ export async function listPiJsonlFiles(dir: string): Promise<string[]> {
 
 /**
  * The session id embedded in a pi log filename. pi names each log
- * `<timestamp>_<sessionId>.jsonl` (we pass our session id via `--session-id`);
+ * `<timestamp>_<worktreeId>.jsonl` (we pass our session id via `--session-id`);
  * the timestamp prefix carries no underscore, so the id is everything after
  * the first one. Returns undefined for a name without that separator.
  */
@@ -150,9 +150,9 @@ export function sessionIdFromPiLog(file: string): string | undefined {
 }
 
 /** A session's pi logs (oldest first), matched by id within the shared home. */
-export async function piSessionLogs(projectSlug: string, sessionId: string): Promise<string[]> {
+export async function piSessionLogs(projectSlug: string, worktreeId: string): Promise<string[]> {
   const files = await listPiJsonlFiles(piSessionsDir(projectSlug))
-  return files.filter((f) => sessionIdFromPiLog(f) === sessionId)
+  return files.filter((f) => sessionIdFromPiLog(f) === worktreeId)
 }
 
 /**
@@ -164,7 +164,7 @@ export async function piSessionLogs(projectSlug: string, sessionId: string): Pro
  */
 export async function sessionTranscriptPath(
   projectSlug: string,
-  sessionId: string,
+  worktreeId: string,
   tool: AgentTool,
 ): Promise<string | undefined> {
   // codex is absent on purpose: it names its rollout files unpredictably, so
@@ -173,16 +173,16 @@ export async function sessionTranscriptPath(
   // the DB does not know is simply unresolvable.
   if (tool === 'opencode' || tool === 'codex') return undefined
   if (tool === 'pi') {
-    const logs = await piSessionLogs(projectSlug, sessionId)
+    const logs = await piSessionLogs(projectSlug, worktreeId)
     return logs[logs.length - 1]
   }
-  const file = path.join(claudeTranscriptDir(projectSlug), `${sessionId}.jsonl`)
+  const file = path.join(claudeTranscriptDir(projectSlug), `${worktreeId}.jsonl`)
   return await exists(file) ? file : undefined
 }
 
 /** What the backfill learns about one session from the files it left behind. */
 export interface TranscriptRecord {
-  sessionId: string
+  worktreeId: string
   tool: AgentTool
   transcriptPath: string
   createdAtMs: number
@@ -192,19 +192,19 @@ async function collect(
   dir: string,
   tool: AgentTool,
   files: string[],
-  sessionIdOf: (file: string) => string | undefined,
+  worktreeIdOf: (file: string) => string | undefined,
 ): Promise<TranscriptRecord[]> {
   const out: TranscriptRecord[] = []
   for (const file of files) {
-    const sessionId = sessionIdOf(file)
-    if (sessionId === undefined) continue
+    const worktreeId = worktreeIdOf(file)
+    if (worktreeId === undefined) continue
     const full = path.isAbsolute(file) ? file : path.join(dir, file)
     try {
       // stat follows through, so a recorded path that is still a legacy
       // symlink stats its target rather than the link itself.
       // it's the rollout's timestamps we want.
       const s = await fs.stat(full)
-      out.push({ sessionId, tool, transcriptPath: full, createdAtMs: s.birthtimeMs })
+      out.push({ worktreeId, tool, transcriptPath: full, createdAtMs: s.birthtimeMs })
     } catch {
       // Unstattable (raced deletion, dangling legacy symlink) — skip.
     }

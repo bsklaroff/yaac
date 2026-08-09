@@ -1,23 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 import {
-  SessionStatusWatcher,
+  WorktreeStatusWatcher,
   StatusWatcherManager,
   podAgentMode,
-  type WatchedSession,
+  type WatchedWorktree,
 } from '#features/status/status-watcher'
 import type { StreamChild } from '#platform/k8s'
 import {
-  readSessionStatus,
-  isSessionStreamHealthy,
+  readWorktreeStatus,
+  isWorktreeStreamHealthy,
   setAgentStatus,
-  _resetSessionStatusStoreForTests,
+  _resetWorktreeStatusStoreForTests,
 } from '#features/status/status-store'
 import {
-  sessionControlStreamSend,
+  worktreeControlStreamSend,
   _clearControlStreamRegistryForTests,
 } from '#features/status/control-stream-registry'
-import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '#platform/k8s/pods'
+import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_TOOL, type PodInfo, worktreeIdLabels } from '#platform/k8s/pods'
 
 class FakeAttachChild implements StreamChild {
   writes: string[] = []
@@ -56,18 +56,18 @@ class FakeAttachChild implements StreamChild {
   }
 }
 
-function session(tool: WatchedSession['tool']): WatchedSession {
-  return { slug: 'demo', sessionId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
+function session(tool: WatchedWorktree['tool']): WatchedWorktree {
+  return { slug: 'demo', worktreeId: 's1', jobName: 'yaac-demo-s1', tool, mode: 'tui' }
 }
 
-function makeWatcher(tool: WatchedSession['tool'], deps: {
+function makeWatcher(tool: WatchedWorktree['tool'], deps: {
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
   respawnDelayMs?: number
-} = {}): { watcher: SessionStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
+} = {}): { watcher: WorktreeStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
   const children: FakeAttachChild[] = []
   const revives: string[] = []
-  const watcher = new SessionStatusWatcher(session(tool), {
+  const watcher = new WorktreeStatusWatcher(session(tool), {
     dial: () => {
       const child = new FakeAttachChild()
       children.push(child)
@@ -102,13 +102,13 @@ async function connectWatcher(
   child.feedReply(`${paneId} ${tool}`)
   await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B
   child.feedReply('')
-  await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
+  await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
 }
 
-let watchers: SessionStatusWatcher[] = []
+let watchers: WorktreeStatusWatcher[] = []
 
 beforeEach(() => {
-  _resetSessionStatusStoreForTests()
+  _resetWorktreeStatusStoreForTests()
   _clearControlStreamRegistryForTests()
 })
 
@@ -118,10 +118,10 @@ afterEach(() => {
 })
 
 describe('podAgentMode', () => {
-  const pod = (labels: Record<string, string>): SessionPod => ({
+  const pod = (labels: Record<string, string>): PodInfo => ({
     jobName: 'yaac-demo-s1',
     podName: 'yaac-demo-s1-abc',
-    sessionId: 's1',
+    worktreeId: 's1',
     projectSlug: 'demo',
     tool: 'claude',
     ...(labels['yaac.mode'] !== undefined ? { mode: labels['yaac.mode'] } : {}),
@@ -144,7 +144,7 @@ describe('podAgentMode', () => {
   })
 })
 
-describe('SessionStatusWatcher (title tools)', () => {
+describe('WorktreeStatusWatcher (title tools)', () => {
   it('enumerates agent panes, subscribes to their titles, and marks the stream healthy', async () => {
     const { watcher, children } = makeWatcher('claude')
     watchers.push(watcher)
@@ -157,7 +157,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     // replace each other, so a shared name silences every pane but the last.
     expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
     // No classification yet — absent entry reads as waiting.
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
   it('publishes the proven stream as the session command channel and retires it with the stream', async () => {
@@ -167,9 +167,9 @@ describe('SessionStatusWatcher (title tools)', () => {
     const child = children[0]
     // Not registered while still attaching (registration happens only
     // after the pane-id and subscribe replies prove the stream).
-    expect(sessionControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    expect(worktreeControlStreamSend('yaac-demo-s1')).toBeUndefined()
     await connectWatcher(child)
-    const send = sessionControlStreamSend('yaac-demo-s1')
+    const send = worktreeControlStreamSend('yaac-demo-s1')
     expect(send).toBeDefined()
 
     // A command through the channel rides the same control-mode stream.
@@ -181,7 +181,7 @@ describe('SessionStatusWatcher (title tools)', () => {
 
     // Stream death unregisters the channel (until the respawn re-proves one).
     child.emitExit()
-    expect(sessionControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    expect(worktreeControlStreamSend('yaac-demo-s1')).toBeUndefined()
   })
 
   it('classifies pushed title values from the subscription', async () => {
@@ -192,10 +192,10 @@ describe('SessionStatusWatcher (title tools)', () => {
     await connectWatcher(child)
 
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(readSessionStatus('demo', 's1')).toBe('running')
+    expect(readWorktreeStatus('demo', 's1')).toBe('running')
 
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ✳ done\n')
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
   it('ignores subscriptions for other panes or names', async () => {
@@ -207,7 +207,7 @@ describe('SessionStatusWatcher (title tools)', () => {
 
     child.feed('%subscription-changed status-9 $0 @0 0 %9 : ⠋ other pane\n')
     child.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
   it('keeps status sticky and flips health on stream exit, then respawns', async () => {
@@ -217,11 +217,11 @@ describe('SessionStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
     child.feed('%subscription-changed status-7 $0 @0 0 %7 : ⠋ working\n')
-    expect(readSessionStatus('demo', 's1')).toBe('running')
+    expect(readWorktreeStatus('demo', 's1')).toBe('running')
 
     child.emitExit()
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
-    expect(readSessionStatus('demo', 's1')).toBe('running') // sticky
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
+    expect(readWorktreeStatus('demo', 's1')).toBe('running') // sticky
 
     await vi.waitFor(() => expect(children.length).toBe(2))
     const second = children[1]
@@ -230,7 +230,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     second.feedReply('%7 claude')
     await vi.waitFor(() => expect(second.commandCount).toBe(2))
     second.feedReply('')
-    await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
+    await vi.waitFor(() => expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true))
   })
 
   it('tears down and respawns when the heartbeat gets no reply', async () => {
@@ -251,7 +251,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     // them either), so the child count only grows from here.
     await vi.waitFor(() => expect(children.length).toBeGreaterThanOrEqual(2))
     expect(child.killed).toBe(true)
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
   })
 
   it('answers heartbeats to stay connected', async () => {
@@ -267,7 +267,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
     expect(children.length).toBe(1)
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
   })
 
   it('respawns when init fails (tmux window not up yet)', async () => {
@@ -311,7 +311,7 @@ describe('SessionStatusWatcher (title tools)', () => {
   })
 })
 
-describe('SessionStatusWatcher (pane tools)', () => {
+describe('WorktreeStatusWatcher (pane tools)', () => {
   it('subscribes opencode to its tmux-side busy format (no capture-pane, no %output)', async () => {
     const { watcher, children } = makeWatcher('opencode')
     watchers.push(watcher)
@@ -335,9 +335,9 @@ describe('SessionStatusWatcher (pane tools)', () => {
 
     // opencode/pi push an already-resolved word, not pane content.
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : running\n')
-    expect(readSessionStatus('demo', 's1')).toBe('running')
+    expect(readWorktreeStatus('demo', 's1')).toBe('running')
     child.feed('%subscription-changed status-2 $0 @0 0 %2 : waiting\n')
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
   it('ignores stray %output (the watcher attaches no-output, so it never re-captures)', async () => {
@@ -353,17 +353,17 @@ describe('SessionStatusWatcher (pane tools)', () => {
 })
 
 function pod(opts: {
-  sessionId: string
+  worktreeId: string
   slug?: string
   running?: boolean
   prewarmed?: boolean
   tool?: string
-}): SessionPod {
+}): PodInfo {
   const slug = opts.slug ?? 'demo'
   return {
-    jobName: `yaac-${slug}-${opts.sessionId}`,
-    podName: `yaac-${slug}-${opts.sessionId}-abcde`,
-    sessionId: opts.sessionId,
+    jobName: `yaac-${slug}-${opts.worktreeId}`,
+    podName: `yaac-${slug}-${opts.worktreeId}-abcde`,
+    worktreeId: opts.worktreeId,
     projectSlug: slug,
     tool: opts.tool ?? 'claude',
     phase: opts.running === false ? 'Pending' : 'Running',
@@ -371,8 +371,8 @@ function pod(opts: {
     terminating: false,
     createdAtMs: 0,
     labels: {
-      [JOB_NAME_LABEL]: `yaac-${slug}-${opts.sessionId}`,
-      [LABEL_SESSION_ID]: opts.sessionId,
+      [JOB_NAME_LABEL]: `yaac-${slug}-${opts.worktreeId}`,
+      ...worktreeIdLabels(opts.worktreeId),
       [LABEL_PROJECT]: slug,
       [LABEL_TOOL]: opts.tool ?? 'claude',
       ...(opts.prewarmed ? { [LABEL_PREWARMED]: 'true' } : {}),
@@ -399,9 +399,9 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
-        pod({ sessionId: 's1' }),
-        pod({ sessionId: 's2', running: false }),
-        pod({ sessionId: 's3', prewarmed: true }),
+        pod({ worktreeId: 's1' }),
+        pod({ worktreeId: 's2', running: false }),
+        pod({ worktreeId: 's3', prewarmed: true }),
       ])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
@@ -413,8 +413,8 @@ describe('StatusWatcherManager', () => {
   it('is idempotent for an unchanged pod set', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([pod({ sessionId: 's1' })])
-      manager.sync([pod({ sessionId: 's1' })])
+      manager.sync([pod({ worktreeId: 's1' })])
+      manager.sync([pod({ worktreeId: 's1' })])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
     } finally {
@@ -425,12 +425,12 @@ describe('StatusWatcherManager', () => {
   it('stops the watcher and evicts the store entry when the pod goes away', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([pod({ sessionId: 's1' })])
+      manager.sync([pod({ worktreeId: 's1' })])
       setAgentStatus('demo', 's1', '%0', 'running')
       manager.sync([])
       expect(manager.size).toBe(0)
       expect(children[0].killed).toBe(true)
-      expect(readSessionStatus('demo', 's1')).toBe('waiting')
+      expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
     } finally {
       manager.stopAll()
     }
@@ -439,9 +439,9 @@ describe('StatusWatcherManager', () => {
   it('starts a watcher when a claimed spare loses its prewarm label', () => {
     const { manager } = makeManager()
     try {
-      manager.sync([pod({ sessionId: 's1', prewarmed: true })])
+      manager.sync([pod({ worktreeId: 's1', prewarmed: true })])
       expect(manager.size).toBe(0)
-      manager.sync([pod({ sessionId: 's1' })])
+      manager.sync([pod({ worktreeId: 's1' })])
       expect(manager.size).toBe(1)
     } finally {
       manager.stopAll()
@@ -450,7 +450,7 @@ describe('StatusWatcherManager', () => {
 
   it('stopAll kills every watcher', () => {
     const { manager, children } = makeManager()
-    manager.sync([pod({ sessionId: 's1' }), pod({ sessionId: 's2' })])
+    manager.sync([pod({ worktreeId: 's1' }), pod({ worktreeId: 's2' })])
     expect(manager.size).toBe(2)
     manager.stopAll()
     expect(manager.size).toBe(0)

@@ -4,7 +4,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
-    listSessionPods: vi.fn(),
+    listWorktreePods: vi.fn(),
   }
 })
 
@@ -17,28 +17,28 @@ vi.mock('#features/status/liveness', () => ({
 }))
 
 vi.mock('#features/forwarders/port-forwarders', () => ({
-  hasSessionForwarders: vi.fn(),
-  provisionSessionForwarders: vi.fn(),
+  hasWorktreeForwarders: vi.fn(),
+  provisionWorktreeForwarders: vi.fn(),
 }))
 
-import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { resolveProjectConfig } from '#features/projects/config'
 import { isTmuxSessionAlive } from '#features/status/liveness'
-import { hasSessionForwarders, provisionSessionForwarders } from '#features/forwarders/port-forwarders'
-import { restoreAllSessionForwarders } from '#features/forwarders/restore'
+import { hasWorktreeForwarders, provisionWorktreeForwarders } from '#features/forwarders/port-forwarders'
+import { restoreAllWorktreeForwarders } from '#features/forwarders/restore'
 
-const mockListPods = vi.mocked(listSessionPods)
+const mockListPods = vi.mocked(listWorktreePods)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
-const mockHasForwarders = vi.mocked(hasSessionForwarders)
-const mockProvision = vi.mocked(provisionSessionForwarders)
+const mockHasForwarders = vi.mocked(hasWorktreeForwarders)
+const mockProvision = vi.mocked(provisionWorktreeForwarders)
 
-function pod(overrides: Partial<SessionPod> = {}): SessionPod {
+function pod(overrides: Partial<PodInfo> = {}): PodInfo {
   return {
     jobName: 'yaac-proj-sess',
     podName: 'yaac-proj-sess-x1y2z',
-    sessionId: 'sess-1',
+    worktreeId: 'sess-1',
     projectSlug: 'proj',
     tool: 'claude',
     phase: 'Running',
@@ -50,7 +50,7 @@ function pod(overrides: Partial<SessionPod> = {}): SessionPod {
   }
 }
 
-describe('restoreAllSessionForwarders', () => {
+describe('restoreAllWorktreeForwarders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mockTmuxAlive.mockResolvedValue(true)
@@ -63,11 +63,11 @@ describe('restoreAllSessionForwarders', () => {
 
   it('provisions forwarders for each running session pod', async () => {
     mockListPods.mockResolvedValue([
-      pod({ jobName: 'yaac-proj-sess1', sessionId: 'sess1' }),
-      pod({ jobName: 'yaac-proj-sess2', sessionId: 'sess2' }),
+      pod({ jobName: 'yaac-proj-sess1', worktreeId: 'sess1' }),
+      pod({ jobName: 'yaac-proj-sess2', worktreeId: 'sess2' }),
     ])
 
-    await restoreAllSessionForwarders()
+    await restoreAllWorktreeForwarders()
 
     expect(mockProvision).toHaveBeenCalledTimes(2)
     expect(mockProvision).toHaveBeenCalledWith(
@@ -82,50 +82,50 @@ describe('restoreAllSessionForwarders', () => {
     mockListPods.mockResolvedValue([
       pod({ running: false, phase: 'Failed' }),
     ])
-    await restoreAllSessionForwarders()
+    await restoreAllWorktreeForwarders()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('skips pods missing session/project/job metadata', async () => {
     mockListPods.mockResolvedValue([
-      pod({ sessionId: '' }),
+      pod({ worktreeId: '' }),
       pod({ projectSlug: '' }),
       pod({ jobName: '' }),
     ])
-    await restoreAllSessionForwarders()
+    await restoreAllWorktreeForwarders()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('skips pods with a dead tmux session', async () => {
     mockTmuxAlive.mockResolvedValue(false)
     mockListPods.mockResolvedValue([pod()])
-    await restoreAllSessionForwarders()
+    await restoreAllWorktreeForwarders()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('skips pods whose forwarders are already registered', async () => {
     mockHasForwarders.mockReturnValue(true)
     mockListPods.mockResolvedValue([pod()])
-    await restoreAllSessionForwarders()
+    await restoreAllWorktreeForwarders()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
-  it('continues when listSessionPods throws', async () => {
+  it('continues when listWorktreePods throws', async () => {
     mockListPods.mockRejectedValue(new Error('cluster offline'))
-    await expect(restoreAllSessionForwarders()).resolves.toBeUndefined()
+    await expect(restoreAllWorktreeForwarders()).resolves.toBeUndefined()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('swallows per-session provision errors so one failure does not block the rest', async () => {
     mockListPods.mockResolvedValue([
-      pod({ jobName: 'yaac-proj-a', sessionId: 'a' }),
-      pod({ jobName: 'yaac-proj-b', sessionId: 'b' }),
+      pod({ jobName: 'yaac-proj-a', worktreeId: 'a' }),
+      pod({ jobName: 'yaac-proj-b', worktreeId: 'b' }),
     ])
     mockProvision
       .mockRejectedValueOnce(new Error('first failed'))
       .mockResolvedValueOnce([])
 
-    await expect(restoreAllSessionForwarders()).resolves.toBeUndefined()
+    await expect(restoreAllWorktreeForwarders()).resolves.toBeUndefined()
     expect(mockProvision).toHaveBeenCalledTimes(2)
   })
 })

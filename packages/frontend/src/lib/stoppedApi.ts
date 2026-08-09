@@ -3,7 +3,7 @@ import { ServerError } from '@yaac/shared/errors'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
 
 /**
- * Deleted sessions for a project — sessions whose containers are gone but
+ * Deleted worktrees for a project — worktrees whose containers are gone but
  * whose transcripts remain on disk, so they can be restarted (resumed).
  * Mirrors `yaac worktree list -s`.
  *
@@ -27,7 +27,7 @@ export async function getStoppedWorktrees(
 /**
  * Mark an abnormal death as seen — the user viewed its detail in the deleted
  * overlay, so the notification dot / row highlight should clear. Persisted on
- * the server (session row) so the acknowledgement is durable and
+ * the server (worktree row) so the acknowledgement is durable and
  * shared across clients. Best-effort: a failed write just re-shows the dot,
  * which the next view clears again, so callers fire-and-forget.
  */

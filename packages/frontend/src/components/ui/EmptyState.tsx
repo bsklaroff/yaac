@@ -3,7 +3,7 @@ import clsx from 'clsx'
 
 /**
  * Centered empty-state block: a soft icon badge, a title, an optional line of
- * help text, and an optional action (e.g. a New-session button). The outer
+ * help text, and an optional action (e.g. a New-worktree button). The outer
  * layout — full-height and centered for a pane, or inset at the top of a
  * list — is left to the caller via `className`.
  *

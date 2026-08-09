@@ -1,11 +1,11 @@
 import { api } from './api'
 
 /**
- * Forward a detected-but-unforwarded container port for a session.
- * `persist: false` opens a live forward for just this running session;
+ * Forward a detected-but-unforwarded container port for a worktree.
+ * `persist: false` opens a live forward for just this running worktree;
  * `persist: true` also writes the port into the project's yaac-config.json
- * (so future sessions inherit it) and fans the live forward out to the
- * project's other running sessions. Either way the server pushes a fresh
+ * (so future worktrees inherit it) and fans the live forward out to the
+ * project's other running worktrees. Either way the server pushes a fresh
  * snapshot that moves the port from `unforwardedPorts` to `forwardedPorts`,
  * so the badge updates on its own.
  */
@@ -21,7 +21,7 @@ export async function forwardDetectedPort(
 }
 
 /**
- * Hide a detected port for this session (server-side, in-memory — resets on
+ * Hide a detected port for this worktree (server-side, in-memory — resets on
  * server restart). The pushed snapshot drops it from `unforwardedPorts`.
  */
 export async function dismissDetectedPort(

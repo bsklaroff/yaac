@@ -1,54 +1,54 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import {
-  readSessionStatus,
-  readSessionWaitingSince,
-  isSessionStreamHealthy,
+  readWorktreeStatus,
+  readWorktreeWaitingSince,
+  isWorktreeStreamHealthy,
   setAgentStatus,
-  setSessionStreamHealth,
-  evictSessionStatus,
+  setWorktreeStreamHealth,
+  evictWorktreeStatus,
   setLiveAgents,
   onLiveAgentsChanged,
-  onSessionStatusChanged,
-  _resetSessionStatusStoreForTests,
+  onWorktreeStatusChanged,
+  _resetWorktreeStatusStoreForTests,
 } from '#features/status/status-store'
 
 beforeEach(() => {
-  _resetSessionStatusStoreForTests()
+  _resetWorktreeStatusStoreForTests()
 })
 
-describe('readSessionStatus', () => {
+describe('readWorktreeStatus', () => {
   it('returns waiting for a session with no entry', () => {
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
   })
 
   it('returns the stored status after a write', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
-    expect(readSessionStatus('demo', 's1')).toBe('running')
+    expect(readWorktreeStatus('demo', 's1')).toBe('running')
   })
 
   it('keys by slug AND session id', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
-    expect(readSessionStatus('other', 's1')).toBe('waiting')
-    expect(readSessionStatus('demo', 's2')).toBe('waiting')
+    expect(readWorktreeStatus('other', 's1')).toBe('waiting')
+    expect(readWorktreeStatus('demo', 's2')).toBe('waiting')
   })
 })
 
-describe('isSessionStreamHealthy', () => {
+describe('isWorktreeStreamHealthy', () => {
   it('returns false for a session with no entry', () => {
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
   })
 
   it('returns true after a status write (classification implies a live stream)', () => {
     setAgentStatus('demo', 's1', '%0', 'waiting')
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
   })
 })
 
 describe('setAgentStatus', () => {
   it('fires the change listener when the status flips', () => {
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
+    onWorktreeStatusChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
     setAgentStatus('demo', 's1', '%0', 'waiting')
@@ -58,63 +58,63 @@ describe('setAgentStatus', () => {
   it('does not fire when the same status is re-set on a healthy entry', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
+    onWorktreeStatusChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).not.toHaveBeenCalled()
   })
 
   it('fires when re-classifying an unhealthy entry (health became visible)', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
-    setSessionStreamHealth('demo', 's1', false)
+    setWorktreeStreamHealth('demo', 's1', false)
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
+    onWorktreeStatusChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
   })
 })
 
-describe('setSessionStreamHealth', () => {
+describe('setWorktreeStreamHealth', () => {
   it('creates a waiting entry when marking an absent session healthy', () => {
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
-    setSessionStreamHealth('demo', 's1', true)
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+    onWorktreeStatusChanged(listener)
+    setWorktreeStreamHealth('demo', 's1', true)
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('is a no-op when marking an absent session unhealthy', () => {
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
-    setSessionStreamHealth('demo', 's1', false)
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+    onWorktreeStatusChanged(listener)
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
     expect(listener).not.toHaveBeenCalled()
   })
 
   it('keeps the sticky status across a health drop', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
-    setSessionStreamHealth('demo', 's1', false)
-    expect(readSessionStatus('demo', 's1')).toBe('running')
-    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(readWorktreeStatus('demo', 's1')).toBe('running')
+    expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
   })
 
   it('fires only when the health bit actually flips', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
-    setSessionStreamHealth('demo', 's1', true)
+    onWorktreeStatusChanged(listener)
+    setWorktreeStreamHealth('demo', 's1', true)
     expect(listener).not.toHaveBeenCalled()
-    setSessionStreamHealth('demo', 's1', false)
+    setWorktreeStreamHealth('demo', 's1', false)
     expect(listener).toHaveBeenCalledTimes(1)
-    setSessionStreamHealth('demo', 's1', false)
+    setWorktreeStreamHealth('demo', 's1', false)
     expect(listener).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('readSessionWaitingSince (waiting spells)', () => {
+describe('readWorktreeWaitingSince (waiting spells)', () => {
   it('returns undefined for an absent entry (booting — no spell yet)', () => {
-    expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
+    expect(readWorktreeWaitingSince('demo', 's1')).toBeUndefined()
   })
 
   it('stamps a spell on entering waiting and keeps it while waiting persists', () => {
@@ -122,10 +122,10 @@ describe('readSessionWaitingSince (waiting spells)', () => {
     try {
       vi.setSystemTime(1_000)
       setAgentStatus('demo', 's1', '%0', 'waiting')
-      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+      expect(readWorktreeWaitingSince('demo', 's1')).toBe(1_000)
       vi.setSystemTime(5_000)
       setAgentStatus('demo', 's1', '%0', 'waiting')
-      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+      expect(readWorktreeWaitingSince('demo', 's1')).toBe(1_000)
     } finally {
       vi.useRealTimers()
     }
@@ -137,18 +137,18 @@ describe('readSessionWaitingSince (waiting spells)', () => {
       vi.setSystemTime(1_000)
       setAgentStatus('demo', 's1', '%0', 'waiting')
       setAgentStatus('demo', 's1', '%0', 'running')
-      expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
+      expect(readWorktreeWaitingSince('demo', 's1')).toBeUndefined()
       vi.setSystemTime(2_000)
       setAgentStatus('demo', 's1', '%0', 'waiting')
-      expect(readSessionWaitingSince('demo', 's1')).toBe(2_000)
+      expect(readWorktreeWaitingSince('demo', 's1')).toBe(2_000)
     } finally {
       vi.useRealTimers()
     }
   })
 
   it('stamps the waiting entry created by a healthy-attach on an absent session', () => {
-    setSessionStreamHealth('demo', 's1', true)
-    expect(readSessionWaitingSince('demo', 's1')).toBeGreaterThan(0)
+    setWorktreeStreamHealth('demo', 's1', true)
+    expect(readWorktreeWaitingSince('demo', 's1')).toBeGreaterThan(0)
   })
 
   it('keeps the spell across a stream-health drop (sticky, like status)', () => {
@@ -157,9 +157,9 @@ describe('readSessionWaitingSince (waiting spells)', () => {
       vi.setSystemTime(1_000)
       setAgentStatus('demo', 's1', '%0', 'waiting')
       vi.setSystemTime(9_000)
-      setSessionStreamHealth('demo', 's1', false)
-      setSessionStreamHealth('demo', 's1', true)
-      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+      setWorktreeStreamHealth('demo', 's1', false)
+      setWorktreeStreamHealth('demo', 's1', true)
+      expect(readWorktreeWaitingSince('demo', 's1')).toBe(1_000)
     } finally {
       vi.useRealTimers()
     }
@@ -167,35 +167,35 @@ describe('readSessionWaitingSince (waiting spells)', () => {
 
   it('is gone after eviction', () => {
     setAgentStatus('demo', 's1', '%0', 'waiting')
-    evictSessionStatus('demo', 's1')
-    expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
+    evictWorktreeStatus('demo', 's1')
+    expect(readWorktreeWaitingSince('demo', 's1')).toBeUndefined()
   })
 })
 
-describe('evictSessionStatus', () => {
+describe('evictWorktreeStatus', () => {
   it('removes the entry and fires the listener', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
-    evictSessionStatus('demo', 's1')
-    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    onWorktreeStatusChanged(listener)
+    evictWorktreeStatus('demo', 's1')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('does not fire for an absent entry', () => {
     const listener = vi.fn()
-    onSessionStatusChanged(listener)
-    evictSessionStatus('demo', 's1')
+    onWorktreeStatusChanged(listener)
+    evictWorktreeStatus('demo', 's1')
     expect(listener).not.toHaveBeenCalled()
   })
 })
 
-describe('onSessionStatusChanged', () => {
+describe('onWorktreeStatusChanged', () => {
   it('replaces the previous listener (last registration wins)', () => {
     const first = vi.fn()
     const second = vi.fn()
-    onSessionStatusChanged(first)
-    onSessionStatusChanged(second)
+    onWorktreeStatusChanged(first)
+    onWorktreeStatusChanged(second)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)

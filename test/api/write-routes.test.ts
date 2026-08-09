@@ -14,29 +14,29 @@ import {
 } from '@yaac/shared/tool-auth'
 import { getDefaultTool } from '@yaac/server/features/records/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
-import type * as sessionCreateModule from '@yaac/server/features/sessions/create'
+import type * as sessionCreateModule from '@yaac/server/features/worktrees/create'
 import type * as projectAddModule from '@yaac/server/features/projects/add'
-import type * as sessionDeleteModule from '@yaac/server/features/sessions/stop'
-import type * as sessionRestartModule from '@yaac/server/features/sessions/restart'
-import type * as projectRemoveModule from '@yaac/server/features/sessions/project-teardown'
+import type * as sessionDeleteModule from '@yaac/server/features/worktrees/stop'
+import type * as sessionRestartModule from '@yaac/server/features/worktrees/restart'
+import type * as projectRemoveModule from '@yaac/server/features/worktrees/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
-vi.mock('@yaac/server/features/sessions/create', async () => {
-  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/features/sessions/create')
+vi.mock('@yaac/server/features/worktrees/create', async () => {
+  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/features/worktrees/create')
   return {
     ...actual,
-    createSession: vi.fn(),
+    createWorktree: vi.fn(),
   }
 })
 
-vi.mock('@yaac/server/features/sessions/stop', () => ({
+vi.mock('@yaac/server/features/worktrees/stop', () => ({
   stopWorktree: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
 
-vi.mock('@yaac/server/features/sessions/restart', () => ({
+vi.mock('@yaac/server/features/worktrees/restart', () => ({
   restartWorktree: vi.fn(),
 } satisfies Partial<typeof sessionRestartModule>))
 
@@ -48,7 +48,7 @@ vi.mock('@yaac/server/features/projects/add', async () => {
   }
 })
 
-vi.mock('@yaac/server/features/sessions/project-teardown', () => ({
+vi.mock('@yaac/server/features/worktrees/project-teardown', () => ({
   removeProject: vi.fn(),
 } satisfies Partial<typeof projectRemoveModule>))
 
@@ -62,12 +62,12 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
   }
 })
 
-import { createSession } from '@yaac/server/features/sessions/create'
-import { stopWorktree } from '@yaac/server/features/sessions/stop'
-import { restartWorktree } from '@yaac/server/features/sessions/restart'
+import { createWorktree } from '@yaac/server/features/worktrees/create'
+import { stopWorktree } from '@yaac/server/features/worktrees/stop'
+import { restartWorktree } from '@yaac/server/features/worktrees/restart'
 import { addProject } from '@yaac/server/features/projects/add'
-import { removeProject } from '@yaac/server/features/sessions/project-teardown'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/sessions/provisioning'
+import { removeProject } from '@yaac/server/features/worktrees/project-teardown'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/worktrees/provisioning'
 import { authAgentHub } from '@yaac/server/features/auth/agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
@@ -129,7 +129,7 @@ function installLoopbackAgent(): () => void {
   }
 }
 
-const mockCreateSession = vi.mocked(createSession)
+const mockCreateWorktree = vi.mocked(createWorktree)
 const mockDeleteSession = vi.mocked(stopWorktree)
 const mockRestartSession = vi.mocked(restartWorktree)
 const mockAddProject = vi.mocked(addProject)
@@ -546,8 +546,8 @@ describe('write routes', () => {
       expect(body.error.code).toBe('VALIDATION')
     })
 
-    it('streams progress and a terminal result event from createSession', async () => {
-      mockCreateSession.mockImplementation((_slug, opts) => {
+    it('streams progress and a terminal result event from createWorktree', async () => {
+      mockCreateWorktree.mockImplementation((_slug, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
         opts.onProgress?.('Creating session job yaac-demo-sess-x...')
         return Promise.resolve({
@@ -585,13 +585,13 @@ describe('write routes', () => {
           },
         },
       ])
-      expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({
+      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({
         gitUser: { name: 'A', email: 'a@b' },
       }))
     })
 
-    it('emits a terminal error event when createSession throws', async () => {
-      mockCreateSession.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
+    it('emits a terminal error event when createWorktree throws', async () => {
+      mockCreateWorktree.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
@@ -601,15 +601,15 @@ describe('write routes', () => {
       ])
     })
 
-    it('threads a branch into createSession', async () => {
-      mockCreateSession.mockResolvedValue({
+    it('threads a branch into createWorktree', async () => {
+      mockCreateWorktree.mockResolvedValue({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.worktree.create.$post({ json: { project: 'demo', branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
+      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({ branch: 'dev' }))
     })
 
     it('rejects an empty branch with VALIDATION', async () => {
@@ -621,8 +621,8 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('threads a client-supplied sessionId into createSession', async () => {
-      mockCreateSession.mockResolvedValue({
+    it('threads a client-supplied worktreeId into createWorktree', async () => {
+      mockCreateWorktree.mockResolvedValue({
         worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
       })
       const id = '11111111-1111-4111-8111-111111111111'
@@ -630,10 +630,10 @@ describe('write routes', () => {
       const res = await client.worktree.create.$post({ json: { project: 'demo', worktreeId: id } })
       expect(res.status).toBe(200)
       await res.text()
-      expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({ sessionId: id }))
+      expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({ worktreeId: id }))
     })
 
-    it('rejects a non-uuid sessionId with VALIDATION', async () => {
+    it('rejects a non-uuid worktreeId with VALIDATION', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
       const res = await app.request('/worktree/create', withAuth({
         method: 'POST',
@@ -662,7 +662,7 @@ describe('write routes', () => {
   })
 
   describe('POST /worktree/restart', () => {
-    it('rejects missing sessionId', async () => {
+    it('rejects missing worktreeId', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
       const res = await app.request('/worktree/restart', withAuth({
         method: 'POST',

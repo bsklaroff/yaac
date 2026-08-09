@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTag } from '@yaac/server/features/image-engine/image-builder'
-import { sessionUid } from '@yaac/server/platform/k8s/pod-spec'
+import { podUid } from '@yaac/server/platform/k8s/pod-spec'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
@@ -32,7 +32,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
  *
  * Assets, not just cli.js: the bundle runs in bundled mode (tsup sets
  * YAAC_BUNDLED), where PACKAGE_ROOT is the directory holding cli.js — so the
- * migrations, k8s manifests, builtin skills and session-bin scripts must be
+ * migrations, k8s manifests, builtin skills and worktree-bin scripts must be
  * sitting beside it or a spawned server dies on its first query.
  */
 async function buildCliBundle(): Promise<void> {
@@ -194,7 +194,7 @@ export async function setup(): Promise<void> {
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseHash = await baseImageHash(baseDockerfile)
   const baseTag = `yaac-test-base:${baseHash}`
-  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR, { YAAC_UID: String(sessionUid()) })
+  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR, { YAAC_UID: String(podUid()) })
 
   // --- Tools layer (Dockerfile.tools, layered on base) ---
   // toolsContentHash covers the Dockerfile plus its COPY'd support files
@@ -214,7 +214,7 @@ export async function setup(): Promise<void> {
   const nestableTag = `yaac-test-nestable:${nestableHash}`
   await ensureImageByTag(nestableTag, nestableDockerfile, DOCKERFILES_DIR, {
     BASE_IMAGE: toolsTag,
-    YAAC_UID: String(sessionUid()),
+    YAAC_UID: String(podUid()),
   })
 
   // --- Proxy (k8s/proxy/) ---

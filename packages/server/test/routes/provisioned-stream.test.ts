@@ -5,17 +5,17 @@ import {
   registerProvisioning,
   listProvisioning,
   clearAllProvisioningForTests,
-} from '#features/sessions/provisioning'
+} from '#features/worktrees/provisioning'
 import {
-  onSessionListChanged,
-  _resetSessionListChangedForTests,
+  onWorktreeListChanged,
+  _resetWorktreeListChangedForTests,
 } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 
 type Run = Parameters<typeof streamProvisioned>[2]
 
-async function request(sessionId: string, run: Run): Promise<{ res: Response; events: unknown[] }> {
-  const app = new Hono().post('/op', (c) => streamProvisioned(c, sessionId, run))
+async function request(worktreeId: string, run: Run): Promise<{ res: Response; events: unknown[] }> {
+  const app = new Hono().post('/op', (c) => streamProvisioned(c, worktreeId, run))
   const res = await app.request('/op', { method: 'POST' })
   const text = await res.text()
   return { res, events: text.trim().split('\n').map((l) => JSON.parse(l) as unknown) }
@@ -27,12 +27,12 @@ describe('streamProvisioned', () => {
   beforeEach(() => {
     clearAllProvisioningForTests()
     notifies = 0
-    onSessionListChanged(() => { notifies += 1 })
+    onWorktreeListChanged(() => { notifies += 1 })
   })
 
   afterEach(() => {
     clearAllProvisioningForTests()
-    _resetSessionListChangedForTests()
+    _resetWorktreeListChangedForTests()
   })
 
   it('streams NDJSON progress events followed by the terminal result', async () => {

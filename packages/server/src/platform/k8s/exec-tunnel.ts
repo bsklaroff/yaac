@@ -10,7 +10,7 @@ import { serverLog } from '#log'
  * 127.0.0.1 listener on an ephemeral port bridges each accepted
  * connection into the target pod via `kubectl exec -i deploy/<name> --
  * socat`; the per-connection relay wiring is the shared
- * startPortForwarders helper session port-forwarding uses, so the two
+ * startPortForwarders helper worktree port-forwarding uses, so the two
  * relay paths cannot drift.
  *
  * Deliberately NOT `kubectl port-forward` (which this replaced):

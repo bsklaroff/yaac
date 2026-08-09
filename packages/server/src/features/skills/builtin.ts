@@ -1,16 +1,16 @@
 /**
  * yaac's own bundled skills — `builtin-skills/<name>/SKILL.md` dirs shipped
- * inside the yaac package that yaac injects into *every* session's personal
+ * inside the yaac package that yaac injects into *every* worktree's personal
  * skills root, for every agent tool.
  *
- * Delivery is a per-session read-only mount, never a write into a config dir:
- * at session create the packaged skills are copied into a staging dir under
- * the session dir (`stageBuiltinSkills`) and each is mounted at `<root>/<name>`
+ * Delivery is a per-worktree read-only mount, never a write into a config dir:
+ * at worktree create the packaged skills are copied into a staging dir under
+ * the worktree dir (`stageBuiltinSkills`) and each is mounted at `<root>/<name>`
  * in every tool's personal skills dir (`builtinSkillMounts`). Copying fresh
  * from the install on every create keeps the staged skills in lockstep with
  * the running yaac version, and because the content rides in via the mount it
  * never lands in the persisted per-project config dirs — so nothing ever goes
- * stale there. The staging dir is removed with the session dir on cleanup.
+ * stale there. The staging dir is removed with the worktree dir on cleanup.
  *
  * Discovery (discover.ts) reads the install dir directly — it runs pod-less, so
  * it can't see the in-pod mounts — and surfaces these as `system`/`yaac` skills
@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { type SessionMount } from '#platform/k8s'
+import { type PodMount } from '#platform/k8s'
 
 /**
  * In-pod personal skills root for each agent tool. yaac's bundled skills are
@@ -69,7 +69,7 @@ export async function listBuiltinSkills(dir: string): Promise<string[]> {
 }
 
 /** Copy every skill dir from `srcDir` into `destDir` (replacing any prior
- *  staging) and return the staged skill names. A fresh copy per session keeps
+ *  staging) and return the staged skill names. A fresh copy per worktree keeps
  *  the staged skills in lockstep with the installed yaac version. */
 export async function stageBuiltinSkills(srcDir: string, destDir: string): Promise<string[]> {
   await fs.rm(destDir, { recursive: true, force: true })
@@ -83,10 +83,10 @@ export async function stageBuiltinSkills(srcDir: string, destDir: string): Promi
 /** Read-only mounts placing each staged skill at `<root>/<name>` in every
  *  tool's personal skills dir. The skill content rides in via the mount, so it
  *  is never written into the persisted per-project config dirs. The staging dir
- *  is SHARED (under `sessionDir`) — server-written, pod-read — so it takes the
+ *  is SHARED (under `worktreeStateDir`) — server-written, pod-read — so it takes the
  *  shared tier's source. */
-export function builtinSkillMounts(stagingDir: string, names: string[]): SessionMount[] {
-  const mounts: SessionMount[] = []
+export function builtinSkillMounts(stagingDir: string, names: string[]): PodMount[] {
+  const mounts: PodMount[] = []
   for (const name of names) {
     for (const root of TOOL_SKILL_ROOTS) {
       mounts.push({

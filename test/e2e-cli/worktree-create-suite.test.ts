@@ -8,7 +8,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { listSessionPods, type SessionPod } from '@yaac/server/platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -21,7 +21,7 @@ import {
   requirePodman,
   requireCluster,
   execInJob,
-  cleanupSessionJobs,
+  cleanupWorktreeJobs,
 } from '@yaac/test-utils/setup'
 import { k8sNamespace, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
@@ -223,7 +223,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
   afterAll(async () => {
     if (server) await server.stop()
     server = null
-    await cleanupSessionJobs()
+    await cleanupWorktreeJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -273,17 +273,17 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     return projectPath
   }
 
-  async function findSessionPod(slug: string): Promise<SessionPod> {
-    // listSessionPods scopes by the data-dir-hash label, so we never trip
+  async function findWorktreePod(slug: string): Promise<PodInfo> {
+    // listWorktreePods scopes by the data-dir-hash label, so we never trip
     // over pods owned by a concurrent worker. Oldest-first so we always
     // grab the CLI's session.
-    const pods = await listSessionPods(slug)
+    const pods = await listWorktreePods(slug)
     const pod = pods.sort((a, b) => a.createdAtMs - b.createdAtMs)[0]
     if (!pod) throw new Error(`no session pod found for project ${slug}`)
     return pod
   }
 
-  async function createSession(
+  async function createWorktree(
     slug: string,
     ...extraArgs: string[]
   ): Promise<{ jobName: string; stdout: string }> {
@@ -293,7 +293,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    return { jobName: (await findSessionPod(slug)).jobName, stdout }
+    return { jobName: (await findWorktreePod(slug)).jobName, stdout }
   }
 
   /**
@@ -347,7 +347,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // "Forwarding host port ... -> container port ..." progress messages.
     const hostPortFor = new Map<number, number>()
     let jobName = ''
-    let sessionId = ''
+    let worktreeId = ''
     let projectPath = ''
     let roDir = ''
     let rwDir = ''
@@ -408,7 +408,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         skipDangerousModePermissionPrompt: true,
       }) + '\n')
 
-      const created = await createSession('kitchen', '--tool', 'claude')
+      const created = await createWorktree('kitchen', '--tool', 'claude')
       jobName = created.jobName
 
       // Parse the CLI's progress stream for the resolved host ports. Each
@@ -420,12 +420,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }
       expect(hostPortFor.size).toBe(PORT_FORWARD.length)
 
-      sessionId = (await findSessionPod('kitchen')).sessionId
-      expect(sessionId).toBeTruthy()
+      worktreeId = (await findWorktreePod('kitchen')).worktreeId
+      expect(worktreeId).toBeTruthy()
     }, 240_000)
 
     it('provisions pod, worktree, mounts, git, and tmux', async () => {
-      const pod = await findSessionPod('kitchen')
+      const pod = await findWorktreePod('kitchen')
       expect(pod.running).toBe(true)
       expect(pod.labels['yaac.project']).toBe('kitchen')
       expect(pod.labels['yaac.tool']).toBe('claude')
@@ -445,7 +445,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const { stdout: branch } = await execInJob(jobName, [
         'sh', '-c', 'cd /workspace && git rev-parse --abbrev-ref HEAD',
       ])
-      expect(branch.trim()).toBe(`agent/${sessionId}`)
+      expect(branch.trim()).toBe(`agent/${worktreeId}`)
 
       const { stdout: tmuxList } = await execInJob(jobName, [
         'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',
@@ -519,7 +519,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'tmux', '-S', CONTAINER_TMUX_SOCK,
         'show-option', '-t', 'yaac', 'status-right',
       ])
-      expect(statusRight).toContain(sessionId.slice(0, 8))
+      expect(statusRight).toContain(worktreeId.slice(0, 8))
       for (const { containerPort, hostPortStart } of PORT_FORWARD.slice(0, 2)) {
         const m = statusRight.match(new RegExp(`:(\\d+)->${containerPort}`))
         expect(m).not.toBeNull()
@@ -579,7 +579,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         + ' && printf "\\nappended\\n" >> README.md',
       ])
 
-      const res = await fetch(`${base}/worktree/${sessionId}/changes`, { headers: auth })
+      const res = await fetch(`${base}/worktree/${worktreeId}/changes`, { headers: auth })
       expect(res.status).toBe(200)
       const body = await res.json() as {
         base: string
@@ -616,7 +616,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await execInJob(jobName, ['sh', '-c',
         'cd /workspace && rm -f untracked.txt && printf "second\\n" > later.txt',
       ])
-      const res2 = await fetch(`${base}/worktree/${sessionId}/changes`, { headers: auth })
+      const res2 = await fetch(`${base}/worktree/${worktreeId}/changes`, { headers: auth })
       expect(res2.status).toBe(200)
       const body2 = await res2.json() as { files: Array<{ path: string }> }
       const paths2 = body2.files.map((f) => f.path)
@@ -700,7 +700,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 90_000)
 
     it('forwards a detected port for this session and serves real traffic', async () => {
-      const res = await fetch(`${base}/worktree/${sessionId}/forward-port`, {
+      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8090 }),
@@ -720,7 +720,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       // Now forwarded → subtracted from the offerable set, so a repeat
       // request is rejected.
-      const again = await fetch(`${base}/worktree/${sessionId}/forward-port`, {
+      const again = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8090 }),
@@ -729,7 +729,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
     it('rejects forwarding a port with no detected listener', async () => {
-      const res = await fetch(`${base}/worktree/${sessionId}/forward-port`, {
+      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8099 }),
@@ -744,7 +744,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'listener on 8091 never surfaced in unforwardedPorts',
       )
 
-      const res = await fetch(`${base}/worktree/${sessionId}/forward-port`, {
+      const res = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8091, persist: true }),
@@ -776,7 +776,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'listener on 8092 never surfaced in unforwardedPorts',
       )
 
-      const res = await fetch(`${base}/worktree/${sessionId}/dismiss-port`, {
+      const res = await fetch(`${base}/worktree/${worktreeId}/dismiss-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8092 }),
@@ -785,7 +785,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect((await kitchenSession()).unforwardedPorts).not.toContain(8092)
 
       // A dismissed port is also no longer forwardable.
-      const forward = await fetch(`${base}/worktree/${sessionId}/forward-port`, {
+      const forward = await fetch(`${base}/worktree/${worktreeId}/forward-port`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: 8092 }),
@@ -905,7 +905,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // webapp's "+" path), attach it over the WS, round-trip a command.
       // A shell window needs no agent auth — just the container and tmux.
       const createRes = await fetch(
-        `${base}/worktree/${sessionId}/terminals`,
+        `${base}/worktree/${worktreeId}/terminals`,
         { method: 'POST', headers: auth },
       )
       expect(createRes.ok).toBe(true)
@@ -914,7 +914,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(shell.target).toMatch(/^window:@\d+$/)
       const { ws, binary, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/pty/attach`
-          + `?id=${sessionId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
+          + `?id=${worktreeId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
         auth,
       )
       await opened
@@ -930,7 +930,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // tmux client, ends the PTY, and closes the socket server-side.
       const native = openWs(
         `ws://127.0.0.1:${server!.lock.port}/pty/attach`
-          + `?id=${sessionId}&target=native&cols=100&rows=30`,
+          + `?id=${worktreeId}&target=native&cols=100&rows=30`,
         auth,
       )
       const nativeClosed = new Promise<void>((resolve) => native.ws.on('close', () => resolve()))
@@ -947,7 +947,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // tmux. `exit` ends the shell and closes the socket.
       const rawShell = openWs(
         `ws://127.0.0.1:${server!.lock.port}/pty/attach`
-          + `?id=${sessionId}&target=shell&cols=100&rows=30`,
+          + `?id=${worktreeId}&target=shell&cols=100&rows=30`,
         auth,
       )
       const shellClosed = new Promise<void>((resolve) => rawShell.ws.on('close', () => resolve()))
@@ -998,7 +998,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
       const ns = k8sNamespace()
       const { stdout: ipOut } = await kubectlWithRetry([
-        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${sessionId}`,
+        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${worktreeId}`,
         '-o', 'jsonpath={.items[0].status.podIP}',
       ])
       const podIp = ipOut.trim()
@@ -1021,7 +1021,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // session ingress lock (its SYN is dropped — nc times out). The probe
       // runs the session image (guaranteed present on the node, has nc).
       const { stdout: imgOut } = await kubectlWithRetry([
-        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${sessionId}`,
+        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${worktreeId}`,
         '-o', 'jsonpath={.items[0].spec.containers[0].image}',
       ])
       const probeName = `streamd-lock-probe-${randomUUID().slice(0, 8)}`
@@ -1134,7 +1134,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         'echo hello > /workspace/node_modules/marker.txt',
       ])
       const hostBacking = path.join(
-        projectPath, '.cached-packages', 'modules', sessionId, 'root', 'marker.txt',
+        projectPath, '.cached-packages', 'modules', worktreeId, 'root', 'marker.txt',
       )
       const hostMarker = await fs.readFile(hostBacking, 'utf8')
       expect(hostMarker.trim()).toBe('hello')
@@ -1142,7 +1142,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Host worktree's node_modules has no leaked content — the bind
       // mount shadows it from the container side only.
       const worktreeMarker = path.join(
-        projectPath, 'worktrees', sessionId, 'node_modules', 'marker.txt',
+        projectPath, 'worktrees', worktreeId, 'node_modules', 'marker.txt',
       )
       await expect(fs.access(worktreeMarker)).rejects.toThrow()
 
@@ -1151,13 +1151,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // runs — which git refuses to check out into unless the add is
       // staged. Both are asserted here: the checkout populated the tracked
       // parent around the mount point, and the mount itself is live.
-      const wtDir = path.join(projectPath, 'worktrees', sessionId)
+      const wtDir = path.join(projectPath, 'worktrees', worktreeId)
       expect(await fs.readFile(path.join(wtDir, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
       await execInJob(jobName, [
         'sh', '-c', 'echo nested > /workspace/frontends/node_modules/marker.txt',
       ])
       const nestedBacking = await fs.readFile(path.join(
-        projectPath, '.cached-packages', 'modules', sessionId,
+        projectPath, '.cached-packages', 'modules', worktreeId,
         'frontends_node_modules', 'marker.txt',
       ), 'utf8')
       expect(nestedBacking.trim()).toBe('nested')
@@ -1181,11 +1181,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       // Delete the session; modules/<sid> goes away, pnpm-store survives.
       const { exitCode: delExit } = await runYaac(
-        serverEnv, 'worktree', 'stop', sessionId,
+        serverEnv, 'worktree', 'stop', worktreeId,
       )
       expect(delExit).toBe(0)
 
-      const modulesRoot = path.join(projectPath, '.cached-packages', 'modules', sessionId)
+      const modulesRoot = path.join(projectPath, '.cached-packages', 'modules', worktreeId)
       // Cleanup is detached — poll briefly.
       let gone = false
       for (let i = 0; i < 40; i++) {
@@ -1212,7 +1212,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await setupProject('no-ephemeral', {
         yaacConfig: { ephemeralModulesPaths: [] },
       })
-      const sessionId = randomUUID()
+      const worktreeId = randomUUID()
 
       // Watch the snapshot stream while the create runs.
       const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
@@ -1222,13 +1222,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const createDone = fetch(`${base}/worktree/create`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', worktreeId: sessionId }),
+        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', worktreeId }),
       }).then((r) => r.text())
 
       // The provisioning row appears in the snapshot during creation.
       let sawProvisioning = false
       for (let i = 0; i < 100; i++) {
-        const row = sub.latest()?.provisioning.find((p) => p.worktreeId === sessionId)
+        const row = sub.latest()?.provisioning.find((p) => p.worktreeId === worktreeId)
         if (row) {
           expect(row.kind).toBe('create')
           expect(row.projectSlug).toBe('no-ephemeral')
@@ -1247,17 +1247,17 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // The real session exists under the SAME client-supplied id...
       const list = await (await fetch(`${base}/worktree/list?project=no-ephemeral`, { headers: auth })).json() as
         { worktrees: Array<{ worktreeId: string }> }
-      expect(list.worktrees.some((s) => s.worktreeId === sessionId)).toBe(true)
+      expect(list.worktrees.some((s) => s.worktreeId === worktreeId)).toBe(true)
 
       // ...and the provisioning row drops on hand-off (the create route
-      // removes it when createSession resolves; until then buildSnapshot
+      // removes it when createWorktree resolves; until then buildSnapshot
       // hides the session so no snapshot ever carries both — no double row,
       // and no terminals mounted against a half-built session).
       let droppedFromProvisioning = false
       for (let i = 0; i < 100; i++) {
         const snap = sub.latest()
-        if (snap && snap.worktrees.some((s) => s.worktreeId === sessionId)
-          && !snap.provisioning.some((p) => p.worktreeId === sessionId)) {
+        if (snap && snap.worktrees.some((s) => s.worktreeId === worktreeId)
+          && !snap.provisioning.some((p) => p.worktreeId === worktreeId)) {
           droppedFromProvisioning = true
           break
         }
@@ -1269,7 +1269,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // /workspace/node_modules should not exist at all when the redirect
       // is disabled — the worktree is a fresh git checkout with no
       // node_modules in it and no bind mount is installed.
-      const pod = await findSessionPod('no-ephemeral')
+      const pod = await findWorktreePod('no-ephemeral')
       await expect(execInJob(pod.jobName, [
         'test', '-e', '/workspace/node_modules',
       ])).rejects.toThrow()
@@ -1287,12 +1287,12 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // flow. `/repo` (not `/workspace`) is the key codex sees because the
       // session worktree's .git file points at /repo/.git.
       await fs.mkdir(path.join(projectPath, 'codex'), { recursive: true })
-      const created = await createSession('codex-demo', '--tool', 'codex')
+      const created = await createWorktree('codex-demo', '--tool', 'codex')
       jobName = created.jobName
     }, 240_000)
 
     it('mounts shared Claude and Codex state', async () => {
-      const pod = await findSessionPod('codex-demo')
+      const pod = await findWorktreePod('codex-demo')
       expect(pod.labels['yaac.tool']).toBe('codex')
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
       await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
@@ -1422,7 +1422,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     beforeAll(async () => {
       projectPath = await setupProject('oc-demo')
-      const created = await createSession('oc-demo', '--tool', 'opencode')
+      const created = await createWorktree('oc-demo', '--tool', 'opencode')
       jobName = created.jobName
     }, 240_000)
 
@@ -1598,7 +1598,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         skipDangerousModePermissionPrompt: true,
       }) + '\n')
 
-      const created = await createSession(
+      const created = await createWorktree(
         SLUG, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
       )
       jobName = created.jobName
@@ -1649,17 +1649,17 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
     it('--branch rejects a branch missing from origin without creating a pod', async () => {
-      const podsBefore = (await listSessionPods(SLUG)).length
+      const podsBefore = (await listWorktreePods(SLUG)).length
       const bad = await runYaac(serverEnv, 'worktree', 'create', SLUG, '--branch', 'ghost')
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
-      expect((await listSessionPods(SLUG)).length).toBe(podsBefore)
+      expect((await listWorktreePods(SLUG)).length).toBe(podsBefore)
     }, 60_000)
   })
   describe('agent mode (--mode acp)', () => {
     const SLUG = 'acped'
     let jobName = ''
-    let sessionId = ''
+    let worktreeId = ''
     let agentSessionId = ''
 
     // Its own session, unlike the describes above: an ACP worktree is a
@@ -1668,9 +1668,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // block, and both cases below only read it.
     beforeAll(async () => {
       await setupProject(SLUG)
-      const created = await createSession(SLUG, '--tool', 'claude', '--mode', 'acp')
+      const created = await createWorktree(SLUG, '--tool', 'claude', '--mode', 'acp')
       jobName = created.jobName
-      sessionId = (await findSessionPod(SLUG)).sessionId
+      worktreeId = (await findWorktreePod(SLUG)).worktreeId
 
       // The ACP handshake mints the conversation id, and the registry records
       // it — ACP mode's replacement for the in-pod hook and its log, so
@@ -1684,7 +1684,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
           }>
         }
         agentSessionId = body.worktrees
-          .find((w) => w.worktreeId === sessionId)
+          .find((w) => w.worktreeId === worktreeId)
           ?.agentSessions.find((a) => a.mode === 'acp')?.agentSessionId ?? ''
         if (agentSessionId === '') await sleep(1000)
       }
@@ -1739,7 +1739,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // what the agent decides to answer.
       const { ws, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/acp/attach`
-          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
         auth,
       )
       await opened
@@ -1764,7 +1764,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // in-memory event log used to do, badly.
       const { ws, text, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/acp/attach`
-          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
         auth,
       )
       await opened
@@ -1783,7 +1783,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     it('serves the conversation over /acp/attach', async () => {
       const { ws, text, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/acp/attach`
-          + `?id=${sessionId}&session=${encodeURIComponent(agentSessionId)}`,
+          + `?id=${worktreeId}&session=${encodeURIComponent(agentSessionId)}`,
         auth,
       )
       await opened
@@ -1805,14 +1805,14 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
     it('refuses a tool with no ACP adapter before provisioning anything', async () => {
       await setupProject('acp-unsupported')
-      const podsBefore = (await listSessionPods('acp-unsupported')).length
+      const podsBefore = (await listWorktreePods('acp-unsupported')).length
       const bad = await runYaac(
         serverEnv, 'worktree', 'create', 'acp-unsupported', '--tool', 'opencode', '--mode', 'acp',
       )
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toMatch(/no ACP adapter/)
       // The check runs before the worktree, the Job, or a database row exists.
-      expect((await listSessionPods('acp-unsupported')).length).toBe(podsBefore)
+      expect((await listWorktreePods('acp-unsupported')).length).toBe(podsBefore)
     }, 120_000)
   })
 })

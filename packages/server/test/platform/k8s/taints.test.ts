@@ -21,14 +21,14 @@ const UNINITIALIZED: NodeTaint = {
   key: 'node.cloudprovider.kubernetes.io/uninitialized', value: 'true', effect: 'NoSchedule',
 }
 const SESSIONS_POOL: NodeTaint[] = [
-  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' },
-  { key: 'yaac.dev/sessions', value: 'true', effect: 'NoExecute' },
+  { key: 'yaac.dev/worktrees', value: 'true', effect: 'NoSchedule' },
+  { key: 'yaac.dev/worktrees', value: 'true', effect: 'NoExecute' },
 ]
 
 /** What the gvisor RuntimeClass declares for a tainted sessions pool. */
 const POOL_TOLERATIONS: PodToleration[] = [
-  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
-  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
+  { key: 'yaac.dev/worktrees', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
+  { key: 'yaac.dev/worktrees', operator: 'Equal', value: 'true', effect: 'NoExecute' },
 ]
 
 describe('untoleratedTaints', () => {
@@ -63,19 +63,19 @@ describe('untoleratedTaints', () => {
     expect(untoleratedTaints(SESSIONS_POOL, noScheduleOnly)).toEqual([SESSIONS_POOL[1]])
     // An EMPTY effect is the wildcard, not "no effect" — it covers both.
     expect(untoleratedTaints(SESSIONS_POOL, [
-      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true' },
+      { key: 'yaac.dev/worktrees', operator: 'Equal', value: 'true' },
     ])).toEqual([])
 
     // Operator: empty defaults to Equal, so the value must match — a pool
     // relabelled `value: gpu` is not tolerated by the `true` toleration.
     expect(untoleratedTaints(
-      [{ key: 'yaac.dev/sessions', value: 'gpu', effect: 'NoSchedule' }],
-      [{ key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' }],
-    )).toEqual([{ key: 'yaac.dev/sessions', value: 'gpu', effect: 'NoSchedule' }])
+      [{ key: 'yaac.dev/worktrees', value: 'gpu', effect: 'NoSchedule' }],
+      [{ key: 'yaac.dev/worktrees', value: 'true', effect: 'NoSchedule' }],
+    )).toEqual([{ key: 'yaac.dev/worktrees', value: 'gpu', effect: 'NoSchedule' }])
     // Exists ignores the value: the usual spelling for a valueless taint.
     expect(untoleratedTaints(
-      [{ key: 'yaac.dev/sessions', value: 'gpu', effect: 'NoSchedule' }],
-      [{ key: 'yaac.dev/sessions', operator: 'Exists' }],
+      [{ key: 'yaac.dev/worktrees', value: 'gpu', effect: 'NoSchedule' }],
+      [{ key: 'yaac.dev/worktrees', operator: 'Exists' }],
     )).toEqual([])
     // A valueless taint matches an Equal toleration with no value.
     expect(untoleratedTaints([MEMORY_PRESSURE], [
@@ -87,9 +87,9 @@ describe('untoleratedTaints', () => {
     // only question is which way an impossible input fails, and granting a
     // node on a typo'd operator is the wrong one.
     expect(untoleratedTaints(
-      [{ key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' }],
-      [{ key: 'yaac.dev/sessions', operator: 'Equals', value: 'true', effect: 'NoSchedule' }],
-    )).toEqual([{ key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' }])
+      [{ key: 'yaac.dev/worktrees', value: 'true', effect: 'NoSchedule' }],
+      [{ key: 'yaac.dev/worktrees', operator: 'Equals', value: 'true', effect: 'NoSchedule' }],
+    )).toEqual([{ key: 'yaac.dev/worktrees', value: 'true', effect: 'NoSchedule' }])
 
     // Empty key is the wildcard only with Exists — netd's and the gVisor
     // installer's `{operator: Exists}`, which tolerates the whole cluster.
@@ -123,6 +123,6 @@ describe('formatTaint', () => {
     expect(formatTaint(CONTROL_PLANE)).toBe('node-role.kubernetes.io/control-plane:NoSchedule')
     expect(formatTaint(UNINITIALIZED))
       .toBe('node.cloudprovider.kubernetes.io/uninitialized=true:NoSchedule')
-    expect(formatTaint(SESSIONS_POOL[1])).toBe('yaac.dev/sessions=true:NoExecute')
+    expect(formatTaint(SESSIONS_POOL[1])).toBe('yaac.dev/worktrees=true:NoExecute')
   })
 })

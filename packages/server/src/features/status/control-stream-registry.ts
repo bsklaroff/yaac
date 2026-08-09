@@ -1,6 +1,6 @@
 /**
- * Registry of live per-session tmux control-mode command channels, keyed
- * by the session's Job name. Each running session's status watcher
+ * Registry of live per-worktree tmux control-mode command channels, keyed
+ * by the worktree's Job name. Each running worktree's status watcher
  * (`status-watcher.ts`) holds one persistent `kubectl exec` stream to
  * the in-pod tmux server; it registers a send function here so other
  * server paths (the webapp terminals listing) can ride that stream
@@ -19,9 +19,9 @@ export type ControlStreamSend = (command: string) => Promise<string>
 
 const registry = new Map<string, ControlStreamSend>()
 
-/** Make a session's control-mode channel available. Replaces any earlier
+/** Make a worktree's control-mode channel available. Replaces any earlier
  *  registration for the Job (a watcher respawn supersedes its old stream). */
-export function registerSessionControlStream(jobName: string, send: ControlStreamSend): void {
+export function registerWorktreeControlStream(jobName: string, send: ControlStreamSend): void {
   registry.set(jobName, send)
 }
 
@@ -30,13 +30,13 @@ export function registerSessionControlStream(jobName: string, send: ControlStrea
  * watcher tearing down stream generation N must not remove the
  * generation-N+1 channel that already replaced it.
  */
-export function unregisterSessionControlStream(jobName: string, send: ControlStreamSend): void {
+export function unregisterWorktreeControlStream(jobName: string, send: ControlStreamSend): void {
   if (registry.get(jobName) === send) registry.delete(jobName)
 }
 
-/** The session's live command channel, or undefined when no watcher
+/** The worktree's live command channel, or undefined when no watcher
  *  stream is up (prewarmed spares, stream mid-respawn, non-server CLI). */
-export function sessionControlStreamSend(jobName: string): ControlStreamSend | undefined {
+export function worktreeControlStreamSend(jobName: string): ControlStreamSend | undefined {
   return registry.get(jobName)
 }
 

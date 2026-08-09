@@ -3,9 +3,9 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-vi.mock('#features/sessions/list', () => ({ listActiveSessions: vi.fn() }))
+vi.mock('#features/worktrees/list', () => ({ listActiveWorktrees: vi.fn() }))
 vi.mock('#features/records/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
-vi.mock('#notify', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
@@ -22,18 +22,18 @@ import { _resetTitleSummarizerForTests } from '#features/titles/title-summarizer
 // and the title cap bounds what may be persisted.
 import { LLAMA_CPP_TAG } from '#features/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { listActiveSessions } from '#features/sessions/list'
+import { listActiveWorktrees } from '#features/worktrees/list'
 import { setWorktreeTitle } from '#features/records/worktree-store'
-import { notifySessionListChanged } from '#notify'
+import { notifyWorktreeListChanged } from '#notify'
 import { execFileAsync } from '#platform/shell'
 import type * as shellModule from '#platform/shell'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { WorktreeListEntry } from '@yaac/shared/types'
 
-const mockList = vi.mocked(listActiveSessions)
+const mockList = vi.mocked(listActiveWorktrees)
 const mockSetTitle = vi.mocked(setWorktreeTitle)
-const mockNotify = vi.mocked(notifySessionListChanged)
+const mockNotify = vi.mocked(notifyWorktreeListChanged)
 const mockExec = vi.mocked(execFileAsync)
 const mockLog = vi.mocked(serverLog)
 

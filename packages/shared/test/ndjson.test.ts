@@ -25,10 +25,10 @@ describe('consumeNdjsonStream', () => {
   it('returns the terminal result payload', async () => {
     const res = ndjsonResponse([
       { type: 'progress', message: 'step 1' },
-      { type: 'result', result: { sessionId: 's-1', jobName: 'j-1' } },
+      { type: 'result', result: { worktreeId: 's-1', jobName: 'j-1' } },
     ])
-    const result = await consumeNdjsonStream<{ sessionId: string }>(res, () => {})
-    expect(result).toEqual({ sessionId: 's-1', jobName: 'j-1' })
+    const result = await consumeNdjsonStream<{ worktreeId: string }>(res, () => {})
+    expect(result).toEqual({ worktreeId: 's-1', jobName: 'j-1' })
   })
 
   it('fans each progress message out to onProgress in order', async () => {
@@ -71,7 +71,7 @@ describe('consumeNdjsonStream', () => {
   })
 
   it('reassembles events split across chunk boundaries', async () => {
-    const line = JSON.stringify({ type: 'result', result: { sessionId: 's-2' } }) + '\n'
+    const line = JSON.stringify({ type: 'result', result: { worktreeId: 's-2' } }) + '\n'
     const res = chunkedResponse([
       JSON.stringify({ type: 'progress', message: 'split' }).slice(0, 10),
       JSON.stringify({ type: 'progress', message: 'split' }).slice(10) + '\n' + line.slice(0, 5),
@@ -80,7 +80,7 @@ describe('consumeNdjsonStream', () => {
     const seen: string[] = []
     const result = await consumeNdjsonStream(res, (m) => seen.push(m))
     expect(seen).toEqual(['split'])
-    expect(result).toEqual({ sessionId: 's-2' })
+    expect(result).toEqual({ worktreeId: 's-2' })
   })
 
   it('throws when the stream ends without a result event', async () => {

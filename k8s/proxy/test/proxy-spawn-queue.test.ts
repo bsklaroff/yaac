@@ -11,12 +11,12 @@ import {
 /** Enqueue capturing the completion, failing the test on an enqueue reject. */
 function enqueue(
   q: SpawnQueue,
-  sessionId = 's1',
+  worktreeId = 's1',
   now = 0,
 ): { requestId: string; completed: () => { status: number; body: string } | undefined } {
   let completion: { status: number; body: string } | undefined
   const res = q.enqueue(
-    { sessionId, prompt: 'do the thing' },
+    { worktreeId, prompt: 'do the thing' },
     (status, body) => { completion = { status, body } },
     now,
   )
@@ -60,15 +60,15 @@ describe('validateSpawnRequest', () => {
 })
 
 describe('SpawnQueue', () => {
-  it('round-trips enqueue → drain → complete(ok) as a 200 with the session id', () => {
+  it('round-trips enqueue → drain → complete(ok) as a 200 with the worktree id', () => {
     const q = new SpawnQueue()
     const { requestId, completed } = enqueue(q)
     const drained = q.drain()
     expect(drained).toHaveLength(1)
     expect(drained[0].requestId).toBe(requestId)
-    expect(drained[0].sessionId).toBe('s1')
+    expect(drained[0].worktreeId).toBe('s1')
     expect(drained[0].prompt).toBe('do the thing')
-    expect(q.complete({ requestId, ok: true, sessionId: 'new-id' })).toBe(true)
+    expect(q.complete({ requestId, ok: true, worktreeId: 'new-id' })).toBe(true)
     expect(completed()).toEqual({ status: 200, body: 'new-id' })
   })
 
@@ -76,7 +76,7 @@ describe('SpawnQueue', () => {
     const q = new SpawnQueue()
     let completion: unknown
     const res = q.enqueue(
-      { sessionId: 's1', prompt: 'p', tool: 'claude', model: 'claude-opus-4-8' },
+      { worktreeId: 's1', prompt: 'p', tool: 'claude', model: 'claude-opus-4-8' },
       () => { completion = true },
       0,
     )
@@ -104,11 +104,11 @@ describe('SpawnQueue', () => {
 
   it('complete on an unknown or already-completed request returns false', () => {
     const q = new SpawnQueue()
-    expect(q.complete({ requestId: 'missing', ok: true, sessionId: 'x' })).toBe(false)
+    expect(q.complete({ requestId: 'missing', ok: true, worktreeId: 'x' })).toBe(false)
     const { requestId } = enqueue(q)
     q.drain()
-    expect(q.complete({ requestId, ok: true, sessionId: 'x' })).toBe(true)
-    expect(q.complete({ requestId, ok: true, sessionId: 'x' })).toBe(false)
+    expect(q.complete({ requestId, ok: true, worktreeId: 'x' })).toBe(true)
+    expect(q.complete({ requestId, ok: true, worktreeId: 'x' })).toBe(false)
   })
 
   it('expires pending AND claimed requests past the TTL with a 504', () => {
@@ -123,28 +123,28 @@ describe('SpawnQueue', () => {
     expect(claimed.completed()?.status).toBe(504)
     expect(fresh.completed()).toBeUndefined()
     // Expired entries are gone: their results no longer land anywhere.
-    expect(q.complete({ requestId: pending.requestId, ok: true, sessionId: 'x' })).toBe(false)
+    expect(q.complete({ requestId: pending.requestId, ok: true, worktreeId: 'x' })).toBe(false)
   })
 
-  it('caps pending requests per session at 429, counting claimed ones too', () => {
+  it('caps pending requests per worktree at 429, counting claimed ones too', () => {
     const q = new SpawnQueue()
     for (let i = 0; i < SPAWN_MAX_PENDING_PER_SESSION - 1; i++) enqueue(q, 's1')
-    q.drain() // claimed entries still count toward the session cap
+    q.drain() // claimed entries still count toward the worktree cap
     enqueue(q, 's1')
-    const rejected = q.enqueue({ sessionId: 's1', prompt: 'p' }, () => {})
+    const rejected = q.enqueue({ worktreeId: 's1', prompt: 'p' }, () => {})
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) expect(rejected.status).toBe(429)
-    // Other sessions are unaffected.
+    // Other worktrees are unaffected.
     enqueue(q, 's2')
   })
 
-  it('caps total pending requests across sessions', () => {
+  it('caps total pending requests across worktrees', () => {
     const q = new SpawnQueue()
     for (let i = 0; i < SPAWN_MAX_PENDING_TOTAL; i++) {
-      // Spread across sessions so the per-session cap never trips first.
+      // Spread across worktrees so the per-worktree cap never trips first.
       enqueue(q, `s${Math.floor(i / (SPAWN_MAX_PENDING_PER_SESSION - 1))}`)
     }
-    const rejected = q.enqueue({ sessionId: 'fresh', prompt: 'p' }, () => {})
+    const rejected = q.enqueue({ worktreeId: 'fresh', prompt: 'p' }, () => {})
     expect(rejected.ok).toBe(false)
     if (!rejected.ok) expect(rejected.status).toBe(429)
   })
@@ -156,8 +156,8 @@ describe('SpawnQueue', () => {
       () => enqueue(q, 's1'),
     )
     q.drain()
-    expect(q.enqueue({ sessionId: 's1', prompt: 'p' }, () => {}).ok).toBe(false)
-    q.complete({ requestId: held[0].requestId, ok: true, sessionId: 'x' })
-    expect(q.enqueue({ sessionId: 's1', prompt: 'p' }, () => {}).ok).toBe(true)
+    expect(q.enqueue({ worktreeId: 's1', prompt: 'p' }, () => {}).ok).toBe(false)
+    q.complete({ requestId: held[0].requestId, ok: true, worktreeId: 'x' })
+    expect(q.enqueue({ worktreeId: 's1', prompt: 'p' }, () => {}).ok).toBe(true)
   })
 })

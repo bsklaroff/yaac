@@ -60,7 +60,7 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
 /**
  * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The server
  * has filesystem access to the key, so it uses `-i <keyPath>` directly.
- * The session container never sees this string — its own GIT_SSH_COMMAND is
+ * The worktree container never sees this string — its own GIT_SSH_COMMAND is
  * built separately and uses the proxy's ssh-agent instead of `-i`.
  */
 export function buildHostSideGitSshCommand(keyPath: string, knownHostsPath: string): string {
@@ -190,8 +190,8 @@ export async function listRemoteBranches(repoPath: string): Promise<string[]> {
 /**
  * The branch a worktree branch tracks, read from the repo's config
  * (`branch.<name>.merge` = `refs/heads/<branch>`), or null when no
- * upstream is recorded. For session branches (`agent/<sessionId>`) this is
- * the durable record of the reference branch the session was created from:
+ * upstream is recorded. For worktree branches (`agent/<worktreeId>`) this is
+ * the durable record of the reference branch the worktree was created from:
  * `startJobWithSetup` writes it before the tmux session exists, and the
  * claim-time re-branch prep rewrites it.
  */
@@ -249,8 +249,8 @@ async function bestEffort(op: () => Promise<unknown>): Promise<void> {
 }
 
 /**
- * Add a session worktree at a path that may ALREADY EXIST and already hold
- * entries — a session's `/workspace` mount points (the ephemeral module
+ * Add a worktree worktree at a path that may ALREADY EXIST and already hold
+ * entries — a worktree's `/workspace` mount points (the ephemeral module
  * dirs) are created there before the checkout runs, and the pod's runtime
  * creates any that are missing the moment it mounts. `git worktree add`
  * refuses a destination that is not an empty directory (`--force` does not
@@ -263,11 +263,11 @@ async function bestEffort(op: () => Promise<unknown>): Promise<void> {
  *
  * The scratch dir's basename is the destination's, because git names the
  * admin dir (`.git/worktrees/<name>`) after it and the in-pod relink
- * addresses that dir by session id.
+ * addresses that dir by worktree id.
  *
  * Staging moves the branch's creation ahead of the steps that can fail, so
  * every failure after it is rolled back here: a create that dies is a
- * `never-started` session, and restarting one resumes the SAME id and calls
+ * `never-started` worktree, and restarting one resumes the SAME id and calls
  * this again with the same branch name. Left behind, the registration and
  * the branch make that retry die on "a branch named … already exists" —
  * and the registration has to go first, because git refuses to delete a
@@ -275,7 +275,7 @@ async function bestEffort(op: () => Promise<unknown>): Promise<void> {
  *
  * `--no-track` is deliberate: setting up branch tracking here would write
  * the shared `.git/config` from the host, and a host-side write replaces
- * the file's inode underneath the VM-kernel virtiofs cache that session
+ * the file's inode underneath the VM-kernel virtiofs cache that worktree
  * pods read `/repo/.git` through — until the stale dentry expires (a few
  * seconds), every git command in a pod dies with "fatal: unknown error
  * occurred while reading the configuration files". The upstream is
@@ -316,7 +316,7 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
       // because the in-pod setup rewrites it to the container's own view
       // (`/workspace/.git`, see buildWorktreeLinkExec). So a repair run
       // anywhere that /workspace is a real directory — a nested yaac, or an
-      // e2e suite inside a session, both supported — resolves those pod
+      // e2e suite inside a worktree, both supported — resolves those pod
       // paths in the CURRENT namespace and overwrites the live worktree
       // sitting there, pointing it at an unrelated repo's admin dir.
       await fs.writeFile(path.join(adminDir, 'gitdir'), `${worktreePath}/.git\n`)

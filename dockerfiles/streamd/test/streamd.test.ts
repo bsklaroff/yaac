@@ -204,7 +204,7 @@ describe('pty streams', () => {
     expect(JSON.parse(exit!.payload.toString('utf8'))).toEqual({ code: 0 })
   })
 
-  it('spawns the child with TERM=xterm-256color (the session image TERM)', async () => {
+  it('spawns the child with TERM=xterm-256color (the worktree image TERM)', async () => {
     const port = await startDaemon()
     const { socket } = await handshake(port, {
       token: TOKEN, kind: 'pty', cmd: ['sh', '-c', 'echo TERM=$TERM'], cols: 80, rows: 24,

@@ -172,7 +172,7 @@
 }
 
 /*
- * Sidebar session-title marquee: on row hover, scroll a title that's too long
+ * Sidebar worktree-title marquee: on row hover, scroll a title that's too long
  * to fit out to its end and back so the whole thing can be read. --marquee-shift
  * (a negative px value) is set per-row from its measured overflow; the holds at
  * each end give the eye a beat to catch the start and finish.

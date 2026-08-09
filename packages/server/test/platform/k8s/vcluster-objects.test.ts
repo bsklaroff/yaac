@@ -72,7 +72,7 @@ describe('listVclusterNamespaces', () => {
       ],
     })
     await expect(listVclusterNamespaces()).resolves.toEqual([
-      { name: VC, sessionId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z' },
+      { name: VC, worktreeId: SID, namespace: VCNS, creationTimestamp: '2026-06-15T00:00:00Z' },
     ])
     // Only namespaces this install owns: plain `yaac.vcluster` presence plus
     // the data-dir-hash of this data dir.

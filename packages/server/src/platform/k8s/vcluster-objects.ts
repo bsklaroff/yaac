@@ -3,7 +3,7 @@
  * namespace publishes, the validate-and-map step that turns raw API objects
  * into them, and the one-shot list calls.
  *
- * This is the same job `pods.ts` does for session pods and Jobs, and it lives
+ * This is the same job `pods.ts` does for worktree pods and Jobs, and it lives
  * beside it for the same reason: the informer registry (cluster-cache.ts) and
  * the reconcile snapshot (tick-snapshot.ts) are platform, and they need these
  * shapes without any of the vcluster *lifecycle* — provisioning, sleep/wake,
@@ -26,8 +26,8 @@ export const LABEL_VCLUSTER_DATA_DIR_HASH = 'yaac.vcluster-data-dir-hash'
 export interface VclusterNamespaceInfo {
   /** The vcluster (release) name, `yvc-<sid8>`. */
   name: string
-  /** Owning session id. */
-  sessionId: string
+  /** Owning worktree id. */
+  worktreeId: string
   /** The dedicated host namespace. */
   namespace: string
   /** Namespace creationTimestamp (ISO) — the orphan-GC grace anchor. */
@@ -56,11 +56,11 @@ export function mapVclusterNamespaceObject(obj: unknown): VclusterNamespaceInfo 
   if (!res.success) return null
   const { name: namespace, labels, creationTimestamp } = res.data.metadata
   const name = labels?.[LABEL_VCLUSTER]
-  const sessionId = labels?.[LABEL_VCLUSTER_SESSION_ID]
-  if (!name || !sessionId) return null
+  const worktreeId = labels?.[LABEL_VCLUSTER_SESSION_ID]
+  if (!name || !worktreeId) return null
   return {
     name,
-    sessionId,
+    worktreeId,
     namespace,
     creationTimestamp: creationTimestamp instanceof Date
       ? creationTimestamp.toISOString()

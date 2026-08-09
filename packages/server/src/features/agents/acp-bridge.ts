@@ -48,7 +48,7 @@ function toText(data: Buffer | ArrayBuffer | Buffer[]): string {
  * Attach `sock` to the conversation, or close it with an error when there is
  * none live. "None live" is a normal state, not a fault: the worktree may
  * still be booting, or its connection may be mid-respawn — so the pane is told
- * plainly and retries, exactly as `SessionTerminal` does on a dropped PTY.
+ * plainly and retries, exactly as `WorktreeTerminal` does on a dropped PTY.
  */
 export function attachAcp(
   slug: string,

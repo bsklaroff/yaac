@@ -1,29 +1,29 @@
 /**
- * The session-terminal entry points — `listSessionTerminals`,
+ * The session-terminal entry points — `listWorktreeTerminals`,
  * `createShellWindow`, `killWindowTerminal`.
  *
  * Nothing under features/terminals is mocked here: the window-listing parse,
  * the agent-window convention and the scratch-shell naming all run for real,
- * and the fakes start at the pod boundary — `sessionExec` for the one-shot
+ * and the fakes start at the pod boundary — `podExec` for the one-shot
  * relay exec and the control-stream registry for the watcher's persistent
  * read-only channel. The internals are covered by the listings these tests
  * feed back rather than by tests of their own.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as relayModule from '#platform/k8s/stream-relay'
-import { sessionExec } from '#platform/k8s/stream-relay'
+import { podExec } from '#platform/k8s/stream-relay'
 import {
-  registerSessionControlStream,
+  registerWorktreeControlStream,
   _clearControlStreamRegistryForTests,
 } from '#features/status/control-stream-registry'
-import { createShellWindow, killWindowTerminal, listSessionTerminals } from '#features/terminals'
+import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#features/terminals'
 
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
-  sessionExec: vi.fn(),
+  podExec: vi.fn(),
 }))
 
-const exec = vi.mocked(sessionExec)
+const exec = vi.mocked(podExec)
 const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
   Promise.resolve({ stdout, stderr: '' })
 
@@ -34,10 +34,10 @@ beforeEach(() => {
   _clearControlStreamRegistryForTests()
 })
 
-describe('listSessionTerminals', () => {
+describe('listWorktreeTerminals', () => {
   it('maps every window but the agent (lowest index), pipes in names and all', async () => {
     exec.mockReturnValueOnce(out('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
-    expect(await listSessionTerminals('yaac-demo')).toEqual([
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
       { target: 'window:@3', name: 'dev-server' },
       { target: 'window:@5', name: 'a|b|c' },
     ])
@@ -46,22 +46,22 @@ describe('listSessionTerminals', () => {
 
   it('is empty for a lone agent window, for garbage, and for a failed probe', async () => {
     exec.mockReturnValueOnce(out('0|@0|claude\n'))
-    expect(await listSessionTerminals('yaac-demo')).toEqual([])
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
 
     exec.mockReturnValueOnce(out('no pipes here\n???\n'))
-    expect(await listSessionTerminals('yaac-demo')).toEqual([])
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
 
     exec.mockRejectedValueOnce(new Error('pod gone'))
-    expect(await listSessionTerminals('yaac-demo')).toEqual([])
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([])
   })
 
   it('rides a registered control stream, falling back to exec when it fails', async () => {
     const sent: string[] = []
-    registerSessionControlStream('yaac-demo', (cmd) => {
+    registerWorktreeControlStream('yaac-demo', (cmd) => {
       sent.push(cmd)
       return Promise.resolve('0|@0|claude\n1|@1|init')
     })
-    expect(await listSessionTerminals('yaac-demo')).toEqual([
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
       { target: 'window:@1', name: 'init' },
     ])
     expect(sent[0]).toContain(LIST_FORMAT)
@@ -69,9 +69,9 @@ describe('listSessionTerminals', () => {
 
     // The watcher's stream just died mid-respawn: this call takes the
     // one-shot relay exec instead of failing.
-    registerSessionControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
+    registerWorktreeControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
     exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|init\n'))
-    expect(await listSessionTerminals('yaac-demo')).toEqual([
+    expect(await listWorktreeTerminals('yaac-demo')).toEqual([
       { target: 'window:@1', name: 'init' },
     ])
     expect(exec).toHaveBeenCalledOnce()
@@ -110,7 +110,7 @@ describe('createShellWindow', () => {
 
   it('mutations never ride the (read-only) control stream — only the listing does', async () => {
     const sent: string[] = []
-    registerSessionControlStream('yaac-demo', (cmd) => {
+    registerWorktreeControlStream('yaac-demo', (cmd) => {
       sent.push(cmd)
       return Promise.resolve('0|@0|claude\n1|@1|shell')
     })

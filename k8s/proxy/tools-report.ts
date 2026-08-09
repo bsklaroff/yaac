@@ -1,5 +1,5 @@
 // Pure helpers for the `GET yaac.internal/tools` endpoint (yaac-spawn --models):
-// given which tool credentials the host has and the session's registered tool,
+// given which tool credentials the host has and the worktree's registered tool,
 // report which agent tools are usable and their accepted model ids. proxy.ts
 // starts servers on import, so this logic lives in its own side-effect-free
 // module to stay unit-testable in isolation.
@@ -31,7 +31,7 @@ export type ToolCredsView =
 export interface ToolReportEntry {
   tool: AgentTool
   authed: boolean
-  /** True when this is the tool the querying session itself runs. */
+  /** True when this is the tool the querying worktree itself runs. */
   current: boolean
   kind?: 'oauth' | 'api-key'
   provider?: string
@@ -92,7 +92,7 @@ export function apiHostForTool(
   return provider ? PI_PROVIDER_HOSTS[provider] : undefined
 }
 
-/** Build the availability report from host creds + the session's tool. */
+/** Build the availability report from host creds + the worktree's tool. */
 export function buildToolsReport(input: BuildToolsReportInput): ToolsReport {
   const currentTool = input.currentTool ?? null
   const tools = AGENT_TOOLS.map((tool): ToolReportEntry => {
@@ -113,7 +113,7 @@ export function buildToolsReport(input: BuildToolsReportInput): ToolsReport {
 /** Render the report as the default human-readable text/plain body. */
 export function formatToolsReport(report: ToolsReport): string {
   const lines: string[] = [
-    `Agent tools available in this project (current session tool: ${report.currentTool ?? 'unknown'})`,
+    `Agent tools available in this project (current worktree tool: ${report.currentTool ?? 'unknown'})`,
     '',
   ]
   for (const t of report.tools) {

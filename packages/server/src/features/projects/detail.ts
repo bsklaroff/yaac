@@ -9,7 +9,7 @@ export interface ProjectDetail {
   slug: string
   remoteUrl: string
   addedAt: string
-  sessionCount: number
+  worktreeCount: number
   config: YaacConfig | null
 }
 
@@ -44,7 +44,7 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
 
 export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(slug)
-  const [sessionCount, configResult] = await Promise.all([
+  const [worktreeCount, configResult] = await Promise.all([
     herd().workspaces.count(slug),
     resolveProjectConfigWithSource(slug),
   ])
@@ -52,7 +52,7 @@ export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
     slug: meta.slug,
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
-    sessionCount,
+    worktreeCount,
     config: configResult.config,
   }
 }

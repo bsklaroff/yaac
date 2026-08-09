@@ -123,7 +123,7 @@ export function ProjectSettings(): JSX.Element {
             <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
               Files stored next to the Dockerfile as its build context — reference them
               with <code className="text-text-dim">COPY</code>. Changes apply on the next
-              rebuild or session create.
+              rebuild or worktree create.
             </p>
             <div className="mt-2">
               {filesApi && <BuildFiles key={`files:${slug}`} filesApi={filesApi} title={slug} />}

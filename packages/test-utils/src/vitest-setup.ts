@@ -9,11 +9,11 @@ delete process.env.GIT_DIR
 delete process.env.GIT_WORK_TREE
 
 // Strip the host server's HTTP-posture config. When the suite runs inside a
-// yaac session, the session preset carries YAAC_TRUST_PROXY=1 and
+// yaac worktree, the worktree preset carries YAAC_TRUST_PROXY=1 and
 // YAAC_ALLOWED_HOSTS=<tailnet host> because the *outer* server sits behind
 // `tailscale serve`. Every test server binds loopback directly, so no test
 // needs either — but a test server reads them live and silently changes the
-// posture under test: a spoofed X-Forwarded-Proto starts flipping session
+// posture under test: a spoofed X-Forwarded-Proto starts flipping worktree
 // cookies to Secure, and an extra Host header becomes admissible. Stripped
 // here rather than in unit-setup because e2e/api servers inherit
 // `process.env` too, and the flags are wrong for them for the same reason.

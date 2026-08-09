@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { describeSessionDeathReason } from '#death-reason'
-import type { SessionDeathReason } from '#types'
+import { describeWorktreeDeathReason } from '#death-reason'
+import type { WorktreeDeathReason } from '#types'
 
-describe('describeSessionDeathReason', () => {
+describe('describeWorktreeDeathReason', () => {
   it('maps every reason to human copy', () => {
-    const cases: Array<[SessionDeathReason, string]> = [
-      ['oom', 'out of memory (hit the session memory limit)'],
+    const cases: Array<[WorktreeDeathReason, string]> = [
+      ['oom', 'out of memory (hit the worktree memory limit)'],
       ['evicted', 'evicted by the node'],
       ['crashed', 'crashed'],
       ['pod-stopped', 'container stopped'],
@@ -14,12 +14,12 @@ describe('describeSessionDeathReason', () => {
       ['orphaned', 'removed outside yaac'],
     ]
     for (const [reason, copy] of cases) {
-      expect(describeSessionDeathReason(reason)).toBe(copy)
+      expect(describeWorktreeDeathReason(reason)).toBe(copy)
     }
   })
 
   it('appends detail after an em-dash', () => {
-    expect(describeSessionDeathReason('crashed', 'exit code 1'))
+    expect(describeWorktreeDeathReason('crashed', 'exit code 1'))
       .toBe('crashed — exit code 1')
   })
 })

@@ -1,6 +1,6 @@
 /**
  * Client half of the ACP conversation stream: one WebSocket per attached chat
- * pane, mirroring `SessionTerminal`'s PTY socket (same reconnect-with-backoff,
+ * pane, mirroring `WorktreeTerminal`'s PTY socket (same reconnect-with-backoff,
  * same "the agent outlives this tab" assumption).
  *
  * The pane never sees ACP itself — the server projects every `session/update`

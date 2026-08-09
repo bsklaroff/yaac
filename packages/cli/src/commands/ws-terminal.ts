@@ -2,7 +2,7 @@ import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 
 /**
- * CLI-side terminal transport: attach the user's terminal to a session
+ * CLI-side terminal transport: attach the user's terminal to a worktree
  * over the server's /pty/attach WebSocket — the same path the webapp
  * uses — instead of a client-side `kubectl exec`. This is what makes
  * attach/shell/stream work identically against a local and a remote
@@ -21,10 +21,10 @@ export function toWsUrl(baseUrl: string): string {
 
 export function buildPtyAttachUrl(
   baseUrl: string,
-  params: { sessionId: string; target: string; cols?: number; rows?: number },
+  params: { worktreeId: string; target: string; cols?: number; rows?: number },
 ): string {
   const url = new URL(`${toWsUrl(baseUrl)}/pty/attach`)
-  url.searchParams.set('id', params.sessionId)
+  url.searchParams.set('id', params.worktreeId)
   url.searchParams.set('target', params.target)
   if (params.cols) url.searchParams.set('cols', String(params.cols))
   if (params.rows) url.searchParams.set('rows', String(params.rows))
@@ -35,20 +35,20 @@ export function buildPtyAttachUrl(
 const PING_INTERVAL_MS = 30_000
 
 /**
- * Attach the current terminal to a session PTY until the server closes
- * the stream (tmux detach, shell exit, or session death). Resolves on
- * a clean close; a server-reported error (e.g. session not running) is
+ * Attach the current terminal to a worktree PTY until the server closes
+ * the stream (tmux detach, shell exit, or worktree death). Resolves on
+ * a clean close; a server-reported error (e.g. worktree not running) is
  * printed and sets exitCode 1 rather than throwing, matching how the
  * old kubectl path surfaced mid-attach failures.
  */
-export async function attachSessionPty(
-  sessionId: string,
+export async function attachWorktreePty(
+  worktreeId: string,
   /** 'native' (full tmux) | 'shell' (raw zsh) | 'window:@N' | 'agent'. */
   target: string,
 ): Promise<void> {
   const server = await resolveServerTarget()
   const url = buildPtyAttachUrl(server.baseUrl, {
-    sessionId,
+    worktreeId,
     target,
     cols: process.stdout.columns,
     rows: process.stdout.rows,

@@ -22,7 +22,7 @@ import {
   createTickSnapshot,
   setActiveClusterCache,
   type ClusterCache,
-  type SessionPod,
+  type PodInfo,
   type VclusterPod,
 } from '#platform/k8s'
 
@@ -52,8 +52,8 @@ function rawPod(name: string): unknown {
 function healthyCache(): ClusterCache {
   return {
     healthy: () => true,
-    sessionPods: () => [{ podName: 'cached' } as SessionPod],
-    sessionJobs: () => [],
+    worktreePods: () => [{ podName: 'cached' } as PodInfo],
+    worktreeJobs: () => [],
     vclusterNamespaces: () => [],
     vclusterPods: () => [{ name: 'vp', podIP: '10.0.0.9', labels: {} }],
     vclusterServices: () => [{ name: 'yaac-proxy', labels: {} }],
@@ -96,7 +96,7 @@ describe('createTickSnapshot', () => {
     const snap = createTickSnapshot()
     const pods = await snap.pods()
     expect(pods.map((p) => p.podName)).toEqual(['yaac-demo-p1'])
-    expect(pods[0].sessionId).toBe(SID)
+    expect(pods[0].worktreeId).toBe(SID)
     expect(await snap.pods()).toBe(pods)
     await snap.jobs()
     await snap.jobs()
@@ -153,7 +153,7 @@ describe('createTickSnapshot', () => {
 
     const snap = createTickSnapshot()
     expect(await snap.vclusters()).toEqual([{
-      name: VC.name, sessionId: SID, namespace: VC.namespace,
+      name: VC.name, worktreeId: SID, namespace: VC.namespace,
       creationTimestamp: '2026-06-15T00:00:00Z',
     }])
     expect(await snap.vclusterPods(VC.namespace)).toEqual([

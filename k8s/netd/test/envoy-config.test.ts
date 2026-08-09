@@ -171,7 +171,7 @@ describe('renderCds', () => {
 
   it('wraps every upstream in PROXY-protocol v2', () => {
     // This is what carries pod identity to the proxy; without it the
-    // proxy cannot attribute a connection to a session at all.
+    // proxy cannot attribute a connection to a worktree at all.
     for (const r of resources(renderCds(CDS))) {
       const ts = r.transport_socket as { name: string; typed_config: { config: { version: string } } }
       expect(ts.name).toBe('envoy.transport_sockets.upstream_proxy_protocol')

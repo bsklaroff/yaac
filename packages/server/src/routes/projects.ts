@@ -9,7 +9,7 @@ import {
   listProjects,
   resolveProjectConfigWithSource,
 } from '#features/projects'
-import { removeProject } from '#features/sessions'
+import { removeProject } from '#features/worktrees'
 import { getProjectSkills, getSkillDetail } from '#features/skills'
 import { herd } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
@@ -57,7 +57,7 @@ export const projectApp = new Hono()
     await herd().projects.removeConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
-  // Branch data for the new-session picker: local remote-tracking refs
+  // Branch data for the new-worktree picker: local remote-tracking refs
   // (instant), or freshly fetched with ?refresh=1.
   .get(
     '/:slug/branches',
@@ -70,7 +70,7 @@ export const projectApp = new Hono()
   // Set (or clear, with null) the project's default reference branch —
   // the picker's "set as default". Existence-checked against the local
   // remote-tracking refs so a typo'd default fails here, not at the next
-  // session create.
+  // worktree create.
   .put(
     '/:slug/reference-branch',
     zv('json', z.object({ branch: z.string().min(1).nullable() })),
@@ -89,7 +89,7 @@ export const projectApp = new Hono()
   )
   // Personal + plugin + project SKILL.md files a project's agent can use, for
   // the given tool (default claude). A pure host-side read of each agent's
-  // explicit skill dirs, so it needs no running session.
+  // explicit skill dirs, so it needs no running worktree.
   .get(
     '/:slug/skills',
     zv('query', z.object({
@@ -156,7 +156,7 @@ export const projectApp = new Hono()
           imagePrefix: testEnv.imagePrefix,
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
-        // New sessions pull from the in-cluster registry, so the rebuilt
+        // New worktrees pull from the in-cluster registry, so the rebuilt
         // image is invisible until it's pushed there.
         await write({ type: 'progress', message: 'Pushing rebuilt image to the local registry...' })
         // force: the rebuild changed image bytes under an unchanged

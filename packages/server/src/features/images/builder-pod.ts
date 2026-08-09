@@ -71,8 +71,8 @@ import { stringHash, type ImageLayer } from '#features/image-engine'
 /**
  * Digest-pinned upstream image the builder pods run — podman + coreutils,
  * mirrored into the local registry like the vcluster image set (the digest
- * IS the pin; no content-hash tag). Pinned near the session engines'
- * podman major so store metadata stays compatible. Never the session's own
+ * IS the pin; no content-hash tag). Pinned near the worktree engines'
+ * podman major so store metadata stays compatible. Never the worktree's own
  * image: its binaries are user-customizable and must not run yaac-driven
  * builds.
  */
@@ -83,12 +83,12 @@ export const BUILDER_LOCAL_TAG = 'podman-stable:v5.5'
 /**
  * Sentry tmpfs cap for the builder graphroot: parent chain (~5GB for the
  * tools chain) + build products + per-step cache images. Larger than the
- * session pods' 8Gi because a build holds parent AND product layers
+ * worktree pods' 8Gi because a build holds parent AND product layers
  * simultaneously. Pure scratch — dies with the pod.
  */
 export const BUILDER_GRAPHROOT_TMPFS_BYTES = 16 * 1024 ** 3
 
-/** emptyDir sizeLimit: sentry cap + slack (same rationale as sessions —
+/** emptyDir sizeLimit: sentry cap + slack (same rationale as worktrees —
  *  eviction must stay unreachable behind the sentry's ENOSPC). */
 export const BUILDER_GRAPHROOT_SIZELIMIT_BYTES = BUILDER_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
 
@@ -100,16 +100,16 @@ export const BUILDER_MEMORY_LIMIT_BYTES = 8 * 1024 ** 3
  * Scheduler reservation for a builder, well under the limit above. Explicit
  * because kubernetes defaults an omitted request UP TO the limit: a
  * limits-only builder reserved the whole 8Gi ceiling, which on a
- * request-saturated node is 8 sessions' worth of memory that one routine
+ * request-saturated node is 8 worktrees' worth of memory that one routine
  * build would have to displace to schedule. Compression is the same bet
- * sessions make — a build's steady state is well below its peak, and the
+ * worktrees make — a build's steady state is well below its peak, and the
  * peak is still allowed by the limit.
  */
 export const BUILDER_MEMORY_REQUEST_BYTES = 2 * 1024 ** 3
 
-/** cpu floor, no ceiling — same reasoning as session pods (a CFS quota
+/** cpu floor, no ceiling — same reasoning as worktree pods (a CFS quota
  *  would only make builds slower on an idle node). Builds are burstier
- *  than a session, hence the larger share. */
+ *  than a worktree, hence the larger share. */
 export const BUILDER_CPU_REQUEST_MILLIS = 500
 
 /**
@@ -227,10 +227,10 @@ export function buildBuilderPodManifest(name: string, imageRef: string): Record<
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       runtimeClassName: RUNTIME_CLASS_GVISOR,
-      // Above sessions (a build one is waiting on should outlive it under
+      // Above worktrees (a build one is waiting on should outlive it under
       // node pressure), but the builder class forbids preemption: a build
-      // that waits for room costs a session create some latency, where a
-      // preempted session pod is gone for good (backoffLimit 0).
+      // that waits for room costs a worktree create some latency, where a
+      // preempted worktree pod is gone for good (backoffLimit 0).
       priorityClassName: PRIORITY_CLASS_BUILDER,
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },

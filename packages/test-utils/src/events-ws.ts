@@ -1,7 +1,7 @@
 /**
  * Test-side client for the server's `/events` WebSocket — the snapshot
  * stream the webapp sidebar hydrates from. E2e suites use it to assert on
- * exactly what a browser would render (provisioning rows, session lists)
+ * exactly what a browser would render (provisioning rows, worktree lists)
  * while a create/spawn/restart is in flight.
  */
 import WebSocket from 'ws'

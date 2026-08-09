@@ -51,7 +51,7 @@ function persistViewMode(mode: ViewMode): void {
   } catch { /* non-fatal */ }
 }
 
-/** The project + session the workspace is currently viewing — persisted so a
+/** The project + worktree the workspace is currently viewing — persisted so a
  *  reload, or a shared/bookmarked link, reopens the same view. */
 export interface PersistedSelection {
   projectSlug: string | null
@@ -60,16 +60,16 @@ export interface PersistedSelection {
 
 /**
  * Read the persisted selection. The URL query wins over localStorage — a
- * shared `?project=…&session=…` link should override the last local view —
- * with localStorage as the fallback for a bare reload. The session is only a
- * hint: App drops it if that session is no longer active. Exported for tests.
+ * shared `?project=…&worktree=…` link should override the last local view —
+ * with localStorage as the fallback for a bare reload. The worktree is only a
+ * hint: App drops it if that worktree is no longer active. Exported for tests.
  */
 export function loadSelection(): PersistedSelection {
   try {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const projectSlug = params.get('project')
-      if (projectSlug) return { projectSlug, worktreeId: params.get('session') }
+      if (projectSlug) return { projectSlug, worktreeId: params.get('worktree') }
     }
   } catch { /* fall through to localStorage */ }
   try {
@@ -92,7 +92,7 @@ export function loadSelection(): PersistedSelection {
 
 /**
  * Persist the selection to localStorage and mirror it into the URL bar as
- * `?project=&session=` query params (replaceState — no navigation; unrelated
+ * `?project=&worktree=` query params (replaceState — no navigation; unrelated
  * params like `token` are preserved). The SPA is served only at `/`, so
  * query params (not a path) keep deep links working on a hard reload.
  * Best-effort. Exported for tests.
@@ -108,8 +108,8 @@ export function persistSelection(projectSlug: string | null, worktreeId: string 
       const url = new URL(window.location.href)
       if (projectSlug) url.searchParams.set('project', projectSlug)
       else url.searchParams.delete('project')
-      if (worktreeId) url.searchParams.set('session', worktreeId)
-      else url.searchParams.delete('session')
+      if (worktreeId) url.searchParams.set('worktree', worktreeId)
+      else url.searchParams.delete('worktree')
       window.history.replaceState({}, '', url.pathname + url.search + url.hash)
     }
   } catch { /* history failures are non-fatal */ }
@@ -198,7 +198,7 @@ export function persistLayouts(layouts: Record<string, Workspace | null>): void 
 }
 
 /**
- * Insert a special (non-terminal) pane — preview or changes — into a session's
+ * Insert a special (non-terminal) pane — preview or changes — into a worktree's
  * workspace as a new equal-width column beside the existing panes; a workspace
  * already showing it is returned unchanged. Exported for tests.
  */
@@ -235,24 +235,24 @@ export function mergeProvisioning(
 export type TerminalTab = string
 
 /**
- * Whether a session is waiting and its current waiting spell hasn't been
+ * Whether a worktree is waiting and its current waiting spell hasn't been
  * viewed. A read mark stores the spell's waitingSinceMs, so a mark from an
- * earlier spell (session ran and is waiting again — even across a page
- * reload) no longer matches and the session re-flags. A missing
+ * earlier spell (worktree ran and is waiting again — even across a page
+ * reload) no longer matches and the worktree re-flags. A missing
  * waitingSinceMs (server predating the field) is normalized to 0.
  */
 export function isUnreadWaiting(
-  session: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>,
+  worktree: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>,
   readWaiting: Record<string, number>,
 ): boolean {
-  return session.status === 'waiting' && readWaiting[session.worktreeId] !== (session.waitingSinceMs ?? 0)
+  return worktree.status === 'waiting' && readWaiting[worktree.worktreeId] !== (worktree.waitingSinceMs ?? 0)
 }
 
 /**
- * Whether a deleted session died for an abnormal reason the user hasn't looked
+ * Whether a deleted worktree died for an abnormal reason the user hasn't looked
  * at yet. Only the stale reaper sets deathReason (a plain user delete leaves it
  * null), so this flags exactly the unexpected deaths. `seen` is server-persisted
- * on the session row and resets to false when a reused id dies anew, so
+ * on the worktree row and resets to false when a reused id dies anew, so
  * a re-death re-flags without any client-side spell keying.
  */
 export function isUnseenDeath(
@@ -262,21 +262,21 @@ export function isUnseenDeath(
 }
 
 /**
- * Per-project count of unread waiting sessions — waiting and not yet viewed
+ * Per-project count of unread waiting worktrees — waiting and not yet viewed
  * during the current waiting spell. Drives the rail attention badge, so a
- * waiting session the user has already looked at doesn't keep flagging.
- * Terminating sessions never count: the server marks them `stopping` (and
+ * waiting worktree the user has already looked at doesn't keep flagging.
+ * Terminating worktrees never count: the server marks them `stopping` (and
  * forces their status off 'waiting'), and a UI-initiated delete not yet
  * reflected in the snapshot is covered by `pendingDeleteIds` — either way a
- * session on its way out must not flash the badge.
+ * worktree on its way out must not flash the badge.
  */
 export function unreadWaitingBySlug(
-  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping'>[],
+  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'stopping'>[],
   readWaiting: Record<string, number>,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
-  for (const s of sessions) {
+  for (const s of worktrees) {
     if (s.stopping || pendingDeleteIds.includes(s.worktreeId)) continue
     if (isUnreadWaiting(s, readWaiting)) {
       out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
@@ -286,38 +286,38 @@ export function unreadWaitingBySlug(
 }
 
 /**
- * The session Alt+B lands on: the one most in need of attention. Callers pass
- * the sidebar's sessions (mid-delete rows already filtered out); status order
+ * The worktree Alt+B lands on: the one most in need of attention. Callers pass
+ * the sidebar's worktrees (mid-delete rows already filtered out); status order
  * within the array matches the display order, since the Waiting group renders
  * above Running and each group preserves array order. Priority:
- *   1. the topmost session with an unread waiting notification,
- *   2. else the topmost waiting session (already viewed this spell),
- *   3. else the topmost running session.
+ *   1. the topmost worktree with an unread waiting notification,
+ *   2. else the topmost waiting worktree (already viewed this spell),
+ *   3. else the topmost running worktree.
  * Null when there's nothing to jump to.
  */
 export function resolveAttentionTarget(
-  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>[],
+  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>[],
   readWaiting: Record<string, number>,
 ): string | null {
-  const unread = sessions.find((s) => isUnreadWaiting(s, readWaiting))
+  const unread = worktrees.find((s) => isUnreadWaiting(s, readWaiting))
   if (unread) return unread.worktreeId
-  const waiting = sessions.find((s) => s.status === 'waiting')
+  const waiting = worktrees.find((s) => s.status === 'waiting')
   if (waiting) return waiting.worktreeId
-  return sessions.find((s) => s.status === 'running')?.worktreeId ?? null
+  return worktrees.find((s) => s.status === 'running')?.worktreeId ?? null
 }
 
 /**
- * The tool the new-session shortcut would launch — the selected session's
+ * The tool the new-worktree shortcut would launch — the selected worktree's
  * tool, else claude — gated on its credentials being configured. Null means
  * the shortcut must be ignored: the target tool has no stored credential
  * (which includes the moment before the auth list has loaded).
  */
-export function resolveNewSessionTool(
-  sessions: Pick<WorktreeListEntry, 'worktreeId' | 'tool'>[],
+export function resolveNewWorktreeTool(
+  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'tool'>[],
   selectedWorktreeId: string | null,
   configured: ReadonlySet<AgentTool>,
 ): AgentTool | null {
-  const tool = sessions.find((s) => s.worktreeId === selectedWorktreeId)?.tool ?? 'claude'
+  const tool = worktrees.find((s) => s.worktreeId === selectedWorktreeId)?.tool ?? 'claude'
   return configured.has(tool) ? tool : null
 }
 
@@ -327,23 +327,23 @@ export type SettingsSection =
 
 /** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {
-  /** Project whose sessions the sidebar is scoped to (rail selection). */
+  /** Project whose worktrees the sidebar is scoped to (rail selection). */
   activeProjectSlug: string | null
-  /** Session shown in the main pane. */
+  /** Worktree shown in the main pane. */
   selectedWorktreeId: string | null
-  /** Bumped every time a session is selected or opened. The view watches it
-   *  to pull keyboard focus into that session's primary pane — a plain
+  /** Bumped every time a worktree is selected or opened. The view watches it
+   *  to pull keyboard focus into that worktree's primary pane — a plain
    *  textarea focus, never a synthetic click (which would clobber any
    *  local selection in the terminal). */
   focusNonce: number
-  /** Per-session counter; bumping one forces that terminal to remount +
+  /** Per-worktree counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
-  /** Per-session workspace: a row of equal-width columns, each a tabbed group.
+  /** Per-worktree workspace: a row of equal-width columns, each a tabbed group.
    *  Missing key = the default single agent column; null = an explicitly
    *  emptied workspace. */
   layouts: Record<string, Workspace | null>
-  /** Per-session container port the (single) preview pane currently shows.
+  /** Per-worktree container port the (single) preview pane currently shows.
    *  Missing = show the first forwarded port. */
   previewPort: Record<string, number>
   /** Point the preview pane at another forwarded port (toolbar dropdown). */
@@ -351,15 +351,15 @@ interface UiState {
   /** Open/focus the preview pane (the header chip). Seeds the shown port
    *  when unset. */
   openPreview: (worktreeId: string, containerPort?: number) => void
-  /** Open/focus the changes (review-diff) pane for a session. */
+  /** Open/focus the changes (review-diff) pane for a worktree. */
   openChanges: (worktreeId: string) => void
-  /** Whether the session sidebar is shown. */
+  /** Whether the worktree sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
    *  and reflects it onto <html data-theme> for the CSS palette (index.css). */
   themePref: ThemePref
   setThemePref: (pref: ThemePref) => void
-  /** Whether the attention chime plays when a session flips to waiting. */
+  /** Whether the attention chime plays when a worktree flips to waiting. */
   soundEnabled: boolean
   setSoundEnabled: (enabled: boolean) => void
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
@@ -369,40 +369,40 @@ interface UiState {
    *  `metricKey`); null shows the tightest limit. Persisted. */
   pinnedUsageMetric: string | null
   setPinnedUsageMetric: (key: string | null) => void
-  /** Per-session active terminal: the visible tab in tabs mode, the
+  /** Per-worktree active terminal: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
-  /** Per-session set of expanded file paths in the Changes (review-diff)
-   *  pane. Kept in the store — not SessionChanges' local state — so the
+  /** Per-worktree set of expanded file paths in the Changes (review-diff)
+   *  pane. Kept in the store — not WorktreeChanges' local state — so the
    *  accordion survives the pane being torn down off-screen on a tab or
-   *  session switch, the same way previewPort survives it. A missing key
-   *  means the pane hasn't loaded for that session yet: SessionChanges seeds
+   *  worktree switch, the same way previewPort survives it. A missing key
+   *  means the pane hasn't loaded for that worktree yet: WorktreeChanges seeds
    *  it by auto-opening the first file, so any existing entry (even empty) is
    *  the user's own choice and no auto-open reapplies. */
   changesExpanded: Record<string, string[]>
-  /** Replace a session's expanded-files set in the Changes pane. */
+  /** Replace a worktree's expanded-files set in the Changes pane. */
   setChangesExpanded: (worktreeId: string, paths: string[]) => void
-  /** Per-session scroll offset of the Changes pane's file list, so returning
+  /** Per-worktree scroll offset of the Changes pane's file list, so returning
    *  to the pane lands where the user left off. In-memory like
-   *  changesExpanded — it survives a tab/session switch, not a reload. */
+   *  changesExpanded — it survives a tab/worktree switch, not a reload. */
   changesScroll: Record<string, number>
-  /** Record a session's Changes-pane scroll offset. */
+  /** Record a worktree's Changes-pane scroll offset. */
   setChangesScroll: (worktreeId: string, scrollTop: number) => void
-  /** Per-session base branch the Changes pane diffs against. In-memory like
-   *  changesExpanded — survives a tab/session switch, not a reload. Absent = the
-   *  session's own fork base (@{upstream}), i.e. today's default. */
+  /** Per-worktree base branch the Changes pane diffs against. In-memory like
+   *  changesExpanded — survives a tab/worktree switch, not a reload. Absent = the
+   *  worktree's own fork base (@{upstream}), i.e. today's default. */
   changesBase: Record<string, string>
-  /** Set (or, with undefined, clear back to the default) a session's Changes
+  /** Set (or, with undefined, clear back to the default) a worktree's Changes
    *  base branch. */
   setChangesBase: (worktreeId: string, branch: string | undefined) => void
-  /** Per-session find query filtering the Changes pane's file list. In-memory
-   *  like changesExpanded — survives a tab/session switch, not a reload.
+  /** Per-worktree find query filtering the Changes pane's file list. In-memory
+   *  like changesExpanded — survives a tab/worktree switch, not a reload.
    *  Absent = no filter. */
   changesFind: Record<string, string>
-  /** Set (or, with '', clear) a session's Changes find query. */
+  /** Set (or, with '', clear) a worktree's Changes find query. */
   setChangesFind: (worktreeId: string, query: string) => void
   /** One-shot "focus the Changes find box" request, raised by the find-changes
-   *  shortcut alongside openChanges. The mounted SessionChanges pane consumes
+   *  shortcut alongside openChanges. The mounted WorktreeChanges pane consumes
    *  it (focuses its input, then clears the flag), so a pane mounted later —
    *  e.g. opened by the header button — never steals focus for a stale press. */
   changesFindPending: boolean
@@ -412,14 +412,14 @@ interface UiState {
    *  these only bridge the gap until the first snapshot frame carries the id,
    *  then they're pruned. */
   optimisticProvisioning: ProvisioningWorktreeEntry[]
-  /** Sessions whose delete was confirmed — rendered as "stopping…"
+  /** Worktrees whose delete was confirmed — rendered as "stopping…"
    *  optimistically (bridging the gap before the snapshot carries the
    *  server's own `stopping` flag) until the snapshot drops them. */
   pendingDeleteIds: string[]
-  /** Just-deleted sessions (that had history) shown optimistically in the
-   *  deleted-sessions view until the server's list-deleted catches up. */
+  /** Just-deleted worktrees (that had history) shown optimistically in the
+   *  deleted-worktrees view until the server's list-deleted catches up. */
   optimisticStopped: StoppedWorktreeEntry[]
-  /** Read marks for waiting sessions: worktreeId → waitingSinceMs of the
+  /** Read marks for waiting worktrees: worktreeId → waitingSinceMs of the
    *  spell the user viewed. Keying by spell means a mark from an earlier
    *  wait never hides a new one, even across reloads or a page that was
    *  closed through the whole round trip. Persisted; syncWaitingRead GCs
@@ -441,7 +441,7 @@ interface UiState {
   recordingShortcut: boolean
   setRecordingShortcut: (recording: boolean) => void
   /** Whether the settings modal is open. Lives here (not in the gear button)
-   *  so other surfaces — e.g. a "Sign in" item in the new-session menu — can
+   *  so other surfaces — e.g. a "Sign in" item in the new-worktree menu — can
    *  open settings onto a specific section. */
   settingsOpen: boolean
   /** Section the settings modal shows; sticky across open/close. */
@@ -454,7 +454,7 @@ interface UiState {
   openSettings: (section?: SettingsSection, focusTool?: AgentTool) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
-  /** Whether the full-screen deleted-sessions view is open. Opened from the
+  /** Whether the full-screen deleted-worktrees view is open. Opened from the
    *  sidebar header; scoped to the active project when rendered. */
   stoppedOverlayOpen: boolean
   openStoppedOverlay: () => void
@@ -471,36 +471,36 @@ interface UiState {
   /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
   removeOptimisticProvisioning: (worktreeId: string) => void
   setActiveProject: (slug: string | null) => void
-  selectSession: (id: string | null) => void
-  /** Jump to a specific session, switching the active project to match. */
-  openSession: (projectSlug: string, worktreeId: string) => void
+  selectWorktree: (id: string | null) => void
+  /** Jump to a specific worktree, switching the active project to match. */
+  openWorktree: (projectSlug: string, worktreeId: string) => void
   reconnectTerminal: (worktreeId: string) => void
-  /** Replace a session's workspace layout (built with the pure helpers in
+  /** Replace a worktree's workspace layout (built with the pure helpers in
    *  lib/layout). */
-  setSessionLayout: (worktreeId: string, layout: Workspace | null) => void
+  setWorktreeLayout: (worktreeId: string, layout: Workspace | null) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
-  /** Record a session's active terminal without moving keyboard focus —
+  /** Record a worktree's active terminal without moving keyboard focus —
    *  for focus changes the DOM already made (clicking into a pane). */
   setActiveTab: (worktreeId: string, target: string) => void
   /** Make a terminal active AND pull keyboard focus into it — for tab
    *  clicks and the tab-switch shortcuts. */
   focusTerminal: (worktreeId: string, target: string) => void
-  /** Optimistically hide a session being deleted. */
+  /** Optimistically hide a worktree being deleted. */
   beginDelete: (worktreeId: string) => void
-  /** Stop hiding a session — on delete error (restore) or once the snapshot
+  /** Stop hiding a worktree — on delete error (restore) or once the snapshot
    *  confirms it's gone (prune). */
   endDelete: (worktreeId: string) => void
-  /** Optimistically show a just-deleted session in the Deleted group. */
+  /** Optimistically show a just-deleted worktree in the Deleted group. */
   addOptimisticStopped: (entry: StoppedWorktreeEntry) => void
   /** Drop an optimistic deleted entry — once list-deleted includes it, or on
    *  restart. */
   removeOptimisticStopped: (worktreeId: string) => void
-  /** Mark a session's current waiting spell as seen (it's open in the main
+  /** Mark a worktree's current waiting spell as seen (it's open in the main
    *  pane). Pass the entry's waitingSinceMs (normalized: missing → 0). */
   markWaitingRead: (worktreeId: string, waitingSinceMs: number) => void
   /** GC read marks against the currently-waiting (worktreeId, waitingSinceMs)
-   *  pairs: a mark whose spell is over (session running, gone, or waiting
+   *  pairs: a mark whose spell is over (worktree running, gone, or waiting
    *  anew) no longer matches anything and is dropped. Correctness doesn't
    *  depend on this — isUnreadWaiting compares spells — it only keeps the
    *  persisted map from growing. */
@@ -572,16 +572,16 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.worktreeId !== worktreeId) }
       : s
   )),
-  // Switching projects clears the open session — the sidebar now shows a
-  // different project's sessions, so the old selection no longer belongs.
+  // Switching projects clears the open worktree — the sidebar now shows a
+  // different project's worktrees, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorktreeId: null }),
-  selectSession: (id) => set((s) => ({ selectedWorktreeId: id, focusNonce: s.focusNonce + 1 })),
-  openSession: (projectSlug, worktreeId) =>
+  selectWorktree: (id) => set((s) => ({ selectedWorktreeId: id, focusNonce: s.focusNonce + 1 })),
+  openWorktree: (projectSlug, worktreeId) =>
     set((s) => ({ activeProjectSlug: projectSlug, selectedWorktreeId: worktreeId, focusNonce: s.focusNonce + 1 })),
   reconnectTerminal: (worktreeId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [worktreeId]: (s.terminalNonces[worktreeId] ?? 0) + 1 },
   })),
-  setSessionLayout: (worktreeId, layout) => set((s) => ({
+  setWorktreeLayout: (worktreeId, layout) => set((s) => ({
     layouts: { ...s.layouts, [worktreeId]: layout },
   })),
   setPreviewPort: (worktreeId, containerPort) => set((s) => (
@@ -705,16 +705,16 @@ export const useUiStore = create<UiState>((set) => ({
   }),
 }))
 
-// Workspace layouts survive reloads. Session ids are stable across restarts
-// (restart resumes the same id), so a restored session gets its old layout
+// Workspace layouts survive reloads. Worktree ids are stable across restarts
+// (restart resumes the same id), so a restored worktree gets its old layout
 // back too.
 useUiStore.subscribe((state, prev) => {
   if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
 })
 
-// The active project + session survive reloads and are mirrored into the URL
-// bar so a link is shareable. Only the session is liveness-gated — App drops a
-// restored selection whose session is no longer active.
+// The active project + worktree survive reloads and are mirrored into the URL
+// bar so a link is shareable. Only the worktree is liveness-gated — App drops a
+// restored selection whose worktree is no longer active.
 useUiStore.subscribe((state, prev) => {
   if (
     state.activeProjectSlug !== prev.activeProjectSlug
@@ -724,8 +724,8 @@ useUiStore.subscribe((state, prev) => {
   }
 })
 
-// Read marks survive reloads so already-viewed waiting sessions don't
-// re-flag. Marks are keyed by the server's waitingSinceMs, so a session
+// Read marks survive reloads so already-viewed waiting worktrees don't
+// re-flag. Marks are keyed by the server's waitingSinceMs, so a worktree
 // that waited anew while the page was closed carries a different spell
 // timestamp and correctly shows unread; restored stale marks are GC'd
 // against the first snapshot.

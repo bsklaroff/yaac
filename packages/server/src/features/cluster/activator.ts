@@ -12,13 +12,13 @@
  * The activator holds a vcluster's server-CA key during a wake (enough
  * to impersonate that vcluster's API endpoint), so it is deliberately
  * narrow: trusted infra on runc in the install namespace, unreachable
- * from sessions except on its one port, and granted RBAC only
+ * from worktrees except on its one port, and granted RBAC only
  * per-vcluster (a Role in each vcluster's namespace, applied with the
  * vcluster and torn down with it — no standing cluster-wide grant).
  */
 
 import {
-  LABEL_SESSION_ID,
+  LABEL_WORKTREE_ID_LEGACY,
   LABEL_VCLUSTER_MANAGED_BY,
   LABEL_VCLUSTER_NAMESPACE,
   VCLUSTER_API_PORT,
@@ -52,7 +52,7 @@ export function buildActivatorServiceAccountManifest(): Record<string, unknown> 
 
 /**
  * Per-vcluster grant for the activator SA, applied into the vcluster's
- * own namespace by `ensureSessionVcluster` and swept with it. The
+ * own namespace by `ensureWorktreeVcluster` and swept with it. The
  * narrowest RBAC that covers a wake: read the one certs Secret (serving
  * cert + front-proxy identity), scale/read the one control-plane
  * Deployment, find its pod IP, and delete the one interception slice.
@@ -167,7 +167,7 @@ export function buildActivatorDeploymentManifest(imageRef: string): Record<strin
 /**
  * The activator's containment NetworkPolicy, both directions.
  *
- * Ingress: its one port is reachable by session pods (whose intercepted
+ * Ingress: its one port is reachable by worktree pods (whose intercepted
  * API dials arrive at the activator after kube-proxy's DNAT, so policy is
  * evaluated on the activator as the destination) and by the node (the
  * kubelet readiness probe). A vcluster's synced pods never dial it: while
@@ -207,7 +207,7 @@ export function buildActivatorNetworkPolicyManifest(
         { from: blocks(nodeCidrs), ports: [apiPort] },
         {
           from: [{
-            podSelector: { matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] },
+            podSelector: { matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }] },
           }],
           ports: [apiPort],
         },
@@ -293,10 +293,10 @@ export async function getActivatorPodIp(): Promise<string> {
 
 /**
  * Stand up (or converge) the activator. It runs the proxy sidecar image,
- * so the caller passes the tag: the session create flow ensures the proxy
+ * so the caller passes the tag: the worktree create flow ensures the proxy
  * before the vcluster, and by then it has already built and pushed exactly
  * that tag. Taking it as an argument is what keeps this feature below the
- * session feature rather than reaching up into it for the same answer.
+ * worktree feature rather than reaching up into it for the same answer.
  */
 export async function ensureActivator(proxyImageTag: string): Promise<void> {
   const imageRef = registryRef(proxyImageTag)

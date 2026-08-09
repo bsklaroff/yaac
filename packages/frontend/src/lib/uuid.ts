@@ -7,7 +7,7 @@
  * port) it is `undefined` and calling it throws `crypto.randomUUID is not a
  * function`. `crypto.getRandomValues()` has no such restriction, so fall back
  * to it and format the 16 random bytes ourselves (version nibble → 4, variant
- * nibble → 10xx). The webapp uses these only as client-minted session ids, so
+ * nibble → 10xx). The webapp uses these only as client-minted worktree ids, so
  * the fallback's randomness is more than sufficient.
  */
 export function randomUUID(): string {

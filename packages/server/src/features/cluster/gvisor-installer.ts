@@ -32,11 +32,11 @@ import { assertMirrorArch } from './netd'
  *    exists (a remote control plane, a managed node pool);
  *  - node recycling is handled for free. A pool upgrade replaces nodes; the
  *    DaemonSet schedules onto each new one and installs before the
- *    RuntimeClass selector lets any session pod near it. Nothing has to
+ *    RuntimeClass selector lets any worktree pod near it. Nothing has to
  *    notice a node was replaced.
  *
  * Blast radius is bounded by where the DaemonSet runs: `nodeSelector` is
- * plumbed through so a cluster with a dedicated sessions pool can install
+ * plumbed through so a cluster with a dedicated worktrees pool can install
  * the runtime there only, leaving infra nodes' containerd untouched. Every
  * infra pod yaac runs (proxy, registries, node-write pods, vcluster control
  * planes, this installer) stamps no RuntimeClass and so keeps running on
@@ -171,7 +171,7 @@ export interface GvisorInstallerOptions {
   /**
    * Where the runtime gets installed. Empty (the default) means every node,
    * which is what a single-node local cluster wants. A cluster with a
-   * dedicated sessions pool sets its pool label here and the runtime — plus
+   * dedicated worktrees pool sets its pool label here and the runtime — plus
    * the containerd restart that installing it costs — never touches an
    * infra node; the RuntimeClasses follow automatically, since they select
    * on the label this DaemonSet stamps, not on the pool.
@@ -186,7 +186,7 @@ export interface GvisorInstallerOptions {
  *   config, and it restarts containerd by entering PID 1's mount namespace
  *   to run the node's own systemctl — there is no unprivileged spelling of
  *   "install a container runtime". This is the plan's accepted portability
- *   cost, and the reason a dedicated sessions pool is worth having.
+ *   cost, and the reason a dedicated worktrees pool is worth having.
  * - runc, like every other yaac infra pod: it stamps no RuntimeClass, which
  *   it could not anyway — it is what makes the sandbox tier exist.
  * - `hostNetwork` with the NODE's DNS. The pod must work on a node whose
@@ -198,7 +198,7 @@ export interface GvisorInstallerOptions {
  * - Blanket toleration, `system-node-critical`, like netd: this is node
  *   infrastructure, and a node the installer was evicted from is a node
  *   whose sandboxed pods stop being schedulable. It is also why a tainted
- *   sessions pool costs this DaemonSet nothing — `Exists` already covers the
+ *   worktrees pool costs this DaemonSet nothing — `Exists` already covers the
  *   pool taint; only the *workload's* toleration has to be declared, and
  *   that goes on the RuntimeClasses.
  * - `maxUnavailable: 1` on the rolling update. A version bump changes the
@@ -276,7 +276,7 @@ export function buildGvisorInstallerDaemonSetManifest(
  * (and where a containerd restart is spent), so it lands on the DaemonSet;
  * the DaemonSet needs no toleration plumbing at all, since it already
  * tolerates everything the way node infrastructure must. `tolerations`
- * bounds nothing — it is what lets sandboxed pods onto a tainted sessions
+ * bounds nothing — it is what lets sandboxed pods onto a tainted worktrees
  * pool — so it lands on the RuntimeClasses, whose admission merge is what
  * puts it on every pod that names them (see buildRuntimeClassManifests).
  *

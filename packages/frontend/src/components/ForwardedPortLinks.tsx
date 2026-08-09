@@ -21,7 +21,7 @@ export function portLinkLabel(p: PortMapping): string {
  * the tailnet name when served remotely (the forwarders bind that same
  * interface via YAAC_FORWARD_BIND, so the link is correct wherever you
  * loaded the app). This is the webapp's replacement for the tmux
- * status-right port readout — webapp panes attach through view sessions
+ * status-right port readout — webapp panes attach through view worktrees
  * with `status off`, so the server-pushed snapshot is the only place the
  * mapping can surface.
  */

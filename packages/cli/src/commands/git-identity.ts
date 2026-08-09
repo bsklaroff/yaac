@@ -4,7 +4,7 @@ import { getGitUserConfig } from '@yaac/shared/git'
 
 /**
  * Resolve the user's global git identity, prompting for (and persisting)
- * one when it's missing. Session create/restart resolve the identity
+ * one when it's missing. Worktree create/restart resolve the identity
  * CLI-side so the server receives an already-resolved pair. Returns
  * `undefined` when the prompt is abandoned (empty name or email); callers
  * set the exit code.

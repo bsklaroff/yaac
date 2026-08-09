@@ -5,16 +5,16 @@
  * it with "the node carries no taint at all" is only right for a pod that
  * tolerates nothing. That used to describe every yaac pod bar netd, so the
  * blanket answer was indistinguishable from the real one — until a
- * dedicated sessions pool, which is built the conventional way: taint the
+ * dedicated worktree pool, which is built the conventional way: taint the
  * pool so nothing else drifts onto it, and tolerate that taint from the
  * workload that belongs there. Under the blanket rule such a pool reads as
- * *zero* nodes a session can use, and the only repair it can suggest is
+ * *zero* nodes a worktree can use, and the only repair it can suggest is
  * removing the taint — dismantling the isolation the pool exists for.
  *
- * Where a session pod's tolerations come from is the other half: nothing
+ * Where a worktree pod's tolerations come from is the other half: nothing
  * stamps them per-pod. `RuntimeClass.scheduling.tolerations` is merged by
  * the RuntimeClass admission controller into every pod naming the class, so
- * declaring the pool's toleration once on `gvisor` reaches session pods,
+ * declaring the pool's toleration once on `gvisor` reaches worktree pods,
  * builder pods, vcluster-synced pods and cluster check's own pinned probes
  * alike (those bypass the scheduler, but kubelet still admits them, and a
  * `NoExecute` taint evicts what it does not tolerate).
@@ -29,7 +29,7 @@
  * the pod. This answers the scheduler's question — may the pod land here —
  * and a time-bounded toleration lands the pod, so it counts as tolerated.
  * That makes a time-bounded pool toleration a configuration yaac cannot warn
- * about: every gate passes, and sessions are evicted when the clock runs
+ * about: every gate passes, and worktrees are evicted when the clock runs
  * out. Declare a pool's toleration without `tolerationSeconds`; there is no
  * reason to bound it, since the taint is the pool's identity rather than a
  * condition expected to clear.

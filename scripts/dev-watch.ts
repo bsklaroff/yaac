@@ -1,6 +1,6 @@
 /**
  * `pnpm watch` — dev loop for working on yaac itself (including inside
- * a yaac-in-yaac session). package.json runs this under `tsx watch`,
+ * a yaac-in-yaac worktree). package.json runs this under `tsx watch`,
  * which reruns it whenever a build input changes; each run does
  * `pnpm build:watch` then `yaac server start`, falling back to `yaac
  * server restart` when start refuses (live server on an older

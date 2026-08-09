@@ -28,7 +28,7 @@ import crypto from 'node:crypto'
 /**
  * The reserved node-local port window, as trio slots. Passed in from the
  * server (proxy-constants.ts) via env so the range has ONE definition —
- * the session NetworkPolicy admits exactly these ports, so a netd that
+ * the worktree NetworkPolicy admits exactly these ports, so a netd that
  * disagreed with the policy would bind listeners nothing may reach.
  */
 export interface ListenerRange {

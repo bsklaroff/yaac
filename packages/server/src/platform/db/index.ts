@@ -9,7 +9,7 @@
 // owns opening, migrating and closing the database, not the queries.
 //
 // Everything else is internal: the data dir's `db` path, the legacy file
-// layout, and the session backfill, all covered through the entry points
+// layout, and the worktree backfill, all covered through the entry points
 // below in packages/server/test/platform/db/.
 
 export { closeDb, getDb, _freshDbForTests } from './client'

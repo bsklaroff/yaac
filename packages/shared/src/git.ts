@@ -44,7 +44,7 @@ function shellQuoteArg(s: string): string {
  * Lives in shared because both the CLI (which prompts when missing
  * and forwards the resolved pair to the server) and the server
  * (which falls back to the global config during non-interactive
- * session creation) need it.
+ * worktree creation) need it.
  */
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
   try {

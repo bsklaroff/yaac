@@ -55,7 +55,7 @@ describe('getProjectDetail', () => {
       slug: 'foo',
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
-      sessionCount: 2,
+      worktreeCount: 2,
       config: { envPassthrough: ['B'] },
     })
     expect(count).toHaveBeenCalledWith('foo')
@@ -71,7 +71,7 @@ describe('getProjectDetail', () => {
     })
 
     const detail = await getProjectDetail('foo')
-    expect(detail.sessionCount).toBe(0)
+    expect(detail.worktreeCount).toBe(0)
     expect(detail.config).toBeNull()
   })
 })

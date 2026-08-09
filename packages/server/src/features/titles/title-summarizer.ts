@@ -23,7 +23,7 @@ import { serverLog } from '#log'
  *  IQ4_XS (imatrix, 333MB) held Q5_K_M/Q8_0 quality with zero defects over the
  *  test set while being the smallest and fastest — its importance-matrix
  *  calibration beats the same-size plain Q4_K_S/Q4_K_M, which mashed words and
- *  hallucinated ("Llama 2 …"). See docs/session-title-model-eval.md. Re-verify
+ *  hallucinated ("Llama 2 …"). See docs/worktree-title-model-eval.md. Re-verify
  *  title quality before swapping the model or quant. */
 export const TITLE_MODEL_URL
   = 'https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-IQ4_XS.gguf'

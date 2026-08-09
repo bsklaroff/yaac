@@ -6,7 +6,7 @@
  * command text is unit-testable.
  *
  * The tool-agnostic base setup (git identity, tmux server + options,
- * streamd) lives in `session-bin/yaac-session-init`, the pod's postStart
+ * streamd) lives in `worktree-bin/yaac-worktree-init`, the pod's postStart
  * hook; only the steps that need host coordination remain here.
  */
 import {
@@ -37,11 +37,11 @@ import type { AgentTool, YaacConfig } from '@yaac/shared/types'
  *    never `git worktree remove`d (teardown rm -rf's the dirs), so the
  *    lock needs no clearing.
  */
-export function buildWorktreeLinkExec(sessionId: string): string {
-  const admin = `/repo/.git/worktrees/${sessionId}`
+export function buildWorktreeLinkExec(worktreeId: string): string {
+  const admin = `/repo/.git/worktrees/${worktreeId}`
   return `echo 'gitdir: ${admin}' > /workspace/.git`
     + ` && echo '/workspace/.git' > ${admin}/gitdir`
-    + ` && printf 'yaac worktree ${sessionId}' > ${admin}/locked`
+    + ` && printf 'yaac worktree ${worktreeId}' > ${admin}/locked`
 }
 
 /**

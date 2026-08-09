@@ -4,7 +4,7 @@
  * This is the one image bus (docs/trust-split-builds.md): host-side
  * `podman build` pushes trusted layers into it, sandboxed builder pods pull
  * their parents from it and push their products back, node containerd pulls
- * every session image from it, and the vcluster chart's images are named
+ * every worktree image from it, and the vcluster chart's images are named
  * through it. It is deliberately the SAME topology as the per-project
  * registries (project-registry.ts) rather than a second pattern:
  * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
@@ -24,11 +24,11 @@
  *  - Its ingress lock admits a different caller set: node CIDRs (containerd
  *    pulls and the kubelet probe, plus the server's port-forward, which
  *    arrives from the node) and builder pods in ANY namespace, rather than
- *    one project's sessions. Session pods are not on that list and cannot
+ *    one project's worktrees. Worktree pods are not on that list and cannot
  *    reach it anyway — their own default-deny egress
- *    (`buildSessionEgressNpManifest`) admits nothing but the node's netd
+ *    (`buildWorktreeEgressNpManifest`) admits nothing but the node's netd
  *    listener range. Note the world-deny policy is NOT what stops them: it
- *    explicitly excludes session-labeled pods.
+ *    explicitly excludes worktree-labeled pods.
  *
  * On the lock's limits, so the rationale is not read as more than it is:
  * builder pods are the UNTRUSTED principal of the trust split — an
@@ -64,7 +64,7 @@
  * claim: nothing migrates blobs, because nothing here has ever needed to —
  * `registryHasTag` misses and the pushers refill, the same self-healing the
  * store has always relied on for a cluster recreate. The cost is one round
- * of re-pushes and rebuilds on the first session create after the upgrade.
+ * of re-pushes and rebuilds on the first worktree create after the upgrade.
  * The old hostPath data stays on the nodes until `sweepLegacyNodeStores`
  * reclaims it, which it will not do until this registry is demonstrably
  * serving from the claim, so the window is also the recovery window.
@@ -113,8 +113,8 @@ export const LABEL_MAIN_REGISTRY_NODE_WRITE = 'yaac.main-registry-node-write'
 
 /**
  * Install-scoping labels. The hash carries the registry-scoped key rather
- * than the session one, for the same reason project-registry.ts uses it:
- * these objects must stay invisible to the session reaper and list paths.
+ * than the worktree one, for the same reason project-registry.ts uses it:
+ * these objects must stay invisible to the worktree reaper and list paths.
  */
 function mainRegistryLabels(): Record<string, string> {
   return {
@@ -137,7 +137,7 @@ export function mainRegistryPvcName(): string {
  * enforces: kind's local-path provisioner ignores the number entirely (the
  * volume is a directory on the node's filesystem), so on the local backend
  * the real bound is the build-cache GC. It is sized for the backends where
- * it does bind — this store holds every session image of the install plus
+ * it does bind — this store holds every worktree image of the install plus
  * every trust-split step-cache layer, and running it out of space fails
  * builds rather than degrading them.
  *
@@ -207,8 +207,8 @@ export function buildMainRegistryDeploymentManifest(): Record<string, unknown> {
         spec: {
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // Infra tier: every session pod's image comes from here, so
-          // evicting it to make room for a session is backwards.
+          // Infra tier: every worktree pod's image comes from here, so
+          // evicting it to make room for a worktree is backwards.
           priorityClassName: PRIORITY_CLASS_INFRA,
           containers: [
             {
@@ -277,7 +277,7 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  *    role label is unforgeable: the builder-role ValidatingAdmissionPolicy
  *    lets no ServiceAccount set it.
  *
- * Session pods are deliberately absent. This does NOT stop a builder-origin
+ * Worktree pods are deliberately absent. This does NOT stop a builder-origin
  * write (see the module header) — it stops everything that is not a builder
  * or the node from becoming a caller by accident.
  *
@@ -336,7 +336,7 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
  * kubelet still admits, and the taint manager still evicts, so a
  * `NoExecute` taint would refuse this pod on the very nodes it has to reach.
  * A node with no hosts.toml cannot pull, so the pods that most need this
- * write are exactly the ones a tainted sessions pool would deny it to. The
+ * write are exactly the ones a tainted worktrees pool would deny it to. The
  * blanket toleration costs nothing in scheduling freedom: the pod is pinned
  * to one named node and lives for seconds.
  *

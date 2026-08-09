@@ -114,7 +114,7 @@ New `src/frontend/lib/image-links.ts`:
   offsets back to 1-based `IBufferRange`s, underline-on-hover decoration,
   `activate` → `onOpen(resolvedPath)`. Returns the `IDisposable`.
 
-`SessionTerminal` (`src/frontend/components/SessionTerminal.tsx`) gains an
+`WorktreeTerminal` (`src/frontend/components/WorktreeTerminal.tsx`) gains an
 optional `onOpenImage?: (path: string) => void` prop; when set, register
 the provider after `term.open(el)` (near the addon setup at `:98-120`)
 and dispose it in the effect cleanup.
@@ -128,13 +128,13 @@ state. Leaf targets are already plain strings (`'agent'`, `'shell:<name>'`,
 Helpers in `image-links.ts` (exported, unit-tested): `imageTarget(path)`,
 `isImageTarget(t)`, `imageTargetPath(t)`.
 
-`SessionView.tsx` changes:
+`WorktreeView.tsx` changes:
 
-- **Layout sync** (`SessionView.tsx:142-155`): the reconcile effect removes
+- **Layout sync** (`WorktreeView.tsx:142-155`): the reconcile effect removes
   leaves missing from the live tmux window list — skip `image:` leaves in
   the removal loop (they have no backing window) and never feed them to
   the `addLeafToLargest` re-add loop.
-- **Open handler** passed down as `onOpenImage` to every `SessionTerminal`
+- **Open handler** passed down as `onOpenImage` to every `WorktreeTerminal`
   (bound to that pane's session id, not the selected one): if a leaf with
   the same target exists, just `focusTerminal` to it; otherwise
   `addLeafToLargest` + focus, mirroring `openShell` (`:197-214`) minus the
@@ -142,10 +142,10 @@ Helpers in `image-links.ts` (exported, unit-tested): `imageTarget(path)`,
 - **`paneName`** (`:72-76`): image targets → `basename(path)`.
 - **Pane body** (mounted loop at `:578-619`): branch on `isImageTarget` —
   render `<ImagePane sessionId={id} path={…} />` instead of
-  `SessionTerminal`. Keep-alive works unchanged (the pane is cheap).
+  `WorktreeTerminal`. Keep-alive works unchanged (the pane is cheap).
 - **Close**: image panes get the header ×/tab × unconditionally, but both
   the click path and the Alt+W shortcut skip the `ConfirmDialog` and the
-  `killSessionTerminal` call — closing destroys nothing; just drop the
+  `killWorktreeTerminal` call — closing destroys nothing; just drop the
   leaf and the `opened` entry.
 - **Persistence**: layouts already persist to localStorage, so image panes
   reappear on reload and re-fetch; a stopped session yields the pane's
@@ -160,7 +160,7 @@ New `src/frontend/components/ImagePane.tsx`:
   centered on the pane's `bg` block. Revoke the object URL on unmount and
   before each refetch.
 - States: loading (reuse the `LoadingIcon` "Connecting…" pattern from
-  `SessionTerminal.tsx:283-289`), error (the `ApiError` message — "No such
+  `WorktreeTerminal.tsx:283-289`), error (the `ApiError` message — "No such
   file", "session not running", "too large" — plus a Retry button), and a
   small refresh control in the pane body so a re-taken screenshot at the
   same path can be reloaded (`no-store` keeps the fetch honest).
@@ -190,7 +190,7 @@ Unit (`test/unit/`, every new exported function covered per repo rule):
   helpers round-trip.
 - `frontend/image-pane.test.tsx`: blob fetch success/error/retry, object
   URL revocation; `api-client.test.ts`: `getBlob`.
-- SessionView layout sync: image leaves survive the terminals reconcile
+- WorktreeView layout sync: image leaves survive the terminals reconcile
   and are never server-killed (extend the existing frontend tests around
   layout/persist).
 

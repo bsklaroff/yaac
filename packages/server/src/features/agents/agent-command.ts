@@ -1,4 +1,4 @@
-import { RelayExecError, sessionExec } from '#platform/k8s'
+import { RelayExecError, podExec } from '#platform/k8s'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
@@ -50,7 +50,7 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
 
 export function buildAgentCmd(
   tool: AgentTool,
-  sessionId: string,
+  worktreeId: string,
   resume = false,
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
@@ -67,7 +67,7 @@ export function buildAgentCmd(
     // binds it to whichever command runs.
     return [
       'codex --yolo',
-      resume ? `resume ${sessionId}` : '',
+      resume ? `resume ${worktreeId}` : '',
       model ? `--model ${model}` : '',
     ].filter(Boolean).join(' ')
   }
@@ -88,7 +88,7 @@ export function buildAgentCmd(
     // guarded so a future registry gap falls back to pi's own default rather
     // than `--model undefined`).
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve${modelFlag} --session-id ${sessionId}`
+    const pi = `pi --approve${modelFlag} --session-id ${worktreeId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
     // '<id>'; creating a new session with that id." to stderr, which then
@@ -120,7 +120,7 @@ export function buildAgentCmd(
     // --port + --hostname enable opencode's built-in HTTP server on
     // container loopback. yaac reads /session and /session/status from
     // there (via `kubectl exec curl`) for status + first-message lookup.
-    // --continue resumes the one session stored in the per-yaac-session
+    // --continue resumes the one session stored in the per-yaac-worktree
     // data dir (isolated per container — no cwd-collision concern).
     // --model takes `provider/model`; omitted, opencode uses the model
     // persisted in its shared config (or its own default).
@@ -134,7 +134,7 @@ export function buildAgentCmd(
   return [
     'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
     model ? `--model ${model}` : '',
-    resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
+    resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')
 }
 
@@ -232,7 +232,7 @@ export async function typeInitialPrompt(
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  await sessionExec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
+  await podExec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
     maxAttempts: 1,
     timeout: 15_000,
   })
@@ -268,7 +268,7 @@ export function buildAgentWindowCheck(tool: AgentTool): string {
  */
 export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
   try {
-    await sessionExec(jobName, buildAgentWindowCheck(tool))
+    await podExec(jobName, buildAgentWindowCheck(tool))
   } catch (err) {
     if (!(err instanceof RelayExecError)) throw err
     const detail = err.stderr.trim()

@@ -8,7 +8,7 @@ vi.mock('#platform/k8s/kubectl', () => ({
 
 import { buildEgressWorldDenyNpManifest } from '#features/cluster'
 import { EGRESS_WORLD_DENY_NAME, LABEL_ROLE, PROXY_APP_NAME } from '#platform/k8s/proxy-constants'
-import { LABEL_SESSION_ID } from '#platform/k8s/pods'
+import { LABEL_WORKTREE_ID_LEGACY } from '#platform/k8s/pods'
 
 interface Spec {
   podSelector: Record<string, unknown>
@@ -20,7 +20,7 @@ interface Spec {
 // re-applies the install-wide world-deny after a builder pod exits. Every
 // other manifest in policy-manifests.ts is internal and asserted where it is
 // applied — the session/proxy set through `ensureProxyResources`, the
-// per-vcluster set through `ensureSessionVcluster`.
+// per-vcluster set through `ensureWorktreeVcluster`.
 describe('buildEgressWorldDenyNpManifest', () => {
   const np = buildEgressWorldDenyNpManifest()
   const spec = np.spec as Spec
@@ -39,7 +39,7 @@ describe('buildEgressWorldDenyNpManifest', () => {
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
-        { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
+        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: ['builder'] },
       ],
     })

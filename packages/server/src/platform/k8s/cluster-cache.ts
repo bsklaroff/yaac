@@ -7,12 +7,12 @@ import {
 import { k8sNamespace } from './kubectl'
 import {
   LABEL_VCLUSTER_MANAGED_BY,
-  mapSessionJobObject,
-  mapSessionPodObject,
-  sessionJobSelector,
-  sessionPodSelector,
-  type SessionJob,
-  type SessionPod,
+  mapJobObject,
+  mapPodObject,
+  worktreeJobSelector,
+  worktreePodSelector,
+  type JobInfo,
+  type PodInfo,
 } from './pods'
 import {
   mapVclusterConfigMapObject,
@@ -29,15 +29,15 @@ import { serverLog } from '#log'
 
 /**
  * Every informer the server runs, in one registry: the install-scoped
- * session pods / session Jobs / vcluster namespaces watches, plus a
+ * worktree pods / worktree Jobs / vcluster namespaces watches, plus a
  * dynamic pods+services+claims informer set per live vcluster namespace
  * (created and torn down as the namespaces cache changes). Consumers —
  * the reconciler, the status-watcher sync, the display path — read the
  * caches and subscribe to `onDelta` instead of listing the cluster.
  */
 export type DeltaSource =
-  | 'session-pods'
-  | 'session-jobs'
+  | 'worktree-pods'
+  | 'worktree-jobs'
   | 'vcluster-namespaces'
   | 'vcluster-pods'
   | 'vcluster-services'
@@ -58,8 +58,8 @@ interface VclusterInformers {
 }
 
 export class ClusterCache {
-  private readonly pods: InformerCache<SessionPod>
-  private readonly jobs: InformerCache<SessionJob>
+  private readonly pods: InformerCache<PodInfo>
+  private readonly jobs: InformerCache<JobInfo>
   private readonly namespaces: InformerCache<VclusterNamespaceInfo>
   private readonly vcInformers = new Map<string, VclusterInformers>()
   private readonly listeners = new Set<(source: DeltaSource) => void>()
@@ -69,20 +69,20 @@ export class ClusterCache {
   constructor(deps: ClusterCacheDeps = {}) {
     this.deps = deps
     const ns = k8sNamespace()
-    this.pods = this.buildCache('session-pods', {
+    this.pods = this.buildCache('worktree-pods', {
       path: `/api/v1/namespaces/${ns}/pods`,
-      labelSelector: sessionPodSelector(),
+      labelSelector: worktreePodSelector(),
       listFn: () => getCoreApi().listNamespacedPod(
-        { namespace: ns, labelSelector: sessionPodSelector() }),
-      mapItem: mapSessionPodObject,
+        { namespace: ns, labelSelector: worktreePodSelector() }),
+      mapItem: mapPodObject,
       keyOf: (p) => p.podName,
     })
-    this.jobs = this.buildCache('session-jobs', {
+    this.jobs = this.buildCache('worktree-jobs', {
       path: `/apis/batch/v1/namespaces/${ns}/jobs`,
-      labelSelector: sessionJobSelector(),
+      labelSelector: worktreeJobSelector(),
       listFn: () => getBatchApi().listNamespacedJob(
-        { namespace: ns, labelSelector: sessionJobSelector() }),
-      mapItem: mapSessionJobObject,
+        { namespace: ns, labelSelector: worktreeJobSelector() }),
+      mapItem: mapJobObject,
       keyOf: (j) => j.jobName,
     })
     this.namespaces = this.buildCache('vcluster-namespaces', {
@@ -121,12 +121,12 @@ export class ClusterCache {
     this.listeners.add(fn)
   }
 
-  sessionPods(projectFilter?: string): SessionPod[] {
+  worktreePods(projectFilter?: string): PodInfo[] {
     const all = this.pods.items()
     return projectFilter ? all.filter((p) => p.projectSlug === projectFilter) : all
   }
 
-  sessionJobs(): SessionJob[] {
+  worktreeJobs(): JobInfo[] {
     return this.jobs.items()
   }
 
@@ -152,9 +152,9 @@ export class ClusterCache {
     return entry?.configMaps.healthy() ? entry.configMaps.items() : null
   }
 
-  healthy(source: 'session-pods' | 'session-jobs' | 'vcluster-namespaces'): boolean {
-    if (source === 'session-pods') return this.pods.healthy()
-    if (source === 'session-jobs') return this.jobs.healthy()
+  healthy(source: 'worktree-pods' | 'worktree-jobs' | 'vcluster-namespaces'): boolean {
+    if (source === 'worktree-pods') return this.pods.healthy()
+    if (source === 'worktree-jobs') return this.jobs.healthy()
     return this.namespaces.healthy()
   }
 

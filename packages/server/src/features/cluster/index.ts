@@ -5,10 +5,10 @@
 //
 // This feature owns the *substrate*: the local kind/podman cluster and the
 // datapath the server hangs off it — the shared egress proxy, netd's
-// redirect layer, the main and per-project registries, and the per-session
+// redirect layer, the main and per-project registries, and the per-worktree
 // vclusters with their sleep activators. Three kinds of consumer enter here: `yaac cluster
-// check/setup/delete` (before any server exists), session create and its
-// reconcilers (which stand a session's slice of that datapath up and tear it
+// check/setup/delete` (before any server exists), worktree create and its
+// reconcilers (which stand a worktree's slice of that datapath up and tear it
 // down), and the image builders (which need the builder pod's admission
 // guard and its route to the registry).
 //
@@ -33,7 +33,7 @@
 //  - The vcluster *object layer* — the shapes a vcluster namespace
 //    publishes, their mappers, and the one-shot lists — is what the informer
 //    registry and the reconcile snapshot read, and it is the same job
-//    `pods.ts` does for session pods, so it lives in
+//    `pods.ts` does for worktree pods, so it lives in
 //    `#platform/k8s`. What stays here is the vcluster
 //    *lifecycle*: provisioning, sleep/wake, status and teardown.
 
@@ -86,10 +86,10 @@ export { ClusterSetupError, runClusterSetup } from './setup'
 export {
   VCLUSTER_ORPHAN_GRACE_MS,
   buildVclusterCleanupShellCommand,
-  ensureSessionVcluster,
+  ensureWorktreeVcluster,
   ensureVclusterImages,
   getVclusterStatus,
-  removeSessionVcluster,
+  removeWorktreeVcluster,
   sleepVcluster,
   vapAvailable,
   vclusterLabels,

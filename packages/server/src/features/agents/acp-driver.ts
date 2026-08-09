@@ -28,7 +28,7 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { dialCtrlStream, sessionExec, type StreamChild } from '#platform/k8s'
+import { dialCtrlStream, podExec, type StreamChild } from '#platform/k8s'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { CONTAINER_TMUX_SOCK, containerAcpLog, containerAcpSock } from '@yaac/shared/paths'
@@ -48,7 +48,7 @@ import type {
   AgentDriver,
   AgentLaunchSpec,
   AgentObservation,
-  DrivenSession,
+  DrivenWorktree,
   LiveAgent,
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
@@ -174,18 +174,18 @@ class AcpConnection implements AgentConnection {
   private readonly sweepMs: number
   private readonly commandTimeoutMs: number
   private readonly log: (msg: string) => void
-  private readonly dial: (session: DrivenSession, argv: string[]) => StreamChild
+  private readonly dial: (session: DrivenWorktree, argv: string[]) => StreamChild
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
 
   constructor(
-    private readonly session: DrivenSession,
+    private readonly session: DrivenWorktree,
     private readonly sink: (obs: AgentObservation) => void,
     deps: AgentConnectDeps,
   ) {
     this.sweepMs = deps.heartbeatIntervalMs ?? DEFAULT_SWEEP_MS
     this.commandTimeoutMs = deps.commandTimeoutMs ?? DEFAULT_COMMAND_MS
     this.log = deps.log ?? serverLog
-    this.dial = deps.dial ?? ((s, argv) => dialCtrlStream(s.sessionId, argv))
+    this.dial = deps.dial ?? ((s, argv) => dialCtrlStream(s.worktreeId, argv))
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     void this.sweep().then(() => this.rearm())
   }
@@ -289,7 +289,7 @@ class AcpConnection implements AgentConnection {
   }
 
   private async listAcpWindows(): Promise<Array<{ handle: string; tool: AgentTool }>> {
-    const { stdout } = await sessionExec(
+    const { stdout } = await podExec(
       this.session.jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} list-windows -t yaac -F '#{window_name}'`,
       { maxAttempts: 1, timeout: this.commandTimeoutMs },
@@ -310,7 +310,7 @@ class AcpConnection implements AgentConnection {
       // than a port precisely so it stays out of the auto-forward port scan.
       child = this.dial(this.session, ['socat', '-', `UNIX-CONNECT:${containerAcpSock(handle)}`])
     } catch (err) {
-      this.log(`[server] acp-driver ${this.session.sessionId}/${handle}: dial failed: ${String(err)}`)
+      this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: dial failed: ${String(err)}`)
       return
     }
 
@@ -330,7 +330,7 @@ class AcpConnection implements AgentConnection {
         // it onto the one the conversation will be addressed by from now on.
         void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
         if (entry.conversation) {
-          registerAcpConversation(this.session.slug, this.session.sessionId, { handle, agentSessionId }, entry.conversation)
+          registerAcpConversation(this.session.slug, this.session.worktreeId, { handle, agentSessionId }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's DB row —
         // ACP mode's replacement for the in-pod hook's session-starts log.
@@ -343,14 +343,14 @@ class AcpConnection implements AgentConnection {
         // One conversation's stream dropped; the others are unaffected, and
         // acpd is still holding this one's agent. Drop the entry so the next
         // sweep re-attaches (and, on a reattach, skips the handshake).
-        this.log(`[server] acp-driver ${this.session.sessionId}/${handle}: ${reason}`)
+        this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: ${reason}`)
         this.detach(entry, reason)
       },
     })
     // A synchronous failure above already detached; do not re-publish it.
     if (!this.attached.has(handle)) return
     entry.agentSessionId = resumeSessionId
-    registerAcpConversation(this.session.slug, this.session.sessionId, {
+    registerAcpConversation(this.session.slug, this.session.worktreeId, {
       handle,
       ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
     }, entry.conversation)
@@ -359,12 +359,12 @@ class AcpConnection implements AgentConnection {
   private detach(entry: Attached, reason: string): void {
     if (!this.attached.has(entry.handle)) return
     this.attached.delete(entry.handle)
-    unregisterAcpConversation(this.session.slug, this.session.sessionId, {
+    unregisterAcpConversation(this.session.slug, this.session.worktreeId, {
       handle: entry.handle,
       ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
     })
     entry.conversation?.close()
-    this.log(`[server] acp-driver ${this.session.sessionId}/${entry.handle}: detached (${reason})`)
+    this.log(`[server] acp-driver ${this.session.worktreeId}/${entry.handle}: detached (${reason})`)
     // A conversation that dropped is one this connection owes a re-attach, and
     // the drop can land between sweeps — the dial into a window whose acpd is
     // still binding fails milliseconds after a sweep armed the settled
@@ -417,20 +417,20 @@ class AcpConnection implements AgentConnection {
  * launch name was already the final one.
  */
 async function adoptLog(
-  session: DrivenSession,
+  session: DrivenWorktree,
   launchedAs: string | undefined,
   agentSessionId: string,
   log: (msg: string) => void,
 ): Promise<void> {
-  const provisional = launchedAs ?? session.sessionId
+  const provisional = launchedAs ?? session.worktreeId
   if (provisional === agentSessionId) return
-  const dir = acpLogDir(session.slug, session.sessionId)
+  const dir = acpLogDir(session.slug, session.worktreeId)
   try {
     await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
   } catch (err) {
     // Losing the adoption costs this conversation its history on the next
     // attach, not the conversation itself — so it is logged, not fatal.
-    log(`[server] acp-driver ${session.sessionId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
+    log(`[server] acp-driver ${session.worktreeId}: could not adopt log for ${agentSessionId}: ${String(err)}`)
   }
 }
 
@@ -494,12 +494,12 @@ export const acpDriver: AgentDriver = {
    * is session create, which runs the moment the agent window is made and
    * before the driver's sweep has attached to it.
    */
-  async deliverPrompt(session: DrivenSession, handle: string, text: string): Promise<void> {
+  async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
     const conversation = await waitForConversation(
-      session.slug, session.sessionId, handle, PROMPT_ATTACH_TIMEOUT_MS,
+      session.slug, session.worktreeId, handle, PROMPT_ATTACH_TIMEOUT_MS,
     )
     void conversation.prompt(text).catch((err: unknown) => {
-      serverLog(`[server] acp-driver ${session.sessionId}/${handle}: prompt failed: ${String(err)}`)
+      serverLog(`[server] acp-driver ${session.worktreeId}/${handle}: prompt failed: ${String(err)}`)
     })
   },
 }

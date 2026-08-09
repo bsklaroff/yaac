@@ -98,7 +98,7 @@ function visibleSections(): typeof SECTIONS {
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
  * scrollable content pane (General: default tool; Credentials: tool sign-in +
  * git tokens). Open state lives in the store so other surfaces (the
- * new-session menu's "Sign in") can open it onto a specific section.
+ * new-worktree menu's "Sign in") can open it onto a specific section.
  */
 export function SettingsButton(): JSX.Element {
   const open = useUiStore((s) => s.settingsOpen)
@@ -177,7 +177,7 @@ export function SettingsButton(): JSX.Element {
                 <h2 className="text-sm font-semibold">General</h2>
                 <Field
                   label="Default tool"
-                  hint="The initial pick when creating a session."
+                  hint="The initial pick when creating a worktree."
                 >
                   <RadioGroup
                     value={tool ?? undefined}
@@ -231,7 +231,7 @@ export function SettingsButton(): JSX.Element {
                 </Field>
                 <Field
                   label="Sounds"
-                  hint="Play a chime when a session needs your input."
+                  hint="Play a chime when a worktree needs your input."
                 >
                   <button
                     type="button"
@@ -303,7 +303,7 @@ function UserDockerfilePane(): JSX.Element {
           <>
             Files stored next to Dockerfile.user as its build context — reference them
             with <code className="text-text-dim">COPY</code>. Changes apply on the next
-            rebuild or session create.
+            rebuild or worktree create.
           </>
         )}
       >
@@ -317,7 +317,7 @@ function UserDockerfilePane(): JSX.Element {
  * Per-tool sign-in plus git tokens. Each tool row shows its stored credential
  * (masked) with a sign-out, or a sign-in expander: claude/codex can import the
  * native login already on the server's machine or take a pasted API key;
- * opencode takes a provider pick + API key. New-session creation is blocked
+ * opencode takes a provider pick + API key. New-worktree creation is blocked
  * per tool until a credential lands here.
  */
 function CredentialsPane(): JSX.Element {
@@ -331,7 +331,7 @@ function CredentialsPane(): JSX.Element {
   return (
     <section>
       <h2 className="text-sm font-semibold">Credentials</h2>
-      <Field label="Agent tools" hint="Sign in to create sessions with a tool. Keys stay on this machine — containers only ever see placeholders.">
+      <Field label="Agent tools" hint="Sign in to create worktrees with a tool. Keys stay on this machine — containers only ever see placeholders.">
         <div className="space-y-1.5 text-xs">
           {TOOLS.map((t) => (
             <ToolAuthRow
@@ -344,7 +344,7 @@ function CredentialsPane(): JSX.Element {
           ))}
         </div>
       </Field>
-      <Field label="Git credentials" hint="HTTPS tokens injected into session containers.">
+      <Field label="Git credentials" hint="HTTPS tokens injected into worktree containers.">
         <div className="space-y-1.5 text-xs">
           {auth?.gitCredentials.map((c) => (
             <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
@@ -446,7 +446,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const providerOptions = PROVIDER_OPTIONS[tool]
   const [provider, setProvider] = useState<string>(defaultProvider(tool) ?? 'openrouter')
 
-  // Opened via a "Sign in" affordance elsewhere (new-session menu) — land
+  // Opened via a "Sign in" affordance elsewhere (new-worktree menu) — land
   // with this tool's form already open.
   useEffect(() => {
     if (autoExpand && !summary) setExpanded(true)
@@ -572,7 +572,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
   const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
   const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
 
-  // Poll while the flow runs. A vanished session (server restart, expiry)
+  // Poll while the flow runs. A vanished worktree (server restart, expiry)
   // resets to the start button.
   useEffect(() => {
     if (login?.status !== 'running') return

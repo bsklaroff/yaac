@@ -4,10 +4,10 @@ import { k8sNamespace } from './kubectl'
 import { JOB_NAME_LABEL } from './pods'
 
 /**
- * Waiting for one session pod to become Ready, event-driven: a typed-client
+ * Waiting for one worktree pod to become Ready, event-driven: a typed-client
  * list seeds the state, then a watch on the Job's pod label delivers status
  * transitions the moment the apiserver records them — no kubectl child per
- * poll and no fixed poll-interval latency. Session-create is the only
+ * poll and no fixed poll-interval latency. Worktree-create is the only
  * consumer; the long-lived caches stay on InformerCache (this is a bounded
  * one-shot wait, not a cache).
  */
@@ -19,16 +19,16 @@ export type PodReadyVerdict =
   | { kind: 'pending'; detail: string }
 
 /**
- * Classify a session pod's status. Ready means the session container
+ * Classify a worktree pod's status. Ready means the worktree container
  * reports ready — with no readiness probe that is "running", and the
- * postStart hook (yaac-session-init) gates running, so ready implies the
+ * postStart hook (yaac-worktree-init) gates running, so ready implies the
  * in-pod setup finished. Terminal phases and image-pull failures are
  * fatal: content-hash tags are immutable, so a pull failure never
  * self-heals — the bytes are either in the registry or they aren't.
  */
-export function evaluateSessionPodReady(pod: V1Pod): PodReadyVerdict {
+export function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
   const phase = pod.status?.phase ?? 'Unknown'
-  // containerStatuses[0] is the session container (egress is redirected at
+  // containerStatuses[0] is the worktree container (egress is redirected at
   // the cluster level, so there is no per-pod sidecar to gate on).
   const cs = pod.status?.containerStatuses?.[0]
   if (cs?.ready) return { kind: 'ready' }
@@ -94,7 +94,7 @@ function realDeps(jobName: string): PodReadyDeps {
 const WATCH_EPISODE_MS = 15_000
 
 /**
- * Resolve when the Job's session pod is Ready; reject on a terminal state,
+ * Resolve when the Job's worktree pod is Ready; reject on a terminal state,
  * an image-pull failure, or the deadline. Each round lists (fresh state +
  * resourceVersion), then watches from there; any watch error — including a
  * 410 Gone from an expired resourceVersion — just starts the next round's
@@ -111,10 +111,10 @@ export async function waitForJobPodReady(
 
   const check = (pod: V1Pod | undefined): boolean => {
     if (!pod) return false
-    const verdict = evaluateSessionPodReady(pod)
+    const verdict = evaluatePodReady(pod)
     if (verdict.kind === 'ready') return true
     if (verdict.kind === 'fatal') {
-      throw new Error(`session pod for ${jobName} ${verdict.reason}`)
+      throw new Error(`worktree pod for ${jobName} ${verdict.reason}`)
     }
     lastDetail = verdict.detail
     return false
@@ -176,6 +176,6 @@ export async function waitForJobPodReady(
     if (ready) return
   }
   throw new Error(
-    `session pod for ${jobName} not ready after ${timeoutMs}ms (${lastDetail})`,
+    `worktree pod for ${jobName} not ready after ${timeoutMs}ms (${lastDetail})`,
   )
 }

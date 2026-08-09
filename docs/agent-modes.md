@@ -12,7 +12,7 @@ its **mode**, and there are two:
 | Conversation ids from | the in-pod hook's session-starts log | `session/new`'s reply |
 
 Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
-runs. Only tools with an adapter in the session image can use `acp`
+runs. Only tools with an adapter in the worktree image can use `acp`
 (`ACP_TOOLS` in `@yaac/shared/types`; today, claude).
 
 ## tmux supervises both
@@ -39,14 +39,14 @@ tmux window                                   server
 So `tmux : PTY :: acpd : JSON-RPC` — one supervisor, two presentation
 transports. Everything downstream of "a conversation is a tmux window" is
 untouched: the launch exec, the restart that respawns what was live,
-window-close teardown, and session GC.
+window-close teardown, and worktree GC.
 
 ## The driver seam
 
 `#features/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
-`launchCmd(spec)` and `connect(session, sink, deps)` — a stream of
+`launchCmd(spec)` and `connect(worktree, sink, deps)` — a stream of
 `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
-`command-channel`). `SessionStatusWatcher` consumes it and owns what both modes
+`command-channel`). `WorktreeStatusWatcher` consumes it and owns what both modes
 need identically: respawn, backoff, and the streamd self-heal. That is why ACP
 mode added no second retry loop.
 
@@ -130,10 +130,10 @@ mid-conversation, possibly mid-turn. Two things follow.
 **The handshake runs once per agent process, not per connection.** acpd's first
 line on every attach is `_acpd/hello {firstAttach}`; when false, the client
 skips `initialize` and `session/new` and resumes consuming notifications for
-the session id it already holds. `firstAttach` tracks whether a client ever
+the worktree id it already holds. `firstAttach` tracks whether a client ever
 *spoke*, not whether one ever connected — a client that died during an
 adapter's cold start ran no handshake, and telling its successor otherwise
-would send it to address a session that was never created.
+would send it to address a worktree that was never created.
 
 **An in-flight `session/prompt` reply arrives as an orphan.** Its request id
 belonged to the previous connection, so it is read as "that turn ended" — the
@@ -151,7 +151,7 @@ that was.
 It *removes* more than it adds. A `tui` conversation is discovered — an in-pod
 hook appends a sighting and the reconciler joins recorded handles against the live
 pane set. An `acp` conversation is authored: `session/new` hands the server the
-id directly. No hook, no session-starts log, no join.
+id directly. No hook, no worktree-starts log, no join.
 
 The row is still written by the reconciler's conversation sweep, and the
 handshake that mints the id moves nothing the informers watch — so the id
@@ -171,7 +171,7 @@ Status is exact at turn boundaries, but three states are worth knowing.
 
 A **hung adapter** — process alive, prompt never answered — pins the
 conversation `running` indefinitely: nothing times out a `session/prompt`, and
-`session/cancel` is a notification a wedged agent will not act on. The way out
+`worktree/cancel` is a notification a wedged agent will not act on. The way out
 is the pane's stop button, then a worktree restart.
 
 **Stop cancels the running turn, not the queue.** Messages sent while the agent
@@ -192,8 +192,8 @@ container*, on the real `/workspace`, with its own tools — so yaac declines
 those capabilities and the container boundary (gVisor, the egress proxy, the
 NetworkPolicy) stays the one thing constraining it.
 
-`session/request_permission` is always granted, matching the TUI mode's
-`claude --dangerously-skip-permissions`: what constrains a yaac session is the
+`worktree/request_permission` is always granted, matching the TUI mode's
+`claude --dangerously-skip-permissions`: what constrains a yaac worktree is the
 sandbox and a throwaway git worktree, not a prompt nobody is watching.
 
 ## Where things live
@@ -211,4 +211,4 @@ sandbox and a throwaway git worktree, not a prompt nobody is watching.
 | In-pod supervisor | `dockerfiles/acpd/` (baked into the base image) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
-| Chat pane | `packages/frontend/src/components/SessionChat.tsx`, `src/lib/acp.ts` |
+| Chat pane | `packages/frontend/src/components/WorktreeChat.tsx`, `src/lib/acp.ts` |

@@ -23,7 +23,7 @@
  *
  * Semantics:
  * - No entry for a conversation → `waiting`. Matches the probe-era answer for
- *   a session that hasn't set a title yet (booting) or whose pod isn't
+ *   a worktree that hasn't set a title yet (booting) or whose pod isn't
  *   exec-able yet.
  * - The worktree aggregate is `waiting` if ANY of its agents is waiting.
  *   Waiting is the actionable state — an agent that needs you needs you
@@ -37,19 +37,19 @@
  *   signal — only the stale reaper's own probes may conclude `dead`.
  */
 
-import type { LiveAgent, SessionAgentStatus } from '#features/agents'
+import type { LiveAgent, AgentPaneStatus } from '#features/agents'
 
-export type { SessionAgentStatus }
+export type { AgentPaneStatus }
 
 export interface AgentStatusEntry {
-  status: SessionAgentStatus
+  status: AgentPaneStatus
   /** Epoch ms when this conversation's current waiting spell began; set iff
    *  waiting. */
   waitingSinceMs?: number
   updatedAtMs: number
 }
 
-export interface SessionStatusEntry {
+export interface WorktreeStatusEntry {
   /** True while the worktree's watcher connection is up and classifying. */
   streamHealthy: boolean
   /** Epoch ms of the last write (status or health). */
@@ -65,14 +65,14 @@ export interface SessionStatusEntry {
   liveAgents?: LiveAgent[]
   /**
    * Spell start for a worktree whose connection is up but whose conversations
-   * have not been classified yet — a session still booting its agent. Without
+   * have not been classified yet — a worktree still booting its agent. Without
    * it a booting worktree reads as `waiting` with no spell, and a client
    * keying unread marks on the spell has nothing to key on.
    */
   attachedWaitingSinceMs?: number
 }
 
-const store = new Map<string, SessionStatusEntry>()
+const store = new Map<string, WorktreeStatusEntry>()
 
 let listener: (() => void) | null = null
 let liveAgentsListener: (() => void) | null = null
@@ -84,10 +84,10 @@ function key(slug: string, worktreeId: string): string {
 /**
  * Register the handler fired whenever an entry's observable state
  * (status or stream health) changes. Replaces any previous handler —
- * same single-listener convention as `onSessionListChanged` (the server
+ * same single-listener convention as `onWorktreeListChanged` (the server
  * is one process, and the one consumer fans out via the event hub).
  */
-export function onSessionStatusChanged(fn: () => void): void {
+export function onWorktreeStatusChanged(fn: () => void): void {
   listener = fn
 }
 
@@ -98,7 +98,7 @@ function notifyChanged(): void {
 /**
  * Register the handler fired when a worktree's *set* of live conversations
  * changes — one appeared, one went, or one finally learned its id. Separate
- * from `onSessionStatusChanged` on purpose: that one fires on every turn
+ * from `onWorktreeStatusChanged` on purpose: that one fires on every turn
  * boundary, and its consumer only pushes a snapshot. This one drives a
  * reconcile pass, and a pass per turn would be a pod sweep per turn.
  *
@@ -113,10 +113,10 @@ export function onLiveAgentsChanged(fn: () => void): void {
   liveAgentsListener = fn
 }
 
-function entry(k: string): SessionStatusEntry {
+function entry(k: string): WorktreeStatusEntry {
   const existing = store.get(k)
   if (existing) return existing
-  const fresh: SessionStatusEntry = {
+  const fresh: WorktreeStatusEntry = {
     streamHealthy: false,
     updatedAtMs: Date.now(),
     agents: new Map(),
@@ -129,7 +129,7 @@ function entry(k: string): SessionStatusEntry {
  * The worktree's status: `waiting` if any of its agents is waiting, else
  * `running` if any is running, else `waiting` (nothing classified yet).
  */
-export function readSessionStatus(slug: string, worktreeId: string): SessionAgentStatus {
+export function readWorktreeStatus(slug: string, worktreeId: string): AgentPaneStatus {
   const agents = store.get(key(slug, worktreeId))?.agents
   if (!agents || agents.size === 0) return 'waiting'
   for (const a of agents.values()) if (a.status === 'waiting') return 'waiting'
@@ -142,7 +142,7 @@ export function readSessionStatus(slug: string, worktreeId: string): SessionAgen
  * agent going idle joins the spell already in progress rather than restarting
  * it, so a client's per-spell read mark isn't cleared by an unrelated agent.
  */
-export function readSessionWaitingSince(slug: string, worktreeId: string): number | undefined {
+export function readWorktreeWaitingSince(slug: string, worktreeId: string): number | undefined {
   const e = store.get(key(slug, worktreeId))
   if (!e) return undefined
   let earliest: number | undefined
@@ -180,7 +180,7 @@ export function liveAgents(slug: string, worktreeId: string): LiveAgent[] | unde
  * driver is attached to the in-pod tmux server right now. Absent entry → false
  * (unknown, not dead).
  */
-export function isSessionStreamHealthy(slug: string, worktreeId: string): boolean {
+export function isWorktreeStreamHealthy(slug: string, worktreeId: string): boolean {
   return store.get(key(slug, worktreeId))?.streamHealthy ?? false
 }
 
@@ -194,10 +194,10 @@ export function setAgentStatus(
   slug: string,
   worktreeId: string,
   handle: string,
-  status: SessionAgentStatus,
+  status: AgentPaneStatus,
 ): void {
   const k = key(slug, worktreeId)
-  const before = readSessionStatus(slug, worktreeId)
+  const before = readWorktreeStatus(slug, worktreeId)
   const hadEntry = store.has(k)
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
@@ -220,7 +220,7 @@ export function setAgentStatus(
   e.updatedAtMs = Date.now()
   // Also fires when health became visible again: a classification proves the
   // connection is back, which clients render even when the status itself held.
-  if (!hadEntry || !prev || !wasHealthy || readSessionStatus(slug, worktreeId) !== before) {
+  if (!hadEntry || !prev || !wasHealthy || readWorktreeStatus(slug, worktreeId) !== before) {
     notifyChanged()
   }
 }
@@ -233,7 +233,7 @@ export function setAgentStatus(
  */
 export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgent[]): void {
   const k = key(slug, worktreeId)
-  const before = readSessionStatus(slug, worktreeId)
+  const before = readWorktreeStatus(slug, worktreeId)
   const e = entry(k)
   const next = new Set(agents.map((a) => a.handle))
   const previous = e.liveAgents
@@ -249,7 +249,7 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
   // how a just-handshaken ACP conversation becomes a row without waiting for
   // the resync.
   if (changed) liveAgentsListener?.()
-  if (changed || readSessionStatus(slug, worktreeId) !== before) notifyChanged()
+  if (changed || readWorktreeStatus(slug, worktreeId) !== before) notifyChanged()
 }
 
 /**
@@ -258,7 +258,7 @@ export function setLiveAgents(slug: string, worktreeId: string, agents: LiveAgen
  * tmux is up even before the first classification lands. Marking an absent
  * worktree unhealthy is a no-op.
  */
-export function setSessionStreamHealth(slug: string, worktreeId: string, healthy: boolean): void {
+export function setWorktreeStreamHealth(slug: string, worktreeId: string, healthy: boolean): void {
   const k = key(slug, worktreeId)
   const prev = store.get(k)
   if (!prev) {
@@ -280,12 +280,12 @@ export function setSessionStreamHealth(slug: string, worktreeId: string, healthy
  * watcher manager retires a worktree, so a restart that reuses the same
  * id never sees the previous life's status.
  */
-export function evictSessionStatus(slug: string, worktreeId: string): void {
+export function evictWorktreeStatus(slug: string, worktreeId: string): void {
   if (store.delete(key(slug, worktreeId))) notifyChanged()
 }
 
 /** Test-only: drop every entry and the change listener. */
-export function _resetSessionStatusStoreForTests(): void {
+export function _resetWorktreeStatusStoreForTests(): void {
   store.clear()
   listener = null
   liveAgentsListener = null

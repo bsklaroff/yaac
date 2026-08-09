@@ -4,9 +4,9 @@ import {
   NESTED_GRAPHROOT_PATH,
   SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
-  buildSessionJobManifest,
+  buildPodJobManifest,
   graphrootMountAnnotations,
-  sessionUid,
+  podUid,
 } from '#platform/k8s'
 // Internals, for fixtures and bounds only: the in-container cert dir, the
 // sentry tmpfs cap, and the params the builder takes.
@@ -14,10 +14,10 @@ import {
   CA_MOUNT_DIR,
   NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_TMPFS_BYTES,
-  type SessionJobParams,
+  type PodJobParams,
 } from '#platform/k8s/pod-spec'
 
-function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
+function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
   return {
     jobName: 'yaac-demo-abcd',
     namespace: 'test-ns',
@@ -107,11 +107,11 @@ interface Manifest {
   }
 }
 
-function build(overrides: Partial<SessionJobParams> = {}): Manifest {
-  return buildSessionJobManifest(params(overrides)) as unknown as Manifest
+function build(overrides: Partial<PodJobParams> = {}): Manifest {
+  return buildPodJobManifest(params(overrides)) as unknown as Manifest
 }
 
-describe('buildSessionJobManifest', () => {
+describe('buildPodJobManifest', () => {
   it('builds a single-shot Job: backoffLimit 0, restartPolicy Never', () => {
     const m = build()
     expect(m.apiVersion).toBe('batch/v1')
@@ -163,7 +163,7 @@ describe('buildSessionJobManifest', () => {
 
   it('configures the session container: image, pull policy, workdir, requests/limits', () => {
     const c = build().spec.template.spec.containers[0]
-    expect(c.name).toBe('session')
+    expect(c.name).toBe('worktree')
     expect(c.image).toBe('localhost:5000/yaac-tools:abc')
     expect(c.imagePullPolicy).toBe('IfNotPresent')
     expect(c.workingDir).toBe('/workspace')
@@ -190,7 +190,7 @@ describe('buildSessionJobManifest', () => {
   it('puts host session pods on the low-priority tier and inner ones on none', () => {
     // Infra (proxy, registries, builders) outranks this, so a full node
     // sheds a session rather than the network every session depends on.
-    expect(build().spec.template.spec.priorityClassName).toBe('yaac-session')
+    expect(build().spec.template.spec.priorityClassName).toBe('yaac-worktree')
     // Inner (vcluster) pods stamp nothing, like runtimeClassName: the
     // syncer drops the class name host-side but copies preemptionPolicy,
     // and the host's priority admission plugin rejects that combination —
@@ -296,10 +296,10 @@ describe('buildSessionJobManifest', () => {
   })
 
   it('wires postStartExec as the session container postStart hook', () => {
-    const c = build({ postStartExec: ['/usr/local/bin/yaac-session-init'] })
+    const c = build({ postStartExec: ['/usr/local/bin/yaac-worktree-init'] })
       .spec.template.spec.containers[0]
     expect(c.lifecycle).toEqual({
-      postStart: { exec: { command: ['/usr/local/bin/yaac-session-init'] } },
+      postStart: { exec: { command: ['/usr/local/bin/yaac-worktree-init'] } },
     })
   })
 
@@ -367,8 +367,8 @@ describe('buildSessionJobManifest', () => {
     const nested = true
 
     it('leaves the non-nested manifest byte-identical when nested is absent', () => {
-      const withoutField = buildSessionJobManifest(params())
-      const withUndefined = buildSessionJobManifest({ ...params(), nested: undefined })
+      const withoutField = buildPodJobManifest(params())
+      const withUndefined = buildPodJobManifest({ ...params(), nested: undefined })
       expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
 
       const spec = build().spec.template.spec
@@ -406,7 +406,7 @@ describe('buildSessionJobManifest', () => {
     it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
       // The graphroot is disk-backed page cache, not pod memory — its size is
       // deliberately decoupled from memoryLimitBytes.
-      expect(() => buildSessionJobManifest({
+      expect(() => buildPodJobManifest({
         ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
       })).not.toThrow()
     })
@@ -510,18 +510,18 @@ describe('graphrootMountAnnotations', () => {
   })
 })
 
-describe('sessionUid', () => {
+describe('podUid', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
   it('mirrors the server process uid', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(501)
-    expect(sessionUid()).toBe(501)
+    expect(podUid()).toBe(501)
   })
 
   it('falls back to 1000 when the server runs as root (uid 0 is taken in the image)', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(0)
-    expect(sessionUid()).toBe(1000)
+    expect(podUid()).toBe(1000)
   })
 })

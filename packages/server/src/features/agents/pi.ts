@@ -5,7 +5,7 @@ import { scanJsonlForward } from './jsonl'
  * Status classification + first-message lookup for pi (earendil) sessions.
  *
  * Unlike opencode, pi writes plain JSONL session logs (one
- * `<timestamp>_<sessionId>.jsonl` per session) into the shared, host-mounted
+ * `<timestamp>_<worktreeId>.jsonl` per session) into the shared, host-mounted
  * `.pi` home (`piSessionsDir`), so the first-message lookup reads those files
  * directly on the host — no HTTP probe and no DB meta cache. A session's logs
  * are matched by the id pi embeds in the filename (from our `--session-id`).
@@ -75,9 +75,9 @@ function getUserMessageText(entry: PiMessageEntry): string | undefined {
  */
 export async function getSessionPiFirstUserMessage(
   projectSlug: string,
-  sessionId: string,
+  worktreeId: string,
 ): Promise<string | undefined> {
-  const files = await piSessionLogs(projectSlug, sessionId)
+  const files = await piSessionLogs(projectSlug, worktreeId)
   for (const file of files) {
     const msg = await getPiFirstUserMessage(file)
     if (msg !== undefined) return msg

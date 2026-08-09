@@ -109,7 +109,7 @@ RUN cat <<'EOF' > ~/.zshrc
 HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory
-PS1="%n@${YAAC_SESSION_ID:0:8} %~ $ "
+PS1="%n@${YAAC_WORKTREE_ID:0:8} %~ $ "
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 EOF

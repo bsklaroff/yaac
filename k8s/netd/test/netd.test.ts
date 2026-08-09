@@ -441,7 +441,7 @@ describe('publishClaimOnce', () => {
     }
   }
 
-  it('claims this install\'s session pods for its own proxy pod IP', async () => {
+  it('claims this install\'s worktree pods for its own proxy pod IP', async () => {
     const h = claimHarness([PROXY_POD, SESSION_POD])
     const changed = await publishClaimOnce(h.deps, h.memo)
     expect(JSON.parse(h.published[0])).toEqual({
@@ -463,7 +463,7 @@ describe('publishClaimOnce', () => {
     expect(h.published).toEqual([''])
   })
 
-  it('retracts when the install has no session pods', async () => {
+  it('retracts when the install has no worktree pods', async () => {
     const h = claimHarness([PROXY_POD])
     await publishClaimOnce(h.deps, h.memo)
     expect(h.published).toEqual([''])

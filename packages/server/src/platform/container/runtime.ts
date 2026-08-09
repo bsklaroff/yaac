@@ -8,11 +8,11 @@ let runtimeVerified = false
 /**
  * Verify both halves of the split runtime:
  *   - podman — the image build engine (`podman build` / `podman push`).
- *     Sessions never run on it; it only produces images for the registry.
- *   - kubernetes — the session runtime (one Job per session).
+ *     Worktrees never run on it; it only produces images for the registry.
+ *   - kubernetes — the worktree runtime (one Job per worktree).
  *
  * Verified once per process: both halves are ~hundreds of ms of child
- * processes on every session create, and a runtime that disappears mid-run
+ * processes on every worktree create, and a runtime that disappears mid-run
  * surfaces immediately in whichever podman/kubectl call needs it — this
  * check only exists to print install instructions on first contact.
  */
@@ -77,8 +77,8 @@ async function ensurePodmanLinux(): Promise<void> {
 
   // No self-revive anywhere: the host rootful socket is root-owned and
   // socket-activated by systemd (yaac runs unprivileged), and a nested
-  // session's in-pod engine is started once by session-create — if it
-  // died, the session is degraded and the operator restarts it.
+  // worktree's in-pod engine is started once by worktree-create — if it
+  // died, the worktree is degraded and the operator restarts it.
   console.error(
     '\nRootful podman is not reachable (yaac builds session images on the '
     + 'rootful podman engine on Linux — the kind node needs the cgroup2 root '
@@ -95,9 +95,9 @@ async function ensurePodmanLinux(): Promise<void> {
 
 /**
  * The rootful podman system socket. On a Linux host it is managed by
- * systemd's `podman.socket`; inside a nested session pod the SAME path is
+ * systemd's `podman.socket`; inside a nested worktree pod the SAME path is
  * served by the sudo-started in-pod engine (`podman system service` —
- * podman's rootful default), opened to the yaac user at session setup.
+ * podman's rootful default), opened to the yaac user at worktree setup.
  */
 export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
 
@@ -108,7 +108,7 @@ export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
  * rootful engine delegates the full cgroup2 root + BPF filesystem the
  * calico-node DaemonSet needs to program the node's netfilter — under rootless
  * podman that DaemonSet never goes Ready and `yaac cluster setup` hangs.
- * A nested (in-pod, `YAAC_NESTED`) yaac drives the session's rootful
+ * A nested (in-pod, `YAAC_NESTED`) yaac drives the worktree's rootful
  * in-sandbox engine remotely — the image's CONTAINER_HOST points every
  * podman call at ROOTFUL_PODMAN_SOCKET.
  */
@@ -121,7 +121,7 @@ export function usesRootfulPodman(): boolean {
  * at the rootful system socket via `CONTAINER_HOST`, so both the image build
  * engine and the kind node land on the same rootful podman. Idempotent and
  * safe to call from every entrypoint; honours a `CONTAINER_HOST` the user set
- * themselves — including the session image's baked ENV (same socket path).
+ * themselves — including the worktree image's baked ENV (same socket path).
  * No-op on macOS (podman machine).
  */
 export function ensureRootfulPodmanHost(): void {

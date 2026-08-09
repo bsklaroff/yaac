@@ -1,7 +1,7 @@
 /**
  * Enumerates the skills a project's agent has available by reading the loose
  * `SKILL.md` files under its host-mounted config and repo — no pod, no running
- * session required, since those dirs are all on-host.
+ * worktree required, since those dirs are all on-host.
  *
  * Discovery reads the *explicit* directories each agent loads skills from at
  * their known layout, rather than recursively scanning a whole tree: every
@@ -427,7 +427,7 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
   const ref = await resolveRepoRef(repoDir(slug), branch)
   const readers = await readersFor(tool, slug, ref)
   // yaac's own bundled skills — shipped in the package and injected into every
-  // tool's personal root at session create (see builtin.ts). Read the install
+  // tool's personal root at worktree create (see builtin.ts). Read the install
   // dir directly here, since pod-less discovery can't see the in-pod mounts;
   // surfaced as `system`/`yaac` for every tool.
   readers.push(fsReader(builtinSkillsDir(), 'system', 'yaac'))

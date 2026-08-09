@@ -5,11 +5,11 @@ import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { restartSession } from '#lib/createSession'
+import { restartWorktree } from '#lib/createWorktree'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
-import { useProvisionSession } from '#lib/useProvisionSession'
+import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { isUnseenDeath, useUiStore } from '#store'
-import { describeSessionDeathReason } from '@yaac/shared/death-reason'
+import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
 
 /** Human relative age from a UTC 'YYYY-MM-DD HH:MM:SS' time, '' if unset. */
@@ -26,12 +26,12 @@ function relativeAge(utc: string | undefined): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
-const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New session'
+const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New worktree'
 
 /**
- * Sidebar entry point to the deleted-sessions view plus the full-screen modal
+ * Sidebar entry point to the deleted-worktrees view plus the full-screen modal
  * it opens. Rendered as a labeled button below the Waiting/Running groups.
- * Deleted sessions (containers gone, transcripts kept) are project-scoped, so
+ * Deleted worktrees (containers gone, transcripts kept) are project-scoped, so
  * this lives in the sidebar; open state lives in the store so the overlay is a
  * sibling of the workspace, not nested in a row.
  *
@@ -44,8 +44,8 @@ export function StoppedWorktreesButton({
   activeSignature,
 }: {
   projectSlug: string
-  /** Sorted active-session id list — re-fetches the deleted list whenever the
-   *  active set changes (a just-deleted session appears, a restarted one drops). */
+  /** Sorted active-worktree id list — re-fetches the deleted list whenever the
+   *  active set changes (a just-deleted worktree appears, a restarted one drops). */
   activeSignature: string
 }): JSX.Element {
   const open = useUiStore((s) => s.stoppedOverlayOpen)
@@ -53,7 +53,7 @@ export function StoppedWorktreesButton({
   const closeOverlay = useUiStore((s) => s.closeStoppedOverlay)
   const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
-  const provision = useProvisionSession()
+  const provision = useProvisionWorktree()
   const queryClient = useQueryClient()
 
   const [queryText, setQueryText] = useState('')
@@ -62,8 +62,8 @@ export function StoppedWorktreesButton({
   const [confirm, setConfirm] = useState<StoppedWorktreeEntry | null>(null)
 
   // Fetch even while closed so the sidebar can hide the entry point when the
-  // project has no deleted sessions. Re-keys on the active set (activeSignature)
-  // so a just-deleted session shows up and a restarted one drops.
+  // project has no deleted worktrees. Re-keys on the active set (activeSignature)
+  // so a just-deleted worktree shows up and a restarted one drops.
   const { data } = useQuery({
     queryKey: ['deleted', projectSlug, activeSignature],
     queryFn: () => getStoppedWorktrees(projectSlug, 100),
@@ -78,8 +78,8 @@ export function StoppedWorktreesButton({
     for (const e of optimisticStopped) if (fetched.has(e.worktreeId)) removeOptimisticStopped(e.worktreeId)
   }, [data, optimisticStopped, removeOptimisticStopped])
 
-  // A restart reuses the session id and clears its recorded deletion, so once
-  // the restart takes effect the session drops out of the fetched list. Prune
+  // A restart reuses the worktree id and clears its recorded deletion, so once
+  // the restart takes effect the worktree drops out of the fetched list. Prune
   // it from `restarting` then — the filter below has done its job. Otherwise a
   // later re-delete of the same id re-enters `data` but stays hidden by that
   // filter until a browser reload resets this component-local state.
@@ -140,16 +140,16 @@ export function StoppedWorktreesButton({
     setConfirm(null)
     setRestarting((r) => [...r, entry.worktreeId])
     removeOptimisticStopped(entry.worktreeId)
-    // Close the overlay so useProvisionSession's auto-open shows progress in
+    // Close the overlay so useProvisionWorktree's auto-open shows progress in
     // the main pane.
     closeOverlay()
     provision(projectSlug, entry.tool, 'restart', entry.worktreeId,
-      (sid, onProgress) => restartSession(sid, onProgress, { projectSlug, tool: entry.tool }))
+      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug, tool: entry.tool }))
   }
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
-      {/* Entry point hidden until the project actually has deleted sessions
+      {/* Entry point hidden until the project actually has deleted worktrees
           (optimistic or fetched). The overlay below stays mounted regardless so
           an open dialog keeps its exit animation if the list empties out. */}
       {merged.length > 0 && (
@@ -159,13 +159,13 @@ export function StoppedWorktreesButton({
             outline-none transition hover:text-text-dim"
         >
           <DeleteIcon size={13} className="shrink-0" />
-          <span>Deleted sessions</span>
+          <span>Deleted worktrees</span>
           {/* Decorative unread dot (aria-hidden so it stays out of the button's
               accessible name); the title is a hover tooltip. */}
           {unseenDeaths > 0 && (
             <span
               aria-hidden="true"
-              title={`${unseenDeaths} session${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
+              title={`${unseenDeaths} worktree${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
               className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
             />
           )}
@@ -180,7 +180,7 @@ export function StoppedWorktreesButton({
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
           <div className="flex items-center justify-between">
-            <Dialog.Title className="text-xs font-semibold text-text-dim">Deleted sessions</Dialog.Title>
+            <Dialog.Title className="text-xs font-semibold text-text-dim">Deleted worktrees</Dialog.Title>
             <div className="flex items-center gap-2">
               {/* Only offered when there is something unread to clear. */}
               {unseenDeaths > 0 && (
@@ -207,8 +207,8 @@ export function StoppedWorktreesButton({
           {merged.length === 0 ? (
             <EmptyState
               className="flex-1"
-              title="No deleted sessions"
-              description="Sessions you delete are kept here so you can restart them."
+              title="No deleted worktrees"
+              description="Worktrees you delete are kept here so you can restart them."
             />
           ) : (
             <div className="flex min-h-0 flex-1 gap-3">
@@ -246,7 +246,7 @@ export function StoppedWorktreesButton({
                         <span className="flex items-center gap-2 text-[11px] text-text-faint">
                           <span className="truncate">
                             {d.deathReason
-                              ? `died ${relativeAge(d.stoppedAt)} — ${describeSessionDeathReason(d.deathReason)}`
+                              ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
                               : d.stoppedAt ? `deleted ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
                           </span>
                           <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
@@ -273,7 +273,7 @@ export function StoppedWorktreesButton({
                         <>
                           <dt>Cause</dt>
                           <dd className="text-text-dim">
-                            {describeSessionDeathReason(selected.deathReason, selected.deathDetail)}
+                            {describeWorktreeDeathReason(selected.deathReason, selected.deathDetail)}
                           </dd>
                         </>
                       )}
@@ -305,9 +305,9 @@ export function StoppedWorktreesButton({
         open={!!confirm}
         onOpenChange={(next) => { if (!next) setConfirm(null) }}
         destructive={false}
-        title="Restart this session?"
+        title="Restart this worktree?"
         description={confirm
-          ? (confirm.deathReason ? `This session died: ${describeSessionDeathReason(confirm.deathReason)}. ` : '')
+          ? (confirm.deathReason ? `This worktree died: ${describeWorktreeDeathReason(confirm.deathReason)}. ` : '')
             + `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
           : ''}
         confirmLabel="Restart"

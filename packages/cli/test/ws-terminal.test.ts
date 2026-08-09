@@ -11,7 +11,7 @@ describe('toWsUrl', () => {
 describe('buildPtyAttachUrl', () => {
   it('builds the attach URL with id, target, and size', () => {
     const url = new URL(buildPtyAttachUrl('https://srv.ts.net', {
-      sessionId: 'abc-123',
+      worktreeId: 'abc-123',
       target: 'native',
       cols: 132,
       rows: 43,
@@ -27,7 +27,7 @@ describe('buildPtyAttachUrl', () => {
 
   it('omits size params when the terminal has no dimensions (no TTY)', () => {
     const url = new URL(buildPtyAttachUrl('http://127.0.0.1:8787', {
-      sessionId: 'abc',
+      worktreeId: 'abc',
       target: 'shell',
     }))
     expect(url.searchParams.has('cols')).toBe(false)

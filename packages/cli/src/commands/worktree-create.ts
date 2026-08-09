@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
-import { attachSessionPty } from '#commands/ws-terminal'
+import { attachWorktreePty } from '#commands/ws-terminal'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
@@ -99,7 +99,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
 
   if (!testEnv.e2eNoAttach) {
     try {
-      await attachSessionPty(worktreeId, 'native')
+      await attachWorktreePty(worktreeId, 'native')
     } catch {
       // Job or tmux session was killed (e.g. ctrl-b k) — the server's
       // background loop will reap the dead worktree.

@@ -19,7 +19,7 @@ import { OPENCODE_BUSY_MARKERS, getSessionOpencodeFirstUserMessage } from './ope
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 
 /** What an agent pane is doing, as every display path reads it. */
-export type SessionAgentStatus = 'running' | 'waiting'
+export type AgentPaneStatus = 'running' | 'waiting'
 
 /** Normalize a raw `yaac.tool` label value into an AgentTool. */
 export function normalizeTool(raw: string | undefined): AgentTool {
@@ -86,7 +86,7 @@ export function agentStatusFormat(tool: AgentTool): string {
  * title (classified by the Braille-spinner prefix); opencode/pi push an
  * already-resolved verdict from their `agentStatusFormat`.
  */
-export function classifyAgentObservation(tool: AgentTool, observed: string): SessionAgentStatus {
+export function classifyAgentObservation(tool: AgentTool, observed: string): AgentPaneStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
   if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)

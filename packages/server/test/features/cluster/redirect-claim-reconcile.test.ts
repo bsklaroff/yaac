@@ -29,7 +29,7 @@ const PROXY_IP = '10.244.0.31'
 const SESSION_IP = '10.244.0.44'
 
 const vc = (ns = VC_NS, name = VC_NAME): VclusterNamespaceInfo =>
-  ({ name, sessionId: 's1', namespace: ns, creationTimestamp: '' })
+  ({ name, worktreeId: 's1', namespace: ns, creationTimestamp: '' })
 
 const synced = (name: string, podIP: string, vcName = VC_NAME): VclusterPod =>
   ({ name, podIP, labels: { 'vcluster.loft.sh/managed-by': vcName } })

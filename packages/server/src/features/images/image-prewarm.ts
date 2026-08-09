@@ -1,6 +1,6 @@
 /**
  * Reconcile step that keeps every project's image chain built and
- * pushed, so session create finds warm images instead of paying a podman
+ * pushed, so worktree create finds warm images instead of paying a podman
  * build (minutes after a Dockerfile.default edit) inside the create request.
  *
  * Each tick sweeps all projects and fires one detached prewarm task per
@@ -9,10 +9,10 @@
  * two projects needing the same base wait on one build, then their distinct
  * downstream layers build in parallel.
  *
- * Runs in nested yaac sessions too — in-pod podman builds are slower, but
+ * Runs in nested yaac worktrees too — in-pod podman builds are slower, but
  * that's exactly when proactive building pays off (editing dockerfiles from
- * inside a yaac-in-yaac dev session is the hot path), and the coordinator's
- * single-flight dedup means a session create just joins the sweep's build.
+ * inside a yaac-in-yaac dev worktree is the hot path), and the coordinator's
+ * single-flight dedup means a worktree create just joins the sweep's build.
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
@@ -30,7 +30,7 @@ import {
 /** How long a failed chain build blocks the sweep from retrying. Hitting
  *  retry in the webapp (which forgets the failed entry) or editing the
  *  Dockerfile (which changes the tag) re-enables the sweep immediately;
- *  dismissing the row does not; session creates always bypass it. */
+ *  dismissing the row does not; worktree creates always bypass it. */
 const FAILED_RETRY_MS = 10 * 60_000
 
 /** Min interval between full sweeps. A warm-project sweep is cheap but not
@@ -38,7 +38,7 @@ const FAILED_RETRY_MS = 10 * 60_000
  *  inspects plus a registry HEAD — and at the 5s tick cadence that steady
  *  child-process churn was a measurable slice of server CPU. A minute
  *  bounds how long a Dockerfile edit or an externally pruned image waits
- *  for the sweep; session creates bypass the sweep and build immediately. */
+ *  for the sweep; worktree creates bypass the sweep and build immediately. */
 export const PREWARM_SWEEP_INTERVAL_MS = 60_000
 
 /** Projects with a prewarm task in flight; added synchronously before the

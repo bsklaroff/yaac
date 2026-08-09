@@ -18,10 +18,10 @@
  * The hash marker lives INSIDE `packages/frontend/dist` (as
  * `.input-hash`), co-located with the very output it describes. That
  * coupling is deliberate: `node_modules` (and the pnpm store) can be a
- * shared mount across yaac dev sessions to save disk, but the source
- * tree — including `packages/frontend/dist` — is per-session. A marker
- * in `node_modules/.cache` could then describe a sibling session's dist
- * and green-light a skip this session's dist doesn't reflect. Keeping
+ * shared mount across yaac dev worktrees to save disk, but the source
+ * tree — including `packages/frontend/dist` — is per-worktree. A marker
+ * in `node_modules/.cache` could then describe a sibling worktree's dist
+ * and green-light a skip this worktree's dist doesn't reflect. Keeping
  * the marker in the dist it describes makes them share fate: vite's
  * `emptyOutDir` wipes both at build start, and the marker is written
  * last, so a missing/partial dist (or a mid-build kill) can never read

@@ -1,8 +1,8 @@
 /**
- * Workspace layout for a session's terminals. In full-window (tiles) mode the
+ * Workspace layout for a worktree's terminals. In full-window (tiles) mode the
  * workspace is a flat, left-to-right list of equal-width columns; each column
  * is a "window group" holding one or more tabbed panes (identified by their
- * /pty/attach target — unique per session). There is no vertical stacking:
+ * /pty/attach target — unique per worktree). There is no vertical stacking:
  * panes sit side by side as columns, and multiple panes in one slot are tabs.
  *
  * All operations are pure — callers store the returned workspace.
@@ -22,7 +22,7 @@ export interface WindowGroup {
   active: string
 }
 
-/** A session workspace: left-to-right, equal-width columns. */
+/** A worktree workspace: left-to-right, equal-width columns. */
 export type Workspace = WindowGroup[]
 
 /** A column with the pixel rect it occupies. */
@@ -202,12 +202,12 @@ export function withActive(ws: Workspace | null, target: string): Workspace {
 }
 
 /**
- * The pane keyboard focus should land in when a session becomes selected or a
- * shortcut switches terminals. `activeTab` is the session's last-active
+ * The pane keyboard focus should land in when a worktree becomes selected or a
+ * shortcut switches terminals. `activeTab` is the worktree's last-active
  * terminal as stored (possibly stale — validated here). Tabs mode shows one
  * pane at a time, so the visible tab wins; tiles mode shows every column, so
  * prefer the last-active pane, then the agent (the one you talk to), then the
- * first pane. Null when the session has no panes.
+ * first pane. Null when the worktree has no panes.
  */
 export function focusPaneTarget(
   targets: string[],

@@ -171,7 +171,7 @@ describe('waitForJobPodReady', () => {
       [[failed]],
     )
     await expect(waitForJobPodReady('job-a', 2_000, deps))
-      .rejects.toThrow('session pod for job-a reached terminal phase Failed (StartError: hook exited 1)')
+      .rejects.toThrow('worktree pod for job-a reached terminal phase Failed (StartError: hook exited 1)')
   })
 
   it('falls back to the container lastState when the current state is empty', async () => {
@@ -184,7 +184,7 @@ describe('waitForJobPodReady', () => {
       [],
     )
     await expect(waitForJobPodReady('job-a', 2_000, deps))
-      .rejects.toThrow('session pod for job-a reached terminal phase Succeeded (Completed)')
+      .rejects.toThrow('worktree pod for job-a reached terminal phase Succeeded (Completed)')
   })
 
   it('rejects on either image-pull failure — a content-hash tag never self-heals', async () => {

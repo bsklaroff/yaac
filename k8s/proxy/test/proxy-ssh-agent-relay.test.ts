@@ -8,11 +8,11 @@ import {
   createSshAgentServer,
   isSshRemote,
   sshAgentGate,
-  type AgentPeerSession,
+  type AgentPeerWorktree,
 } from 'yaac-proxy-sidecar/ssh-agent-relay'
 
 /**
- * The ssh-agent forwarding transport: session pods reach the proxy's
+ * The ssh-agent forwarding transport: worktree pods reach the proxy's
  * in-memory agent over TCP (a hostPath UNIX socket only rendezvous between
  * pods on one node), and the proxy decides per connection whether the
  * source is entitled to it.
@@ -86,7 +86,7 @@ interface Harness {
 
 async function startListener(opts: {
   agentSock: string
-  session?: AgentPeerSession
+  worktree?: AgentPeerWorktree
   repoUrl?: string
   maxConnections?: number
   idleTimeoutMs?: number
@@ -94,7 +94,7 @@ async function startListener(opts: {
   const logs: string[] = []
   const server = createSshAgentServer({
     agentSock: opts.agentSock,
-    resolveSession: () => Promise.resolve(opts.session),
+    resolveWorktree: () => Promise.resolve(opts.worktree),
     repoUrlFor: () => opts.repoUrl,
     log: (m) => { logs.push(m) },
     maxConnections: opts.maxConnections,
@@ -131,12 +131,12 @@ function ask(port: number, payload: Buffer | Buffer[]): Promise<Buffer> {
   })
 }
 
-const SESSION: AgentPeerSession = { sessionId: 'sess-1234abcd', viaVclusterAttribution: false }
+const SESSION: AgentPeerWorktree = { worktreeId: 'sess-1234abcd', viaVclusterAttribution: false }
 
 describe('sshAgentGate', () => {
-  it('admits a watched session pod whose registered remote is SSH', () => {
+  it('admits a watched worktree pod whose registered remote is SSH', () => {
     expect(sshAgentGate(SESSION, 'git@github.com:acme/app.git'))
-      .toEqual({ ok: true, sessionId: SESSION.sessionId })
+      .toEqual({ ok: true, worktreeId: SESSION.worktreeId })
     expect(sshAgentGate(SESSION, 'ssh://git@example.com:2222/acme/app.git').ok).toBe(true)
   })
 
@@ -147,11 +147,11 @@ describe('sshAgentGate', () => {
   })
 
   it('refuses a vcluster-attributed source: nested installs have their own agent', () => {
-    const nested: AgentPeerSession = { sessionId: 'sess-1234abcd', viaVclusterAttribution: true }
+    const nested: AgentPeerWorktree = { worktreeId: 'sess-1234abcd', viaVclusterAttribution: true }
     expect(sshAgentGate(nested, 'git@github.com:acme/app.git').ok).toBe(false)
   })
 
-  it('refuses a session with no SSH remote — the same condition the server provisions on', () => {
+  it('refuses a worktree with no SSH remote — the same condition the server provisions on', () => {
     expect(sshAgentGate(SESSION, 'https://github.com/acme/app.git').ok).toBe(false)
     expect(sshAgentGate(SESSION, undefined).ok).toBe(false)
   })
@@ -191,7 +191,7 @@ describe('createAgentRequestFilter', () => {
 
   it('admits identity listing and signing, and nothing else', () => {
     // The two an ssh client needs. Everything else — add, remove-all, lock,
-    // extension — would mutate an agent every session shares.
+    // extension — would mutate an agent every worktree shares.
     const res = run([
       agentMessage(REQUEST_IDENTITIES),
       agentMessage(SIGN_REQUEST, Buffer.from('blob')),
@@ -224,10 +224,10 @@ describe('createAgentRequestFilter', () => {
 })
 
 describe('createSshAgentServer', () => {
-  it('passes an entitled session\'s sign request through to the agent socket', async () => {
+  it('passes an entitled worktree\'s sign request through to the agent socket', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
     })
     // The request is written immediately after connect, i.e. while the gate
     // is still resolving: those bytes must be buffered, not dropped.
@@ -237,11 +237,11 @@ describe('createSshAgentServer', () => {
   })
 
   it('answers a mutating request itself and never lets it reach the agent', async () => {
-    // The cross-session DoS this closes: the agent is install-wide, so one
-    // session locking or emptying it would strand every other session.
+    // The cross-worktree DoS this closes: the agent is install-wide, so one
+    // worktree locking or emptying it would strand every other worktree.
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
     })
     const reply = await ask(port, agentMessage(REMOVE_ALL_IDENTITIES))
     expect(reply).toEqual(agentMessage(AGENT_FAILURE))
@@ -252,7 +252,7 @@ describe('createSshAgentServer', () => {
   it('still serves a legitimate request pipelined behind a refused one', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
     })
     await ask(port, [agentMessage(LOCK), agentMessage(REQUEST_IDENTITIES)])
     expect(agent.received()[4]).toBe(REQUEST_IDENTITIES)
@@ -261,7 +261,7 @@ describe('createSshAgentServer', () => {
   it('drops a refused connection without writing a byte', async () => {
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'https://github.com/acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'https://github.com/acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
     expect(logs.join('\n')).toContain('BLOCKED ssh-agent')
@@ -273,13 +273,13 @@ describe('createSshAgentServer', () => {
       agentSock: agent.sock, repoUrl: 'git@github.com:acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
-    expect(logs.join('\n')).toContain('not a known session pod')
+    expect(logs.join('\n')).toContain('not a known worktree pod')
   })
 
   it('closes the client when the agent socket is missing rather than hanging', async () => {
     const { port, logs } = await startListener({
       agentSock: path.join(os.tmpdir(), 'yaac-agent-does-not-exist.sock'),
-      session: SESSION,
+      worktree: SESSION,
       repoUrl: 'git@github.com:acme/app.git',
     })
     expect(await ask(port, agentMessage(SIGN_REQUEST))).toHaveLength(0)
@@ -289,7 +289,7 @@ describe('createSshAgentServer', () => {
   it('refuses new dials past the in-flight cap instead of holding agent fds', async () => {
     const agent = await startFakeAgent()
     const { port, logs } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
       maxConnections: 1,
     })
     // Hold one open (no payload, so it never completes), then dial again.
@@ -309,7 +309,7 @@ describe('createSshAgentServer', () => {
     // and only real propagation can pass this.
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
       idleTimeoutMs: 60_000,
     })
     await ask(port, agentMessage(REQUEST_IDENTITIES))
@@ -323,7 +323,7 @@ describe('createSshAgentServer', () => {
   it('reaps a connection that goes idle', async () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
-      agentSock: agent.sock, session: SESSION, repoUrl: 'git@github.com:acme/app.git',
+      agentSock: agent.sock, worktree: SESSION, repoUrl: 'git@github.com:acme/app.git',
       idleTimeoutMs: 150,
     })
     const idle = net.connect({ port, host: '127.0.0.1' })

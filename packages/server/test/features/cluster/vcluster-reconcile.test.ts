@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 vi.mock('#platform/k8s/pods', () => ({
-  listSessionPods: vi.fn().mockResolvedValue([]),
-  listSessionJobs: vi.fn().mockResolvedValue([]),
+  listWorktreePods: vi.fn().mockResolvedValue([]),
+  listWorktreeJobs: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('#platform/k8s/vcluster-objects', () => ({
@@ -13,10 +13,10 @@ vi.mock('#platform/k8s/vcluster-objects', () => ({
 
 vi.mock('#features/cluster/vcluster', () => ({
   VCLUSTER_ORPHAN_GRACE_MS: 15 * 60 * 1000,
-  removeSessionVcluster: vi.fn().mockResolvedValue(undefined),
-  vclusterLabels: vi.fn((name: string, sessionId: string) => ({
+  removeWorktreeVcluster: vi.fn().mockResolvedValue(undefined),
+  vclusterLabels: vi.fn((name: string, worktreeId: string) => ({
     'yaac.vcluster': name,
-    'yaac.vcluster-session-id': sessionId,
+    'yaac.vcluster-session-id': worktreeId,
   })),
   waitForVclusterKubeconfig: vi.fn().mockResolvedValue('kubeconfig-bytes\n'),
 }))
@@ -45,21 +45,21 @@ import {
   healVclusterSleepState,
   reconcileVclusters,
 } from '#features/cluster/vcluster-reconcile'
-import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
+import { listWorktreeJobs, listWorktreePods } from '#platform/k8s/pods'
 import { getActivatorPodIp } from '#features/cluster/activator'
 import {
-  removeSessionVcluster,
+  removeWorktreeVcluster,
   waitForVclusterKubeconfig,
 } from '#features/cluster/vcluster'
 import { listVclusterNamespaces } from '#platform/k8s/vcluster-objects'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { sessionVclusterDir } from '@yaac/shared/project-paths'
+import { worktreeVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-const mockPods = vi.mocked(listSessionPods)
-const mockJobs = vi.mocked(listSessionJobs)
+const mockPods = vi.mocked(listWorktreePods)
+const mockJobs = vi.mocked(listWorktreeJobs)
 const mockList = vi.mocked(listVclusterNamespaces)
-const mockRemove = vi.mocked(removeSessionVcluster)
+const mockRemove = vi.mocked(removeWorktreeVcluster)
 const mockWait = vi.mocked(waitForVclusterKubeconfig)
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -74,10 +74,10 @@ const FRESH_TS = new Date(NOW - 5_000).toISOString()
 
 function vcInfo(
   name: string,
-  sessionId: string,
+  worktreeId: string,
   creationTimestamp = OLD_TS,
-): { name: string; sessionId: string; namespace: string; creationTimestamp: string } {
-  return { name, sessionId, namespace: `yaac-vc-${name.replace(/^yvc-/, '')}`, creationTimestamp }
+): { name: string; worktreeId: string; namespace: string; creationTimestamp: string } {
+  return { name, worktreeId, namespace: `yaac-vc-${name.replace(/^yvc-/, '')}`, creationTimestamp }
 }
 
 let tmpDir: string
@@ -120,7 +120,7 @@ describe('reconcileVclusters', () => {
   })
 
   it('spares a freshly-created vcluster from the orphan GC (in-flight create)', async () => {
-    // createSession stands the vcluster up BEFORE the session Job, so for
+    // createWorktree stands the vcluster up BEFORE the session Job, so for
     // a window the vcluster's session-id matches no live pod/Job. The GC
     // must not reap it during that window or it kills the provisioning
     // session.
@@ -132,7 +132,7 @@ describe('reconcileVclusters', () => {
   it('keeps a vcluster whose session only shows in the Job list (pod mid-recreate)', async () => {
     mockList.mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')])
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-p-deadbeef-1111', sessionId: 'deadbeef-1111', projectSlug: 'p', createdAtMs: 0 },
+      { jobName: 'yaac-p-deadbeef-1111', worktreeId: 'deadbeef-1111', projectSlug: 'p', createdAtMs: 0 },
     ])
     await reconcileVclusters(NOW)
     expect(mockRemove).not.toHaveBeenCalled()
@@ -143,11 +143,11 @@ describe('reconcileVclusters', () => {
   it('heals a live session\'s missing kubeconfig from the secret', async () => {
     mockList.mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')])
     mockPods.mockResolvedValue([
-      { sessionId: 'deadbeef-1111', projectSlug: 'proj' } as never,
+      { worktreeId: 'deadbeef-1111', projectSlug: 'proj' } as never,
     ])
     await reconcileVclusters(NOW)
     expect(mockRemove).not.toHaveBeenCalled()
-    const configPath = path.join(sessionVclusterDir('proj', 'deadbeef-1111'), 'config')
+    const configPath = path.join(worktreeVclusterDir('proj', 'deadbeef-1111'), 'config')
     await expect(fs.readFile(configPath, 'utf8')).resolves.toBe('kubeconfig-bytes\n')
   })
 
@@ -171,9 +171,9 @@ describe('reconcileVclusters', () => {
   it('leaves a present kubeconfig untouched', async () => {
     mockList.mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')])
     mockPods.mockResolvedValue([
-      { sessionId: 'deadbeef-1111', projectSlug: 'proj' } as never,
+      { worktreeId: 'deadbeef-1111', projectSlug: 'proj' } as never,
     ])
-    const dir = sessionVclusterDir('proj', 'deadbeef-1111')
+    const dir = worktreeVclusterDir('proj', 'deadbeef-1111')
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(path.join(dir, 'config'), 'existing\n')
     await reconcileVclusters(NOW)
