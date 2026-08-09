@@ -4,79 +4,60 @@ description: Watch this project's GitHub repo for newly opened PRs and spawn a s
 ---
 
 You are running **inside a yaac worktree**. This skill sets up **continuous
-review coverage** for a repo: you watch for newly opened PRs, and for each one
-you spawn a **sibling session** whose whole job is that PR — review it, post
-the findings to GitHub, then keep watching it and re-review as it changes.
+review coverage**: you watch for newly opened PRs and spawn a **sibling
+session** per PR whose whole job is that PR — review it, post findings to
+GitHub, keep watching it, re-review as it changes.
 
-You stay the dispatcher. You never review the PR yourself, and the reviewer
+You stay the dispatcher. You never review the PR yourself, and reviewer
 sessions never report back to you — their output is the PR thread.
 
-It builds on two other shipped skills:
-[`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
+Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
 [`yaac-spawn`](../yaac-spawn/SKILL.md) (the reviewer).
 
 ## The reviewer argument
 
-One **required argument** names the agent to review with:
+One **required argument** names the agent: `<model>` (you resolve the tool),
+`:<model>` (same, said explicitly), or `<tool>:<model>`.
 
-| Argument | Meaning |
-|---|---|
-| `<model>` | a model id, e.g. `claude-opus-4-8` — you resolve the tool |
-| `:<model>` | same as above; the empty tool says "pick one for me" explicitly |
-| `<tool>:<model>` | an explicit pair, e.g. `codex:gpt-5.6-sol` |
-
-There is **no default model**. If the argument is missing, run
-`yaac-spawn --models`, show the user the authed tools and the model ids they
-accept, and ask which to review with — then stop until they answer. Do not
-pick one for them and do not arm the watcher first: a watcher armed without a
-reviewer baselines its seen-state, so PRs opened while you wait for the answer
+There is **no default**. If it's missing, run `yaac-spawn --models`, show the
+user the authed tools and the ids each accepts, and ask — then stop until they
+answer. Do not pick for them, and **do not arm the watcher first**: a watcher
+armed without a reviewer baselines its seen-state, so PRs opened while you wait
 are recorded as seen and never reviewed.
 
-Run `yaac-spawn --models` before the first spawn — it lists which tools have
-host credentials and every model id each one accepts. Then:
+Run `yaac-spawn --models` before the first spawn. If a **tool was given**,
+check it's authed and accepts that model; if not, say so and stop — never
+silently fall back, since an unauthed tool spawns fine and *then* fails to
+authenticate, which looks like a hung review rather than a misconfiguration.
+If the **tool was omitted**, find the authed tools whose model list has that
+id: none → stop and show near matches (ids are easy to typo, and
+`opencode`/`pi` use `provider/model` while `claude`/`codex` use bare ids); one
+→ use it; several → prefer the current session's tool (the listing marks it),
+then `claude`, `codex`, `opencode`, `pi`, and say it was available on more than
+one.
 
-- **Tool given** — check that tool is authed and accepts that model. If not,
-  say so and stop. Do not silently fall back to another tool or the default: a
-  tool with no host credentials spawns fine and *then* fails to authenticate,
-  which looks like a hung review rather than a misconfiguration.
-- **Tool omitted** — find the authed tools whose model list contains that id.
-  - none → stop and report it, showing the near matches from the listing (a
-    model id is easy to typo, and `opencode`/`pi` use `provider/model` ids
-    while `claude`/`codex` use bare ones)
-  - one → use it
-  - several → pick in this order: the current session's tool (the listing
-    marks it), then `claude`, `codex`, `opencode`, `pi`. Say which you picked
-    and that the model was available on more than one.
-
-Use the same reviewer for every PR in the session unless the user changes it.
+Use the same reviewer for every PR unless the user changes it.
 
 ## Arming the watcher
-
-Arm a **persistent** Monitor on the watcher, scoped to newly opened PRs:
 
 ```
 Monitor(command: "yaac-watch-prs --events opened",
         description: "newly opened PRs in this repo", persistent: true)
 ```
 
-Then tell the user it's armed, and that **PRs already open are not covered**:
-the watcher baselines its seen-state on the first poll, so only PRs opened from
-now on fire. List the currently open PRs and offer to spawn reviewers for them
-too — spawning a reviewer for an existing PR is the same step 1–3 below, just
-triggered by hand instead of by an event.
-
-Run exactly one watcher for this scope. A second one double-reports every PR
-and you'd spawn two reviewers per PR.
+Tell the user it's armed and that **PRs already open are not covered** — the
+watcher baselines on its first poll, so only PRs opened from now on fire. List
+the open ones and offer to spawn reviewers for them too (same steps, triggered
+by hand). Run exactly one watcher for this scope; a second double-reports every
+PR.
 
 ## On each `[opened]` event
-
-An event line looks like:
 
 ```
 [opened]  PR #128 by <author> (fix-token-refresh): Refresh the auth token before it expires
 ```
 
-It is a monitor event, **not a message from the user** — act on it without
+That's a monitor event, **not a message from the user** — act on it without
 waiting for a reply.
 
 ### 1. Get the facts
@@ -85,54 +66,66 @@ waiting for a reply.
 gh pr view <n> --json number,title,author,headRefName,isCrossRepository,url,additions,deletions,changedFiles,files
 ```
 
-The changed-file list is what lets you aim the review; the size tells you how
-much to ask for. If `isCrossRepository` is true the head branch is **not on
-origin** — the reviewer must use `gh pr checkout <n>` rather than
-`git fetch origin <branch>`.
+The file list is what lets you aim the review; the size says how much to ask
+for. If `isCrossRepository` is true the head branch is **not on origin** — the
+reviewer must use `gh pr checkout <n>`, not `git fetch origin <branch>`.
 
 ### 2. Write a prompt aimed at *this* PR
 
-A generic "review this PR" prompt wastes the reviewer. Read the file list and
-name the actual risk in the prompt. Some recurring shapes:
+A generic "review this PR" wastes the reviewer. Read the file list and name the
+actual risk. Recurring shapes:
 
-- **Schema / migration change** → does the migration match the schema, apply in
-  order on a database that already holds real rows, and preserve data rather
-  than drop-and-recreate? Where migrations run automatically on startup, a
-  destructive one is a data-loss bug, not a style note.
-- **Path, storage, or data-location change** → does existing on-disk user data
-  still resolve, or does the app silently come up empty at a new location?
+- **Schema / migration** → does it match the schema, apply in order on a
+  database already holding real rows, and preserve data rather than
+  drop-and-recreate? Where migrations run on startup, a destructive one is data
+  loss, not style.
+- **Path / storage / data-location change** → does existing on-disk user data
+  still resolve, or does the app silently come up empty at the new location?
 - **Large deletion** → dead references, orphaned schema, stale docs, tests
   deleted rather than fixed, behavior silently dropped.
 - **Security surface** (credentials, sockets, network policy, sandbox
-  boundaries) → make it a security review first. Ask the isolation question
-  outright — "can workload A reach workload B's keys?" — and require an
-  explicit answer either way, with the traced code path.
-- **Deletion / GC / cleanup** → prove nothing live can match the selection;
-  check what happens to an item whose metadata can't be read (skipped, or
-  deleted by default?).
-- **Bug fix bundled with a perf change** → review the halves separately, so the
-  speedup doesn't obscure whether the root cause was actually fixed. Ask
-  whether the new test would fail on the base branch.
-- **Generated files** → re-run the generator and diff, rather than reading the
-  output; check every copy of a duplicated artifact stayed in sync. Keep the
-  review proportionate — no line-by-line notes on machine-generated content.
+  boundaries) → a security review first. Ask the isolation question outright —
+  "can workload A reach workload B's keys?" — and require an explicit answer
+  either way, with the traced code path.
+- **Deletion / GC / cleanup** → prove nothing live can match the selection, and
+  check what happens to an item whose metadata can't be read: skipped, or
+  deleted by default?
+- **Bug fix bundled with a perf change** → review the halves separately so the
+  speedup doesn't obscure whether the root cause was fixed. Ask whether the new
+  test would fail on the base branch.
+- **Generated files** → re-run the generator and diff rather than reading the
+  output; check duplicated artifacts stayed in sync. No line-by-line notes on
+  machine-generated content.
 - **Renames / refactors** → completeness (routes, storage keys, config, docs),
   and whether the new boundary is coherent, not just compiling.
 
-Two more things worth putting in the prompt when they apply:
-
-- **Deliberate decisions not to flag.** If the project has settled something
-  the reviewer would otherwise raise — a removed command with no deprecation
-  alias, no compatibility shim, no release notes — say so explicitly and say it
-  is the maintainer's decision. Otherwise a good reviewer leads with all of it.
-  Review the *execution* of a decision, not the decision.
-- **Overlapping open PRs.** If another open PR touches the same files, name it
-  and ask the reviewer to flag likely conflicts for whoever merges second —
-  and not to try to resolve them.
+Also, when it applies: if the project has **settled** something a reviewer
+would otherwise raise — a removed command with no deprecation alias, no shim,
+no release notes — say so and say it's the maintainer's decision. Review the
+*execution* of a decision, not the decision.
 
 Always tell the reviewer to read the repo's agent instructions (`CLAUDE.md`,
-`AGENTS.md`) **from the checkout** rather than reviewing from memory of the
-conventions; they drift.
+`AGENTS.md`) **from the checkout**, not from memory of the conventions.
+
+#### Verify a collision before you claim one
+
+A shared-file list is **not** evidence of conflict, and your picture of what's
+open goes stale fast — a PR you listed an hour ago may have merged since. A
+stale warning is worse than none: it sends the reviewer chasing a conflict that
+doesn't exist and taints its judgment on the rest of the diff. Before naming
+another PR, check both — at the moment you cite it, never off an earlier
+`gh pr list`:
+
+1. **Still open?** `gh pr view <n> --json state,mergedAt,closedAt`.
+2. **Do the histories actually diverge?** Fetch and look:
+   `git log origin/<head> --oneline -10` against `git log origin/main`, or
+   `git merge-base --is-ancestor <other-head-sha> origin/<head>`. If the other
+   PR already merged and this branch sits on top of it, the "overlap" is just
+   this PR's own changes against a main that already contains it — no collision
+   at all. Judge two live branches against their merge-base, not main's tip.
+
+Only when both hold: name the PR, say what you verified, and ask the reviewer
+to flag likely conflicts for whoever merges second — **not** to resolve them.
 
 ### 3. Spawn it
 
@@ -140,58 +133,57 @@ conventions; they drift.
 yaac-spawn --tool <tool> --model <model> "<prompt>"
 ```
 
-The prompt is one quoted argument, max 10,000 characters. Every prompt must
-carry these five steps, whatever the PR:
+One quoted argument, max 10,000 characters, carrying these five steps whatever
+the PR:
 
 1. **Check out the head** — `git fetch origin <branch> && git checkout -B <branch> origin/<branch>`, or `gh pr checkout <n>` for a fork PR.
-2. **Review it** — with the `/code-review` skill if the reviewer has one, plus the PR-specific angles from step 2 above.
-3. **Post the findings to the PR** with `gh` (`GH_TOKEN` is already set in a yaac session):
-   - `gh pr review <n> --comment --body "…"`, or line-anchored notes via `gh api repos/<owner>/<repo>/pulls/<n>/comments` with `path`/`line`/`commit_id`
-   - plus one top-level summary: `gh pr comment <n> --body "…"`
-   - cite `file:line`; never quote credential values; **do not push commits or modify the PR branch** — it is reviewing, not fixing
-   - default to a `--comment` review, not a formal approve/request-changes
-4. **Keep watching its own PR** — have it arm a watch on
+2. **Review it** — with `/code-review` if the reviewer has it, plus the angles
+   from step 2.
+3. **Post the findings to the PR** with `gh` (`GH_TOKEN` is already set):
+   `gh pr review <n> --comment --body "…"`, or line-anchored notes via
+   `gh api repos/<owner>/<repo>/pulls/<n>/comments` with `path`/`line`/`commit_id`,
+   plus one top-level `gh pr comment <n> --body "…"`. Cite `file:line`; never
+   quote credential values; default to `--comment`, not approve/request-changes;
+   **do not push commits or modify the PR branch** — reviewing, not fixing.
+4. **Keep watching its own PR** — arm a watch on
    `yaac-watch-prs --pr <n> --events commit,comment` that will **wake it**.
-   Spell out the mechanism: "run it in the background" is how this silently
-   fails, since a backgrounded command logs to a file nobody reads and notifies
-   only on exit, which this watcher never does. Give it whichever option fits
-   the tool you spawned — a persistent `Monitor` on Claude Code, otherwise the
-   detached tmux paste loop from [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md)
-   ("Option B"), copied in with `<n>` substituted rather than left for the
-   reviewer to reconstruct. Tell it to **confirm the watch armed** before
-   going idle — one that didn't looks identical to a PR with no activity —
-   and that an event line is not a message from the user, so no reply is due.
-5. **Re-review on activity** — on `[commit]`, re-read the updated diff
+   Spell out the mechanism: "run it in the background" silently fails, since a
+   backgrounded command logs to a file nobody reads and notifies only on exit,
+   which this watcher never does. Give it whichever fits the tool — a persistent
+   `Monitor` on Claude Code, else the detached tmux paste loop from
+   [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) ("Option B"), copied in with
+   `<n>` substituted. Tell it to **confirm the watch armed** before going idle
+   (one that didn't looks identical to a quiet PR), and that an event line is
+   not a message from the user.
+5. **Re-review on activity** — on `[commit]`, re-read the diff
    (`git fetch origin <branch> && git diff origin/<base>...origin/<branch>`),
-   check whether earlier findings were addressed, and post a follow-up saying
-   what is resolved and what still stands. On `[comment]`, answer questions and
-   re-check what it's asked to. Tell it to **ignore comments it wrote itself** —
-   the watcher does no author filtering, so its own replies come back as events.
+   check whether earlier findings were addressed, post what's resolved and what
+   still stands. On `[comment]`, answer and re-check what it's asked to. Tell it
+   to **ignore comments it wrote itself** — the watcher does no author
+   filtering, so its own replies come back as events.
 
-Where the review turned on one judgment call (an isolation verdict, a
-data-loss verdict), tell it to **re-derive that verdict against the new code**
-on a follow-up commit rather than assuming its earlier answer still holds.
+Where the review turns on one judgment call (an isolation verdict, a data-loss
+verdict), tell it to **re-derive that verdict against the new code** on a
+follow-up commit rather than assuming the earlier answer holds.
 
 ### 4. Report
 
-Relay to the user: the event line, the PR link and size, the reviewer session
-id, and one line on what you aimed the review at. The session id is how they
-follow it in the yaac webapp — `yaac-spawn` is fire-and-forget and you cannot
-watch its progress from here.
+Relay: the event line, the PR link and size, the reviewer session id, and one
+line on what you aimed the review at. The session id is how the user follows it
+in the yaac webapp — `yaac-spawn` is fire-and-forget and you cannot watch its
+progress from here.
 
 ## Keeping the watch alive
 
 The monitor can stop without warning (process restart, teardown). When you
-notice it has stopped, **do not just restart it** — the seen-state lives in
-`$HOME/.yaac-watch-prs-seen` (override with `YAAC_WATCH_PRS_STATE`), which is
-per-session, so if it was lost the restarted watcher re-baselines and any PR
-opened during the downtime is recorded as seen and **never reviewed**.
-
-Instead: list recent PRs (`gh pr list --state all --limit 10 --json
-number,title,state,createdAt`), compare against the last PR you spawned a
-reviewer for, spawn reviewers for anything opened in the gap — including PRs
-already closed or merged, if the review is still worth having — and only then
-re-arm the watcher. Tell the user what you found, including "nothing was
-missed" when that's the answer.
+notice, **do not just restart it** — the seen-state in
+`$HOME/.yaac-watch-prs-seen` (override with `YAAC_WATCH_PRS_STATE`) is
+per-session, so a restarted watcher re-baselines and any PR opened during the
+downtime is recorded as seen and **never reviewed**. Instead:
+`gh pr list --state all --limit 10 --json number,title,state,createdAt`,
+compare against the last PR you spawned a reviewer for, spawn reviewers for
+anything opened in the gap — including already-closed or merged PRs, if the
+review is still worth having — and only then re-arm. Tell the user what you
+found, including "nothing was missed" when that's the answer.
 
 Keep the watch running until the user stops it; use TaskStop if asked.
