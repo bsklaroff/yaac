@@ -333,7 +333,7 @@ class AcpConnection implements AgentConnection {
           registerAcpConversation(this.session.slug, this.session.sessionId, { handle, agentSessionId }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's DB row —
-        // ACP mode's replacement for the in-pod hook's link tree.
+        // ACP mode's replacement for the in-pod hook's session-starts log.
         this.publishAgents()
       },
       onBusy: (busy) => {

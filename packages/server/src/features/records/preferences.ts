@@ -38,6 +38,10 @@ export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
  *  to the file it resolves to. See `resolveSymlinkedTranscripts`. */
 export const TRANSCRIPT_PATHS_RESOLVED_KEY = 'transcript_paths_resolved'
 
+/** One-shot: delete the codex transcript symlinks, once every row that named
+ *  one has been rewritten to its target. See `purgeTranscriptSymlinks`. */
+export const TRANSCRIPT_SYMLINKS_PURGED_KEY = 'transcript_symlinks_purged'
+
 /** One-shot: rewrite absolute recorded transcript paths to the relative form
  *  the column stores. See `relativizeTranscriptPaths`. */
 export const TRANSCRIPT_PATHS_RELATIVE_KEY = 'transcript_paths_relative'

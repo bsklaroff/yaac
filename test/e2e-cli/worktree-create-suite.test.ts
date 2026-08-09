@@ -1673,7 +1673,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       sessionId = (await findSessionPod(SLUG)).sessionId
 
       // The ACP handshake mints the conversation id, and the registry records
-      // it — ACP mode's replacement for the in-pod hook and its link tree, so
+      // it — ACP mode's replacement for the in-pod hook and its log, so
       // this is also the proof that replacement works.
       for (let i = 0; i < 120 && agentSessionId === ''; i++) {
         const res = await fetch(`${base}/worktree/list?project=${SLUG}`, { headers: auth })

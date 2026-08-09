@@ -54,10 +54,11 @@ function escapesRoot(rel: string): boolean {
  * an empty record (see dockerfiles/Dockerfile.tools): the conversation is
  * real, only its path is unexpressible.
  *
- * The realpath fallback exists for the legacy-symlink branch of
- * `readWorktreeLinks`, which resolves through symlinks — on a data dir with
- * a symlinked component (macOS `/tmp` → `/private/tmp`) the literal project
- * directory is not a textual prefix of the path it hands back.
+ * The realpath fallback is for callers that hand back an already-resolved
+ * path — `resolveSymlinkedTranscripts` realpaths the old codex symlinks
+ * before encoding their targets. On a data dir with a symlinked component
+ * (macOS `/tmp` → `/private/tmp`) the literal project directory is not a
+ * textual prefix of such a path.
  */
 export async function toProjectRelative(
   slug: string,

@@ -153,7 +153,7 @@ describe('agentDriver', () => {
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     // The conversation's handle is its pane id; which conversation sits on it
-    // is the link tree's answer, not this driver's.
+    // is the hook's session-starts log to answer, not this driver's.
     expect(seen).toContainEqual({ kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude' }] })
     expect(seen.some((o) => o.kind === 'command-channel' && o.send !== null)).toBe(true)
 
@@ -213,7 +213,7 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-1' } })}\n`)
 
     // The conversation id the agent minted is published — this is what the
-    // registry records, replacing the TUI mode's hook + link tree entirely.
+    // registry records, replacing the TUI mode's hook and its log entirely.
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',

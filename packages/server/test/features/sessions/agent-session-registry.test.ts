@@ -172,7 +172,7 @@ describe('reconcileWorktreeAgentSessions', () => {
   })
 
   it('records the pinned conversation for a pod that predates the hook', async () => {
-    // No link tree, but the transcript the old `--session-id` pin guarantees
+    // Nothing in the log, but the transcript the old `--session-id` pin guarantees
     // is on disk — that is the evidence this worktree really does predate the
     // hook, and its conversation id IS the worktree id.
     const dir = path.join(claudeDir('demo'), 'projects', '-workspace')
@@ -200,7 +200,7 @@ describe('reconcileWorktreeAgentSessions', () => {
   })
 
   it('records an acp conversation off the live set, with its transcript', async () => {
-    // ACP mode has no hook and no link tree: the server IS the ACP client, so
+    // ACP mode has no hook and no log to fold: the server IS the ACP client, so
     // `session/new` hands it the id and the live set carries it. The adapter
     // still writes the tool's usual transcript, and naming it is what gives
     // the conversation a last-activity time for the stopped listing — which
@@ -308,7 +308,7 @@ describe('reconcileWorktreeAgentSessions', () => {
   it('probes an opencode conversation in the pod, since it leaves no transcript', async () => {
     // The one tool whose opening message is not on the host — which is why the
     // sweep has to carry the job name down to the read.
-    // No link tree and no transcript will ever exist for it, so the sweep has
+    // No hook line and no transcript will ever exist for it, so the sweep has
     // only the pin create made — and that exemption is what keeps an opencode
     // worktree from going permanently unlabelled.
     vi.mocked(sessionExec).mockResolvedValue({

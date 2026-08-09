@@ -23,7 +23,7 @@
  *
  * A conversation's handle here is its tmux pane id (`%3`). Which conversation
  * a pane has loaded is deliberately not known — that is the in-pod hook's
- * link tree to answer, and the registry joins the two.
+ * session-starts log to answer, and the registry joins the two.
  */
 
 import { StringDecoder } from 'node:string_decoder'

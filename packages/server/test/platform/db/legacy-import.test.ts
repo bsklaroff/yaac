@@ -42,6 +42,9 @@ const metaDir = (slug: string): string => path.join(projectDir(slug), 'opencode-
 const tokensJsonPath = (): string => path.join(getDataDir(), 'tokens.json')
 
 const exists = (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false)
+/** `exists` follows the link, so a dangling one reads as absent — this asks
+ *  whether the entry itself is still on disk. */
+const entryExists = (p: string): Promise<boolean> => fs.lstat(p).then(() => true, () => false)
 
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
 
@@ -233,9 +236,9 @@ describe('importLegacyJsonStores', () => {
 
   it('resolves a recorded transcript path that is a yaac symlink to its target', async () => {
     // yaac used to index codex's rollouts with a symlink per session, and
-    // capture stored *that* path — so every pre-link-tree codex row points at
-    // a symlink. Resolving them is what lets the symlinks stop being written:
-    // afterwards the DB holds a real path, which is all any reader needs.
+    // capture stored *that* path — so every codex row recorded before the
+    // hook reported one points at a symlink. Resolving them is what lets the
+    // symlinks go: afterwards the DB holds a real path, all any reader needs.
     const rollout = path.join(codexDir('proj'), 'sessions', 'rollout-2026-abc.jsonl')
     await fs.mkdir(path.dirname(rollout), { recursive: true })
     await fs.writeFile(rollout, '{}\n')
@@ -277,6 +280,86 @@ describe('importLegacyJsonStores', () => {
     expect(gone?.transcriptPath).toBeUndefined()
     const [unlinked] = await listWorktreeAgentSessions('proj', 'wt-unlinked')
     expect(unlinked?.transcriptPath).toBeUndefined()
+  })
+
+  it('deletes the transcript symlinks once no row names one, sparing real files', async () => {
+    const rollout = path.join(codexDir('proj'), 'sessions', 'rollout-2026-xyz.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    await fs.writeFile(rollout, '{}\n')
+    const linkDir = codexTranscriptDir('proj')
+    await fs.mkdir(linkDir, { recursive: true })
+    const link = path.join(linkDir, 'wt-cx.jsonl')
+    await fs.symlink(rollout, link)
+    const dangling = path.join(linkDir, 'wt-gone.jsonl')
+    await fs.symlink(path.join(codexDir('proj'), 'sessions', 'missing.jsonl'), dangling)
+    // Not a link. This dir is still codex's scan root, so anything else that
+    // lands here is a transcript someone would want, not an index entry.
+    const real = path.join(linkDir, 'wt-real.jsonl')
+    await fs.writeFile(real, '{}\n')
+
+    // A project whose index held nothing but links loses the directory too.
+    await fs.mkdir(codexTranscriptDir('bare'), { recursive: true })
+    const bareLink = path.join(codexTranscriptDir('bare'), 'wt-bare.jsonl')
+    await fs.symlink(rollout, bareLink)
+
+    await importLegacyJsonStores()
+
+    expect(await entryExists(link)).toBe(false)
+    expect(await entryExists(dangling)).toBe(false)
+    expect(await exists(real)).toBe(true)
+    expect(await exists(linkDir)).toBe(true) // the real file holds it open
+    expect(await exists(codexTranscriptDir('bare'))).toBe(false)
+
+    // The ordering hazard, asserted rather than assumed: the backfill reads
+    // this dir as codex's transcript root, so a session known only by its link
+    // must be adopted — and left holding the rollout behind it — before the
+    // purge takes the link away.
+    expect(await listWorktreeAgentSessions('proj', 'wt-cx')).toMatchObject([
+      { tool: 'codex', transcriptPath: await fs.realpath(rollout) },
+    ])
+  })
+
+  it('purges the symlinks once, and not again for a link written afterwards', async () => {
+    // The flag is its own, so this cannot free-ride on the row rewrite's —
+    // and a link the hook of a still-running pre-upgrade pod writes after the
+    // sweep is not this sweep's to collect.
+    const rollout = path.join(codexDir('proj'), 'sessions', 'rollout-late.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    await fs.writeFile(rollout, '{}\n')
+    await fs.mkdir(codexTranscriptDir('proj'), { recursive: true })
+    await importLegacyJsonStores()
+
+    const late = path.join(codexTranscriptDir('proj'), 'wt-late.jsonl')
+    await fs.mkdir(codexTranscriptDir('proj'), { recursive: true })
+    await fs.symlink(rollout, late)
+    await importLegacyJsonStores()
+
+    expect(await entryExists(late)).toBe(true)
+  })
+
+  it('leaves the flag unset when a project\'s index could not be swept', async () => {
+    // The flag is the whole retry story, so anything left behind must not be
+    // sealed behind it. A path that is not a directory stands in for the
+    // unreadable one: `readdir` fails with something other than ENOENT, which
+    // is the case that must not read as "no index dir here".
+    await fs.mkdir(codexDir('blocked'), { recursive: true })
+    await fs.writeFile(codexTranscriptDir('blocked'), 'not a directory\n')
+
+    const rollout = path.join(codexDir('proj'), 'sessions', 'rollout-retry.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+    await fs.writeFile(rollout, '{}\n')
+    await fs.mkdir(codexTranscriptDir('proj'), { recursive: true })
+
+    await importLegacyJsonStores()
+
+    // Second start: had the flag been set, this link would survive — the
+    // "purges once" case above is exactly that assertion.
+    const stranded = path.join(codexTranscriptDir('proj'), 'wt-stranded.jsonl')
+    await fs.mkdir(codexTranscriptDir('proj'), { recursive: true }) // the emptied dir went with it
+    await fs.symlink(rollout, stranded)
+    await importLegacyJsonStores()
+
+    expect(await entryExists(stranded)).toBe(false)
   })
 
   it('rewrites a tool-home-relative recorded path to its project-relative form', async () => {

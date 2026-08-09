@@ -71,9 +71,11 @@ import type * as relayModule from '#platform/k8s/stream-relay'
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import {
+  _resetLegacyLinkTreeSweepForTests,
   _resetOrphanModulesSweepForTests,
   cleanupSession,
   cleanupSessionDetached,
+  gcLegacyAgentLinkTrees,
   gcOrphanEphemeralModuleDirs,
   sessionModulesDir,
 } from '#features/sessions/cleanup'
@@ -86,7 +88,7 @@ import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/statu
 import { _resetSessionStatusStoreForTests } from '#features/status/status-store'
 import { _setServerLinkForTests } from '#server-link'
 import { serverLog } from '#log'
-import { setDataDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexDir, piDir, setDataDir, worktreeDir } from '@yaac/shared/project-paths'
 import type { HerdEvent } from '@yaac/shared/herd'
 
 const sessionExecMock = vi.mocked(sessionExec)
@@ -502,5 +504,123 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
     // Nothing was removed because we bailed out before the sweep.
     await expect(fs.access(dead)).resolves.toBeUndefined()
+  })
+})
+
+describe('gcLegacyAgentLinkTrees', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-links-'))
+    setDataDir(dataDir)
+    mockListPods.mockReset()
+    mockListJobs.mockReset()
+    _resetLegacyLinkTreeSweepForTests()
+    _resetDesiredWorkspacesForTests()
+  })
+
+  afterEach(async () => {
+    _resetDesiredWorkspacesForTests()
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  /** The tree as the old in-pod hook left it: both pointer kinds, in every
+   *  tool home that ran the hook. */
+  async function seedLinkTree(slug: string, worktreeId: string): Promise<string[]> {
+    const roots: string[] = []
+    for (const home of [claudeDir(slug), codexDir(slug), piDir(slug)]) {
+      const root = path.join(home, '.yaac-links')
+      const wt = path.join(root, worktreeId)
+      await fs.mkdir(path.join(wt, 'sessions'), { recursive: true })
+      await fs.mkdir(path.join(wt, 'panes'), { recursive: true })
+      await fs.writeFile(path.join(wt, 'sessions', 'conv-1'), 'projects/-workspace/conv-1.jsonl\n')
+      await fs.writeFile(path.join(wt, 'panes', '0'), 'conv-1\n')
+      roots.push(root)
+    }
+    return roots
+  }
+
+  it('removes the tree from every tool home and leaves the homes themselves alone', async () => {
+    const roots = await seedLinkTree('proj-a', 'wt-1')
+    await seedLinkTree('proj-b', 'wt-2')
+    // The transcripts these pointers named live in the same homes, and are
+    // still what every recorded path resolves to.
+    const transcript = path.join(claudeDir('proj-a'), 'projects', '-workspace', 'conv-1.jsonl')
+    await fs.mkdir(path.dirname(transcript), { recursive: true })
+    await fs.writeFile(transcript, '{}\n')
+
+    await gcLegacyAgentLinkTrees()
+
+    for (const root of roots) await expect(fs.access(root)).rejects.toThrow()
+    await expect(fs.access(path.join(codexDir('proj-b'), '.yaac-links'))).rejects.toThrow()
+    await expect(fs.access(transcript)).resolves.toBeUndefined()
+    await expect(fs.access(claudeDir('proj-a'))).resolves.toBeUndefined()
+  })
+
+  // `fs.rm` does not follow links, and this is a recursive delete inside a
+  // data dir that also holds every checkout. The two shapes that would turn
+  // it into one that does: a link inside the tree, and the tree itself being
+  // one. Both pass today; the point is that a refactor to a manual walk
+  // cannot quietly start following them.
+  it('unlinks symlinks rather than following them out of the tree', async () => {
+    const checkout = path.join(worktreeDir('proj-a', 'wt-1'), 'src')
+    await fs.mkdir(checkout, { recursive: true })
+    await fs.writeFile(path.join(checkout, 'index.ts'), 'export {}\n')
+
+    const [claudeRoot] = await seedLinkTree('proj-a', 'wt-1')
+    const escape = path.join(claudeRoot, 'wt-1', 'sessions', 'escape')
+    await fs.symlink(checkout, escape)
+
+    // …and a whole tree that is a link to somewhere real.
+    const target = path.join(codexDir('proj-b'), 'real-tree')
+    await fs.mkdir(target, { recursive: true })
+    await fs.writeFile(path.join(target, 'keep'), 'keep\n')
+    await fs.mkdir(codexDir('proj-b'), { recursive: true })
+    const linkedRoot = path.join(codexDir('proj-b'), '.yaac-links')
+    await fs.symlink(target, linkedRoot)
+
+    await gcLegacyAgentLinkTrees()
+
+    await expect(fs.access(claudeRoot)).rejects.toThrow()
+    await expect(fs.lstat(linkedRoot)).rejects.toThrow()
+    // Everything the links named is still there.
+    await expect(fs.access(path.join(checkout, 'index.ts'))).resolves.toBeUndefined()
+    await expect(fs.access(path.join(target, 'keep'))).resolves.toBeUndefined()
+  })
+
+  // A pod launched from a pre-upgrade image keeps writing its tree until it
+  // restarts, so one can reappear after the sweep. Collecting it is the next
+  // server start's job — re-walking every tool home each tick to chase a
+  // hook that is already gone is not worth the syscalls.
+  it('sweeps once per herd life', async () => {
+    await seedLinkTree('proj-a', 'wt-1')
+    await gcLegacyAgentLinkTrees()
+
+    const [reappeared] = await seedLinkTree('proj-a', 'wt-1')
+    await gcLegacyAgentLinkTrees()
+
+    await expect(fs.access(reappeared)).resolves.toBeUndefined()
+  })
+
+  // Nothing reads a link tree, so there is no create to race and no live
+  // worktree to spare — which is the whole reason this is its own step
+  // rather than part of the orphan sweep, whose guards would strand it here.
+  it('runs with no desired set published and no reachable cluster', async () => {
+    const [claudeRoot] = await seedLinkTree('proj-a', 'wt-1')
+    mockListPods.mockRejectedValue(new Error('cluster offline'))
+
+    await gcLegacyAgentLinkTrees()
+
+    await expect(fs.access(claudeRoot)).rejects.toThrow()
+    expect(mockListPods).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op for a project that never had one, and with no projects dir', async () => {
+    await fs.mkdir(claudeDir('proj-fresh'), { recursive: true })
+    await expect(gcLegacyAgentLinkTrees()).resolves.toBeUndefined()
+
+    _resetLegacyLinkTreeSweepForTests()
+    await fs.rm(path.join(dataDir, 'projects'), { recursive: true, force: true })
+    await expect(gcLegacyAgentLinkTrees()).resolves.toBeUndefined()
   })
 })

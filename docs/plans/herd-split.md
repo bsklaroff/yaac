@@ -25,8 +25,8 @@ process, any DB read it still has is a crash.
 Two consequences do most of the design work:
 
 - **Discovery inverts.** `createSession` writes `worktrees` and
-  `agent_sessions` rows today; the registry reconciler imports the in-pod
-  hook's link tree; the prompt capture parses transcripts into rows. All three
+  `agent_sessions` rows today; the registry reconciler imports what the in-pod
+  hook reports; the prompt capture parses transcripts into rows. All three
   become *emitters*: the herd has the bytes, so it parses them and says what it
   found, and the server writes the row.
 - **Lookups invert.** The stale reaper reads recorded rows to know what should
@@ -164,11 +164,12 @@ server's write is fill-only, which is what makes re-reporting after a restart
 a no-op rather than a clobber.
 
 Both discovery sources are already herd-side, and they are asymmetric in a way
-that helps: under `tui` the history is the in-pod hook's link tree, but under
+that helps: under `tui` the history is the in-pod hook's session-starts log,
+but under
 `acp` the server *is* the ACP client, so `session/new` hands back the id as a
 return value.
 
-opencode is the case to be careful with. It has no link tree and leaves no host
+opencode is the case to be careful with. No hook fires for it and it leaves no host
 transcript, so nothing discovers it — its rows come only from create, and the
 old capture pass reached them through the database. Severing that removes its
 prompts entirely unless the sweep is given an explicit exemption from the
@@ -482,7 +483,8 @@ in place: credential paths, and worktree paths that appear in call arguments.
 - **Step 4 is the subtlest.** Reporting a partial conversation set where the
   server diffs against the whole would silently unlink live conversations; the
   report has to be complete per worktree, and the tests have to say so. Two
-  discovery sources with different shapes (a link tree, a handshake reply) make
+  discovery sources with different shapes (a session-starts log, a handshake
+  reply) make
   a partial set easy to produce by accident.
 - **Both agent modes have to be exercised at every step that touches
   conversations** — 3, 4, 5 and 7. `tui` and `acp` differ in where history

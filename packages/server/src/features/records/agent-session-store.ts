@@ -12,7 +12,7 @@ import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types
  * which worktree, and which of them were live).
  *
  * Everything here is discovered rather than authored — the registry
- * reconciler feeds it from the in-pod hook's link tree — so every write is an
+ * reconciler feeds it from what the herd swept up — so every write is an
  * upsert and none of them are fatal: a missed tick is re-reconciled on the
  * next one. The one write that carries real weight is `setActiveAgentSessions`,
  * because the set it leaves behind is frozen at teardown and read back by

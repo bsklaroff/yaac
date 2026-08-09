@@ -56,8 +56,8 @@ export interface LiveAgent {
   /**
    * The conversation's own id, when the driver knows it. `acp` always does —
    * it created the session and holds the id. `tui` never does: which
-   * conversation a pane has loaded is the in-pod hook's link tree to answer,
-   * and the registry joins the two.
+   * conversation a pane has loaded is the in-pod hook's session-starts log to
+   * answer, and the registry joins the two.
    */
   agentSessionId?: string
 }
