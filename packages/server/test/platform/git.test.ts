@@ -70,6 +70,38 @@ describe('git helpers', () => {
     expect(branch.trim()).toBe('agent/test-session')
   })
 
+  it('leaves a sibling worktree alone when its admin gitdir names a pod path', async () => {
+    // Every worktree yaac has started has an admin `gitdir` rewritten to the
+    // CONTAINER's view of itself (`/workspace/.git`, see
+    // buildWorktreeLinkExec) — a path that means something quite different in
+    // whatever namespace the server happens to be running in.
+    //
+    // `git worktree repair` is not scoped to the path it is handed: it walks
+    // every worktree in the repo and, wherever a `gitdir` no longer resolves,
+    // writes a fresh `.git` file at the path that file names. Using it here
+    // would follow those pod paths out of the repo and overwrite whatever
+    // real directory sits at the far end — inside a nested yaac or an e2e run
+    // in a session, that is a live worktree someone is working in.
+    const first = path.join(tmpDir, 'first')
+    await addWorktree(sourceRepo, first, 'agent/first')
+    const adminDir = (await fs.readFile(path.join(first, '.git'), 'utf8'))
+      .replace(/^gitdir:/, '').trim()
+
+    // Stand in for /workspace: a directory that is not this repo's business.
+    const bystander = path.join(tmpDir, 'bystander')
+    await fs.mkdir(bystander, { recursive: true })
+    await fs.writeFile(path.join(adminDir, 'gitdir'), `${bystander}/.git\n`)
+
+    await addWorktree(sourceRepo, path.join(tmpDir, 'second'), 'agent/second')
+
+    expect(await fs.readdir(bystander)).toEqual([])
+    // The second worktree is still fully wired: its own admin entry points
+    // at it, which is the whole of the repair it needs.
+    const second = simpleGit(path.join(tmpDir, 'second'))
+    expect((await second.raw(['status', '--porcelain'])).trim()).toBe('')
+    expect((await second.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('agent/second')
+  })
+
   it('checks out into a destination that already holds the pod mount points', async () => {
     // /workspace is a bind of the worktree dir, so an ephemeral-module
     // mount at /workspace/frontends/node_modules is a directory ON the host
