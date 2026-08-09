@@ -364,9 +364,16 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       projectPath = await setupProject('kitchen', {
         // Real Node projects gitignore node_modules; seed the same so
         // `git status` stays clean once the bind mount is populated.
-        files: { '.gitignore': 'node_modules\n' },
+        // `frontends/` is tracked so the nested ephemeral path below has a
+        // real parent: its mount point is created on the host worktree
+        // before the checkout, which then has to populate a dir that is
+        // already there.
+        files: { '.gitignore': 'node_modules\n', 'frontends/app.txt': 'app\n' },
         yaacConfig: {
           envPassthrough: ['YAAC_TEST_VAR'],
+          // Both shapes of ephemeral redirect at once: the root default and
+          // a nested path whose target dir sits under a tracked one.
+          ephemeralModulesPaths: ['node_modules', 'frontends/node_modules'],
           // cacheVolumes are hostPath dirs under the project dir on the k8s
           // backend, so they vanish with the temp data dir.
           cacheVolumes: { 'test-cache': '/tmp/test-cache' },
@@ -1138,6 +1145,25 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         projectPath, 'worktrees', sessionId, 'node_modules', 'marker.txt',
       )
       await expect(fs.access(worktreeMarker)).rejects.toThrow()
+
+      // The nested redirect works the same way, and its mount TARGET is a
+      // dir on the host worktree that exists before `git worktree add`
+      // runs — which git refuses to check out into unless the add is
+      // staged. Both are asserted here: the checkout populated the tracked
+      // parent around the mount point, and the mount itself is live.
+      const wtDir = path.join(projectPath, 'worktrees', sessionId)
+      expect(await fs.readFile(path.join(wtDir, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
+      await execInJob(jobName, [
+        'sh', '-c', 'echo nested > /workspace/frontends/node_modules/marker.txt',
+      ])
+      const nestedBacking = await fs.readFile(path.join(
+        projectPath, '.cached-packages', 'modules', sessionId,
+        'frontends_node_modules', 'marker.txt',
+      ), 'utf8')
+      expect(nestedBacking.trim()).toBe('nested')
+      await expect(
+        fs.access(path.join(wtDir, 'frontends', 'node_modules', 'marker.txt')),
+      ).rejects.toThrow()
 
       // node_modules is gitignored (via the seeded .gitignore), so a
       // populated bind mount doesn't surface in `git status`.

@@ -70,6 +70,85 @@ describe('git helpers', () => {
     expect(branch.trim()).toBe('agent/test-session')
   })
 
+  it('checks out into a destination that already holds the pod mount points', async () => {
+    // /workspace is a bind of the worktree dir, so an ephemeral-module
+    // mount at /workspace/frontends/node_modules is a directory ON the host
+    // worktree before the checkout runs — and `git worktree add` refuses any
+    // destination that is not an empty dir, `--force` included. This is the
+    // case the staged checkout exists for.
+    const git = simpleGit(sourceRepo)
+    await fs.mkdir(path.join(sourceRepo, 'frontends'), { recursive: true })
+    await fs.writeFile(path.join(sourceRepo, 'frontends', 'app.txt'), 'app\n')
+    await git.add('.')
+    await git.commit('frontends')
+
+    const wtPath = path.join(tmpDir, 'worktree')
+    await fs.mkdir(path.join(wtPath, 'node_modules'), { recursive: true })
+    await fs.mkdir(path.join(wtPath, 'frontends', 'node_modules'), { recursive: true })
+
+    await addWorktree(sourceRepo, wtPath, 'agent/mounted')
+
+    expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
+    expect(await fs.readFile(path.join(wtPath, 'frontends', 'app.txt'), 'utf8')).toBe('app\n')
+    // The mount points survive — the pod may already be bound to them — and
+    // the checked-out tree is clean.
+    expect(await fs.readdir(path.join(wtPath, 'node_modules'))).toEqual([])
+    expect(await fs.readdir(path.join(wtPath, 'frontends', 'node_modules'))).toEqual([])
+    const wtGit = simpleGit(wtPath)
+    expect((await wtGit.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('agent/mounted')
+    expect((await wtGit.raw(['status', '--porcelain'])).trim()).toBe('')
+
+    // The admin dir keeps the destination's basename — the in-pod relink
+    // addresses it as /repo/.git/worktrees/<session id> — and points back at
+    // the real worktree, not at the staging dir the checkout was born in.
+    expect(await fs.readdir(path.join(sourceRepo, '.git', 'worktrees'))).toEqual(['worktree'])
+    const gitdir = await fs.readFile(
+      path.join(sourceRepo, '.git', 'worktrees', 'worktree', 'gitdir'), 'utf8')
+    expect(gitdir.trim()).toBe(path.join(await fs.realpath(wtPath), '.git'))
+    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+  })
+
+  it('rolls a failed add back so the same id can be retried', async () => {
+    // A create that dies here is a never-started session, and restarting
+    // one resumes the SAME id — so the branch and the registration the
+    // staged add creates before the fallible steps must not survive it.
+    // A `.git` that is a non-empty DIRECTORY fails the rename after the
+    // add has already made both.
+    const wtPath = path.join(tmpDir, 'worktree')
+    await fs.mkdir(path.join(wtPath, '.git'), { recursive: true })
+    await fs.writeFile(path.join(wtPath, '.git', 'blocker'), 'x')
+
+    await expect(addWorktree(sourceRepo, wtPath, 'agent/retried')).rejects.toThrow()
+
+    const worktreesDir = path.join(sourceRepo, '.git', 'worktrees')
+    expect(await fs.readdir(worktreesDir).catch(() => [])).toEqual([])
+    expect((await simpleGit(sourceRepo).branchLocal()).all).not.toContain('agent/retried')
+    // The blocker is not ours to remove — only a `.git` this call staged is.
+    expect(await fs.readdir(path.join(wtPath, '.git'))).toEqual(['blocker'])
+    expect(await fs.readdir(tmpDir)).not.toContain('.staging-worktree')
+
+    await fs.rm(path.join(wtPath, '.git'), { recursive: true, force: true })
+    await addWorktree(sourceRepo, wtPath, 'agent/retried')
+    expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
+    expect(await fs.readdir(worktreesDir)).toEqual(['worktree'])
+  })
+
+  it('checks out over a crashed attempt half-written tree', async () => {
+    // Same never-started restart path, one step further along: the earlier
+    // attempt got tracked files down but no `.git`. An empty index makes
+    // every one of them untracked, and an unforced checkout refuses to
+    // overwrite an untracked file even byte-for-byte.
+    const wtPath = path.join(tmpDir, 'worktree')
+    await fs.mkdir(path.join(wtPath, 'node_modules'), { recursive: true })
+    await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
+
+    await addWorktree(sourceRepo, wtPath, 'agent/crashed')
+
+    expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
+    expect(await fs.readdir(path.join(wtPath, 'node_modules'))).toEqual([])
+    expect((await simpleGit(wtPath).raw(['status', '--porcelain'])).trim()).toBe('')
+  })
+
   it('creates a worktree from a start point without writing tracking config', async () => {
     // Clone so we have a remote called "origin"
     const cloneDir = path.join(tmpDir, 'clone')

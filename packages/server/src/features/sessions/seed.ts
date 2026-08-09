@@ -77,19 +77,54 @@ export interface EphemeralMount {
 }
 
 /**
- * Resolve per-session ephemeral-module mount descriptors and ensure
- * each backing directory exists on the host before the Job is created.
+ * `mkdir -p` a mount target inside the worktree without following a link
+ * out of it. On a restart the worktree is already full of agent-authored
+ * content, so a committed `frontends -> /anywhere` would otherwise turn a
+ * plain-looking `"frontends/node_modules"` into a host-side mkdir at
+ * `/anywhere/node_modules`. A link that stays inside the worktree (a repo
+ * pointing one of its own dirs at another) is left alone — the pod resolves
+ * it the same way.
+ */
+async function mkdirMountTarget(worktreeDirPath: string, rel: string): Promise<void> {
+  const root = await fs.realpath(worktreeDirPath)
+  let dir = root
+  for (const segment of rel.split('/')) {
+    dir = path.join(dir, segment)
+    try {
+      await fs.mkdir(dir)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    }
+    const resolved = await fs.realpath(dir)
+    if (resolved !== dir && !resolved.startsWith(root + path.sep)) {
+      throw new Error(
+        `ephemeralModulesPaths: "${rel}" leaves the worktree through a symlink at "${segment}"`,
+      )
+    }
+    dir = resolved
+  }
+}
+
+/**
+ * Resolve per-session ephemeral-module mount descriptors and ensure both
+ * ends of each mount exist on the host before the Job is created.
  *
  * Each `rel` becomes a hostPath mount from
  * `<cachedPackages>/modules/<sessionId>/<slotKey>` on host to
  * `/workspace/<rel>` inside the container. Keeping the backing dirs
  * under the same `.cached-packages` mount as the pnpm store preserves
- * hardlink affinity (same superblock → `link(2)` does not hit EXDEV),
- * and nothing lands on the host worktree.
+ * hardlink affinity (same superblock → `link(2)` does not hit EXDEV).
+ *
+ * The mount *target* is nested inside /workspace, which is a bind of the
+ * host worktree dir — so unlike the backing dirs, it is a directory on the
+ * worktree, and pre-creating it here is what keeps the pod's runtime from
+ * creating it root-owned 0700 instead. It exists before the checkout runs,
+ * which `addWorktree` is built to accept.
  */
 export async function prepareEphemeralMounts(
   cachedPackages: string,
   sessionId: string,
+  worktreeDirPath: string,
   relPaths: string[],
 ): Promise<EphemeralMount[]> {
   const mounts: EphemeralMount[] = []
@@ -97,6 +132,7 @@ export async function prepareEphemeralMounts(
     const slot = ephemeralModulesSlotKey(rel)
     const hostBacking = path.join(cachedPackages, 'modules', sessionId, slot)
     await fs.mkdir(hostBacking, { recursive: true })
+    await mkdirMountTarget(worktreeDirPath, rel)
     mounts.push({
       rel,
       hostBacking,
