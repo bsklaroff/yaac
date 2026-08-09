@@ -19,11 +19,11 @@ Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
 One **required argument** names the agent: `<model>` (you resolve the tool),
 `:<model>` (same, said explicitly), or `<tool>:<model>`.
 
-There is **no default**. If it's missing, run `yaac-spawn --models`, show the
-user the authed tools and the ids each accepts, and ask — then stop until they
-answer. Do not pick for them, and **do not arm the watcher first**: a watcher
-armed without a reviewer baselines its seen-state, so PRs opened while you wait
-are recorded as seen and never reviewed.
+There is **no default model**. If it's missing, run `yaac-spawn --models`, show
+the user the authed tools and the ids each accepts, and ask — then stop until
+they answer. Do not pick for them, and **do not arm the watcher first**: a
+watcher armed without a reviewer baselines its seen-state, so PRs opened while
+you wait are recorded as seen and never reviewed.
 
 Run `yaac-spawn --models` before the first spawn. If a **tool was given**,
 check it's authed and accepts that model; if not, say so and stop — never
