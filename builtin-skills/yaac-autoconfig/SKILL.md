@@ -183,7 +183,7 @@ Every option is optional. Include only what the project needs.
 | `setAllowedUrls` | `string[]` | **Replace** the default allowlist entirely. `["*"]` allows all (disables filtering); `[]` blocks all egress. Warns if it omits `api.anthropic.com`/`github.com`. Mutually exclusive with `addAllowedUrls`. |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
 | `virtualCluster` | `boolean` | Give the session its own virtual kubernetes cluster (vcluster) + per-project push registry. **Implies `nestedContainers`** — setting `"nestedContainers": false` alongside it is a config error. |
-| `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) redirected via symlink to per-session storage so package-manager writes don't touch the host worktree. `[]` disables the redirect. |
+| `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) bind-mounted onto per-session storage so package-manager writes don't touch the host worktree. `[]` disables the redirect. |
 | `referenceBranch` | `string` | Default branch on `origin` (no `origin/` prefix) that new session worktrees branch from. Unset → the remote's default branch. Overridable per create. |
 
 ## Gotchas

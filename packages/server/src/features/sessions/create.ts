@@ -646,6 +646,18 @@ export async function createSession(
   // Directory) mounts on first attempt: the Job is applied while the
   // checkout below may still be running.
   await fs.mkdir(wtDir, { recursive: true })
+  // The ephemeral-module mounts land *inside* /workspace, so their targets
+  // are directories on the host worktree. Create them here — before either
+  // provisioning leg starts — rather than leaving them to the pod: the pod
+  // creates them root-owned 0700 whenever it happens to win the race with
+  // the checkout, and either way the checkout must cope with a destination
+  // that is not empty (see addWorktree, which is what makes that legal).
+  const ephemeralMounts = await prepareEphemeralMounts(
+    cachedPackagesDir(projectSlug),
+    sessionId,
+    wtDir,
+    resolveEphemeralModulesPaths(config),
+  )
 
   // Report the session BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
@@ -750,8 +762,8 @@ export async function createSession(
     }
 
     // Create the worktree (or reuse an existing one when resuming). The
-    // wtDir itself was pre-created above; a populated worktree is
-    // recognized by its `.git` link file.
+    // wtDir itself was pre-created above, holding the /workspace mount
+    // points; a populated worktree is recognized by its `.git` link file.
     const worktreeExists = await fs.access(path.join(wtDir, '.git'))
       .then(() => true).catch(() => false)
     if (options.resume && worktreeExists) {
@@ -774,8 +786,9 @@ export async function createSession(
     }
     const refBranch = requested ?? await getDefaultBranch(repo)
     emit(`Creating worktree from ${refBranch}...`, options)
-    // `git worktree add` accepts the pre-created empty dir; nothing
-    // pod-side reads /workspace before startJobWithSetup joins this task.
+    // addWorktree checks out into the pre-created dir whether or not it is
+    // empty; nothing pod-side reads /workspace before startJobWithSetup
+    // joins this task.
     await addWorktree(repo, wtDir, `agent/${sessionId}`, `origin/${refBranch}`)
     return { upstreamStartPoint: `origin/${refBranch}` }
   })()
@@ -1073,12 +1086,6 @@ export async function createSession(
     // conversation history under `sessions/` is deliberately kept.
     await clearPanePointers(projectSlug, sessionId)
 
-    const ephemeralMounts = await prepareEphemeralMounts(
-      cachedPackages,
-      sessionId,
-      resolveEphemeralModulesPaths(config),
-    )
-
     // yaac's own bundled skills: stage a fresh copy under the session dir and
     // mount them read-only into every tool's personal skills root below. Copied
     // per session so they track the installed yaac version, and never written
@@ -1119,7 +1126,7 @@ export async function createSession(
     }
 
     return {
-      toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
+      toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
       claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
       cachedPackages, acpLogs,
@@ -1128,7 +1135,7 @@ export async function createSession(
 
   const [imageRef, cluster, prep] = await Promise.all([imageTask, clusterTask, prepTask])
   const {
-    toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries, ephemeralMounts,
+    toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, sessionBinStaging, sessionBinNames,
     claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
     cachedPackages, acpLogs,

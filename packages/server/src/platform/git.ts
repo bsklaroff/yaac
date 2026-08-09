@@ -238,20 +238,98 @@ export async function fetchOrigin(
   })
 }
 
+/** Run a rollback step, keeping the failure that triggered it as the one
+ *  the caller sees. */
+async function bestEffort(op: () => Promise<unknown>): Promise<void> {
+  try {
+    await op()
+  } catch {
+    // The original error is the one worth reporting.
+  }
+}
+
 /**
- * Add a session worktree. `--no-track` is deliberate: setting up branch
- * tracking here would write the shared `.git/config` from the host, and a
- * host-side write replaces the file's inode underneath the VM-kernel
- * virtiofs cache that session pods read `/repo/.git` through — until the
- * stale dentry expires (a few seconds), every git command in a pod dies
- * with "fatal: unknown error occurred while reading the configuration
- * files". The upstream is configured from inside the pod instead (see
- * `startJobWithSetup`), where the write stays cache-coherent for all pods
- * and the host alike. With no config write left here, concurrent adds no
- * longer race git's config.lock and need no serialization.
+ * Add a session worktree at a path that may ALREADY EXIST and already hold
+ * entries — a session's `/workspace` mount points (the ephemeral module
+ * dirs) are created there before the checkout runs, and the pod's runtime
+ * creates any that are missing the moment it mounts. `git worktree add`
+ * refuses a destination that is not an empty directory (`--force` does not
+ * relax that check), so the checkout is staged: the worktree is created
+ * `--no-checkout` in a scratch dir — where only its `.git` file lands — that
+ * file is moved into the real destination, `worktree repair` re-points the
+ * admin `gitdir` at it, and the population happens in place. The
+ * destination's inode is never replaced, which is what lets the pod bind
+ * `/workspace` to it before any of this has run.
+ *
+ * The scratch dir's basename is the destination's, because git names the
+ * admin dir (`.git/worktrees/<name>`) after it and the in-pod relink
+ * addresses that dir by session id.
+ *
+ * Staging moves the branch's creation ahead of the steps that can fail, so
+ * every failure after it is rolled back here: a create that dies is a
+ * `never-started` session, and restarting one resumes the SAME id and calls
+ * this again with the same branch name. Left behind, the registration and
+ * the branch make that retry die on "a branch named … already exists" —
+ * and the registration has to go first, because git refuses to delete a
+ * branch a registration still claims.
+ *
+ * `--no-track` is deliberate: setting up branch tracking here would write
+ * the shared `.git/config` from the host, and a host-side write replaces
+ * the file's inode underneath the VM-kernel virtiofs cache that session
+ * pods read `/repo/.git` through — until the stale dentry expires (a few
+ * seconds), every git command in a pod dies with "fatal: unknown error
+ * occurred while reading the configuration files". The upstream is
+ * configured from inside the pod instead (see `startJobWithSetup`), where
+ * the write stays cache-coherent for all pods and the host alike. With no
+ * config write left here, concurrent adds no longer race git's config.lock
+ * and need no serialization.
  */
 export async function addWorktree(repoPath: string, worktreePath: string, branchName: string, startPoint?: string): Promise<void> {
-  const args = ['worktree', 'add', '--no-track', worktreePath, '-b', branchName]
-  if (startPoint) args.push(startPoint)
-  await simpleGit(repoPath).raw(args)
+  const base = path.basename(worktreePath)
+  const stagingRoot = path.join(path.dirname(worktreePath), `.staging-${base}`)
+  const staged = path.join(stagingRoot, base)
+  await fs.rm(stagingRoot, { recursive: true, force: true })
+  await fs.mkdir(stagingRoot, { recursive: true })
+  try {
+    const args = ['worktree', 'add', '--no-track', '--no-checkout', staged, '-b', branchName]
+    if (startPoint) args.push(startPoint)
+    await simpleGit(repoPath).raw(args)
+    let adminDir: string | undefined
+    let movedGit = false
+    try {
+      // The staged `.git` names the admin dir git just registered, and is
+      // the only thing that knows it once the scratch dir is gone.
+      adminDir = (await fs.readFile(path.join(staged, '.git'), 'utf8'))
+        .replace(/^gitdir:/, '').trim()
+      await fs.mkdir(worktreePath, { recursive: true })
+      await fs.rename(path.join(staged, '.git'), path.join(worktreePath, '.git'))
+      movedGit = true
+      await simpleGit(repoPath).raw(['worktree', 'repair', worktreePath])
+      // `--no-checkout` leaves the index empty, so a bare `checkout` (the
+      // documented way to finish a deferred worktree add) populates the
+      // tree. Forced because an empty index treats everything already in
+      // the destination as untracked, and a plain checkout refuses to
+      // overwrite such a file even when it is byte-identical: a crashed
+      // earlier attempt's half-written tree would wedge the retry forever.
+      // Nothing there can be worth keeping — a destination holding a live
+      // checkout has a `.git` file, and callers reuse those rather than
+      // adding over them.
+      await simpleGit(worktreePath).raw(['checkout', '--force'])
+    } catch (err) {
+      // Deliberately not `git worktree prune`: it would also drop a
+      // CONCURRENT add whose registration momentarily points at its own
+      // scratch dir, between that add's rename and its repair.
+      const admin = adminDir
+      if (admin !== undefined) await bestEffort(() => fs.rm(admin, { recursive: true, force: true }))
+      await bestEffort(() => simpleGit(repoPath).raw(['branch', '-D', branchName]))
+      // Only ours: a `.git` this call did not stage belongs to whatever
+      // put it there. Leaving one behind would make the destination pass
+      // the caller's "already a worktree" probe with an empty index, where
+      // git reports every tracked file deleted.
+      if (movedGit) await bestEffort(() => fs.rm(path.join(worktreePath, '.git'), { force: true }))
+      throw err
+    }
+  } finally {
+    await fs.rm(stagingRoot, { recursive: true, force: true })
+  }
 }

@@ -25,7 +25,7 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
 
 /**
  * Derive the per-path subdirectory name under `modules/<sessionId>/`.
- * Root "node_modules" → "root" (keeps the symlink target cleanly named
+ * Root "node_modules" → "root" (keeps the backing dir cleanly named
  * and avoids node_modules-inside-node_modules on disk). Nested paths
  * collapse slashes to underscores, e.g. "packages/web/node_modules" →
  * "packages_web_node_modules".
