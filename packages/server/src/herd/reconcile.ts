@@ -1,4 +1,5 @@
 import {
+  gcLegacyAgentLinkTrees,
   gcOrphanEphemeralModuleDirs,
   reconcileAgentSessions,
   reconcileImageSalvage,
@@ -75,8 +76,9 @@ function herdSteps(): HerdStep[] {
     // one that survives the collect.
     { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
     // Which agent sessions each worktree holds, which are live, and what each
-    // opened with — read from the in-pod hook's link tree (or the ACP
-    // handshake) crossed with the watcher's live agent set. The opening
+    // opened with — read from the worktree's metadata document, with the
+    // in-pod hook's session-starts log folded in (or, under `acp`, from the
+    // handshake), crossed with the watcher's live agent set. The opening
     // message rides along because the sweep has just resolved the transcript
     // it would be read from. Reported as events; the server writes the rows,
     // and its title generation runs after this pass for that reason.
@@ -117,6 +119,13 @@ function herdSteps(): HerdStep[] {
     // the desired set the pass above it published. Self-gating: once per
     // herd life.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
+    // The `.yaac-links` trees an older yaac's SessionStart hook wrote, now
+    // that the worktree metadata document has replaced them. Nothing reads
+    // one, so unlike the sweep above it needs no desired set and no cluster
+    // listing — which is why it stands alone rather than riding along, and why
+    // it still runs on an install whose cluster is unreachable. Self-gating:
+    // once per herd life.
+    { name: 'legacy-link-tree-gc', triggers: [], run: () => gcLegacyAgentLinkTrees() },
   ]
 }
 

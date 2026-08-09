@@ -641,7 +641,7 @@ export async function createSession(
   // so a worktree with none has neither — and could not be restarted. Making
   // create the authority (discovery only ever adds to what it wrote) is what
   // keeps that from depending on a hook firing, which for opencode never
-  // happens at all: it has no host link tree.
+  // happens at all: no hook fires for it.
   const launching: Array<{ agentSessionId: string; tool: AgentTool }> =
     options.resumeAgentSessions !== undefined && options.resumeAgentSessions.length > 0
       ? options.resumeAgentSessions

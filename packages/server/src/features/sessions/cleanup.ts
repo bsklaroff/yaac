@@ -25,7 +25,10 @@ import {
 } from '#features/cluster'
 import {
   cachedPackagesDir,
+  claudeDir,
+  codexDir,
   opencodeDataDir,
+  piDir,
   projectsRoots,
   repoDir,
   sessionRoots,
@@ -469,6 +472,68 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
         } catch (err) {
           console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
         }
+      }
+    }
+  }
+}
+
+/**
+ * The record tree the metadata document replaced:
+ * `<toolHome>/.yaac-links/<worktreeId>/{sessions,panes}/`, one under each
+ * host-mounted tool home, maintained by the in-pod SessionStart hook. See
+ * `worktree-meta.ts` and docs/worktree-storage.md.
+ *
+ * Every worktree that ran before the document has one on disk and nothing
+ * reads it: the herd's record is now the document, folded from the hook's
+ * session-starts log, and the sessions themselves are rows the server already
+ * holds. So this is a removal, not a reconcile — there is no state to carry
+ * across first, and nothing that a mistaken delete could cost.
+ *
+ * That is also why it is its own step rather than part of the orphan sweep
+ * below: it needs neither the cluster listing nor the in-flight set, and
+ * folding it in would strand it whenever the cluster is unreachable.
+ *
+ * It cannot be exactly-once, and does not try to be. A pod launched from a
+ * pre-upgrade image keeps writing its tree until it restarts, so one may
+ * reappear after this runs; the hook `mkdir -p`s and exits 0 whatever it
+ * finds, so deleting underneath it is safe, and the next server start
+ * collects whatever it wrote.
+ */
+const LEGACY_LINKS_DIR = '.yaac-links'
+
+let legacyLinkTreesSwept = false
+
+/** Test helper: let the once-per-herd-life sweep run again. */
+export function _resetLegacyLinkTreeSweepForTests(): void {
+  legacyLinkTreesSwept = false
+}
+
+export async function gcLegacyAgentLinkTrees(): Promise<void> {
+  // Once per herd life: this collects what an older yaac left behind, so a
+  // second pass in the same process has nothing new to find.
+  if (legacyLinkTreesSwept) return
+  legacyLinkTreesSwept = true
+
+  // Both roots, as the orphan sweep does: a project whose shared half is gone
+  // can still have a node-local tree, and enumerating one root would never
+  // generate its slug.
+  const slugLists = await Promise.all(
+    projectsRoots().map((root) => fs.readdir(root).catch((): string[] => [])),
+  )
+  for (const slug of new Set(slugLists.flat())) {
+    // The three homes the hook ever wrote into. opencode has no host
+    // transcript and never ran the hook, so it never had a tree.
+    for (const home of [claudeDir(slug), codexDir(slug), piDir(slug)]) {
+      const dir = path.join(home, LEGACY_LINKS_DIR)
+      // Probe first: `rm -rf` on a path that was never there is silent, and
+      // without this every install would report a removal for every project
+      // it has, forever.
+      if (await fs.stat(dir).catch(() => null) === null) continue
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+        console.log(`Removed legacy agent link tree ${dir}`)
+      } catch (err) {
+        console.warn(`Legacy link tree GC: failed to remove ${dir}: ${(err as Error).message}`)
       }
     }
   }

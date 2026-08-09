@@ -10,11 +10,11 @@ import {
   worktreeAgentSessions,
   worktrees,
 } from './schema'
-import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, TRANSCRIPT_PATHS_PROJECT_KEY, TRANSCRIPT_PATHS_RELATIVE_KEY, TRANSCRIPT_PATHS_RESOLVED_KEY, isFlagSet, isSerializedChord, isValidTool, setFlag } from '#features/records'
+import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, TRANSCRIPT_PATHS_PROJECT_KEY, TRANSCRIPT_PATHS_RELATIVE_KEY, TRANSCRIPT_PATHS_RESOLVED_KEY, TRANSCRIPT_SYMLINKS_PURGED_KEY, isFlagSet, isSerializedChord, isValidTool, setFlag } from '#features/records'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { worktreeUpstreamBranch } from '#platform/git'
-import { repoDir } from '@yaac/shared/project-paths'
+import { codexTranscriptDir, repoDir } from '@yaac/shared/project-paths'
 import {
   resolveProjectPath,
   scanProjectTranscripts,
@@ -502,7 +502,66 @@ export async function importLegacyJsonStores(): Promise<void> {
   await projectRelativeTranscriptPaths(db)
   await relativizeTranscriptPaths(db)
   await resolveSymlinkedTranscripts(db)
+  // Last, and only here: the symlinks the step above reads are the same ones
+  // this deletes. It is a separate flag rather than a tail on that function
+  // so a crash between the two retries the deletion instead of stranding the
+  // links behind a flag that is already set.
+  await purgeTranscriptSymlinks(slugs)
   await importTokens(db)
+}
+
+/**
+ * Delete the codex transcript symlinks, now that no row names one.
+ *
+ * `.yaac-transcripts/<agentSessionId>.jsonl` was yaac's own index into codex's
+ * rollout files, maintained by the in-pod hook; the recorded path replaced it,
+ * and `resolveSymlinkedTranscripts` above has rewritten every row that still
+ * pointed at one to the file behind it. What is left is a directory of links
+ * nothing writes and nothing follows.
+ *
+ * It has to come after BOTH one-shots that read the directory — the row
+ * rewrite, and `backfillSessions`, for which `scanProjectTranscripts` treats
+ * this dir as codex's transcript root. Deleting a link before either would
+ * cost a session its path, or lose it from the adoption entirely.
+ *
+ * Symlinks only, and the directory only if it empties. The path is still
+ * codex's scan root, so a regular file that landed there is a transcript
+ * someone would want; and `rmdir` on a non-empty directory failing is the
+ * check, not an error.
+ *
+ * The flag is set only when every removal succeeded, because the flag is the
+ * whole retry story — one stranded by an EACCES would never be reached again.
+ * A directory that cannot be *read* counts as a failure for the same reason;
+ * only ENOENT means "no index dir here". The cost of a permanent failure is
+ * one readdir per project per server start, which is what the flag was
+ * saving in the first place.
+ */
+async function purgeTranscriptSymlinks(slugs: string[]): Promise<void> {
+  if (await isFlagSet(TRANSCRIPT_SYMLINKS_PURGED_KEY)) return
+  let removed = 0
+  let failed = 0
+  for (const slug of slugs) {
+    const dir = codexTranscriptDir(slug)
+    let entries: string[]
+    try {
+      entries = await fs.readdir(dir)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') failed++
+      continue
+    }
+    for (const name of entries) {
+      const p = path.join(dir, name)
+      // lstat, so a real file is never mistaken for the link that used to
+      // stand in front of it.
+      const st = await fs.lstat(p).catch(() => null)
+      if (st === null || !st.isSymbolicLink()) continue
+      await fs.unlink(p).then(() => { removed++ }).catch(() => { failed++ })
+    }
+    await fs.rmdir(dir).catch(() => { /* still holds real transcripts */ })
+  }
+  if (failed === 0) await setFlag(TRANSCRIPT_SYMLINKS_PURGED_KEY)
+  if (removed > 0) serverLog(`[db] removed ${removed} legacy transcript symlink(s)`)
+  if (failed > 0) serverLog(`[db] ${failed} legacy transcript symlink(s) left for the next start`)
 }
 
 /**
@@ -512,12 +571,14 @@ export async function importLegacyJsonStores(): Promise<void> {
  * yaac used to index codex's transcripts with a symlink per session
  * (`.yaac-transcripts/<id>.jsonl`) because codex names its rollout files
  * unpredictably and there is no way to derive one from a session id. Capture
- * stored *that* path, so every codex row recorded before the link tree points
- * at a symlink rather than at a transcript — and the hook no longer maintains
- * those symlinks, so the ones on disk are the last that will ever exist.
+ * stored *that* path, so every codex row recorded before the hook began
+ * reporting one points at a symlink rather than at a transcript — and nothing
+ * maintains those symlinks now, so the ones on disk are the last that will
+ * ever exist.
  *
- * Resolving them now is what lets the symlinks go: afterwards the DB holds a
- * real path for every row, which is the only thing any reader needs. Must run
+ * Resolving them is what lets the symlinks go (`purgeTranscriptSymlinks`
+ * takes them right after): afterwards the DB holds a real path for every row,
+ * which is the only thing any reader needs. Must run
  * while the old symlinks are still present, which is why it lives in the
  * startup sweep rather than in a migration — SQL cannot follow a symlink.
  *

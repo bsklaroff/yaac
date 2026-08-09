@@ -21,6 +21,18 @@ vi.mock('node:fs/promises', () => ({
     readdir: vi.fn().mockResolvedValue([]),
     cp: vi.fn().mockResolvedValue(undefined),
     copyFile: vi.fn().mockResolvedValue(undefined),
+    // The worktree metadata document: create writes it whole (tmp + rename)
+    // and stamps a life, which measures the session-starts log first. Nothing
+    // exists in this fake filesystem, so `stat` rejects like `readFile` — a
+    // fresh worktree's log length is zero either way.
+    //
+    // Inline implementations rather than `.mockResolvedValue()`: `mockReset`
+    // restores the function `vi.fn` was constructed with but strips anything
+    // configured afterwards, so these survive the `resetAllMocks` in each
+    // suite's beforeEach without having to be re-primed in all three.
+    stat: vi.fn(() => Promise.reject(new Error('missing'))),
+    rename: vi.fn(() => Promise.resolve()),
+    appendFile: vi.fn(() => Promise.resolve()),
   },
 }))
 
@@ -117,6 +129,10 @@ vi.mock('@yaac/server/platform/k8s/pod-wait', () => ({
   waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
 }))
 
+// A whole replacement, not a partial one: every path has to land under /tmp
+// so nothing here can reach a real data dir. The cost is that it has to be
+// kept in step by hand — a path helper the create path starts calling is
+// `undefined` here until it is added below.
 vi.mock('@yaac/shared/project-paths', () => ({
   // A constant, not a per-project path: sealing features/cluster put its
   // setup module in this graph — session create reaches it through the
@@ -138,9 +154,13 @@ vi.mock('@yaac/shared/project-paths', () => ({
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
-  // The agent-session link tree lives under each tool's mounted home; create
-  // wipes the worktree's pane pointers before the pod starts.
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
+  // The herd's own record of a worktree, and the log the in-pod hook appends
+  // its session starts to — create writes the first and pre-creates the
+  // second so the pod's `File` mount resolves on the first attempt.
+  worktreeMetaPath: vi.fn((slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.json`),
+  worktreeSessionStartsPath: vi.fn(
+    (slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.session-starts.jsonl`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   sessionDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
   sessionVclusterDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/vcluster`),

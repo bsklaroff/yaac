@@ -242,9 +242,10 @@ export interface LaunchedSession {
  * message.
  *
  * Where the history comes from is the one thing that differs by mode. Under
- * `tui` it is the in-pod hook's link tree; under `acp` there is nothing to
- * discover, because the server is the ACP client and the handshake handed it
- * the id.
+ * `tui` it is the worktree's metadata document, into which the herd folds
+ * whatever the in-pod hook has appended to its session-starts log; under
+ * `acp` there is nothing to discover, because the server is the ACP client
+ * and the handshake handed it the id.
  */
 export interface SessionsDiscovered {
   type: 'sessions-discovered'
