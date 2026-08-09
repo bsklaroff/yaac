@@ -11,7 +11,7 @@ import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getDefaultTool } from '@yaac/server/features/projects/preferences'
+import { getDefaultTool } from '@yaac/server/features/records/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
 import type * as sessionCreateModule from '@yaac/server/features/sessions/create'
 import type * as projectAddModule from '@yaac/server/features/projects/add'

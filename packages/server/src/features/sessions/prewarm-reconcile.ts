@@ -7,7 +7,6 @@
  * this wrapper just lists pods and drives the side effects.
  */
 import { type TickSnapshot, listSessionPods } from '#platform/k8s'
-import { getDefaultTool } from '#features/projects'
 import { cleanupSessionDetached } from './cleanup'
 import { createSession } from './create'
 import {
@@ -36,7 +35,13 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
  * Reconcile the prewarm pool once. No-op when `YAAC_PREWARM_POOL_SIZE=0`.
  * Best-effort: a cluster hiccup just skips this tick.
  */
-export async function reconcilePrewarmPool(snapshot?: TickSnapshot): Promise<void> {
+export async function reconcilePrewarmPool(
+  // Which tool to warm spares with is a user preference — a row, and so the
+  // server's to resolve and hand down. A herd is told what to run, never
+  // where the answer is kept (docs/plans/herd-split.md).
+  defaultTool: AgentTool,
+  snapshot?: TickSnapshot,
+): Promise<void> {
   const poolSize = env.prewarmPoolSize
   if (poolSize === 0) return
 
@@ -47,7 +52,6 @@ export async function reconcilePrewarmPool(snapshot?: TickSnapshot): Promise<voi
     return
   }
 
-  const defaultTool = (await getDefaultTool()) ?? 'claude'
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, defaultTool, inFlight, claiming)
 
   for (const target of toReap) {

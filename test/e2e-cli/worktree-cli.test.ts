@@ -17,14 +17,14 @@ import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
-} from '@yaac/server/features/sessions/worktree-store'
+} from '@yaac/server/features/records/worktree-store'
 import {
   recordAgentSessions,
   setActiveAgentSessions,
-} from '@yaac/server/features/sessions/agent-session-store'
+} from '@yaac/server/features/records/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
 import { closeDb } from '@yaac/server/platform/db'
-import { SESSIONS_BACKFILLED_KEY, clearFlag } from '@yaac/server/features/projects'
+import { SESSIONS_BACKFILLED_KEY, clearFlag } from '@yaac/server/features/records'
 import { firstSnapshot } from '@yaac/test-utils/events-ws'
 
 /**

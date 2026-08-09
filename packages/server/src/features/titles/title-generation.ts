@@ -10,7 +10,8 @@
  * `attempted` set covers in-flight dedup, failure memory, and
  * don't-regenerate after a user deliberately clears a generated title.
  */
-import { listActiveSessions, setWorktreeTitle } from '#features/sessions'
+import { listActiveSessions } from '#features/sessions'
+import { setWorktreeTitle } from '#features/records'
 import { notifySessionListChanged } from '#notify'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'

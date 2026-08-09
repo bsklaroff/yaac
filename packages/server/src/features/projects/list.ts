@@ -1,13 +1,10 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { getProjectsDir } from '@yaac/shared/project-paths'
+import { listProjectRows } from '#features/records'
 import {
   isDeferredClusterBootPending,
   isPrewarmed,
   listSessionPods,
   triggerDeferredClusterBoot,
 } from '#platform/k8s'
-import type { ProjectMeta } from '@yaac/shared/types'
 
 export interface ProjectListEntry {
   slug: string
@@ -17,44 +14,25 @@ export interface ProjectListEntry {
 }
 
 /**
- * Scan every `project.json` under `~/.yaac/projects/` and count live
- * sessions by pod label. If the cluster is unavailable we still return
- * the projects — just with `sessionCount: 0`. Same behavior as the old
- * in-process `projectList()` command.
+ * Every recorded project, with a live session count by pod label. If the
+ * cluster is unavailable we still return the projects — just with
+ * `sessionCount: 0`, which is the whole point of the split: which projects
+ * exist is the server's own record, and only the count needs a substrate.
  *
  * This is the pure data half of `yaac project list`; the CLI renderer
  * lives in `src/commands/project-list.ts`.
  */
 export async function listProjects(): Promise<ProjectListEntry[]> {
-  const projectsDir = getProjectsDir()
-
-  let entries: string[]
-  try {
-    entries = await fs.readdir(projectsDir)
-  } catch {
-    return []
-  }
-
-  const sessionCounts = await countSessionsByProject()
-
-  const projects: ProjectListEntry[] = []
-  for (const entry of entries) {
-    const metaPath = path.join(projectsDir, entry, 'project.json')
-    try {
-      const raw = await fs.readFile(metaPath, 'utf8')
-      const meta = JSON.parse(raw) as ProjectMeta
-      projects.push({
-        slug: meta.slug,
-        remoteUrl: meta.remoteUrl,
-        addedAt: meta.addedAt,
-        sessionCount: sessionCounts[meta.slug] ?? 0,
-      })
-    } catch {
-      // skip malformed entries
-    }
-  }
-
-  return projects
+  const [rows, sessionCounts] = await Promise.all([
+    listProjectRows(),
+    countSessionsByProject(),
+  ])
+  return rows.map((meta) => ({
+    slug: meta.slug,
+    remoteUrl: meta.remoteUrl,
+    addedAt: meta.addedAt,
+    sessionCount: sessionCounts[meta.slug] ?? 0,
+  }))
 }
 
 async function countSessionsByProject(): Promise<Record<string, number>> {

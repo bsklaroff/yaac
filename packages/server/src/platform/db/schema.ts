@@ -35,6 +35,25 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
 })
 
 /**
+ * Every project yaac has cloned, one row per slug.
+ *
+ * The clone itself, its config and its tool homes are bytes on the substrate
+ * that runs sessions, and none of them can be reproduced from here. What is
+ * here is the ANSWER to "which projects exist" — so the server can list them,
+ * refuse a duplicate add, and 404 an unknown slug without asking anything
+ * that might be unreachable (docs/plans/herd-split.md).
+ *
+ * `addedAt` is text, not a timestamp, because it is handed to clients
+ * verbatim as the ISO string `project.json` has always carried; parsing and
+ * re-serializing it would change the shape of a value nothing computes on.
+ */
+export const projects = snakeCase.table('projects', {
+  slug: text().primaryKey(),
+  remoteUrl: text().notNull(),
+  addedAt: text().notNull(),
+})
+
+/**
  * Every worktree yaac has ever created, one row per (project, worktree id).
  * This is the spine: the cluster stays authoritative for "is it running",
  * and this table for "did it exist, and what is it". A row is inserted by

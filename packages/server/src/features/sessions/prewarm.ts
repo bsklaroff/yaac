@@ -39,13 +39,8 @@ import {
   waitForStreamd,
 } from '#platform/k8s'
 import { cleanupSessionDetached } from './cleanup'
-import { recordAgentSessions, setActiveAgentSessions } from './agent-session-store'
+import { emitHerdEvent } from '#herd-events'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import {
-  deleteWorktreeRow,
-  recordWorktreeCreated,
-  setWorktreeBaseBranch,
-} from './worktree-store'
 import type { SessionCreateResult } from './create'
 import { isTmuxSessionAlive } from '#features/status'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
@@ -276,20 +271,21 @@ export async function tryClaimPrewarmed(
     // here aborts the claim before any mutation, so the spare stays a spare
     // and the caller falls back to a cold create.
     recordedRow = true
-    await recordWorktreeCreated({
+    await emitHerdEvent({
+      type: 'worktree-created',
       projectSlug,
       worktreeId: chosen.sessionId,
       ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
     })
-    // The spare's agent is already running, pinned to its own id — record it
+    // The spare's agent is already running, pinned to its own id — report it
     // as the worktree's first conversation, since that is where the
     // worktree's tool is read from.
-    await recordAgentSessions(projectSlug, chosen.sessionId, [
-      { tool, agentSessionId: chosen.sessionId },
-    ])
-    await setActiveAgentSessions(projectSlug, chosen.sessionId, [
-      { tool, agentSessionId: chosen.sessionId },
-    ])
+    await emitHerdEvent({
+      type: 'conversations-launched',
+      projectSlug,
+      worktreeId: chosen.sessionId,
+      conversations: [{ tool, agentSessionId: chosen.sessionId }],
+    })
 
     if (rebranchTo !== null) {
       // The claim path is otherwise zero-network; a re-branch must fetch so
@@ -355,10 +351,15 @@ export async function tryClaimPrewarmed(
       })
     }
 
-    // A claim that moved the spare to another branch records the branch it
+    // A claim that moved the spare to another branch reports the branch it
     // ended on, not the one it was warmed from.
     if (rebranchTo !== null) {
-      await setWorktreeBaseBranch(projectSlug, chosen.sessionId, rebranchTo)
+      await emitHerdEvent({
+        type: 'base-branch-resolved',
+        projectSlug,
+        worktreeId: chosen.sessionId,
+        baseBranch: rebranchTo,
+      })
     }
 
     emit('Using prewarmed session...')
@@ -382,10 +383,12 @@ export async function tryClaimPrewarmed(
       reserved = undefined
     }
     // The claim never completed, so its row describes a session that never
-    // existed — the caller is about to cold-create a different one.
+    // existed — the caller is about to cold-create a different one. A claim
+    // is always a fresh worktree, never a resume, so the row is erased.
     if (chosen && recordedRow) {
-      await deleteWorktreeRow(projectSlug, chosen.sessionId)
-        .catch(() => { /* best-effort; the row has no pod to back it */ })
+      await emitHerdEvent({
+        type: 'worktree-create-failed', projectSlug, worktreeId: chosen.sessionId,
+      }).catch(() => { /* best-effort; the row has no pod to back it */ })
     }
     return undefined
   } finally {

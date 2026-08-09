@@ -97,9 +97,13 @@ describe('listActiveSessions single-flight', () => {
   it('keeps different filters on separate in-flight slots', async () => {
     // Project dirs must exist so ensureProjectExists doesn't 404.
     await fs.mkdir(path.join(tmpDir, 'projects', 'proj-a'), { recursive: true })
-    await fs.writeFile(path.join(tmpDir, 'projects', 'proj-a', 'project.json'), '{}')
+    await fs.writeFile(path.join(tmpDir, 'projects', 'proj-a', 'project.json'), JSON.stringify({
+      slug: 'proj-a', remoteUrl: 'https://example.com/a.git', addedAt: '2026-01-01T00:00:00.000Z',
+    }))
     await fs.mkdir(path.join(tmpDir, 'projects', 'proj-b'), { recursive: true })
-    await fs.writeFile(path.join(tmpDir, 'projects', 'proj-b', 'project.json'), '{}')
+    await fs.writeFile(path.join(tmpDir, 'projects', 'proj-b', 'project.json'), JSON.stringify({
+      slug: 'proj-b', remoteUrl: 'https://example.com/b.git', addedAt: '2026-01-01T00:00:00.000Z',
+    }))
 
     mockListPods.mockResolvedValue([])
 

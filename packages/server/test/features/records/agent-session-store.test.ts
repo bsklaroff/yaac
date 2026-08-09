@@ -6,8 +6,8 @@ import {
   deleteWorktreeAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
-} from '#features/sessions/agent-session-store'
-import { recordWorktreeCreated } from '#features/sessions/worktree-store'
+} from '#features/records/agent-session-store'
+import { recordWorktreeCreated } from '#features/records/worktree-store'
 
 /**
  * The store's writes are covered through the reconciler and the listings that

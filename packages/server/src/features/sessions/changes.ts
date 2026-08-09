@@ -24,7 +24,7 @@
 import { sessionExec } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { worktreeUpstreamBranch } from '#platform/git'
-import { getWorktreeRow } from './worktree-store'
+import { getWorktreeRow } from '#features/records'
 import { repoDir } from '@yaac/shared/project-paths'
 import type { ChangeStatus, SessionChange, SessionChanges } from '@yaac/shared/types'
 

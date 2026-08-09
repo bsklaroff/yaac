@@ -1,11 +1,14 @@
 import {
-  captureSessionPrompts,
   reconcilePrewarmPool,
   reconcileAgentSessions,
   reconcileImageSalvage,
   reconcileSpawnRequests,
   reconcileStaleSessions,
 } from '#features/sessions'
+import {
+  getDefaultTool,
+  pushDesiredWorkspaces,
+} from '#features/records'
 import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
 import {
   reconcileProjectRegistryGc,
@@ -47,11 +50,17 @@ export interface ReconcileStep {
 
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
+    // Tell the herd what the server records as existing. Before the reaper,
+    // which is the step that needs it: absence only means something against
+    // a set from this pass, not the last one.
+    { name: 'desired-workspaces', triggers: ['session-pods', 'session-jobs', 'poll'],
+      run: () => pushDesiredWorkspaces() },
     // Poll keeps dead-tmux detection at today's cadence (not a k8s event).
     { name: 'stale-sessions', triggers: ['session-pods', 'session-jobs', 'poll'],
       run: (s) => reconcileStaleSessions(s) },
     // Service in-session `yaac-spawn` requests queued at the egress proxy.
-    { name: 'spawn-requests', triggers: ['poll'], run: (s) => reconcileSpawnRequests({}, s) },
+    { name: 'spawn-requests', triggers: ['poll'],
+      run: async (s) => reconcileSpawnRequests({ defaultTool: await getDefaultTool() }, s) },
     // Leaked trust-split builder pods (server restarted mid-build) — the
     // label sweep backstop. Throttled internally. Ahead of image-prewarm on
     // purpose: a leaked builder's memory reservation is what stops the next
@@ -63,7 +72,8 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'image-prewarm', triggers: [], run: () => reconcileImagePrewarm() },
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped sessions). No-op when the pool size is 0.
-    { name: 'prewarm-pool', triggers: ['session-pods'], run: (s) => reconcilePrewarmPool(s) },
+    { name: 'prewarm-pool', triggers: ['session-pods'],
+      run: async (s) => reconcilePrewarmPool((await getDefaultTool()) ?? 'claude', s) },
     // Mid-session image salvage (nested engines → project registry). Throttled
     // internally per session; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
@@ -73,19 +83,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // internally; after the salvage, so a just-pushed generation is the
     // one that survives the collect.
     { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
-    // Which agent sessions each worktree holds, and which are live — read
-    // from the in-pod hook's link tree crossed with the watcher's pane set.
-    // Before session-prompts, whose work list is the conversations this
-    // discovers.
+    // Which agent sessions each worktree holds, which are live, and what each
+    // opened with — read from the in-pod hook's link tree (or the ACP
+    // handshake) crossed with the watcher's live agent set. The opening
+    // message rides along because the sweep has just resolved the transcript
+    // it would be read from.
     { name: 'agent-sessions', triggers: ['session-pods'],
       run: (s) => reconcileAgentSessions(s) },
-    // First user message onto each conversation, and the founding one onto
-    // the worktree — once per subject, so every display path reads the
-    // prompt instead of parsing a transcript.
-    { name: 'session-prompts', triggers: ['session-pods'],
-      run: (s) => captureSessionPrompts(s) },
-    // Model-generated titles for untitled sessions (right after first-message
-    // capture so a freshly captured prompt is eligible the same pass).
+    // Model-generated titles for untitled sessions (right after the sweep, so
+    // a freshly captured prompt is eligible the same pass).
     { name: 'generated-titles', triggers: ['session-pods'],
       run: () => reconcileGeneratedTitles() },
     // ssh-agent heal only (attach-only probe, never bootstraps): agent

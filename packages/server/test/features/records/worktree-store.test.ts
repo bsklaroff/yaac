@@ -21,8 +21,8 @@ import {
   clearWorktreeStopped,
   setWorktreeBackground,
   setWorktreeTitle,
-} from '#features/sessions/worktree-store'
-import { recordAgentSessions } from '#features/sessions/agent-session-store'
+} from '#features/records/worktree-store'
+import { recordAgentSessions } from '#features/records/agent-session-store'
 
 describe('session store', () => {
   let tmpDir: string

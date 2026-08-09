@@ -6,11 +6,8 @@ import {
   probeTmuxLiveness,
 } from '#features/status'
 import { cleanupSessionDetached } from './cleanup'
-import {
-  listStoppedWorktreeIds,
-  listLiveWorktreeRows,
-  recordWorktreeStopped,
-} from './worktree-store'
+import { desiredWorkspaces } from '#herd-desired'
+import { emitHerdEvent } from '#herd-events'
 import { listProvisioning } from './provisioning'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
@@ -50,6 +47,10 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
+  // What the server says exists. `undefined` means it has never said — so the
+  // two sweeps that need it stand down rather than guessing, which is the
+  // only safe direction: an empty set would condemn everything at once.
+  const desired = desiredWorkspaces()
   const { running, stale: staleAll, indeterminate, terminating } =
     await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
 
@@ -156,10 +157,18 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   const ourStuck: typeof stuckTerminating = []
   const externalStuck: typeof stuckTerminating = []
   if (stuckTerminating.length > 0) {
-    const recorded = await listStoppedWorktreeIds().catch(() => new Set<string>())
-    for (const t of stuckTerminating) {
-      if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
-      else externalStuck.push(t)
+    // With no published set this split cannot be made, and the safe side is
+    // OURS: `externalStuck` restamps the cause as "deleted out-of-band", which
+    // would overwrite a plain user delete or an earlier reaped death. Resuming
+    // the teardown while preserving whatever is recorded loses nothing — the
+    // delete is idempotent — so silence means preserve, not reclassify.
+    if (desired === undefined) ourStuck.push(...stuckTerminating)
+    else {
+      const recorded = new Set(desired.stopped)
+      for (const t of stuckTerminating) {
+        if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
+        else externalStuck.push(t)
+      }
     }
   }
 
@@ -178,10 +187,9 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // makes one bad listing cost nothing. The map is in-memory, so a server
   // restart re-arms every timer, which errs toward not recording.
   const livePodIds = new Set(pods.map((p) => p.sessionId))
-  try {
-    const liveRows = await listLiveWorktreeRows()
+  if (desired !== undefined) {
     const seen = new Set<string>()
-    for (const row of liveRows) {
+    for (const row of desired.live) {
       const rowKey = `${row.projectSlug}/${row.worktreeId}`
       seen.add(rowKey)
       if (livePodIds.has(row.worktreeId) || provisioningIds.has(row.worktreeId)) {
@@ -205,15 +213,18 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
         `[server] stale-reaper: recording worktree=${row.worktreeId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
       )
-      await recordWorktreeStopped(row.projectSlug, row.worktreeId, cause)
+      await emitHerdEvent({
+        type: 'worktree-stopped',
+        projectSlug: row.projectSlug,
+        worktreeId: row.worktreeId,
+        cause,
+      }).catch(() => { /* best-effort; the next tick retries */ })
     }
     // Forget timers for rows that are no longer live (deleted, restarted,
     // or their project removed), so the map tracks only what it watches.
     for (const rowKey of missingSince.keys()) {
       if (!seen.has(rowKey)) missingSince.delete(rowKey)
     }
-  } catch {
-    // DB unavailable — the next tick retries.
   }
 
   const targets = [

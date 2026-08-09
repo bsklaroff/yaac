@@ -2,21 +2,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#platform/db/client'
 import { preferences, shortcutOverrides } from '#platform/db/schema'
-import {
-  DEFAULT_TOOL_KEY,
-  SESSIONS_BACKFILLED_KEY,
-  clearShortcutOverrides,
-  getDefaultTool,
-  getShortcutOverrides,
-  isFlagSet,
-  isSerializedChord,
-  isValidTool,
-  setDefaultToolChecked,
-  setFlag,
-  setShortcutOverride,
-} from '#features/projects'
+import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, clearShortcutOverrides, getDefaultTool, getShortcutOverrides, isFlagSet, isSerializedChord, isValidTool, setDefaultToolChecked, setFlag, setShortcutOverride } from '#features/records'
 // Shape of a stored chord, for building fixtures. Not under test here.
-import type { SerializedChord } from '#features/projects/preferences'
+import type { SerializedChord } from '#features/records/preferences'
 import { ServerError } from '@yaac/shared/errors'
 
 const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({

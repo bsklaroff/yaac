@@ -217,7 +217,7 @@ vi.mock('@yaac/server/features/forwarders/port-forwarders', () => ({
 // The session row is a real DB write; this file mocks everything around
 // createSession, so it mocks the store too. `recordWorktreeCreated` throwing
 // is a failed create (see the teardown case below), not a swallowed hiccup.
-vi.mock('@yaac/server/features/sessions/worktree-store', () => ({
+vi.mock('@yaac/server/features/records/worktree-store', () => ({
   recordWorktreeCreated: vi.fn(),
   recordWorktreeStopped: vi.fn(),
   deleteWorktreeRow: vi.fn(),
@@ -227,7 +227,7 @@ vi.mock('@yaac/server/features/sessions/worktree-store', () => ({
   restoreWorktreeStop: vi.fn(),
 } satisfies Partial<typeof storeModule>))
 
-vi.mock('@yaac/server/features/sessions/agent-session-store', () => ({
+vi.mock('@yaac/server/features/records/agent-session-store', () => ({
   recordAgentSessions: vi.fn(),
   setActiveAgentSessions: vi.fn(),
   deleteWorktreeAgentSessions: vi.fn().mockResolvedValue(undefined),
@@ -248,8 +248,8 @@ import {
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
-} from '@yaac/server/features/sessions/worktree-store'
-import { recordAgentSessions } from '@yaac/server/features/sessions/agent-session-store'
+} from '@yaac/server/features/records/worktree-store'
+import { recordAgentSessions } from '@yaac/server/features/records/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/agents/agent-command'
 import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
@@ -1208,8 +1208,8 @@ import type * as projectConfigModule from '@yaac/server/features/projects/config
 import type * as credentialsModule from '@yaac/server/features/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
 import type * as portForwardersModule from '@yaac/server/features/forwarders/port-forwarders'
-import type * as storeModule from '@yaac/server/features/sessions/worktree-store'
-import type * as agentStoreModule from '@yaac/server/features/sessions/agent-session-store'
+import type * as storeModule from '@yaac/server/features/records/worktree-store'
+import type * as agentStoreModule from '@yaac/server/features/records/agent-session-store'
 import type * as cleanupModule from '@yaac/server/features/sessions/cleanup'
 
 // worktreeCreate posts to the streaming /worktree/create route via the `api`

@@ -1,11 +1,11 @@
 import { listSessionPods } from '#platform/k8s'
-import { listWorktreeRows, type WorktreeRow } from './worktree-store'
+import { listWorktreeRows, type WorktreeRow } from '#features/records'
 import {
   getAgentSessionsFor,
   setAgentSessionCapture,
   toAgentSessionEntry,
   type AgentSessionLinkRow,
-} from './agent-session-store'
+} from '#features/records'
 import {
   getAgentSessionFirstMessage,
   sessionTranscriptPath,

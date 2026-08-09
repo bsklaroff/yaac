@@ -7,7 +7,7 @@ import {
   listSessionJobs,
   listSessionPods,
 } from '#platform/k8s'
-import { recordWorktreeStopped } from './worktree-store'
+import { emitHerdEvent } from '#herd-events'
 import { listProvisioning } from './provisioning'
 import { evictSessionStatus, forgetLiveness, markSessionTerminating } from '#features/status'
 import { proxyClient } from '#features/egress'
@@ -71,11 +71,12 @@ export async function cleanupSession(params: {
   // display path rendering "terminating…" instead of a stray waiting spell.
   markSessionTerminating(sessionId)
 
-  // Stamp the deletion time (and death cause, when a reaper supplied one)
-  // so the deleted-session view can order by recency and say why the
-  // session went away (best-effort; falls back to transcript mtime if
-  // unwritten).
-  await recordWorktreeStopped(projectSlug, sessionId, cause)
+  // Report the stop (and death cause, when a reaper supplied one) so the
+  // deleted-session view can order by recency and say why the session went
+  // away (best-effort; falls back to transcript mtime if unrecorded).
+  await emitHerdEvent({
+    type: 'worktree-stopped', projectSlug, worktreeId: sessionId, cause,
+  })
 
   // Drop any cached tmux-alive entry and the watcher-fed status-store row
   // so a subsequent caller doesn't see a stale value from this session (or,
@@ -171,13 +172,15 @@ export async function cleanupSessionDetached(params: {
   // Mark terminating BEFORE evicting the status below (see cleanupSession).
   markSessionTerminating(sessionId)
 
-  // Stamp the deletion time (and death cause, when a reaper supplied one)
-  // so the deleted-session view can order by recency and say why the
-  // session went away (best-effort; falls back to transcript mtime if
-  // unwritten). Skipped when resuming a teardown yaac already recorded, so
-  // the existing cause survives (see `preserveDeletedRecord`).
+  // Report the stop (and death cause, when a reaper supplied one) so the
+  // deleted-session view can order by recency and say why the session went
+  // away (best-effort; falls back to transcript mtime if unrecorded). Skipped
+  // when resuming a teardown yaac already recorded, so the existing cause
+  // survives (see `preserveDeletedRecord`).
   if (!preserveDeletedRecord) {
-    await recordWorktreeStopped(projectSlug, sessionId, cause)
+    await emitHerdEvent({
+      type: 'worktree-stopped', projectSlug, worktreeId: sessionId, cause,
+    })
   }
 
   forgetLiveness(projectSlug, sessionId)

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo, isGitAuthError } from '#platform/git'
 import { parseGitRemote, resolveCredentialForUrl } from './credentials'
+import { getProjectRow, recordProject } from '#features/records'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -50,6 +51,14 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
 
   await ensureDataDir()
 
+  // The record is the authority on what exists, so a duplicate is refused
+  // from it rather than from a directory the server may not share. The
+  // directory check stays as a second guard: a clone into an occupied dir
+  // would fail confusingly, and an adopted-but-unrecorded dir is exactly
+  // what the adoption shim is for.
+  if (await getProjectRow(slug)) {
+    throw new ServerError('CONFLICT', `Project "${slug}" already exists`)
+  }
   try {
     await fs.access(dir)
     throw new ServerError('CONFLICT', `Project "${slug}" already exists at ${dir}`)
@@ -100,7 +109,10 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
     remoteUrl,
     addedAt: new Date().toISOString(),
   }
+  // Both: the row is what the server answers from, and `project.json` is
+  // what the adoption shim reads on a data dir an older yaac wrote.
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')
+  await recordProject(meta)
 
   return { project: meta }
 }

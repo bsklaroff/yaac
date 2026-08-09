@@ -20,7 +20,9 @@ describe('getProjectBranches', () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-branches-test-'))
     setDataDir(tmp)
     await fs.mkdir(projectDir(slug), { recursive: true })
-    await fs.writeFile(path.join(projectDir(slug), 'project.json'), '{}')
+    await fs.writeFile(path.join(projectDir(slug), 'project.json'), JSON.stringify({
+      slug, remoteUrl: 'https://example.com/proj.git', addedAt: '2026-01-01T00:00:00.000Z',
+    }))
 
     sourceRepo = path.join(tmp, 'source')
     await fs.mkdir(sourceRepo, { recursive: true })
