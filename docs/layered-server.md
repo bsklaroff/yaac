@@ -105,11 +105,40 @@ disciplines that make re-reporting safe live with the event types
   dismissal included — the prior stop is read and cleared adjacently in
   the `worktree-created` handler.
 
+## The push path
+
+> Every store the snapshot reads notifies at its own mutation site, and
+> the api layer's hub is the only thing listening.
+
+`buildSnapshot` gathers rows, the informer cache, the provisioning and
+image-build registries, the status store, the forwarder registry and the
+port detector, the plan-usage cache, and the two files the egress proxy
+write-throughs. Each of those announces its own changes on `#notify`; the
+hub coalesces the burst, rebuilds, diffs against what it last sent, and
+broadcasts only a difference. Nothing else publishes — routes translate
+and return, and the reconciler knows nothing about snapshots.
+
+One rule, so a new writer never has to ask how its change reaches a
+browser: **if you mutate something `buildSnapshot` reads, notify there.**
+`applyWorktreeEvent` covers every observed fact at the event door;
+intent writers (a title, a pin) notify individually.
+
+The consequence worth keeping: an idle server rebuilds nothing at all.
+The only clock left on this path is the plan-usage refresh, which is
+genuinely irreducible — the upstream usage endpoints have no push — and
+is gated on a client being connected.
+
 ## The reconcile pass
 
-`main/reconciler.ts` is the engine — three lanes (watch deltas, a 5s poll,
-a 60s resync) feeding one serialized, debounced pass executor with
-per-step error isolation. `domain/reconcile.ts` is the ordered step list:
+`main/reconciler.ts` is the engine — two lanes (watch deltas and a 60s
+resync) feeding one serialized, debounced pass executor with per-step
+error isolation. There is no poll lane: every source has an edge, and
+the resync is what makes losing one cost latency rather than
+correctness — the same bet the informer's relist makes. Beyond the cache
+deltas the edges are `live-agents` and `status-streams` (in-pod facts,
+from the driver connections) and `spawn-requests` / `proxy-reconnect`,
+which the egress proxy reports over the event stream described below.
+`domain/reconcile.ts` is the ordered step list:
 the stale reaper first (so counts reflect just-reaped worktrees by the
 time the prewarm pool runs), the substrate sweeps and GCs, the
 conversation sweep, and title generation last, so a just-captured opening
@@ -128,6 +157,29 @@ construction. A failed read stands every sweep down — reaping on a guess
 destroys uncommitted work — and the in-flight exemption comes straight
 from the provisioning registry, which is populated synchronously before a
 create stages anything.
+
+## The proxy event stream
+
+Three facts the server needs are visible only inside the egress proxy: a
+worktree's blocked-host set growing, a git credential being rejected
+upstream (the proxy MITMs the git exchange, so pods never hold the
+credential and only it sees the rejection), and an in-worktree
+`yaac-spawn` landing in its queue.
+
+The proxy cannot dial the server — it is an in-cluster pod, the server is
+a host process with no in-cluster address, and nested the server sits
+inside a pod of the *outer* cluster. So the signal rides the connection
+the server already holds: one long-lived `GET /events` over the control
+tunnel, NDJSON, consumed by `ProxyEventStream` in `#runtime/k8s/egress`.
+
+The events carry no state. `/data/blocked-hosts.json` and
+`/data/git-auth-failures.json` stay the data plane — they are also how a
+replaced proxy comes back knowing this state — and the spawn queue keeps
+its own claim protocol. Every event means only "look again", and a
+reconnect re-fires all of them, so a dropped stream costs latency, never
+a lost update. That reconnect is also the only edge that says the proxy
+pod may have been replaced, which is what the ssh-agent heal and the
+vcluster-attribution re-push hang off.
 
 ## Naming
 

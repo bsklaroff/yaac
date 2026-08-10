@@ -3,6 +3,7 @@ import path from 'node:path'
 import { eq } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects } from './schema'
+import { notifyWorktreeListChanged } from '#notify'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 
@@ -19,6 +20,7 @@ export async function recordProject(meta: ProjectMeta): Promise<void> {
     target: projects.slug,
     set: { remoteUrl: meta.remoteUrl },
   })
+  notifyWorktreeListChanged()
 }
 
 export async function getProjectRow(slug: string): Promise<ProjectMeta | undefined> {
@@ -37,6 +39,7 @@ export async function listProjectRows(): Promise<ProjectMeta[]> {
 export async function deleteProjectRow(slug: string): Promise<void> {
   const db = await getDb()
   await db.delete(projects).where(eq(projects.slug, slug))
+  notifyWorktreeListChanged()
 }
 
 /**

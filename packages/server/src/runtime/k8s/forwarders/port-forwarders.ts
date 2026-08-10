@@ -12,6 +12,7 @@
  */
 
 import { relayTcpFactory, podExec } from '#platform/k8s'
+import { notifyWorktreeListChanged } from '#notify'
 import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import type { ReservedPort } from '#platform/port'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
@@ -47,9 +48,13 @@ export function registerWorktreeForwarders(
     // just holds both, and stopWorktreeForwarders runs every stop.
     entry.stops.push(stop)
     entry.ports.push(...mapped)
-    return
+  } else {
+    forwarders.set(worktreeId, { stops: [stop], ports: mapped })
   }
-  forwarders.set(worktreeId, { stops: [stop], ports: mapped })
+  // This registry is what `forwardedPorts` reads, so it announces its own
+  // changes. The startup restore fires this before any client connects,
+  // where publishing is a no-op.
+  notifyWorktreeListChanged()
 }
 
 /**
@@ -73,6 +78,8 @@ export function stopWorktreeForwarders(worktreeId: string): void {
       // Best-effort teardown — a wedged forwarder shouldn't block delete.
     }
   }
+  // Covers stopAllWorktreeForwarders too, which runs this per worktree.
+  notifyWorktreeListChanged()
 }
 
 export function hasWorktreeForwarders(worktreeId: string): boolean {
@@ -210,6 +217,9 @@ export async function addWorktreeForwarder(
   } else {
     forwarders.set(worktreeId, { stops: [stop], ports: [mapping] })
   }
+  // Before the cosmetic refresh below: the forward is live now, and the
+  // snapshot is what moves the port out of `unforwardedPorts`.
+  notifyWorktreeListChanged()
 
   // Cosmetic — a failed status-right refresh must not undo a live forward.
   await setWorktreeStatusRight(jobName, projectSlug, worktreeId, getWorktreePorts(worktreeId))

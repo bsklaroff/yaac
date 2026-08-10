@@ -831,6 +831,9 @@ function persistBlockedHosts(): void {
   } catch (err) {
     console.error('[proxy] Failed to persist blocked hosts:', (err as Error).message)
   }
+  // After the write, so a subscriber that re-reads on signal cannot see the
+  // pre-change file.
+  emitProxyEvent('blocked-hosts')
 }
 
 function loadBlockedHosts(): void {
@@ -859,6 +862,7 @@ function persistGitAuthFailures(): void {
   } catch (err) {
     console.error('[proxy] Failed to persist git auth failures:', (err as Error).message)
   }
+  emitProxyEvent('git-auth-failures')
 }
 
 function loadGitAuthFailures(): void {
@@ -2051,6 +2055,44 @@ function checkAuth(req: http.IncomingMessage): boolean {
   return timingSafeStrEqual(auth, `Bearer ${PROXY_AUTH_SECRET}`)
 }
 
+// ── Event stream ───────────────────────────────────────────────────────
+
+/**
+ * Open `GET /events` responses. The server holds one; the Set tolerates a
+ * second (a reconnect racing its predecessor's close).
+ *
+ * The proxy cannot dial the server — it is an in-cluster pod and the server
+ * is a host process with no in-cluster address — so the change signal rides
+ * the connection the server already holds open to us.
+ */
+const eventSubscribers = new Set<http.ServerResponse>()
+
+/** How often to write a ping, so a peer can detect a dead tunnel by read
+ *  timeout rather than waiting on TCP. */
+const EVENT_PING_MS = 15_000
+
+/**
+ * Tell every subscriber that `type` changed — deliberately WITHOUT the new
+ * state. The /data files stay the data plane (they are also how a replaced
+ * proxy comes back knowing this state), so the server re-reads truth on
+ * signal. That keeps the whole path level-triggered: a dropped connection
+ * costs a reconnect, never a lost update, because the reconnecting server
+ * re-reads everything anyway.
+ */
+function emitProxyEvent(type: 'blocked-hosts' | 'git-auth-failures' | 'spawn' | 'ping'): void {
+  if (eventSubscribers.size === 0) return
+  const line = JSON.stringify({ type }) + '\n'
+  for (const res of eventSubscribers) {
+    try {
+      res.write(line)
+    } catch {
+      eventSubscribers.delete(res)
+    }
+  }
+}
+
+setInterval(() => emitProxyEvent('ping'), EVENT_PING_MS).unref()
+
 function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.method === 'GET' && req.url === '/healthz') {
     if (USE_TOR && !fs.existsSync('/data/tor-ready')) {
@@ -2323,8 +2365,29 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // In-worktree spawn requests: the server drains pending requests each
-  // background tick (drain = claim, at-most-once) ...
+  // The change stream the server subscribes to for everything only this
+  // process can see: a worktree's blocked-host set growing, a git
+  // credential being rejected upstream, a queued in-worktree spawn. Held
+  // open; one NDJSON line per change, plus periodic pings.
+  if (req.method === 'GET' && req.url === '/events') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    })
+    // Flush the headers so the subscriber knows it is attached before the
+    // first change rather than at the first write.
+    res.flushHeaders()
+    eventSubscribers.add(res)
+    const drop = (): void => { eventSubscribers.delete(res) }
+    res.on('close', drop)
+    res.on('error', drop)
+    return
+  }
+
+  // In-worktree spawn requests: the server drains pending requests when the
+  // `spawn` event above wakes it (drain = claim, at-most-once) ...
   if (req.method === 'GET' && req.url === '/spawn/pending') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -2789,6 +2852,9 @@ function handleSpawnRequest(
     )
     if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }
     console.log(`[proxy] spawn request from worktree ${worktreeId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
+    // The caller's response is held until the server drains and answers, so
+    // the drain is worth waking immediately rather than at the next resync.
+    emitProxyEvent('spawn')
   })
 }
 

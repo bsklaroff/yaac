@@ -140,6 +140,29 @@ still read when only it exists.
 > redeploy per install writes the new name, so the window closes on its own —
 > just not instantly.
 
+**The proxy event stream's 404 lane** — the `res.status === 404` branch of
+`ProxyEventStream.connectOnce` and `UNSUPPORTED_RETRY_MS`
+(`runtime/k8s/egress/proxy-events.ts`). It keys off exactly one thing: a
+deployed proxy answering 404 to `GET /events`, i.e. one built before that
+route existed. In that state the server has no edges at all, so the retry
+tick stands in for them — it re-fires the spawn drain and rebuilds the
+snapshot every 5s, which is the cadence the reconciler's deleted poll lane
+ran at.
+
+> Deleting this while an old proxy can still be deployed fails **silently and
+> twice over**. A queued in-worktree `yaac-spawn` gets no drain, so it sits
+> until the proxy's TTL and answers its caller 504. And a newly blocked host
+> or git-auth failure gets no push: the resync dirties reconcile steps, but no
+> reconcile step publishes a snapshot any more, so on an otherwise quiet
+> server it may never reach the browser at all. Neither logs anything.
+>
+> Safe to drop once every deployed proxy has been redeployed past the commit
+> that added `/events`. That happens on its own — `ensureRunning`'s
+> content-hash check re-rolls a stale proxy on the first worktree create after
+> an upgrade — so the window is one create per install, not a version floor.
+> `reportedDown` logs `deployed proxy has no /events route` once per outage,
+> which is the tell that an install is still inside it.
+
 ## 5. Tripwires added when the backfill went
 
 Not legacy code themselves; they exist because the pre-database import was

@@ -9,7 +9,13 @@
  * In-memory (server-process singleton): a restart drops the marks, which is
  * fine — a genuinely terminating pod still carries its own deletionTimestamp,
  * and `pruneTerminating` clears anything stale.
+ *
+ * `pruneTerminating` deliberately does NOT notify: it runs inside the
+ * display-list build, so the build that prunes a mark already renders the
+ * un-greyed row.
  */
+
+import { notifyWorktreeListChanged } from '#notify'
 
 /** worktreeId -> epoch ms when the teardown was marked. */
 const marks = new Map<string, number>()
@@ -26,7 +32,13 @@ export const TERMINATING_TTL_MS = 60_000
  *  the TTL measures from the first mark). */
 export function markWorktreeTerminating(worktreeId: string, nowMs = Date.now()): void {
   if (!worktreeId) return
-  if (!marks.has(worktreeId)) marks.set(worktreeId, nowMs)
+  if (marks.has(worktreeId)) return
+  marks.set(worktreeId, nowMs)
+  // A mark greys the row, so it is a snapshot input and announces itself
+  // (docs/layered-server.md). Without this a CLI- or reaper-issued stop
+  // showed nothing until the pod's deletionTimestamp delta landed, which
+  // is the whole gap this mark exists to cover.
+  notifyWorktreeListChanged()
 }
 
 /** Whether a worktree is currently marked terminating. */
@@ -37,7 +49,7 @@ export function isWorktreeTerminating(worktreeId: string): boolean {
 /** Drop a worktree's mark — called when its id is reused (restart) so a fresh
  *  incarnation isn't rendered as terminating. */
 export function clearWorktreeTerminating(worktreeId: string): void {
-  marks.delete(worktreeId)
+  if (marks.delete(worktreeId)) notifyWorktreeListChanged()
 }
 
 /**

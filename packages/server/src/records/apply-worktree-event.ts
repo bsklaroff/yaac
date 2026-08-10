@@ -10,6 +10,7 @@ import {
   setWorktreeBaseBranch,
   type PriorStop,
 } from './worktree-store'
+import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { WorktreeEvent, WorktreeCreateFailed, WorktreeCreated } from './events'
 
@@ -21,8 +22,18 @@ import type { WorktreeEvent, WorktreeCreateFailed, WorktreeCreated } from './eve
  * live nowhere else — the per-event mutators are internal to this feature,
  * off the barrel, so a caller cannot write an observed fact except by
  * saying what happened (docs/layered-server.md).
+ *
+ * Being the one door also makes this the one place rows announce
+ * themselves: rows are a snapshot input, so every observed fact notifies.
+ * Unconditional on purpose — the hub diffs before it broadcasts, so an
+ * event that changed nothing visible costs a rebuild, never a push.
  */
 export async function applyWorktreeEvent(event: WorktreeEvent): Promise<void> {
+  await applyEvent(event)
+  notifyWorktreeListChanged()
+}
+
+async function applyEvent(event: WorktreeEvent): Promise<void> {
   switch (event.type) {
     case 'worktree-created':
       await applyCreated(event)

@@ -1,6 +1,7 @@
 import type net from 'node:net'
 import { type PodInfo, isPrewarmed, relayDial } from '#platform/k8s'
 import { getWorktreePorts } from './port-forwarders'
+import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 
 /**
@@ -110,6 +111,9 @@ export function dismissWorktreePort(worktreeId: string, port: number): boolean {
     dismissed.set(worktreeId, set)
   }
   set.add(port)
+  // Self-clears the popover row: the dismissal only exists here, so this is
+  // the only place that can announce it.
+  notifyWorktreeListChanged()
   return true
 }
 

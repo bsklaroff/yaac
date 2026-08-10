@@ -3,7 +3,7 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
-import { authAgentHub } from '#domain/auth'
+import { authAgentHub, refreshPlanUsage } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeRecords, openRecords } from '#records'
 import { EventHub } from '#api/events'
@@ -153,11 +153,23 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // `/health` as `ready` so `yaac server start` waits for genuine readiness
   // instead of the pre-init responsive window (see waitForReadyLock).
   let ready = false
-  // Push a fresh snapshot the moment worktree state changes — a create /
-  // restart from a route handler, an informer delta, or a watcher-fed
-  // status flip. The first notification publishes immediately; bursts
-  // (server start seeding N pods) coalesce into one trailing rebuild.
+  // The one path by which server state reaches a browser. Every store the
+  // snapshot reads notifies at its own mutation site (docs/layered-server.md),
+  // and this is the sole consumer of that channel: rebuild, diff, push. The
+  // first notification publishes immediately; bursts (server start seeding N
+  // pods) coalesce into one trailing rebuild.
   onWorktreeListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
+  // The plan-usage readouts are the one thing here with no edge to ride:
+  // the upstream usage endpoints have no push, so freshness can only come
+  // from asking. Gated on a connected client, which is what keeps a closed
+  // webapp from generating upstream traffic. A landed result notifies, so
+  // this needs no publish of its own.
+  const planUsageTimer = setInterval(() => {
+    if (hub.size === 0) return
+    void refreshPlanUsage().catch(
+      (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${String(err)}`),
+    )
+  }, 5 * 60_000)
   const app = buildApp({ secret, buildId, tokens, isReady: () => ready })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
@@ -379,6 +391,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
+    clearInterval(planUsageTimer)
+    // Stop pushing. Teardown mutates plenty that clients can see — every
+    // forwarder goes, reap ticks land — and rebuilding a snapshot against a
+    // substrate we are in the middle of letting go of buys nothing: the
+    // clients are about to be disconnected, and reconnect to a full one.
+    onWorktreeListChanged(() => {})
     // Stop the push-fed state layer first, before the loop drain below:
     // its watches hold open substrate connections and a long-lived
     // process per worktree, which would otherwise outlive the server.
@@ -439,13 +457,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     onAttached: () => {
       // Started before the startup GCs drain (they run detached), so the
       // server serves the reconcile path right away.
-      loopDone = startReconciler({
-        signal: abortCtrl.signal,
-        // After each reconcile pass, push a fresh snapshot to any connected
-        // webapp clients (no-op when none are connected, and only broadcasts
-        // when the state actually changed).
-        onPass: () => hub.publishSnapshot(),
-      })
+      loopDone = startReconciler({ signal: abortCtrl.signal })
     },
   })
 }

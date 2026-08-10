@@ -10,17 +10,24 @@ import {
   recordWorktreeCreated,
 } from '#records/worktree-store'
 import { listWorktreeAgentSessions } from '#records/agent-session-store'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('applyWorktreeEvent', () => {
   let tmpDir: string
 
+  let pushes: number
+
   beforeEach(async () => {
     _resetPriorStopsForTests()
+    _resetWorktreeListChangedForTests()
+    pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
     tmpDir = await createTempDataDir()
     await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-1' })
   })
 
   afterEach(async () => {
+    _resetWorktreeListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -200,5 +207,35 @@ describe('applyWorktreeEvent', () => {
     expect(row?.stoppedAt).toBeInstanceOf(Date)
     expect(row?.deathReason).toBeUndefined()
     expect(await rowOf('wt-1')).toBeDefined() // kept, not erased
+  })
+
+  // Rows are a snapshot input, and this is the one door they change
+  // through — so it is also the one place they announce themselves. Every
+  // event pushes, whatever it landed in; the hub diffs before broadcasting,
+  // so an event that changed nothing visible costs a rebuild, not a push.
+  it('pushes a fresh snapshot for every event it applies', async () => {
+    const before = pushes
+    await created('wt-2')
+    await applyWorktreeEvent({
+      type: 'base-branch-resolved', projectSlug: 'proj', worktreeId: 'wt-2', baseBranch: 'main',
+    })
+    await applyWorktreeEvent({
+      type: 'sessions-discovered', projectSlug: 'proj', worktreeId: 'wt-2', sessions: [],
+    })
+    await applyWorktreeEvent({
+      type: 'sessions-active', projectSlug: 'proj', worktreeId: 'wt-2', active: [],
+    })
+    await stopped('wt-2')
+    expect(pushes - before).toBe(5)
+  })
+
+  // The rollback path still pushes: a failed create leaves a row that looks
+  // different from the one the client last saw, whether it was erased or
+  // put back.
+  it('pushes after a rolled-back create', async () => {
+    await created('wt-3')
+    const before = pushes
+    await failed('wt-3')
+    expect(pushes - before).toBe(1)
   })
 })

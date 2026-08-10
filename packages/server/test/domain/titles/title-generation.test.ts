@@ -5,7 +5,6 @@ import path from 'node:path'
 
 vi.mock('#domain/worktrees/list', () => ({ listActiveWorktrees: vi.fn() }))
 vi.mock('#records/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
-vi.mock('#notify', () => ({ notifyWorktreeListChanged: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
@@ -24,7 +23,6 @@ import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveWorktrees } from '#domain/worktrees/list'
 import { setWorktreeTitle } from '#records/worktree-store'
-import { notifyWorktreeListChanged } from '#notify'
 import { execFileAsync } from '#platform/shell'
 import type * as shellModule from '#platform/shell'
 import { serverLog } from '#log'
@@ -33,7 +31,6 @@ import type { WorktreeListEntry } from '@yaac/shared/types'
 
 const mockList = vi.mocked(listActiveWorktrees)
 const mockSetTitle = vi.mocked(setWorktreeTitle)
-const mockNotify = vi.mocked(notifyWorktreeListChanged)
 const mockExec = vi.mocked(execFileAsync)
 const mockLog = vi.mocked(serverLog)
 
@@ -162,7 +159,7 @@ describe('reconcileGeneratedTitles', () => {
     await fs.rm(homeDir, { recursive: true, force: true })
   })
 
-  it('fetches the pinned runtime and model, titles the first message, and notifies', async () => {
+  it('fetches the pinned runtime and model and titles the first message', async () => {
     listOf(session())
     await reconcileGeneratedTitles()
     await flush()
@@ -196,7 +193,6 @@ describe('reconcileGeneratedTitles', () => {
     expect(call.opts?.env?.DYLD_LIBRARY_PATH).toBe(path.dirname(bin))
 
     expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
-    expect(mockNotify).toHaveBeenCalledTimes(1)
   })
 
   it('reuses a cached runtime and model instead of downloading', async () => {
@@ -262,7 +258,6 @@ describe('reconcileGeneratedTitles', () => {
 
     expect(inferences()).toHaveLength(2)
     expect(mockSetTitle).not.toHaveBeenCalled()
-    expect(mockNotify).not.toHaveBeenCalled()
   })
 
   it('keeps on-topic titles matched by substring, and ones made only of short words', async () => {
@@ -443,7 +438,6 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
     expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] p/s1:'))
-    expect(mockNotify).not.toHaveBeenCalled()
   })
 
   it('swallows a session-list failure', async () => {

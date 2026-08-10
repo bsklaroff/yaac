@@ -27,6 +27,7 @@ import {
   stopAllWorktreeForwarders,
   stopWorktreeForwarders,
 } from '#runtime/k8s/forwarders/port-forwarders'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 const mockExec = vi.mocked(podExec)
 const mockReserve = vi.mocked(reserveAvailablePort)
@@ -79,6 +80,7 @@ describe('registry: register/stop/hasWorktreeForwarders', () => {
     // bleed across it() calls.
     stopWorktreeForwarders('sess-reg-1')
     stopWorktreeForwarders('sess-reg-2')
+    _resetWorktreeListChangedForTests()
   })
 
   it('registers a forwarder and reports it present', () => {
@@ -112,6 +114,26 @@ describe('registry: register/stop/hasWorktreeForwarders', () => {
     stopWorktreeForwarders('sess-reg-1')
     expect(stop).toHaveBeenCalledTimes(1)
     expect(hasWorktreeForwarders('sess-reg-1')).toBe(false)
+  })
+
+  // This registry is what the snapshot's `forwardedPorts` reads, so both
+  // ends of a forward's life announce themselves here rather than at the
+  // route that happened to ask for it.
+  it('pushes a fresh snapshot when the forward set changes', () => {
+    let pushes = 0
+    _resetWorktreeListChangedForTests()
+    onWorktreeListChanged(() => { pushes += 1 })
+
+    registerWorktreeForwarders('sess-reg-1', vi.fn(), [{ containerPort: 3000, hostPort: 19000 }])
+    expect(pushes).toBe(1)
+    // A merge is a change too — it adds ports to the entry.
+    registerWorktreeForwarders('sess-reg-1', vi.fn(), [{ containerPort: 8080, hostPort: 19001 }])
+    expect(pushes).toBe(2)
+    stopWorktreeForwarders('sess-reg-1')
+    expect(pushes).toBe(3)
+    // Nothing left to tear down: no entry, no change, no push.
+    stopWorktreeForwarders('sess-reg-1')
+    expect(pushes).toBe(3)
   })
 })
 

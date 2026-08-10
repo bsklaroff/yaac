@@ -30,7 +30,6 @@ import {
   setWorktreeTitle,
   toAgentSessionEntry,
 } from '#records'
-import { notifyWorktreeListChanged } from '#notify'
 import { getDefaultTool } from '#records'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
@@ -205,8 +204,6 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { projectSlug, worktreeId, background } = c.req.valid('json')
       await setWorktreeBackground(projectSlug, worktreeId, background)
-      // Push a fresh snapshot so the sidebar regroups immediately.
-      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
@@ -224,8 +221,6 @@ export const worktreeApp = new Hono()
       // fine; the title lives on the host, not in the container.
       const { projectSlug, worktreeId } = await resolveWorktreeContainer(c.req.param('id'))
       await setWorktreeTitle(projectSlug, worktreeId, c.req.valid('json').title)
-      // Push a fresh snapshot so the sidebar reflects the rename immediately.
-      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
@@ -305,7 +300,6 @@ export const worktreeApp = new Hono()
         host,
         { persist: persist ?? false },
       )
-      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )
@@ -327,9 +321,6 @@ export const worktreeApp = new Hono()
         containerPort,
         { persist: persist ?? false },
       )
-      // Fresh snapshot moves the port from unforwardedPorts into
-      // forwardedPorts, self-clearing the popover row.
-      notifyWorktreeListChanged()
       return c.json(mapping)
     },
   )
@@ -348,7 +339,6 @@ export const worktreeApp = new Hono()
           `port ${containerPort} is not an unforwarded listener in session ${target.worktreeId.slice(0, 8)}`,
         )
       }
-      notifyWorktreeListChanged()
       return c.body(null, 204)
     },
   )

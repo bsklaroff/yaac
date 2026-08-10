@@ -2,6 +2,7 @@ import { and, eq, isNotNull, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { deleteWorktreeAgentSessions } from './agent-session-store'
 import { agentSessions, worktreeAgentSessions, worktrees } from './schema'
+import { notifyWorktreeListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorktreeDeathCause, WorktreeDeathReason } from '@yaac/shared/types'
 
@@ -397,6 +398,7 @@ export async function setWorktreeTitle(
   await db.update(worktrees)
     .set({ title: normalized === '' ? null : normalized })
     .where(key(projectSlug, worktreeId))
+  notifyWorktreeListChanged()
 }
 
 /** Pin (or unpin) a worktree to the sidebar's Background section. */
@@ -407,6 +409,7 @@ export async function setWorktreeBackground(
 ): Promise<void> {
   const db = await getDb()
   await db.update(worktrees).set({ background }).where(key(projectSlug, worktreeId))
+  notifyWorktreeListChanged()
 }
 
 /** Every row of a project, keyed by worktree id — one query per project per

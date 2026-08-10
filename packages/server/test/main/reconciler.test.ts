@@ -19,6 +19,7 @@ vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
 }))
 vi.mock('#runtime/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
 vi.mock('#runtime/k8s/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
+vi.mock('#runtime/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
 vi.mock('#runtime/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   reconcileImagePrewarm: vi.fn(),
@@ -44,7 +45,6 @@ import {
   type ReconcileStep,
   type ReconcileTrigger,
 } from '#main/reconciler'
-import type { DeltaSource } from '#platform/k8s/cluster-cache'
 import type { TickSnapshot } from '#platform/k8s'
 import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
@@ -56,6 +56,7 @@ import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
 import { importLegacyMeta } from '#domain/worktrees/meta-import'
 import { reconcileBuilderPodGc } from '#runtime/k8s/images/builder-pod'
 import { reconcileBuildCacheGc } from '#runtime/k8s/images/build-cache-gc'
+import { reconcileNodeImageStores } from '#runtime/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#runtime/k8s/images/image-prewarm'
 import { reconcileHostImageGc } from '#runtime/k8s/image-engine/image-gc'
 import { reconcileProxySshKeys } from '#runtime/k8s/egress/proxy-reconcile'
@@ -68,7 +69,8 @@ import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 const ALL_STEP_FNS = [
   importLegacyMeta, reconcileStaleWorktrees, reconcileSpawnRequests,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
-  reconcileImageSalvage, reconcileProjectRegistryGc, reconcileAgentSessions,
+  reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
+  reconcileAgentSessions,
   reconcileProxySshKeys, reconcileVclusters, reconcileVclusterAttribution,
   reconcileRedirectClaims, reconcileHostImageGc, reconcileBuildCacheGc,
   gcOrphanEphemeralModuleDirs, reconcileGeneratedTitles,
@@ -77,8 +79,7 @@ const ALL_STEP_FNS = [
 type StepRuns = Array<{ name: string; resync: boolean }>
 
 interface Harness {
-  passes: number
-  emit: (source: DeltaSource) => void
+  emit: (source: ReconcileTrigger) => void
   abort: () => void
   done: Promise<void>
 }
@@ -100,14 +101,11 @@ function makeStep(
 }
 
 function start(steps: ReconcileStep[], opts: {
-  pollIntervalMs?: number
   resyncIntervalMs?: number
-  onPass?: () => void | Promise<void>
 } = {}): Harness {
   const ctrl = new AbortController()
   let emit: Harness['emit'] = () => {}
   const harness: Harness = {
-    passes: 0,
     emit: (s) => emit(s),
     abort: () => ctrl.abort(),
     done: Promise.resolve(),
@@ -118,9 +116,7 @@ function start(steps: ReconcileStep[], opts: {
     onDelta: (fn) => { emit = fn },
     // Immediate debounce keeps the tests deterministic without fake timers.
     sleep: async () => {},
-    pollIntervalMs: opts.pollIntervalMs ?? 60 * 60_000,
     resyncIntervalMs: opts.resyncIntervalMs ?? 60 * 60_000,
-    onPass: opts.onPass ?? (() => { harness.passes += 1 }),
   })
   return harness
 }
@@ -135,7 +131,7 @@ describe('startReconciler', () => {
     const h = start([
       makeStep(runs, 'a', ['worktree-pods']),
       makeStep(runs, 'b', []),
-      makeStep(runs, 'c', ['poll']),
+      makeStep(runs, 'c', ['status-streams']),
     ])
     await flush()
     expect(runs).toEqual([
@@ -143,7 +139,6 @@ describe('startReconciler', () => {
       { name: 'b', resync: true },
       { name: 'c', resync: true },
     ])
-    expect(h.passes).toBe(1)
     h.abort()
     await h.done
   })
@@ -153,7 +148,7 @@ describe('startReconciler', () => {
     const h = start([
       makeStep(runs, 'pods-a', ['worktree-pods']),
       makeStep(runs, 'vc', ['vcluster-namespaces']),
-      makeStep(runs, 'pods-b', ['worktree-pods', 'poll']),
+      makeStep(runs, 'pods-b', ['worktree-pods', 'status-streams']),
     ])
     await flush()
     runs.length = 0
@@ -204,27 +199,34 @@ describe('startReconciler', () => {
     await h.done
   })
 
-  it('poll and resync timers mark their lanes', async () => {
+  // The only remaining lane besides the change deltas. It is what makes
+  // losing an edge cost latency rather than correctness, so a step nothing
+  // triggers must still run on it — and keep running, tick after tick.
+  it('the resync timer runs every step, including untriggered ones', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] })
     try {
       const runs: StepRuns = []
       const h = start([
-        makeStep(runs, 'poller', ['poll']),
+        makeStep(runs, 'triggered', ['worktree-pods']),
         makeStep(runs, 'idle', []),
-      ], { pollIntervalMs: 5_000, resyncIntervalMs: 60_000 })
+      ], { resyncIntervalMs: 60_000 })
       await flush()
       runs.length = 0
 
-      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.advanceTimersByTimeAsync(60_000)
       await flush()
-      expect(runs).toEqual([{ name: 'poller', resync: false }])
+      expect(runs).toEqual([
+        { name: 'triggered', resync: true },
+        { name: 'idle', resync: true },
+      ])
 
       runs.length = 0
-      await vi.advanceTimersByTimeAsync(55_000)
+      await vi.advanceTimersByTimeAsync(60_000)
       await flush()
-      // 11 more poll marks landed, and the 60s resync ran everything once.
-      expect(runs.filter((r) => r.name === 'idle')).toEqual([{ name: 'idle', resync: true }])
-      expect(runs.some((r) => r.name === 'poller')).toBe(true)
+      expect(runs).toEqual([
+        { name: 'triggered', resync: true },
+        { name: 'idle', resync: true },
+      ])
       h.abort()
       await h.done
     } finally {
@@ -232,7 +234,7 @@ describe('startReconciler', () => {
     }
   })
 
-  it('isolates step failures and still calls onPass', async () => {
+  it('isolates step failures and still runs the steps after them', async () => {
     const runs: StepRuns = []
     const h = start([
       { name: 'boom', triggers: [], run: () => Promise.reject(new Error('step failed')) },
@@ -240,20 +242,6 @@ describe('startReconciler', () => {
     ])
     await flush()
     expect(runs).toEqual([{ name: 'after', resync: true }])
-    expect(h.passes).toBe(1)
-    h.abort()
-    await h.done
-  })
-
-  it('swallows onPass errors', async () => {
-    const runs: StepRuns = []
-    const h = start([makeStep(runs, 'a', ['worktree-pods'])], {
-      onPass: () => { throw new Error('listener broke') },
-    })
-    await flush()
-    h.emit('worktree-pods')
-    await flush()
-    expect(runs).toHaveLength(2)
     h.abort()
     await h.done
   })
@@ -331,18 +319,41 @@ describe('defaultReconcileSteps', () => {
     expect([...titles.triggers].sort()).toEqual(['live-agents', 'worktree-pods'])
   })
 
-  // The reaper is the destructive step, and the one a poll exists for:
-  // in-pod tmux death is not a substrate event, so nothing else would ever
-  // dirty it.
-  it('runs only the steps a poll owes', async () => {
-    await runPass(['poll'])
-    expect(reconcileStaleWorktrees).toHaveBeenCalledTimes(1)
-    expect(reconcileSpawnRequests).toHaveBeenCalledTimes(1)
-    expect(reconcileProxySshKeys).toHaveBeenCalledTimes(1)
-    // Not owed by a poll: a pod delta drives the sweep, and the hygiene
-    // steps are throttled internally off the resync.
-    expect(reconcileAgentSessions).not.toHaveBeenCalled()
-    expect(reconcileBuilderPodGc).not.toHaveBeenCalled()
+  /** Assert that `triggers` runs exactly `expected` and nothing else. The
+   *  negative half is over EVERY step, so hanging a new one off a source it
+   *  has no business on fails here rather than shipping. */
+  async function expectOnly(
+    triggers: ReconcileTrigger[],
+    expected: ReadonlyArray<(typeof ALL_STEP_FNS)[number]>,
+  ): Promise<void> {
+    await runPass(triggers)
+    for (const fn of ALL_STEP_FNS) {
+      if (expected.includes(fn)) expect(fn).toHaveBeenCalledTimes(1)
+      else expect(fn).not.toHaveBeenCalled()
+    }
+  }
+
+  // The reaper is the destructive step, and losing a worktree's driver
+  // stream is its edge: in-pod tmux death is not a substrate event, so
+  // nothing else would ever dirty it. Its slower sweeps ride the resync,
+  // which is why this source pulls in the reaper and nothing more.
+  it('runs only the reaper when a driver stream goes unhealthy', async () => {
+    await expectOnly(['status-streams'], [reconcileStaleWorktrees])
+  })
+
+  // The proxy holds the calling pod's HTTP response open until the drain
+  // answers it, so the enqueue is reported rather than waited for.
+  it('runs only the spawn drain when the proxy reports a queued spawn', async () => {
+    await expectOnly(['spawn-requests'], [reconcileSpawnRequests])
+  })
+
+  // A stream reattach is the one edge that says the proxy pod may have been
+  // replaced — which is what both proxy heals were previously polling for.
+  it('runs only the proxy heals on a stream reattach', async () => {
+    await expectOnly(
+      ['proxy-reconnect'],
+      [reconcileProxySshKeys, reconcileVclusterAttribution],
+    )
   })
 
   // The conversation sweep is the only substrate step that reads the
