@@ -46,7 +46,7 @@ export {
   type LaunchedSession,
   type WorktreeEvent,
 } from './events'
-export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-workspaces'
+export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-worktrees'
 export { closeRecords, openRecords } from './lifecycle'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {

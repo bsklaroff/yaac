@@ -9,11 +9,11 @@ import type { AgentTool } from '@yaac/shared/types'
  *
  * Read once per conversation, which is what keeps every display path reading
  * prompts from the server's record instead of re-parsing a transcript on
- * every tick. Once per conversation *per herd life*: the herd cannot ask the
- * server what it already knows, so a restart re-reads each conversation once
- * and the server's fill-only write makes that a no-op. That is a strictly
- * better trade than the alternative, which is asking the server for a work
- * list on every pass.
+ * every tick. Once per conversation *per server life*, gated on an
+ * in-memory set rather than a row query: a restart re-reads each
+ * conversation once and the fill-only write makes that a no-op. That is a
+ * strictly better trade than the alternative, which is deriving a work
+ * list from the rows on every pass.
  *
  * What is cached is the MESSAGE, not the fact of having read it, and the
  * difference matters: the row write can fail without saying so (the store

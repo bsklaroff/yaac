@@ -55,7 +55,7 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  * Remove everything on disk that belongs to one worktree, in one call.
  *
  * The counterpart to a create: the checkout, git's admin dir for it, the
- * herd's metadata document and the in-pod hook's log beside it, and the
+ * worktree's metadata document and the in-pod hook's log beside it, and the
  * per-worktree opencode database. Every one of them is keyed by the worktree
  * id, which is what makes this a single function rather than a list each
  * caller has to remember — and `opencode-data` is here because until now
@@ -316,7 +316,7 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
  */
 let orphanModulesSwept = false
 
-/** Test helper: let the once-per-herd-life sweep run again. */
+/** Test helper: let the once-per-server-life sweep run again. */
 export function _resetOrphanModulesSweepForTests(): void {
   orphanModulesSwept = false
 }

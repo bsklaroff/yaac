@@ -54,7 +54,7 @@ import {
  *
  * The sweep reports what it found rather than writing rows, so the real
  * `applyWorktreeEvent` is wired as the sink: every assertion below is on the rows
- * a herd's report actually produces, end to end.
+ * a discovery report actually produces, end to end.
  */
 describe('reconcileWorktreeAgentSessions', () => {
   let tmpDir: string

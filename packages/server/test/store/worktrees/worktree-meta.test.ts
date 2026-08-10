@@ -20,7 +20,7 @@ import {
 } from '#store/worktrees/worktree-meta'
 
 /**
- * The herd's own record of a worktree — what it reads back when it may not
+ * The worktree's own record of itself — what the server reads back when it may not
  * read a row. Two writers meet here and neither may block the other: this
  * module rewrites the document whole, while the in-pod hook only ever appends
  * to the log beside it.

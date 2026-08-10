@@ -12,7 +12,7 @@ import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types
  * which worktree, and which of them were live).
  *
  * Everything here is discovered rather than authored — the registry
- * reconciler feeds it from what the herd swept up — so every write is an
+ * reconciler feeds it from what the discovery sweep found — so every write is an
  * upsert and none of them are fatal: a missed tick is re-reconciled on the
  * next one. The one write that carries real weight is `setActiveAgentSessions`,
  * because the set it leaves behind is frozen at teardown and read back by
@@ -77,7 +77,7 @@ export interface DiscoveredAgentSession {
    *  protocol mid-life, and a later sighting that guessed wrong must not
    *  rewrite what the create path recorded. */
   mode?: AgentMode
-  /** Project-relative, as the herd reports it and the column stores it —
+  /** Project-relative, as discovery reports it and the column stores it —
    *  the one form that survives the data dir moving and means the same thing
    *  on both sides of the link (see `toProjectRelative`). */
   transcriptPath?: string
@@ -122,9 +122,9 @@ export async function recordAgentSessions(
 
     for (const d of discovered) {
       const seenAt = d.firstSeenMs !== undefined ? new Date(d.firstSeenMs) : now
-      // Stored exactly as reported — the herd already speaks the column's
+      // Stored exactly as reported — the sweep already speaks the column's
       // form (project-relative, see `toProjectRelative`). Absent is not the
-      // same as empty: a conversation whose path the herd could not express
+      // same as empty: a conversation whose path the sweep could not express
       // must not overwrite a good stored value, so the fill branch below
       // omits the column entirely rather than clearing it.
       const stored = d.transcriptPath ?? null

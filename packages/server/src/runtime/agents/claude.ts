@@ -90,7 +90,7 @@ export const AGENT_LINKS_HOOK = '/etc/yaac/agent-links.sh'
 export const CONTAINER_CLAUDE_HOME = '/home/yaac/.claude'
 
 /** Claude's home under the project directory — the prefix a transcript path
- *  recorded by the hook carries, so the herd can resolve it host-side. */
+ *  recorded by the hook carries, so the server can resolve it host-side. */
 const CLAUDE_HOME_NAME = 'claude'
 
 /** The command claude runs. The home and its project-relative name travel as

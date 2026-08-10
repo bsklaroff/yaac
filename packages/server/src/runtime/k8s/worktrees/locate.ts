@@ -15,12 +15,10 @@ import type { RuntimeHandle } from '#runtime/contract'
  * Answering "which workspace does this id name", and "how many is each
  * project running" — the substrate half of every resolve above the boundary.
  *
- * Herd-side rather than in the boundary's own implementation on purpose: all
- * of it is substrate behavior (which view to trust, when a miss is a miss,
- * what a listing failure means), and the boundary's implementation is the
- * file that gets replaced by an RPC client. Anything left there vanishes at
- * that swap; anything here moves into the herd package with its feature
- * (docs/plans/layered-server.md).
+ * Runtime-side on purpose: all of it is substrate behavior — which view to
+ * trust, when a miss is a miss, what a listing failure means — described in
+ * the vocabulary of `#runtime/contract` so nothing above has to know a pod
+ * carries a raw label string (docs/plans/layered-server.md).
  */
 
 /**

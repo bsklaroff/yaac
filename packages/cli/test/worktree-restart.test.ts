@@ -29,7 +29,7 @@ import type { PodInfo } from '@yaac/server/platform/k8s/pods'
 /**
  * Unit coverage for the session-restart pipeline: target resolution
  * (live workspace first, recorded row for reaped ones) and the handoff to
- * the herd's teardown + create. The real in-process herd stands behind the
+ * teardown + create. The real implementations stand behind the
  * boundary so the whole pipeline runs; only its substrate leaves are mocked,
  * so we don't need a cluster.
  */

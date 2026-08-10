@@ -15,7 +15,7 @@ import { listWorktreePods } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 // The listing is a join: the rows are the server's, and which of them still
 // have a runtime — plus every transcript read behind a prompt or a
-// last-activity stamp — is the herd's. Its real halves stand behind the
+// last-activity stamp — is read off disk. Its real halves stand behind the
 // boundary here, so the leaf mocks above still drive them.
 import {
   recordWorktreeCreated,

@@ -8,7 +8,7 @@ import { cleanupWorktreeDetached } from './cleanup'
  * Delete every byte a project has on the substrate: its live worktrees, its
  * per-project push registry, and both of its storage-tier roots.
  *
- * The herd's half of `project remove`. The rows that say the project exists
+ * The bytes half of `project remove`. The rows that say the project exists
  * are the server's and it deletes them itself (see `project-teardown.ts`);
  * this half knows only about bytes, which is why it is best-effort throughout
  * — a cluster that cannot be reached must not stop the directories from going

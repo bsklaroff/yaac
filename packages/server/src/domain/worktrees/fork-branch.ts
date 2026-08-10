@@ -3,7 +3,7 @@ import { worktreeForkFallback } from '#runtime/k8s/worktrees'
 
 /**
  * How long a worktree's fork branch is trusted without re-reading it. Reading
- * it hits the DB (and, for a worktree with no row, the herd's checkout), and
+ * it hits the DB (and, for a worktree with no row, the checkout itself), and
  * the pane polls every few seconds — but the value is near-immutable (it is
  * written at worktree start and rewritten only by the claim-time re-branch
  * prep), so a short window costs nothing and the pane's own polling picks up a
@@ -26,7 +26,7 @@ const forkBranchCache = new Map<string, { at: number; branch: string | null }>()
  * The worktree row is the authority, because it is OURS: it is stamped once
  * when provisioning resolves the fork branch (and again by the claim-time
  * re-branch prep) and nothing in the pod can touch it. Only when there is no
- * row does this ask the herd for the checkout's own `branch.agent/<id>.merge`,
+ * row does this ask the checkout for its own `branch.agent/<id>.merge`,
  * which is a fallback rather than a second source of truth — that key lives in
  * the shared repo config the agent's own git writes to, and one `git push -u
  * origin HEAD:<pr-branch>` repoints it at the branch just pushed, whose fork
@@ -34,7 +34,7 @@ const forkBranchCache = new Map<string, { at: number; branch: string | null }>()
  * having no changes at all.
  *
  * Server-side because the row is the authority and rows are the server's; the
- * fallback is one herd call away (docs/plans/layered-server.md).
+ * fallback is one runtime call away (docs/plans/layered-server.md).
  */
 export async function worktreeForkBranch(projectSlug: string, worktreeId: string): Promise<string | null> {
   const key = `${projectSlug} ${worktreeId}`

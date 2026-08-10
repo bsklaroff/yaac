@@ -130,9 +130,8 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
 }
 
 /**
- * The ids a sweep must not touch: workspaces this server is still creating
- * or restarting, so it owns their whole lifecycle. Delivered to the herd with
- * the desired set — it never reads this registry.
+ * The ids a sweep must not touch: worktrees this server is still creating
+ * or restarting, so it owns their whole lifecycle.
  *
  * A FAILED entry is excluded and that exclusion is the point: its row lingers
  * with no TTL until the user dismisses it, and its own rollback has already

@@ -12,19 +12,19 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#log'
 
 /**
- * The herd's own durable index of a worktree: what it is, and which agent
+ * The worktree's durable index of itself on disk: what it is, and which agent
  * sessions it has hosted (docs/worktree-storage.md).
  *
- * This is the file that replaces the per-tool `.yaac-links` trees. The herd may
+ * This is the file that replaces the per-tool `.yaac-links` trees. The server may
  * not read the database (docs/plans/layered-server.md), so it needs somewhere of
  * its own to remember what it has discovered — and one document per worktree,
  * rewritten whole, is a great deal easier to reason about than a tree of
  * pointer files spread across three tool homes.
  *
- * **It holds only what the herd needs to work without the database.** Titles,
+ * **It holds only what discovery needs to work without the database.** Titles,
  * background pins, `stoppedAt` and death causes are the server's; mirroring one
  * here would make two sources of truth that drift. What is here is what the
- * herd would otherwise have to ask for: which sessions a worktree has, where
+ * sweep would otherwise have to ask for: which sessions a worktree has, where
  * their transcripts are, and which handle each is on right now.
  *
  * Writes are whole-document and atomic (tmp + rename), serialized per worktree
@@ -42,7 +42,7 @@ const sessionSchema = z.object({
   tool: z.enum(AGENT_TOOLS),
   mode: z.enum(['tui', 'acp']),
   /**
-   * Stamped by the herd when it first records the session, so the in-pod hook
+   * Stamped by the server when it first records the session, so the in-pod hook
    * never has to produce a timestamp. Array order is first-seen order, which
    * is also the order a restart brings windows back up in.
    */
@@ -107,7 +107,7 @@ const metaMutex = createKeyedMutex()
  * use.
  *
  * A document that fails its schema is treated as absent rather than fatal. The
- * herd's other inputs — the session-starts log, the transcripts on disk, the
+ * sweep's other inputs — the session-starts log, the transcripts on disk, the
  * cluster — are still there, so the worst case is that a worktree is
  * rediscovered rather than remembered. Refusing to proceed would strand it.
  */
@@ -125,7 +125,7 @@ export async function readWorktreeMeta(
   try {
     parsed = JSON.parse(raw)
   } catch {
-    serverLog(`[herd] worktree meta ${projectSlug}/${worktreeId}: unparseable, ignoring`)
+    serverLog(`[worktree-meta] ${projectSlug}/${worktreeId}: unparseable, ignoring`)
     return undefined
   }
   const result = worktreeMetaSchema.safeParse(parsed)
@@ -135,7 +135,7 @@ export async function readWorktreeMeta(
     // refuses to rewrite it for the same reason.
     const version = (parsed as { version?: unknown } | null)?.version
     serverLog(
-      `[herd] worktree meta ${projectSlug}/${worktreeId}: `
+      `[worktree-meta] ${projectSlug}/${worktreeId}: `
       + (typeof version === 'number' && version > WORKTREE_META_VERSION
         ? `version ${version} is newer than ${WORKTREE_META_VERSION}, ignoring`
         : 'failed validation, ignoring'),
@@ -179,7 +179,7 @@ async function writeWorktreeMeta(meta: WorktreeMeta): Promise<void> {
  * returning `undefined` from it declines the write, which is how a caller that
  * only ever *updates* (a discovery sweep, say) avoids inventing a document for
  * a worktree that create never recorded. Best-effort throughout: a failed write
- * degrades what the herd remembers, and must never fail a create or a teardown.
+ * degrades what the document remembers, and must never fail a create or a teardown.
  */
 export async function updateWorktreeMeta(
   projectSlug: string,
@@ -198,7 +198,7 @@ export async function updateWorktreeMeta(
       if (next === undefined) return
       await writeWorktreeMeta(next)
     } catch (err) {
-      serverLog(`[herd] worktree meta ${projectSlug}/${worktreeId}: ${String(err)}`)
+      serverLog(`[worktree-meta] ${projectSlug}/${worktreeId}: ${String(err)}`)
     }
   })
 }
@@ -438,7 +438,7 @@ export async function readSessionStarts(
  *
  * The one call a discovery tick needs: the hook's log is the only thing that
  * knows a user started a session, and the document is the only thing that
- * remembers it across a herd restart. Returns undefined for a worktree with no
+ * remembers it across a server restart. Returns undefined for a worktree with no
  * document — a spare that was never claimed, or one created before this
  * existed — which the caller treats as "nothing recorded yet".
  *

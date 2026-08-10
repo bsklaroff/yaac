@@ -154,7 +154,7 @@ vi.mock('@yaac/shared/project-paths', () => ({
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   worktreeDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/worktrees/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
-  // The herd's own record of a worktree, and the log the in-pod hook appends
+  // The worktree's own record of itself, and the log the in-pod hook appends
   // its session starts to — create writes the first and pre-creates the
   // second so the pod's `File` mount resolves on the first attempt.
   worktreeMetaPath: vi.fn((slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.json`),

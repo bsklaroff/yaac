@@ -506,7 +506,7 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
 /**
  * Report that a create gave up, so the server can undo what the matching
  * `worktree-created` started. What "undo" means differs by `resume` and is
- * the server's to decide (see `apply-herd-event.ts`); this half knows only
+ * records' to decide (see `apply-worktree-event.ts`); this half knows only
  * that provisioning failed.
  */
 async function reportCreateFailed(
@@ -667,7 +667,7 @@ export async function createWorktree(
     resolveEphemeralModulesPaths(config),
   )
 
-  // The herd's own record, written for a prewarmed spare too — unlike a row,
+  // The worktree's own record, written for a prewarmed spare too — unlike a row,
   // which a spare only gets when it is claimed. A spare is a checkout, a branch
   // and a pod from the moment it is warmed, and this document is what the delete
   // path reads to take all of it away again if it is reaped unclaimed.
@@ -1396,7 +1396,7 @@ export async function createWorktree(
       source: { kind: 'hostPath', path: claudeJson, type: 'File' },
       mountPath: '/home/yaac/.claude.json',
     },
-    // SHARED, and the one file the pod writes that the herd reads back. A
+    // SHARED, and the one file the pod writes that the server reads back. A
     // `File` mount is safe here precisely because both ends only ever append
     // — the metadata document beside it is rewritten whole, which is why that
     // one is never mounted anywhere.
@@ -1522,7 +1522,7 @@ export async function createWorktree(
       })
     }
   }
-  // Mirrored into the herd's document for the same reason it is reported: it
+  // Mirrored into the metadata document for the same reason it is reported: it
   // is only knowable once the concurrent checkout resolves it.
   {
     const { upstreamStartPoint } = await worktreeTask

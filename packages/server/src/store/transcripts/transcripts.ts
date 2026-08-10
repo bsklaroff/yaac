@@ -32,9 +32,9 @@ function claudeTranscriptDir(slug: string): string {
  * pins a row to the directory that wrote it: move the data dir (a restored
  * backup, a changed `YAAC_DATA_DIR`) and every row points somewhere that no
  * longer exists, silently, because the readers only ever stat these paths.
- * And an absolute path in a herd event names a path on the *herd's* machine,
- * which the server can neither resolve nor meaningfully store once the two
- * are separate processes (docs/plans/layered-server.md).
+ * And an absolute path names one machine's layout: project-relative is the
+ * form that stays true wherever the data dir sits
+ * (docs/plans/layered-server.md).
  *
  * Project-relative rather than tool-home-relative because it needs no tool:
  * every tool home is `<projectDir>/<tool>`, so the tool segment is simply the
@@ -73,10 +73,8 @@ export function toProjectRelative(slug: string, absolute: string): string | null
  * is why its callers are worth naming. Two: `toLinkRow` in the record store,
  * which is the single projection every server-side reader comes through (the
  * stopped listing's last-activity stat and the detail route's founding-ask
- * parse both arrive that way), and the discovery sweep, which is herd-side
- * and legitimately works in absolute paths. The first is the whole of the
- * shared-filesystem assumption between the halves — it wants to be a herd
- * call, and until it is, that funnel is where it lives.
+ * parse both arrive that way), and the discovery sweep, which legitimately
+ * works in absolute paths while it stats what it found.
  *
  * An absolute stored value is refused outright rather than joined onto the
  * project directory, which would fabricate a path that resolves nowhere. The

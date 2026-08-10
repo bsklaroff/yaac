@@ -105,7 +105,7 @@ function spare(o: Partial<PodInfo> = {}): PodInfo {
   }
 }
 
-const herdEvents: WorktreeEvent[] = []
+const appliedEvents: WorktreeEvent[] = []
 
 describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
@@ -114,9 +114,9 @@ describe('tryClaimPrewarmed', () => {
     // The claim reports what it recorded rather than writing rows, so a stub
     // link stands in for the server: no DB is opened, and what a claim tells
     // it is asserted directly.
-    herdEvents.length = 0
+    appliedEvents.length = 0
     vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
-      herdEvents.push(event)
+      appliedEvents.push(event)
       return Promise.resolve()
     })
     mockTmuxAlive.mockResolvedValue(true)
@@ -157,7 +157,7 @@ describe('tryClaimPrewarmed', () => {
     // The spare's own id is the worktree's first conversation — that is
     // where its tool is read from — and no re-branch means no second
     // branch report.
-    expect(herdEvents).toEqual([
+    expect(appliedEvents).toEqual([
       {
         type: 'worktree-created', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'main',
       },
@@ -174,7 +174,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
 
-    expect(herdEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
+    expect(appliedEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
       {
         type: 'base-branch-resolved', projectSlug: 'p', worktreeId: 'spare1', baseBranch: 'dev',
       },
@@ -188,7 +188,7 @@ describe('tryClaimPrewarmed', () => {
     mockRetool.mockRejectedValue(new Error('retool blew up'))
 
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
-    expect(herdEvents.at(-1)).toEqual({
+    expect(appliedEvents.at(-1)).toEqual({
       type: 'worktree-create-failed', projectSlug: 'p', worktreeId: 'spare1',
     })
   })

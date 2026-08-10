@@ -14,7 +14,7 @@ export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode',
  * `anthropic/claude-opus-4-8`) never need them.
  *
  * Here rather than beside the command builder because it is request
- * vocabulary: the route that accepts a model and the herd that launches with
+ * vocabulary: the route that accepts a model and the launch path that runs with
  * it both need it, and neither may import the other.
  */
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/

@@ -15,7 +15,7 @@ interface RestoreCandidate {
  * The forwarder registry is in-memory, so a server restart loses it while the
  * pods keep running with a tmux `status-right` still advertising ports that
  * are no longer forwarded. Without this pass the bars lie. Run once as the
- * herd attaches, before it serves anything.
+ * server attaches to the substrate, before it serves anything.
  *
  * Every step is skipped rather than retried: a pod that isn't running, one
  * that already has forwarders (nothing was lost), and one whose tmux is gone

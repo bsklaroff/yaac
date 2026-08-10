@@ -43,7 +43,7 @@ describe('applyWorktreeEvent', () => {
       type: 'worktree-create-failed', projectSlug: 'proj', worktreeId, ...extra,
     })
 
-  it('records a reported worktree, with the branch when the herd knew it', async () => {
+  it('records a reported worktree, with the branch when the emitter knew it', async () => {
     await created('wt-new', { baseBranch: 'main' })
 
     expect(await rowOf('wt-new')).toMatchObject({
@@ -123,7 +123,7 @@ describe('applyWorktreeEvent', () => {
     expect((await rowOf('wt-2'))?.stoppedAt).toBeUndefined()
   })
 
-  // The herd reports what it saw; a worktree the server has no row for is
+  // An observer reports what it saw; a worktree the server has no row for is
   // not an error it can do anything about, and must not fail the teardown
   // that reported it.
   it('is a no-op for a worktree with no row', async () => {

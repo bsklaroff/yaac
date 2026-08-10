@@ -97,7 +97,7 @@ export async function reconcileWorktreeAgentSessions(
   // Fold whatever the in-pod hook has appended since last tick into the
   // worktree's document, then read the document back. The hook is the only
   // witness of a user-started session — `/clear`, a hand-typed
-  // `claude --resume` — and the document is where the herd remembers it.
+  // `claude --resume` — and the document is where the server remembers it.
   const meta = await foldSessionStarts(projectSlug, worktreeId)
   const sessions = meta?.sessions ?? []
   if (sessions.length === 0) {
@@ -150,7 +150,7 @@ export async function reconcileWorktreeAgentSessions(
     return
   }
 
-  // Opening messages are read once per session per herd life and folded back
+  // Opening messages are read once per session per server life and folded back
   // into the document, so a settled worktree costs one file read a tick.
   const withPrompts = await Promise.all(sessions.map(async (s) => {
     if (s.firstPrompt !== undefined) return s
@@ -203,9 +203,9 @@ export async function reconcileWorktreeAgentSessions(
  * The form a session crosses the boundary in: its transcript path made
  * project-relative.
  *
- * The herd works in absolute paths — it stats transcripts and hands them to
+ * The sweep works in absolute paths — it stats transcripts and hands them to
  * parsers — but it must not report one. An absolute path names a place on the
- * herd's own machine, which the server can neither resolve nor meaningfully
+ * data dir that wrote it, which a restored backup or a moved data dir
  * store once the two are separate processes, and storing one would pin the row
  * to the data dir that wrote it. So the conversion happens here, at the last
  * moment before the event, rather than at every site that produced a path.
@@ -225,7 +225,7 @@ function toReported(
 }
 
 /**
- * Add the session's opening message, when this herd has not read it yet.
+ * Add the session's opening message, when this server has not read it yet.
  * Folded into the sweep rather than run as a pass of its own: the sweep has
  * just resolved the transcript, and the alternative — asking the server which
  * conversations still lack a prompt — is the row read this whole exercise is
@@ -299,7 +299,7 @@ async function reconcileAcpAgentSessions(
   )
   // Through the same conversion the tui branch uses: `sessionTranscriptPath`
   // hands back an absolute path, and an absolute path must never cross the
-  // boundary — it names a place on the herd's machine and re-pins the row to
+  // convention — it names one machine's layout and re-pins the row to
   // this data dir.
   const reported = live.map((c) => toReported(projectSlug, c))
   if (reported.length > 0) {

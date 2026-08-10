@@ -99,13 +99,13 @@ const mockServerLog = vi.mocked(serverLog)
 // Cleanup reports the stop as an event rather than writing the row itself,
 // so applyWorktreeEvent is stubbed: these tests never open a DB, and what a
 // teardown says is asserted directly.
-const herdEvents: WorktreeEvent[] = []
+const appliedEvents: WorktreeEvent[] = []
 vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
-  herdEvents.push(event)
+  appliedEvents.push(event)
   return Promise.resolve()
 })
-const clearWorktreeEvents = (): void => { herdEvents.length = 0 }
-const stopsReported = (): Array<[string, string, unknown]> => herdEvents
+const clearWorktreeEvents = (): void => { appliedEvents.length = 0 }
+const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
 
@@ -461,7 +461,7 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   // It collects what a PREVIOUS process left behind, so a second pass has
   // nothing new to find — and it runs from the reconcile loop, which would
   // otherwise re-walk the tree on every tick forever.
-  it('sweeps once per herd life', async () => {
+  it('sweeps once per server life', async () => {
     await seedWorktreesDir('proj-a', 'dead-1')
     mockListPods.mockResolvedValue([])
 

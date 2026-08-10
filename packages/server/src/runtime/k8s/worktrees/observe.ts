@@ -24,7 +24,7 @@ import { testEnv } from '@yaac/shared/env'
 import type { AgentLiveness, RuntimeReport, WorktreeRuntimeReport } from '#runtime/contract'
 
 /**
- * The herd's half of a worktree listing: what the substrate can see right now.
+ * The runtime's half of a worktree listing: what the substrate can see right now.
  *
  * Everything here is recomputed from the runtime on every call and none of it
  * survives a restart — pods, the watcher-fed status store, the forwarder

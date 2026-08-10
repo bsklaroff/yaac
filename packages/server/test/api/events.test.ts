@@ -125,7 +125,7 @@ describe('EventHub', () => {
   })
 })
 
-// The build registry is the herd's, so the snapshot asks for it across the
+// The build registry is the runtime's, so the snapshot asks for it across the
 // boundary; the real listing stands behind the stub so the entries a case
 // registers are the ones it asserts on.
 

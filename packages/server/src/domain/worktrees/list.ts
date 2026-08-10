@@ -37,7 +37,7 @@ export function _clearListActiveInflightForTests(): void {
  * The active-worktree rows the renderer displays, and the stale set the caller
  * is expected to tear down.
  *
- * This is the JOIN. The herd reports what its substrate can see right now
+ * This is the JOIN. The runtime reports what its substrate can see right now
  * (`observeWorkspaces`); everything else here is what only the server knows —
  * the title a user typed, the pin they set, the creation time that has to
  * survive a restart the runtime did not, and the conversations a workspace
@@ -60,7 +60,7 @@ export async function listActiveWorktrees(projectFilter?: string): Promise<Activ
 
 async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWorktreesResult> {
   // Whether a project exists is the server's own record, so it is checked
-  // here rather than left to a herd, which only knows what it is running.
+  // here rather than derived from the runtime, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
   const report = await observeWorkspaces(projectFilter)
@@ -100,7 +100,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       tool: w.tool,
       // The recorded creation time, which — unlike the runtime's — survives a
       // restart. A workspace whose row has not landed yet falls back to what
-      // the herd saw.
+      // the runtime saw.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
       // The founding ask is the first conversation's opening message — the
       // worktree has none of its own.
@@ -145,7 +145,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
 }
 
 /**
- * A live conversation's own busy/idle, joined onto the herd's per-handle
+ * A live conversation's own busy/idle, joined onto the runtime's per-handle
  * liveness by the handle this conversation was last seen on — a tmux pane id
  * under `tui`, the acpd window name under `acp`. A conversation with no live
  * handle (the worktree's history) has none, which is how a client tells

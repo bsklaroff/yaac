@@ -53,8 +53,8 @@ const mockCleanup = vi.mocked(cleanupWorktreeDetached)
 // The reaper reads what should exist from records and reports a death as
 // an event rather than writing the row — both stubbed above, so what a
 // pass decided is asserted directly.
-const herdEvents: WorktreeEvent[] = []
-const stopsReported = (): Array<[string, string, unknown]> => herdEvents
+const appliedEvents: WorktreeEvent[] = []
+const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
 /** What the reaper's records read answers, plus which creates are in
@@ -105,9 +105,9 @@ describe('reconcileStaleWorktrees', () => {
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
-    herdEvents.length = 0
+    appliedEvents.length = 0
     vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
-      herdEvents.push(event)
+      appliedEvents.push(event)
       return Promise.resolve()
     })
     setDesired({})
@@ -475,7 +475,7 @@ describe('reconcileStaleWorktrees', () => {
       expect(stopsReported()).toEqual([])
     })
 
-    // A herd that has been told nothing must reap nothing: an empty set would
+    // A reaper whose read failed must reap nothing: an empty set would
     // condemn every running workspace at once, and nothing un-marks a death.
     it('stands down entirely until the server has published a set', async () => {
       mockListPods.mockResolvedValue([])

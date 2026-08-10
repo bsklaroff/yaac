@@ -36,9 +36,9 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
  * Best-effort: a cluster hiccup just skips this tick.
  */
 export async function reconcilePrewarmPool(
-  // Which tool to warm spares with is a user preference — a row, and so the
-  // server's to resolve and hand down. A herd is told what to run, never
-  // where the answer is kept (docs/plans/layered-server.md).
+  // Which tool to warm spares with is a user preference — a row, resolved
+  // once per pass and handed down so no substrate step reads one
+  // (docs/plans/layered-server.md).
   defaultTool: AgentTool,
   snapshot?: TickSnapshot,
 ): Promise<void> {
@@ -56,8 +56,8 @@ export async function reconcilePrewarmPool(
 
   for (const target of toReap) {
     // A spare that is reaped unclaimed never became a worktree, so nothing
-    // else would ever collect its checkout, its git admin dir or the herd's
-    // document for it — there is no row to make any of it visible.
+    // else would ever collect its checkout, its git admin dir or its
+    // metadata document — there is no row to make any of it visible.
     //
     // The AWAITED teardown, not the detached one: the detached variant
     // resolves before its `kubectl delete job` has even started, so removing
