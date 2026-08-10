@@ -1,6 +1,7 @@
 import { isPrewarmed, listWorktreePods } from '#platform/k8s'
 import { proxyClient } from './proxy-client'
 import { addAllowedHostToProjectConfig } from '#store/projects'
+import { notifyWorktreeListChanged } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -28,6 +29,7 @@ export async function allowWorktreeHost(
         `session ${target.worktreeId} is not registered with the egress proxy`,
       )
     }
+    notifyBlockedHostsChanged()
     return
   }
 
@@ -40,4 +42,17 @@ export async function allowWorktreeHost(
       .filter((p) => p.running && p.worktreeId && !isPrewarmed(p))
       .map((p) => proxyClient.allowHost(p.worktreeId, host)),
   )
+  notifyBlockedHostsChanged()
+}
+
+/**
+ * The allow just pruned the host from the proxy's recorded blocked set,
+ * which the snapshot reads. Strictly speaking the proxy's own
+ * `blocked-hosts` event covers this — but pushing here keeps the click
+ * instant regardless of stream latency, and is the only signal at all
+ * against a proxy predating the event stream. The hub diffs, so the
+ * overlap costs a rebuild rather than a duplicate push.
+ */
+function notifyBlockedHostsChanged(): void {
+  notifyWorktreeListChanged()
 }

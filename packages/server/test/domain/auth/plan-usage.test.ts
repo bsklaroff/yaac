@@ -11,6 +11,7 @@ import { notifyWorktreeListChanged } from '#notify'
 import {
   planUsageForSnapshot,
   codexPlanUsageForSnapshot,
+  refreshPlanUsage,
   requestPlanUsageRefresh,
 } from '#domain/auth'
 import { _resetPlanUsageForTests } from '#domain/auth/plan-usage'
@@ -925,5 +926,63 @@ describe('requestPlanUsageRefresh', () => {
     await flush()
     expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(1)
     expect(upstream.countTo(CODEX_USAGE_URL)).toBe(1)
+  })
+})
+
+describe('refreshPlanUsage', () => {
+  useAuthFixture('yaac-usage-cycle-')
+
+  it('is a no-op for every tool that is not signed in with OAuth', async () => {
+    await refreshPlanUsage()
+    await seedClaudeApiKey()
+    await seedCodexApiKey()
+    await refreshPlanUsage()
+    await flush()
+    expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(0)
+    expect(upstream.countTo(CODEX_USAGE_URL)).toBe(0)
+  })
+
+  // The background cycle, which the server ticks on its own clock while a
+  // client is connected. This is the one irreducible poll in the server —
+  // the usage endpoints have no push — and it used to free-ride on a
+  // snapshot being rebuilt after every reconcile pass. It keeps the passive
+  // 5-minute cadence rather than the nudge's one-minute floor, so an idle
+  // dashboard cannot burn a rate-limited endpoint's budget.
+  it('refreshes both tools on the 5-minute cadence, not the nudge floor', async () => {
+    await seedClaude()
+    await seedCodex()
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+    upstream.always(CODEX_USAGE_URL, json(CODEX_BODY))
+
+    await refreshPlanUsage()
+    await flush()
+    expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(1)
+    expect(upstream.countTo(CODEX_USAGE_URL)).toBe(1)
+
+    // Two minutes on — past the nudge floor, inside the cadence.
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    await refreshPlanUsage()
+    await flush()
+    expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(1)
+    expect(upstream.countTo(CODEX_USAGE_URL)).toBe(1)
+
+    vi.setSystemTime(Date.now() + 4 * 60_000)
+    await refreshPlanUsage()
+    await flush()
+    expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(2)
+    expect(upstream.countTo(CODEX_USAGE_URL)).toBe(2)
+  })
+
+  // A landed result notifies on its own, which is what pushes it — the
+  // caller neither builds nor publishes a snapshot.
+  it('pushes the fresh readout without the caller publishing anything', async () => {
+    await seedClaude()
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+
+    await refreshPlanUsage()
+    await flush()
+    expect(notifyWorktreeListChanged).toHaveBeenCalled()
   })
 })

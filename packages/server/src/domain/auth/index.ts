@@ -18,5 +18,6 @@ export { listAuth } from './list'
 export {
   codexPlanUsageForSnapshot,
   planUsageForSnapshot,
+  refreshPlanUsage,
   requestPlanUsageRefresh,
 } from './plan-usage'

@@ -408,6 +408,22 @@ export class ProxyClient {
   }
 
   /**
+   * Open the proxy's change stream (`GET /events`, NDJSON, held open).
+   *
+   * Deliberately the bare `fetch`, not `tunnelFetch`: that one arms a 15s
+   * `AbortSignal.timeout`, which is exactly right for a request/response
+   * call and fatal for a stream meant to live for the server's whole
+   * lifetime. Liveness is the caller's job instead — the proxy pings, and
+   * `ProxyEventStream` aborts through `signal` when the pings stop.
+   */
+  async openEvents(signal: AbortSignal): Promise<Response> {
+    return fetch(`${this.baseUrl}/events`, {
+      signal,
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
+    })
+  }
+
+  /**
    * Drain the proxy's queued in-worktree `yaac-spawn` requests. A drain is a
    * claim — the proxy hands each request out exactly once and holds the
    * worktree's HTTP response open until `postSpawnResults` (or its TTL).

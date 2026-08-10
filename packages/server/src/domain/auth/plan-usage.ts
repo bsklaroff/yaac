@@ -22,8 +22,9 @@ import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac
  * differ only in how a fresh result is produced (`claudeRefreshOnce` /
  * `codexRefreshOnce`).
  *
- * Snapshots are only built while a webapp client is connected, which makes
- * that the refresh gate for free: no open webapp, no upstream traffic.
+ * Upstream traffic is gated on a webapp client being connected: snapshots
+ * are only built for connected clients, and the background cycle
+ * (`refreshPlanUsage`) is only ticked while the hub holds a connection.
  */
 const REFRESH_INTERVAL_MS = 5 * 60_000
 /** Floor for on-demand nudges (webapp popover opens): a nudge inside a
@@ -211,10 +212,11 @@ async function codexRefreshOnce(bundle: CodexOAuthBundle): Promise<PlanUsageResu
 
 /**
  * The Claude plan-usage slice of the server snapshot. Gates on the stored
- * credential kind (a local file read, so auth changes reflect on the next
- * 5s tick), returns the in-memory result, and kicks a detached upstream
- * refresh at most once per interval. Returns null before the first refresh
- * lands.
+ * credential kind (a local file read, so an auth change reflects in the
+ * snapshot that change pushes), returns the in-memory result, and kicks a
+ * detached upstream refresh at most once per interval — which is what makes
+ * a freshly connected client's first snapshot warm. Returns null before the
+ * first refresh lands.
  */
 export async function planUsageForSnapshot(): Promise<PlanUsageResult | null> {
   const creds = await loadClaudeCredentialsFile()
@@ -252,16 +254,36 @@ export async function codexPlanUsageForSnapshot(): Promise<PlanUsageResult | nul
  * Fire-and-forget: results ride the next pushed snapshot.
  */
 export async function requestPlanUsageRefresh(): Promise<void> {
+  await kickSignedInTools(ON_DEMAND_MIN_INTERVAL_MS)
+}
+
+/**
+ * The background cycle, driven by the server's own clock.
+ *
+ * This is the one genuinely irreducible poll in the server: the upstream
+ * usage endpoints have no push, so freshness can only come from asking. It
+ * used to free-ride on the fact that a snapshot was rebuilt after every
+ * reconcile pass — which stopped being true once snapshots became purely
+ * edge-driven, so it owns an explicit interval instead (see server-run).
+ * The caller gates on having a connected client, which preserves the
+ * standing rule that a closed webapp produces no upstream traffic.
+ */
+export async function refreshPlanUsage(): Promise<void> {
+  await kickSignedInTools(REFRESH_INTERVAL_MS)
+}
+
+/** Kick every signed-in tool's engine, subject to `minIntervalMs`. */
+async function kickSignedInTools(minIntervalMs: number): Promise<void> {
   const [claude, codex] = await Promise.all([
     loadClaudeCredentialsFile(),
     loadCodexCredentialsFile(),
   ])
   if (claude?.kind === 'oauth') {
     const bundle = claude.claudeAiOauth
-    kickRefresh(states.claude, ON_DEMAND_MIN_INTERVAL_MS, () => claudeRefreshOnce(bundle, states.claude))
+    kickRefresh(states.claude, minIntervalMs, () => claudeRefreshOnce(bundle, states.claude))
   }
   if (codex?.kind === 'oauth') {
     const bundle = codex.codexOauth
-    kickRefresh(states.codex, ON_DEMAND_MIN_INTERVAL_MS, () => codexRefreshOnce(bundle))
+    kickRefresh(states.codex, minIntervalMs, () => codexRefreshOnce(bundle))
   }
 }

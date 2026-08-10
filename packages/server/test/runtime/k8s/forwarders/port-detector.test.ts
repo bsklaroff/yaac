@@ -19,6 +19,7 @@ import {
   getUnforwardedPorts,
   isForwardablePort,
 } from '#runtime/k8s/forwarders/port-detector'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 import type { PodInfo } from '#platform/k8s/pods'
 
 const mockGetSessionPorts = vi.mocked(getWorktreePorts)
@@ -110,6 +111,21 @@ describe('getUnforwardedPorts', () => {
     expect(dismissWorktreePort('s1', 3000)).toBe(true)
     expect(getUnforwardedPorts('s1')).toEqual([8080])
     expect(getUnforwardedPorts('s2')).toEqual([3000])
+  })
+
+  // A dismissal exists only in this module's memory, so it is the only
+  // thing that can tell a client the popover row is gone.
+  it('pushes a fresh snapshot when a dismissal lands, and not when it is refused', () => {
+    _resetWorktreeListChangedForTests()
+    let pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
+    _setDetectedPortsForTests('s1', [3000])
+
+    expect(dismissWorktreePort('s1', 8080)).toBe(false)
+    expect(pushes).toBe(0)
+    expect(dismissWorktreePort('s1', 3000)).toBe(true)
+    expect(pushes).toBe(1)
+    _resetWorktreeListChangedForTests()
   })
 
   it('refuses to dismiss a port that is not currently surfaced', () => {

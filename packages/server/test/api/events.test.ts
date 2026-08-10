@@ -123,6 +123,64 @@ describe('EventHub', () => {
     expect(hub.size).toBe(1)
     expect(good.sent).toHaveLength(1)
   })
+
+  // A build is several awaited substrate reads long, so two in flight can
+  // resolve out of order. Left concurrent, the older one broadcasts last and
+  // sets `lastSerialized` to state that has already been superseded — after
+  // which the diff believes clients hold the stale snapshot and nothing
+  // repairs it until the next unrelated mutation. Serializing is what makes
+  // the last thing on the wire also the newest.
+  it('never lets a slower build overwrite a newer one', async () => {
+    const releases: Array<() => void> = []
+    let n = 0
+    const hub = new EventHub(() => {
+      const slug = `p${++n}`
+      // First build resolves LAST — the inversion the ordering must survive.
+      return new Promise<ServerSnapshot>((resolve) => {
+        releases.push(() => resolve(snapshotWithProject(slug)))
+      })
+    })
+    const ws = new FakeWs()
+    hub.add(ws)
+
+    const publish = hub.publishSnapshot()
+    await Promise.resolve()
+    void hub.publishSnapshot()
+    await Promise.resolve()
+
+    // Only one build is in flight; the second call folded into it.
+    expect(releases).toHaveLength(1)
+    releases[0]()
+    await new Promise((r) => setImmediate(r))
+
+    // Folding does not lose the request: a second build runs after the first.
+    expect(releases).toHaveLength(2)
+    releases[1]()
+    await publish
+
+    const last = JSON.parse(ws.sent[ws.sent.length - 1]) as { data: ServerSnapshot }
+    expect(last.data.projects[0].slug).toBe('p2')
+  })
+
+  // The trailing call of a coalesced burst is exactly when a second publish
+  // lands mid-build, so folding must not swallow it — otherwise the last
+  // snapshot after a storm is the one built before the storm ended.
+  it('runs a final build for a publish that arrived mid-build', async () => {
+    let builds = 0
+    let current = emptySnapshot()
+    const hub = new EventHub(() => {
+      builds++
+      const snapshot = current
+      return Promise.resolve().then(() => snapshot)
+    })
+    hub.add(new FakeWs())
+
+    const running = hub.publishSnapshot()
+    current = snapshotWithProject('late')
+    void hub.publishSnapshot()
+    await running
+    expect(builds).toBe(2)
+  })
 })
 
 // The build registry is the runtime's, so the snapshot asks for it across the

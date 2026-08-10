@@ -8,6 +8,10 @@ import { proxyDataHostDir } from '@yaac/shared/project-paths'
  * whenever a worktree's blocked set grows; /data is a hostPath, so the
  * server reads the live state straight off the filesystem — no proxy
  * HTTP round-trip, no reconcile-pass snapshotting, no staleness.
+ *
+ * The file is the data plane; knowing *when* to re-read it is the proxy
+ * event stream's job (see proxy-events.ts), which emits a contentless
+ * `blocked-hosts` after each write.
  */
 export function blockedHostsStatePath(): string {
   return path.join(proxyDataHostDir(), 'blocked-hosts.json')

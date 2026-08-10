@@ -8,19 +8,20 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
- * not on a fixed clock — three lanes feed one serialized pass executor:
+ * not on a fixed clock — two lanes feed one serialized pass executor:
  *
- * - changes: the convergence watches (worktree pods/Jobs, vcluster
- *   namespaces and their pods/services, and the set of live conversations)
- *   mark their sources dirty; a pass runs after a short debounce so event
- *   storms coalesce.
- * - poll: a 5s mark for the state no watch can see — the proxy's queued
- *   spawn requests and in-pod tmux death (the stale reaper). These are
- *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
- *   that short-circuit on healthy status streams.
+ * - changes: the convergence signals (worktree pods/Jobs, vcluster
+ *   namespaces and their pods/services, the set of live conversations,
+ *   driver-stream health, and what the egress proxy reports over its
+ *   event stream) mark their sources dirty; a pass runs after a short
+ *   debounce so event storms coalesce.
  * - resync: a 60s mark that runs EVERY step — the safety net for a missed
  *   event, and the driver for the internally-throttled hygiene steps
  *   (image prewarm/GC, salvage, builder-pod GC).
+ *
+ * There is no poll lane. Every source that had one now has an edge, and
+ * the resync is what makes losing an edge cost latency rather than
+ * correctness — which is the same reason the informer relists.
  *
  * Passes never overlap (steps share module state) and preserve the step
  * order below; each pass isolates step errors. Substrate steps share one
@@ -34,17 +35,10 @@ export interface ReconcilerDeps {
   steps?: ReconcileStep[]
   /** Change subscription; defaults to the convergence watches. */
   onDelta?: (fn: (source: ChangeSource) => void) => void
-  pollIntervalMs?: number
   resyncIntervalMs?: number
   debounceMs?: number
   /** Injected for tests — replaces the timer-based debounce wait. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>
-  /**
-   * Called after every completed pass. Used to push a fresh state snapshot
-   * to webapp clients once reconciliation has settled. Errors are swallowed
-   * so a bad listener can't wedge the reconciler.
-   */
-  onPass?: () => void | Promise<void>
 }
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -81,7 +75,6 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     wake?.()
   }
   ;(deps.onDelta ?? onConvergenceChange)(mark)
-  const pollTimer = setInterval(() => mark('poll'), deps.pollIntervalMs ?? 5_000)
   const resyncTimer = setInterval(() => mark('resync'), deps.resyncIntervalMs ?? 60_000)
   const onAbort = (): void => wake?.()
   signal.addEventListener('abort', onAbort, { once: true })
@@ -131,16 +124,8 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
           serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
         }
       }
-      if (deps.onPass) {
-        try {
-          await deps.onPass()
-        } catch (err) {
-          serverLog(`[server] reconcile onPass failed: ${String(err)}`)
-        }
-      }
     }
   } finally {
-    clearInterval(pollTimer)
     clearInterval(resyncTimer)
     signal.removeEventListener('abort', onAbort)
   }

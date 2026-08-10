@@ -23,8 +23,19 @@ import crypto from 'node:crypto'
  */
 export const SPAWN_MAGIC_HOST = 'yaac.internal'
 export const SPAWN_PATH = '/spawn'
-/** How long a held request waits for the server before failing with a 504. */
-export const SPAWN_TTL_MS = 60_000
+/**
+ * How long a held request waits for the server before failing with a 504.
+ *
+ * Sized against the server's worst case for noticing it should drain, which
+ * is a silently dead event stream: its read-idle deadline (45s) plus a
+ * reconnect backoff (up to 5s) before the reattach re-fires the drain. The
+ * normal path is a `spawn` event, i.e. immediate, so this budget is only
+ * ever spent in that degraded lane — and at 60s it left almost none.
+ *
+ * `worktree-bin/yaac-spawn`'s `--max-time` must stay ABOVE this, so the
+ * caller sees this self-describing 504 rather than an opaque curl timeout.
+ */
+export const SPAWN_TTL_MS = 120_000
 /** Cap on the buffered request body (the prompt). */
 export const SPAWN_MAX_BODY_BYTES = 64 * 1024
 /** Prompt character limit — mirrors the server's spawn reconciler. */

@@ -7,7 +7,11 @@ import {
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileImageSalvage } from '#runtime/k8s/worktrees'
-import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#runtime/k8s/egress'
+import {
+  reconcileProxySshKeys,
+  reconcileVclusterAttribution,
+  type ProxyChangeSource,
+} from '#runtime/k8s/egress'
 import {
   reconcileProjectRegistryGc,
   reconcileRedirectClaims,
@@ -25,9 +29,17 @@ import { listProjectRows } from '#records'
 import type { DeltaSource, TickSnapshot } from '#platform/k8s'
 import type { AgentTool } from '@yaac/shared/types'
 
-/** A source that can dirty a pass: an informer cache delta, the live-agent
- *  set (an in-pod event no informer sees), or the 5s poll lane. */
-export type ReconcileTrigger = DeltaSource | 'live-agents' | 'poll'
+/**
+ * A source that can dirty a pass: an informer cache delta, or one of the
+ * three edges no informer can see — the live-agent set and a worktree's
+ * driver-stream health (both in-pod), and what the egress proxy reports
+ * over its event stream.
+ */
+export type ReconcileTrigger =
+  | DeltaSource
+  | 'live-agents'
+  | 'status-streams'
+  | ProxyChangeSource
 
 export interface ReconcileStep {
   name: string
@@ -76,14 +88,25 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // The stale reaper — first, so counts reflect just-reaped worktrees by
     // the time the prewarm pool runs. It reads what should exist from
     // records at the top of its pass; the sources here are the ones on
-    // which a worktree may have appeared or gone, plus poll because in-pod
-    // tmux death is not a substrate event.
-    { name: 'stale-worktrees', triggers: ['worktree-pods', 'worktree-jobs', 'poll'],
+    // which a worktree may have appeared or gone, plus `status-streams`
+    // because in-pod tmux death is not a substrate event — losing a
+    // driver connection is the edge after which liveness can no longer be
+    // inferred and must be probed. Its slower sweeps ride the resync, which
+    // costs them nothing: the podless-row sweep waits out 30 minutes, and
+    // the placeholder-zombie, orphan-Job and stuck-terminating sweeps wait
+    // out the 60s starting grace. Nor can a flapping stream turn this into
+    // a reaping loop — the destructive path needs a conclusive in-pod
+    // verdict, and a failed or timed-out probe reads `unknown` and keeps
+    // the worktree.
+    { name: 'stale-worktrees', triggers: ['worktree-pods', 'worktree-jobs', 'status-streams'],
       run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
     // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS
     // (tool precedence, the fan-out cap, the minted id) is `decideSpawn`'s.
-    { name: 'spawn-requests', triggers: ['poll'],
+    // The proxy holds the caller's HTTP response open until we answer, so
+    // it reports the enqueue over its event stream rather than making the
+    // caller wait out a poll.
+    { name: 'spawn-requests', triggers: ['spawn-requests'],
       run: (ctx) => reconcileSpawnRequests({}, ctx.snapshot()) },
     // Leaked trust-split builder pods (server restarted mid-build) — the
     // label sweep backstop. Throttled internally. Ahead of image-prewarm on
@@ -137,15 +160,19 @@ export function defaultReconcileSteps(): ReconcileStep[] {
       run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
     // ssh-agent heal only (attach-only probe, never bootstraps): agent
     // identities are memory-only by design and need the server to re-upload
-    // them after a proxy pod replacement.
-    { name: 'proxy-ssh-keys', triggers: ['poll'], run: () => reconcileProxySshKeys() },
+    // them after a proxy pod replacement. A replacement necessarily kills
+    // the proxy event stream, so its reattach IS the heal's edge; the step
+    // still checks the loss signature itself, so a merely flaky tunnel
+    // re-uploads nothing.
+    { name: 'proxy-ssh-keys', triggers: ['proxy-reconnect'], run: () => reconcileProxySshKeys() },
     // Per-worktree vclusters: orphan GC + host-side kubeconfig heal.
     { name: 'vclusters', triggers: ['vcluster-namespaces', 'worktree-pods', 'worktree-jobs'],
       run: (ctx) => reconcileVclusters(Date.now(), ctx.snapshot()) },
     // yaac-in-yaac: tell the outer proxy which outer worktree owns each
-    // vcluster's pods. Poll re-pushes cover outer-proxy restarts.
+    // vcluster's pods. A stream reattach re-pushes, which is what covers an
+    // outer-proxy restart (the restart is what dropped the stream).
     { name: 'vcluster-attribution',
-      triggers: ['vcluster-namespaces', 'vcluster-pods', 'poll'],
+      triggers: ['vcluster-namespaces', 'vcluster-pods', 'proxy-reconnect'],
       run: (ctx) => reconcileVclusterAttribution(ctx.snapshot()) },
     // yaac-in-yaac: validate each vcluster's redirect claims and republish
     // them for netd. Claim documents arrive through the vcluster syncer, so

@@ -13,13 +13,13 @@ import {
   gcOrphanProjectRegistries,
 } from '#runtime/k8s/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
-import { StatusWatcherManager, onLiveAgentsChanged, onWorktreeStatusChanged } from '#runtime/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import {
   PortDetectorManager,
   restoreAllWorktreeForwarders,
   stopAllWorktreeForwarders,
 } from '#runtime/k8s/forwarders'
-import { proxyClient } from '#runtime/k8s/egress'
+import { ProxyEventStream, proxyClient, type ProxyChangeSource } from '#runtime/k8s/egress'
 import { recordedConversationHandles } from '#records'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
@@ -28,27 +28,41 @@ import { env } from '@yaac/shared/env'
 /**
  * A change one of the convergence watches saw — the sources that dirty a
  * reconcile pass. Mostly substrate-flavored because the informer is; the
- * one that is not a cache delta is `live-agents`: a worktree's set of
- * running conversations changed, which only an in-pod event (an ACP
- * handshake answering with a session id) can produce.
+ * three that are not cache deltas are the ones no informer can see:
+ *
+ * - `live-agents`: a worktree's set of running conversations changed, which
+ *   only an in-pod event (an ACP handshake answering with a session id) can
+ *   produce.
+ * - `status-streams`: a worktree's driver connection went unhealthy, so the
+ *   display path can no longer infer that its in-pod tmux is alive.
+ * - `spawn-requests` / `proxy-reconnect`: reported by the egress proxy over
+ *   its event stream — a queued in-worktree spawn, and the reattach that
+ *   says the proxy pod may have been replaced.
  */
-export type ChangeSource = DeltaSource | 'live-agents'
+export type ChangeSource = DeltaSource | 'live-agents' | 'status-streams' | ProxyChangeSource
 
 /**
  * Attaching the server to its substrate, and letting go of it again.
  *
  * Everything convergence-owning starts here — the informer caches, the
- * per-worktree status watchers, the port detector — and stops here, in two
- * stages: `stopConvergence` kills everything push-fed before the reconcile
- * loop drains (the watches hold apiserver connections and a long-lived exec
- * per worktree), and `releaseConvergence` lets go of what was borrowed from
+ * per-worktree status watchers, the port detector, the proxy event stream —
+ * and stops here, in two stages: `stopConvergence` kills everything
+ * push-fed before the reconcile loop drains (the watches hold apiserver
+ * connections and a long-lived exec per worktree, and the event stream
+ * holds a request open), and `releaseConvergence` lets go of what was
+ * borrowed from
  * the host (port forwarders, the proxy control tunnel) after the drain,
  * because a reap tick still tears its worktree's forwards down.
  */
 let clusterCache: ClusterCache | null = null
 let statusWatchers: StatusWatcherManager | null = null
 let portDetector: PortDetectorManager | null = null
+let proxyEvents: ProxyEventStream | null = null
 const changeListeners: ((source: ChangeSource) => void)[] = []
+
+function fireChange(source: ChangeSource): void {
+  for (const fn of changeListeners) fn(source)
+}
 
 async function attachNow(): Promise<void> {
   // Kill any podman build/push a previous server left running before the
@@ -123,21 +137,31 @@ async function attachNow(): Promise<void> {
     if (source === 'worktree-pods') {
       manager.sync(cache.worktreePods())
       detector.sync(cache.worktreePods())
+      // The cache is itself a snapshot input (pod phase reaches clients
+      // without any row write), so its delta handler is its mutation site.
       notifyWorktreeListChanged()
     }
-    for (const fn of changeListeners) fn(source)
+    fireChange(source)
   })
-  onWorktreeStatusChanged(() => notifyWorktreeListChanged())
   // A conversation appearing, going, or learning its id is a change the
   // reconcile steps owe work on, and no watch above can see it: for `acp`
   // the id comes from the in-pod handshake, well after the pod deltas
   // that created the window have gone quiet. Without this the worktree's
   // conversation rows — and so the webapp's chat pane — wait for the 60s
   // resync.
-  onLiveAgentsChanged(() => {
-    for (const fn of changeListeners) fn('live-agents')
-  })
+  onLiveAgentsChanged(() => fireChange('live-agents'))
+  // Losing a driver connection retires the "stream healthy ⇒ tmux alive"
+  // shortcut for that worktree, which is precisely when the stale reaper's
+  // own probes are worth running. In-pod tmux death is not a substrate
+  // event, so without this the reaper would have nothing to wake it.
+  onStreamHealthLost(() => fireChange('status-streams'))
+  // The proxy's change stream: blocked hosts and git-auth failures (snapshot
+  // inputs it notifies for itself) plus the spawn queue and the reattach
+  // edge, which dirty a pass.
+  const events = new ProxyEventStream(fireChange)
+  proxyEvents = events
   cache.start()
+  events.start()
   setActiveClusterCache(cache)
 
   // Remove per-project push registries whose project dir is gone —
@@ -148,7 +172,8 @@ async function attachNow(): Promise<void> {
 
 /**
  * Attach to the substrate: informer caches, per-worktree status watchers,
- * the port detector, the cluster bootstrap, and the startup GCs.
+ * the port detector, the proxy event stream, the cluster bootstrap, and
+ * the startup GCs.
  *
  * `onAttached` fires once really attached, which is not necessarily before
  * this resolves — a nested server defers every cluster touch until first
@@ -185,7 +210,8 @@ export async function attachConvergence(opts: { onAttached: () => void }): Promi
 
 /**
  * Stop everything push-fed, synchronously: informer watches, status
- * watchers, the port detector, and any host image build in flight.
+ * watchers, the port detector, the proxy event stream, and any host image
+ * build in flight.
  *
  * Separate from `releaseConvergence` because the reconcile loop drains
  * between the two — the watches must be down before the drain, and the
@@ -199,6 +225,10 @@ export function stopConvergence(): void {
   clusterCache?.stop()
   statusWatchers?.stopAll()
   portDetector?.stopAll()
+  // The held-open /events request keeps its exec relay (and the kubectl
+  // child behind it) alive, exactly like the watches above.
+  proxyEvents?.stop()
+  proxyEvents = null
   // Abort in-flight host builds/pushes. Podman commits an image tag only
   // when the build finishes, so an orphaned `podman build` is invisible
   // to the next server's exists check — it would start a second build of

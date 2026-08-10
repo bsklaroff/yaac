@@ -41,7 +41,7 @@ export {
   evictWorktreeStatus,
   liveAgents,
   onLiveAgentsChanged,
-  onWorktreeStatusChanged,
+  onStreamHealthLost,
   readAgentStatus,
   readWorktreeStatus,
   readWorktreeWaitingSince,

@@ -34,9 +34,12 @@
  * - `streamHealthy` doubles as the display-path tmux-liveness signal: a
  *   healthy driver connection is conclusive proof the in-pod tmux server is
  *   up (both drivers reach it through tmux). It is deliberately NOT a death
- *   signal — only the stale reaper's own probes may conclude `dead`.
+ *   signal — only the stale reaper's own probes may conclude `dead`. Losing
+ *   health is, however, the *edge* on which those probes are worth running:
+ *   see `onStreamHealthLost`.
  */
 
+import { notifyWorktreeListChanged } from '#notify'
 import type { LiveAgent, AgentPaneStatus } from '#runtime/agents'
 
 export type { AgentPaneStatus }
@@ -74,31 +77,49 @@ export interface WorktreeStatusEntry {
 
 const store = new Map<string, WorktreeStatusEntry>()
 
-let listener: (() => void) | null = null
 let liveAgentsListener: (() => void) | null = null
+let streamHealthLostListener: (() => void) | null = null
 
 function key(slug: string, worktreeId: string): string {
   return `${slug}/${worktreeId}`
 }
 
 /**
- * Register the handler fired whenever an entry's observable state
- * (status or stream health) changes. Replaces any previous handler —
- * same single-listener convention as `onWorktreeListChanged` (the server
- * is one process, and the one consumer fans out via the event hub).
+ * Announce a change in what this store contributes to the snapshot — a
+ * worktree's aggregate status, its waiting spell, or its stream health.
+ * Emitted straight onto `#notify` because this store is itself a snapshot
+ * input, so it is its own mutation site (docs/layered-server.md).
  */
-export function onWorktreeStatusChanged(fn: () => void): void {
-  listener = fn
+function notifyChanged(): void {
+  notifyWorktreeListChanged()
 }
 
-function notifyChanged(): void {
-  listener?.()
+/**
+ * Register the handler fired when a worktree's driver connection goes from
+ * healthy to unhealthy. This is the reaper's edge: `probeTmuxLiveness`
+ * short-circuits "stream healthy ⇒ tmux alive", so losing health is exactly
+ * the transition after which the answer can no longer be inferred and the
+ * real probe has to run.
+ *
+ * The transition, and nothing else, on purpose. `notifyChanged` above fires
+ * on every turn boundary and its consumer only rebuilds a snapshot; this one
+ * dirties a reconcile pass, and a pass per turn would be a pod sweep per
+ * turn (the same reasoning as `onLiveAgentsChanged`).
+ *
+ * Losing health is not a death verdict and this hook does not make it one —
+ * the reaper's own probes stay the arbiter, and an inconclusive probe still
+ * reaps nothing. It only decides when to look.
+ *
+ * Single-listener, same convention as below.
+ */
+export function onStreamHealthLost(fn: () => void): void {
+  streamHealthLostListener = fn
 }
 
 /**
  * Register the handler fired when a worktree's *set* of live conversations
  * changes — one appeared, one went, or one finally learned its id. Separate
- * from `onWorktreeStatusChanged` on purpose: that one fires on every turn
+ * from the snapshot notification on purpose: that one fires on every turn
  * boundary, and its consumer only pushes a snapshot. This one drives a
  * reconcile pass, and a pass per turn would be a pod sweep per turn.
  *
@@ -187,8 +208,16 @@ export function isWorktreeStreamHealthy(slug: string, worktreeId: string): boole
 /**
  * Record a freshly classified status for one conversation. Creates the entry
  * (marked healthy — a classification only ever comes from a live connection)
- * and fires the change listener when the worktree's visible status actually
- * flipped, so a busy sibling doesn't spam every client.
+ * and announces it whenever anything a client can see actually changed.
+ *
+ * "Anything a client can see" is per-conversation, not just the worktree
+ * aggregate: each conversation's own status and waiting spell ride the
+ * snapshot too (`agentLiveness` → `liveStatus`), so a sibling's flip that
+ * leaves the aggregate alone still moves a per-tab dot, and a waiting
+ * worktree whose earliest waiter changes still moves its spell. Gating on
+ * the aggregate alone left those stale until some unrelated notify landed.
+ * A genuine no-op — the same status re-published on a healthy entry — still
+ * says nothing.
  */
 export function setAgentStatus(
   slug: string,
@@ -220,7 +249,11 @@ export function setAgentStatus(
   e.updatedAtMs = Date.now()
   // Also fires when health became visible again: a classification proves the
   // connection is back, which clients render even when the status itself held.
-  if (!hadEntry || !prev || !wasHealthy || readWorktreeStatus(slug, worktreeId) !== before) {
+  const entryChanged = !prev
+    || prev.status !== status
+    || prev.waitingSinceMs !== waitingSinceMs
+  if (entryChanged || !hadEntry || !wasHealthy
+    || readWorktreeStatus(slug, worktreeId) !== before) {
     notifyChanged()
   }
 }
@@ -273,6 +306,9 @@ export function setWorktreeStreamHealth(slug: string, worktreeId: string, health
   prev.streamHealthy = healthy
   prev.updatedAtMs = Date.now()
   notifyChanged()
+  // Health just went healthy → unhealthy: the display path can no longer
+  // infer tmux liveness for this worktree, so the reaper is owed a pass.
+  if (!healthy) streamHealthLostListener?.()
 }
 
 /**
@@ -287,6 +323,6 @@ export function evictWorktreeStatus(slug: string, worktreeId: string): void {
 /** Test-only: drop every entry and the change listener. */
 export function _resetWorktreeStatusStoreForTests(): void {
   store.clear()
-  listener = null
   liveAgentsListener = null
+  streamHealthLostListener = null
 }

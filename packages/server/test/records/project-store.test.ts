@@ -10,12 +10,20 @@ import {
   listProjectRows,
   recordProject,
 } from '#records/project-store'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('recordProject', () => {
   let tmpDir: string
+  let pushes: number
 
-  beforeEach(async () => { tmpDir = await createTempDataDir() })
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    _resetWorktreeListChangedForTests()
+    pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
+  })
   afterEach(async () => {
+    _resetWorktreeListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -37,6 +45,37 @@ describe('recordProject', () => {
     expect(await getProjectRow('app')).toMatchObject({
       remoteUrl: 'https://y/app.git', addedAt: '2026-01-01',
     })
+  })
+
+  // The project list is a snapshot input, and this is its only INSERT — so
+  // it is where a new project announces itself. Nothing above it pushes:
+  // before this, a newly added project reached the sidebar only because a
+  // reconcile pass happened to rebuild the snapshot afterwards.
+  it('pushes a fresh snapshot', async () => {
+    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    expect(pushes).toBe(1)
+  })
+})
+
+describe('deleteProjectRow', () => {
+  let tmpDir: string
+
+  beforeEach(async () => { tmpDir = await createTempDataDir() })
+  afterEach(async () => {
+    _resetWorktreeListChangedForTests()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('removes the row and pushes a fresh snapshot', async () => {
+    await recordProject({ slug: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' })
+    _resetWorktreeListChangedForTests()
+    let pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
+
+    await deleteProjectRow('app')
+    expect(await getProjectRow('app')).toBeUndefined()
+    expect(pushes).toBe(1)
   })
 })
 

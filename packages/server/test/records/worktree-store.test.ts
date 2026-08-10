@@ -23,15 +23,22 @@ import {
   setWorktreeTitle,
 } from '#records/worktree-store'
 import { recordAgentSessions } from '#records/agent-session-store'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('session store', () => {
   let tmpDir: string
 
+  let pushes: number
+
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    _resetWorktreeListChangedForTests()
+    pushes = 0
+    onWorktreeListChanged(() => { pushes += 1 })
   })
 
   afterEach(async () => {
+    _resetWorktreeListChangedForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -147,6 +154,38 @@ describe('session store', () => {
 
       await setWorktreeTitle('proj', 'sid-1', '   ')
       expect((await getProjectWorktreeRows('proj')).get('sid-1')?.title).toBeUndefined()
+    })
+
+    // The rename is a snapshot input, so the writer pushes it — which is
+    // what lets both the route and the title generator above it stay
+    // ignorant of the push channel entirely.
+    it('pushes a fresh snapshot on every write', async () => {
+      await create('sid-1')
+      const before = pushes
+      await setWorktreeTitle('proj', 'sid-1', 'renamed')
+      expect(pushes - before).toBe(1)
+      await setWorktreeTitle('proj', 'sid-1', '')
+      expect(pushes - before).toBe(2)
+    })
+  })
+
+  describe('setWorktreeBackground', () => {
+    it('pins and unpins the row', async () => {
+      await create('sid-1')
+      await setWorktreeBackground('proj', 'sid-1', true)
+      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.background).toBe(true)
+
+      await setWorktreeBackground('proj', 'sid-1', false)
+      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.background).toBe(false)
+    })
+
+    // Regrouping the sidebar is the whole point of the flag, so the write
+    // pushes it.
+    it('pushes a fresh snapshot', async () => {
+      await create('sid-1')
+      const before = pushes
+      await setWorktreeBackground('proj', 'sid-1', true)
+      expect(pushes - before).toBe(1)
     })
   })
 

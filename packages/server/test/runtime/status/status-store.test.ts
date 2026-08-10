@@ -9,12 +9,16 @@ import {
   evictWorktreeStatus,
   setLiveAgents,
   onLiveAgentsChanged,
-  onWorktreeStatusChanged,
+  onStreamHealthLost,
   _resetWorktreeStatusStoreForTests,
 } from '#runtime/status/status-store'
+import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
+// The store is a snapshot input, so what it announces it announces straight
+// on #notify — the hub is the only consumer, and these tests stand in for it.
 beforeEach(() => {
   _resetWorktreeStatusStoreForTests()
+  _resetWorktreeListChangedForTests()
 })
 
 describe('readWorktreeStatus', () => {
@@ -48,7 +52,7 @@ describe('isWorktreeStreamHealthy', () => {
 describe('setAgentStatus', () => {
   it('fires the change listener when the status flips', () => {
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
     setAgentStatus('demo', 's1', '%0', 'waiting')
@@ -58,16 +62,39 @@ describe('setAgentStatus', () => {
   it('does not fire when the same status is re-set on a healthy entry', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).not.toHaveBeenCalled()
+  })
+
+  // Per-conversation status and waiting spells ride the snapshot too
+  // (agentLiveness → liveStatus), so a sibling's flip that leaves the
+  // worktree aggregate alone is still visible to a client — a per-tab dot,
+  // and which agent's stamp the worktree's spell comes from.
+  it('fires when a sibling flips but the worktree aggregate does not', () => {
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%1', 'running')
+    const listener = vi.fn()
+    onWorktreeListChanged(listener)
+
+    // %1 running→waiting: aggregate was already `waiting` and stays there,
+    // but %1's own dot moved.
+    setAgentStatus('demo', 's1', '%1', 'waiting')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    // %0 waiting→running: still `waiting` overall (%1 waits), but %0's dot
+    // moved and the worktree's spell should now come from %1.
+    setAgentStatus('demo', 's1', '%0', 'running')
+    expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
+    expect(listener).toHaveBeenCalledTimes(2)
   })
 
   it('fires when re-classifying an unhealthy entry (health became visible)', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     setWorktreeStreamHealth('demo', 's1', false)
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(listener).toHaveBeenCalledTimes(1)
     expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
@@ -77,7 +104,7 @@ describe('setAgentStatus', () => {
 describe('setWorktreeStreamHealth', () => {
   it('creates a waiting entry when marking an absent session healthy', () => {
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setWorktreeStreamHealth('demo', 's1', true)
     expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
     expect(isWorktreeStreamHealthy('demo', 's1')).toBe(true)
@@ -86,7 +113,7 @@ describe('setWorktreeStreamHealth', () => {
 
   it('is a no-op when marking an absent session unhealthy', () => {
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setWorktreeStreamHealth('demo', 's1', false)
     expect(isWorktreeStreamHealthy('demo', 's1')).toBe(false)
     expect(listener).not.toHaveBeenCalled()
@@ -102,7 +129,7 @@ describe('setWorktreeStreamHealth', () => {
   it('fires only when the health bit actually flips', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     setWorktreeStreamHealth('demo', 's1', true)
     expect(listener).not.toHaveBeenCalled()
     setWorktreeStreamHealth('demo', 's1', false)
@@ -176,7 +203,7 @@ describe('evictWorktreeStatus', () => {
   it('removes the entry and fires the listener', () => {
     setAgentStatus('demo', 's1', '%0', 'running')
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     evictWorktreeStatus('demo', 's1')
     expect(readWorktreeStatus('demo', 's1')).toBe('waiting')
     expect(listener).toHaveBeenCalledTimes(1)
@@ -184,19 +211,53 @@ describe('evictWorktreeStatus', () => {
 
   it('does not fire for an absent entry', () => {
     const listener = vi.fn()
-    onWorktreeStatusChanged(listener)
+    onWorktreeListChanged(listener)
     evictWorktreeStatus('demo', 's1')
     expect(listener).not.toHaveBeenCalled()
   })
 })
 
-describe('onWorktreeStatusChanged', () => {
+describe('onStreamHealthLost', () => {
+  // This is the stale reaper's edge. The display path infers "stream healthy
+  // ⇒ tmux alive", so losing health is exactly when that inference expires
+  // and the reaper's own probes have to run — in-pod tmux death being
+  // invisible to every cluster watch.
+  it('fires when a healthy stream goes unhealthy', () => {
+    setAgentStatus('demo', 's1', '%0', 'running')
+    const listener = vi.fn()
+    onStreamHealthLost(listener)
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  // The transition and nothing else. This one dirties a reconcile pass, and
+  // a pass per turn boundary would be a pod sweep per turn — the same trap
+  // onLiveAgentsChanged is built to avoid.
+  it('does not fire on attach, on a status flip, or on a repeat drop', () => {
+    const listener = vi.fn()
+    onStreamHealthLost(listener)
+    setWorktreeStreamHealth('demo', 's1', true)
+    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    expect(listener).not.toHaveBeenCalled()
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(1)
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(1)
+    // Reattaching is not a loss either; the next drop is.
+    setWorktreeStreamHealth('demo', 's1', true)
+    expect(listener).toHaveBeenCalledTimes(1)
+    setWorktreeStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(2)
+  })
+
   it('replaces the previous listener (last registration wins)', () => {
     const first = vi.fn()
     const second = vi.fn()
-    onWorktreeStatusChanged(first)
-    onWorktreeStatusChanged(second)
+    onStreamHealthLost(first)
+    onStreamHealthLost(second)
     setAgentStatus('demo', 's1', '%0', 'running')
+    setWorktreeStreamHealth('demo', 's1', false)
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
   })

@@ -9,7 +9,8 @@ import type { GitAuthFailure } from '@yaac/shared/types'
  * whenever it sees an upstream reject an injected git credential (and when
  * a later success clears one); /data is a hostPath, so the server reads the
  * live state straight off the filesystem — same pattern as
- * blocked-hosts.json.
+ * blocked-hosts.json, including the `git-auth-failures` event the proxy
+ * emits after each write to say the file is worth re-reading.
  */
 export function gitAuthFailuresStatePath(): string {
   return path.join(proxyDataHostDir(), 'git-auth-failures.json')

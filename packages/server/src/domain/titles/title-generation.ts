@@ -12,7 +12,6 @@
  */
 import { listActiveWorktrees } from '#domain/worktrees'
 import { setWorktreeTitle } from '#records'
-import { notifyWorktreeListChanged } from '#notify'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -47,7 +46,6 @@ async function generateOne(slug: string, worktreeId: string, prompt: string): Pr
     const title = await summarizeTitle(prompt)
     if (title === undefined) return
     await setWorktreeTitle(slug, worktreeId, title)
-    notifyWorktreeListChanged()
   } catch (err) {
     serverLog(`[titles] ${slug}/${worktreeId}: ${String(err)}`)
   }

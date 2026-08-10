@@ -20,8 +20,10 @@ export async function ensureProjectExists(slug: string): Promise<void> {
 
 /**
  * In-flight `listActiveWorktrees` calls keyed by `projectFilter ?? ''`.
- * The UI polls /worktree/list every ~5s; overlapping requests share one
- * execution. Each entry is cleared when its Promise settles.
+ * The webapp does not poll this — it hydrates from pushed snapshots — but
+ * a snapshot rebuild, a CLI read and a route can still overlap, and each
+ * call is a full substrate observation. Overlapping ones share a single
+ * execution; each entry is cleared when its Promise settles.
  */
 const listActiveInflight = new Map<string, Promise<ActiveWorktreesResult>>()
 

@@ -1,18 +1,29 @@
 /**
- * A tiny in-process signal so anything that changes what the worktree list
- * shows can tell the events hub to push a fresh snapshot immediately, instead
- * of waiting for the next periodic tick (up to ~5s). The server is a single
- * process (one EventHub), so a single module-level listener is enough.
+ * The one channel by which server state reaches a browser.
  *
- * Wired in the server entrypoint: `onWorktreeListChanged(() => hub.publishSnapshot())`.
+ * The rule (docs/layered-server.md): **every store the snapshot reads
+ * notifies at its own mutation site.** Rows announce themselves at the
+ * event door and in the intent writers, the informer cache in its delta
+ * handler, the in-memory registries in their mutators, the proxy's state
+ * on the events it reports. Nothing above them pushes — routes translate
+ * and return, and the reconciler knows nothing about snapshots.
+ *
+ * The signal is contentless on purpose: it says "something changed", and
+ * the one listener — the api layer's snapshot hub, wired in the server
+ * entrypoint as `onWorktreeListChanged(() => hub.publishSnapshot())` —
+ * answers by rebuilding the whole snapshot, diffing it against what it
+ * last sent, and broadcasting only a difference. So a notify that changed
+ * nothing visible costs a rebuild rather than a push, and an idle server
+ * rebuilds nothing at all. The server is a single process (one EventHub),
+ * so a single module-level listener is enough.
  *
  * Deliberately a zero-dependency module at the package root rather than part
- * of #domain/worktrees. The notifiers are spread across features — image
- * builds, plan usage, generated titles — and none of them otherwise depend on
+ * of #domain/worktrees. The notifiers are spread across every layer — image
+ * builds, plan usage, rows, forwarders — and none of them otherwise depend on
  * the worktrees feature. Housing this in that barrel made all of them import
  * it for a one-line side effect, which is most of what tied the feature layer
  * into a cycle. It names the worktree list because that is what the snapshot
- * contains, not because it belongs to that feature.
+ * mostly contains, not because it belongs to that feature.
  */
 let listener: (() => void) | null = null
 
