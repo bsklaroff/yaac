@@ -195,6 +195,42 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+/*
+ * The app owns the whole viewport and never scrolls as a page — every scroll
+ * belongs to a pane inside it. Without this a soft keyboard, or an
+ * overscrolling terminal, drags the whole shell around on iOS.
+ */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/*
+ * `--app-height` is the *visual* viewport height, published by
+ * useVisualViewportHeight() while the mobile shell is active. The layout
+ * viewport doesn't shrink when a soft keyboard opens, so sizing to it would
+ * leave the bottom of a terminal behind the keyboard; sizing to the visual
+ * viewport instead makes the pane's ResizeObserver — and so the PTY's row
+ * count — track the space actually on screen. Falls back to the dynamic
+ * viewport unit, and then to the 100% above, when neither is available.
+ */
+#root {
+  height: var(--app-height, 100dvh);
+}
+
+/*
+ * Keep the mobile shell's chrome clear of the notch and the home indicator.
+ * Applied to the shell's positioned container, so the screens stacked inside
+ * it with `inset-0` land on its padding box and inherit the clearance.
+ */
+.safe-area-inset {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
 *::-webkit-scrollbar {
   width: 3px;
   height: 3px;

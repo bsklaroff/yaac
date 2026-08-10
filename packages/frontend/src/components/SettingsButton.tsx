@@ -100,7 +100,11 @@ function visibleSections(): typeof SECTIONS {
  * git tokens). Open state lives in the store so other surfaces (the
  * new-worktree menu's "Sign in") can open it onto a specific section.
  */
-export function SettingsButton(): JSX.Element {
+export function SettingsButton(
+  /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
+   *  screen's full-width labelled row. */
+  { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
+): JSX.Element {
   const open = useUiStore((s) => s.settingsOpen)
   const section = useUiStore((s) => s.settingsSection)
   const openSettings = useUiStore((s) => s.openSettings)
@@ -131,29 +135,42 @@ export function SettingsButton(): JSX.Element {
       <button
         onClick={() => openSettings()}
         title="Settings"
-        className="flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all
-          hover:rounded-xl hover:text-text-dim"
+        className={variant === 'row'
+          ? 'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition '
+            + 'active:bg-surface-2'
+          : 'flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all '
+            + 'hover:rounded-xl hover:text-text-dim'}
       >
         <SettingsIcon size={18} />
+        {variant === 'row' && <span>Settings</span>}
       </button>
 
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
+        {/* Below md the two-column dialog goes full-screen and stacks: the
+            left nav becomes a scrolling row of chips above the content. */}
         <Dialog.Popup className="fixed left-1/2 top-1/2 flex h-[480px] max-h-[calc(100vh-4rem)] w-[720px]
           max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border
           border-hairline bg-surface text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none
           transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
-          data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
+          data-[ending-style]:scale-95 data-[ending-style]:opacity-0
+          max-md:inset-0 max-md:left-0 max-md:top-0 max-md:h-full max-md:max-h-none max-md:w-full
+          max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:flex-col
+          max-md:rounded-none max-md:border-0">
           {/* Left nav */}
-          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2">
-            <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim">Settings</Dialog.Title>
+          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
+            max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
+            <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
+              Settings
+            </Dialog.Title>
             {visibleSections().map(({ key, label, Icon }) => (
               <button
                 key={key}
                 onClick={() => setSection(key)}
                 className={clsx(
                   'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
+                  'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
                   section === key
                     ? 'bg-surface-2 font-medium text-text'
                     : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
@@ -166,7 +183,7 @@ export function SettingsButton(): JSX.Element {
           </div>
 
           {/* Content */}
-          <div className="relative min-w-0 flex-1 overflow-y-auto p-6">
+          <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
             <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
               text-text-faint transition hover:bg-surface-2 hover:text-text" aria-label="Close settings">
               <CloseIcon size={14} />

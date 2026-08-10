@@ -9,7 +9,11 @@ import { useUiStore } from '#store'
  * new project. Surfaces the server's error (e.g. AUTH_REQUIRED when no git
  * credential matches the host).
  */
-export function NewProjectButton(): JSX.Element {
+export function NewProjectButton(
+  /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
+   *  screen's full-width labelled row. */
+  { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
+): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -38,10 +42,14 @@ export function NewProjectButton(): JSX.Element {
       <button
         onClick={() => setOpen(true)}
         title="New project"
-        className="flex h-10 w-10 items-center justify-center rounded-[20px] bg-surface-2 text-text-dim transition-all
-          hover:rounded-xl hover:bg-surface-3 hover:text-accent"
+        className={variant === 'row'
+          ? 'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition '
+            + 'active:bg-surface-2'
+          : 'flex h-10 w-10 items-center justify-center rounded-[20px] bg-surface-2 text-text-dim transition-all '
+            + 'hover:rounded-xl hover:bg-surface-3 hover:text-accent'}
       >
         <AddIcon size={18} />
+        {variant === 'row' && <span>Add project</span>}
       </button>
 
       <Dialog.Portal>

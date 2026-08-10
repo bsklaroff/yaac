@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Menu } from '@base-ui/react/menu'
 import { useUiStore } from '#store'
 import { WorktreeTerminal } from '#components/WorktreeTerminal'
 import { WorktreePreview } from '#components/WorktreePreview'
@@ -10,19 +11,22 @@ import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
 import { acpTarget, acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { isElectron } from '#lib/platform'
+import { goBackScreen } from '#lib/mobileHistory'
+import { useIsMobile } from '#lib/viewport'
 import { WorktreeTitle } from '#components/WorktreeTitle'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
+import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
-  AddIcon, ChangesIcon, CloseIcon, PreviewIcon, SidebarIcon, TabsIcon, TerminalIcon,
-  TilesIcon, TOOL_LABEL,
+  AddIcon, ChangesIcon, CloseIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
+  TerminalIcon, TilesIcon, TOOL_LABEL,
 } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
-import { ForwardedPortLinks, portLinkLabel } from '#components/ForwardedPortLinks'
+import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '#components/ForwardedPortLinks'
 import { getWorktreeTerminals, createShellTerminal, killWorktreeTerminal } from '#lib/terminalsApi'
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import {
@@ -51,8 +55,10 @@ import type {
 
 /** Gap between column cards. */
 const GAP = 8
-/** Pane card header height. */
+/** Pane card header (tab strip) height. */
 const HEADER_H = 28
+/** The same strip on touch, where a tab has to be a finger-sized target. */
+const MOBILE_HEADER_H = 38
 /** Pane card inner padding around the terminal block. */
 const PAD = 3
 /** Pointer must travel this far before a tab-drag becomes a move. */
@@ -61,6 +67,10 @@ const DRAG_THRESHOLD = 5
  *  kubectl-exec PTY on the server, so a large install shouldn't fan out
  *  dozens at once. Worktrees past the cap attach on first view, as before. */
 const EAGER_ATTACH_MAX = 12
+/** The same budget on a phone. Twelve pre-attached PTYs, each a live stream,
+ *  is a desktop-on-LAN number; on a metered radio the instant switch-back
+ *  isn't worth it beyond the worktree the user is actually in. */
+const MOBILE_EAGER_ATTACH_MAX = 2
 
 interface DragState {
   src: string
@@ -132,6 +142,13 @@ export function WorktreeView({
   const setPreviewPort = useUiStore((s) => s.setPreviewPort)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
+  // On a phone this pane is a screen of its own: back replaces the sidebar
+  // toggle, the header's control cluster folds into an overflow menu, and
+  // tiles mode is off the table (docs/mobile-layout.md).
+  const isMobile = useIsMobile()
+  // The tab strip is part of the pane's pixel math (every terminal's rect is
+  // measured below it), so its height is a number here rather than a class.
+  const headerH = isMobile ? MOBILE_HEADER_H : HEADER_H
   const queryClient = useQueryClient()
   const worktrees = snapshot?.worktrees ?? []
   const worktree = worktrees.find((s) => s.worktreeId === selectedWorktreeId)
@@ -226,7 +243,10 @@ export function WorktreeView({
   const activeTab = sid
     ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
     : undefined
-  const tiled = viewMode === 'tiles'
+  // Forced off on mobile at render, never written back to the store: a user
+  // who prefers tiles on their desktop must not have that preference rewritten
+  // by opening the same server on a phone.
+  const tiled = viewMode === 'tiles' && !isMobile
   // The pane to drop focus into when this worktree is selected/opened or a
   // shortcut switches terminals — only that one terminal gets a live
   // focusKey, so a bumped focusNonce focuses it without disturbing any
@@ -282,7 +302,7 @@ export function WorktreeView({
   // old click-to-attach behavior.
   const eagerIdsKey = worktrees
     .filter((s) => !s.stopping)
-    .slice(0, EAGER_ATTACH_MAX)
+    .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
     .map((s) => s.worktreeId)
     .join(',')
   useEffect(() => {
@@ -290,9 +310,9 @@ export function WorktreeView({
     const keys = eagerIdsKey.split(',').map((id) => `${id}|agent`)
     const rect = {
       left: PAD,
-      top: HEADER_H,
+      top: headerH,
       width: wsSize.w - PAD * 2,
-      height: wsSize.h - HEADER_H - PAD,
+      height: wsSize.h - headerH - PAD,
     }
     for (const k of keys) {
       if (!lastRects.current.has(k)) lastRects.current.set(k, rect)
@@ -301,7 +321,7 @@ export function WorktreeView({
       const fresh = keys.filter((k) => !prev.includes(k))
       return fresh.length ? [...prev, ...fresh] : prev
     })
-  }, [eagerIdsKey, wsSize.w, wsSize.h])
+  }, [eagerIdsKey, wsSize.w, wsSize.h, headerH])
 
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
@@ -347,8 +367,8 @@ export function WorktreeView({
   // App's Workspace, which owns project scope). Captured on window so the chord
   // is swallowed before xterm's textarea handler could forward it to the PTY;
   // the ref keeps the single listener reading the current render's state.
-  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts })
-  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts }
+  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts, isMobile })
+  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts, isMobile }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -404,6 +424,12 @@ export function WorktreeView({
           return
         case 'view-tabs':
         case 'view-tiles':
+          // Mobile forces tabs at render, so the chord would have no visible
+          // effect — but it would still persist the mode, silently rewriting a
+          // desktop tiles preference from a phone-width viewport with a
+          // hardware keyboard attached. Leave the chord alone there, the same
+          // way the header's toggle button is `!isMobile`-gated.
+          if (ctx.isMobile) return
           e.preventDefault()
           e.stopPropagation()
           state.setViewMode(id === 'view-tabs' ? 'tabs' : 'tiles')
@@ -559,8 +585,11 @@ export function WorktreeView({
         onClick={opts.draggable ? undefined : opts.onSelect}
         className={clsx(
           'rounded px-2 py-0.5 text-[11px] transition',
+          // Finger-sized on touch — with tiles mode off, this strip is the
+          // only way to move between a worktree's panes.
+          'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
           opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
-          t !== 'agent' && 'pr-5',
+          t !== 'agent' && 'pr-5 max-md:pr-7',
           drag?.active && drag.src === t && 'opacity-60',
           opts.isActive
             ? 'bg-surface-3 font-medium text-text'
@@ -575,7 +604,8 @@ export function WorktreeView({
           title="Close pane"
           aria-label={`Close ${paneName(t, terminals, previewPortForWorktree)}`}
           className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
+            max-md:h-6 max-md:w-6 max-md:opacity-100"
         >
           <CloseIcon size={10} />
         </button>
@@ -585,7 +615,8 @@ export function WorktreeView({
           title={`Kill ${paneName(t, terminals)}`}
           aria-label={`Kill ${paneName(t, terminals)}`}
           className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
+            max-md:h-6 max-md:w-6 max-md:opacity-100"
         >
           <CloseIcon size={10} />
         </button>
@@ -593,91 +624,111 @@ export function WorktreeView({
     </span>
   )
 
+  /** The header's leading affordance. On a phone this pane is a screen of its
+   *  own, so it is the back chevron to the worktree list; on desktop it is the
+   *  show-sidebar toggle, and only while the sidebar is hidden — when it's
+   *  open, its toggle lives in the sidebar header next to +. */
+  const leading: ReactNode = isMobile ? (
+    <button
+      onClick={goBackScreen}
+      title="Back to worktrees"
+      aria-label="Back to worktrees"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
+        transition active:bg-surface-2"
+    >
+      <NavBackIcon size={18} />
+    </button>
+  ) : !sidebarOpen ? (
+    <button
+      onClick={toggleSidebar}
+      title="Show sidebar"
+      aria-label="Show sidebar"
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+        hover:bg-surface-2 hover:text-text-dim"
+    >
+      <SidebarIcon size={14} />
+    </button>
+  ) : null
+
+  // Desktop lays eleven controls across the worktree bar; a phone has room for
+  // the title and about three. The alarm chits (git auth, blocked hosts,
+  // unforwarded ports) stay in the bar — they mean something is wrong and
+  // shouldn't be buried — and the rest folds into this menu.
+  const headerClass = isMobile
+    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
+    : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
+
+  // The terminal accessory keys: only on a phone, only over a real terminal
+  // pane. A preview, a diff or an ACP chat pane has nothing to send Esc to.
+  const keyBarTarget = isMobile && worktree && activeTab && !isSpecialPane(activeTab) ? activeTab : null
+
   return (
     <main className="flex h-full min-w-0 flex-col">
       {/* Slim worktree bar on the base layer — the panes are the cards. */}
       {creatingHere ? (
-        <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          {/* Only when the sidebar is collapsed — the reopen affordance. When
-              open, its toggle lives in the sidebar header (next to +). */}
-          {!sidebarOpen && (
-            <button
-              onClick={toggleSidebar}
-              title="Show sidebar"
-              aria-label="Show sidebar"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text-dim"
-            >
-              <SidebarIcon size={14} />
-            </button>
-          )}
+        <header className={headerClass}>
+          {leading}
           <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">
             {creatingHere.kind === 'restart' ? 'Restarting worktree' : 'New worktree'}
           </span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
         </header>
       ) : worktree ? (
-        <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          {/* Only when the sidebar is collapsed — the reopen affordance. When
-              open, its toggle lives in the sidebar header (next to +). */}
-          {!sidebarOpen && (
-            <button
-              onClick={toggleSidebar}
-              title="Show sidebar"
-              aria-label="Show sidebar"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text-dim"
-            >
-              <SidebarIcon size={14} />
-            </button>
-          )}
+        <header className={headerClass}>
+          {leading}
           <WorktreeTitle
             worktreeId={worktree.worktreeId}
             title={worktree.title ?? ''}
             prompt={worktree.prompt ?? ''}
           />
-          <button
-            onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
-            title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-            aria-label={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
-              hover:bg-surface-2 hover:text-text"
-          >
-            {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
-          </button>
-          <button
-            onClick={() => openShell()}
-            title="New shell"
-            aria-label="New shell"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
-              hover:bg-surface-2 hover:text-text"
-          >
-            <AddIcon size={14} />
-          </button>
-          <button
-            onClick={() => openChanges(worktree.worktreeId)}
-            title="Review changes"
-            aria-label="Review changes"
-            className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-              text-text-dim transition hover:bg-surface-2 hover:text-text"
-          >
-            <ChangesIcon size={13} />
-            Changes
-          </button>
-          {embedPreview && previewPorts.length > 0 && (
+          {!isMobile && (
             <button
-              onClick={() => openPreview(worktree.worktreeId, previewPorts[0].containerPort)}
-              title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
-              aria-label="Open preview"
-              className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
-                text-text-dim transition hover:bg-surface-2 hover:text-text"
+              onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
+              title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
+              aria-label={tiled ? 'Switch to tabs' : 'Switch to tiles'}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
+                hover:bg-surface-2 hover:text-text"
             >
-              <PreviewIcon size={11} />
-              Preview
+              {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
             </button>
           )}
-          {chipPorts.length > 0 && (
-            <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
+          {!isMobile && (
+            <>
+              <button
+                onClick={() => openShell()}
+                title="New shell"
+                aria-label="New shell"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <AddIcon size={14} />
+              </button>
+              <button
+                onClick={() => openChanges(worktree.worktreeId)}
+                title="Review changes"
+                aria-label="Review changes"
+                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+              >
+                <ChangesIcon size={13} />
+                Changes
+              </button>
+              {embedPreview && previewPorts.length > 0 && (
+                <button
+                  onClick={() => openPreview(worktree.worktreeId, previewPorts[0].containerPort)}
+                  title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
+                  aria-label="Open preview"
+                  className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
+                    text-text-dim transition hover:bg-surface-2 hover:text-text"
+                >
+                  <PreviewIcon size={11} />
+                  Preview
+                </button>
+              )}
+              {chipPorts.length > 0 && (
+                <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
+              )}
+            </>
           )}
           {worktree.unforwardedPorts.length > 0 && (
             <UnforwardedPortsBadge
@@ -698,26 +749,23 @@ export function WorktreeView({
           {worktree.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={worktree.blockedHosts} worktreeId={worktree.worktreeId} iconSize={12} className="hover:bg-[#d65858]/25" />
           )}
-          {/* Tool name sits at the far right, past any chits that appear. */}
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[worktree.tool]}</span>
+          {isMobile ? (
+            <PaneOverflowMenu
+              tool={worktree.tool}
+              chipPorts={chipPorts}
+              previewPorts={embedPreview ? previewPorts : []}
+              onNewShell={() => openShell()}
+              onOpenChanges={() => openChanges(worktree.worktreeId)}
+              onOpenPreview={(p) => openPreview(worktree.worktreeId, p)}
+            />
+          ) : (
+            /* Tool name sits at the far right, past any chits that appear. */
+            <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[worktree.tool]}</span>
+          )}
         </header>
       ) : (
-        <header className="titlebar-drag flex h-8 shrink-0 items-center px-2">
-          {/* Only when the sidebar is collapsed — the reopen affordance. When
-              open, its toggle lives in the sidebar header (next to +). */}
-          {!sidebarOpen && (
-            <div className="no-drag">
-              <button
-                onClick={toggleSidebar}
-                title="Show sidebar"
-                aria-label="Show sidebar"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text-dim"
-              >
-                <SidebarIcon size={14} />
-              </button>
-            </div>
-          )}
+        <header className={clsx(headerClass, 'titlebar-drag')}>
+          {leading && <div className="no-drag">{leading}</div>}
         </header>
       )}
 
@@ -748,7 +796,7 @@ export function WorktreeView({
             className="absolute flex flex-col overflow-hidden rounded-lg border border-hairline
               bg-surface shadow-[0_8px_24px_var(--shadow-color)]"
           >
-            <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
+            <div style={{ height: headerH }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {group.tabs.map((t) => renderTab(t, {
                 isActive: group.active === t,
                 onSelect: () => focusTerminal(worktree.worktreeId, t),
@@ -770,9 +818,16 @@ export function WorktreeView({
         {/* Tabs mode: one full-bleed card; the strip switches between all the
             workspace's panes the tiles mode arranges into columns. */}
         {worktree && !tiled && targets.length > 0 && (
+          // Full-bleed on a phone: the screen is the card, so the rounding,
+          // border and drop shadow (which exist to lift the pane off the base
+          // layer it floats on) have nothing left to lift it from.
           <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
-            border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]">
-            <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
+            border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]
+            max-md:rounded-none max-md:border-0 max-md:shadow-none">
+            <div
+              style={{ height: headerH }}
+              className="flex shrink-0 items-center gap-0.5 overflow-x-auto px-1.5"
+            >
               {targets.map((t) => renderTab(t, {
                 isActive: activeTab === t,
                 onSelect: () => focusTerminal(worktree.worktreeId, t),
@@ -814,17 +869,17 @@ export function WorktreeView({
           // still unmount off-screen (below).
           const tabsRect = {
             left: PAD,
-            top: HEADER_H,
+            top: headerH,
             width: wsSize.w - PAD * 2,
-            height: wsSize.h - HEADER_H - PAD,
+            height: wsSize.h - headerH - PAD,
           }
           const onScreen = colRect != null || (id === sid && !tiled && target === activeTab)
           const style = colRect
             ? {
                 left: colRect.x + PAD,
-                top: colRect.y + HEADER_H,
+                top: colRect.y + headerH,
                 width: colRect.w - PAD * 2,
-                height: colRect.h - HEADER_H - PAD,
+                height: colRect.h - headerH - PAD,
               }
             : id === sid && !tiled && (special ? target === activeTab : targets.includes(target))
               ? tabsRect
@@ -925,6 +980,11 @@ export function WorktreeView({
         )}
       </div>
 
+      {/* A sibling of the measured workspace, not an overlay on it: the space
+          the bar takes comes out of the terminal's height, so the PTY's row
+          count follows and nothing ends up hidden behind it. */}
+      {keyBarTarget && sid && <TerminalKeyBar worktreeId={sid} target={keyBarTarget} />}
+
       <ConfirmDialog
         open={!!confirmKill}
         onOpenChange={(next) => { if (!next) setConfirmKill(null) }}
@@ -937,6 +997,82 @@ export function WorktreeView({
         }}
       />
     </main>
+  )
+}
+
+/**
+ * The mobile worktree bar's ⋯ menu: everything the desktop bar lays out
+ * horizontally and a 390px screen has no room for.
+ *
+ * The alarm chits (git auth, blocked hosts, unforwarded ports) deliberately
+ * stay out of here and remain in the bar — they say something is wrong, and
+ * burying that behind a tap defeats the point.
+ */
+function PaneOverflowMenu({
+  tool,
+  chipPorts,
+  previewPorts,
+  onNewShell,
+  onOpenChanges,
+  onOpenPreview,
+}: {
+  tool: WorktreeListEntry['tool']
+  /** Forwarded ports as external links (browser builds — no embedded webview). */
+  chipPorts: WorktreeListEntry['forwardedPorts']
+  /** Forwarded ports the embedded preview pane can show (Electron only). */
+  previewPorts: WorktreeListEntry['forwardedPorts']
+  onNewShell: () => void
+  onOpenChanges: () => void
+  onOpenPreview: (containerPort: number) => void
+}): JSX.Element {
+  const ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-2 text-xs '
+    + 'text-text-dim outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        title="More"
+        aria-label="More pane actions"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
+          transition active:bg-surface-2 data-[popup-open]:bg-surface-2"
+      >
+        <MoreIcon size={18} />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+          <Menu.Popup className="min-w-[200px] rounded-lg border border-border bg-surface-2 p-1 text-text
+            shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
+            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+            <Menu.Item className={ITEM} onClick={onNewShell}>
+              <AddIcon size={14} />
+              New shell
+            </Menu.Item>
+            <Menu.Item className={ITEM} onClick={onOpenChanges}>
+              <ChangesIcon size={14} />
+              Review changes
+            </Menu.Item>
+            {previewPorts.length > 0 && (
+              <Menu.Item className={ITEM} onClick={() => onOpenPreview(previewPorts[0].containerPort)}>
+                <PreviewIcon size={14} />
+                Preview
+              </Menu.Item>
+            )}
+            {/* Opened imperatively rather than as an <a>: this is a menu item,
+                and the click is a user gesture, so no popup blocker applies. */}
+            {chipPorts.map((p) => (
+              <Menu.Item
+                key={`${p.hostPort}:${p.containerPort}`}
+                className={ITEM}
+                onClick={() => window.open(portLinkHref(window.location.hostname, p), '_blank', 'noopener')}
+              >
+                <PreviewIcon size={14} />
+                <span className="font-mono">{portLinkLabel(p)}</span>
+              </Menu.Item>
+            ))}
+            <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }
 

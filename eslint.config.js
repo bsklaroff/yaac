@@ -302,6 +302,34 @@ export default tseslint.config(
     },
   },
 
+  // The mobile shell's intent/effect split (docs/mobile-layout.md). Which
+  // screen shows moves only on a user action, so App's own effects — the
+  // project recovery and the pane auto-select — go through variants that
+  // deliberately don't navigate. Those variants exist for exactly one caller
+  // each; reaching for one from a component (or a new effect anywhere else)
+  // would fling the user past the list they were looking at, which is the bug
+  // the whole design exists to prevent. Keep it a conscious rule edit rather
+  // than an autocomplete accident.
+  //
+  // Re-states ImportExpression: this zone redeclares no-restricted-syntax, and
+  // a redeclaration replaces the base rule's options wholesale.
+  {
+    files: ['packages/frontend/src/**/*.{ts,tsx}'],
+    ignores: ['packages/frontend/src/App.tsx', 'packages/frontend/src/store.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        'ImportExpression',
+        {
+          selector: "Identifier[name='autoSelectWorktree'], Identifier[name='restoreActiveProject']",
+          message: 'autoSelectWorktree/restoreActiveProject are App\'s effect-side actions. Anything a user '
+            + 'taps must use selectWorktree/setActiveProject so the mobile shell navigates with it '
+            + '(docs/mobile-layout.md).',
+        },
+      ],
+    },
+  },
+
   // desktop (Electron main): only @yaac/shared (+ self via #). Talking to
   // the server goes through the shared typed client, same as the CLI; the
   // window's content is the SPA served by the server, so nothing here may

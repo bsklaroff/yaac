@@ -122,7 +122,8 @@ export function NewWorktreeButton(
         <Popover.Trigger
           title="New worktree"
           className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
-            hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent"
+            hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent
+            max-md:h-9 max-md:w-9"
         >
           <AddIcon size={14} />
         </Popover.Trigger>
