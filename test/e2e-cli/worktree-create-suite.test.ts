@@ -1648,12 +1648,35 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(devFile).toBe('dev content\n')
     }, 60_000)
 
-    it('--branch rejects a branch missing from origin without creating a pod', async () => {
+    it('--branch rejects a branch missing from origin, leaving no pod and no checkout', async () => {
+      // The create stages its worktree dir (and the ephemeral mount points
+      // inside it) before provisioning starts, so a create that dies this
+      // late has something on disk to collect. Its row is rolled back with
+      // it, and every sweep that could name a leftover works from rows — so
+      // whatever survives here survives forever. Counted rather than named
+      // because the CLI mints the id server-side.
+      const worktreesRoot = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees')
+      const adminRoot = path.join(testEnv.dataDir, 'projects', SLUG, 'repo', '.git', 'worktrees')
+      const ls = async (dir: string): Promise<string[]> =>
+        (await fs.readdir(dir).catch((): string[] => [])).sort()
+      const [checkoutsBefore, adminBefore] = [await ls(worktreesRoot), await ls(adminRoot)]
       const podsBefore = (await listWorktreePods(SLUG)).length
+
       const bad = await runYaac(serverEnv, 'worktree', 'create', SLUG, '--branch', 'ghost')
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
       expect((await listWorktreePods(SLUG)).length).toBe(podsBefore)
+
+      // Polled, not asserted outright: the removal is chained off the
+      // checkout leg settling rather than run inline, so that a create whose
+      // leg is still mid-fetch can't have a full checkout staged *after* the
+      // rm. Here that leg is the very thing that failed, so this settles at
+      // once — the poll is for the ordering, not for slowness.
+      for (let i = 0; i < 50 && (await ls(worktreesRoot)).length > checkoutsBefore.length; i++) {
+        await sleep(100)
+      }
+      expect(await ls(worktreesRoot)).toEqual(checkoutsBefore)
+      expect(await ls(adminRoot)).toEqual(adminBefore)
     }, 60_000)
   })
   describe('agent mode (--mode acp)', () => {

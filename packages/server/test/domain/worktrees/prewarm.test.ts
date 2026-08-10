@@ -16,7 +16,8 @@ vi.mock('#domain/worktrees/spare-pool', () => ({
   rebranchSpare: vi.fn(),
 }))
 vi.mock('#domain/worktrees/cleanup', () => ({
-  cleanupWorktreeDetached: vi.fn(),
+  cleanupWorktree: vi.fn(),
+  deleteWorktreeState: vi.fn(),
 }))
 vi.mock('#runtime/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn(),
@@ -63,7 +64,7 @@ import {
 } from '#domain/worktrees/prewarm'
 import { LABEL_PREWARMED, LABEL_TOOL, listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
+import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { kubectlWithRetry } from '#platform/k8s/kubectl'
 import { podExec, waitForStreamd } from '#platform/k8s/stream-relay'
@@ -81,12 +82,17 @@ const mockExec = vi.mocked(podExec)
 const mockWaitForStreamd = vi.mocked(waitForStreamd)
 const mockRetool = vi.mocked(retoolSpare)
 const mockRebranch = vi.mocked(rebranchSpare)
-const mockCleanupDetached = vi.mocked(cleanupWorktreeDetached)
+const mockCleanup = vi.mocked(cleanupWorktree)
+const mockDeleteState = vi.mocked(deleteWorktreeState)
 const mockFetchOrigin = vi.mocked(fetchOrigin)
 const mockDefaultBranch = vi.mocked(getDefaultBranch)
 const mockRemoteBranchExists = vi.mocked(remoteBranchExists)
 const mockWorktreeUpstream = vi.mocked(worktreeUpstreamBranch)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)
+
+/** Let the teardown chain a burned claim starts — deliberately unawaited, so
+ *  the caller falls straight through to a cold create — run to completion. */
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 const GIT_USER = { name: 'A B', email: 'a@b.co' }
 const emit = vi.fn()
@@ -127,7 +133,8 @@ describe('tryClaimPrewarmed', () => {
     mockWaitForStreamd.mockResolvedValue(undefined)
     mockRetool.mockResolvedValue(undefined)
     mockRebranch.mockResolvedValue(undefined)
-    mockCleanupDetached.mockResolvedValue(undefined)
+    mockCleanup.mockResolvedValue(true)
+    mockDeleteState.mockResolvedValue(true)
     // Branch defaults: spare warmed from main, config sets no default —
     // so no re-branch prep unless a test asks for one.
     mockResolveConfig.mockResolvedValue({})
@@ -184,15 +191,59 @@ describe('tryClaimPrewarmed', () => {
   })
 
   // A claim that gave up after reporting describes a session that never
-  // existed; the caller is about to cold-create a different one.
-  it('reports the create failed when a claim gives up after reporting the worktree', async () => {
+  // existed; the caller is about to cold-create a different one. The checkout
+  // has to go with it: the claim cleared the `spare` flag before it mutated
+  // anything, so the sweep that collects a dead spare's checkout on the
+  // strength of that flag can no longer see this one, and erasing the row
+  // takes the last name anything had for it.
+  it('collects the burned spare whole — pod, then checkout, then row', async () => {
     mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
     mockRetool.mockRejectedValue(new Error('retool blew up'))
 
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
+    await flush()
+
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
     expect(appliedEvents.at(-1)).toEqual({
       type: 'worktree-create-failed', projectSlug: 'p', worktreeId: 'spare1',
     })
+    // Order is the whole safety argument. The AWAITED teardown runs first, so
+    // the checkout is never removed under a pod still mounting /workspace;
+    // the row goes last, so a teardown that dies partway leaves something the
+    // stale reaper can still see rather than a checkout nothing can name.
+    expect(mockCleanup.mock.invocationCallOrder[0])
+      .toBeLessThan(mockDeleteState.mock.invocationCallOrder[0])
+    expect(mockDeleteState.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(applyWorktreeEvent).mock.invocationCallOrder.at(-1)!)
+  })
+
+  // Each step of that chain destroys the evidence the one before it relied
+  // on, so each gates the next on having actually happened.
+  it('keeps the checkout, and its row, when the teardown cannot confirm the pod is gone', async () => {
+    // A Job delete that timed out leaves a pod in its grace period still
+    // writing to /workspace.
+    mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+    mockCleanup.mockResolvedValue(false)
+
+    expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
+    await flush()
+    expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(appliedEvents.some((e) => e.type === 'worktree-create-failed')).toBe(false)
+  })
+
+  it('keeps the row when the checkout could not be removed', async () => {
+    // The row is the last name those bytes have — erasing it over a failed rm
+    // is exactly how a retryable leftover becomes a permanent one. What
+    // survives reaches the user as an ordinary stopped worktree.
+    mockListPods.mockResolvedValue([spare({ tool: 'codex' })])
+    mockRetool.mockRejectedValue(new Error('retool blew up'))
+    mockDeleteState.mockResolvedValue(false)
+
+    expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
+    await flush()
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
+    expect(appliedEvents.some((e) => e.type === 'worktree-create-failed')).toBe(false)
   })
 
   it('returns undefined when there is no spare', async () => {
@@ -236,7 +287,7 @@ describe('tryClaimPrewarmed', () => {
     mockRetool.mockRejectedValue(new Error('respawn failed'))
 
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
-    expect(mockCleanupDetached).toHaveBeenCalledWith({
+    expect(mockCleanup).toHaveBeenCalledWith({
       jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 'spare1',
     })
     // The reservation is kept so a concurrent claim can't grab the dying pod.
@@ -248,7 +299,7 @@ describe('tryClaimPrewarmed', () => {
     mockKubectl.mockRejectedValue(new Error('pod gone'))
 
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
-    expect(mockCleanupDetached).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
   it('releases and skips a spare whose tmux is dead', async () => {
@@ -266,12 +317,15 @@ describe('tryClaimPrewarmed', () => {
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)).toBeUndefined()
     expect(mockWaitForStreamd).toHaveBeenCalledWith('yaac-p-spare', { timeoutMs: 10_000 })
     // Nothing ran against the pod, so the spare is untainted: no retool, no
-    // relabel, and no reap — the claim just degrades to a cold create.
+    // relabel, and no reap — the claim just degrades to a cold create, and
+    // the spare keeps the checkout it is still going to serve from.
     expect(mockRetool).not.toHaveBeenCalled()
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockExec).not.toHaveBeenCalled()
     expect(mockKubectl).not.toHaveBeenCalled()
-    expect(mockCleanupDetached).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+    await flush()
+    expect(mockDeleteState).not.toHaveBeenCalled()
     expect(claiming.size).toBe(0)
   })
 
@@ -290,7 +344,7 @@ describe('tryClaimPrewarmed', () => {
 
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
     expect(result?.worktreeId).toBe('spare1')
-    expect(mockCleanupDetached).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('skips the git-config execs when no identity is supplied', async () => {
@@ -393,7 +447,7 @@ describe('tryClaimPrewarmed', () => {
     await expect(tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'nope'))
       .rejects.toMatchObject({ code: 'VALIDATION' })
     expect(mockRebranch).not.toHaveBeenCalled()
-    expect(mockCleanupDetached).not.toHaveBeenCalled() // pre-mutation: not tainted
+    expect(mockCleanup).not.toHaveBeenCalled() // pre-mutation: not tainted
     expect(claiming.size).toBe(0) // released for the next claim
     // The row is claimed before the branch is validated, so propagating has
     // to undo it first. Left flagged claimed, the pod would still be labeled
@@ -410,7 +464,7 @@ describe('tryClaimPrewarmed', () => {
     mockRebranch.mockRejectedValue(new Error('reset failed'))
 
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')).toBeUndefined()
-    expect(mockCleanupDetached).toHaveBeenCalledWith({
+    expect(mockCleanup).toHaveBeenCalledWith({
       jobName: 'yaac-p-spare', projectSlug: 'p', worktreeId: 'spare1',
     })
     expect(claiming.has('yaac-p-spare')).toBe(true)
@@ -422,7 +476,7 @@ describe('tryClaimPrewarmed', () => {
     mockListPods.mockResolvedValue([spare()])
     mockRebranch.mockRejectedValue(new ServerError('VALIDATION', 'weird in-pod failure'))
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')).toBeUndefined()
-    expect(mockCleanupDetached).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
   })
 
   it('lets an explicit branch request win over the project default', async () => {

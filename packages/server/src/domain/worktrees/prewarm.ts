@@ -38,7 +38,7 @@ import {
   podExec,
   waitForStreamd,
 } from '#platform/k8s'
-import { cleanupWorktreeDetached } from './cleanup'
+import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#records'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import { claimSpareWorktree, restoreSpareWorktree } from '#records'
@@ -398,31 +398,45 @@ export async function tryClaimPrewarmed(
     // so a later claim can't pick up its inconsistent state; the reconciler
     // warms a fresh one. Keep the reservation (jobNames are never reused,
     // so the leaked entry is inert) so a concurrent claim can't grab the
-    // dying pod before the detached teardown lands.
+    // dying pod before the teardown lands.
+    //
+    // Everything the spare left goes, in the reap path's order
+    // (prewarm-reconcile.ts): pod, then checkout, then row. The checkout has
+    // to be removed here at all because the claim cleared the `spare` flag
+    // before it mutated anything, putting these bytes beyond the startup
+    // sweep that collects a dead spare's checkout on the strength of it.
+    //
+    // Each step gates the next on having actually happened, because each one
+    // destroys the evidence the one before it relied on. `cleanupWorktree`
+    // resolves false when its delete timed out with the pod still
+    // terminating — and a pod in its grace period is still writing to
+    // /workspace, so the checkout stays. `deleteWorktreeState` resolves false
+    // when an rm failed, and then the row stays: the row is the last name
+    // these bytes have, so erasing it over a failed rm is exactly how a
+    // retryable leftover becomes a permanent one. Whatever is left in either
+    // case keeps its row and reaches the user as an ordinary stopped
+    // worktree, via the stale reaper.
+    //
+    // The row erase is the same one any failed create does: the claim never
+    // completed, so the row describes a worktree that never existed, and a
+    // claim is always a fresh worktree, never a resume. Unawaited as a whole,
+    // so the caller degrades to a cold create immediately — the row can
+    // therefore linger, marked terminating, for as long as the teardown runs.
     if (chosen && mutated) {
       const { jobName, projectSlug: slug, worktreeId } = chosen
-      cleanupWorktreeDetached({ jobName, projectSlug: slug, worktreeId })
+      void cleanupWorktree({ jobName, projectSlug: slug, worktreeId })
+        .then((podGone) => podGone && deleteWorktreeState(slug, worktreeId))
+        .then((removed) => (removed && recordedRow
+          ? applyWorktreeEvent({ type: 'worktree-create-failed', projectSlug, worktreeId })
+          : undefined))
         .catch(() => { /* best-effort; the stale-session reaper retries */ })
       reserved = undefined
-    }
-    // The claim never completed, so its row describes a worktree that never
-    // existed — the caller is about to cold-create a different one.
-    //
-    // Which undo applies depends on whether the spare survived. A mutated
-    // spare is being torn down above, so its row is erased like any failed
-    // create's (a claim is always a fresh worktree, never a resume). An
-    // untouched one is still a perfectly good spare — putting the flag back
-    // returns it to the pool rather than stranding a pod whose row no longer
-    // says it is reapable.
-    if (chosen && recordedRow) {
+    } else if (chosen && recordedRow) {
+      // An untouched spare is still a perfectly good spare — putting the flag
+      // back returns it to the pool rather than stranding a pod whose row no
+      // longer says it is reapable.
       try {
-        if (mutated) {
-          await applyWorktreeEvent({
-            type: 'worktree-create-failed', projectSlug, worktreeId: chosen.worktreeId,
-          })
-        } else {
-          await restoreSpareWorktree(projectSlug, chosen.worktreeId)
-        }
+        await restoreSpareWorktree(projectSlug, chosen.worktreeId)
       } catch {
         // Best-effort; the row has no pod to back it either way.
       }

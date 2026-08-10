@@ -67,8 +67,11 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  *
  * NOT called by an ordinary stop. A stopped worktree is a checkout still on
  * disk, diff and all, waiting to be restarted; this is for the cases where the
- * worktree itself goes away — an unclaimed spare being reaped, and a project
- * being removed.
+ * worktree itself goes away — an unclaimed spare being reaped, and the two
+ * failures that leave a checkout no row will ever name again: a fresh create
+ * that gave up, and a claim that failed after mutating its spare. (A failed
+ * *resume* is not one of those: its row is put back as the restart found it,
+ * and its checkout is the work the user came back for.)
  *
  * The admin dir needs its `locked` file cleared first: worktree setup writes it
  * precisely so `git worktree prune` can never reap a live worktree from
@@ -78,23 +81,40 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  * Transcripts are deliberately left. The tool homes are shared across a
  * project, so a worktree resumed into a second worktree would lose its history
  * to the first one's deletion.
+ *
+ * Every path is still best-effort — a worktree that half-goes-away beats a
+ * reap that aborts and leaves the rest for nobody — but the verdict is
+ * REPORTED rather than swallowed. Callers delete the worktree's row next, and
+ * the row is the last name anything has for these bytes: erasing it after a
+ * failed rm is what turns a retryable leftover into a permanent one. `false`
+ * therefore means "keep the row", and the caller that keeps it hands the
+ * worktree to the stale reaper, which surfaces it as an ordinary stopped
+ * worktree the user can see and delete.
  */
 export async function deleteWorktreeState(
   projectSlug: string,
   worktreeId: string,
-): Promise<void> {
+): Promise<boolean> {
+  // Structural, not incidental: every id reaching here today is a
+  // server-minted UUID or one read back off a row or a pod label, but an
+  // empty one would resolve `worktreeDir` to the worktrees ROOT and take
+  // every worktree of the project with it.
+  if (!worktreeId) {
+    serverLog(`[server] delete worktree state ${projectSlug}: refused an empty worktree id`)
+    return false
+  }
   const adminDir = path.join(repoDir(projectSlug), '.git', 'worktrees', worktreeId)
-  await Promise.all([
+  const outcomes = await Promise.all([
     fs.rm(worktreeDir(projectSlug, worktreeId), { recursive: true, force: true }),
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
     deleteSessionStartsLog(projectSlug, worktreeId),
-  ].map((p) => p.catch((err: unknown) => {
-    // Best-effort per path: a worktree that half-goes-away is better than a
-    // reap that aborts and leaves the rest behind for nobody to collect.
+  ].map((p) => p.then(() => true, (err: unknown) => {
     serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)
+    return false
   })))
+  return outcomes.every(Boolean)
 }
 
 /**
@@ -114,6 +134,12 @@ async function removeWorktreeFromProxy(worktreeId: string): Promise<void> {
   }
 }
 
+/**
+ * Tear a running worktree's runtime down. Resolves `true` when the Job — and
+ * with it the pod — is really gone, `false` when the delete timed out with the
+ * pod still terminating. Callers that go on to remove the checkout must gate
+ * on that: a pod in its grace period is still writing to /workspace.
+ */
 export async function cleanupWorktree(params: {
   jobName: string
   projectSlug: string
@@ -121,7 +147,7 @@ export async function cleanupWorktree(params: {
   /** Why the worktree died, when a reaper (not the user) is tearing it
    *  down — persisted so the deleted-worktree view can say so. */
   cause?: WorktreeDeathCause
-}): Promise<void> {
+}): Promise<boolean> {
   const { jobName, projectSlug, worktreeId, cause } = params
 
   // Mark terminating BEFORE evicting the status below: in the gap before
@@ -154,16 +180,27 @@ export async function cleanupWorktree(params: {
 
   // Delete the worktree Job; the pod's terminationGracePeriodSeconds (5s)
   // covers the graceful-stop window, so no separate stop step is needed.
-  // --wait so the modules/worktree dirs below aren't yanked out from under
-  // a still-terminating pod.
+  //
+  // --cascade=foreground --wait so the dirs below aren't yanked out from
+  // under a still-terminating pod. Both halves are needed and only the pair
+  // is enough: under kubectl's DEFAULT background propagation the API server
+  // drops the Job object and returns while the GC deletes the pod behind it,
+  // so `--wait` would return with the pod still running — and still writing
+  // into /workspace — for its whole grace period. Foreground holds the Job
+  // until its pod is really gone, which is what callers that go on to remove
+  // the checkout (`deleteWorktreeState`) are relying on.
+  let podGone = true
   try {
     await kubectlWithRetry([
       'delete', 'job', jobName, '-n', k8sNamespace(),
-      '--ignore-not-found', '--wait=true', '--timeout=30s',
+      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=30s',
     ])
   } catch {
-    // Job may already be gone, or deletion timed out — best-effort; the
-    // background reconcile loop sweeps any leftover Job.
+    // Already gone, or the delete timed out with the pod still terminating.
+    // Reported rather than swallowed: the caller may be about to delete the
+    // checkout, and a timeout is exactly the case where a live pod may still
+    // be writing to it. The background reconcile loop sweeps the leftover Job.
+    podGone = false
   }
 
   // Tear down the worktree's vcluster, if it had one. One cheap probe
@@ -194,6 +231,7 @@ export async function cleanupWorktree(params: {
   }
 
   console.log(`Session ${worktreeId} cleaned up.`)
+  return podGone
 }
 
 /**
@@ -355,7 +393,11 @@ async function gcOrphanSpares(
   for (const sid of spares) {
     if (liveWorktreeIds.has(sid)) continue
     if (await inUseBySweep(worktreeDir(slug, sid), sid, sweepStartedAtMs)) continue
-    await deleteWorktreeState(slug, sid)
+    // The row goes only once the bytes actually did: it is the flag on this
+    // row that lets the sweep recognize the checkout at all, so dropping it
+    // after a failed rm would strand whatever is left for good. Keeping it
+    // costs nothing — the next sweep retries.
+    if (!await deleteWorktreeState(slug, sid)) continue
     await deleteSpareWorktreeRow(slug, sid).catch(() => { /* next sweep */ })
     console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
   }

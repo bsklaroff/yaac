@@ -65,19 +65,24 @@ export async function reconcilePrewarmPool(
     // the checkout off the back of it would race a pod still mounting
     // /workspace — and a crash in that window would leave a claimable
     // labeled spare whose checkout is gone. `cleanupWorktree` returns only
-    // once the Job is deleted.
+    // once the Job and its pod are really gone, and says so: a delete that
+    // timed out with the pod still terminating resolves false, and then the
+    // bytes stay put for the startup sweep rather than being pulled out from
+    // under it.
     //
     // Not awaited by the tick, so a slow teardown never stalls the pool; a
     // failure here is collected by the startup sweep instead, since once the
     // pod is gone the planner (which sees only pods) can never retry it.
-    // The row goes last, and only after the bytes: while it survives, the
-    // spare flag is what tells the startup sweep this checkout was never a
-    // worktree, so dropping it first would strand whatever the teardown then
-    // failed to remove. `deleteSpareWorktreeRow` is guarded on the flag, so
-    // it can only ever take the row it was warmed with.
+    // The row goes last, and only once the bytes are actually gone: while it
+    // survives, the spare flag is what tells the startup sweep this checkout
+    // was never a worktree, so dropping it over a failed rm would strand
+    // whatever the teardown left. `deleteSpareWorktreeRow` is guarded on the
+    // flag, so it can only ever take the row it was warmed with.
     void cleanupWorktree(target)
-      .then(() => deleteWorktreeState(target.projectSlug, target.worktreeId))
-      .then(() => deleteSpareWorktreeRow(target.projectSlug, target.worktreeId))
+      .then((podGone) => podGone && deleteWorktreeState(target.projectSlug, target.worktreeId))
+      .then(async (removed) => {
+        if (removed) await deleteSpareWorktreeRow(target.projectSlug, target.worktreeId)
+      })
       .catch(() => { /* swept at startup — see gcOrphanWorktreeState */ })
   }
 
