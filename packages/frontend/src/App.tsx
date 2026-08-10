@@ -124,6 +124,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const readWaiting = useUiStore((s) => s.readWaiting)
   const markWaitingRead = useUiStore((s) => s.markWaitingRead)
   const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
+  const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
 
   const projects = snapshot?.projects ?? []
   const worktrees = snapshot?.worktrees ?? []
@@ -299,6 +300,22 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       .filter((s) => s.status === 'waiting')
       .map((s) => ({ worktreeId: s.worktreeId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
   }, [snapshot, worktrees, syncWaitingRead])
+
+  // GC chat drafts for worktrees that no longer exist. Same hydration guard as
+  // the read marks, and for the same reason: syncing against the pre-snapshot
+  // empty fallback would wipe every restored draft on reload.
+  //
+  // Provisioning ids count as live: a worktree being restarted is filtered out
+  // of the snapshot's worktree list for the whole restart, and it comes back
+  // with the same id and the same conversations — GCing there would delete a
+  // draft the user is about to return to.
+  useEffect(() => {
+    if (!snapshot) return
+    syncChatDrafts([
+      ...worktrees.map((s) => s.worktreeId),
+      ...provisioning.map((p) => p.worktreeId),
+    ])
+  }, [snapshot, worktrees, provisioning, syncChatDrafts])
 
   // Per-project count of unread waiting worktrees → the rail attention badge.
   const attention = unreadWaitingBySlug(worktrees, readWaiting, pendingDeleteIds)

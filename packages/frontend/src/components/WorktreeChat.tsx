@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
+import { chatDraftKey, useUiStore } from '#store'
 import type { AcpContent, AcpEvent, AcpPlanEntry, AcpToolCall } from '@yaac/shared/acp'
 
 /**
@@ -14,7 +15,8 @@ import type { AcpContent, AcpEvent, AcpPlanEntry, AcpToolCall } from '@yaac/shar
  * `WorktreeChanges`' conventions (own transport, own scroll state, torn down
  * when off-screen) rather than the terminal's keep-alive discipline: there is
  * no PTY to keep warm, because the conversation lives on the server and
- * replays on every attach.
+ * replays on every attach. The one thing a teardown must not cost is the
+ * user's own words, so the draft lives in the ui store rather than here.
  *
  * Rendering is deliberately chunk-driven. The agent emits text in small
  * pieces and each one is its own event, so consecutive events of the same kind
@@ -35,6 +37,12 @@ type Group =
 
 function textOf(content: AcpContent[]): string {
   return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
+}
+
+/** What the input box held when a `user` event was sent — the text parts only,
+ *  so it compares against a draft rather than against a rendering of one. */
+function promptText(content: AcpContent[]): string {
+  return content.filter((c) => c.type === 'text').map((c) => c.text).join('')
 }
 
 /**
@@ -174,7 +182,18 @@ export function WorktreeChat({
   visible?: boolean
 }): JSX.Element {
   const { events, busy, connected, send } = useAcpStream(worktreeId, agentSessionId, visible)
-  const [draft, setDraft] = useState('')
+  const setChatDraft = useUiStore((s) => s.setChatDraft)
+  const setChatSent = useUiStore((s) => s.setChatSent)
+  /**
+   * The draft is held locally and mirrored into the store, rather than read
+   * from it: this pane is the only writer, so a keystroke needs no round trip
+   * through a subscription. The seed is a plain initializer because the pane is
+   * keyed by conversation — a different one is a different mount, never a prop
+   * change under this state.
+   */
+  const [draft, setDraft] = useState(
+    () => useUiStore.getState().chatDrafts[chatDraftKey(worktreeId, agentSessionId)]?.text ?? '',
+  )
   /**
    * A message handed to the socket but not yet echoed back by the server.
    * Writing to a socket is not evidence the server received anything — the
@@ -183,6 +202,14 @@ export function WorktreeChat({
    * what the user typed is still there to send again.
    */
   const [awaitingEcho, setAwaitingEcho] = useState<string | null>(null)
+  /** What this pane mounted with — the draft, and the message a previous mount
+   *  had handed to the socket without seeing its echo — plus whether the two
+   *  have been reconciled against the replayed history yet (see below). */
+  const restoredRef = useRef(draft)
+  const restoredSentRef = useRef(
+    useUiStore.getState().chatDrafts[chatDraftKey(worktreeId, agentSessionId)]?.sent,
+  )
+  const reconciledRef = useRef(false)
   const groups = useMemo(() => groupEvents(events), [events])
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
@@ -205,17 +232,56 @@ export function WorktreeChat({
     if (visible) inputRef.current?.focus()
   }, [visible])
 
+  // Keep the store's copy in step, so the text is still there when the pane is
+  // torn down off-screen and mounted again. Re-mirroring the restored value on
+  // mount is a no-op the setter absorbs.
+  useEffect(() => {
+    setChatDraft(worktreeId, agentSessionId, draft)
+  }, [draft, worktreeId, agentSessionId, setChatDraft])
+
+  /**
+   * Settle a restored in-flight message, once, when the first `hello` lands.
+   *
+   * A sent message stays in the box until the server echoes it, so a pane torn
+   * down inside that window restores text that may well have been delivered —
+   * showing the user their own message twice and inviting them to send it
+   * again. Two questions decide it, and they need different evidence. Is the
+   * box holding *the message that was sent*, rather than words that merely
+   * read like it? That is the `sent` marker: string equality against the
+   * conversation's history would clear a freshly typed "ok" just because the
+   * last "ok" was delivered. And did it actually arrive? That is the replayed
+   * history, which is the only thing that knows.
+   *
+   * Both yes: the message landed, and the box is emptied. Either no: the text
+   * stays put, which is the whole point of holding it. The marker is dropped
+   * regardless — the history has spoken, so nothing is in flight any more.
+   */
+  useEffect(() => {
+    if (reconciledRef.current || !connected) return
+    reconciledRef.current = true
+    const sent = restoredSentRef.current
+    if (sent === undefined) return
+    setChatSent(worktreeId, agentSessionId, undefined)
+    if (restoredRef.current.trim() !== sent) return
+    let lastUser: string | undefined
+    for (const e of events) if (e.type === 'user') lastUser = promptText(e.content)
+    if (lastUser !== sent) return
+    // Only if the box is still untouched — text typed while the socket was
+    // coming up is newer than anything the history can speak to.
+    setDraft((cur) => (cur === restoredRef.current ? '' : cur))
+  }, [connected, events, worktreeId, agentSessionId, setChatSent])
+
   // The server confirms a message by echoing it as a `user` event. Until then
   // the text stays put; the echo is what clears it.
   useEffect(() => {
     if (awaitingEcho === null) return
-    const echoed = events.some((e) => e.type === 'user'
-      && e.content.filter((c) => c.type === 'text').map((c) => c.text).join('') === awaitingEcho)
+    const echoed = events.some((e) => e.type === 'user' && promptText(e.content) === awaitingEcho)
     if (echoed) {
       setDraft('')
       setAwaitingEcho(null)
+      setChatSent(worktreeId, agentSessionId, undefined)
     }
-  }, [events, awaitingEcho])
+  }, [events, awaitingEcho, worktreeId, agentSessionId, setChatSent])
 
   // A connection that drops before the echo means the message may never have
   // arrived. Stop waiting so the box is usable again — with the text still in
@@ -239,6 +305,9 @@ export function WorktreeChat({
     if (text === '' || !connected || busy || awaitingEcho !== null) return
     if (send({ type: 'prompt', text })) {
       setAwaitingEcho(text)
+      // Recorded where it outlives this pane: if the pane is torn down before
+      // the echo, its successor needs to know this exact text was in flight.
+      setChatSent(worktreeId, agentSessionId, text)
       pinnedRef.current = true
     }
   }

@@ -12,6 +12,7 @@ const SELECTION_LS_KEY = 'yaac.selection.v1'
 const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
 const PINNED_USAGE_LS_KEY = 'yaac.pinnedusage.v1'
 const SOUND_LS_KEY = 'yaac.sound.v1'
+const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
 
 /** Whether the attention chime plays; defaults on (exported for tests). */
 export function loadSoundEnabled(): boolean {
@@ -184,6 +185,73 @@ export function persistReadWaiting(marks: Record<string, number>): void {
     localStorage.setItem(READ_WAITING_LS_KEY, JSON.stringify(marks))
   } catch {
     // quota/serialization failures are non-fatal — marks just won't stick
+  }
+}
+
+/** Key a chat pane's draft by its conversation: a worktree can run several ACP
+ *  sessions at once, each its own pane with its own half-typed message. Same
+ *  `id|target` shape WorktreeView keys its mounted panes with (neither id
+ *  contains a pipe). */
+export function chatDraftKey(worktreeId: string, agentSessionId: string): string {
+  return `${worktreeId}|${agentSessionId}`
+}
+
+/**
+ * One chat pane's input box, as it survives the pane.
+ *
+ * `sent` is the exact text this box last handed to the socket without seeing
+ * the server's echo. It is what makes "is the box holding a message that was
+ * already delivered?" an identity question rather than a guess: the pane can
+ * ask whether the text it restored is *the one it sent*, instead of whether it
+ * merely reads like the last thing the conversation heard — which a user
+ * retyping "ok" would too.
+ */
+export interface ChatDraft {
+  text: string
+  sent?: string
+}
+
+/** A draft this long is a paste, not a message being typed. It stays in memory
+ *  (so navigating away still keeps it) but never reaches localStorage, where it
+ *  could exhaust the quota and take every other key's writes down with it. */
+const MAX_PERSISTED_DRAFT = 64 * 1024
+
+/** Read persisted chat drafts (conversation key → box state), dropping
+ *  anything not shaped like a draft (exported for tests). Stale keys are
+ *  pruned against the first snapshot by syncChatDrafts. */
+export function loadChatDrafts(): Record<string, ChatDraft> {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const raw = localStorage.getItem(CHAT_DRAFTS_LS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, ChatDraft> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue
+      const { text, sent } = v as { text?: unknown; sent?: unknown }
+      if (typeof text !== 'string') continue
+      if (sent !== undefined && typeof sent !== 'string') continue
+      if (text === '' && sent === undefined) continue
+      out[k] = sent === undefined ? { text } : { text, sent }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Persist chat drafts; best-effort (exported for tests). */
+export function persistChatDrafts(drafts: Record<string, ChatDraft>): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    const storable = Object.fromEntries(
+      Object.entries(drafts).filter(([, d]) =>
+        d.text.length <= MAX_PERSISTED_DRAFT && (d.sent ?? '').length <= MAX_PERSISTED_DRAFT),
+    )
+    localStorage.setItem(CHAT_DRAFTS_LS_KEY, JSON.stringify(storable))
+  } catch {
+    // quota/serialization failures are non-fatal — drafts just won't stick
   }
 }
 
@@ -401,6 +469,24 @@ interface UiState {
   changesFind: Record<string, string>
   /** Set (or, with '', clear) a worktree's Changes find query. */
   setChangesFind: (worktreeId: string, query: string) => void
+  /** Half-typed ACP messages, keyed by chatDraftKey(worktreeId,
+   *  agentSessionId). Lives here — not in WorktreeChat's local state — because
+   *  a chat pane is torn down whenever it goes off-screen, which would
+   *  otherwise throw away whatever the user was in the middle of writing.
+   *  Persisted (unlike the Changes pane's view state): typed text is the
+   *  user's own work, and a reload should not eat it. */
+  chatDrafts: Record<string, ChatDraft>
+  /** Record (or, with '', clear) a conversation's half-typed message. Editing
+   *  the text drops any `sent` marker: the box no longer holds the message
+   *  that went to the socket. */
+  setChatDraft: (worktreeId: string, agentSessionId: string, text: string) => void
+  /** Mark the text a conversation's box just handed to the socket, or clear
+   *  the mark (undefined) once the server's echo settles it. */
+  setChatSent: (worktreeId: string, agentSessionId: string, sent: string | undefined) => void
+  /** GC drafts belonging to worktrees the snapshot no longer lists. Keyed on
+   *  the worktree alone: an agent session that goes inactive and comes back
+   *  with the same id is the same conversation, and keeps its draft. */
+  syncChatDrafts: (worktreeIds: string[]) => void
   /** One-shot "focus the Changes find box" request, raised by the find-changes
    *  shortcut alongside openChanges. The mounted WorktreeChanges pane consumes
    *  it (focuses its input, then clears the flag), so a pane mounted later —
@@ -527,6 +613,7 @@ export const useUiStore = create<UiState>((set) => ({
   changesBase: {},
   changesFind: {},
   changesFindPending: false,
+  chatDrafts: loadChatDrafts(),
   optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticStopped: [],
@@ -655,6 +742,39 @@ export const useUiStore = create<UiState>((set) => ({
   setChangesFindPending: (pending) => set((s) => (
     s.changesFindPending === pending ? s : { changesFindPending: pending }
   )),
+  setChatDraft: (worktreeId, agentSessionId, text) => set((s) => {
+    const key = chatDraftKey(worktreeId, agentSessionId)
+    const cur = s.chatDrafts[key]
+    // Unchanged text is a no-op, so a pane re-mirroring the draft it just
+    // restored doesn't churn the state.
+    if ((cur?.text ?? '') === text) return s
+    // Edited text is no longer the message that went to the socket, so the
+    // marker goes with it — what's in the box now is new work either way.
+    const next = { ...s.chatDrafts }
+    if (text === '') delete next[key]
+    else next[key] = { text }
+    return { chatDrafts: next }
+  }),
+  setChatSent: (worktreeId, agentSessionId, sent) => set((s) => {
+    const key = chatDraftKey(worktreeId, agentSessionId)
+    const cur = s.chatDrafts[key]
+    if ((cur?.sent) === sent) return s
+    const next = { ...s.chatDrafts }
+    // An emptied box with nothing in flight leaves no key behind — a settled
+    // message shouldn't linger in the persisted map as an empty draft.
+    if (sent === undefined && (cur?.text ?? '') === '') delete next[key]
+    else if (sent === undefined) next[key] = { text: cur?.text ?? '' }
+    else next[key] = { text: cur?.text ?? '', sent }
+    return { chatDrafts: next }
+  }),
+  syncChatDrafts: (worktreeIds) => set((s) => {
+    const live = new Set(worktreeIds)
+    const kept: Record<string, ChatDraft> = {}
+    for (const [key, draft] of Object.entries(s.chatDrafts)) {
+      if (live.has(key.slice(0, key.indexOf('|')))) kept[key] = draft
+    }
+    return Object.keys(kept).length === Object.keys(s.chatDrafts).length ? s : { chatDrafts: kept }
+  }),
   focusTerminal: (worktreeId, target) => set((s) => {
     // Also surface the target in its column: cycle shortcuts / preview / changes
     // may focus a pane that's currently a hidden tab, and it must become the
@@ -732,3 +852,43 @@ useUiStore.subscribe((state, prev) => {
 useUiStore.subscribe((state, prev) => {
   if (state.readWaiting !== prev.readWaiting) persistReadWaiting(state.readWaiting)
 })
+
+/** How long a keystroke waits before the draft map is re-serialized. */
+const CHAT_DRAFT_PERSIST_MS = 400
+
+let draftTimer: ReturnType<typeof setTimeout> | undefined
+let unwrittenDrafts: Record<string, ChatDraft> | null = null
+
+/** Write any pending draft change now. Called when the page is going away — a
+ *  tab closed mid-sentence must not lose the last few hundred milliseconds of
+ *  typing — and exported for tests, which would otherwise have to wait out the
+ *  timer. Idempotent: with nothing unwritten it does nothing. */
+export function flushChatDrafts(): void {
+  if (draftTimer !== undefined) {
+    clearTimeout(draftTimer)
+    draftTimer = undefined
+  }
+  if (unwrittenDrafts === null) return
+  persistChatDrafts(unwrittenDrafts)
+  unwrittenDrafts = null
+}
+
+// Drafts survive reloads, but on a trailing timer rather than per keystroke:
+// alone among the persisted maps this one changes on every character typed,
+// and each write re-serializes the whole thing.
+useUiStore.subscribe((state, prev) => {
+  if (state.chatDrafts === prev.chatDrafts) return
+  unwrittenDrafts = state.chatDrafts
+  if (draftTimer !== undefined) clearTimeout(draftTimer)
+  draftTimer = setTimeout(flushChatDrafts, CHAT_DRAFT_PERSIST_MS)
+})
+
+// `pagehide` is the primary signal, but mobile and bfcache kill paths skip it;
+// a hidden `visibilitychange` is the one browsers reliably deliver. Flushing on
+// both costs nothing — the second firing finds nothing unwritten.
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushChatDrafts)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushChatDrafts()
+  })
+}
