@@ -53,7 +53,12 @@ evaluation focused on finding the smallest one that stays reliable.
   user-reported bad-title cases. The set lives in the evaluation harness (see
   *Reproducing* below).
 - **Runner:** `llama.cpp` release **`b9940`**, `llama-completion` binary — the
-  same pinned runtime the server uses.
+  same pinned runtime the server uses. Its binaries link against the system
+  OpenMP runtime (`libgomp.so.1`), which the release archive does *not* bundle;
+  a host without it extracts the archive fine and then fails to load every
+  binary in it. `ensureLlamaCpp` smoke-checks the extracted runtime for exactly
+  this reason and fetches `libgomp1` into its own cache (rootless, from the
+  distro mirror) when it is the thing missing.
   - Decoder-only chat models: the model's own chat template via
     `--jinja -st -sys <system> -p <user> --temp 0 --no-display-prompt
     --simple-io` (greedy). This is exactly what `runChatCompletion` does.

@@ -54,13 +54,28 @@ let homeDir: string
 let calls: ExecCall[]
 /** Model stdout for one inference, keyed on the templated input it was given. */
 let reply: (input: string) => Promise<string>
+/** Whether the host can load the OpenMP runtime the release links against.
+ *  False makes every binary in the release die in the loader, exactly as a
+ *  minimal Ubuntu does — including the smoke check that exists to catch it. */
+let openMpPresent: boolean
+/** Whether the rootless `apt-get download libgomp1` repair can succeed. */
+let aptAvailable: boolean
 const platformDesc = Object.getOwnPropertyDescriptor(process, 'platform')!
 const archDesc = Object.getOwnPropertyDescriptor(process, 'arch')!
 
-/** `sh -c …` commands the feature shelled out for downloads. */
-const downloads = (): string[] => calls.filter((c) => c.file === 'sh').map((c) => c.args[1])
-/** llama-completion invocations (everything that isn't a download). */
-const inferences = (): ExecCall[] => calls.filter((c) => c.file !== 'sh')
+/** Every `sh -c …` command the feature shelled out for. */
+const shCommands = (): string[] => calls.filter((c) => c.file === 'sh').map((c) => c.args[1])
+/** The two fetches of a clean setup: the pinned release, then the model. The
+ *  OpenMP repair is a shell-out too, so it is named separately below. */
+const downloads = (): string[] => shCommands().filter((c) => !c.includes('libgomp1'))
+/** The rootless `libgomp1` fetch the smoke check triggers on a host missing it. */
+const openMpFetches = (): string[] => shCommands().filter((c) => c.includes('libgomp1'))
+/** The post-extraction smoke check — `--version`, the cheapest run there is. */
+const smokeChecks = (): ExecCall[] =>
+  calls.filter((c) => c.file !== 'sh' && c.args[0] === '--version')
+/** Real llama-completion inferences: not a shell-out, not the smoke check. */
+const inferences = (): ExecCall[] =>
+  calls.filter((c) => c.file !== 'sh' && c.args[0] !== '--version')
 /** The templated payload the model was asked to title. */
 const payloadOf = (call: ExecCall): string => call.args[call.args.indexOf('-p') + 1]
 
@@ -114,10 +129,26 @@ describe('reconcileGeneratedTitles', () => {
 
     calls = []
     reply = () => Promise.resolve(TITLE)
+    openMpPresent = true
+    aptAvailable = true
     mockSetTitle.mockResolvedValue(undefined)
     mockExec.mockImplementation(((file: string, args: string[], opts?: { env?: Record<string, string> }) => {
       calls.push({ file, args, opts })
-      if (file === 'sh') return Promise.resolve({ stdout: '', stderr: '' })
+      if (file === 'sh') {
+        if (args[1].includes('libgomp1')) {
+          if (!aptAvailable) return Promise.reject(new Error('sh: apt-get: not found'))
+          // The repair worked: the library now sits beside the bundled .so s.
+          openMpPresent = true
+        }
+        return Promise.resolve({ stdout: '', stderr: '' })
+      }
+      // The loader kills the process before main, whatever it was asked to do.
+      if (!openMpPresent) {
+        return Promise.reject(new Error(`Command failed: ${file} ${args.join(' ')}\n${file}: `
+          + 'error while loading shared libraries: libgomp.so.1: cannot open shared '
+          + 'object file: No such file or directory\n'))
+      }
+      if (args[0] === '--version') return Promise.resolve({ stdout: 'version: 9940', stderr: '' })
       return reply(payloadOf({ file, args })).then((stdout) => ({ stdout, stderr: '' }))
     }) as never)
   })
@@ -322,6 +353,43 @@ describe('reconcileGeneratedTitles', () => {
     release(TITLE)
     await flush()
     expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+  })
+
+  it('vendors the OpenMP runtime into the cache when the host lacks it', async () => {
+    const bin = await seedCache()
+    openMpPresent = false // a minimal Ubuntu: extraction succeeds, nothing runs
+    listOf(session())
+    await reconcileGeneratedTitles()
+    await flush()
+
+    // Fetched rootlessly from the distro mirror and dropped beside the
+    // archive's own shared libs, where the loader path already points.
+    const [repair] = openMpFetches()
+    expect(repair).toContain('apt-get download libgomp1')
+    expect(repair).toContain('dpkg-deb -x')
+    expect(repair).toContain(`cp x/usr/lib/*/libgomp.so.1* '${path.dirname(bin)}/'`)
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] vendored libgomp.so.1'))
+
+    // Re-checked after the repair, then used for real: the session is titled.
+    expect(smokeChecks()).toHaveLength(2)
+    expect(mockSetTitle).toHaveBeenCalledWith('p', 's1', TITLE)
+  })
+
+  it('reports one actionable error when the runtime cannot run and cannot be repaired', async () => {
+    await seedCache()
+    openMpPresent = false
+    aptAvailable = false // no apt, or an index too stale to resolve it
+    listOf(session(), session({ worktreeId: 's2', projectSlug: 'q' }))
+    await reconcileGeneratedTitles()
+    await flush()
+
+    // The whole point of the smoke check: this is one loud setup failure
+    // naming the fix, not a silent per-session inference failure forever.
+    expect(mockLog).toHaveBeenCalledTimes(1)
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[titles] model setup failed'))
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('sudo apt install libgomp1'))
+    expect(inferences()).toEqual([])
+    expect(mockSetTitle).not.toHaveBeenCalled()
   })
 
   it('logs a setup failure once and fast-fails the rest of the backoff window', async () => {

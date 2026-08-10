@@ -47,7 +47,10 @@ brew install node pnpm kubernetes-cli podman bsklaroff/yaac/yaac-kind bsklaroff/
 # Debian/Ubuntu 26.04+. Note: NOT nodejs/npm from apt — Debian's Node is
 # built without the TypeScript type-stripper the frontend build needs
 # (see below). Install Node via nvm instead.
-sudo apt install podman acl
+# libgomp1 is the OpenMP runtime the pinned llama.cpp build (session titles)
+# links against; a minimal 26.04 does not ship it. yaac fetches it into its
+# own cache if it is missing, so this line only saves it the trip.
+sudo apt install podman acl libgomp1
 
 # Node via nvm: its official builds ship the type-stripper (Node >= 22.18).
 # 22.22.2 matches the repo's .nvmrc; pnpm installs into nvm's user-owned
