@@ -1,18 +1,19 @@
 import { isPrewarmed, listWorktreePods, type TickSnapshot } from '#platform/k8s'
 import { classifyWorktreePods, liveAgents, podAgentMode, probeTmuxLiveness } from '#runtime/status'
 import { normalizeTool, readAcpFirstPrompt } from '#runtime/agents'
-import { resolveProjectPath, sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
-import { applyWorktreeEvent } from '#records'
-import { captureFirstPrompt } from './prompt-capture'
+import { sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
 import {
-  foldSessionStarts,
-  mergeSessions,
-  worktreesOnCurrentLife,
-  updateWorktreeMeta,
-} from '#store/worktrees'
+  applyWorktreeEvent,
+  getWorktreeRow,
+  listWorktreeAgentSessions,
+  setAgentSessionCapture,
+} from '#records'
+import { captureFirstPrompt } from './prompt-capture'
+import { readSessionStarts, type SessionStartSighting } from '#store/worktrees'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
+import { serverLog } from '#log'
 import type { DiscoveredSession } from '#records'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
@@ -28,15 +29,16 @@ import type { AgentMode, AgentTool } from '@yaac/shared/types'
  * A session is active in a worktree when the history names it AND its handle
  * is currently alive.
  *
- * For `tui`, history is the worktree's metadata document, fed by the in-pod
- * hook's session-starts log (`worktree-meta.ts`), and neither source can
- * answer alone: a recorded handle outlives the pane that wrote it (a `/clear`
- * leaves the previous session's handle in place only until the pane is
- * rewritten, and a pane that simply exited leaves a live-looking one behind),
- * and the pane list knows nothing about which session is loaded.
+ * For `tui`, history comes from the in-pod hook's session-starts log
+ * (`#store/worktrees`), folded into the worktree's rows and read back from
+ * them; neither source can answer alone: a recorded handle outlives the pane
+ * that wrote it (a `/clear` leaves the previous session's handle in place
+ * only until the pane is rewritten, and a pane that simply exited leaves a
+ * live-looking one behind), and the pane list knows nothing about which
+ * session is loaded.
  *
- * For `acp` there is no hook and no document to read, because there is nothing
- * to discover: the server IS the ACP client, so `session/new` hands it the
+ * For `acp` there is no hook and no log to read, because there is nothing to
+ * discover: the server IS the ACP client, so `session/new` hands it the
  * session id directly and the live set carries it. That is a strictly
  * simpler path — the mode replaces a whole discovery mechanism with a return
  * value — and it is why the two branches below look so different in length.
@@ -94,13 +96,62 @@ export async function reconcileWorktreeAgentSessions(
     await reconcileAcpAgentSessions(projectSlug, worktreeId)
     return
   }
-  // Fold whatever the in-pod hook has appended since last tick into the
-  // worktree's document, then read the document back. The hook is the only
-  // witness of a user-started session — `/clear`, a hand-typed
-  // `claude --resume` — and the document is where the server remembers it.
-  const meta = await foldSessionStarts(projectSlug, worktreeId)
-  const sessions = meta?.sessions ?? []
-  if (sessions.length === 0) {
+  // A warming spare's conversations are not a worktree's: its agent is
+  // pinned to its own id and belongs to nobody until the pod is claimed.
+  // `reconcileAgentSessions` already skips prewarmed pods; this is the same
+  // refusal for the create path, which calls in directly.
+  const row = await getWorktreeRow(projectSlug, worktreeId)
+  if (row?.spare === true) return
+
+  // Fold whatever the in-pod hook has appended into rows. The hook is the
+  // only witness of a user-started session — `/clear`, a hand-typed
+  // `claude --resume` — and the rows are where the server remembers it.
+  //
+  // Only what the fold actually saw is reported: a session it did not sight
+  // this tick has simply not moved, and naming it here would clear the pane
+  // a previous fold recorded for it.
+  //
+  // The offset is read here and applied below, and a restart's
+  // `recordWorktreeLife` can commit in between — in which case handles
+  // computed against the previous life's boundary are written back after the
+  // transaction that nulled them. The pane heals itself within a tick: the
+  // next fold re-reads the row, those lines now fall below the new boundary,
+  // and the conflict-set nulls the pane again.
+  //
+  // The residual is not quite zero, though, and it is why this is a comment
+  // rather than a lock. `recordWorktreeLife` clears `paneId`, not `active`,
+  // and `active` is what a restart resumes — so a worktree that stops inside
+  // the window freezes one conversation too many and comes back with an extra
+  // window. That conversation is real history rather than a phantom, so the
+  // cost is an unasked-for window, not a wrong one.
+  const boundary = row?.lifeLogBytes ?? 0
+  const { sightings, sizeBytes } = await readSessionStarts(projectSlug, worktreeId)
+  // A log SHORTER than the boundary recorded into it. Nothing yaac does can
+  // produce that — the log is only ever appended to — so it means something
+  // outside replaced or rotated it, and the failure is otherwise silent:
+  // every line falls below the boundary, loses its handle, and the worktree
+  // reports no live agents until its next restart. Strictly `<`: a boundary
+  // equal to the size is the ordinary state of a pod that has not appended
+  // yet, which is every restarted worktree until its hook first fires.
+  if (sizeBytes < boundary) {
+    serverLog(
+      `[agent-sessions] ${projectSlug}/${worktreeId}: session-starts log is ${sizeBytes} `
+      + `bytes, shorter than the recorded life boundary (${boundary}); handles will be `
+      + 'dropped until the next restart',
+    )
+  }
+  const sighted = foldSightings(sightings, boundary)
+  if (sighted.length > 0) {
+    await applyWorktreeEvent({
+      type: 'sessions-discovered', projectSlug, worktreeId, sessions: sighted,
+    })
+  }
+
+  // The worktree's whole history, as records now holds it — the hook's
+  // sightings plus whatever create recorded for a conversation no hook ever
+  // fires for.
+  const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
+  if (links.length === 0) {
     // Nothing recorded yet. That is ambiguous: either the pod predates the
     // hook (its one session is pinned to the worktree id by `--session-id`),
     // or the agent simply has not started — a pod lists as running as soon
@@ -150,39 +201,20 @@ export async function reconcileWorktreeAgentSessions(
     return
   }
 
-  // Opening messages are read once per session per server life and folded back
-  // into the document, so a settled worktree costs one file read a tick.
-  const withPrompts = await Promise.all(sessions.map(async (s) => {
-    if (s.firstPrompt !== undefined) return s
+  // Opening messages are read once per conversation per server life — the row
+  // remembers the answer — so a settled worktree costs one file read a tick.
+  // Written straight to the conversation rather than reported as a discovery:
+  // this adds a fact to a row that already exists, and a whole re-report would
+  // have to carry every conversation's pane back with it just to avoid
+  // clearing them.
+  await Promise.all(links.map(async (l) => {
+    if (l.firstPrompt !== undefined) return
     const firstPrompt = await captureFirstPrompt(
-      projectSlug,
-      s.tool,
-      s.agentSessionId,
-      s.transcriptPath === undefined
-        ? undefined
-        : resolveProjectPath(projectSlug, s.transcriptPath),
-      jobName,
+      projectSlug, l.tool, l.agentSessionId, l.transcriptPath, jobName,
     )
-    return firstPrompt !== undefined ? { ...s, firstPrompt } : s
+    if (firstPrompt === undefined) return
+    await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, { firstPrompt })
   }))
-  if (withPrompts.some((s, i) => s !== sessions[i])) {
-    await updateWorktreeMeta(projectSlug, worktreeId, (current) =>
-      current === undefined ? undefined : mergeSessions(current, withPrompts, Date.now()))
-  }
-
-  await applyWorktreeEvent({
-    type: 'sessions-discovered',
-    projectSlug,
-    worktreeId,
-    sessions: withPrompts.map((s) => ({
-      tool: s.tool,
-      agentSessionId: s.agentSessionId,
-      mode: s.mode,
-      firstSeenMs: s.firstSeenMs,
-      ...(s.transcriptPath !== undefined ? { transcriptPath: s.transcriptPath } : {}),
-      ...(s.firstPrompt !== undefined ? { firstPrompt: s.firstPrompt } : {}),
-    })),
-  })
 
   // Intersect the recorded handles with what the status watcher can see. When
   // the watcher has no live set yet (a pod whose connection hasn't attached),
@@ -191,12 +223,52 @@ export async function reconcileWorktreeAgentSessions(
   const observed = liveAgents(projectSlug, worktreeId)
   if (observed === undefined) return
   const handles = new Set(observed.map((a) => a.handle))
-  // Only handles from the current life count: tmux pane ids restart at %0, so
-  // one recorded by the previous life would name a pane this life owns.
-  const live = (meta === undefined ? [] : worktreesOnCurrentLife(meta))
-    .filter((s) => s.handle !== undefined && handles.has(s.handle))
-    .map((s) => ({ tool: s.tool, agentSessionId: s.agentSessionId, paneId: s.handle as string }))
+  // Every recorded handle belongs to the current life: the life that started
+  // this pod cleared the previous one's in the same transaction that stamped
+  // it, so a pane id still on a row was seen by this pod. tmux pane ids
+  // restart at %0, which is what makes that necessary. The one gap is a life
+  // stamped between this tick's offset read and its fold — see above; it
+  // costs a tick, not a wrong freeze.
+  const live = links
+    .filter((l) => l.paneId !== undefined && handles.has(l.paneId))
+    .map((l) => ({ tool: l.tool, agentSessionId: l.agentSessionId, paneId: l.paneId as string }))
   await applyWorktreeEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+}
+
+/**
+ * Collapse the log's lines into one sighting per conversation, in first-seen
+ * order — which is the order `recordAgentSessions` assigns ordinals in, and
+ * so the order a restart brings windows back up in.
+ *
+ * A line below `lifeLogBytes` was appended by a previous pod. It still proves
+ * the conversation exists and still names its transcript, but its pane
+ * belongs to a pod that is gone — and tmux pane ids restart at `%0`, so
+ * carrying that handle forward would attribute a dead conversation to
+ * whichever live pane inherited its number. Drop the handle, keep the
+ * conversation.
+ *
+ * Later lines fill and overwrite in the one direction that makes sense: a
+ * transcript path and a pane say where the conversation is *now*, and a line
+ * that mentions neither leaves both alone.
+ */
+function foldSightings(
+  sightings: SessionStartSighting[],
+  lifeLogBytes: number,
+): DiscoveredSession[] {
+  const byConversation = new Map<string, DiscoveredSession>()
+  for (const s of sightings) {
+    const key = `${s.tool}/${s.agentSessionId}`
+    const prev = byConversation.get(key)
+    const handle = s.atByte >= lifeLogBytes ? s.handle : undefined
+    byConversation.set(key, {
+      tool: s.tool,
+      agentSessionId: s.agentSessionId,
+      ...prev,
+      ...(s.transcriptPath !== undefined ? { transcriptPath: s.transcriptPath } : {}),
+      ...(handle !== undefined ? { paneId: handle } : {}),
+    })
+  }
+  return [...byConversation.values()]
 }
 
 /**

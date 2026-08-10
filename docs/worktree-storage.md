@@ -1,7 +1,7 @@
 # Worktree storage
 
 A yaac worktree is recorded in the `worktrees` table of the server's PGlite
-DB (`packages/server/src/platform/db/schema.ts`), one row per
+DB (`packages/server/src/records/schema.ts`), one row per
 `(projectSlug, worktreeId)`. The cluster stays authoritative for whether a
 worktree is *running*; the row is authoritative for everything else — which
 worktrees have ever existed, their title, base branch, background pin, and
@@ -25,8 +25,8 @@ the id the tool chose — and `worktree_agent_sessions` links the two, so a
 worktree can accumulate conversations over its life and one conversation can be
 resumed into a second worktree. See "Agent worktrees" below.
 
-`features/worktrees/worktree-store.ts` owns the `worktrees` table and
-`features/worktrees/agent-session-store.ts` the other two: every read and write
+`records/worktree-store.ts` owns the `worktrees` table and
+`records/agent-session-store.ts` the other two: every read and write
 goes through them, and they are the only writers.
 
 ## Write discipline
@@ -36,18 +36,29 @@ goes through them, and they are the only writers.
   neither its tool nor its label, so create records the one it is about to
   launch rather than waiting for discovery to notice it. (Discovery only ever
   adds to that; for opencode, which no hook ever fires for, it never fires at
-  all.) Before the Job in `createWorktree`, and before a claim touches a
-  prewarmed spare
-  — the two paths that produce a user worktree. No pod can therefore exist
-  without a row, which matters because a rowless pod is invisible to every
-  path that reads recorded state and there is no way to tell one from an
-  unclaimed spare after the fact. A create that fails afterwards rolls its
-  row back; a *restart* that fails re-marks the row stopped instead, since
-  that row already carried the worktree's history. A spare gets no row while
-  it is warm, because it is not a worktree until claimed.
+  all.) Before the Job in `createWorktree`, so no pod can exist without a
+  row — which matters because a rowless pod is invisible to every path that
+  reads recorded state. A create that fails afterwards rolls its row back; a
+  *restart* that fails re-marks the row stopped instead, since that row
+  already carried the worktree's history.
 - **Everything else is an UPDATE**, which silently no-ops for a row that
-  doesn't exist. That is what keeps spares — and worktrees belonging to
-  another data dir — invisible without a single existence check.
+  doesn't exist. That is what keeps worktrees belonging to another data dir
+  invisible without a single existence check.
+- **A warming spare gets a row too, flagged `spare`.** It is a checkout, a
+  branch and a pod from the moment it is warmed, but not a worktree: every
+  listing filters the flag out, and the reaper's desired set excludes it, so
+  it is as invisible as it would be with no row at all. What the flag buys is
+  the one question an absent row could not answer — once a spare's pod is
+  gone, a reaped spare and a stopped worktree look identical on disk, and
+  deleting the wrong one takes uncommitted work with it.
+
+  `claimSpareWorktree` clears the flag, and it is the one spare write that
+  throws rather than shrugging: the startup sweep deletes a checkout on the
+  strength of the flag, so a silently-lost flip would mark a worktree the
+  user is about to be handed as reapable. The claim runs it before touching
+  the spare, so a failure costs nothing but a cold create — and a claim that
+  fails before any mutation puts the flag *back*, returning the pod to the
+  pool rather than stranding it.
 - **No stop deletes a row.** A row with `stoppedAt` set *is* the stopped
   listing. A restart reuses the id and clears the column, along with any death
   cause from the previous life; the title and the background pin survive,
@@ -87,62 +98,60 @@ the current process are exempt via the provisioning registry.
 
 ## Agent worktrees
 
-A worktree's agent sessions are *discovered*, not authored. The server keeps a
-own record of what it found, because after the database split
-(docs/layered-server.md) it may not read a row: one **metadata document** per
-worktree, `projects/<slug>/meta/<worktreeId>.json`, owned and rewritten whole by
-the server process and validated by a zod schema
-(`store/worktrees/worktree-meta.ts`).
+A worktree's agent sessions are *discovered*, not authored, and what discovery
+finds goes straight into rows: the sweep reports a `sessions-discovered` /
+`sessions-active` event and `applyWorktreeEvent` decides which rows it lands in
+(docs/layered-server.md).
 
-It holds only what discovery needs to work without the database — which worktrees
-a worktree has, where their transcripts are, their opening messages, and which
-handle each is on right now. Titles, background pins, `stoppedAt` and death
-causes are the server's; mirroring one here would make two sources of truth that
-drift. What the sweep finds it reports as a `worktrees-discovered` /
-`worktrees-active` event, and the server writes the row.
-
-Discovery has one input the host cannot see for itself. Every tool with a
-host-mounted home runs a `SessionStart` hook (`/etc/yaac/agent-links.sh`, baked
-into the tools image) which appends **one JSON line per firing** to
-`projects/<slug>/meta/<worktreeId>.worktree-starts.jsonl`, mounted into the pod at
-`/home/yaac/.yaac/worktree-starts.jsonl`:
+Discovery has one input the host cannot see for itself, and it is the only file
+in this story. Every tool with a host-mounted home runs a `SessionStart` hook
+(`/etc/yaac/agent-links.sh`, baked into the tools image) which appends **one
+JSON line per firing** to
+`projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, mounted into the pod
+at `/home/yaac/.yaac/session-starts.jsonl`:
 
 ```jsonc
 {"id":"<agentSessionId>","tool":"claude","pane":"3","path":"claude/projects/-workspace/….jsonl"}
 ```
 
 The hook fires on `startup`, `resume`, `clear` and `compact` — exactly the
-events that change which worktree a pane is in — and it is the only witness of a
-user-started one, because it alone sees `TMUX_PANE` beside the tool's worktree
-id. `/clear` and a hand-typed `claude --resume` are invisible from outside the
-pod.
+events that change which conversation a pane is in — and it is the only witness
+of a user-started one, because it alone sees `TMUX_PANE` beside the tool's
+session id. `/clear` and a hand-typed `claude --resume` are invisible from
+outside the pod.
 
-**Two files rather than one, and the split is the design.** The document is
-rewritten whole (tmp + `rename`), which makes a torn read impossible and is why
-it is never mounted into a pod: a rename replaces the inode a `File` hostPath
-mount pins, and the pod would read a stale copy forever. The log is append-only
-and never renamed, which is exactly what makes mounting it safe. Two
+**The pod appends and the server folds**, and that asymmetry is the whole
+design. The log is append-only and never renamed, which is what makes mounting
+it as a `File` hostPath safe — a rename would replace the inode the mount pins,
+and the pod would go on writing to a file nobody reads. Two writers doing two
 read-modify-writes would lose one side's write, and coordinating them would mean
-a lock held across a hostPath mount from inside a gVisor sandbox — so the pod
-appends and the server folds, and no lock crosses the boundary. Within the
-server process, `updateWorktreeMeta` serializes per worktree on a keyed mutex.
+a lock held across a hostPath mount from inside a gVisor sandbox. So nothing
+crosses the boundary but appended lines; the database is server-local and
+single-writer (PGlite), which the pod could not reach even if it wanted to.
 
-Nothing truncates the log. Sightings are idempotent — a worktree id maps to one
-handle — so re-folding it every tick is correct, and it avoids the drain/append
-race a truncation would introduce.
+Nothing truncates the log. Sightings are idempotent — a conversation id maps to
+one handle — so re-folding the whole file every tick is correct, and it avoids
+the drain/append race a truncation would introduce.
 
-A worktree is **active** in a worktree when the document names a handle for it
-*and* the status watcher can currently see that handle. Neither source answers
-alone: a handle outlives the pane that wrote it, and the watcher knows nothing
-about which worktree is loaded. When the watcher has not enumerated handles yet
-the active set is left untouched, so a stream gap never reads as "every agent
-exited".
+A conversation is **active** in a worktree when its link row names a pane *and*
+the status watcher can currently see that pane. Neither source answers alone: a
+recorded handle outlives the pane that wrote it, and the watcher knows nothing
+about which conversation is loaded. When the watcher has not enumerated handles
+yet the active set is left untouched, so a stream gap never reads as "every
+agent exited".
 
-Handles are scoped to a **life** — one pod, recorded as `life` on the document
-with a fresh id at each create. A handle counts only while its `handleLifeId` is
-the current life, because tmux pane ids restart at `%0` and the previous life's
-handle would otherwise name this life's pane. Nothing has to be deleted before a
-pod starts.
+Handles are scoped to a **life** — one pod, stamped on the worktree row at each
+create. `recordWorktreeLife` sets `lifeStartedAt` and NULLs every recorded
+`paneId` in one transaction, because those are the same fact: tmux pane ids
+restart at `%0`, so a handle the previous life recorded would name a pane *this*
+life owns. Doing it atomically is what stops a crash between the two halves from
+leaving a dead pod's handles against a fresh life.
+
+The log needs the same boundary, since it is never truncated and its lines carry
+no life marker. `lifeLogBytes` records how long it was when the life began: a
+line below that offset still proves its conversation exists and still names its
+transcript, but its pane belongs to a pod that is gone — so the fold keeps the
+conversation and drops the handle.
 
 `active` is frozen at teardown and never recomputed while a worktree is stopped.
 That freeze is the whole contract: a restart brings back exactly the worktrees
@@ -161,7 +170,7 @@ discovery mechanism with a return value.
 ## Transcript paths
 
 Every transcript path is stored **relative to the project directory** — in the
-metadata document, in the event that reports it, and in
+session-starts log, in the event that reports it, and in
 `agent_sessions.transcriptPath`. Absolute appears nowhere.
 
 One form rather than three. An absolute path carries the data dir, so it pins a
@@ -215,12 +224,12 @@ worktree id.
 
 ## First messages
 
-Capture is per worktree: each gets its own opening message, read from the
-transcript the metadata document names. There is no separate worktree-level capture — the
-founding ask *is* the first worktree's opening message.
+Capture is per conversation: each gets its own opening message, read from the
+transcript its row names. There is no separate worktree-level capture — the
+founding ask *is* the first conversation's opening message.
 
-The discovery sweep does this once per worktree per server life and folds the
-result back into the document, so a settled worktree costs one file read a tick. Where the transcripts live per tool
-is `store/transcripts/transcripts.ts`. A worktree that died before capture
-parses its first conversation's transcript on demand from the stopped listing,
-and the result is persisted.
+The discovery sweep does this once per conversation per server life and writes
+the result to the row, so a settled worktree costs one file read a tick. Where
+the transcripts live per tool is `store/transcripts/transcripts.ts`. A worktree
+that died before capture parses its first conversation's transcript on demand
+from the stopped listing, and the result is persisted.

@@ -23,6 +23,7 @@ import type {
 export type WorktreeEvent =
   | WorktreeCreated
   | WorktreeCreateFailed
+  | WorktreeLifeStarted
   | BaseBranchResolved
   | SessionsLaunched
   | SessionsDiscovered
@@ -46,6 +47,10 @@ export interface WorktreeCreated {
    *  carries a history — title, pin, founding prompt, and how it last died —
    *  which is why a failed resume is put back rather than erased. */
   resume?: boolean
+  /** This is a prewarmed spare being warmed, not a worktree being created.
+   *  It gets a row so a reap can still tell it from a stopped worktree once
+   *  its pod is gone, but every listing filters it out until it is claimed. */
+  spare?: boolean
 }
 
 /**
@@ -62,6 +67,28 @@ export interface WorktreeCreateFailed {
   projectSlug: string
   worktreeId: string
   resume?: boolean
+}
+
+/**
+ * A pod has come up for this worktree — a **life** has begun.
+ *
+ * The event that invalidates the previous life's handles. Handling it NULLs
+ * every recorded pane id in the same transaction that stamps the life,
+ * because tmux pane ids restart at `%0` in a new pod and a surviving handle
+ * would name a pane this life owns.
+ *
+ * Emitted after the worktree is recorded and before the Job exists, so the
+ * first thing the in-pod hook can append is already on the right side of the
+ * boundary below.
+ */
+export interface WorktreeLifeStarted {
+  type: 'worktree-life-started'
+  projectSlug: string
+  worktreeId: string
+  /** The session-starts log's length right now. Nothing this life wrote is
+   *  in it yet, so everything already there belongs to a previous pod — which
+   *  is what the discovery fold reads it back to decide. */
+  logBytes: number
 }
 
 /** The branch a worktree forked from, resolved by the checkout. */
@@ -109,10 +136,9 @@ export interface LaunchedSession {
  * opening message.
  *
  * Where the history comes from is the one thing that differs by mode. Under
- * `tui` it is the worktree's metadata document, into which the sweep folds
- * whatever the in-pod hook has appended to its session-starts log; under
- * `acp` there is nothing to discover, because the server is the ACP client
- * and the handshake handed it the id.
+ * `tui` the sweep folds whatever the in-pod hook has appended to the
+ * worktree's session-starts log; under `acp` there is nothing to discover,
+ * because the server is the ACP client and the handshake handed it the id.
  */
 export interface SessionsDiscovered {
   type: 'sessions-discovered'

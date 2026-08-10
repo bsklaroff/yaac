@@ -1,5 +1,6 @@
 import {
   gcOrphanEphemeralModuleDirs,
+  importLegacyMeta,
   reconcileAgentSessions,
   reconcilePrewarmPool,
   reconcileSpawnRequests,
@@ -54,6 +55,19 @@ export interface PassContext {
  */
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
+    // Carry a previous yaac's per-worktree metadata documents into rows.
+    // FIRST, and self-gating to once per server life: the sweeps below read
+    // the columns it fills — the spare flag a reap deletes a checkout on,
+    // and the log offset the conversation fold trusts panes against — so
+    // running either ahead of it would judge an install mid-upgrade against
+    // columns nobody had written yet.
+    //
+    // No triggers, so it runs on resync passes only. That is sufficient
+    // *because the first pass of a server's life is always a resync*
+    // (`startReconciler` seeds one before the loop) and a pass runs its steps
+    // in order, awaited. If that seeding ever changes, this needs a trigger
+    // of its own rather than the ordering alone.
+    { name: 'legacy-meta-import', triggers: [], run: () => importLegacyMeta() },
     // The stale reaper — first, so counts reflect just-reaped worktrees by
     // the time the prewarm pool runs. It reads what should exist from
     // records at the top of its pass; the sources here are the ones on
@@ -94,9 +108,9 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // one that survives the collect.
     { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
     // Which agent sessions each worktree holds, which are live, and what
-    // each opened with — read from the worktree's metadata document, with
-    // the in-pod hook's session-starts log folded in (or, under `acp`, from
-    // the handshake), crossed with the watcher's live agent set. The
+    // each opened with — the in-pod hook's session-starts log folded into
+    // rows and read back (or, under `acp`, the handshake), crossed with the
+    // watcher's live agent set. The
     // opening message rides along because the sweep has just resolved the
     // transcript it would be read from; title generation runs after this
     // step for that reason. `live-agents` is here and nowhere else: it is

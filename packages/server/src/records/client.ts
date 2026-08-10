@@ -9,6 +9,11 @@ import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 /**
  * The server's on-disk PGlite database (embedded Postgres, WAL-backed).
  *
+ * An internal module of `records/`, deliberately off its barrel: rows are
+ * records' alone, and a layer that could reach `getDb` could build its own
+ * queries against the tables. What the rest of the server gets is
+ * `openRecords`/`closeRecords` (lifecycle.ts) and the row functions.
+ *
  * Server-only invariant: PGlite is single-process, so this handle must only
  * ever be opened by the server process — the proxy pod, auth-daemon, and CLI
  * share the data dir but never touch `<dataDir>/db`. That is why `dbDir()`
@@ -36,7 +41,7 @@ let cached: { dir: string; promise: Promise<Db> } | null = null
  * in-memory PGlite serves every data dir the process visits; switching dirs
  * truncates instead of opening a second instance, which is what a fresh dir
  * gives a test anyway. Kept behind the flag because the on-disk handle is the
- * real contract — its own tests (test/platform/db/client.test.ts) opt out and
+ * real contract — its own tests (test/records/client.test.ts) opt out and
  * exercise the instance-per-dir path.
  */
 let sharedDb: Promise<Db> | null = null

@@ -21,7 +21,7 @@ import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
 import { recordWorktreeCreated } from '@yaac/server/records/worktree-store'
 import { recordAgentSessions } from '@yaac/server/records/agent-session-store'
-import { closeDb } from '@yaac/server/platform/db/client'
+import { closeDb } from '@yaac/server/records/client'
 import { worktreeRestart } from '#commands/worktree-restart'
 
 import type { PodInfo } from '@yaac/server/platform/k8s/pods'

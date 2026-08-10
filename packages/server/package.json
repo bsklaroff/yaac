@@ -25,7 +25,6 @@
     "#http": "./src/api/http/index.js",
     "#routes/*": "./src/api/routes/*.js",
     "#platform/container": "./src/platform/container/index.js",
-    "#platform/db": "./src/platform/db/index.js",
     "#platform/k8s": "./src/platform/k8s/index.js",
     "#test/*": "./test/*.js",
     "#*": "./src/*.js"
@@ -56,7 +55,6 @@
     "./http/*": "./src/api/http/*.js",
     "./routes/*": "./src/api/routes/*.js",
     "./platform/container": "./src/platform/container/index.js",
-    "./platform/db": "./src/platform/db/index.js",
     "./platform/k8s": "./src/platform/k8s/index.js",
     "./*": "./src/*.js",
     "./package.json": "./package.json"

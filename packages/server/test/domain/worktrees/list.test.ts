@@ -18,7 +18,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 import { listWorktreePods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import { recordWorktreeCreated } from '#records/worktree-store'
 import {
   getProjectsDir,

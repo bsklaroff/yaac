@@ -1,7 +1,7 @@
 /**
  * The database handle's lifecycle — `getDb`, `closeDb`.
  *
- * Nothing under platform/db is mocked here: a real PGlite instance is opened
+ * Nothing in the handle is mocked here: a real PGlite instance is opened
  * in a temp data dir and the checked-in migrations run against it, so the
  * private data-dir path builder, the single-flighted open and the dangling
  * -handle close are covered by the dir switches these tests drive rather
@@ -11,7 +11,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { getDb, closeDb, preferences } from '#platform/db'
+import { getDb, closeDb } from '#records/client'
+import { preferences } from '#records/schema'
 
 // The rest of the unit suite borrows one shared in-memory PGlite (the unit
 // setup file sets YAAC_TEST_SHARED_DB) because booting one per test dominates

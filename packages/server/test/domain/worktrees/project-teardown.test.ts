@@ -6,7 +6,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { removeProject } from '#domain/worktrees'
 import { listWorktreeRows, recordWorktreeCreated } from '#records/worktree-store'
 import { listProjectRows } from '#records/project-store'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 

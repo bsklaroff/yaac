@@ -13,7 +13,7 @@ api        routes/, http/, events (the /events snapshot hub)
 domain     the mediators: everything that reads rows and drives the
            layers below
   ↓      ↓       ↓
-records  store  runtime     records: rows; the only importer of #platform/db
+records  store  runtime     records: rows; owns the database outright
   ↓       ↓       ↓         store: worktrees/clones/transcripts/config on disk
         platform            runtime: how agents run (k8s driver today)
 ```
@@ -53,10 +53,15 @@ turned back into bytes on disk.
 - **`records/`** — the worktree, agent-session and project stores,
   preferences, token persistence, `desired-worktrees` (what the reaper
   judges absence against), records' open/close lifecycle, and the event
-  machinery below. The only feature allowed to import `#platform/db`.
+  machinery below. The database is its own: `client.ts` (the PGlite
+  handle) and `schema.ts` (the drizzle tables) are internal modules here,
+  off the barrel, so no other layer can name a table or build a query.
+  What the rest of the server gets is `openRecords`/`closeRecords` and
+  the row functions; the driver packages are eslint-banned everywhere
+  else.
 - **`store/`** — `projects/` (the clone's branches, the two config layers,
   git credentials, dockerfiles, build dirs and files), `worktrees/`
-  (checkout seeding and the per-worktree metadata document),
+  (checkout seeding, and the in-pod hook's session-starts log),
   `transcripts/` (per-tool readers, the JSONL scanner, and the
   project-relative path convention). Pure disk mechanics: no rows, no
   substrate, nothing above platform.
@@ -71,8 +76,8 @@ turned back into bytes on disk.
   host-process runtime with no cluster — implements.
 - **`platform/`** — substrate primitives with no opinions about worktrees:
   `k8s/` (client, informers, exec, pod specs, the per-pass
-  `TickSnapshot`), `container/` (podman, the local registry), `db/`
-  (PGlite, the drizzle schema), git, shell, process helpers.
+  `TickSnapshot`), `container/` (podman, the local registry), git, shell,
+  process helpers.
 
 ## The event door
 

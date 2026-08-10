@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import {
   deleteProjectRow,
   getProjectRow,

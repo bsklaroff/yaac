@@ -57,8 +57,8 @@ export const projects = snakeCase.table('projects', {
  * Every worktree yaac has ever created, one row per (project, worktree id).
  * This is the spine: the cluster stays authoritative for "is it running",
  * and this table for "did it exist, and what is it". A row is inserted by
- * worktree create (and by a prewarmed spare's claim — spares themselves get
- * no row, which is why teardown only ever UPDATEs), never deleted: a
+ * worktree create — including when it warms a prewarmed spare, which gets a
+ * `spare` row the claim later clears — and never deleted by a stop: a
  * `stoppedAt` row IS the stopped-worktree listing, and a restart clears the
  * column again because worktree ids are reused verbatim.
  *
@@ -93,6 +93,40 @@ export const worktrees = snakeCase.table('worktrees', {
   deathReason: text(),
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
+  /**
+   * An unclaimed prewarmed spare: a checkout, a branch and a pod, but not a
+   * worktree — nobody has been handed it. Every listing filters these out,
+   * and the reaper's desired set excludes them, so a spare is invisible to
+   * the user exactly as it was when it had no row at all. The claim clears
+   * the flag, which is the moment the pod becomes someone's worktree.
+   *
+   * Worth a column rather than an absent row because the startup sweep has
+   * to be able to answer "was this a spare?" once its pod is already gone —
+   * that is what tells an orphaned spare (delete the checkout) from a
+   * stopped worktree (keep it, diff and all).
+   */
+  spare: boolean().notNull().default(false),
+  /**
+   * When the pod currently hosting this worktree came up. Null when nothing
+   * is hosting it. A **life** is one pod, and it is the boundary that
+   * invalidates handles: `recordWorktreeLife` stamps this and NULLs every
+   * `worktree_agent_sessions.paneId` in the same transaction, because tmux
+   * pane ids restart at `%0` in a new pod and last life's handle would
+   * otherwise name this life's pane.
+   */
+  lifeStartedAt: timestamp({ withTimezone: true }),
+  /**
+   * How long the worktree's session-starts log was when the current life
+   * began — the boundary between what a previous pod appended and what this
+   * one has.
+   *
+   * The log is never truncated and its lines carry no life marker, so
+   * without this every fold would re-stamp the previous life's pane onto the
+   * current one. Recording the offset is what makes "appended during this
+   * life" answerable without the in-pod hook having to know which life it is
+   * in.
+   */
+  lifeLogBytes: integer().notNull().default(0),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
 
 /**
@@ -107,9 +141,8 @@ export const worktrees = snakeCase.table('worktrees', {
  * which is exactly why the link below is many-to-many.
  *
  * A `tui` conversation is discovered, not authored: the in-pod SessionStart
- * hook appends it to the worktree's session-starts log, the sweep folds that
- * into the worktree's metadata document, and the registry reconciler imports
- * what it reports. An `acp` one is authored — the server is the ACP client, so
+ * hook appends it to the worktree's session-starts log, and the registry
+ * reconciler folds that into these rows. An `acp` one is authored — the server is the ACP client, so
  * `session/new` hands it the id directly and no hook is involved.
  * `transcriptPath` is null for opencode (no host transcript) and for a
  * conversation whose transcript has since been removed.

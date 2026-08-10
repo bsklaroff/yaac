@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { eq } from 'drizzle-orm'
-import { getDb, projects } from '#platform/db'
+import { getDb } from './client'
+import { projects } from './schema'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 

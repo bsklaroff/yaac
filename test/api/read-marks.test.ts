@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
-import { closeDb } from '@yaac/server/platform/db/client'
+import { closeDb } from '@yaac/server/records/client'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
