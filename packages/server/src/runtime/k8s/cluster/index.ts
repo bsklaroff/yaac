@@ -49,8 +49,10 @@ export { ClusterDeleteError, runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { buildEgressWorldDenyNpManifest } from './policy-manifests'
 export {
+  PROJECT_REGISTRY_PORT,
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
+  projectRegistryClusterIp,
   projectRegistryConfDropIn,
   projectRegistryHost,
   reconcileProjectRegistryGc,

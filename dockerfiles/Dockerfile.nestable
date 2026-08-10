@@ -151,16 +151,25 @@ EOF
 # not pod-pinned memory.
 # graphroot/runroot are set EXPLICITLY because once a [storage] section
 # exists podman refuses to default them ("runroot must be set").
-# There is NO additionalimagestores lower: the cross-session layer cache is
-# the project registry — the server pushes a session's images at salvage
-# and pulls them into a fresh session's store (image-promoter.ts) — so it
-# needs no node-local mount and survives landing on another node.
-RUN mkdir -p /var/lib/containers
+#
+# additionalimagestores adds ONE read-only lower: the node-local image
+# store, a per-(node, project) containers/storage the server materializes
+# from the project registry and hostPath-mounts here (store-builder.ts).
+# It is a CACHE of the registry, which stays the distribution mechanism and
+# the thing that survives a node dying — this only makes the project's warm
+# layers visible to a fresh session's engine with no pull and no graphroot
+# spend, shared by every session on the node. The directory is baked in
+# EMPTY so a session with no generation to mount (a cold node, an inner
+# yaac whose vcluster denies the hostPath) still starts: containers/storage
+# treats an empty additional store as no images.
+RUN mkdir -p /var/lib/containers /var/lib/shared-images
 RUN cat <<'EOF' > /etc/containers/storage.conf
 [storage]
 driver = "overlay"
 runroot = "/run/containers/storage"
 graphroot = "/var/lib/containers/storage"
+[storage.options]
+additionalimagestores = ["/var/lib/shared-images"]
 EOF
 
 USER yaac

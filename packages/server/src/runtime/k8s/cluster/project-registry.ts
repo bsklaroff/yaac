@@ -794,11 +794,22 @@ async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void>
  * applied and the Deployment rolled out (the rollout also guarantees the
  * writer pod's own image is already on the node).
  */
-export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<void> {
+/**
+ * The registry Service's live ClusterIP, or null when it has none yet (or
+ * the cluster is unreachable). The allocator assigns it and nothing ever
+ * pins it, so every consumer that cannot use cluster DNS — the node's
+ * containerd hosts.toml below, and the hostNetwork'd image-store builder —
+ * has to read it fresh rather than remember one.
+ */
+export async function projectRegistryClusterIp(projectSlug: string): Promise<string | null> {
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
     'get', 'service', projectRegistryName(projectSlug), '-n', k8sNamespace(),
-  ])
-  const vip = svc?.spec?.clusterIP
+  ]).catch(() => null)
+  return svc?.spec?.clusterIP ?? null
+}
+
+export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<void> {
+  const vip = await projectRegistryClusterIp(projectSlug)
   if (!vip) throw new Error(`project registry Service ${projectRegistryName(projectSlug)} has no ClusterIP yet`)
   // Reap stray writer/cleanup pods left by crashed runs (a daemon killed
   // mid-poll never reaches runPodToCompletion's cleanup delete, and the

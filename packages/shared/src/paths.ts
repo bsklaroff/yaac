@@ -126,6 +126,11 @@ export function sharedProjectPath(slug: string, ...rest: string[]): string {
   return path.join(getProjectsDir(), slug, ...rest)
 }
 
+/** A NODE-LOCAL path outside the project tree: `<nodeLocalRoot>/<…rest>`. */
+export function nodeLocalPath(...rest: string[]): string {
+  return path.join(nodeLocalRoot(), ...rest)
+}
+
 /** A NODE-LOCAL per-project path: `<nodeLocalRoot>/projects/<slug>/<…rest>`. */
 export function nodeLocalProjectPath(slug: string, ...rest: string[]): string {
   return path.join(nodeLocalRoot(), 'projects', slug, ...rest)

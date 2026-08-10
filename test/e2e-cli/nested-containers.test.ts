@@ -8,6 +8,8 @@ import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
 import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
 import { k8sNamespace, kubectlGetJson } from '@yaac/server/platform/k8s/kubectl'
+import { DONE_MARKER } from '@yaac/server/runtime/k8s/images/store-writer'
+import { imageStoreDir } from '@yaac/shared/project-paths'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -260,6 +262,29 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     await testEnv.cleanup()
   }, 300_000)
 
+  /**
+   * Wait until this node has a COMPLETE image-store generation for the
+   * project — a `gen-…` directory carrying the DONE marker the writer pod
+   * writes last. The server enumerates exactly this to decide what a new
+   * pod mounts.
+   */
+  async function waitForStoreGeneration(projectSlug: string, timeoutMs: number): Promise<void> {
+    const parent = imageStoreDir(projectSlug)
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const names = await fs.readdir(parent).catch(() => [] as string[])
+      for (const name of names) {
+        if (await fs.access(path.join(parent, name, DONE_MARKER)).then(() => true, () => false)) {
+          return
+        }
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`no complete image-store generation under ${parent} within ${timeoutMs}ms`)
+      }
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+  }
+
   it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
     const slug = 'nested-cache'
     await setupProject(slug)
@@ -269,16 +294,26 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const name1 = session1.jobName
 
     // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
-    // podman socket, the engine has NO additional image store (the
-    // cross-session cache is the project registry, so nothing pins a
-    // session to one node), and the registry is reachable as an insecure
-    // (plain HTTP) registry via the per-project drop-in.
+    // podman socket, the engine takes the node-local image store as its one
+    // read-only lower (a cache of the project registry, which is still what
+    // the salvage pushes to and what survives a node dying), and the
+    // registry is reachable as an insecure (plain HTTP) registry via the
+    // per-project drop-in.
     const { stdout: dockerVer } = await execInJob(name1, ['docker', 'version'], { timeout: 30_000 })
     expect(dockerVer.toLowerCase()).toContain('podman')
     const { stdout: storageConf } = await execInJob(name1, [
       'cat', '/etc/containers/storage.conf',
     ])
-    expect(storageConf).not.toContain('additionalimagestores')
+    expect(storageConf).toContain('additionalimagestores = ["/var/lib/shared-images"]')
+    // And it is genuinely read-only to the session, enforced host-side by
+    // the gofer rather than by anything in-sandbox: the engine runs as real
+    // root with CAP_SYS_ADMIN inside the sentry, so nothing in the pod is
+    // what stops one session corrupting the store every other session on
+    // the node reads.
+    const { stdout: roProbe } = await execInJob(name1, [
+      'sh', '-c', 'sudo touch /var/lib/shared-images/probe 2>&1 || echo READ-ONLY',
+    ])
+    expect(roProbe).toContain('READ-ONLY')
     const { stdout: regConf } = await execInJob(name1, [
       'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
@@ -333,6 +368,14 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
+    // The salvage's push is what triggers a node image-store rebuild, and a
+    // create only mounts a generation that is already COMPLETE — so a
+    // session started before the writer pod finishes gets a cold engine.
+    // That is the intended product behavior (a create must never block on a
+    // multi-minute build), which makes waiting the test's job, not the
+    // server's.
+    await waitForStoreGeneration(slug, 600_000)
+
     // --- Session 2 ---
     const session2 = await createWorktree(slug)
     expect(session2.worktreeId).not.toBe(session1.worktreeId)
@@ -368,9 +411,9 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(tags).toContain('"v1"')
     expect(tags).toContain('"yaac-cache-v1-1"')
 
-    // Prime (session setup) pulled them back, so session 1's image is
-    // reachable in session 2 by NAME and is the SAME IMAGE CONTENT: every
-    // uncompressed layer digest matches.
+    // The node image store carries them into session 2's engine as a
+    // read-only lower, so session 1's image is reachable there by NAME and
+    // is the SAME IMAGE CONTENT: every uncompressed layer digest matches.
     const s2Id = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Id')
     const s2Parent = await inspect(session2.jobName, 'yaac-cache-probe:v1', 'Parent')
     expect(await inspect(session2.jobName, 'yaac-cache-probe:v1', 'RootFS.Layers')).toBe(layers1)

@@ -163,6 +163,15 @@ if ! [ -S /run/podman/podman.sock ]; then
   exit 1
 fi
 chmod 0755 /run/podman && chown yaac /run/podman/podman.sock
+# Warm the daemon's view of the node-local image store (the read-only
+# additionalimagestores lower at /var/lib/shared-images) before the agent
+# can ask for it. c/storage loads an additional store ONCE per engine and
+# afterwards revalidates by statting its lockfile, so this single walk —
+# the store's metadata plus a stat per layer directory, all of it across
+# the gVisor gofer — is the only cold cost there is; every later `podman
+# image ls` / `docker image ls` is answered from the daemon's memory.
+# Cheap and harmless when nothing is mounted (an empty store is no images).
+podman image ls -a >/dev/null 2>&1 || true
 EOF
   # setsid + full redirection so the hook's exec stream can close while the
   # engine keeps running, reparented to the container's catatonit init.
