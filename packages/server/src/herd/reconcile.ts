@@ -1,5 +1,4 @@
 import {
-  gcLegacyAgentLinkTrees,
   gcOrphanEphemeralModuleDirs,
   reconcileAgentSessions,
   reconcileImageSalvage,
@@ -119,13 +118,6 @@ function herdSteps(): HerdStep[] {
     // the desired set the pass above it published. Self-gating: once per
     // herd life.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
-    // The `.yaac-links` trees an older yaac's SessionStart hook wrote, now
-    // that the worktree metadata document has replaced them. Nothing reads
-    // one, so unlike the sweep above it needs no desired set and no cluster
-    // listing — which is why it stands alone rather than riding along, and why
-    // it still runs on an install whose cluster is unreachable. Self-gating:
-    // once per herd life.
-    { name: 'legacy-link-tree-gc', triggers: [], run: () => gcLegacyAgentLinkTrees() },
   ]
 }
 

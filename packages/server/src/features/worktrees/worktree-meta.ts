@@ -367,9 +367,8 @@ const sessionStartSchema = z.object({
    * Project-relative, empty when the tool wrote outside the project tree.
    *
    * Absolute is refused, not just traversal: an absolute path names a file
-   * anywhere on the host, and `resolveProjectPath` passes absolutes straight
-   * through by design (they are rows an old migration has not reached). The
-   * hook only ever emits a path it built by stripping its own home, so
+   * anywhere on the host, and the column holds project-relative values only.
+   * The hook only ever emits a path it built by stripping its own home, so
    * anything else came from something other than the hook.
    */
   path: z.string().refine(

@@ -25,7 +25,6 @@ export { reconcileAgentSessions } from './agent-session-registry'
 export { getWorktreeChanges, worktreeForkFallback } from './changes'
 export {
   cleanupWorktreeDetached,
-  gcLegacyAgentLinkTrees,
   gcOrphanEphemeralModuleDirs,
   teardownForRestart,
 } from './cleanup'

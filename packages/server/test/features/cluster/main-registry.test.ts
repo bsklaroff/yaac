@@ -11,7 +11,6 @@ vi.mock('#platform/k8s/kubectl', () => ({
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 // The node-CIDR probe the ingress lock is rendered from — a live cluster
@@ -41,7 +40,7 @@ import {
 } from '#features/cluster/main-registry'
 import { ROLE_BUILDER } from '#platform/k8s/proxy-constants'
 import { REGISTRY_UPSTREAM_IMAGE } from '#features/cluster/project-registry'
-import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { invalidateRegistryEndpoint, registryReachable } from '#platform/container/registry'
 
 const mockApply = vi.mocked(kubectlApply)
@@ -49,13 +48,6 @@ const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
 const mockReachable = vi.mocked(registryReachable)
 const mockInvalidate = vi.mocked(invalidateRegistryEndpoint)
-const mockExec = vi.mocked(execFileAsync)
-
-/** The one host-command boundary an ensure crosses: the legacy-container rm. */
-function podmanArgs(): string[][] {
-  return mockExec.mock.calls.filter((c) => c[0] === 'podman').map((c) => c[1] as string[])
-}
-
 const CLUSTER_IP = '10.96.12.34'
 
 interface Manifest {
@@ -123,7 +115,6 @@ function serveCluster(opts: {
 beforeEach(() => {
   vi.clearAllMocks()
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockExec.mockResolvedValue({ stdout: '', stderr: '' })
   mockReachable.mockResolvedValue(false)
   serveCluster()
 })
@@ -142,8 +133,7 @@ describe('ensureMainRegistry', () => {
     // The upgrade is invisible to a reachability check — the OLD registry
     // answers perfectly well — so the cheap path reads the live Deployment's
     // storage volume too. Without this the install would stay on its
-    // hostPath forever AND `sweepLegacyNodeStores` would reclaim that
-    // hostPath out from under it a few steps later in the same server start.
+    // hostPath forever, serving a store nothing else would ever convert.
     mockReachable.mockResolvedValue(true)
     serveCluster({ storage: 'hostPath' })
     await ensureMainRegistry()
@@ -302,42 +292,6 @@ describe('ensureMainRegistry', () => {
       podSelector: { matchLabels: { 'yaac.role': ROLE_BUILDER } },
     }])
     for (const r of rules) expect(r.ports).toEqual([{ protocol: 'TCP', port: 5000 }])
-  })
-
-  it('drops the pre-in-cluster EndpointSlice before applying the Service', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
-    await ensureMainRegistry()
-
-    // The old selectorless Service's hand-written slice carries this
-    // Service's service-name label and no managed-by, so it survives the
-    // apply — and kube-proxy unions every slice, which would load-balance
-    // the ClusterIP onto the dead podman container's address.
-    const del = retryArgs().find((a) => a[0] === 'delete' && a[1] === 'endpointslice')
-    expect(del).toEqual([
-      'delete', 'endpointslice', 'yaac-registry-1', '-n', 'yaac', '--ignore-not-found',
-    ])
-  })
-
-  it('retires the legacy host podman registry container', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
-    await ensureMainRegistry()
-
-    // The container the in-cluster registry replaces. Nothing names it any
-    // more and `cluster delete` no longer removes it, so the ensure that
-    // stands up its replacement is the one chance to retire it — and
-    // `--ignore` is what makes that a no-op on a fresh install.
-    expect(podmanArgs()).toEqual([['rm', '-f', '--ignore', 'yaac-registry']])
-  })
-
-  it('still comes up when the legacy container cannot be removed', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
-    // The rm is the only host command an ensure runs, so a blanket
-    // rejection is exactly "podman failed" and nothing else.
-    mockExec.mockRejectedValue(new Error('podman: command not found'))
-    // A leftover container is cosmetic; the registry it shadows is already
-    // rolled out and reachable by this point, so failing here would break a
-    // working install over garbage collection.
-    await expect(ensureMainRegistry()).resolves.toBeUndefined()
   })
 
   it('annotates a rollout failure with the command that diagnoses it', async () => {

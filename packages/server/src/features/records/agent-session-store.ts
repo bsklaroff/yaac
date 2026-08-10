@@ -306,11 +306,10 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
 }
 
 /**
- * The link → conversation join. A function, not a module-scope const: the db
- * barrel re-exports `legacy-import`, which imports this folder's sibling
- * store, so evaluating a table reference while this module is first loading
- * can find the table exports still uninitialized. Deferring it to call time
- * removes the load-order dependency outright.
+ * The link → conversation join. A function, not a module-scope const:
+ * evaluating a table reference while this module is first loading can find
+ * the db barrel's table exports still uninitialized, and deferring it to call
+ * time removes the load-order dependency outright.
  */
 const linkJoin = () => and(
   eq(worktreeAgentSessions.projectSlug, agentSessions.projectSlug),
@@ -416,13 +415,13 @@ export async function setAgentSessionCapture(
   // in an absolute path: the stopped listing resolves a transcript to read it,
   // then reports what it read. Converting here is what keeps "absolute appears
   // nowhere" true for rows captured on demand — otherwise every founding-ask
-  // capture would quietly undo the relativize migration for its row, and only
-  // a moved data dir would ever reveal it.
+  // capture would write an absolute back into a column nothing else puts one
+  // in, and only a moved data dir would ever reveal it.
   //
   // As in recordAgentSessions: an unexpressible path leaves the column alone
   // rather than clearing what an earlier pass managed to record.
   const stored = capture.transcriptPath !== undefined
-    ? await toProjectRelative(projectSlug, capture.transcriptPath)
+    ? toProjectRelative(projectSlug, capture.transcriptPath)
     : null
   const values = {
     ...(capture.firstPrompt !== undefined

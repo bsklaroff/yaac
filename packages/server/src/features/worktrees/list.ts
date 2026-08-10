@@ -99,8 +99,8 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       projectSlug: w.projectSlug,
       tool: w.tool,
       // The recorded creation time, which — unlike the runtime's — survives a
-      // restart. A workspace with no row yet (created by an older yaac, no
-      // transcript for the backfill to find) falls back to what the herd saw.
+      // restart. A workspace whose row has not landed yet falls back to what
+      // the herd saw.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
       // The founding ask is the first conversation's opening message — the
       // worktree has none of its own.

@@ -236,16 +236,6 @@ export function projectCodexAuthFile(slug: string): string {
   return path.join(codexDir(slug), 'auth.json')
 }
 
-/** SHARED: written in-pod, read by the server's transcript reader. */
-export function codexTranscriptDir(slug: string): string {
-  return path.join(codexDir(slug), '.yaac-transcripts')
-}
-
-/** SHARED — see {@link codexTranscriptDir}. */
-export function codexTranscriptFile(slug: string, worktreeId: string): string {
-  return path.join(codexTranscriptDir(slug), `${worktreeId}.jsonl`)
-}
-
 /**
  * SHARED. Per-project shared opencode config root. Bind-mounted at
  * `/home/yaac/.config/opencode/` inside the container. Shared across

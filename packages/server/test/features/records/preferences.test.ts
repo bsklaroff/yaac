@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#platform/db/client'
 import { preferences, shortcutOverrides } from '#platform/db/schema'
-import { DEFAULT_TOOL_KEY, SESSIONS_BACKFILLED_KEY, clearShortcutOverrides, getDefaultTool, getShortcutOverrides, isFlagSet, isSerializedChord, isValidTool, setDefaultToolChecked, setFlag, setShortcutOverride } from '#features/records'
+import { DEFAULT_TOOL_KEY, clearShortcutOverrides, getDefaultTool, getShortcutOverrides, isSerializedChord, isValidTool, setDefaultToolChecked, setShortcutOverride } from '#features/records'
 // Shape of a stored chord, for building fixtures. Not under test here.
 import type { SerializedChord } from '#features/records/preferences'
 import { ServerError } from '@yaac/shared/errors'
@@ -131,30 +131,5 @@ describe('clearShortcutOverrides', () => {
   it('is a no-op when none are set', async () => {
     await clearShortcutOverrides()
     expect(await getShortcutOverrides()).toEqual({})
-  })
-})
-
-/**
- * One-shot migration markers. These gate work that must happen exactly once
- * per data dir (adopting pre-existing sessions), so "has it run?" has to
- * survive a restart and be independent of whatever the migration itself
- * wrote — the reason the session backfill can't just ask whether its table
- * is empty.
- */
-describe('isFlagSet', () => {
-  it('is false until the flag is set, and keys are independent', async () => {
-    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(false)
-    await setFlag('some_other_migration')
-    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(false)
-    expect(await isFlagSet('some_other_migration')).toBe(true)
-  })
-})
-
-describe('setFlag', () => {
-  it('marks the flag done, is idempotent, and leaves unrelated prefs alone', async () => {
-    await setFlag(SESSIONS_BACKFILLED_KEY)
-    await setFlag(SESSIONS_BACKFILLED_KEY)
-    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(true)
-    expect(await getDefaultTool()).toBeUndefined()
   })
 })

@@ -46,6 +46,22 @@ break an install still running old code — its pods name that class, and the
 apiserver rejects a pod whose class is missing (the Job applies, no pod ever
 appears). A leftover class costs nothing.
 
+The **three NetworkPolicy sweeps** are the one piece of this rename still owed a
+cleanup, and they are not a compatibility window — nothing reads the old
+objects, they are only being deleted. `ensureProxyResources` deletes
+`yaac-session-egress` and `yaac-session-ingress-lock` in the install namespace,
+and `ensureWorktreeVcluster` deletes `yaac-inner-session-ingress-lock` in each
+vcluster namespace; all three run on every ensure, forever. **Delete them once
+every cluster in use has been through one worktree create on a build carrying
+them** — the ensures, not server boot, are what run them. After that they are
+three API calls per ensure against objects that cannot exist, and a leftover
+policy is a duplicate rule rather than a hole, so removing them a little early
+costs nothing.
+
+The PriorityClass is *not* on that list and must not be added to it: as the
+paragraph above says, `yaac-session` is deliberately left in place because the
+class is cluster-scoped and a coexisting old install's pods still name it.
+
 **The on-disk layout.** A worktree's state tree lives under
 `projects/<slug>/sessions/<id>`. The helpers naming it moved
 (`worktreeStateDir`, `worktreeStateRoots`); the path segment did not, because it

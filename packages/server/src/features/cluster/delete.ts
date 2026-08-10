@@ -16,10 +16,11 @@ import { env } from '@yaac/shared/env'
  * re-pushes the images.
  *
  * There is deliberately no host-container step here any more. The registry
- * an older yaac ran as a podman container beside the cluster is retired by
- * the ensure that stands up its in-cluster replacement (main-registry.ts),
- * not by delete — otherwise an install that upgraded and never deleted
- * would keep the orphan forever.
+ * an older yaac ran as a podman container beside the cluster is not this
+ * command's to reap: it outlives any single cluster, so tying its removal to
+ * `cluster delete` would leave the orphan forever on an install that upgraded
+ * and never deleted. Nothing removes it automatically now — see
+ * docs/cluster-setup.md, which hands over the `podman rm -f` line.
  */
 
 // Lives in arg-guards.ts (which costs nothing to import) so the CLI can

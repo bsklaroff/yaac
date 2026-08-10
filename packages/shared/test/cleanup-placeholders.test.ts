@@ -140,15 +140,15 @@ describe('cleanupProjectCodexPlaceholders', () => {
   it('leaves other files in the codex dir intact', async () => {
     await fs.mkdir(codexDir('alpha'), { recursive: true })
     await writeProjectCodexPlaceholder('alpha', CODEX_BUNDLE)
-    // Simulate hooks / config.toml / transcripts sitting alongside auth.json.
+    // Simulate hooks / config.toml / rollouts sitting alongside auth.json.
     await fs.writeFile(`${codexDir('alpha')}/config.toml`, '# keep\n')
-    await fs.mkdir(`${codexDir('alpha')}/.yaac-transcripts`, { recursive: true })
-    await fs.writeFile(`${codexDir('alpha')}/.yaac-transcripts/sess.jsonl`, 'keep\n')
+    await fs.mkdir(`${codexDir('alpha')}/sessions`, { recursive: true })
+    await fs.writeFile(`${codexDir('alpha')}/sessions/rollout.jsonl`, 'keep\n')
 
     await cleanupProjectCodexPlaceholders()
     expect(await fileExists(projectCodexAuthFile('alpha'))).toBe(false)
     expect(await fileExists(`${codexDir('alpha')}/config.toml`)).toBe(true)
-    expect(await fileExists(`${codexDir('alpha')}/.yaac-transcripts/sess.jsonl`)).toBe(true)
+    expect(await fileExists(`${codexDir('alpha')}/sessions/rollout.jsonl`)).toBe(true)
   })
 
   it('is a no-op when the projects dir is missing', async () => {

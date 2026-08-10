@@ -55,7 +55,6 @@ export {
   projectRegistryHost,
   reconcileProjectRegistryGc,
   removeProjectRegistry,
-  sweepLegacyNodeStores,
 } from './project-registry'
 export {
   ensureBuilderRoleGuard,

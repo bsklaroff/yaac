@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Dirent } from 'node:fs'
-import { claudeDir, codexTranscriptDir, piSessionsDir, projectDir } from '@yaac/shared/project-paths'
+import { claudeDir, piSessionsDir, projectDir } from '@yaac/shared/project-paths'
 import type { AgentTool } from '@yaac/shared/types'
+import { serverLog } from '#log'
 
 /**
  * Where each tool's session transcript lives on the host — the one place
@@ -54,23 +55,14 @@ function escapesRoot(rel: string): boolean {
  * an empty record (see dockerfiles/Dockerfile.tools): the conversation is
  * real, only its path is unexpressible.
  *
- * The realpath fallback is for callers that hand back an already-resolved
- * path — `resolveSymlinkedTranscripts` realpaths the old codex symlinks
- * before encoding their targets. On a data dir with a symlinked component
- * (macOS `/tmp` → `/private/tmp`) the literal project directory is not a
- * textual prefix of such a path.
+ * Purely textual, and can be: every path that reaches here is built from
+ * `projectDir(slug)` by the same literal joins this un-joins — the hook
+ * strips its own home, and the host-side builders start from `claudeDir` /
+ * `piSessionsDir`. Nothing hands it a realpath-resolved path.
  */
-export async function toProjectRelative(
-  slug: string,
-  absolute: string,
-): Promise<string | null> {
-  const root = projectDir(slug)
-  const rel = path.relative(root, absolute)
-  if (!escapesRoot(rel)) return rel
-  const realRoot = await fs.realpath(root).catch(() => null)
-  if (realRoot === null) return null
-  const viaReal = path.relative(realRoot, absolute)
-  return escapesRoot(viaReal) ? null : viaReal
+export function toProjectRelative(slug: string, absolute: string): string | null {
+  const rel = path.relative(projectDir(slug), absolute)
+  return escapesRoot(rel) ? null : rel
 }
 
 /**
@@ -78,20 +70,33 @@ export async function toProjectRelative(
  * install cannot resolve.
  *
  * The only place the relative form is turned back into bytes on a disk, which
- * is why its callers are worth naming. Three: `toLinkRow` in the record store,
+ * is why its callers are worth naming. Two: `toLinkRow` in the record store,
  * which is the single projection every server-side reader comes through (the
  * stopped listing's last-activity stat and the detail route's founding-ask
- * parse both arrive that way); the discovery sweep, which is herd-side and
- * legitimately works in absolute paths; and the one-shot migration. The first
- * is the whole of the shared-filesystem assumption between the halves — it
- * wants to be a herd call, and until it is, that funnel is where it lives.
+ * parse both arrive that way), and the discovery sweep, which is herd-side
+ * and legitimately works in absolute paths. The first is the whole of the
+ * shared-filesystem assumption between the halves — it wants to be a herd
+ * call, and until it is, that funnel is where it lives.
  *
- * An absolute stored value is a row the one-shot sweep has not reached
- * (`relativizeTranscriptPaths`); return it as-is rather than joining it onto
- * the project directory, which would fabricate a path that resolves nowhere.
+ * An absolute stored value is refused outright rather than joined onto the
+ * project directory, which would fabricate a path that resolves nowhere. The
+ * column holds project-relative values only: `toProjectRelative` emits
+ * nothing else, and the hook's own schema refuses an absolute at the door.
+ *
+ * Refusing is logged because every caller degrades *silently* — `toLinkRow`
+ * just omits the path, and the row surfaces as a listing with no prompt and no
+ * last-activity. Two things can put an absolute here, and both are worth a
+ * line: a new writer that bypassed the encoder, or a row stranded by an
+ * install that upgraded past the pass that used to relativize them (claude and
+ * pi rows recover through `stoppedPrompt`'s conventional-path fallback, but a
+ * codex rollout filename follows from nothing, so that pointer is gone). The
+ * line is pure signal — in a healthy install this branch is unreachable.
  */
 export function resolveProjectPath(slug: string, stored: string): string | undefined {
-  if (path.isAbsolute(stored)) return stored
+  if (path.isAbsolute(stored)) {
+    serverLog(`[transcripts] refusing absolute recorded path for ${slug}: ${stored}`)
+    return undefined
+  }
   const root = projectDir(slug)
   const joined = path.join(root, stored)
   // Symmetric with the encoder: refuse anything that does not land inside the
@@ -178,64 +183,6 @@ export async function sessionTranscriptPath(
   }
   const file = path.join(claudeTranscriptDir(projectSlug), `${worktreeId}.jsonl`)
   return await exists(file) ? file : undefined
-}
-
-/** What the backfill learns about one session from the files it left behind. */
-export interface TranscriptRecord {
-  worktreeId: string
-  tool: AgentTool
-  transcriptPath: string
-  createdAtMs: number
-}
-
-async function collect(
-  dir: string,
-  tool: AgentTool,
-  files: string[],
-  worktreeIdOf: (file: string) => string | undefined,
-): Promise<TranscriptRecord[]> {
-  const out: TranscriptRecord[] = []
-  for (const file of files) {
-    const worktreeId = worktreeIdOf(file)
-    if (worktreeId === undefined) continue
-    const full = path.isAbsolute(file) ? file : path.join(dir, file)
-    try {
-      // stat follows through, so a recorded path that is still a legacy
-      // symlink stats its target rather than the link itself.
-      // it's the rollout's timestamps we want.
-      const s = await fs.stat(full)
-      out.push({ worktreeId, tool, transcriptPath: full, createdAtMs: s.birthtimeMs })
-    } catch {
-      // Unstattable (raced deletion, dangling legacy symlink) — skip.
-    }
-  }
-  return out
-}
-
-/**
- * Every session a project's transcripts prove existed, for the one-shot
- * backfill of sessions that predate the `agent_sessions` table.
- * Deliberately NOT a steady-state input: after the backfill, an
- * unrecognized transcript belongs to a conversation the agent started for
- * itself (`/clear`), not to a yaac session, and adopting it would
- * resurrect the phantom rows this table exists to remove.
- */
-export async function scanProjectTranscripts(projectSlug: string): Promise<TranscriptRecord[]> {
-  const jsonlNames = async (dir: string): Promise<string[]> => {
-    try {
-      return (await fs.readdir(dir)).filter((f) => f.endsWith('.jsonl'))
-    } catch {
-      return [] // no record dir for this tool
-    }
-  }
-  const claudeRoot = claudeTranscriptDir(projectSlug)
-  const codexRoot = codexTranscriptDir(projectSlug)
-  const basename = (f: string): string => path.basename(f, '.jsonl')
-  return [
-    ...await collect(claudeRoot, 'claude', await jsonlNames(claudeRoot), basename),
-    ...await collect(codexRoot, 'codex', await jsonlNames(codexRoot), basename),
-    ...await collect('', 'pi', await listPiJsonlFiles(piSessionsDir(projectSlug)), sessionIdFromPiLog),
-  ]
 }
 
 /** Last time the agent appended to a transcript, or undefined if it's gone. */

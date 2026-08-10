@@ -94,6 +94,15 @@ interface CodexHooksFile {
  * whenever it isn't already trusted — the exact prompt the managed hook exists
  * to avoid. Best-effort and idempotent: a project with no hooks.json (the
  * common case going forward) is a no-op.
+ *
+ * **Not a spent one-shot, despite looking like one.** Nothing else ever writes
+ * a project's mounted `~/.codex/hooks.json`, so this never self-heals: a
+ * project created before the managed hook, on an install that jumped straight
+ * here from npm without running an intermediate release, keeps the stale entry
+ * — and its trust prompt — forever. Deleting this on the "every install has
+ * already run it" argument is the mistake to avoid; that argument holds only
+ * for migrations something else rewrites. Same reasoning keeps
+ * `normalizeLegacyPattern` in features/projects/credentials.ts.
  */
 export async function removeLegacyCodexHook(codexPath: string): Promise<void> {
   await fs.rm(path.join(codexPath, '.yaac-hook.sh'), { force: true })

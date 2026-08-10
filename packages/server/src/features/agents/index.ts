@@ -74,9 +74,7 @@ export {
 } from './setup-commands'
 export {
   resolveProjectPath,
-  scanProjectTranscripts,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
-  type TranscriptRecord,
 } from './transcripts'

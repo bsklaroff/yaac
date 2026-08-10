@@ -152,7 +152,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   // write into it through the mount.
   acpLogDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/acp/${worktreeId}`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
-  codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/worktrees/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   // The herd's own record of a worktree, and the log the in-pod hook appends
