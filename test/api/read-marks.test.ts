@@ -7,7 +7,7 @@ import {
   recordWorktreeCreated,
   recordWorktreeStopped,
   listWorktreeRows,
-} from '@yaac/server/features/records/worktree-store'
+} from '@yaac/server/records/worktree-store'
 
 /**
  * One data dir for the file, not one per test: a fresh dir costs a PGlite

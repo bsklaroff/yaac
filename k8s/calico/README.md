@@ -11,7 +11,7 @@ copy without carrying 350 KB of upstream YAML in the repo and the npm
 artifact.
 
 To move to a new version, bump `CALICO_VERSION` in
-`packages/server/src/features/cluster/setup.ts` and repin:
+`packages/server/src/runtime/k8s/cluster/setup.ts` and repin:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/projectcalico/calico/v<version>/manifests/calico.yaml \

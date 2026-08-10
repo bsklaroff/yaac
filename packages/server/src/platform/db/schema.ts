@@ -41,7 +41,7 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  * that runs worktrees, and none of them can be reproduced from here. What is
  * here is the ANSWER to "which projects exist" — so the server can list them,
  * refuse a duplicate add, and 404 an unknown slug without asking anything
- * that might be unreachable (docs/plans/herd-split.md).
+ * that might be unreachable (docs/layered-server.md).
  *
  * `addedAt` is text, not a timestamp, because it is handed to clients
  * verbatim as the ISO string `project.json` has always carried; parsing and
@@ -107,7 +107,7 @@ export const worktrees = snakeCase.table('worktrees', {
  * which is exactly why the link below is many-to-many.
  *
  * A `tui` conversation is discovered, not authored: the in-pod SessionStart
- * hook appends it to the worktree's session-starts log, the herd folds that
+ * hook appends it to the worktree's session-starts log, the sweep folds that
  * into the worktree's metadata document, and the registry reconciler imports
  * what it reports. An `acp` one is authored — the server is the ACP client, so
  * `session/new` hands it the id directly and no hook is involved.

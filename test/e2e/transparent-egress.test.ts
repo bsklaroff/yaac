@@ -15,8 +15,8 @@ import {
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/features/egress/proxy-client'
-import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
+import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import {
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,

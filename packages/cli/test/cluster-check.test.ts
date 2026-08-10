@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
-vi.mock('@yaac/server/features/cluster/check', () => ({
+vi.mock('@yaac/server/runtime/k8s/cluster/check', () => ({
   runClusterCheck: vi.fn(),
   formatCheckResult: vi.fn(
     (r: { name: string; status: string }) => `[${r.status}] ${r.name}`,
@@ -8,8 +8,8 @@ vi.mock('@yaac/server/features/cluster/check', () => ({
 } satisfies Partial<typeof clusterCheckModule>))
 
 import { clusterCheck } from '#commands/cluster-check'
-import { formatCheckResult, runClusterCheck } from '@yaac/server/features/cluster/check'
-import type * as clusterCheckModule from '@yaac/server/features/cluster/check'
+import { formatCheckResult, runClusterCheck } from '@yaac/server/runtime/k8s/cluster/check'
+import type * as clusterCheckModule from '@yaac/server/runtime/k8s/cluster/check'
 
 const mockRun = vi.mocked(runClusterCheck)
 const mockFormat = vi.mocked(formatCheckResult)

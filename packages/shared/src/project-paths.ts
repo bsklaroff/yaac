@@ -295,11 +295,10 @@ export function worktreesDir(slug: string): string {
 }
 
 /**
- * SHARED. One worktree's metadata document — the herd's own durable index of
- * what a worktree is and which agent sessions it has hosted
- * (docs/worktree-storage.md).
+ * SHARED. One worktree's metadata document — its durable index of what it
+ * is and which agent sessions it has hosted (docs/worktree-storage.md).
  *
- * Written only by the herd, and rewritten whole (tmp + rename), so it is
+ * Written only by the server, and rewritten whole (tmp + rename), so it is
  * deliberately NOT mounted into the pod: a rename replaces the inode a `File`
  * hostPath mount pins, and the pod would read a stale document forever. What
  * the pod writes is {@link worktreeSessionStartsPath} instead.

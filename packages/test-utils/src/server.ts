@@ -1,7 +1,6 @@
 import crypto from 'node:crypto'
 import { serve, type ServerType } from '@hono/node-server'
 import { buildApp } from '@yaac/server/main/server'
-import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import type { TokenStore } from '@yaac/server/http/token-store'
 
 export interface InProcessServer {
@@ -16,17 +15,14 @@ export interface InProcessServer {
  * code path, but we skip the lock file entirely by pointing the client
  * at us via the `YAAC_SERVER_URL` + `YAAC_SERVER_SECRET` env vars.
  *
- * The server is attached to an in-process herd, as `yaac server run` would
- * attach it: the routes reach the cluster, the worktrees and the transcripts
- * only through that boundary, so one with no herd answers nothing
- * (docs/plans/herd-split.md). Nothing is converged — `lifecycle.attach` is
- * the server's own startup step and is deliberately not run here.
+ * Nothing is converged — `attachConvergence` is the server's own startup
+ * step and is deliberately not run here, so the routes answer from the
+ * substrate and the disk directly, with no informer caches or watchers.
  */
 export async function bootInProcessServer(
   opts: { tokens?: TokenStore } = {},
 ): Promise<InProcessServer> {
   const secret = crypto.randomBytes(32).toString('hex')
-  setHerd(createInProcessHerd())
   const app = buildApp({ secret, buildId: 'test', tokens: opts.tokens })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
@@ -48,7 +44,6 @@ export async function bootInProcessServer(
     stop: async () => {
       delete process.env.YAAC_SERVER_URL
       delete process.env.YAAC_SERVER_SECRET
-      _resetHerdForTests()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }

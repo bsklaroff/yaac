@@ -24,8 +24,8 @@ anyone whose on-disk file is still in the old shape.
 
 | site | what it does |
 |---|---|
-| `normalizeLegacyPattern` — `features/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
-| `removeLegacyCodexHook` — `features/agents/codex.ts`, called from `createWorktree` | strips the pre-managed-hook SessionStart entry from a project's mounted `~/.codex/hooks.json`. Left there, it re-triggers Codex's `/hooks` trust prompt every session |
+| `normalizeLegacyPattern` — `store/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
+| `removeLegacyCodexHook` — `runtime/agents/codex.ts`, called from `createWorktree` | strips the pre-managed-hook SessionStart entry from a project's mounted `~/.codex/hooks.json`. Left there, it re-triggers Codex's `/hooks` trust prompt every session |
 
 Both become ordinary one-shots the moment something rewrites what they read:
 a conditional write-back in `loadCredentials` when normalization changed
@@ -35,21 +35,21 @@ either is deleted rather than converted — otherwise the failure is silent.
 
 ## 2. On-disk migrations
 
-`migrateLegacyDockerfile` (`features/projects/build-dirs.ts`) renames
+`migrateLegacyDockerfile` (`store/projects/build-dirs.ts`) renames
 `config/Dockerfile.yaac` into the project build dir on first touch, through
 `resolveProjectBuildDir` / `resolveUserBuildDir`. Self-healing, but only for a
 project whose build dir has actually been resolved — a project that has never
 built since the change still holds its Dockerfile at the old path, and deleting
 this silently ignores it.
 
-`adoptProjectDirs` (`features/records/project-store.ts`) turns a `project.json`
+`adoptProjectDirs` (`records/project-store.ts`) turns a `project.json`
 with no row into a row on every `listProjectRows`. **Not on this list to be
 deleted** — it is deliberately not one-shot, because a project directory can
 appear after any given read (a second yaac on the same data dir, a restored
 backup, a manual copy) and a durable flag would make those invisible forever.
 It retires architecturally, when the substrate stops sharing the server's
 filesystem and every project arrives through `recordProject`
-(docs/plans/herd-split.md). `features/projects/add.ts` writes `project.json`
+(docs/layered-server.md). `domain/projects/add.ts` writes `project.json`
 beside the row specifically to keep feeding it, so the two go together.
 
 ## 3. Cluster-object sweeps
@@ -61,8 +61,8 @@ docs/naming.md records.
 
 | site | object |
 |---|---|
-| `ensureProxyResources` — `features/cluster/proxy-apply.ts` | `yaac-session-egress`, `yaac-session-ingress-lock`, install namespace |
-| `ensureWorktreeVcluster` — `features/cluster/vcluster.ts` | `yaac-inner-session-ingress-lock`, per vcluster namespace |
+| `ensureProxyResources` — `runtime/k8s/cluster/proxy-apply.ts` | `yaac-session-egress`, `yaac-session-ingress-lock`, install namespace |
+| `ensureWorktreeVcluster` — `runtime/k8s/cluster/vcluster.ts` | `yaac-inner-session-ingress-lock`, per vcluster namespace |
 
 They run at proxy and vcluster ensure — the first worktree create, not server
 boot.
@@ -84,9 +84,9 @@ document.
 cannot express "either key", so every selector still matches the legacy key,
 while code-level readers go through `labelWorktreeId`, which accepts either.
 Sites: `platform/k8s/pods.ts` (constant, `labelWorktreeId`, the stamp, both zod
-schemas, `worktreePodSelector`), `features/cluster/policy-manifests.ts`,
-`features/cluster/activator.ts`, `features/cluster/vcluster.ts`,
-`features/cluster/project-registry.ts`, `k8s/proxy/pod-watch.ts`,
+schemas, `worktreePodSelector`), `runtime/k8s/cluster/policy-manifests.ts`,
+`runtime/k8s/cluster/activator.ts`, `runtime/k8s/cluster/vcluster.ts`,
+`runtime/k8s/cluster/project-registry.ts`, `k8s/proxy/pod-watch.ts`,
 `k8s/netd/targets.ts`, `packages/test-utils/src/setup.ts`.
 
 > **Move every selector to the new key before dropping the legacy stamp.** The
@@ -117,7 +117,7 @@ once nobody is upgrading across that gap.
 | site | what it does |
 |---|---|
 | `warnAboutUnimportedLegacyData` — `main/legacy-data-check.ts` | stats the four retired JSON stores at startup and warns, naming each unread file |
-| the refused-absolute `serverLog` in `resolveProjectPath` — `features/agents/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
+| the refused-absolute `serverLog` in `resolveProjectPath` — `store/transcripts/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
 
 ## 6. Prose that outlives what it describes
 
@@ -142,20 +142,20 @@ is the part worth keeping.
 
 | comment | goes with |
 |---|---|
-| `features/cluster/delete.ts` — why there is no host-container step | the host-registry era |
-| `features/cluster/main-registry.ts` module doc — the fresh-empty-claim upgrade, and where the old hostPath data sits | the hostPath-registry era |
-| `features/cluster/project-registry.ts`, `buildProjectRegistryPvcManifest` — the same trade per project | the same |
+| `runtime/k8s/cluster/delete.ts` — why there is no host-container step | the host-registry era |
+| `runtime/k8s/cluster/main-registry.ts` module doc — the fresh-empty-claim upgrade, and where the old hostPath data sits | the hostPath-registry era |
+| `runtime/k8s/cluster/project-registry.ts`, `buildProjectRegistryPvcManifest` — the same trade per project | the same |
 | `platform/k8s/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
 | `platform/k8s/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
 | `k8s/proxy/state-files.ts` — why `readJsonEither` takes a legacy path | section 4 |
-| `features/records/agent-session-store.ts` (`firstAgentSession`) and `features/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
+| `records/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
 
 Two neighbours that are **not** cruft and should not be swept with them:
 
 - `LABEL_MODE`'s absence-reads-as-`tui` (`platform/k8s/pods.ts`,
-  `features/status/status-watcher.ts`) is an encoding choice: the label is
+  `runtime/status/status-watcher.ts`) is an encoding choice: the label is
   stamped only for `acp`, so a TUI pod created by this build lacks it too.
-- The local named `legacy` in `features/worktrees/agent-session-registry.ts` is
+- The local named `legacy` in `domain/worktrees/agent-session-registry.ts` is
   the live pinned-conversation path for a worktree whose hook has not reported
   yet. It wants renaming, not deleting.
 

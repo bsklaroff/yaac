@@ -3,7 +3,7 @@
  * is allowed to get. Pure filesystem and text — no podman, no cluster, no
  * image tagging.
  *
- * A platform primitive rather than part of #features/images because two
+ * A platform primitive rather than part of #runtime/k8s/images because two
  * features answer to it. Images hashes this set into a tag and streams it to
  * a sandboxed builder pod; projects lists the same set for the build-files
  * API and enforces the same cap at upload time, so a folder a build would

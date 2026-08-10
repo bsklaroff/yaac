@@ -246,7 +246,7 @@ type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string }
 type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
 // NOTE: keep in sync with packages/shared/src/credentials.ts and
-// packages/server/src/features/projects/credentials.ts. The proxy bundles independently and can't
+// packages/server/src/store/projects/credentials.ts. The proxy bundles independently and can't
 // import from src/. SSH entries live in the same file but are irrelevant to
 // the proxy — the server uploads SSH keys directly via PUT /agent/keys, so we
 // only parse out the HTTPS entries here.

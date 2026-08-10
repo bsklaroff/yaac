@@ -43,7 +43,7 @@ import type http from 'node:http'
 import type { Duplex } from 'node:stream'
 
 
-/** Must match vclusterSleepSliceName in packages/server/src/features/cluster/activator.ts. */
+/** Must match vclusterSleepSliceName in packages/server/src/runtime/k8s/cluster/activator.ts. */
 export function sleepSliceName(vcName: string): string {
   return `yaac-sleep-${vcName}`
 }

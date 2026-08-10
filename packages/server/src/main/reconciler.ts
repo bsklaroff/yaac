@@ -1,17 +1,19 @@
-import { getDefaultTool, pushDesiredWorkspaces } from '#features/records'
-import { inFlightWorktreeIds } from '#features/worktrees'
-import { reconcileGeneratedTitles } from '#features/titles'
-import { DESIRED_SET_TRIGGERS, herd, type HerdChangeSource } from '#herd'
+import { createTickSnapshot } from '#platform/k8s'
+import type { TickSnapshot } from '#platform/k8s'
+import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
+import { getDefaultTool } from '#records'
+import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
+import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — three lanes feed one serialized pass executor:
  *
- * - changes: the herd's watches (worktree pods/Jobs, vcluster namespaces and
- *   their pods/services, and the set of live conversations) mark their
- *   sources dirty; a pass runs after a short debounce so event storms
- *   coalesce.
+ * - changes: the convergence watches (worktree pods/Jobs, vcluster
+ *   namespaces and their pods/services, and the set of live conversations)
+ *   mark their sources dirty; a pass runs after a short debounce so event
+ *   storms coalesce.
  * - poll: a 5s mark for the state no watch can see — the proxy's queued
  *   spawn requests and in-pod tmux death (the stale reaper). These are
  *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
@@ -21,89 +23,17 @@ import { serverLog } from '#log'
  *   (image prewarm/GC, salvage, builder-pod GC).
  *
  * Passes never overlap (steps share module state) and preserve the step
- * order below; each pass isolates step errors.
- *
- * There are only three steps, because the substrate half of a pass is one of
- * them: the herd runs its own ordered steps over its own view of the
- * substrate (docs/plans/herd-split.md). What is left here is what reads or
- * writes rows, and it brackets the herd's pass — the desired set has to be
- * published before the reaper can judge an absence against it, and titles
- * are generated after the conversation sweep so a just-captured opening
- * message is eligible in the same pass.
+ * order below; each pass isolates step errors. Substrate steps share one
+ * point-in-time view (`TickSnapshot`), created lazily so only a pass that
+ * actually runs a substrate step takes one — the first triggered step
+ * takes the view, and every later step in the pass sees the same instant.
  */
-export type ReconcileTrigger = HerdChangeSource | 'poll'
-
-export interface ReconcileStep {
-  name: string
-  /** Sources that dirty this step; every step also runs on resync. */
-  triggers: readonly ReconcileTrigger[]
-  run: (ctx: PassContext) => Promise<void>
-}
-
-export interface PassContext {
-  /** Which sources dirtied this pass. */
-  triggers: ReadonlySet<ReconcileTrigger>
-  /** Whether this is the periodic run-everything pass. */
-  resync: boolean
-  /** Aborts the pass. Handed down so a step that fans out into many of its
-   *  own can stop starting them the moment shutdown signals. */
-  signal: AbortSignal
-}
-
-/** Every source there is: the herd's pass owes work on any of them, and
- *  decides internally which of its own steps a given one dirties. */
-const HERD_TRIGGERS: readonly ReconcileTrigger[] = [
-  'worktree-pods',
-  'worktree-jobs',
-  'vcluster-namespaces',
-  'vcluster-pods',
-  'vcluster-services',
-  'vcluster-configmaps',
-  'live-agents',
-  'poll',
-]
-
-export function defaultReconcileSteps(): ReconcileStep[] {
-  return [
-    // Tell the herd what the server records as existing, and which of those
-    // it is still creating. Before the herd's pass, which is where the reaper
-    // runs: absence only means something against a set from this pass, not
-    // the last one — and the reaper's own triggers are this same shared
-    // constant, so the two can't drift apart.
-    { name: 'desired-workspaces', triggers: DESIRED_SET_TRIGGERS,
-      run: () => pushDesiredWorkspaces(inFlightWorktreeIds()) },
-    // Everything that touches the substrate, in the herd's own order. It
-    // takes the whole trigger set rather than being triggered itself: which
-    // of its steps a pass owes is its business, and a resync owes all of
-    // them. The configured default tool goes down as an argument — it is a
-    // preference row, and a herd never looks one up.
-    { name: 'herd', triggers: HERD_TRIGGERS, run: async ({ triggers, resync, signal }) => {
-      const defaultTool = await getDefaultTool()
-      await herd().lifecycle.reconcile({
-        triggers,
-        resync,
-        signal,
-        ...(defaultTool !== undefined ? { defaultTool } : {}),
-      })
-    } },
-    // Model-generated titles for untitled worktrees, after the herd's
-    // conversation sweep so a freshly captured prompt is eligible the same
-    // pass. Which means it owes a pass on whatever dirties that sweep: an ACP
-    // worktree's opening message is captured on the pass its handshake
-    // triggers, and same-pass eligibility is the whole point of the ordering.
-    // Cheap when there is nothing to do — a row listing against a set of
-    // worktrees already attempted.
-    { name: 'generated-titles', triggers: ['worktree-pods', 'live-agents'],
-      run: () => reconcileGeneratedTitles() },
-  ]
-}
-
 export interface ReconcilerDeps {
   signal: AbortSignal
   /** Injected for tests — overrides the real step list. */
   steps?: ReconcileStep[]
-  /** Change subscription; defaults to the herd's own watches. */
-  onDelta?: (fn: (source: HerdChangeSource) => void) => void
+  /** Change subscription; defaults to the convergence watches. */
+  onDelta?: (fn: (source: ChangeSource) => void) => void
   pollIntervalMs?: number
   resyncIntervalMs?: number
   debounceMs?: number
@@ -150,7 +80,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     dirty.add(source)
     wake?.()
   }
-  ;(deps.onDelta ?? ((fn) => { herd().lifecycle.onChange(fn) }))(mark)
+  ;(deps.onDelta ?? onConvergenceChange)(mark)
   const pollTimer = setInterval(() => mark('poll'), deps.pollIntervalMs ?? 5_000)
   const resyncTimer = setInterval(() => mark('resync'), deps.resyncIntervalMs ?? 60_000)
   const onAbort = (): void => wake?.()
@@ -174,6 +104,21 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       const triggers = new Set<ReconcileTrigger>(
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
+      let snapshot: TickSnapshot | null = null
+      let defaultTool: Promise<AgentTool | undefined> | null = null
+      const ctx: PassContext = {
+        triggers,
+        resync,
+        signal,
+        snapshot: () => (snapshot ??= createTickSnapshot(resync)),
+        // No catch: a failed preference read rejects the accessor, which
+        // fails (and stands down) exactly the steps that needed the answer
+        // — churning a spare toward a fallback tool on a transient read
+        // failure would be worse than warming nothing for one pass. An
+        // UNSET preference resolves undefined, and the consumer's fallback
+        // is for that case alone.
+        defaultTool: () => (defaultTool ??= getDefaultTool()),
+      }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight
         // step still completes (the shutdown path bounds the drain), but we
@@ -181,7 +126,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         if (signal.aborted) return
         if (!resync && !step.triggers.some((t) => triggers.has(t))) continue
         try {
-          await step.run({ triggers, resync, signal })
+          await step.run(ctx)
         } catch (err) {
           serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
         }
@@ -200,3 +145,6 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     signal.removeEventListener('abort', onAbort)
   }
 }
+
+export { defaultReconcileSteps } from '#domain/reconcile'
+export type { PassContext, ReconcileStep, ReconcileTrigger } from '#domain/reconcile'

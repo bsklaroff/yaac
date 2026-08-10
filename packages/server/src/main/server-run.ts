@@ -3,18 +3,17 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
-import { authAgentHub } from '#features/auth'
+import { authAgentHub } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, getDb } from '#platform/db'
-import { EventHub } from '#main/events'
-import { resolveWorktreeContainer } from '#features/worktrees'
-import { createServerLink } from '#main/link'
+import { closeRecords, openRecords } from '#records'
+import { EventHub } from '#api/events'
+import { resolveWorktreeContainer } from '#domain/worktrees'
 import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
-import { createInProcessHerd, herd, setHerd } from '#herd'
-import { setServerLink } from '#server-link'
+import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
-import { refreshClaudeBundledSkills } from '#features/skills'
-import type { SocketLike } from '#features/terminals'
+import { refreshClaudeBundledSkills } from '#domain/skills'
+import { attachPty, type SocketLike } from '#runtime/terminals'
+import { attachAcp } from '#runtime/agents'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -265,7 +264,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          herd().terminals.attachPty(jobName, sock, query)
+          attachPty(jobName, sock, query)
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },
@@ -305,7 +304,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          herd().agents.attachAcp(projectSlug, id, agentSessionId, {
+          attachAcp(projectSlug, id, agentSessionId, {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
             onMessage: (cb) => raw.on('message', (data, isBinary) =>
@@ -342,7 +341,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // in-memory set. A failure here means tokens would silently not persist,
   // so fail the start rather than run half-alive.
   try {
-    await getDb()
+    await openRecords()
     tokens.restoreTokens(await loadTokens())
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
@@ -355,13 +354,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // and returns — a failure to stat is not a reason to fail a start.
   await warnAboutUnimportedLegacyData()
     .catch((err: unknown) => serverLog(`[server] legacy-data check failed: ${String(err)}`))
-  // Both ends of the boundary, wired now rather than beside the listeners
-  // above because the link's handlers write rows: they cannot exist before
-  // the DB is open, and nothing can report until the reconcile loop and the
-  // routes below are live (docs/plans/herd-split.md).
-  setServerLink(createServerLink())
-  setHerd(createInProcessHerd())
-
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
   // control returns to the event loop and any queued request is processed.
@@ -387,10 +379,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
-    // Stop the herd's push-fed state layer first, before the loop drain
-    // below: its watches hold open substrate connections and a long-lived
-    // process per workspace, which would otherwise outlive the server.
-    await herd().lifecycle.stopConvergence()
+    // Stop the push-fed state layer first, before the loop drain below:
+    // its watches hold open substrate connections and a long-lived
+    // process per worktree, which would otherwise outlive the server.
+    stopConvergence()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -402,11 +394,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ])
     }
-    // Then let the herd go of what it borrowed from the host — port
-    // forwarders, the proxy control tunnel, the relay's port-forward child.
-    // After the drain, because a reap tick still tears its workspace's
-    // forwards down.
-    await herd().lifecycle.release()
+    // Then let go of what was borrowed from the host — port forwarders,
+    // the proxy control tunnel, the relay's port-forward child. After the
+    // drain, because a reap tick still tears its worktree's forwards down.
+    releaseConvergence()
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -421,7 +412,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Bounded like server.close(): a wedged close must not block lock
     // removal (WAL replay bounds any damage).
     await Promise.race([
-      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
+      closeRecords().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopServer's 3s
@@ -438,16 +429,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // an in-memory best-effort fetch, so it never blocks startup or fails it.
   void refreshClaudeBundledSkills()
 
-  // Hand the herd its substrate. Everything convergence-owning starts on
-  // that side — informer caches, status watchers, the port detector — and
-  // the server's own reconcile loop starts from `onAttached` rather than
-  // from the return, because a nested server defers the whole attach until
-  // first use to keep its born-at-zero vcluster asleep, and a loop running
-  // against a sleeping vcluster is exactly what would wake it.
-  await herd().lifecycle.attach({
+  // Attach to the substrate. Everything convergence-owning starts there —
+  // informer caches, status watchers, the port detector — and the
+  // reconcile loop starts from `onAttached` rather than from the return,
+  // because a nested server defers the whole attach until first use to
+  // keep its born-at-zero vcluster asleep, and a loop running against a
+  // sleeping vcluster is exactly what would wake it.
+  await attachConvergence({
     onAttached: () => {
-      // Started before the herd's own startup GCs drain (they run detached
-      // on that side), so the server serves the reconcile path right away.
+      // Started before the startup GCs drain (they run detached), so the
+      // server serves the reconcile path right away.
       loopDone = startReconciler({
         signal: abortCtrl.signal,
         // After each reconcile pass, push a fresh snapshot to any connected

@@ -14,7 +14,7 @@ export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode',
  * `anthropic/claude-opus-4-8`) never need them.
  *
  * Here rather than beside the command builder because it is request
- * vocabulary: the route that accepts a model and the herd that launches with
+ * vocabulary: the route that accepts a model and the launch path that runs with
  * it both need it, and neither may import the other.
  */
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
@@ -853,3 +853,13 @@ export interface DesktopServerTargets {
 export type DesktopServerOutcome =
   | { ok: true; changed: boolean }
   | { ok: false; error: string }
+
+/**
+ * Cap on a recorded opening message, applied by whoever stores it. Generous
+ * next to a title — the sidebar truncates for display, but the prompt also
+ * feeds title generation, which reads the opening ~1000 chars. Shared
+ * vocabulary rather than a records-private constant because it bounds what
+ * the store and the discovery sweeps cache as well as what the row keeps,
+ * so the copies cannot disagree.
+ */
+export const MAX_PROMPT_LENGTH = 4000

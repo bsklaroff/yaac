@@ -17,11 +17,11 @@ import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
-} from '@yaac/server/features/records/worktree-store'
+} from '@yaac/server/records/worktree-store'
 import {
   recordAgentSessions,
   setActiveAgentSessions,
-} from '@yaac/server/features/records/agent-session-store'
+} from '@yaac/server/records/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
 import { closeDb } from '@yaac/server/platform/db'
 import { firstSnapshot } from '@yaac/test-utils/events-ws'

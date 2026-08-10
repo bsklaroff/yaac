@@ -19,7 +19,7 @@ export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
  * that predates the rename carries ONLY this one, and a label selector
  * cannot express "either key" — so writers stamp both and every selector
  * (list queries, informers, and the cluster-side NetworkPolicy podSelectors
- * in `#features/cluster`) keeps matching on this one until the compatibility
+ * in `#runtime/k8s/cluster`) keeps matching on this one until the compatibility
  * window closes. Dropping it strands every worktree that was already running
  * at upgrade time, and it fails silently: a stale selector finds no pods, it
  * does not error. Code-level readers go through `labelWorktreeId`, which

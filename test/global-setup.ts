@@ -4,14 +4,14 @@ import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTag } from '@yaac/server/features/image-engine/image-builder'
+import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTag } from '@yaac/server/runtime/k8s/image-engine/image-builder'
 import { podUid } from '@yaac/server/platform/k8s/pod-spec'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
-import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
-import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
-import { ensureBuilderImage } from '@yaac/server/features/images/builder-pod'
-import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
-import { ensureGvisorInstallerImage } from '@yaac/server/features/cluster/gvisor-installer'
+import { ensureRegistryImage } from '@yaac/server/runtime/k8s/cluster/project-registry'
+import { ensureVclusterImages } from '@yaac/server/runtime/k8s/cluster/vcluster'
+import { ensureBuilderImage } from '@yaac/server/runtime/k8s/images/builder-pod'
+import { ensureEnvoyImage } from '@yaac/server/runtime/k8s/cluster/netd'
+import { ensureGvisorInstallerImage } from '@yaac/server/runtime/k8s/cluster/gvisor-installer'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/platform/container/registry'
 import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
@@ -81,7 +81,7 @@ async function fileExists(p: string): Promise<boolean> {
  * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
  * a running real server's artifacts are never matched, and the
  * `yaac-registry` container (registry:2 image) is untouched. See
- * `src/features/images/image-builder.ts` — the test suite opts into
+ * `src/runtime/k8s/images/image-builder.ts` — the test suite opts into
  * `imagePrefix: 'yaac-test'` to get this namespace separation.
  */
 async function pruneTestContainers(): Promise<void> {

@@ -16,12 +16,11 @@ vi.mock('#commands/api', () => ({ api: { worktree: { restart: { $post: postSpy }
 vi.mock('@yaac/shared/ndjson', () => ({ consumeNdjsonStream: consumeSpy }))
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
-import * as cleanup from '@yaac/server/features/worktrees/cleanup'
-import * as worktreeCreate from '@yaac/server/features/worktrees/create'
-import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
-import { resolveRestartTarget, restartWorktree } from '@yaac/server/features/worktrees/restart'
-import { recordWorktreeCreated } from '@yaac/server/features/records/worktree-store'
-import { recordAgentSessions } from '@yaac/server/features/records/agent-session-store'
+import * as cleanup from '@yaac/server/domain/worktrees/cleanup'
+import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
+import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
+import { recordWorktreeCreated } from '@yaac/server/records/worktree-store'
+import { recordAgentSessions } from '@yaac/server/records/agent-session-store'
 import { closeDb } from '@yaac/server/platform/db/client'
 import { worktreeRestart } from '#commands/worktree-restart'
 
@@ -30,7 +29,7 @@ import type { PodInfo } from '@yaac/server/platform/k8s/pods'
 /**
  * Unit coverage for the session-restart pipeline: target resolution
  * (live workspace first, recorded row for reaped ones) and the handoff to
- * the herd's teardown + create. The real in-process herd stands behind the
+ * teardown + create. The real implementations stand behind the
  * boundary so the whole pipeline runs; only its substrate leaves are mocked,
  * so we don't need a cluster.
  */
@@ -56,7 +55,6 @@ describe('resolveRestartTarget', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     vi.spyOn(pods, 'listWorktreePods').mockImplementation(
       listSpy as unknown as typeof pods.listWorktreePods,
@@ -64,7 +62,6 @@ describe('resolveRestartTarget', () => {
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)
@@ -161,7 +158,6 @@ describe('restartWorktree', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
     createSpy = vi.fn().mockResolvedValue({
@@ -182,7 +178,6 @@ describe('restartWorktree', () => {
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)

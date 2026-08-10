@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { loadCredentials, saveCredentials } from '@yaac/server/features/projects/credentials'
+import { loadCredentials, saveCredentials } from '@yaac/server/store/projects/credentials'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,

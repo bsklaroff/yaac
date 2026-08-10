@@ -12,7 +12,7 @@ getting it wrong is how a rename turns into a second rename.
 |---|---|---|
 | **session** | one conversation with an agent | the tool's own id, transcripts, first prompts, `mode`, the webapp's auth cookie, tmux's own |
 | **worktree** | the durable thing: a checkout, its history, its record | storage, the CLI, the database, the webapp, anything a user names |
-| **workspace** | the same thing seen by a herd, substrate-neutrally | the herd contract only — deliberately free of git and Kubernetes nouns (docs/plans/herd-split.md) |
+| **workspace** | the same thing seen by the runtime layer, substrate-neutrally | the runtime observation vocabulary (`#runtime/contract`) — deliberately free of git and Kubernetes nouns (docs/layered-server.md) |
 | **pod** | the Kubernetes object a worktree currently runs in | `#platform/k8s` and nothing above it |
 
 The pod tier is the one that reads as a distinction without a difference until
@@ -74,7 +74,7 @@ wire formats, parsed by the proxy.
 **Agent-facing names.** `--session-id`, the `SessionStart` hook and its
 session-starts log, pi's and opencode's session logs, and the ACP protocol's
 `sessionId` are all the tools' vocabulary, where a session genuinely is a
-conversation. `#features/agents/acp-client.ts` and `acp-protocol.ts` are the two
+conversation. `#runtime/agents/acp-client.ts` and `acp-protocol.ts` are the two
 modules where a bare `sessionId` is an agent's session and not a worktree.
 
 ## Compatibility windows still open

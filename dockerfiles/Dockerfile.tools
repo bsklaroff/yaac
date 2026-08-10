@@ -168,7 +168,7 @@ USER yaac
 #   newline) or startup wipes the cache dir, deleting the seeded file —
 #   re-verify it whenever the opencode pin moves. This support file is folded
 #   into the tools layer's content hash (toolsContentHash in
-#   packages/server/src/features/images/image-builder.ts) so a regen re-tags
+#   packages/server/src/runtime/k8s/images/image-builder.ts) so a regen re-tags
 #   the image like a Dockerfile edit.
 # - kv.json: marks the once-per-install OpenRouter "subpar providers /
 #   OpenCode Zen" dialog as already dismissed; every pod is a fresh install,

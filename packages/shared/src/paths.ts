@@ -186,7 +186,7 @@ export function containerAcpSock(handle: string): string {
 /**
  * In-pod path of the worktree's session-starts log — the host side is
  * `worktreeSessionStartsPath`. The `SessionStart` hook appends one JSON line
- * here per firing, and the herd folds them into the worktree's metadata
+ * here per firing, and the discovery sweep folds them into the worktree's metadata
  * document.
  *
  * Tool-independent on purpose: one path for every tool, so the hook needs no

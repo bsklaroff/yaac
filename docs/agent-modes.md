@@ -43,7 +43,7 @@ window-close teardown, and worktree GC.
 
 ## The driver seam
 
-`#features/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
+`#runtime/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
 `launchCmd(spec)` and `connect(worktree, sink, deps)` — a stream of
 `AgentObservation`s (`up`, `down`, `live-agents`, `status`,
 `command-channel`). `WorktreeStatusWatcher` consumes it and owns what both modes
@@ -200,14 +200,14 @@ sandbox and a throwaway git worktree, not a prompt nobody is watching.
 
 | Concern | Path |
 |---|---|
-| Driver interface + factory | `packages/server/src/features/agents/drivers.ts` |
-| tmux driver | `packages/server/src/features/agents/tui-driver.ts` |
-| ACP driver | `packages/server/src/features/agents/acp-driver.ts` |
-| ACP protocol → `AcpEvent` | `packages/server/src/features/agents/acp-protocol.ts` |
-| Record reader + tail | `packages/server/src/features/agents/acp-log.ts` |
-| JSON-RPC peer | `packages/server/src/features/agents/acp-jsonrpc.ts` |
-| Conversation state | `packages/server/src/features/agents/acp-client.ts` |
-| Pane bridge (`/acp/attach`) | `packages/server/src/features/agents/acp-bridge.ts` |
+| Driver interface + factory | `packages/server/src/runtime/agents/drivers.ts` |
+| tmux driver | `packages/server/src/runtime/agents/tui-driver.ts` |
+| ACP driver | `packages/server/src/runtime/agents/acp-driver.ts` |
+| ACP protocol → `AcpEvent` | `packages/server/src/runtime/agents/acp-protocol.ts` |
+| Record reader + tail | `packages/server/src/runtime/agents/acp-log.ts` |
+| JSON-RPC peer | `packages/server/src/runtime/agents/acp-jsonrpc.ts` |
+| Conversation state | `packages/server/src/runtime/agents/acp-client.ts` |
+| Pane bridge (`/acp/attach`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
 | In-pod supervisor | `dockerfiles/acpd/` (baked into the base image) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |

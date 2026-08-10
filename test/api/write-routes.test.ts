@@ -3,52 +3,51 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
-import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import simpleGit from 'simple-git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { addEntry, loadCredentials } from '@yaac/server/features/projects/credentials'
+import { addEntry, loadCredentials } from '@yaac/server/store/projects/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getDefaultTool } from '@yaac/server/features/records/preferences'
+import { getDefaultTool } from '@yaac/server/records/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
-import type * as sessionCreateModule from '@yaac/server/features/worktrees/create'
-import type * as projectAddModule from '@yaac/server/features/projects/add'
-import type * as sessionDeleteModule from '@yaac/server/features/worktrees/stop'
-import type * as sessionRestartModule from '@yaac/server/features/worktrees/restart'
-import type * as projectRemoveModule from '@yaac/server/features/worktrees/project-teardown'
+import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
+import type * as projectAddModule from '@yaac/server/domain/projects/add'
+import type * as sessionDeleteModule from '@yaac/server/domain/worktrees/stop'
+import type * as sessionRestartModule from '@yaac/server/domain/worktrees/restart'
+import type * as projectRemoveModule from '@yaac/server/domain/worktrees/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
-vi.mock('@yaac/server/features/worktrees/create', async () => {
-  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/features/worktrees/create')
+vi.mock('@yaac/server/domain/worktrees/create', async () => {
+  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/domain/worktrees/create')
   return {
     ...actual,
     createWorktree: vi.fn(),
   }
 })
 
-vi.mock('@yaac/server/features/worktrees/stop', () => ({
+vi.mock('@yaac/server/domain/worktrees/stop', () => ({
   stopWorktree: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
 
-vi.mock('@yaac/server/features/worktrees/restart', () => ({
+vi.mock('@yaac/server/domain/worktrees/restart', () => ({
   restartWorktree: vi.fn(),
 } satisfies Partial<typeof sessionRestartModule>))
 
-vi.mock('@yaac/server/features/projects/add', async () => {
-  const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/features/projects/add')
+vi.mock('@yaac/server/domain/projects/add', async () => {
+  const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/domain/projects/add')
   return {
     ...actual,
     addProject: vi.fn(),
   }
 })
 
-vi.mock('@yaac/server/features/worktrees/project-teardown', () => ({
+vi.mock('@yaac/server/domain/worktrees/project-teardown', () => ({
   removeProject: vi.fn(),
 } satisfies Partial<typeof projectRemoveModule>))
 
@@ -62,13 +61,13 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
   }
 })
 
-import { createWorktree } from '@yaac/server/features/worktrees/create'
-import { stopWorktree } from '@yaac/server/features/worktrees/stop'
-import { restartWorktree } from '@yaac/server/features/worktrees/restart'
-import { addProject } from '@yaac/server/features/projects/add'
-import { removeProject } from '@yaac/server/features/worktrees/project-teardown'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/worktrees/provisioning'
-import { authAgentHub } from '@yaac/server/features/auth/agent'
+import { createWorktree } from '@yaac/server/domain/worktrees/create'
+import { stopWorktree } from '@yaac/server/domain/worktrees/stop'
+import { restartWorktree } from '@yaac/server/domain/worktrees/restart'
+import { addProject } from '@yaac/server/domain/projects/add'
+import { removeProject } from '@yaac/server/domain/worktrees/project-teardown'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
+import { authAgentHub } from '@yaac/server/domain/auth/agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
 import {
@@ -168,13 +167,11 @@ describe('write routes', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     vi.resetAllMocks()
     clearAllProvisioningForTests()
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

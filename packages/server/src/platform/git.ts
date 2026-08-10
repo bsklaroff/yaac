@@ -10,7 +10,7 @@ import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 /**
  * Everything git needs to authenticate against a remote, in the two forms it
  * accepts. Defined here rather than where credentials are looked up because
- * this is what consumes it: the lookup in #features/projects resolves a
+ * this is what consumes it: the lookup in #domain/projects resolves a
  * configured entry down to this shape precisely so the git primitives never
  * have to know about project config.
  */

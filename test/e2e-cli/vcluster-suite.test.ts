@@ -20,7 +20,7 @@ import {
   removeWorktreeVcluster,
   vclusterName,
   vclusterNamespace,
-} from '@yaac/server/features/cluster/vcluster'
+} from '@yaac/server/runtime/k8s/cluster/vcluster'
 import {
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
@@ -28,7 +28,7 @@ import {
   projectRegistryHostname,
   projectRegistryName,
   removeProjectRegistry,
-} from '@yaac/server/features/cluster/project-registry'
+} from '@yaac/server/runtime/k8s/cluster/project-registry'
 import { registryRef } from '@yaac/server/platform/container/registry'
 import {
   createYaacTestEnv,
