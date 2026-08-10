@@ -34,7 +34,7 @@ function claudeTranscriptDir(slug: string): string {
  * longer exists, silently, because the readers only ever stat these paths.
  * And an absolute path names one machine's layout: project-relative is the
  * form that stays true wherever the data dir sits
- * (docs/plans/layered-server.md).
+ * (docs/layered-server.md).
  *
  * Project-relative rather than tool-home-relative because it needs no tool:
  * every tool home is `<projectDir>/<tool>`, so the tool segment is simply the

@@ -19,7 +19,7 @@ import type { WorktreeEvent, WorktreeCreateFailed, WorktreeCreated } from './eve
  * Nothing but row writes belongs here, and the row writes it fans out to
  * live nowhere else — the per-event mutators are internal to this feature,
  * off the barrel, so a caller cannot write an observed fact except by
- * saying what happened (docs/plans/layered-server.md).
+ * saying what happened (docs/layered-server.md).
  */
 export async function applyWorktreeEvent(event: WorktreeEvent): Promise<void> {
   switch (event.type) {

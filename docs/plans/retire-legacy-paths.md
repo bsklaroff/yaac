@@ -49,7 +49,7 @@ appear after any given read (a second yaac on the same data dir, a restored
 backup, a manual copy) and a durable flag would make those invisible forever.
 It retires architecturally, when the substrate stops sharing the server's
 filesystem and every project arrives through `recordProject`
-(docs/plans/layered-server.md). `domain/projects/add.ts` writes `project.json`
+(docs/layered-server.md). `domain/projects/add.ts` writes `project.json`
 beside the row specifically to keep feeding it, so the two go together.
 
 ## 3. Cluster-object sweeps

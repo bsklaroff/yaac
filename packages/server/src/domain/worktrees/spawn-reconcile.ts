@@ -12,7 +12,7 @@
  * tool the new worktree runs, how many a caller may have in flight, what id
  * it gets and what sidebar row it provisions under are policy — the drain's
  * whole contribution is the queue and the caller's labels
- * (docs/plans/layered-server.md).
+ * (docs/layered-server.md).
  */
 import {
   proxyClient,

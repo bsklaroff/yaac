@@ -38,7 +38,7 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
 export async function reconcilePrewarmPool(
   // Which tool to warm spares with is a user preference — a row, resolved
   // once per pass and handed down so no substrate step reads one
-  // (docs/plans/layered-server.md).
+  // (docs/layered-server.md).
   defaultTool: AgentTool,
   snapshot?: TickSnapshot,
 ): Promise<void> {

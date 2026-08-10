@@ -49,10 +49,10 @@ const SEALED_FOLDERS = {
 // PGlite directly instead of going through the barrel. `#features/records`
 // is the ONE feature allowed past this: rows live behind its barrel, and
 // observed facts enter it through `applyWorktreeEvent` rather than through a
-// caller-side write (docs/plans/layered-server.md).
+// caller-side write (docs/layered-server.md).
 const NO_DATABASE_DIRECT = {
   regex: '^(#platform/db|@electric-sql/pglite|drizzle-orm)(/|$)',
-  message: 'Only #records opens the database (docs/plans/layered-server.md): read or write rows through its barrel.',
+  message: 'Only #records opens the database (docs/layered-server.md): read or write rows through its barrel.',
 }
 
 // Lower layers know nothing about the ones above them — not the HTTP
@@ -62,7 +62,7 @@ const NO_DATABASE_DIRECT = {
 // it.
 const NO_API_OR_MAIN = {
   regex: '^(#main|#routes|#http|#api)(/|$)',
-  message: 'Layers below api/main must not import them (docs/plans/layered-server.md): report through #records events or #notify instead.',
+  message: 'Layers below api/main must not import them (docs/layered-server.md): report through #records events or #notify instead.',
 }
 
 export default tseslint.config(
@@ -177,7 +177,7 @@ export default tseslint.config(
   },
 
   // The store layer: worktrees, clones, transcripts and config on disk
-  // (docs/plans/layered-server.md). Pure disk mechanics — it never reads
+  // (docs/layered-server.md). Pure disk mechanics — it never reads
   // rows, never touches the substrate, and never imports the mediators or
   // the runtime above it.
   {
@@ -194,7 +194,7 @@ export default tseslint.config(
             NO_API_OR_MAIN,
             {
               regex: '^(#records|#domain|#runtime)(/|$)',
-              message: 'The store layer must not import records, the runtime, or the mediators above it (docs/plans/layered-server.md).',
+              message: 'The store layer must not import records, the runtime, or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -206,7 +206,7 @@ export default tseslint.config(
     },
   },
 
-  // The runtime layer: how agents run (docs/plans/layered-server.md). It
+  // The runtime layer: how agents run (docs/layered-server.md). It
   // never reads rows — an observed fact leaves as a `WorktreeEvent` from a
   // mediator above it — and never imports the mediators themselves.
   {
@@ -223,7 +223,7 @@ export default tseslint.config(
             NO_API_OR_MAIN,
             {
               regex: '^(#records|#domain)(/|$)',
-              message: 'The runtime layer must not import records or the mediators above it (docs/plans/layered-server.md).',
+              message: 'The runtime layer must not import records or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],

@@ -42,7 +42,7 @@ export function _clearListActiveInflightForTests(): void {
  * the title a user typed, the pin they set, the creation time that has to
  * survive a restart the runtime did not, and the conversations a workspace
  * has hosted with their opening messages. Neither half can answer alone
- * (docs/plans/layered-server.md).
+ * (docs/layered-server.md).
  *
  * Concurrent calls with the same `projectFilter` share one in-flight
  * Promise (see `listActiveInflight`).

@@ -31,7 +31,7 @@ import type { AgentLiveness, RuntimeReport, WorktreeRuntimeReport } from '#runti
  * registry, the egress proxy's blocked hosts, the projects' git-auth state.
  * The durable half — titles, pins, recorded creation times, conversations and
  * their opening messages — is the server's, and `listActiveWorktrees` is the
- * join (docs/plans/layered-server.md).
+ * join (docs/layered-server.md).
  *
  * Agent liveness is reported keyed by the driver's HANDLE rather than by
  * conversation, because which conversation sits on a handle is a fact the

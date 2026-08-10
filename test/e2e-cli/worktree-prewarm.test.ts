@@ -63,7 +63,7 @@ describe('yaac prewarmed sessions', () => {
     // The listing and the project count are JOINS: the rows are read here,
     // and what a substrate is running comes back across the boundary. This
     // file asserts on both in-process, so it needs a substrate of its own — the
-    // spawned server under test has its own (docs/plans/layered-server.md).
+    // spawned server under test has its own (docs/layered-server.md).
     testEnv = await createYaacTestEnv()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()

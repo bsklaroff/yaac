@@ -18,7 +18,7 @@ import type { RuntimeHandle } from '#runtime/contract'
  * Runtime-side on purpose: all of it is substrate behavior — which view to
  * trust, when a miss is a miss, what a listing failure means — described in
  * the vocabulary of `#runtime/contract` so nothing above has to know a pod
- * carries a raw label string (docs/plans/layered-server.md).
+ * carries a raw label string (docs/layered-server.md).
  */
 
 /**

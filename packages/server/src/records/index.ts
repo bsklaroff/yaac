@@ -10,7 +10,7 @@
 // how it died.
 //
 // It is the only feature allowed to touch `#platform/db`, and that is the
-// point (docs/plans/layered-server.md). Observed facts enter through
+// point (docs/layered-server.md). Observed facts enter through
 // exactly one door: code that watches the substrate or reads a worktree's
 // disk emits a `WorktreeEvent`, and `applyWorktreeEvent` alone decides
 // which rows that lands in — its per-event mutators are internal, off this

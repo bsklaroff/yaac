@@ -34,7 +34,7 @@ const forkBranchCache = new Map<string, { at: number; branch: string | null }>()
  * having no changes at all.
  *
  * Server-side because the row is the authority and rows are the server's; the
- * fallback is one runtime call away (docs/plans/layered-server.md).
+ * fallback is one runtime call away (docs/layered-server.md).
  */
 export async function worktreeForkBranch(projectSlug: string, worktreeId: string): Promise<string | null> {
   const key = `${projectSlug} ${worktreeId}`

@@ -13,7 +13,7 @@ import type {
  * in is decided here alone. That inversion is what keeps every observer
  * mechanical, makes re-reporting after a restart a no-op rather than a
  * clobber, and lets one handler own the write-side invariants below
- * (docs/plans/layered-server.md).
+ * (docs/layered-server.md).
  *
  * A `WorktreeEvent` is discrete and past-tense — something that happened,
  * applied once to a row. That is what separates it from the status store,

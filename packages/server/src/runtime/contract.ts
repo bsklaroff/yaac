@@ -7,7 +7,7 @@ import type {
 
 /**
  * The vocabulary of runtime observation — what the substrate can see right
- * now, and nothing that survives it (docs/plans/layered-server.md).
+ * now, and nothing that survives it (docs/layered-server.md).
  *
  * The durable half of a listing (a title, a pin, the recorded creation
  * time, the sessions and their opening messages) lives in `#records`;

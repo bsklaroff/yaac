@@ -50,7 +50,7 @@ export interface SpawnPolicyDeps {
  * Every decision in a spawn is here rather than in the drain that queued it:
  * the tool precedence ends at a preference row, the fan-out cap is a policy,
  * and the id and its sidebar row are the server's to mint
- * (docs/plans/layered-server.md). The drain contributed the one thing only
+ * (docs/layered-server.md). The drain contributed the one thing only
  * the substrate knows — which worktree called, in which project, running
  * what.
  *
