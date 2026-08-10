@@ -1,18 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as cleanupModule from '#features/worktrees/cleanup'
+import type * as cleanupModule from '#domain/worktrees/cleanup'
 import type * as imagePrewarmModule from '#runtime/k8s/images/image-prewarm'
 import type * as projectRegistryModule from '#runtime/k8s/cluster/project-registry'
-import type * as titleGenerationModule from '#features/titles/title-generation'
+import type * as titleGenerationModule from '#domain/titles/title-generation'
 
 // One reconcile step per module, faked so a pass can be driven without a
 // substrate. Which steps a pass owes is the thing under test, so what each
 // one does is beside the point — that it ran, and in what order, is not.
-vi.mock('#features/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
-vi.mock('#features/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
-vi.mock('#features/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
+vi.mock('#domain/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
+vi.mock('#domain/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
+vi.mock('#domain/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
 vi.mock('#runtime/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
-vi.mock('#features/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
-vi.mock('#features/worktrees/cleanup', async (importOriginal) => ({
+vi.mock('#domain/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
+vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
@@ -31,7 +31,7 @@ vi.mock('#runtime/k8s/cluster/project-registry', async (importOriginal) => ({
   reconcileProjectRegistryGc: vi.fn(),
 }))
 vi.mock('#runtime/k8s/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
-vi.mock('#features/titles/title-generation', async (importOriginal) => ({
+vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
   ...(await importOriginal<typeof titleGenerationModule>()),
   reconcileGeneratedTitles: vi.fn(),
 }))
@@ -46,12 +46,12 @@ import {
 import type { DeltaSource } from '#platform/k8s/cluster-cache'
 import type { TickSnapshot } from '#platform/k8s'
 import type { AgentTool } from '@yaac/shared/types'
-import { reconcileStaleWorktrees } from '#features/worktrees/stale-worktrees'
-import { reconcileSpawnRequests } from '#features/worktrees/spawn-reconcile'
-import { reconcilePrewarmPool } from '#features/worktrees/prewarm-reconcile'
+import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
+import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
+import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 import { reconcileImageSalvage } from '#runtime/k8s/worktrees/salvage-reconcile'
-import { reconcileAgentSessions } from '#features/worktrees/agent-session-registry'
-import { gcOrphanEphemeralModuleDirs } from '#features/worktrees/cleanup'
+import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
+import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
 import { reconcileBuilderPodGc } from '#runtime/k8s/images/builder-pod'
 import { reconcileBuildCacheGc } from '#runtime/k8s/images/build-cache-gc'
 import { reconcileImagePrewarm } from '#runtime/k8s/images/image-prewarm'
@@ -61,7 +61,7 @@ import { reconcileVclusterAttribution } from '#runtime/k8s/egress/vcluster-attri
 import { reconcileVclusters } from '#runtime/k8s/cluster/vcluster-reconcile'
 import { reconcileProjectRegistryGc } from '#runtime/k8s/cluster/project-registry'
 import { reconcileRedirectClaims } from '#runtime/k8s/cluster/redirect-claim-reconcile'
-import { reconcileGeneratedTitles } from '#features/titles/title-generation'
+import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
   reconcileStaleWorktrees, reconcileSpawnRequests,
@@ -301,7 +301,7 @@ async function runPass(
 
 describe('defaultReconcileSteps', () => {
   beforeEach(() => {
-    for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset().mockResolvedValue(undefined)
+    for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
   // The reaper runs first (so counts reflect just-reaped worktrees by the
@@ -374,7 +374,6 @@ describe('defaultReconcileSteps', () => {
     })
     vi.mocked(reconcileImagePrewarm).mockImplementation(() => {
       order.push('prewarm')
-      return Promise.resolve()
     })
     vi.mocked(reconcilePrewarmPool).mockImplementation(() => {
       order.push('pool')

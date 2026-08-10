@@ -4,8 +4,8 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/platform/git'
 import { listWorktreePods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
-import { listActiveWorktrees } from '@yaac/server/features/worktrees/list'
-import { listProjects } from '@yaac/server/features/projects/list'
+import { listActiveWorktrees } from '@yaac/server/domain/worktrees/list'
+import { listProjects } from '@yaac/server/domain/projects/list'
 import { isTmuxSessionAlive } from '@yaac/server/runtime/status/liveness'
 import {
   createYaacTestEnv,

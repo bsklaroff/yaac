@@ -16,7 +16,6 @@
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
-import { listProjects } from '#features/projects'
 import { resolveProjectConfig } from '#store/projects'
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { serverLog } from '#log'
@@ -70,27 +69,23 @@ export async function prewarmProjectImage(projectSlug: string): Promise<void> {
  * failure logs, marks the chain for backoff via its build entry, and the
  * next eligible tick retries. Throttled to PREWARM_SWEEP_INTERVAL_MS.
  */
-export async function reconcileImagePrewarm(nowMs: number = Date.now()): Promise<void> {
+export function reconcileImagePrewarm(
+  projectSlugs: string[],
+  nowMs: number = Date.now(),
+): void {
   if (!env.imagePrewarm) return
   if (testEnv.requirePrebuiltImages) return
   if (nowMs - lastSweepMs < PREWARM_SWEEP_INTERVAL_MS) return
   lastSweepMs = nowMs
 
-  let projects
-  try {
-    projects = await listProjects()
-  } catch {
-    return
-  }
-
-  for (const project of projects) {
-    if (prewarming.has(project.slug)) continue
-    prewarming.add(project.slug)
-    void prewarmProjectImage(project.slug)
+  for (const slug of projectSlugs) {
+    if (prewarming.has(slug)) continue
+    prewarming.add(slug)
+    void prewarmProjectImage(slug)
       .catch((err: unknown) => {
-        serverLog(`[image-prewarm] ${project.slug}: ${String(err)}`)
+        serverLog(`[image-prewarm] ${slug}: ${String(err)}`)
       })
-      .finally(() => prewarming.delete(project.slug))
+      .finally(() => prewarming.delete(slug))
   }
 }
 

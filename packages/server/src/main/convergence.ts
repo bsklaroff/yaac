@@ -20,7 +20,7 @@ import {
   stopAllWorktreeForwarders,
 } from '#runtime/k8s/forwarders'
 import { proxyClient } from '#runtime/k8s/egress'
-import { recordedConversationHandles } from '#features/records'
+import { recordedConversationHandles } from '#records'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

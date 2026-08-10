@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('#features/projects/list', () => ({ listProjects: vi.fn() }))
 vi.mock('#store/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#runtime/k8s/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
 vi.mock('#runtime/k8s/images/build-coordinator', () => ({
@@ -18,7 +17,6 @@ import {
   PREWARM_SWEEP_INTERVAL_MS,
   _resetImagePrewarmForTests,
 } from '#runtime/k8s/images/image-prewarm'
-import { listProjects } from '#features/projects/list'
 import { resolveProjectConfig } from '#store/projects/config'
 import { resolveImageChain } from '#runtime/k8s/image-engine/image-builder'
 import { ensureImage, pushImageShared } from '#runtime/k8s/images/build-coordinator'
@@ -33,7 +31,6 @@ import {
 import { _resetWorktreeListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
-const mockListProjects = vi.mocked(listProjects)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
@@ -41,9 +38,7 @@ const mockPush = vi.mocked(pushImageShared)
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-function project(slug: string) {
-  return { slug, remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', worktreeCount: 0 }
-}
+
 
 describe('reconcileImagePrewarm', () => {
   beforeEach(() => {
@@ -69,8 +64,7 @@ describe('reconcileImagePrewarm', () => {
 
   it('runs inside a nested yaac session (in-pod dockerfile edits are the hot path)', async () => {
     vi.stubEnv('YAAC_NESTED', '1')
-    mockListProjects.mockResolvedValue([project('p')])
-    await reconcileImagePrewarm()
+    reconcileImagePrewarm(['p'])
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledWith(
       'p', undefined, false, false, { reason: 'prewarm' })
@@ -78,30 +72,26 @@ describe('reconcileImagePrewarm', () => {
 
   it('is a no-op when YAAC_IMAGE_PREWARM=0', async () => {
     vi.stubEnv('YAAC_IMAGE_PREWARM', '0')
-    await reconcileImagePrewarm()
-    expect(mockListProjects).not.toHaveBeenCalled()
+    reconcileImagePrewarm(['p'])
+    await flush()
+    expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
   it('is a no-op under requirePrebuilt (e2e workers must never build)', async () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    await reconcileImagePrewarm()
-    expect(mockListProjects).not.toHaveBeenCalled()
-  })
-
-  it('swallows a project-list failure', async () => {
-    mockListProjects.mockRejectedValue(new Error('fs gone'))
-    await expect(reconcileImagePrewarm()).resolves.toBeUndefined()
+    reconcileImagePrewarm(['p'])
+    await flush()
+    expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
   it('ensures and pushes every project, threading nestedContainers from config', async () => {
-    mockListProjects.mockResolvedValue([project('plain'), project('nested')])
     mockResolveConfig.mockImplementation((slug) =>
       Promise.resolve(slug === 'nested' ? { nestedContainers: true } : null))
     mockResolveChain.mockImplementation((slug: string) =>
       Promise.resolve({ layers: [], finalTag: `final-${slug}:x` }))
     mockEnsureImage.mockImplementation((slug: string) => Promise.resolve(`final-${slug}:x`))
 
-    await reconcileImagePrewarm()
+    reconcileImagePrewarm(['plain', 'nested'])
     await flush()
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
@@ -115,60 +105,55 @@ describe('reconcileImagePrewarm', () => {
   })
 
   it('virtualCluster implies the nestable layer', async () => {
-    mockListProjects.mockResolvedValue([project('vc')])
     mockResolveConfig.mockResolvedValue({ virtualCluster: true })
-    await reconcileImagePrewarm()
+    reconcileImagePrewarm(['vc'])
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledWith(
       'vc', undefined, false, true, { reason: 'prewarm' })
   })
 
   it('skips a project whose prewarm is still in flight, then resumes', async () => {
-    mockListProjects.mockResolvedValue([project('p')])
     let release!: () => void
     mockEnsureImage.mockImplementation(() =>
       new Promise((res) => { release = () => res('yaac-tools:t') }))
 
     // Distinct past-interval timestamps so the sweep throttle never skips —
     // the in-flight mark is what must dedupe here.
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
+    await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
     release()
     await flush()
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 3)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 3)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
 
   it('logs a failed prewarm and retries it on a later sweep', async () => {
-    mockListProjects.mockResolvedValue([project('p')])
     mockEnsureImage.mockRejectedValueOnce(new Error('podman build exited with code 1'))
 
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
     await flush()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
       expect.stringContaining('[image-prewarm] p:'))
 
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
 
   it('throttles: a sweep inside the interval is a no-op', async () => {
-    mockListProjects.mockResolvedValue([project('p')])
-
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
     await flush()
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS + 5_000)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS + 5_000)
     await flush()
-    expect(mockListProjects).toHaveBeenCalledTimes(1)
     expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
-    await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
     await flush()
-    expect(mockListProjects).toHaveBeenCalledTimes(2)
+    expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
 
   it('backs off a chain with a recent blocking failure', async () => {

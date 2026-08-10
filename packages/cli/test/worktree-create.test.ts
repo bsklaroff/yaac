@@ -234,7 +234,7 @@ vi.mock('@yaac/server/runtime/k8s/forwarders/port-forwarders', () => ({
 // The session row is a real DB write; this file mocks everything around
 // createWorktree, so it mocks the store too. `recordWorktreeCreated` throwing
 // is a failed create (see the teardown case below), not a swallowed hiccup.
-vi.mock('@yaac/server/features/records/worktree-store', () => ({
+vi.mock('@yaac/server/records/worktree-store', () => ({
   recordWorktreeCreated: vi.fn(),
   recordWorktreeStopped: vi.fn(),
   deleteWorktreeRow: vi.fn(),
@@ -244,19 +244,19 @@ vi.mock('@yaac/server/features/records/worktree-store', () => ({
   restoreWorktreeStop: vi.fn(),
 } satisfies Partial<typeof storeModule>))
 
-vi.mock('@yaac/server/features/records/agent-session-store', () => ({
+vi.mock('@yaac/server/records/agent-session-store', () => ({
   recordAgentSessions: vi.fn(),
   setActiveAgentSessions: vi.fn(),
   deleteWorktreeAgentSessions: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof agentStoreModule>))
 
-vi.mock('@yaac/server/features/worktrees/cleanup', () => ({
+vi.mock('@yaac/server/domain/worktrees/cleanup', () => ({
   cleanupWorktreeDetached: vi.fn(),
 } satisfies Partial<typeof cleanupModule>))
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { createWorktree } from '@yaac/server/features/worktrees/create'
+import { createWorktree } from '@yaac/server/domain/worktrees/create'
 import {
   deleteWorktreeRow,
   getWorktreeRow,
@@ -265,10 +265,10 @@ import {
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
-} from '@yaac/server/features/records/worktree-store'
-import { recordAgentSessions } from '@yaac/server/features/records/agent-session-store'
+} from '@yaac/server/records/worktree-store'
+import { recordAgentSessions } from '@yaac/server/records/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
-import { retoolSpare } from '@yaac/server/features/worktrees/spare-pool'
+import { retoolSpare } from '@yaac/server/domain/worktrees/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
 import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
 import { ensureImage, pushImageShared } from '@yaac/server/runtime/k8s/images/build-coordinator'
@@ -1240,9 +1240,9 @@ import type * as projectConfigModule from '@yaac/server/store/projects/config'
 import type * as credentialsModule from '@yaac/server/store/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
 import type * as portForwardersModule from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
-import type * as storeModule from '@yaac/server/features/records/worktree-store'
-import type * as agentStoreModule from '@yaac/server/features/records/agent-session-store'
-import type * as cleanupModule from '@yaac/server/features/worktrees/cleanup'
+import type * as storeModule from '@yaac/server/records/worktree-store'
+import type * as agentStoreModule from '@yaac/server/records/agent-session-store'
+import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
 
 // worktreeCreate posts to the streaming /worktree/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only

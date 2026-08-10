@@ -10,7 +10,7 @@ import type {
  * now, and nothing that survives it (docs/plans/layered-server.md).
  *
  * The durable half of a listing (a title, a pin, the recorded creation
- * time, the sessions and their opening messages) lives in `#features/records`;
+ * time, the sessions and their opening messages) lives in `#records`;
  * joining the two is how a worktree list is produced. Keeping the split in
  * the types is what keeps the join honest: nothing here can carry a fact a
  * restart of the substrate would lose track of.

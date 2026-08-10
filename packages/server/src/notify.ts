@@ -7,7 +7,7 @@
  * Wired in the server entrypoint: `onWorktreeListChanged(() => hub.publishSnapshot())`.
  *
  * Deliberately a zero-dependency module at the package root rather than part
- * of #features/worktrees. The notifiers are spread across features — image
+ * of #domain/worktrees. The notifiers are spread across features — image
  * builds, plan usage, generated titles — and none of them otherwise depend on
  * the worktrees feature. Housing this in that barrel made all of them import
  * it for a one-line side effect, which is most of what tied the feature layer

@@ -46,7 +46,7 @@ export interface StatusWatcherDeps {
    * The conversations yaac has already recorded for a worktree. Injected from
    * `main` rather than read here: the ACP driver needs it to re-address a live
    * agent, but the lookup is a database read, and `#runtime/status` importing
-   * `#features/worktrees` would invert the one-directional dependency the two
+   * `#domain/worktrees` would invert the one-directional dependency the two
    * features are built on (teardown calls in here to evict; never the reverse).
    */
   recordedSessions?: (session: WatchedWorktree) => Promise<Array<{ handle: string; agentSessionId: string }>>

@@ -2,7 +2,7 @@
 // lives on disk — the clone, its branches, the two config layers, the image
 // build dir and its files, and the git credentials every one of those leans
 // on. Which projects EXIST is a records question and lives in
-// `#features/projects` beside the lifecycle verbs. Everything outside this
+// `#domain/projects` beside the lifecycle verbs. Everything outside this
 // directory imports `#store/projects`; the SEALED_FOLDERS lint rule stops
 // src from reaching past this file. Adding a name here widens the interface
 // and obliges a unit test in packages/server/test/store/projects/.

@@ -9,7 +9,7 @@ vi.mock('@yaac/server/platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/features/worktrees/cleanup', async (importOriginal) => {
+vi.mock('@yaac/server/domain/worktrees/cleanup', async (importOriginal) => {
   const actual = await importOriginal<typeof cleanupModule>()
   return {
     ...actual,
@@ -18,11 +18,11 @@ vi.mock('@yaac/server/features/worktrees/cleanup', async (importOriginal) => {
 })
 
 import { worktreeStop } from '#commands/worktree-stop'
-import { stopWorktree } from '@yaac/server/features/worktrees/stop'
+import { stopWorktree } from '@yaac/server/domain/worktrees/stop'
 import { listWorktreePods, listWorktreeJobs, type PodInfo } from '@yaac/server/platform/k8s/pods'
 import type * as podsModule from '@yaac/server/platform/k8s/pods'
-import { cleanupWorktreeDetached } from '@yaac/server/features/worktrees/cleanup'
-import type * as cleanupModule from '@yaac/server/features/worktrees/cleanup'
+import { cleanupWorktreeDetached } from '@yaac/server/domain/worktrees/cleanup'
+import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
 import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockListPods = vi.mocked(listWorktreePods)

@@ -9,7 +9,7 @@
 // store). It reads pods and talks to tmux; it never creates, restarts or
 // tears anything down. Worktree teardown calls in here to evict what it
 // cached — never the other way round — which is what keeps the dependency
-// on `#features/worktrees` one-directional.
+// on `#domain/worktrees` one-directional.
 //
 // The tri-state liveness verdicts are the reason this is worth sealing.
 // `unknown` must never be flattened into `dead` by a caller: the stale

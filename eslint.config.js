@@ -39,28 +39,9 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(auth|projects|records|skills|titles|worktrees)|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|db|k8s))/.',
+  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
-
-// Everything that touches the cluster, a git worktree, a transcript or
-// tmux and has not yet moved into `src/runtime/` (docs/plans/layered-server.md).
-// Code here never imports the api/main layers; observed facts it discovers
-// enter records through `applyWorktreeEvent`, not caller-side writes. This
-// list is interim — it retires as the layer carve replaces it with
-// per-layer globs.
-const BYTES_SRC = [
-  'packages/server/src/platform/container/**/*.ts',
-  'packages/server/src/platform/k8s/**/*.ts',
-  // #features/worktrees leftovers that act on the substrate or the
-  // worktree's disk but still live beside `create`, whose
-  // orchestration/pod-mechanics split they wait on. The JOIN paths that
-  // read rows alongside an observation and the mediators that apply
-  // events answer to the base zone.
-  'packages/server/src/features/worktrees/project-purge.ts',
-  'packages/server/src/features/worktrees/spare-pool.ts',
-  'packages/server/src/features/worktrees/spawn-script.ts',
-]
 
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
 // the leading `#` as a comment and silently matches nothing. The driver
@@ -74,14 +55,14 @@ const NO_DATABASE_DIRECT = {
   message: 'Only #features/records opens the database (docs/plans/layered-server.md): read or write rows through its barrel.',
 }
 
-// The other direction: substrate/disk code knows nothing about the layers
-// above it — not the HTTP layer, not the routes, not the startup. `#notify`
-// and `#log` stay importable from every layer: both are zero-dependency
-// outbound channels, and a change notification is not a dependency on the
-// hub that consumes it.
-const NO_SERVER = {
-  regex: '^(#main|#routes|#http)(/|$)',
-  message: 'Substrate/disk code must not import the api/main layers (docs/plans/layered-server.md): report through #features/records events or #notify instead.',
+// Lower layers know nothing about the ones above them — not the HTTP
+// layer, not the routes, not the startup. `#notify` and `#log` stay
+// importable from every layer: both are zero-dependency outbound channels,
+// and a change notification is not a dependency on the hub that consumes
+// it.
+const NO_API_OR_MAIN = {
+  regex: '^(#main|#routes|#http|#api)(/|$)',
+  message: 'Layers below api/main must not import them (docs/plans/layered-server.md): report through #records events or #notify instead.',
 }
 
 export default tseslint.config(
@@ -174,7 +155,7 @@ export default tseslint.config(
   // database ban.
   {
     files: [
-      'packages/server/src/features/records/**/*.ts',
+      'packages/server/src/records/**/*.ts',
       'packages/server/src/platform/db/**/*.ts',
     ],
     rules: {
@@ -185,32 +166,6 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
-            {
-              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // The substrate/disk half of the server (see BYTES_SRC): the zone above,
-  // plus the database ban. Later than that zone on purpose — flat-config
-  // rule options replace rather than merge, so this re-states every pattern
-  // it inherits.
-  {
-    files: BYTES_SRC,
-    rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          paths: UNTIERED_DATA_DIR,
-          patterns: [
-            RELATIVE_PARENT,
-            SEALED_FOLDERS,
-            NO_DATABASE_DIRECT,
-            NO_SERVER,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
@@ -236,9 +191,9 @@ export default tseslint.config(
             RELATIVE_PARENT,
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
-            NO_SERVER,
+            NO_API_OR_MAIN,
             {
-              regex: '^(#features/(records|worktrees|projects|titles)|#runtime)(/|$)',
+              regex: '^(#records|#domain|#runtime)(/|$)',
               message: 'The store layer must not import records, the runtime, or the mediators above it (docs/plans/layered-server.md).',
             },
             {
@@ -265,11 +220,36 @@ export default tseslint.config(
             RELATIVE_PARENT,
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
-            NO_SERVER,
+            NO_API_OR_MAIN,
             {
-              regex: '^(#features/(records|worktrees|titles))(/|$)',
+              regex: '^(#records|#domain)(/|$)',
               message: 'The runtime layer must not import records or the mediators above it (docs/plans/layered-server.md).',
             },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The domain layer: the mediators. They read records, drive the store
+  // and the runtime, and apply what those report — but never reach up into
+  // the api surface or the composition root.
+  {
+    files: ['packages/server/src/domain/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_API_OR_MAIN,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

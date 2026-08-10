@@ -208,6 +208,7 @@ intended anywhere in this plan; the e2e suites are the check that holds.
 
 ## Steps
 
+**Steps 1–7 have landed**; step 8 (the local driver) is the open follow-on.
 Each step lands green (`pnpm lint`, unit, and the e2e suites — this refactor
 is exactly the "pure refactor, cluster required to trust it" case) and moves
 test files alongside their subjects (`test/` mirrors `src/`).
