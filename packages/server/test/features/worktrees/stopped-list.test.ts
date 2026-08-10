@@ -17,7 +17,6 @@ import type * as podsModule from '#platform/k8s/pods'
 // have a runtime — plus every transcript read behind a prompt or a
 // last-activity stamp — is the herd's. Its real halves stand behind the
 // boundary here, so the leaf mocks above still drive them.
-import { _resetHerdForTests, createInProcessHerd, setHerd } from '#herd'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
@@ -80,14 +79,12 @@ describe('listStoppedWorktrees', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
     await writeProject('demo')
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

@@ -1,4 +1,6 @@
-import { herd } from '#herd'
+import { findWorkspace } from './locate'
+import { teardownForRestart } from './cleanup'
+import { createWorktree } from './create'
 import { clearWorktreeStopped, findWorktreeRow } from '#features/records'
 import {
   firstAgentSession,
@@ -23,7 +25,7 @@ export interface RestartResolution {
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
-    const match = await herd().workspaces.find(idOrName)
+    const match = await findWorkspace(idOrName)
     if (match) {
       return {
         projectSlug: match.projectSlug,
@@ -86,7 +88,7 @@ export async function restartWorktree(
   if (jobName) opts.onProgress?.(`Stopping session job ${jobName}...`)
   // Always, not just when there was a Job: a terminating mark left by an
   // earlier teardown would render the fresh worktree as "stopping…".
-  await herd().workspaces.teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
+  await teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
 
   // Each conversation resumes under its OWN tool: a worktree can hold a
   // codex conversation next to claude ones, and launching the wrong binary
@@ -102,7 +104,7 @@ export async function restartWorktree(
   // with nothing recorded (an older row, or a create that never got an id)
   // falls back to tui, the mode every pre-ACP worktree ran.
 
-  const result = await herd().workspaces.create(projectSlug, {
+  const result = await createWorktree(projectSlug, {
     // Always reuse the checkout — that is what a restart *is*. Clearing this
     // would send the create down `git worktree add` against a checkout that
     // is still there, fail, and roll the worktree row away with it.

@@ -16,7 +16,11 @@ import {
   worktreeForkBranch,
   type WorktreeCreateOptions,
 } from '#features/worktrees'
-import { herd } from '#herd'
+import { createWorktree, getWorktreeChanges, stopWorktree, tryClaimPrewarmed } from '#features/worktrees'
+import { typeInitialPrompt } from '#features/agents'
+import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#features/terminals'
+import { allowWorktreeHost } from '#features/egress'
+import { dismissWorktreePort, forwardWorktreePort } from '#features/forwarders'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
@@ -94,19 +98,14 @@ export const worktreeApp = new Hono()
         // what keeps it from being retooled into a half-ACP session.
         const claimed = body.mode === 'acp'
           ? undefined
-          : await herd().workspaces.claimPrewarmed({
-            projectSlug: body.project,
-            tool,
-            gitUser: body.gitUser,
-            onProgress,
-            branch: body.branch,
-            model: body.model,
-          })
+          : await tryClaimPrewarmed(
+            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
+          )
         if (claimed) {
           // The spare's agent booted with no prompt; type it in now.
           if (body.prompt !== undefined) {
             onProgress('Sending initial prompt...')
-            await herd().agents.typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
+            await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
           }
           return claimed
         }
@@ -124,7 +123,7 @@ export const worktreeApp = new Hono()
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ worktreeId, projectSlug: body.project, tool, kind: 'create' })
-        return await herd().workspaces.create(body.project, opts)
+        return await createWorktree(body.project, opts)
       })
     },
   )
@@ -163,7 +162,7 @@ export const worktreeApp = new Hono()
     zv('json', z.object({ worktreeId: z.string().min(1) })),
     async (c) => {
       const { worktreeId } = c.req.valid('json')
-      const info = await herd().workspaces.stop(worktreeId)
+      const info = await stopWorktree(worktreeId)
       return c.json(info)
     },
   )
@@ -240,7 +239,7 @@ export const worktreeApp = new Hono()
   })
   .get('/:id/terminals', async (c) => {
     const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await herd().terminals.list(jobName))
+    return c.json(await listWorktreeTerminals(jobName))
   })
   // The worktree's review diff — everything changed in the worktree since it
   // forked from the base branch (committed + working + untracked). An optional
@@ -259,7 +258,7 @@ export const worktreeApp = new Hono()
       // collapse the merge-base to HEAD. Cached, because this endpoint is
       // polled.
       const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
-      return c.json(await herd().workspaces.changes(
+      return c.json(await getWorktreeChanges(
         jobName, c.req.valid('query').base, forkBranch ?? undefined,
       ))
     },
@@ -268,7 +267,7 @@ export const worktreeApp = new Hono()
   // returning its entry so the client can open a pane immediately.
   .post('/:id/terminals', async (c) => {
     const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await herd().terminals.createShell(jobName))
+    return c.json(await createShellWindow(jobName))
   })
   .post(
     '/:id/terminals/close',
@@ -277,7 +276,7 @@ export const worktreeApp = new Hono()
       const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
       const { target } = c.req.valid('json')
       try {
-        await herd().terminals.kill(jobName, target)
+        await killWindowTerminal(jobName, target)
       } catch (err) {
         throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
       }
@@ -300,8 +299,8 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { host, persist } = c.req.valid('json')
       const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-      await herd().hosts.allow(
-        { workspaceId: target.worktreeId, projectSlug: target.projectSlug },
+      await allowWorktreeHost(
+        { worktreeId: target.worktreeId, projectSlug: target.projectSlug },
         host,
         { persist: persist ?? false },
       )
@@ -322,8 +321,8 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { containerPort, persist } = c.req.valid('json')
       const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-      const mapping = await herd().ports.forward(
-        { workspaceId: target.worktreeId, projectSlug: target.projectSlug, jobName: target.jobName },
+      const mapping = await forwardWorktreePort(
+        { worktreeId: target.worktreeId, projectSlug: target.projectSlug, jobName: target.jobName },
         containerPort,
         { persist: persist ?? false },
       )
@@ -342,7 +341,7 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { containerPort } = c.req.valid('json')
       const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-      if (!(await herd().ports.dismiss(target.worktreeId, containerPort))) {
+      if (!dismissWorktreePort(target.worktreeId, containerPort)) {
         throw new ServerError(
           'CONFLICT',
           `port ${containerPort} is not an unforwarded listener in session ${target.worktreeId.slice(0, 8)}`,

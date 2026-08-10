@@ -12,11 +12,9 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-// The join under test reads the server's rows alongside a herd's report.
-// The herd here is the real observation half, so the leaf mocks above still
-// drive it end to end — only the boundary between them is stubbed.
-import { observeWorkspaces } from '#features/worktrees/observe'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
+// The join under test reads the recorded rows alongside the real
+// observation half, so the leaf mocks above drive it end to end — only the
+// substrate is stubbed.
 import { listWorktreePods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
@@ -58,7 +56,6 @@ describe('listActiveWorktrees', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
-    _setHerdForTests({ workspaces: { observe: observeWorkspaces } })
     _clearTerminatingForTests()
     _resetDeferredClusterBootForTests()
     mockListPods.mockReset()
@@ -66,7 +63,6 @@ describe('listActiveWorktrees', () => {
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     _clearTerminatingForTests()
     _resetDeferredClusterBootForTests()
     await closeDb()
@@ -239,13 +235,11 @@ describe('listActiveWorktrees project filter', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
-    _setHerdForTests({ workspaces: { observe: observeWorkspaces } })
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

@@ -1,7 +1,6 @@
 import crypto from 'node:crypto'
-import { registerProvisioning, runProvisioned } from '#features/worktrees'
+import { createWorktree, registerProvisioning, runProvisioned } from '#features/worktrees'
 import { getDefaultTool } from '#features/records'
-import { herd } from '#herd'
 import { AGENT_TOOLS, MODEL_RE, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#log'
 import type { SpawnDecision, SpawnRequest } from '#server-link'
@@ -27,11 +26,12 @@ export interface SpawnPolicyDeps {
 /**
  * Decide what a drained `yaac-spawn` means and start it.
  *
- * Every decision in a spawn is here rather than in the herd that drained it:
+ * Every decision in a spawn is here rather than in the drain that queued it:
  * the tool precedence ends at a preference row, the fan-out cap is a policy,
  * and the id and its sidebar row are the server's to mint
- * (docs/plans/layered-server.md). The herd contributed the one thing it alone
- * knows — which workspace called, in which project, running what.
+ * (docs/plans/layered-server.md). The drain contributed the one thing only
+ * the substrate knows — which worktree called, in which project, running
+ * what.
  *
  * The create is detached: the caller's pod is blocked at the proxy on the
  * minted id, not on the workspace being ready, and a failed create is a lost
@@ -77,7 +77,7 @@ export async function decideSpawn(
   // row (dismissable) instead of vanishing silently.
   registerProvisioning({ worktreeId: workspaceId, projectSlug, tool, kind: 'create' })
   void runProvisioned(workspaceId, (onProgress) =>
-    herd().workspaces.create(projectSlug, {
+    createWorktree(projectSlug, {
       tool,
       initialPrompt: request.prompt,
       worktreeId: workspaceId,

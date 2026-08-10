@@ -1,6 +1,6 @@
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow } from '#features/records'
-import { herd } from '#herd'
+import { countProjectWorkspaces } from '#features/worktrees'
 import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
@@ -45,7 +45,7 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
 export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(slug)
   const [worktreeCount, configResult] = await Promise.all([
-    herd().workspaces.count(slug),
+    countProjectWorkspaces(slug),
     resolveProjectConfigWithSource(slug),
   ])
   return {

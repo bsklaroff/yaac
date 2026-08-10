@@ -10,11 +10,12 @@ import { EventHub } from '#main/events'
 import { resolveWorktreeContainer } from '#features/worktrees'
 import { createServerLink } from '#main/link'
 import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
-import { createInProcessHerd, herd, setHerd } from '#herd'
+import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { setServerLink } from '#server-link'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#features/skills'
-import type { SocketLike } from '#features/terminals'
+import { attachPty, type SocketLike } from '#features/terminals'
+import { attachAcp } from '#features/agents'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -265,7 +266,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          herd().terminals.attachPty(jobName, sock, query)
+          attachPty(jobName, sock, query)
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },
@@ -305,7 +306,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          herd().agents.attachAcp(projectSlug, id, agentSessionId, {
+          attachAcp(projectSlug, id, agentSessionId, {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
             onMessage: (cb) => raw.on('message', (data, isBinary) =>
@@ -355,12 +356,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // and returns — a failure to stat is not a reason to fail a start.
   await warnAboutUnimportedLegacyData()
     .catch((err: unknown) => serverLog(`[server] legacy-data check failed: ${String(err)}`))
-  // Both ends of the boundary, wired now rather than beside the listeners
-  // above because the link's handlers write rows: they cannot exist before
-  // the DB is open, and nothing can report until the reconcile loop and the
-  // routes below are live (docs/plans/layered-server.md).
+  // Wired now rather than beside the listeners above because the link's
+  // handlers write rows: they cannot exist before the DB is open, and
+  // nothing can report until the reconcile loop and the routes below are
+  // live (docs/plans/layered-server.md).
   setServerLink(createServerLink())
-  setHerd(createInProcessHerd())
 
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
@@ -387,10 +387,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
-    // Stop the herd's push-fed state layer first, before the loop drain
-    // below: its watches hold open substrate connections and a long-lived
-    // process per workspace, which would otherwise outlive the server.
-    await herd().lifecycle.stopConvergence()
+    // Stop the push-fed state layer first, before the loop drain below:
+    // its watches hold open substrate connections and a long-lived
+    // process per worktree, which would otherwise outlive the server.
+    stopConvergence()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -402,11 +402,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ])
     }
-    // Then let the herd go of what it borrowed from the host — port
-    // forwarders, the proxy control tunnel, the relay's port-forward child.
-    // After the drain, because a reap tick still tears its workspace's
-    // forwards down.
-    await herd().lifecycle.release()
+    // Then let go of what was borrowed from the host — port forwarders,
+    // the proxy control tunnel, the relay's port-forward child. After the
+    // drain, because a reap tick still tears its worktree's forwards down.
+    releaseConvergence()
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -438,16 +437,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // an in-memory best-effort fetch, so it never blocks startup or fails it.
   void refreshClaudeBundledSkills()
 
-  // Hand the herd its substrate. Everything convergence-owning starts on
-  // that side — informer caches, status watchers, the port detector — and
-  // the server's own reconcile loop starts from `onAttached` rather than
-  // from the return, because a nested server defers the whole attach until
-  // first use to keep its born-at-zero vcluster asleep, and a loop running
-  // against a sleeping vcluster is exactly what would wake it.
-  await herd().lifecycle.attach({
+  // Attach to the substrate. Everything convergence-owning starts there —
+  // informer caches, status watchers, the port detector — and the
+  // reconcile loop starts from `onAttached` rather than from the return,
+  // because a nested server defers the whole attach until first use to
+  // keep its born-at-zero vcluster asleep, and a loop running against a
+  // sleeping vcluster is exactly what would wake it.
+  await attachConvergence({
     onAttached: () => {
-      // Started before the herd's own startup GCs drain (they run detached
-      // on that side), so the server serves the reconcile path right away.
+      // Started before the startup GCs drain (they run detached), so the
+      // server serves the reconcile path right away.
       loopDone = startReconciler({
         signal: abortCtrl.signal,
         // After each reconcile pass, push a fresh snapshot to any connected

@@ -1,7 +1,11 @@
-import { herd, type WorkspaceHandle } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#features/records'
-import type { VclusterStatus } from '#features/cluster'
+import { getAgentSessionFirstMessage } from '#features/agents'
+import { readBlockedHosts } from '#features/egress'
+import { readGitAuthFailures } from '#features/projects'
+import { getVclusterStatus, type VclusterStatus } from '#features/cluster'
+import { findWorkspace } from './locate'
+import type { WorkspaceHandle } from '@yaac/shared/herd'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
@@ -22,7 +26,7 @@ export interface WorktreeDetail {
 }
 
 async function findWorktree(idOrName: string): Promise<WorkspaceHandle> {
-  const match = await herd().workspaces.find(idOrName)
+  const match = await findWorkspace(idOrName)
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
   return match
 }
@@ -30,14 +34,14 @@ async function findWorktree(idOrName: string): Promise<WorkspaceHandle> {
 export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetail> {
   const match = await findWorktree(idOrName)
   const blocked = match.workspaceId
-    ? await herd().workspaces.blockedHosts(match.workspaceId)
+    ? await readBlockedHosts(match.workspaceId)
     : []
   const gitAuthFailures = match.projectSlug
-    ? await herd().projects.gitAuthFailures(match.projectSlug)
+    ? await readGitAuthFailures(match.projectSlug)
     : []
   // Best-effort: detail must render even when the vcluster lookup
   // hiccups (it is one extra cluster read; null for non-vcluster worktrees).
-  const vcluster = await herd().workspaces.vclusterStatus(match.workspaceId).catch(() => null)
+  const vcluster = await getVclusterStatus(match.workspaceId).catch(() => null)
   return {
     worktreeId: match.workspaceId,
     projectSlug: match.projectSlug,
@@ -55,7 +59,7 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
 export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {
   const match = await findWorktree(idOrName)
   if (!match.workspaceId) return []
-  return herd().workspaces.blockedHosts(match.workspaceId)
+  return readBlockedHosts(match.workspaceId)
 }
 
 export async function getWorktreePrompt(idOrName: string): Promise<string | undefined> {
@@ -70,5 +74,5 @@ export async function getWorktreePrompt(idOrName: string): Promise<string | unde
   // Fall back to the transcript the conversation recorded, not to a path
   // derived from the worktree id — codex's rollout name is underivable, and
   // the recorded path is the only handle on it.
-  return herd().agents.firstMessage(first?.tool ?? match.tool, first?.transcriptPath, match.jobName)
+  return getAgentSessionFirstMessage(first?.tool ?? match.tool, first?.transcriptPath, match.jobName)
 }

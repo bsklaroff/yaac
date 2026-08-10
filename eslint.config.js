@@ -39,24 +39,17 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|skills|status|terminals|titles|worktrees)|herd|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|skills|status|terminals|titles|worktrees)|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 
-// The HERD half — everything that touches the cluster, a git worktree, a
-// transcript or tmux — is being split into its own process
-// (docs/plans/layered-server.md). It will talk to the server over JSON-RPC and
-// never open the database: PGlite is single-writer and the server holds it,
-// so a DB read left in here is a crash the day the split lands rather than a
-// style question. A herd reports what it discovered and is handed what it
-// needs; it never looks a row up.
-//
-// This list is the split's progress bar. It is seeded with the paths that
-// are ALREADY clean, and every step of the plan's phase 1 severs one more
-// module and adds it here. A path leaves it only by turning out to be the
-// SERVER's — as the provisioning registry did in step 11, being a sidebar
-// row rather than anything on a substrate — never to dodge the ban.
-const HERD_SRC = [
+// Everything that touches the cluster, a git worktree, a transcript or tmux
+// — the future `runtime/` and `store/` layers (docs/plans/layered-server.md)
+// — must not open the database: rows live behind `#features/records`, and
+// code that observes the substrate or the disk reports an event for the
+// server half to persist rather than writing rows itself. This path list is
+// interim — it retires as the layer carve replaces it with per-layer globs.
+const BYTES_SRC = [
   'packages/server/src/platform/container/**/*.ts',
   'packages/server/src/platform/k8s/**/*.ts',
   'packages/server/src/features/agents/**/*.ts',
@@ -64,10 +57,9 @@ const HERD_SRC = [
   'packages/server/src/features/egress/**/*.ts',
   'packages/server/src/features/forwarders/**/*.ts',
   'packages/server/src/features/image-engine/**/*.ts',
-  // #features/projects is split the same way: everything that touches the
-  // clone, its config files, its credentials or its build context is
-  // herd-side. `add`, `detail` and `list` answer "which projects exist" from
-  // the server's rows, so they stay out.
+  // #features/projects: everything that touches the clone, its config
+  // files, its credentials or its build context. `add`, `detail` and `list`
+  // answer "which projects exist" from rows, so they stay out.
   'packages/server/src/features/projects/branches.ts',
   'packages/server/src/features/projects/build-dirs.ts',
   'packages/server/src/features/projects/build-files.ts',
@@ -80,11 +72,10 @@ const HERD_SRC = [
   'packages/server/src/features/images/**/*.ts',
   'packages/server/src/features/status/**/*.ts',
   'packages/server/src/features/terminals/**/*.ts',
-  // #features/worktrees is split down the middle. Everything that acts on the
-  // substrate is herd-side and named here; what is left — the JOIN paths that
-  // read the server's rows alongside a herd's report (list, detail, resolve,
-  // restart, changes, the stopped listing, project teardown) — is the
-  // server's half, and stays out until the herd becomes a package of its own.
+  // #features/worktrees: everything that acts on the substrate is named
+  // here; the JOIN paths that read rows alongside an observation (list,
+  // detail, resolve, restart, the stopped listing, project teardown) stay
+  // out.
   'packages/server/src/features/worktrees/agent-session-registry.ts',
   'packages/server/src/features/worktrees/cleanup.ts',
   'packages/server/src/features/worktrees/create.ts',
@@ -103,12 +94,6 @@ const HERD_SRC = [
   'packages/server/src/features/worktrees/stale-worktrees.ts',
   'packages/server/src/features/worktrees/stop.ts',
   'packages/server/src/features/worktrees/worktree-meta.ts',
-  // The herd's own half of the boundary folder. `contract.ts`/`current.ts`
-  // are shared vocabulary and `in-process.ts` is the seam itself, but these
-  // two are herd code that moves into the herd package with everything else,
-  // so they answer to the herd's bans like any other herd module.
-  'packages/server/src/herd/lifecycle.ts',
-  'packages/server/src/herd/reconcile.ts',
 ]
 
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
@@ -120,69 +105,16 @@ const HERD_SRC = [
 // this covers the barrel as well as the driver packages beneath it.
 const NO_DATABASE = {
   regex: '^(#features/records|#platform/db|@electric-sql/pglite|drizzle-orm)',
-  message: 'The herd must not read the database (docs/plans/layered-server.md): emit a HerdEvent for the server to persist, or take the value as an argument.',
+  message: 'Substrate/disk code must not read the database (docs/plans/layered-server.md): emit an event for #features/records to persist, or take the value as an argument.',
 }
 
-// The other half of the same boundary. A herd reports upward through
-// `#server-link` and knows nothing else about the server: not its HTTP
-// layer, not its routes, not its startup, and not the snapshot hub behind
-// `#notify`. `#herd` is banned too — that is the SERVER's handle on a herd,
-// and a herd reaching for it would be calling itself through the boundary.
+// The other direction: substrate/disk code reports upward through
+// `#server-link` and knows nothing about the layers above it — not the HTTP
+// layer, not the routes, not the startup, and not the snapshot hub behind
+// `#notify`.
 const NO_SERVER = {
-  regex: '^(#main|#routes|#http|#notify|#herd)(/|$)',
-  message: 'The herd must not import the server (docs/plans/layered-server.md): report it through #server-link instead.',
-}
-
-// The server half, and the mirror of HERD_SRC: these paths may not reach
-// into a herd feature except through `#herd`. Exactly one module in the
-// package does — `src/herd/in-process.ts`, the in-process implementation —
-// which is what makes swapping in a remote herd a one-file change.
-//
-// Neither zone's regex can see a RELATIVE import, so a herd module reaching
-// a server module inside the same feature folder would pass both. There is
-// no such reach left: the one that existed — the reaper and the orphan-dir
-// sweep importing `./provisioning` for the in-flight set — was closed by
-// delivering that set on `DesiredWorkspaces` instead, which is what it has
-// to be anyway once the herd is a package that cannot see the registry.
-//
-// Like HERD_SRC this list only ever grows, and what is missing from it is a
-// statement rather than an oversight. Still outside:
-//   - `#features/records/agent-session-store.ts` and `#platform/db`, which
-//     expand a stored transcript path against a tool home — a herd-side
-//     path shape the server should not know, and a schema change to fix;
-//   - `#platform/db/legacy-import.ts`, a one-shot migration that reads the
-//     legacy JSON stores off the herd's disk.
-const SERVER_SRC = [
-  'packages/server/src/main/**/*.ts',
-  'packages/server/src/routes/**/*.ts',
-  'packages/server/src/http/**/*.ts',
-  'packages/server/src/features/titles/**/*.ts',
-  // The JOIN halves: what reads the server's rows alongside a herd's report.
-  // Their herd-side siblings are in HERD_SRC above.
-  'packages/server/src/features/worktrees/detail.ts',
-  'packages/server/src/features/worktrees/fork-branch.ts',
-  'packages/server/src/features/worktrees/list.ts',
-  'packages/server/src/features/worktrees/project-teardown.ts',
-  'packages/server/src/features/worktrees/provisioning.ts',
-  'packages/server/src/features/worktrees/resolve.ts',
-  'packages/server/src/features/worktrees/restart.ts',
-  'packages/server/src/features/worktrees/stopped-list.ts',
-  'packages/server/src/features/projects/detail.ts',
-  'packages/server/src/features/projects/list.ts',
-  'packages/server/src/features/records/desired-workspaces.ts',
-]
-
-// Type-only imports are allowed on purpose: a type costs nothing at runtime
-// and crosses no boundary, so the contract in `#herd` is free to describe a
-// herd's answers with the shapes the features already declare.
-// `#herd-desired` is in here because it is the HERD's end of a push: the
-// server publishes through `HerdClient.workspaces.publishDesired`, and
-// reaching for the store directly would bypass the never-empty discipline
-// that makes an absent set safe.
-const NO_HERD_FEATURES = {
-  regex: '^(#features/(agents|cluster|egress|forwarders|image-engine|images|status|terminals)|#platform/(container|k8s)|#herd-desired)(/|$)',
-  allowTypeImports: true,
-  message: 'The server must not call a herd feature directly (docs/plans/layered-server.md): add it to HerdClient and go through #herd.',
+  regex: '^(#main|#routes|#http|#notify)(/|$)',
+  message: 'Substrate/disk code must not import the api/main layers (docs/plans/layered-server.md): report it through #server-link instead.',
 }
 
 export default tseslint.config(
@@ -266,11 +198,12 @@ export default tseslint.config(
     },
   },
 
-  // The herd half of the server (see HERD_SRC): the zone above, plus the
-  // database ban. Later than that zone on purpose — flat-config rule options
-  // replace rather than merge, so this re-states every pattern it inherits.
+  // The substrate/disk half of the server (see BYTES_SRC): the zone above,
+  // plus the database ban. Later than that zone on purpose — flat-config
+  // rule options replace rather than merge, so this re-states every pattern
+  // it inherits.
   {
-    files: HERD_SRC,
+    files: BYTES_SRC,
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -281,31 +214,6 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_DATABASE,
             NO_SERVER,
-            {
-              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // The server half of the same boundary (see SERVER_SRC): the base server
-  // zone, plus the ban on calling a herd feature. Later than that zone on
-  // purpose — flat-config rule options replace rather than merge, so this
-  // re-states every pattern it inherits.
-  {
-    files: SERVER_SRC,
-    rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          paths: UNTIERED_DATA_DIR,
-          patterns: [
-            RELATIVE_PARENT,
-            SEALED_FOLDERS,
-            NO_HERD_FEATURES,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

@@ -1,28 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as locateModule from '#features/worktrees/locate'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { projectConfigDir, getProjectsDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '#features/projects'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// The live session count is the herd's answer; stubbed so the count a case
-// asserts on is the one it set up.
-const count = vi.fn<(slug: string) => Promise<number>>()
+// The live worktree count comes off the substrate; stubbed so the count a
+// case asserts on is the one it set up.
+vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+  ...(await importOriginal<typeof locateModule>()),
+  countProjectWorkspaces: vi.fn(),
+}))
+import { countProjectWorkspaces } from '#features/worktrees/locate'
+const count = vi.mocked(countProjectWorkspaces)
 
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   count.mockReset().mockResolvedValue(0)
-  _setHerdForTests({ workspaces: { count } })
 })
 
 afterEach(async () => {
-  _resetHerdForTests()
   await cleanupTempDir(tmpDir)
 })
 
@@ -61,9 +64,9 @@ describe('getProjectDetail', () => {
     expect(count).toHaveBeenCalledWith('foo')
   })
 
-  // The herd answers zero for an unreachable substrate rather than throwing
-  // (see test/herd/), so a project still renders with no cluster at all.
-  it('renders with a zero count when the herd has nothing to report', async () => {
+  // The count answers zero for an unreachable substrate rather than throwing
+  // (see locate.test.ts), so a project still renders with no cluster at all.
+  it('renders with a zero count when the substrate has nothing to report', async () => {
     await writeProject('foo', {
       slug: 'foo',
       remoteUrl: 'https://example.com/foo',

@@ -1,6 +1,6 @@
 import { listActiveWorktrees, listProvisioning } from '#features/worktrees'
 import { listProjects } from '#features/projects'
-import { herd } from '#herd'
+import { listImageBuilds } from '#features/image-engine'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -17,13 +17,13 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  const [active, projects, planUsage, codexPlanUsage, imageBuilds] = await Promise.all([
+  const [active, projects, planUsage, codexPlanUsage] = await Promise.all([
     listActiveWorktrees(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
-    herd().images.listBuilds(),
   ])
+  const imageBuilds = listImageBuilds()
   // A worktree with a provisioning entry is mid-create/mid-restart (or
   // failed, awaiting dismissal) — the row, not the worktree, is what clients
   // should render. The pod lists as running well before setup finishes

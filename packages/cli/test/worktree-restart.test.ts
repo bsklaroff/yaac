@@ -18,7 +18,6 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/worktrees/cleanup'
 import * as worktreeCreate from '@yaac/server/features/worktrees/create'
-import { _resetHerdForTests, createInProcessHerd, setHerd } from '@yaac/server/herd'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/features/worktrees/restart'
 import { recordWorktreeCreated } from '@yaac/server/features/records/worktree-store'
 import { recordAgentSessions } from '@yaac/server/features/records/agent-session-store'
@@ -56,7 +55,6 @@ describe('resolveRestartTarget', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     vi.spyOn(pods, 'listWorktreePods').mockImplementation(
       listSpy as unknown as typeof pods.listWorktreePods,
@@ -64,7 +62,6 @@ describe('resolveRestartTarget', () => {
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)
@@ -161,7 +158,6 @@ describe('restartWorktree', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    setHerd(createInProcessHerd())
     listSpy = vi.fn()
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
     createSpy = vi.fn().mockResolvedValue({
@@ -182,7 +178,6 @@ describe('restartWorktree', () => {
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     vi.restoreAllMocks()
     await closeDb()
     await cleanupTempDir(tmpDir)

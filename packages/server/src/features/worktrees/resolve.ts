@@ -1,5 +1,6 @@
-import { herd, type WorkspaceHandle } from '#herd'
+import { findWorkspace } from './locate'
 import { findWorktreeRow } from '#features/records'
+import type { WorkspaceHandle } from '@yaac/shared/herd'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedWorktree {
@@ -15,16 +16,16 @@ export interface ResolvedWorktree {
  * instead of writing to stderr.
  *
  * Every worktree endpoint resolves through here and several of them are
- * polled, so it asks for the herd's cache-preferred match: the informer's
- * push-fed view answers without a subprocess, and the herd falls back to a
- * live listing on a miss (docs/plans/layered-server.md).
+ * polled, so it asks for the cache-preferred match: the informer's push-fed
+ * view answers without a subprocess, falling back to a live listing on a
+ * miss.
  */
 export async function resolveWorktreeContainer(
   idOrName: string,
   opts: { requireRunning?: boolean } = {},
 ): Promise<ResolvedWorktree> {
   const match: WorkspaceHandle | undefined =
-    await herd().workspaces.find(idOrName, { preferCache: true })
+    await findWorkspace(idOrName, { preferCache: true })
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
 
   if (opts.requireRunning && match.state !== 'running') {
@@ -53,7 +54,7 @@ export async function resolveWorktreeRecord(
   idOrName: string,
 ): Promise<{ projectSlug: string; worktreeId: string }> {
   try {
-    const match = await herd().workspaces.find(idOrName)
+    const match = await findWorkspace(idOrName)
     if (match) return { projectSlug: match.projectSlug, worktreeId: match.workspaceId }
   } catch {
     // Substrate unreachable — the row still answers.

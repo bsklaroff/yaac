@@ -1,4 +1,4 @@
-import { herd } from '#herd'
+import { publishDesiredWorkspaces } from '#herd-desired'
 import { listLiveWorktreeRows, listStoppedWorktreeIds } from './worktree-store'
 
 /**
@@ -25,5 +25,5 @@ export async function pushDesiredWorkspaces(provisioning: string[]): Promise<voi
     listLiveWorktreeRows(),
     listStoppedWorktreeIds(),
   ])
-  await herd().workspaces.publishDesired({ live, stopped: [...stopped], provisioning })
+  publishDesiredWorkspaces({ live, stopped: [...stopped], provisioning })
 }

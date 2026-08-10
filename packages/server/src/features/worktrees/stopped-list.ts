@@ -1,4 +1,9 @@
-import { herd } from '#herd'
+import { listWorkspaces } from './locate'
+import {
+  getAgentSessionFirstMessage,
+  sessionTranscriptPath,
+  transcriptLastActiveMs,
+} from '#features/agents'
 import { listWorktreeRows, type WorktreeRow } from '#features/records'
 import {
   getAgentSessionsFor,
@@ -28,7 +33,7 @@ export async function listStoppedWorktrees(
 
   const runningIds = new Set<string>()
   try {
-    for (const w of await herd().workspaces.list()) {
+    for (const w of await listWorkspaces()) {
       if (w.workspaceId) runningIds.add(w.workspaceId)
     }
   } catch {
@@ -96,7 +101,7 @@ async function lastActiveMs(
   const stamps = await Promise.all(links.map(async (l) => {
     const fromDisk = l.transcriptPath === undefined
       ? undefined
-      : await herd().agents.transcriptLastActiveMs(l.transcriptPath)
+      : await transcriptLastActiveMs(l.transcriptPath)
     return fromDisk ?? l.lastActiveAt?.getTime()
   }))
   const known = stamps.filter((s): s is number => s !== undefined)
@@ -104,10 +109,10 @@ async function lastActiveMs(
   // No links yet — a worktree that died before the registry's first tick
   // ever ran. Fall back to the conversation the old pin guarantees, so its
   // listing doesn't report its birth time as last-activity forever.
-  const pinned = await herd().agents.transcriptPath(
+  const pinned = await sessionTranscriptPath(
     r.projectSlug, r.worktreeId, links[0]?.tool ?? 'claude',
   )
-  return pinned === undefined ? undefined : await herd().agents.transcriptLastActiveMs(pinned)
+  return pinned === undefined ? undefined : await transcriptLastActiveMs(pinned)
 }
 
 /**
@@ -131,8 +136,8 @@ async function stoppedPrompt(
   // its prompt is ever recovered. `lastActiveMs` keeps the same fallback for
   // the same reason.
   const path = first.transcriptPath
-    ?? await herd().agents.transcriptPath(r.projectSlug, r.worktreeId, first.tool)
-  const prompt = await herd().agents.firstMessage(first.tool, path)
+    ?? await sessionTranscriptPath(r.projectSlug, r.worktreeId, first.tool)
+  const prompt = await getAgentSessionFirstMessage(first.tool, path)
   if (prompt === undefined) return undefined
   await setAgentSessionCapture(r.projectSlug, first.tool, first.agentSessionId, {
     firstPrompt: prompt,

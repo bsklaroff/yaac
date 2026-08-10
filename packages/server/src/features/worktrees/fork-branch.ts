@@ -1,5 +1,5 @@
 import { getWorktreeRow } from '#features/records'
-import { herd } from '#herd'
+import { worktreeForkFallback } from './changes'
 
 /**
  * How long a worktree's fork branch is trusted without re-reading it. Reading
@@ -58,5 +58,5 @@ export async function worktreeForkBranch(projectSlug: string, worktreeId: string
 async function recordedForkBranch(projectSlug: string, worktreeId: string): Promise<string | null> {
   const row = await getWorktreeRow(projectSlug, worktreeId).catch(() => undefined)
   if (row?.baseBranch) return row.baseBranch
-  return herd().workspaces.worktreeForkFallback(projectSlug, worktreeId).catch(() => null)
+  return worktreeForkFallback(projectSlug, worktreeId).catch(() => null)
 }

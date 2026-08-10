@@ -1,4 +1,4 @@
-import { herd } from '#herd'
+import { purgeProjectBytes } from './project-purge'
 import {
   deleteProjectAgentSessions,
   deleteProjectRow,
@@ -11,9 +11,9 @@ import { ServerError } from '@yaac/shared/errors'
  * Remove a project: its live worktrees and every byte it owns, then the rows
  * that said it existed. Throws `NOT_FOUND` if the project does not exist.
  *
- * The server's half of the teardown — which projects exist is its own record,
- * so the existence check and the deletes are here, and the bytes are one herd
- * call (`purgeProjectBytes`). Ordering across the two matters: the bytes go
+ * Which projects exist is the server's own record, so the existence check
+ * and the row deletes are here, and the bytes are one call
+ * (`purgeProjectBytes`). Ordering across the two matters: the bytes go
  * first, because while the project's record exists the project exists, so a
  * purge that then failed would leave a clone nothing can list, remove, or
  * re-add.
@@ -27,7 +27,7 @@ export async function removeProject(slug: string): Promise<void> {
     throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 
-  await herd().projects.purge(slug)
+  await purgeProjectBytes(slug)
 
   // Forget the project's worktrees: the deleted listing is driven by rows
   // now, and the worktrees and transcripts they point at went with the dirs

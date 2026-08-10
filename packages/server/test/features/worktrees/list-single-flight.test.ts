@@ -31,11 +31,9 @@ vi.mock('#features/agents/agent-tools', async (importOriginal) => ({
   normalizeTool: vi.fn().mockReturnValue('claude'),
 }))
 
-// The join under test reads the server's rows alongside a herd's report.
-// The herd here is the real observation half, so the leaf mocks above still
-// drive it end to end — only the boundary between them is stubbed.
-import { observeWorkspaces } from '#features/worktrees/observe'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
+// The join under test reads the recorded rows alongside the real
+// observation half, so the leaf mocks above drive it end to end — only the
+// substrate is stubbed.
 import { listWorktreePods } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import type * as agentToolsModule from '#features/agents/agent-tools'
@@ -54,12 +52,10 @@ describe('listActiveWorktrees single-flight', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-single-flight-list-'))
     setDataDir(tmpDir)
     _clearListActiveInflightForTests()
-    _setHerdForTests({ workspaces: { observe: observeWorkspaces } })
     mockListPods.mockReset()
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 

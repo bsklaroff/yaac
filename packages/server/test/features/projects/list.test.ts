@@ -1,17 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as locateModule from '#features/worktrees/locate'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#features/projects'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import type { ProjectMeta } from '@yaac/shared/types'
 
-// Which projects exist is the server's own record; how many workspaces each
-// is running is the herd's, and what that count excludes (spares, unlabelled
-// pods) is asserted in test/herd/.
-const counts = vi.fn<() => Promise<Record<string, number>>>()
+// Which projects exist is the server's own record; how many worktrees each
+// is running comes off the substrate, and what that count excludes (spares,
+// unlabelled pods) is asserted in locate.test.ts.
+vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+  ...(await importOriginal<typeof locateModule>()),
+  countWorkspaces: vi.fn(),
+}))
+import { countWorkspaces } from '#features/worktrees/locate'
+const counts = vi.mocked(countWorkspaces)
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
@@ -25,11 +30,9 @@ describe('listProjects', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     counts.mockReset().mockResolvedValue({})
-    _setHerdForTests({ workspaces: { counts } })
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 
@@ -52,11 +55,11 @@ describe('listProjects', () => {
       remoteUrl: 'https://example/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
     })
-    // A project the herd said nothing about counts 0, not undefined.
+    // A project the substrate said nothing about counts 0, not undefined.
     expect(typeof foo?.worktreeCount).toBe('number')
   })
 
-  it('joins the herd’s counts onto the recorded projects', async () => {
+  it('joins the live counts onto the recorded projects', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     await writeProject('bar', { slug: 'bar', remoteUrl: 'https://example/bar', addedAt: '2026-01-02T00:00:00.000Z' })
     counts.mockResolvedValue({ foo: 2, bar: 1 })
@@ -65,9 +68,9 @@ describe('listProjects', () => {
     expect(joined).toEqual({ foo: 2, bar: 1 })
   })
 
-  // The whole point of the split: which projects exist is a row, so a herd
-  // with nothing to say costs the listing a count, not the project.
-  it('still lists a project the herd said nothing about', async () => {
+  // Which projects exist is a row, so a substrate with nothing to say
+  // costs the listing a count, not the project.
+  it('still lists a project the substrate said nothing about', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})
     expect((await listProjects())[0]?.worktreeCount).toBe(0)

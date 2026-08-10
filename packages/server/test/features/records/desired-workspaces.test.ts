@@ -2,12 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#platform/db/client'
 import { pushDesiredWorkspaces } from '#features/records/desired-workspaces'
-import {
-  desiredWorkspaces,
-  publishDesiredWorkspaces,
-  _resetDesiredWorkspacesForTests,
-} from '#herd-desired'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
+import { desiredWorkspaces, _resetDesiredWorkspacesForTests } from '#herd-desired'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
@@ -19,18 +14,10 @@ describe('pushDesiredWorkspaces', () => {
 
   beforeEach(async () => {
     _resetDesiredWorkspacesForTests()
-    // The real herd-side store behind the boundary: this step's whole job is
-    // to hand the rows down, so what a herd would then read is the assertion.
-    _setHerdForTests({
-      workspaces: {
-        publishDesired: (d) => Promise.resolve(publishDesiredWorkspaces(d)),
-      },
-    })
     tmpDir = await createTempDataDir()
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

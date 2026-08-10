@@ -1,17 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as locateModule from '#features/worktrees/locate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { _resetHerdForTests, _setHerdForTests, type WorkspaceHandle } from '#herd'
 import { resolveWorktreeContainer } from '#features/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
+import type { WorkspaceHandle } from '@yaac/shared/herd'
 
 /**
- * The herd is the boundary here: which workspace an id names, and whether it
- * is running, is the substrate's answer (asserted in test/herd/), and what
- * this module adds is the error vocabulary the routes above it rely on.
+ * The substrate lookup is the boundary here: which workspace an id names,
+ * and whether it is running, is `findWorkspace`'s answer (asserted in
+ * locate.test.ts), and what this module adds is the error vocabulary the
+ * routes above it rely on.
  */
-const find = vi.fn<
-  (idOrName: string, opts?: { preferCache?: boolean }) => Promise<WorkspaceHandle | undefined>
->()
+vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+  ...(await importOriginal<typeof locateModule>()),
+  findWorkspace: vi.fn(),
+}))
+import { findWorkspace } from '#features/worktrees/locate'
+const find = vi.mocked(findWorkspace)
 
 function handle(over: Partial<WorkspaceHandle> = {}): WorkspaceHandle {
   return {
@@ -34,11 +39,9 @@ describe('resolveWorktreeContainer', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     find.mockReset().mockResolvedValue(undefined)
-    _setHerdForTests({ workspaces: { find } })
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 
@@ -75,7 +78,7 @@ describe('resolveWorktreeContainer', () => {
     expect(await resolveWorktreeContainer('abc123')).toMatchObject({ state: 'pending' })
   })
 
-  // The herd distinguishes "no match" from "could not ask"; this path must
+  // The lookup distinguishes "no match" from "could not ask"; this path must
   // not flatten the second into a NOT_FOUND the client would act on.
   it('lets a substrate failure through', async () => {
     find.mockRejectedValue(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused'))

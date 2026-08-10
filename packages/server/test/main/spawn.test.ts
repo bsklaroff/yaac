@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type * as worktreesModule from '#features/worktrees'
 import { listProvisioning, clearAllProvisioningForTests } from '#features/worktrees/provisioning'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
+vi.mock('#features/worktrees', async (importOriginal) => ({
+  ...(await importOriginal<typeof worktreesModule>()),
+  createWorktree: vi.fn(),
+}))
+import { createWorktree } from '#features/worktrees'
 import type { WorktreeCreateOptions, WorktreeCreateResult } from '#features/worktrees/create'
 import type { SpawnRequest } from '#server-link'
 import {
@@ -22,12 +27,12 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
   }
 }
 
-/** Install a herd whose only job is to record the create it was asked for. */
-function stubHerd(impl?: CreateFn): ReturnType<typeof vi.fn<CreateFn>> {
-  const create = vi.fn<CreateFn>(impl ?? (() => Promise.resolve({
+/** Stub the create whose only job is to record what it was asked for. */
+function stubCreate(impl?: CreateFn): ReturnType<typeof vi.mocked<typeof createWorktree>> {
+  const create = vi.mocked(createWorktree)
+  create.mockReset().mockImplementation(impl ?? (() => Promise.resolve({
     worktreeId: 'ignored', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
   } as WorktreeCreateResult)))
-  _setHerdForTests({ workspaces: { create } })
   return create
 }
 
@@ -36,15 +41,12 @@ const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 beforeEach(() => {
   clearAllProvisioningForTests()
-})
-
-afterEach(() => {
-  _resetHerdForTests()
+  stubCreate()
 })
 
 describe('decideSpawn', () => {
   it('creates in the caller project with the minted id and returns ok', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     const decision = await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
     expect(decision).toEqual({ ok: true, workspaceId: 'minted-id' })
     expect(create).toHaveBeenCalledWith('proj', {
@@ -58,7 +60,7 @@ describe('decideSpawn', () => {
 
   it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
     let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
-    stubHerd((_slug, opts) => {
+    stubCreate((_slug, opts) => {
       opts.onProgress?.('Creating job...')
       rowDuringCreate = listProvisioning().find((p) => p.worktreeId === 'minted-id')
       return Promise.resolve({
@@ -78,7 +80,7 @@ describe('decideSpawn', () => {
   })
 
   it('keeps a failed row (dismissable) when the detached create rejects', async () => {
-    stubHerd(() => Promise.reject(new Error('image build exploded')))
+    stubCreate(() => Promise.reject(new Error('image build exploded')))
     expect((await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })).ok).toBe(true)
     await settle()
     expect(listProvisioning()[0]).toMatchObject({
@@ -88,7 +90,7 @@ describe('decideSpawn', () => {
   })
 
   it('prefers an explicitly requested tool over the caller tool', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     expect((await decideSpawn(makeRequest({ tool: 'opencode' }))).ok).toBe(true)
     expect(create.mock.calls[0][1].tool).toBe('opencode')
     await settle()
@@ -98,7 +100,7 @@ describe('decideSpawn', () => {
   // yaac knows, so an unlabelled caller falls through to the server's own
   // preference row, and then to claude.
   it('falls back to the configured default, then claude, for an unknown caller tool', async () => {
-    const withDefault = stubHerd()
+    const withDefault = stubCreate()
     expect((await decideSpawn(
       makeRequest({ callerTool: undefined }),
       { defaultToolFn: () => Promise.resolve('pi') },
@@ -106,7 +108,7 @@ describe('decideSpawn', () => {
     expect(withDefault.mock.calls[0][1].tool).toBe('pi')
     await settle()
 
-    const noDefault = stubHerd()
+    const noDefault = stubCreate()
     expect((await decideSpawn(
       makeRequest({ callerTool: undefined }),
       { defaultToolFn: () => Promise.resolve(undefined) },
@@ -116,7 +118,7 @@ describe('decideSpawn', () => {
   })
 
   it('threads a model override into the create', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     const decision = await decideSpawn(
       makeRequest({ tool: 'claude', model: 'claude-opus-4-8' }),
       { mintIdFn: () => 'minted-id' },
@@ -134,21 +136,21 @@ describe('decideSpawn', () => {
 
   it('threads a provider/model override for a non-claude tool', async () => {
     // No explicit tool: resolves to the caller's own tool (codex).
-    const create = stubHerd()
+    const create = stubCreate()
     expect((await decideSpawn(makeRequest({ model: 'openai/gpt-5.2' }))).ok).toBe(true)
     expect(create.mock.calls[0][1]).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
     await settle()
   })
 
   it('rejects a malformed model without creating', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     const decision = await decideSpawn(makeRequest({ tool: 'claude', model: "opus'; rm -rf /" }))
     expect(decision).toEqual({ ok: false, error: "invalid model 'opus'; rm -rf /'" })
     expect(create).not.toHaveBeenCalled()
   })
 
   it('rejects an invalid requested tool without creating', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     const decision = await decideSpawn(makeRequest({ tool: 'not-a-tool' }))
     expect(decision.ok).toBe(false)
     expect(decision.ok ? '' : decision.error).toContain('not-a-tool')
@@ -156,7 +158,7 @@ describe('decideSpawn', () => {
   })
 
   it('rejects empty and oversize prompts', async () => {
-    const create = stubHerd()
+    const create = stubCreate()
     expect((await decideSpawn(makeRequest({ prompt: '  ' }))).ok).toBe(false)
     const over = makeRequest({ prompt: 'x'.repeat(SPAWN_MAX_PROMPT_CHARS + 1) })
     expect((await decideSpawn(over)).ok).toBe(false)
@@ -168,7 +170,7 @@ describe('decideSpawn', () => {
     const callerWorkspaceId = 'guarded-caller'
     let release!: () => void
     const gate = new Promise<void>((r) => { release = r })
-    stubHerd(async () => {
+    stubCreate(async () => {
       await gate
       return {
         worktreeId: 'x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
@@ -189,7 +191,7 @@ describe('decideSpawn', () => {
 
   it('releases the guard and stays ok when the detached create rejects', async () => {
     const callerWorkspaceId = 'failing-caller'
-    stubHerd(() => Promise.reject(new Error('provision failed')))
+    stubCreate(() => Promise.reject(new Error('provision failed')))
     // ok:true — the fire is already acked; the failure is a lost fire.
     expect((await decideSpawn(makeRequest({ callerWorkspaceId }))).ok).toBe(true)
     await settle()

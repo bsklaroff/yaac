@@ -1,22 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type * as locateModule from '#features/worktrees/locate'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getWorktreeBlockedHosts, getWorktreeDetail, getWorktreePrompt } from '#features/worktrees/detail'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { ServerError } from '@yaac/shared/errors'
+
+vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+  ...(await importOriginal<typeof locateModule>()),
+  findWorkspace: vi.fn(),
+}))
+import { findWorkspace } from '#features/worktrees/locate'
 
 describe('session detail helpers', () => {
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    // A herd running nothing: every helper here resolves the workspace first,
-    // so this is what proves each one refuses rather than half-answering.
-    _setHerdForTests({ workspaces: { find: () => Promise.resolve(undefined) } })
+    // A substrate running nothing: every helper here resolves the workspace
+    // first, so this is what proves each one refuses rather than
+    // half-answering.
+    vi.mocked(findWorkspace).mockReset().mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await cleanupTempDir(tmpDir)
   })
 

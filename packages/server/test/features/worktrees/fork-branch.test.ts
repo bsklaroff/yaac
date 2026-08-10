@@ -1,15 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as changesModule from '#features/worktrees/changes'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { closeDb } from '#platform/db/client'
 import { recordWorktreeCreated } from '#features/records/worktree-store'
-import { _resetHerdForTests, _setHerdForTests } from '#herd'
 import { worktreeForkBranch } from '#features/worktrees/fork-branch'
 
-// The row is the server's; the checkout is the herd's. Stubbing the fallback
+// The row is one source; the checkout is the other. Stubbing the fallback
 // is what lets these tests assert the ORDER of the two, which is the whole
 // point of the module.
-const fallback = vi.fn<(slug: string, id: string) => Promise<string | null>>()
+vi.mock('#features/worktrees/changes', async (importOriginal) => ({
+  ...(await importOriginal<typeof changesModule>()),
+  worktreeForkFallback: vi.fn(),
+}))
+import { worktreeForkFallback } from '#features/worktrees/changes'
+const fallback = vi.mocked(worktreeForkFallback)
 
 describe('worktreeForkBranch', () => {
   let tmpDir: string
@@ -17,11 +22,9 @@ describe('worktreeForkBranch', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     fallback.mockReset()
-    _setHerdForTests({ workspaces: { worktreeForkFallback: fallback } })
   })
 
   afterEach(async () => {
-    _resetHerdForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
@@ -31,7 +34,7 @@ describe('worktreeForkBranch', () => {
   // a PR repoints it at the branch just pushed — whose fork point is HEAD, so
   // the pane reports a session with a whole PR in it as having no changes. The
   // row is ours and says `main`.
-  it('prefers the session row’s recorded base over the herd’s fallback', async () => {
+  it('prefers the session row’s recorded base over the checkout fallback', async () => {
     await recordWorktreeCreated({
       projectSlug: 'demo', worktreeId: 'sid-pushed', baseBranch: 'main',
     })
@@ -41,7 +44,7 @@ describe('worktreeForkBranch', () => {
   })
 
   // A session with no row (created by an older yaac) still has to resolve one.
-  it('falls back to the herd when no row records a base', async () => {
+  it('falls back to the checkout when no row records a base', async () => {
     fallback.mockResolvedValue('main')
     expect(await worktreeForkBranch('demo', 'sid-a')).toBe('main')
     expect(fallback).toHaveBeenCalledWith('demo', 'sid-a')

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { herd } from '#herd'
+import { readUserDockerfile, resolveUserBuildDir, writeUserDockerfile } from '#features/projects'
 import { buildFilesApp } from '#routes/build-files'
 
 /**
@@ -11,14 +11,14 @@ import { buildFilesApp } from '#routes/build-files'
  * context).
  */
 export const configApp = new Hono()
-  .get('/user-dockerfile', async (c) => c.json({ content: await herd().projects.readUserDockerfile() }))
+  .get('/user-dockerfile', async (c) => c.json({ content: await readUserDockerfile() }))
   .put(
     '/user-dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
       const { content } = c.req.valid('json')
-      await herd().projects.writeUserDockerfile(content)
+      await writeUserDockerfile(content)
       return c.json({ content })
     },
   )
-  .route('/user-build-files', buildFilesApp(() => herd().projects.userBuildDir()))
+  .route('/user-build-files', buildFilesApp(() => resolveUserBuildDir()))

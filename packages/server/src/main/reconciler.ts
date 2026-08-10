@@ -1,17 +1,35 @@
 import { getDefaultTool, pushDesiredWorkspaces } from '#features/records'
-import { inFlightWorktreeIds } from '#features/worktrees'
+import {
+  gcOrphanEphemeralModuleDirs,
+  inFlightWorktreeIds,
+  reconcileAgentSessions,
+  reconcileImageSalvage,
+  reconcilePrewarmPool,
+  reconcileSpawnRequests,
+  reconcileStaleWorktrees,
+} from '#features/worktrees'
+import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
+import {
+  reconcileProjectRegistryGc,
+  reconcileRedirectClaims,
+  reconcileVclusters,
+} from '#features/cluster'
+import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#features/images'
+import { reconcileHostImageGc } from '#features/image-engine'
 import { reconcileGeneratedTitles } from '#features/titles'
-import { DESIRED_SET_TRIGGERS, herd, type HerdChangeSource } from '#herd'
+import { createTickSnapshot, type TickSnapshot } from '#platform/k8s'
+import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
+import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — three lanes feed one serialized pass executor:
  *
- * - changes: the herd's watches (worktree pods/Jobs, vcluster namespaces and
- *   their pods/services, and the set of live conversations) mark their
- *   sources dirty; a pass runs after a short debounce so event storms
- *   coalesce.
+ * - changes: the convergence watches (worktree pods/Jobs, vcluster
+ *   namespaces and their pods/services, and the set of live conversations)
+ *   mark their sources dirty; a pass runs after a short debounce so event
+ *   storms coalesce.
  * - poll: a 5s mark for the state no watch can see — the proxy's queued
  *   spawn requests and in-pod tmux death (the stale reaper). These are
  *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
@@ -21,17 +39,11 @@ import { serverLog } from '#log'
  *   (image prewarm/GC, salvage, builder-pod GC).
  *
  * Passes never overlap (steps share module state) and preserve the step
- * order below; each pass isolates step errors.
- *
- * There are only three steps, because the substrate half of a pass is one of
- * them: the herd runs its own ordered steps over its own view of the
- * substrate (docs/plans/layered-server.md). What is left here is what reads or
- * writes rows, and it brackets the herd's pass — the desired set has to be
- * published before the reaper can judge an absence against it, and titles
- * are generated after the conversation sweep so a just-captured opening
- * message is eligible in the same pass.
+ * order below; each pass isolates step errors. Substrate steps share one
+ * point-in-time view (`TickSnapshot`), created lazily on first use so the
+ * desired-set step ahead of them publishes before the view is taken.
  */
-export type ReconcileTrigger = HerdChangeSource | 'poll'
+export type ReconcileTrigger = ChangeSource | 'poll'
 
 export interface ReconcileStep {
   name: string
@@ -48,51 +60,122 @@ export interface PassContext {
   /** Aborts the pass. Handed down so a step that fans out into many of its
    *  own can stop starting them the moment shutdown signals. */
   signal: AbortSignal
+  /** The pass's shared substrate view — memoized, created on first use. */
+  snapshot: () => TickSnapshot
+  /** The configured default tool — memoized, read from its preference row
+   *  on first use and handed to the steps that need it, so no substrate
+   *  step reads a row itself. */
+  defaultTool: () => Promise<AgentTool | undefined>
 }
 
-/** Every source there is: the herd's pass owes work on any of them, and
- *  decides internally which of its own steps a given one dirties. */
-const HERD_TRIGGERS: readonly ReconcileTrigger[] = [
+/**
+ * The sources on which a worktree may have appeared or gone.
+ *
+ * ONE constant rather than two equal lists, because the equality is an
+ * invariant: the desired set is refreshed on exactly these, and the stale
+ * reaper judges an absence against it on exactly these, so "absence is
+ * only ever judged against a set from the same pass" holds by
+ * construction.
+ */
+export const DESIRED_SET_TRIGGERS: readonly ReconcileTrigger[] = [
   'worktree-pods',
   'worktree-jobs',
-  'vcluster-namespaces',
-  'vcluster-pods',
-  'vcluster-services',
-  'vcluster-configmaps',
-  'live-agents',
   'poll',
 ]
 
+/**
+ * One flat list, in the order a pass runs it. The two row-touching steps
+ * bracket the substrate steps: the desired set is published before the
+ * reaper can judge an absence against it, and titles are generated after
+ * the conversation sweep so a just-captured opening message is eligible
+ * in the same pass.
+ */
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
-    // Tell the herd what the server records as existing, and which of those
-    // it is still creating. Before the herd's pass, which is where the reaper
-    // runs: absence only means something against a set from this pass, not
-    // the last one — and the reaper's own triggers are this same shared
-    // constant, so the two can't drift apart.
+    // What the server records as existing, and which of those it is still
+    // creating — published for the reaper, on the reaper's own triggers,
+    // so the two cannot drift apart.
     { name: 'desired-workspaces', triggers: DESIRED_SET_TRIGGERS,
       run: () => pushDesiredWorkspaces(inFlightWorktreeIds()) },
-    // Everything that touches the substrate, in the herd's own order. It
-    // takes the whole trigger set rather than being triggered itself: which
-    // of its steps a pass owes is its business, and a resync owes all of
-    // them. The configured default tool goes down as an argument — it is a
-    // preference row, and a herd never looks one up.
-    { name: 'herd', triggers: HERD_TRIGGERS, run: async ({ triggers, resync, signal }) => {
-      const defaultTool = await getDefaultTool()
-      await herd().lifecycle.reconcile({
-        triggers,
-        resync,
-        signal,
-        ...(defaultTool !== undefined ? { defaultTool } : {}),
-      })
-    } },
-    // Model-generated titles for untitled worktrees, after the herd's
+    // The stale reaper. Poll is in its triggers because in-pod tmux death
+    // is not a substrate event.
+    { name: 'stale-worktrees', triggers: DESIRED_SET_TRIGGERS,
+      run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
+    // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
+    // The drain resolves who called from pod labels; what a request MEANS
+    // (tool precedence, the fan-out cap, the minted id) is `decideSpawn`'s.
+    { name: 'spawn-requests', triggers: ['poll'],
+      run: (ctx) => reconcileSpawnRequests({}, ctx.snapshot()) },
+    // Leaked trust-split builder pods (server restarted mid-build) — the
+    // label sweep backstop. Throttled internally. Ahead of image-prewarm on
+    // purpose: a leaked builder's memory reservation is what stops the next
+    // build from scheduling, so it has to go before builds are launched.
+    { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
+    // Keep every project's image chain built and pushed (detached tasks).
+    // Before the prewarm pool: a spare's create then joins the
+    // already-running builds. Throttled internally.
+    { name: 'image-prewarm', triggers: [], run: () => reconcileImagePrewarm() },
+    // Keep one prewarmed spare per active project (after the stale sweep so
+    // counts reflect just-reaped worktrees). No-op when the pool size is 0.
+    { name: 'prewarm-pool', triggers: ['worktree-pods'],
+      run: async (ctx) => reconcilePrewarmPool((await ctx.defaultTool()) ?? 'claude', ctx.snapshot()) },
+    // Mid-worktree image salvage (nested engines → project registry).
+    // Throttled internally per worktree; salvages run detached.
+    { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
+    // Blob reclaim in one project registry per pass. It cannot wait for a
+    // project to go idle — an active one never does — so it takes a
+    // read-only maintenance window instead, and detaches. Throttled
+    // internally; after the salvage, so a just-pushed generation is the
+    // one that survives the collect.
+    { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
+    // Which agent sessions each worktree holds, which are live, and what
+    // each opened with — read from the worktree's metadata document, with
+    // the in-pod hook's session-starts log folded in (or, under `acp`, from
+    // the handshake), crossed with the watcher's live agent set. The
+    // opening message rides along because the sweep has just resolved the
+    // transcript it would be read from; title generation runs after this
+    // step for that reason. `live-agents` is here and nowhere else: it is
+    // the only step that reads the watcher's live set, and it is what turns
+    // a fresh ACP handshake into a conversation row within a debounce
+    // instead of within a resync.
+    { name: 'agent-sessions', triggers: ['worktree-pods', 'live-agents'],
+      run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
+    // ssh-agent heal only (attach-only probe, never bootstraps): agent
+    // identities are memory-only by design and need the server to re-upload
+    // them after a proxy pod replacement.
+    { name: 'proxy-ssh-keys', triggers: ['poll'], run: () => reconcileProxySshKeys() },
+    // Per-worktree vclusters: orphan GC + host-side kubeconfig heal.
+    { name: 'vclusters', triggers: ['vcluster-namespaces', 'worktree-pods', 'worktree-jobs'],
+      run: (ctx) => reconcileVclusters(Date.now(), ctx.snapshot()) },
+    // yaac-in-yaac: tell the outer proxy which outer worktree owns each
+    // vcluster's pods. Poll re-pushes cover outer-proxy restarts.
+    { name: 'vcluster-attribution',
+      triggers: ['vcluster-namespaces', 'vcluster-pods', 'poll'],
+      run: (ctx) => reconcileVclusterAttribution(ctx.snapshot()) },
+    // yaac-in-yaac: validate each vcluster's redirect claims and republish
+    // them for netd. Claim documents arrive through the vcluster syncer, so
+    // a ConfigMap delta is the signal; pod deltas matter too, since a claim
+    // is only as valid as the pod IPs it names.
+    { name: 'redirect-claims',
+      triggers: ['vcluster-namespaces', 'vcluster-configmaps', 'vcluster-pods'],
+      run: (ctx) => reconcileRedirectClaims(ctx.snapshot()) },
+    // Host podman image GC. Throttled internally to every few hours.
+    { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
+    // Registry-side counterpart: retire step-cache tags no build has used
+    // in a cache-ttl and collect their blobs. Throttled internally, and it
+    // stands down while anything is pushing.
+    { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
+    // Per-worktree `.cached-packages/modules/<id>` dirs whose runtime is
+    // gone — leftovers from crashes and host reboots. A startup sweep, run
+    // from the loop rather than from attach because it must not delete a
+    // dir a create is staging into, and which worktrees are mid-create is
+    // the desired set the pass published above. Self-gating: once per
+    // server life.
+    { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
+    // Model-generated titles for untitled worktrees, after the
     // conversation sweep so a freshly captured prompt is eligible the same
-    // pass. Which means it owes a pass on whatever dirties that sweep: an ACP
-    // worktree's opening message is captured on the pass its handshake
-    // triggers, and same-pass eligibility is the whole point of the ordering.
-    // Cheap when there is nothing to do — a row listing against a set of
-    // worktrees already attempted.
+    // pass — which means it owes a pass on whatever dirties that sweep.
+    // Cheap when there is nothing to do.
     { name: 'generated-titles', triggers: ['worktree-pods', 'live-agents'],
       run: () => reconcileGeneratedTitles() },
   ]
@@ -102,8 +185,8 @@ export interface ReconcilerDeps {
   signal: AbortSignal
   /** Injected for tests — overrides the real step list. */
   steps?: ReconcileStep[]
-  /** Change subscription; defaults to the herd's own watches. */
-  onDelta?: (fn: (source: HerdChangeSource) => void) => void
+  /** Change subscription; defaults to the convergence watches. */
+  onDelta?: (fn: (source: ChangeSource) => void) => void
   pollIntervalMs?: number
   resyncIntervalMs?: number
   debounceMs?: number
@@ -150,7 +233,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     dirty.add(source)
     wake?.()
   }
-  ;(deps.onDelta ?? ((fn) => { herd().lifecycle.onChange(fn) }))(mark)
+  ;(deps.onDelta ?? onConvergenceChange)(mark)
   const pollTimer = setInterval(() => mark('poll'), deps.pollIntervalMs ?? 5_000)
   const resyncTimer = setInterval(() => mark('resync'), deps.resyncIntervalMs ?? 60_000)
   const onAbort = (): void => wake?.()
@@ -174,6 +257,15 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       const triggers = new Set<ReconcileTrigger>(
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
+      let snapshot: TickSnapshot | null = null
+      let defaultTool: Promise<AgentTool | undefined> | null = null
+      const ctx: PassContext = {
+        triggers,
+        resync,
+        signal,
+        snapshot: () => (snapshot ??= createTickSnapshot(resync)),
+        defaultTool: () => (defaultTool ??= getDefaultTool().catch(() => undefined)),
+      }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight
         // step still completes (the shutdown path bounds the drain), but we
@@ -181,7 +273,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         if (signal.aborted) return
         if (!resync && !step.triggers.some((t) => triggers.has(t))) continue
         try {
-          await step.run({ triggers, resync, signal })
+          await step.run(ctx)
         } catch (err) {
           serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
         }
