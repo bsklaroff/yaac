@@ -3,17 +3,13 @@
 // from reaching past this file. Modules in here import each other by relative
 // path, which is why they are unaffected by that rule.
 //
-// The handle and its lifecycle, the one-shot legacy-JSON sweep runServer
-// runs at startup, and the six tables the stores query. Callers get a `Db`
-// back from getDb() and build their own queries on those tables — the folder
-// owns opening, migrating and closing the database, not the queries.
-//
-// Everything else is internal: the data dir's `db` path, the legacy file
-// layout, and the worktree backfill, all covered through the entry points
-// below in packages/server/test/platform/db/.
+// The handle and its lifecycle, and the six tables the stores query. Callers
+// get a `Db` back from getDb() and build their own queries on those tables —
+// the folder owns opening, migrating and closing the database, not the
+// queries. The data dir's `db` path is internal, covered through getDb() in
+// packages/server/test/platform/db/.
 
 export { closeDb, getDb, _freshDbForTests } from './client'
-export { importLegacyJsonStores } from './legacy-import'
 export {
   agentSessions,
   preferences,

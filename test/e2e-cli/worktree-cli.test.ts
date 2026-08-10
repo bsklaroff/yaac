@@ -24,7 +24,6 @@ import {
 } from '@yaac/server/features/records/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
 import { closeDb } from '@yaac/server/platform/db'
-import { SESSIONS_BACKFILLED_KEY, clearFlag } from '@yaac/server/features/records'
 import { firstSnapshot } from '@yaac/test-utils/events-ws'
 
 /**
@@ -373,20 +372,20 @@ describe('with seeded projects', () => {
     })
 
     /**
-     * Stopped-worktree fixtures. The listing reads recorded rows, so these are
-     * adopted the way any worktree predating the tables is: the server's
-     * startup sweep takes the transcripts they left behind.
+     * Stopped-worktree fixtures: rows written the way a create-then-stop
+     * writes them, since the listing reads recorded rows and nothing else.
      *
-     * That sweep is one-shot, gated on the durable `SESSIONS_BACKFILLED_KEY`
-     * preference — NOT on the tables being empty — and the flag is set at the
-     * first boot against a data dir. So the transcripts must be on disk
-     * before *that* boot, not merely before the restart below; the flag is
-     * cleared here to re-arm the sweep for fixtures seeded afterwards.
+     * DEL_SLUG's worktree is deliberately recorded WITHOUT a first prompt and
+     * without a transcript path, which is the shape a worktree gets when its
+     * pod died before the capture step ever ran. Its prompt is then reachable
+     * only by parsing the transcript on disk at the conventional claude path,
+     * which is the fallback `stoppedPrompt` exists for — so the transcript
+     * below is the assertion's real subject, not scenery.
      */
     const DEL_SLUG = 'proj-del'
     const CAP_SLUG = 'proj-del-many'
     const ALL_SLUG = 'proj-del-all'
-    const promptSessionId = crypto.randomUUID()
+    const promptWorktreeId = crypto.randomUUID()
     const capIds = Array.from(
       { length: 5 },
       (_, i) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`,
@@ -401,6 +400,15 @@ describe('with seeded projects', () => {
       await fs.writeFile(path.join(dir, `${worktreeId}.jsonl`), body)
     }
 
+    /** One recorded worktree that is stopped, with one claude conversation. */
+    async function seedStopped(slug: string, worktreeId: string): Promise<void> {
+      await recordWorktreeCreated({ projectSlug: slug, worktreeId })
+      await recordAgentSessions(slug, worktreeId, [
+        { tool: 'claude', agentSessionId: crypto.randomUUID() },
+      ])
+      await recordWorktreeStopped(slug, worktreeId)
+    }
+
     beforeAll(async () => {
       for (const slug of [DEL_SLUG, CAP_SLUG, ALL_SLUG]) {
         const repo = path.join(testEnv.scratchDir, slug)
@@ -411,32 +419,34 @@ describe('with seeded projects', () => {
         type: 'user',
         message: { role: 'user', content: 'port the lexer to rust' },
       })
-      await seedTranscript(DEL_SLUG, promptSessionId, [
-        `{"type":"permission-mode","worktreeId":"${promptSessionId}"}`,
+      // The conventional claude path is keyed by the WORKTREE id, which is
+      // what the uncaptured-prompt fallback derives — so this lands where
+      // that lookup will go looking.
+      await seedTranscript(DEL_SLUG, promptWorktreeId, [
+        `{"type":"permission-mode","worktreeId":"${promptWorktreeId}"}`,
         firstMsg,
         '',
       ].join('\n'))
-      for (const id of capIds) await seedTranscript(CAP_SLUG, id, '{"type":"permission-mode"}\n')
-      for (const id of allIds) await seedTranscript(ALL_SLUG, id, '{"type":"permission-mode"}\n')
 
-      // Re-arm the one-shot sweep: the first boot of this data dir already
-      // set the flag, long before these transcripts existed. Written with the
-      // server stopped — the DB has a single writer (see the agents describe).
+      // Rows are written with the server stopped — the DB has a single
+      // writer (see the agents describe).
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await clearFlag(SESSIONS_BACKFILLED_KEY)
+      await seedStopped(DEL_SLUG, promptWorktreeId)
+      for (const id of capIds) await seedStopped(CAP_SLUG, id)
+      for (const id of allIds) await seedStopped(ALL_SLUG, id)
       await closeDb()
-      // Restart so the sweep runs against the seeded data dir. The CLI finds
-      // the new server through the lock file, like any other client.
+      // Restart so the CLI reads these through a server that owns the DB. It
+      // finds the new one through the lock file, like any other client.
       server = await spawnYaacServer(testEnv.env)
     })
 
-    it('worktree list --stopped renders adopted worktrees with their prompts', async () => {
+    it('worktree list --stopped renders stopped worktrees with their prompts', async () => {
       const { stdout, exitCode } = await runYaac(
         testEnv.env, 'worktree', 'list', DEL_SLUG, '--stopped',
       )
       expect(exitCode).toBe(0)
-      expect(stdout).toContain(promptSessionId.slice(0, 8))
+      expect(stdout).toContain(promptWorktreeId.slice(0, 8))
       expect(stdout).toContain(DEL_SLUG)
       expect(stdout).toContain('claude')
       expect(stdout).toContain('PROMPT')

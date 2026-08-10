@@ -14,9 +14,8 @@ export interface SerializedChord {
   shift: boolean
 }
 
-/** Structural guard for a stored chord — used by the legacy JSON import,
- *  whose entries come from a file that may be hand-edited or written by an
- *  older/newer build. */
+/** Structural guard for a stored chord — the shape crossing the wire from
+ *  the webapp, which is not the server's to trust. */
 export function isSerializedChord(value: unknown): value is SerializedChord {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
@@ -29,49 +28,6 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
 
 /** `preferences` row key for the default session tool. */
 export const DEFAULT_TOOL_KEY = 'default_tool'
-
-/** `preferences` row key marking that pre-existing sessions have been
- *  adopted into `agent_sessions` (see backfillWorktrees). */
-export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
-
-/** One-shot: rewrite recorded transcript paths that point at a yaac symlink
- *  to the file it resolves to. See `resolveSymlinkedTranscripts`. */
-export const TRANSCRIPT_PATHS_RESOLVED_KEY = 'transcript_paths_resolved'
-
-/** One-shot: delete the codex transcript symlinks, once every row that named
- *  one has been rewritten to its target. See `purgeTranscriptSymlinks`. */
-export const TRANSCRIPT_SYMLINKS_PURGED_KEY = 'transcript_symlinks_purged'
-
-/** One-shot: rewrite absolute recorded transcript paths to the relative form
- *  the column stores. See `relativizeTranscriptPaths`. */
-export const TRANSCRIPT_PATHS_RELATIVE_KEY = 'transcript_paths_relative'
-
-/** One-shot: rewrite tool-home-relative transcript paths to the
- *  project-relative form the column stores now. See
- *  `projectRelativeTranscriptPaths`. */
-export const TRANSCRIPT_PATHS_PROJECT_KEY = 'transcript_paths_project_relative'
-
-/** Whether a one-shot migration step has already run. */
-export async function isFlagSet(key: string): Promise<boolean> {
-  const db = await getDb()
-  const rows = await db.select().from(preferences).where(eq(preferences.key, key))
-  return rows[0]?.value === '1'
-}
-
-/** Mark a one-shot migration step as done. Idempotent. */
-export async function setFlag(key: string): Promise<void> {
-  const db = await getDb()
-  await db.insert(preferences).values({ key, value: '1' })
-    .onConflictDoUpdate({ target: preferences.key, set: { value: '1' } })
-}
-
-/** Re-arm a one-shot step. Only tests use this: the flag is set at a data
- *  dir's first boot, so a fixture seeded afterwards would otherwise never be
- *  swept. Idempotent. */
-export async function clearFlag(key: string): Promise<void> {
-  const db = await getDb()
-  await db.delete(preferences).where(eq(preferences.key, key))
-}
 
 export async function getDefaultTool(): Promise<AgentTool | undefined> {
   const db = await getDb()

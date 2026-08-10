@@ -124,8 +124,8 @@ export function getDb(): Promise<Db> {
 }
 
 /**
- * Test-only: put the database back to freshly-migrated — no rows, no
- * one-shot markers — while leaving the data dir's *files* alone. What a
+ * Test-only: put the database back to freshly-migrated — no rows — while
+ * leaving the data dir's *files* alone. What a
  * test means by "the user upgraded into a new database": deleting
  * `<dataDir>/db` says that only to the on-disk handle, and says nothing at
  * all to the shared in-memory one, so tests ask for the state instead of

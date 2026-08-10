@@ -35,7 +35,6 @@ import {
   projectRegistryHost,
   reconcileProjectRegistryGc,
   removeProjectRegistry,
-  sweepLegacyNodeStores,
 } from '#features/cluster'
 // Setup values: label keys, the pinned upstream digest, and the name/path
 // derivations the assertions below compare against.
@@ -694,9 +693,7 @@ describe('reconcileProjectRegistryGc', () => {
       spec: { containers: Array<{ command: string[] }> }
     }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
       .spec.containers[0].command[2]
-    // Repo guard keeps a session's own `myapp` repo out of scope. Only the
-    // bare spelling: the alias drop above runs first, so a `localhost/`
-    // -prefixed repo can no longer be standing here...
+    // Repo guard keeps a worktree's own `myapp` repo out of scope...
     expect(script).toContain('yaac-*) ;;')
     // ...and the tag guard is the content-hash shape, so `v1`, `latest`
     // and the cache's `yaac-cache-…` slots can never match.
@@ -704,27 +701,6 @@ describe('reconcileProjectRegistryGc', () => {
     // Newest-first, keeping current + one rollback (the host-side policy).
     expect(script).toContain('ls -1t')
     expect(script).toContain(`tail -n +${REGISTRY_GENERATIONS_KEPT + 1}`)
-  })
-
-  it('drops the legacy localhost/ alias repos before collecting', async () => {
-    oneRegistry()
-    await gcPass(1_000)
-    const script = (mockApply.mock.calls.map((c) => c[0] as {
-      kind: string; metadata: { name: string }
-      spec: { containers: Array<{ command: string[] }> }
-    }).find((m) => m.kind === 'Pod' && m.metadata.name.includes('-gc-'))!)
-      .spec.containers[0].command[2]
-    // An older salvage pushed podman's `localhost/`-prefixed local names
-    // verbatim, so every image the server had also pushed under its bare
-    // tag has a second repo here holding a second, differently compressed
-    // copy of its layers. Removing the subtree un-references those
-    // manifests; the collect below is what reclaims the blobs (marking
-    // whatever a surviving repo still names), so the order matters as much
-    // as the removal.
-    expect(script).toContain(
-      'rm -rf /var/lib/registry/docker/registry/v2/repositories/localhost')
-    expect(script.indexOf('dropped-alias-repos'))
-      .toBeLessThan(script.indexOf('garbage-collect'))
   })
 
   it('sends valid POSIX shell into the collect pod', async () => {
@@ -796,154 +772,5 @@ describe('reconcileProjectRegistryGc', () => {
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
     await expect(reconcileProjectRegistryGc(1_000)).resolves.toBeUndefined()
-  })
-})
-
-describe('sweepLegacyNodeStores', () => {
-  const claimVolume = (name: string): unknown =>
-    ({ name: 'storage', persistentVolumeClaim: { claimName: name } })
-  const hostPathVolume = (path: string): unknown =>
-    ({ name: 'storage', hostPath: { path } })
-
-  /**
-   * Stage the two conversion reads the sweep gates on: the main registry
-   * Deployment (`get deployment`, spec + rollout status) and this install's
-   * project-registry Deployments across all namespaces (`get deployments`).
-   *
-   * Defaults are the fully-converged install; each option turns one gate
-   * off. `mainReady: false` is the applied-but-rollout-failed shape — spec
-   * says PVC while the hostPath store is still the only copy of the data.
-   */
-  function stageSweepCluster(opts: {
-    mainConverted?: boolean
-    mainReady?: boolean
-    projectsConverted?: boolean
-    projectsReadable?: boolean
-  } = {}): void {
-    const mainConverted = opts.mainConverted ?? true
-    const mainReady = opts.mainReady ?? true
-    const projectsConverted = opts.projectsConverted ?? true
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'deployment') {
-        return Promise.resolve({
-          spec: { template: { spec: { volumes: [
-            mainConverted
-              ? claimVolume('yaac-registry-storage-ddh16')
-              : hostPathVolume('/var/lib/yaac/main-registry/ddh16'),
-          ] } } },
-          status: { readyReplicas: mainReady ? 1 : 0 },
-        })
-      }
-      if (args[1] === 'deployments') {
-        if (opts.projectsReadable === false) return Promise.reject(new Error('connection refused'))
-        return Promise.resolve({
-          items: [{
-            spec: { template: { spec: { volumes: [
-              projectsConverted
-                ? claimVolume('yaac-reg-demo-1234abcd-storage')
-                : hostPathVolume('/var/lib/yaac/registry/ddh16/demo'),
-            ] } } },
-          }],
-        })
-      }
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
-      return Promise.resolve(null)
-    })
-  }
-
-  it('removes this install\'s retired store dirs on every node', async () => {
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster()
-
-    await sweepLegacyNodeStores()
-
-    const pods = mockApply.mock.calls.map((c) => c[0] as {
-      spec: {
-        nodeName: string
-        containers: Array<{ command: string[] }>
-        volumes: Array<{ hostPath: { path: string } }>
-      }
-    })
-    expect(pods).toHaveLength(NODE_LIST.items.length)
-    // All three retired roots: the old node-local image store, and both
-    // registries' node-local blob stores now that their storage is a PVC.
-    // This sweep is the ONLY thing that can reclaim them — a store on a node
-    // the registry has since moved off is reachable by no `kubectl exec`.
-    expect(pods[0].spec.volumes.map((v) => v.hostPath.path)).toEqual([
-      '/var/lib/yaac/imagecache',
-      '/var/lib/yaac/registry',
-      '/var/lib/yaac/main-registry',
-    ])
-    // Scoped to this install's subdirectory of each, mounting the parents so
-    // the directories themselves go too.
-    expect(pods[0].spec.containers[0].command[2]).toBe(
-      "rm -rf '/host-store-0/ddh16' '/host-store-1/ddh16' '/host-store-2/ddh16'")
-    expect(pods.map((p) => p.spec.nodeName)).toEqual(NODE_LIST.items.map((n) => n.metadata.name))
-  })
-
-  it('waits for the mirror image rather than failing the boot path', async () => {
-    mockHasTag.mockResolvedValue(false)
-    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('deletes nothing while the main registry still serves from its hostPath', async () => {
-    // The boot ensure that converts it logs its failures rather than
-    // throwing (a cluster with no default StorageClass is the case that
-    // matters), so "the ensure ran" is not "the conversion happened" — and
-    // sweeping here would delete the store a live registry is serving.
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster({ mainConverted: false })
-    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('deletes nothing when the converted main registry has no ready replica', async () => {
-    // Applied-but-not-rolled-out: the spec names the claim while the
-    // hostPath store is still the only copy of the data. `Recreate` has
-    // already deleted the pod that was serving it, so nothing else in this
-    // path would notice — the readiness half of the gate is the whole
-    // protection here.
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster({ mainReady: false })
-    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('deletes nothing while ANY project registry is still on its hostPath', async () => {
-    // The sweep removes /var/lib/yaac/registry/<hash>, the shared parent of
-    // every project's store, but project registries convert lazily — on
-    // their next session create or 6h collect. A restart in between must not
-    // take out a project whose registry is live and serving from it: that
-    // store holds a user's own `docker push`es, not just a rebuildable
-    // layer cache. The main registry's conversion says nothing about this.
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster({ projectsConverted: false })
-    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('deletes nothing when the project-registry list cannot be read', async () => {
-    // Fails safe: an unreadable list is indistinguishable from one holding
-    // an unconverted registry, and only one of those two guesses is
-    // recoverable.
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster({ projectsReadable: false })
-    await expect(sweepLegacyNodeStores()).resolves.toBeUndefined()
-    expect(mockApply).not.toHaveBeenCalled()
-  })
-
-  it('scopes the project-registry probe to this install, across all namespaces', async () => {
-    // The hostPath root is per-INSTALL, not per namespace: an e2e run's
-    // registry in its own namespace stores under the same directory. A
-    // namespace-scoped probe would miss it and sweep anyway.
-    mockHasTag.mockResolvedValue(true)
-    stageSweepCluster()
-    await sweepLegacyNodeStores()
-    expect(mockGetJson).toHaveBeenCalledWith([
-      'get', 'deployments', '--all-namespaces',
-      '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
-    ])
   })
 })

@@ -5,10 +5,11 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
 import { authAgentHub } from '#features/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, getDb, importLegacyJsonStores } from '#platform/db'
+import { closeDb, getDb } from '#platform/db'
 import { EventHub } from '#main/events'
 import { resolveWorktreeContainer } from '#features/worktrees'
 import { createServerLink } from '#main/link'
+import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
 import { createInProcessHerd, herd, setHerd } from '#herd'
 import { setServerLink } from '#server-link'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
@@ -335,15 +336,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     return
   }
   // Open the DB only now that the lock is held (it is the single-writer
-  // guard for PGlite), sweep any legacy JSON stores into it, and restore
-  // the persisted tokens into the store built empty above — all before the
-  // start banner below mints its exchange token, whose onChanged persist
-  // rewrites the full token table from the in-memory set. A failure here
-  // means preferences/titles/tokens would silently not persist, so fail
-  // the start rather than run half-alive.
+  // guard for PGlite), and restore the persisted tokens into the store built
+  // empty above — both before the start banner below mints its exchange
+  // token, whose onChanged persist rewrites the full token table from the
+  // in-memory set. A failure here means tokens would silently not persist,
+  // so fail the start rather than run half-alive.
   try {
     await getDb()
-    await importLegacyJsonStores()
     tokens.restoreTokens(await loadTokens())
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
@@ -351,6 +350,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(process.pid)
     process.exit(1)
   }
+  // Outside the try: an empty database is indistinguishable from one this
+  // build never imported into, and only the disk can tell them apart. Warns
+  // and returns — a failure to stat is not a reason to fail a start.
+  await warnAboutUnimportedLegacyData()
+    .catch((err: unknown) => serverLog(`[server] legacy-data check failed: ${String(err)}`))
   // Both ends of the boundary, wired now rather than beside the listeners
   // above because the link's handlers write rows: they cannot exist before
   // the DB is open, and nothing can report until the reconcile loop and the

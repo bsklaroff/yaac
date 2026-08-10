@@ -112,9 +112,8 @@ async function lastActiveMs(
 
 /**
  * The worktree's founding ask, parsed from its first conversation's transcript
- * on demand for one that died before the capture step ever ran (or that the
- * backfill adopted). The result is persisted, so a given worktree parses at
- * most once. opencode leaves no host transcript, so an uncaptured opencode
+ * on demand for one that died before the capture step ever ran. The result is
+ * persisted, so a given worktree parses at most once. opencode leaves no host transcript, so an uncaptured opencode
  * worktree simply has no prompt.
  */
 async function stoppedPrompt(

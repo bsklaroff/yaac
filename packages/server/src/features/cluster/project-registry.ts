@@ -2,7 +2,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
-  LABEL_ROLE,
   LABEL_WORKTREE_ID_LEGACY,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
@@ -16,14 +15,6 @@ import {
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { nodeIpBlocks } from './cluster-cidrs'
-// Sibling in this sealed folder; main-registry.ts reads two constants back
-// out of this module, which is fine — neither import is used at module
-// evaluation time, only inside functions.
-import {
-  mainRegistryServingFromClaim,
-  specsClaimStorage,
-  type RawRegistryDeploy,
-} from './main-registry'
 import { imageExists } from '#platform/container'
 import { projectDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
@@ -184,9 +175,8 @@ function registrySelector(projectSlug: string): string {
  * part that is not merely a rebuild is anything a worktree `docker push`ed
  * here under a name yaac never mints — that becomes unreachable at the same
  * moment, and unlike the cache it is not regenerable. It is not lost: the
- * old store stays on the node until `sweepLegacyNodeStores` reclaims it, and
- * that sweep will not run while ANY project registry of this install is
- * still on a hostPath. Recoverable by hand until then.
+ * old store stays on the node under `/var/lib/yaac/registry/<install hash>`,
+ * recoverable by hand.
  */
 export function buildProjectRegistryPvcManifest(projectSlug: string): Record<string, unknown> {
   return {
@@ -627,9 +617,8 @@ export const REGISTRY_GENERATIONS_KEPT = 8
  * Two guards keep it off anything else, because a tag here is otherwise a
  * promise to whoever pulls it:
  *  - the repo must be yaac-built (`yaac-…`) — every push into this
- *    registry names one, and the alias cleanup above has already dropped
- *    the `localhost/`-prefixed spellings by the time this runs — so a
- *    worktree's own `myapp` repo is never touched;
+ *    registry names one — so a worktree's own `myapp` repo is never
+ *    touched;
  *  - the tag must have the 16-hex content-hash shape — so `v1`, `latest`
  *    and the cache's `yaac-cache-…` slots can never match.
  * Retiring a tag only unlinks the name; the manifest it pointed at and its
@@ -666,44 +655,8 @@ export function buildRegistryRetentionScript(keep = REGISTRY_GENERATIONS_KEPT): 
 }
 
 /**
- * Drop the `localhost/…` alias repos an older salvage left in the store.
- *
- * The image cache pushed podman's ref for a local name verbatim, and
- * podman stores every non-registry-qualified name under its `localhost/`
- * local-registry prefix — so an image the server had already pushed under
- * its bare tag gained a second repo holding a second, independently
- * compressed copy of every layer. The salvage now canonicalizes the name
- * away
- * (LOCAL_REGISTRY_PREFIX in image-promoter), which stops new ones but
- * leaves the existing subtree tagged, and therefore uncollectable, in
- * every registry an older server wrote.
- *
- * Removing the repo directories un-references their manifests, so the
- * `--delete-untagged` collect that follows reclaims the blobs in the same
- * pass. Blobs a surviving repo still names are marked by the collect's own
- * walk, so sharing between an alias and its canonical twin changes how
- * much is reclaimed, never whether a live blob is. What is lost is at most
- * a cache entry the canonical name does not cover: a rebuild, and the next
- * salvage repushes it under the canonical repo.
- *
- * Scoped to exactly this prefix, and a no-op once the subtree is gone: no
- * producer writes `localhost/…` any more — the salvage canonicalizes,
- * host-side pushes use bare mirror tags, prime reads and retire only
- * DELETEs. A worktree can still `docker push <registry>/localhost/…` by
- * hand (the registry has no path ACLs), which this drops again on the next
- * pass, costing that worktree the cache entry it minted.
- */
-function buildAliasRepoCleanupScript(): string {
-  return [
-    `if [ -d ${GC_REPOS_PATH}/localhost ]; then`,
-    `  rm -rf ${GC_REPOS_PATH}/localhost && echo "dropped-alias-repos"`,
-    'fi',
-  ].join('\n')
-}
-
-/**
- * One-shot pod reclaiming a project's registry blobs: drop the legacy
- * alias repos, retire stale content-hash generations, then `registry
+ * One-shot pod reclaiming a project's registry blobs: retire stale
+ * content-hash generations, then `registry
  * garbage-collect --delete-untagged` against the storage PVC with the
  * registry's own binary and stock config.
  *
@@ -745,11 +698,8 @@ export function buildRegistryGcPodManifest(
     `${projectRegistryName(projectSlug)}-gc-${runId}`,
     null,
     imageRef,
-    // Alias cleanup first: the retention pass exits early on a store with
-    // no repositories dir at all, and neither must run after the collect
-    // that reclaims what they untag.
-    `${buildAliasRepoCleanupScript()}\n`
-    + `${buildRegistryRetentionScript()}\n`
+    // Retention first: it untags the generations the collect then reclaims.
+    `${buildRegistryRetentionScript()}\n`
     + `/bin/registry garbage-collect --delete-untagged=true ${GC_CONFIG_PATH}`,
     [{
       name: 'storage',
@@ -960,148 +910,6 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
     // case the hosts.toml went with the node it was written on.
     await runNodeWritePod(buildRegistryCleanupPodManifest(projectSlug, imageRef, node, i, runId))
       .catch(() => { /* node-side residue is harmless */ })
-  }
-}
-
-/**
- * Node-local roots retired yaac versions left blob stores in, each keyed by
- * install one level down. Nothing mounts any of them now — the
- * cross-worktree image cache is the project registry, and both registries'
- * storage is a PVC — so on a machine that ran an older yaac they are
- * multi-GB of dead weight (the image store measured 25GB after a day of e2e
- * churn, and a registry store is the same order).
- *
- * They are exactly the garbage the hostPath model could not collect on its
- * own: a store on a node the registry has moved off is reachable by no
- * `kubectl exec`, so nothing else will ever reclaim it. This sweep visits
- * every node, so it does.
- */
-const LEGACY_STORE_ROOTS = [
-  '/var/lib/yaac/imagecache',
-  '/var/lib/yaac/registry',
-  '/var/lib/yaac/main-registry',
-]
-
-/** Marker for the one-shot legacy-store sweep pods. */
-export const ROLE_LEGACY_STORE_SWEEP = 'legacy-image-store-sweep'
-
-/**
- * One-shot pod deleting this install's retired store directories on one
- * node. Mounts each PARENT so the install's own directory goes with its
- * contents, exactly like the registry cleanup pod. Pinned by `nodeName`; a
- * node that never ran an old store just sees nothing to delete.
- */
-export function buildLegacyStoreSweepPodManifest(
-  imageRef: string,
-  nodeName: string,
-  nodeIndex: number,
-  runId: string,
-): Record<string, unknown> {
-  const mounts = LEGACY_STORE_ROOTS.map((root, i) => ({
-    name: `store-${i}`,
-    hostMount: `/host-store-${i}`,
-    root,
-  }))
-  return {
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name: `yaac-legacy-store-sweep-${nodeIndex}-${runId}`,
-      namespace: k8sNamespace(),
-      labels: {
-        [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
-        [LABEL_ROLE]: ROLE_LEGACY_STORE_SWEEP,
-      },
-    },
-    spec: {
-      nodeName,
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      priorityClassName: PRIORITY_CLASS_INFRA,
-      containers: [{
-        name: 'sweep',
-        image: imageRef,
-        imagePullPolicy: 'IfNotPresent',
-        command: [
-          'sh', '-c',
-          `rm -rf ${mounts.map((m) => `'${m.hostMount}/${dataDirHash()}'`).join(' ')}`,
-        ],
-        volumeMounts: mounts.map((m) => ({ name: m.name, mountPath: m.hostMount })),
-      }],
-      volumes: mounts.map((m) => ({
-        name: m.name,
-        hostPath: { path: m.root, type: 'DirectoryOrCreate' },
-      })),
-    },
-  }
-}
-
-/**
- * Whether any of THIS INSTALL's project registries is still configured for
- * the node hostPath store — i.e. whether `/var/lib/yaac/registry/<hash>`,
- * which the sweep deletes wholesale, is still somebody's live storage.
- *
- * Across all namespaces, because that root is per-install and not per
- * namespace: a registry an e2e run left in its own namespace stores under
- * the same directory this install's sweep would remove.
- *
- * The main registry's own conversion cannot answer this. Project registries
- * convert LAZILY — `ensureProjectRegistry` on the next worktree create for
- * that project, or the 6h collect's roll, whichever comes first — so a
- * server restart can easily fall between the main registry converting and
- * project B's registry ever being ensured, with B still serving out of the
- * directory about to be deleted. Losing B's layer cache would be survivable;
- * losing what a user `docker push`ed into B's registry is not.
- *
- * Fails SAFE: an unreadable list answers "yes, something is still on a
- * hostPath", so the sweep defers to the next start.
- */
-async function anyProjectRegistryOnHostPath(): Promise<boolean> {
-  interface RawDeployList { items?: Array<RawRegistryDeploy> }
-  const list = await kubectlGetJson<RawDeployList>([
-    'get', 'deployments', '--all-namespaces',
-    '-l', `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
-  ]).catch(() => null)
-  if (!list?.items) return true
-  return list.items.some((d) => !specsClaimStorage(d))
-}
-
-/**
- * Reclaim the retired node-local stores on every node, once per server
- * start. Best-effort and idempotent: the second run finds nothing.
- *
- * Three gates, each of which just defers to the next start when it fails.
- * The mirror image this pod runs must be in the local registry; the main
- * registry must be SERVING from its claim (not merely configured for it);
- * and no project registry of this install may still be on a hostPath. The
- * last two exist because the boot ensure that converts the main registry
- * logs its failures rather than throwing, and because the project
- * registries convert on their own lazy schedule — so neither "the ensure
- * ran" nor "the main registry converted" is evidence that the directories
- * below are garbage. Between them they cover every root this deletes.
- *
- * One ordering invariant those gates rest on, so a future edit does not
- * quietly void them: this must run AFTER an awaited `ensureMainRegistry`.
- * `readyReplicas` counts a still-terminating pod for a moment after a spec
- * flip, so a conversion running CONCURRENTLY with this sweep could in
- * principle show a ready replica that is really the old hostPath pod on its
- * way out. Serialized behind the ensure, that window cannot open — by the
- * time this runs the rollout has been waited on, and a second process
- * applying the same converged spec starts no new rollout. Detaching the
- * ensure, or moving this ahead of it, would make the race reachable.
- */
-export async function sweepLegacyNodeStores(): Promise<void> {
-  if (!await registryHasTag(REGISTRY_MIRROR_TAG)) return
-  if (!await mainRegistryServingFromClaim()) return
-  if (await anyProjectRegistryOnHostPath()) return
-  const imageRef = registryRef(REGISTRY_MIRROR_TAG)
-  const runId = crypto.randomBytes(4).toString('hex')
-  for (const [i, node] of (await listNodeNames()).entries()) {
-    await runNodeWritePod(buildLegacyStoreSweepPodManifest(imageRef, node, i, runId))
-      .catch((err: unknown) => {
-        console.warn(`Legacy image-store sweep on ${node} failed: ${String(err)}`)
-      })
   }
 }
 

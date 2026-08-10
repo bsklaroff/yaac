@@ -14,8 +14,6 @@ import {
   projectClaudeCredentialsFile,
   codexDir,
   projectCodexAuthFile,
-  codexTranscriptDir,
-  codexTranscriptFile,
   opencodeConfigDir,
   worktreesDir,
   worktreeDir,
@@ -118,8 +116,6 @@ describe('paths', () => {
     expect(codexDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex')
     expect(projectCodexAuthFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/auth.json')
     expect(cachedPackagesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/.cached-packages')
-    expect(codexTranscriptDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts')
-    expect(codexTranscriptFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts/abc123.jsonl')
     expect(opencodeConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/opencode-config')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')

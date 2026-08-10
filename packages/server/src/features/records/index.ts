@@ -44,20 +44,12 @@ export { applyHerdEvent } from './apply-herd-event'
 export { pushDesiredWorkspaces } from './desired-workspaces'
 export {
   DEFAULT_TOOL_KEY,
-  SESSIONS_BACKFILLED_KEY,
-  TRANSCRIPT_PATHS_PROJECT_KEY,
-  TRANSCRIPT_PATHS_RELATIVE_KEY,
-  TRANSCRIPT_PATHS_RESOLVED_KEY,
-  TRANSCRIPT_SYMLINKS_PURGED_KEY,
-  clearFlag,
   clearShortcutOverrides,
   getDefaultTool,
   getShortcutOverrides,
-  isFlagSet,
   isSerializedChord,
   isValidTool,
   setDefaultToolChecked,
-  setFlag,
   setShortcutOverride,
 } from './preferences'
 export {

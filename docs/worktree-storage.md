@@ -26,11 +26,8 @@ worktree can accumulate conversations over its life and one conversation can be
 resumed into a second worktree. See "Agent worktrees" below.
 
 `features/worktrees/worktree-store.ts` owns the `worktrees` table and
-`features/worktrees/agent-session-store.ts` the other two: every runtime read and
-write goes through them. The one other writer is the startup sweep in
-`platform/db/legacy-import.ts`, which adopts worktrees that predate the tables —
-it inserts directly, but applies the stores' invariants (normalized titles,
-capped prompts) so an imported row is indistinguishable from a recorded one.
+`features/worktrees/agent-session-store.ts` the other two: every read and write
+goes through them, and they are the only writers.
 
 ## Write discipline
 
@@ -227,20 +224,3 @@ result back into the document, so a settled worktree costs one file read a tick.
 is `features/agents/transcripts.ts`. A worktree that died before capture
 parses its first conversation's transcript on demand from the stopped listing,
 and the result is persisted.
-
-## Worktrees that predate the tables
-
-The startup sweep (`platform/db/legacy-import.ts`) adopts them once: every
-worktree a project's transcripts prove existed becomes a row, and rows the SQL
-data migration had to guess at (it can only see the folded side tables) get
-their `tool`, `createdAt` and base branch corrected from disk. Each also gets
-its single agent session recorded and linked active — before the split, yaac
-pinned the agent's conversation id to the worktree id (`claude --session-id
-<worktreeId>`), so that conversation's id is known rather than guessed.
-
-It is gated on a durable flag in `preferences`, not on the tables being empty —
-the data migration runs first and seeds rows, so an emptiness check would skip
-adoption on precisely the installs that need it. Running once is the point:
-after that, an unrecognized transcript belongs to a conversation the hook will
-link on its own, not to a worktree, and adopting those would list phantom
-worktrees that no checkout, pod, or restart can back.

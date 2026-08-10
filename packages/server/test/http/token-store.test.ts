@@ -202,8 +202,6 @@ describe('createTokenStore', () => {
 
 // One PGlite per file: cold-init is the expensive part, so the DB-backed
 // tests share a data dir and wipe the table instead of recreating it.
-// (Pre-kind and malformed legacy tokens.json files are exercised in
-// db-legacy-import.test.ts — the DB rows always carry a kind.)
 let tmpDir: string
 
 beforeAll(async () => {

@@ -6,14 +6,12 @@ import {
   setDataDir,
   claudeDir,
   codexDir,
-  codexTranscriptDir,
   piSessionsDir,
 } from '@yaac/shared/project-paths'
 import {
   resolveProjectPath,
   listPiJsonlFiles,
   piSessionLogs,
-  scanProjectTranscripts,
   sessionIdFromPiLog,
   sessionTranscriptPath,
   toProjectRelative,
@@ -93,9 +91,9 @@ describe('transcripts', () => {
 
     it('has none for codex, whose rollout name follows from no id', async () => {
       // Nothing derives a codex rollout filename from a conversation id, so
-      // only a recorded path finds one — even with a legacy index entry that
-      // happens to be named after the id sitting right there.
-      await write(path.join(codexTranscriptDir(slug), 'sid.jsonl'))
+      // only a recorded path finds one — even for a file sitting in codex's
+      // own home named after the id.
+      await write(path.join(codexDir(slug), 'sessions', 'sid.jsonl'))
       expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBeUndefined()
     })
 
@@ -107,30 +105,6 @@ describe('transcripts', () => {
 
     it('has none for opencode, which leaves no host transcript', async () => {
       expect(await sessionTranscriptPath(slug, 'sid', 'opencode')).toBeUndefined()
-    })
-  })
-
-  describe('scanProjectTranscripts', () => {
-    it('finds every tool\'s sessions with their creation times', async () => {
-      await write(claudeLog('cl-1'))
-      await write(path.join(claudeDir(slug), 'projects', '-workspace', 'notes.txt'), 'x')
-      await write(path.join(codexTranscriptDir(slug), 'cx-1.jsonl'))
-      await write(path.join(piSessionsDir(slug), '100_pi-1.jsonl'))
-      // Subagent transcripts live a directory deeper, so the scan never sees
-      // them as sessions.
-      await write(path.join(claudeDir(slug), 'projects', '-workspace', 'cl-1', 'subagents', 'agent-a.jsonl'))
-
-      const records = await scanProjectTranscripts(slug)
-      expect(records.map((r) => [r.worktreeId, r.tool]).sort())
-        .toEqual([['cl-1', 'claude'], ['cx-1', 'codex'], ['pi-1', 'pi']])
-      for (const r of records) {
-        expect(r.createdAtMs).toBeGreaterThan(0)
-        expect(path.isAbsolute(r.transcriptPath)).toBe(true)
-      }
-    })
-
-    it('returns [] for a project with no transcripts', async () => {
-      expect(await scanProjectTranscripts('empty')).toEqual([])
     })
   })
 
@@ -146,43 +120,24 @@ describe('transcripts', () => {
   })
 
   describe('toProjectRelative', () => {
-    it('strips the project directory, whatever tool wrote the path', async () => {
+    it('strips the project directory, whatever tool wrote the path', () => {
       // One rule for every tool: the tool home is just the first segment.
-      expect(await toProjectRelative(slug, claudeLog('sid')))
+      expect(toProjectRelative(slug, claudeLog('sid')))
         .toBe(path.join('claude', 'projects', '-workspace', 'sid.jsonl'))
       const rollout = path.join(codexDir(slug), 'sessions', '2026', 'rollout-x.jsonl')
-      expect(await toProjectRelative(slug, rollout))
+      expect(toProjectRelative(slug, rollout))
         .toBe(path.join('codex', 'sessions', '2026', 'rollout-x.jsonl'))
       const piLog = path.join(piSessionsDir(slug), '20260101-120000_sid.jsonl')
-      expect(await toProjectRelative(slug, piLog))
+      expect(toProjectRelative(slug, piLog))
         .toBe(path.join('pi', 'agent', 'sessions', '20260101-120000_sid.jsonl'))
     })
 
-    it('refuses a path with no project-relative form', async () => {
+    it('refuses a path with no project-relative form', () => {
       // Outside the project tree — the same verdict the in-pod hook reaches
       // when it writes an empty record.
-      expect(await toProjectRelative(slug, '/tmp/elsewhere.jsonl')).toBeNull()
+      expect(toProjectRelative(slug, '/tmp/elsewhere.jsonl')).toBeNull()
       // Another project's tree is just as much an escape.
-      expect(await toProjectRelative(slug, claudeDir('other'))).toBeNull()
-    })
-
-    it('relativizes a path that resolved through a symlinked data dir', async () => {
-      // The legacy-symlink branch of readWorktreeLinks hands back realpath
-      // output, so on a data dir with a symlinked component the literal
-      // project directory is not a textual prefix of it.
-      const real = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-real-'))
-      const link = path.join(tmpDir, 'linked-data')
-      await fs.symlink(real, link)
-      setDataDir(link)
-      try {
-        await fs.mkdir(claudeDir(slug), { recursive: true })
-        const viaReal = path.join(await fs.realpath(claudeDir(slug)), 'projects', 'x.jsonl')
-        expect(await toProjectRelative(slug, viaReal))
-          .toBe(path.join('claude', 'projects', 'x.jsonl'))
-      } finally {
-        setDataDir(tmpDir)
-        await fs.rm(real, { recursive: true, force: true })
-      }
+      expect(toProjectRelative(slug, claudeDir('other'))).toBeNull()
     })
   })
 
@@ -192,22 +147,22 @@ describe('transcripts', () => {
         .toBe(path.join(claudeDir(slug), 'projects', 'a.jsonl'))
     })
 
-    it('round-trips what toProjectRelative produced, for every tool', async () => {
+    it('round-trips what toProjectRelative produced, for every tool', () => {
       for (const abs of [
         claudeLog('sid'),
         path.join(codexDir(slug), 'sessions', 'rollout-x.jsonl'),
         path.join(piSessionsDir(slug), '20260101-120000_sid.jsonl'),
       ]) {
-        const stored = await toProjectRelative(slug, abs)
+        const stored = toProjectRelative(slug, abs)
         expect(stored).not.toBeNull()
         expect(resolveProjectPath(slug, stored ?? '')).toBe(abs)
       }
     })
 
-    it('passes an absolute value straight through', () => {
-      // A row the relativize sweep has not reached; joining it onto the
-      // project dir would fabricate a path that resolves nowhere.
-      expect(resolveProjectPath(slug, '/old/home/t.jsonl')).toBe('/old/home/t.jsonl')
+    it('refuses an absolute value', () => {
+      // The column holds project-relative values only; joining an absolute
+      // onto the project dir would fabricate a path that resolves nowhere.
+      expect(resolveProjectPath(slug, '/old/home/t.jsonl')).toBeUndefined()
     })
 
     it('refuses a stored value that climbs out of the project directory', () => {

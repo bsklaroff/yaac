@@ -137,7 +137,7 @@ export async function reconcileWorktreeAgentSessions(
       type: 'sessions-discovered',
       projectSlug,
       worktreeId,
-      sessions: await Promise.all(legacy.map((c) => toReported(projectSlug, c))),
+      sessions: legacy.map((c) => toReported(projectSlug, c)),
     })
     // Unlike the branch below, this reports the active set without consulting
     // `liveAgents` — safe only because a worktree reaching here has exactly
@@ -220,12 +220,12 @@ export async function reconcileWorktreeAgentSessions(
  * session is still real, only its transcript is unaddressable, which is the
  * same verdict the in-pod hook reaches when it records an empty path.
  */
-async function toReported(
+function toReported(
   projectSlug: string,
   session: DiscoveredSession,
-): Promise<DiscoveredSession> {
+): DiscoveredSession {
   if (session.transcriptPath === undefined) return session
-  const rel = await toProjectRelative(projectSlug, session.transcriptPath)
+  const rel = toProjectRelative(projectSlug, session.transcriptPath)
   const { transcriptPath: _absolute, ...rest } = session
   return rel === null ? rest : { ...rest, transcriptPath: rel }
 }
@@ -307,7 +307,7 @@ async function reconcileAcpAgentSessions(
   // hands back an absolute path, and an absolute path must never cross the
   // boundary — it names a place on the herd's machine and re-pins the row to
   // this data dir.
-  const reported = await Promise.all(live.map((c) => toReported(projectSlug, c)))
+  const reported = live.map((c) => toReported(projectSlug, c))
   if (reported.length > 0) {
     await serverLink().workspaceEvent({
       type: 'sessions-discovered', projectSlug, worktreeId, sessions: reported,

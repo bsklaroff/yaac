@@ -10,7 +10,6 @@ import {
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
-  sweepLegacyNodeStores,
 } from '#features/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
 import { StatusWatcherManager, onLiveAgentsChanged, onWorktreeStatusChanged } from '#features/status'
@@ -143,15 +142,6 @@ export function createLifecycle(
     // catches `project remove` runs that raced an unavailable cluster.
     void gcOrphanProjectRegistries()
       .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
-
-    // Reclaim the retired node-local stores: the old image store (the
-    // cross-worktree cache is the project registry now) and both registries'
-    // blob stores (their storage is a PVC now). Multi-GB on a machine that
-    // ran an older yaac, and nothing mounts any of them any more. Ordered
-    // after the awaited `ensureMainRegistry` above, which is what converts
-    // the main registry off the hostPath this then deletes.
-    void sweepLegacyNodeStores()
-      .catch((err) => serverLog(`[server] legacy node-store sweep failed: ${String(err)}`))
   }
 
   return {

@@ -65,9 +65,8 @@
  * `registryHasTag` misses and the pushers refill, the same self-healing the
  * store has always relied on for a cluster recreate. The cost is one round
  * of re-pushes and rebuilds on the first worktree create after the upgrade.
- * The old hostPath data stays on the nodes until `sweepLegacyNodeStores`
- * reclaims it, which it will not do until this registry is demonstrably
- * serving from the claim, so the window is also the recovery window.
+ * The old hostPath data stays on the nodes under
+ * `/var/lib/yaac/main-registry/<install hash>`, recoverable by hand.
  *
  * The upgrade is not free of failure modes: `Recreate` deletes the pod
  * serving the hostPath before anyone can discover the claim will not bind,
@@ -78,7 +77,6 @@
 import crypto from 'node:crypto'
 import {
   dataDirHash,
-  execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
@@ -93,7 +91,6 @@ import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
-  ensureRootfulPodmanHost,
   invalidateRegistryEndpoint,
   registryHost,
   registryReachable,
@@ -438,14 +435,14 @@ export async function writeNodeMainRegistryHostsToml(): Promise<void> {
  *  one-time upstream pull of the pinned registry:2. */
 const ROLLOUT_TIMEOUT_MS = 300_000
 
-/** The slice of a registry Deployment the conversion gates read. */
-export interface RawRegistryDeploy {
+/** The slice of a registry Deployment the conversion gate reads. */
+interface RawRegistryDeploy {
   spec?: { template?: { spec?: { volumes?: Array<Record<string, unknown>> } } }
   status?: { readyReplicas?: number }
 }
 
 /** True when a Deployment's `storage` volume is a PVC rather than a hostPath. */
-export function specsClaimStorage(deploy: RawRegistryDeploy | null): boolean {
+function specsClaimStorage(deploy: RawRegistryDeploy | null): boolean {
   const volumes = deploy?.spec?.template?.spec?.volumes
   if (!volumes) return false
   return volumes.some((v) => v.name === 'storage' && 'persistentVolumeClaim' in v)
@@ -469,35 +466,13 @@ async function readMainRegistryDeploy(): Promise<RawRegistryDeploy | null> {
  *
  * Spec, deliberately, and only sound for that caller: it reaches here having
  * already established the registry ANSWERS, so a spec that names the claim
- * is a claim something is serving from. It is NOT the question the sweep
- * asks — see `mainRegistryServingFromClaim`, which is the same read plus the
- * rollout status, because "the manifest was applied" and "the conversion
- * happened" come apart exactly when the claim cannot bind.
+ * is a claim something is serving from.
  *
  * One `kubectl get`, and it fails SAFE: an unreadable or absent Deployment
  * answers false, which costs a redundant apply.
  */
 export async function mainRegistryStorageIsClaim(): Promise<boolean> {
   return specsClaimStorage(await readMainRegistryDeploy())
-}
-
-/**
- * Whether the main registry is not merely CONFIGURED for its claim but
- * actually serving from it — spec plus a ready replica.
- *
- * This is what `sweepLegacyNodeStores` needs, and the readiness half is the
- * whole point: the conversion is a `Recreate` rollout, so between deleting
- * the hostPath pod and a replacement that can mount the claim there is a
- * window where the spec says PVC and the hostPath store is the only copy of
- * the data. A cluster with no default StorageClass parks there indefinitely.
- * A ready replica is proof the claim bound and something is serving out of
- * it, which is precisely when the hostPath store becomes garbage.
- *
- * Fails SAFE on an unreadable or absent Deployment: no sweep.
- */
-export async function mainRegistryServingFromClaim(): Promise<boolean> {
-  const deploy = await readMainRegistryDeploy()
-  return specsClaimStorage(deploy) && (deploy?.status?.readyReplicas ?? 0) > 0
 }
 
 export interface EnsureMainRegistryOptions {
@@ -508,72 +483,6 @@ export interface EnsureMainRegistryOptions {
    * — while the server's boot ensure takes the cheap path.
    */
   force?: boolean
-}
-
-/**
- * Name of the EndpointSlice the pre-in-cluster registry's SELECTORLESS
- * Service was backed by. It is hand-written (no `managed-by`, so the
- * endpoint-slice controller never touches it) and carries this Service's
- * `kubernetes.io/service-name` label, so on an upgraded cluster it survives
- * the apply that converts the Service to a selector-backed one — and
- * kube-proxy UNIONS every slice of a Service, which would leave the
- * ClusterIP load-balancing between the new registry pod and the dead podman
- * container's old address. Deleted on every ensure.
- */
-const LEGACY_ENDPOINTSLICE_NAME = `${REGISTRY_SERVICE_NAME}-1`
-
-/**
- * Host podman container the pre-in-cluster registry ran as — same name as
- * the Service, published on 127.0.0.1:5001 and joined to the podman `kind`
- * network.
- */
-const LEGACY_REGISTRY_CONTAINER = REGISTRY_SERVICE_NAME
-
-/**
- * One-time migration for an install upgrading from the host-podman
- * registry: remove that container once the in-cluster replacement is
- * serving.
- *
- * It is otherwise unreachable garbage — nothing on this code path names it,
- * and `cluster delete` no longer removes it (one `kind delete` takes the
- * in-cluster registry with the node), so without this it would outlive the
- * install it belonged to, holding its image and blob layer and a published
- * loopback port.
- *
- * Runs on the ensure that CREATES the registry, which is every upgrade path
- * into it: `cluster setup` (both modes, which force) and the server's boot
- * ensure, whose cheap reachable-and-done path returns before this on every
- * later run. `--ignore` makes an absent container a no-op, so a fresh
- * install pays one podman call and logs nothing.
- *
- * Never fatal: the registry that matters is already up by here, and the
- * worst case of a failure is the stopped container the message says how to
- * remove.
- */
-async function removeLegacyRegistryContainer(): Promise<void> {
-  // Which engine holds it is not ambient: the legacy container was created
-  // on the ROOTFUL engine (it shared kind's), and a podman call that lands
-  // on the rootless one would report success having looked in the wrong
-  // place. Idempotent, and honours a CONTAINER_HOST already set.
-  ensureRootfulPodmanHost()
-  try {
-    const { stdout } = await execFileAsync('podman', [
-      'rm', '-f', '--ignore', LEGACY_REGISTRY_CONTAINER,
-    ])
-    // `--ignore` prints nothing when there was no such container, so this
-    // line appears exactly once per upgraded install.
-    if (stdout.trim()) {
-      serverLog(
-        '[registry] removed the legacy host registry container '
-        + `${LEGACY_REGISTRY_CONTAINER}; the in-cluster registry replaces it`,
-      )
-    }
-  } catch (err) {
-    serverLog(
-      `[registry] could not remove the legacy ${LEGACY_REGISTRY_CONTAINER} container `
-      + `(remove it with \`podman rm -f ${LEGACY_REGISTRY_CONTAINER}\`): ${String(err)}`,
-    )
-  }
 }
 
 /**
@@ -619,13 +528,6 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
     // baseline/restricted default would reject at admission.
     metadata: { name: REGISTRY_NAMESPACE, labels: { ...PRIVILEGED_PSS_LABELS } },
   })
-  // Before the Service apply that would otherwise inherit it.
-  await kubectlWithRetry([
-    'delete', 'endpointslice', LEGACY_ENDPOINTSLICE_NAME,
-    '-n', REGISTRY_NAMESPACE, '--ignore-not-found',
-  ]).catch((err: unknown) => {
-    serverLog(`[registry] could not drop the legacy EndpointSlice: ${String(err)}`)
-  })
   // Before the Deployment that mounts it. Applying it second would still
   // converge (the pod just stays Pending until the claim exists), but the
   // rollout wait below would spend that time looking like a scheduling
@@ -655,8 +557,6 @@ export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): 
     )
   }
   await writeNodeMainRegistryHostsToml()
-  // Only now that the replacement is rolled out and the nodes point at it.
-  await removeLegacyRegistryContainer()
 
   // A rolled-out Deployment is not the same as a reachable one from HERE:
   // the port-forward is this process's only route to it, and a stale child
