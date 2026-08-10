@@ -102,6 +102,20 @@ was appended. `seq` is scoped to one attach, which is all a pane needs it for.
 The cost is polling latency — a streaming reply arrives in bursts rather than
 continuously, which a chat pane tolerates far better than a terminal would.
 
+A pane keeps nothing of the conversation, then, but it does keep what has not
+been said yet. A chat pane is torn down whenever it goes off-screen, so the
+half-typed message lives in the webapp's ui store — keyed per conversation and
+persisted — rather than in the pane, and returns with it.
+
+A sent message stays in the box until the server echoes it back, so a pane torn
+down inside that window restores text that may already have been delivered.
+Settling that takes two answers, and they need different evidence. Whether the
+box holds *the message that was sent* is an identity question: the store keeps
+the exact text handed to the socket beside the draft, because comparing against
+the conversation's history would clear a freshly typed "ok" on the strength of
+an earlier one. Whether it arrived is a question only the replayed history can
+answer. Both yes empties the box; either no leaves the text for another try.
+
 Two events do come over the socket, because the record cannot carry them: a
 turn boundary and an error, both synthesized from a `session/prompt` reply that
 acpd never sees. That stays safe because the two sets are *disjoint* —
