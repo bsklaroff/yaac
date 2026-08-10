@@ -61,6 +61,9 @@ const proxy: Record<string, ProxyEntry> = {}
 for (const p of apiPrefixes) proxy[p] = { target, changeOrigin: true }
 proxy['/events'] = { target, changeOrigin: true, ws: true }
 proxy['/pty'] = { target, changeOrigin: true, ws: true }
+// The chat pane's transport, alongside the terminal's — without it a `tui`
+// worktree works in dev and an `acp` one silently never connects.
+proxy['/acp'] = { target, changeOrigin: true, ws: true }
 
 export default defineConfig({
   root: 'src',

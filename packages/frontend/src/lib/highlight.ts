@@ -104,8 +104,22 @@ function parserFor(language: HighlightLanguage): ReturnType<typeof stream> {
   return parser
 }
 
+/**
+ * A lookup table with no prototype behind it.
+ *
+ * Every key that reaches one of these comes from outside — a path in a diff,
+ * a fence an agent wrote — and on an ordinary object literal `constructor`,
+ * `__proto__` and `toString` all answer with something that is not a language.
+ * Putting that in the data structure rather than in a guard at each call site
+ * means the next table someone adds here is born safe.
+ */
+type LangTable = Record<string, HighlightLanguage>
+function langTable(entries: LangTable): LangTable {
+  return Object.assign(Object.create(null) as LangTable, entries)
+}
+
 /** File extensions (lowercased, no dot) → language. */
-const EXT_TO_LANG: Record<string, HighlightLanguage> = {
+const EXT_TO_LANG: LangTable = langTable({
   js: 'js', mjs: 'js', cjs: 'js',
   jsx: 'jsx',
   ts: 'ts', mts: 'ts', cts: 'ts',
@@ -134,12 +148,18 @@ const EXT_TO_LANG: Record<string, HighlightLanguage> = {
   swift: 'swift',
   pl: 'perl', pm: 'perl',
   xml: 'xml', svg: 'xml',
-}
+})
 
 /** Whole-filename matches for extension-less or dot-prefixed files. */
-const FILENAME_TO_LANG: Record<string, HighlightLanguage> = {
+const FILENAME_TO_LANG: LangTable = langTable({
   '.bashrc': 'shell', '.bash_profile': 'shell', '.profile': 'shell',
   '.zshrc': 'shell', '.zprofile': 'shell',
+})
+
+/** Read a table, answering null for anything it does not define. The `hasOwn`
+ *  is belt to `langTable`'s braces: it also keeps the return type honest. */
+function lookup(table: LangTable, key: string): HighlightLanguage | null {
+  return Object.hasOwn(table, key) ? table[key] : null
 }
 
 /**
@@ -151,11 +171,43 @@ export function languageForPath(path: string): HighlightLanguage | null {
   const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   // `Dockerfile`, `Dockerfile.tools`, `foo.dockerfile` all mean dockerfile.
   if (base === 'dockerfile' || base.startsWith('dockerfile.') || base.endsWith('.dockerfile')) return 'dockerfile'
-  const byName = FILENAME_TO_LANG[base]
+  const byName = lookup(FILENAME_TO_LANG, base)
   if (byName) return byName
   const dot = base.lastIndexOf('.')
   if (dot <= 0) return null // no extension, or a dotfile like `.gitignore`
-  return EXT_TO_LANG[base.slice(dot + 1)] ?? null
+  return lookup(EXT_TO_LANG, base.slice(dot + 1))
+}
+
+/**
+ * Names a markdown fence uses that aren't file extensions (```python, ```bash).
+ * Extensions themselves need no entry — they fall through to `EXT_TO_LANG`.
+ */
+const FENCE_TO_LANG: LangTable = langTable({
+  javascript: 'js', typescript: 'ts', node: 'js',
+  python: 'python', python3: 'python',
+  bash: 'shell', shell: 'shell', console: 'shell', sh: 'shell', zsh: 'shell', terminal: 'shell',
+  golang: 'go',
+  rust: 'rust',
+  ruby: 'ruby',
+  csharp: 'csharp', 'c#': 'csharp',
+  kotlin: 'kotlin',
+  perl: 'perl',
+  dockerfile: 'dockerfile', docker: 'dockerfile',
+  'c++': 'cpp',
+  'objective-c': 'objc',
+  markdown: 'md',
+})
+
+/**
+ * Pick a highlight language from a markdown fence's info string (the `ts` in
+ * ```ts), or null when it names nothing we tokenize — including the fences
+ * that are deliberately not code (```text) and the bare fence, which says
+ * nothing at all.
+ */
+export function languageForFence(info: string): HighlightLanguage | null {
+  const name = info.trim().toLowerCase().split(/[\s,{]/)[0]
+  if (name === '') return null
+  return lookup(FENCE_TO_LANG, name) ?? lookup(EXT_TO_LANG, name)
 }
 
 /**

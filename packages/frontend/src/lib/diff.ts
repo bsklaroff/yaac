@@ -1,8 +1,8 @@
 /**
- * Parse a combined `git diff` (unified format) into per-file, per-line
- * structures the changes pane renders. Pure — no DOM, so it's unit-tested
- * directly. Handles new/deleted/binary files and multiple hunks; line numbers
- * are tracked for the diff gutter.
+ * Diff structures the panes render, from the two sources that produce them:
+ * a combined `git diff` (the changes pane) and a before/after text pair (an
+ * ACP edit tool call, in the chat pane). Both land on the same `DiffLine[]`,
+ * so one renderer draws both. Pure — no DOM, so it's unit-tested directly.
  */
 
 export type DiffLineKind = 'add' | 'del' | 'context' | 'hunk'
@@ -94,6 +94,123 @@ export function indexDiffsByPath(diff: string): Map<string, ParsedFileDiff> {
   const map = new Map<string, ParsedFileDiff>()
   for (const f of parseUnifiedDiff(diff)) map.set(f.path, f)
   return map
+}
+
+/**
+ * Split a text into lines for diffing, without the phantom last line a
+ * trailing newline would otherwise produce. An empty text is no lines at all,
+ * not one blank one — an empty file being replaced should not read as a
+ * deleted blank line.
+ */
+function splitLines(text: string): string[] {
+  if (text === '') return []
+  const lines = text.split('\n')
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/**
+ * Number each distinct line, so the matching below compares integers.
+ *
+ * Without this the cap bounds how many cells the table has but not what one
+ * costs: every cell is a string comparison, and lines that are long and
+ * near-identical — a lockfile, a generated file, anything an agent can put in
+ * front of us — make each comparison walk the whole line before answering.
+ * Interning makes them all O(1), so the cap means what it says.
+ */
+function internLines(a: string[], b: string[]): { a: Int32Array; b: Int32Array } {
+  const ids = new Map<string, number>()
+  const idOf = (line: string): number => {
+    const seen = ids.get(line)
+    if (seen !== undefined) return seen
+    ids.set(line, ids.size)
+    return ids.size - 1
+  }
+  return { a: Int32Array.from(a, idOf), b: Int32Array.from(b, idOf) }
+}
+
+/**
+ * Above this many cells the line-matching table costs more than the result is
+ * worth. An agent's edit block is a hunk with a little context, so a fragment
+ * this large means something unusual — a whole-file rewrite — where showing
+ * the old block then the new one reads just as well as an interleaved diff.
+ */
+const MAX_DIFF_CELLS = 1_000_000
+
+/** Every line of one side, as one kind. The fallback for a pair too large to
+ *  match line by line, and the whole answer when one side is absent. */
+function wholeSide(text: string, kind: 'add' | 'del'): DiffLine[] {
+  return splitLines(text).map((line, i) => ({
+    kind,
+    text: line,
+    oldNo: kind === 'del' ? i + 1 : null,
+    newNo: kind === 'add' ? i + 1 : null,
+  }))
+}
+
+/**
+ * Diff a before/after pair of texts into renderable lines.
+ *
+ * This is what an ACP edit tool call hands us: not a unified diff, but the two
+ * versions of a *fragment* — one hunk of a file, with context lines around the
+ * change, or the entire contents when a file is being created. So the line
+ * numbers here are positions within the fragment, and a renderer showing them
+ * as file line numbers would be lying; the chat pane's diff view leaves the
+ * gutter off for that reason.
+ *
+ * The matching is a plain longest-common-subsequence over lines, which is what
+ * makes context lines render as context instead of as a delete and an add of
+ * the same text.
+ */
+export function diffTextPair(oldText: string | undefined, newText: string): DiffLine[] {
+  if (oldText === undefined) return wholeSide(newText, 'add')
+  const a = splitLines(oldText)
+  const b = splitLines(newText)
+  if ((a.length + 1) * (b.length + 1) > MAX_DIFF_CELLS) {
+    return [...wholeSide(oldText, 'del'), ...wholeSide(newText, 'add')]
+  }
+
+  // lcs[i][j] = length of the longest common subsequence of a[i:] and b[j:],
+  // in one flat row-major table. Both sides are compared as interned ids; the
+  // strings themselves are only ever read for the text of an emitted line.
+  const { a: ia, b: ib } = internLines(a, b)
+  const width = b.length + 1
+  const lcs = new Int32Array((a.length + 1) * width)
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i * width + j] = ia[i] === ib[j]
+        ? lcs[(i + 1) * width + j + 1] + 1
+        : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1])
+    }
+  }
+
+  const lines: DiffLine[] = []
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (ia[i] === ib[j]) {
+      lines.push({ kind: 'context', text: a[i], oldNo: i + 1, newNo: j + 1 })
+      i++
+      j++
+    } else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
+      lines.push({ kind: 'del', text: a[i], oldNo: i + 1, newNo: null })
+      i++
+    } else {
+      lines.push({ kind: 'add', text: b[j], oldNo: null, newNo: j + 1 })
+      j++
+    }
+  }
+  for (; i < a.length; i++) lines.push({ kind: 'del', text: a[i], oldNo: i + 1, newNo: null })
+  for (; j < b.length; j++) lines.push({ kind: 'add', text: b[j], oldNo: null, newNo: j + 1 })
+  return lines
+}
+
+/** How many lines a diff adds and removes — the +N/−N a file header shows. */
+export function diffStats(lines: DiffLine[]): { additions: number; deletions: number } {
+  return {
+    additions: lines.filter((l) => l.kind === 'add').length,
+    deletions: lines.filter((l) => l.kind === 'del').length,
+  }
 }
 
 /**

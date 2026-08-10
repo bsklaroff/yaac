@@ -6,8 +6,9 @@ import { useUiStore } from '#store'
 import { getWorktreeChanges } from '#lib/changesApi'
 import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { BranchPicker } from '#components/BranchPicker'
-import { changeMatchesQuery, indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
-import { highlightLine, languageForPath, type HighlightLanguage } from '#lib/highlight'
+import { DiffView } from '#components/DiffView'
+import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
+import { languageForPath } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon } from '#lib/icons'
 import type { ChangeStatus, WorktreeChange } from '@yaac/shared/types'
 
@@ -370,51 +371,4 @@ function FileAccordion({
   )
 }
 
-function DiffView({ lines, language }: { lines: DiffLine[]; language: HighlightLanguage | null }): JSX.Element {
-  // Tokenize each code line once per (lines, language); hunk headers and the
-  // no-language case stay plain. `diff-hl` scopes the tok-* colors (index.css).
-  const highlighted = useMemo(
-    () => (language ? lines.map((line) => (line.kind === 'hunk' ? null : highlightLine(line.text, language))) : null),
-    [lines, language],
-  )
-  return (
-    <div className="diff-hl min-w-full font-mono text-[11px] leading-[1.5]">
-      {lines.map((line, idx) => {
-        if (line.kind === 'hunk') {
-          return (
-            <div key={idx} className="whitespace-pre bg-surface-2 px-2 text-text-faint">
-              {line.text}
-            </div>
-          )
-        }
-        const num = line.kind === 'del' ? line.oldNo : line.newNo
-        const segments = highlighted?.[idx] ?? null
-        return (
-          <div
-            key={idx}
-            className={clsx(
-              'flex whitespace-pre',
-              line.kind === 'add' && 'bg-[rgb(63_185_80/0.14)]',
-              line.kind === 'del' && 'bg-[rgb(248_81_73/0.14)]',
-            )}
-          >
-            <span className="w-10 shrink-0 select-none px-1 text-right text-text-faint/70">{num ?? ''}</span>
-            <span className={clsx(
-              'w-3 shrink-0 select-none text-center',
-              line.kind === 'add' && 'text-[#3fb950]',
-              line.kind === 'del' && 'text-[#f85149]',
-              line.kind === 'context' && 'text-transparent',
-            )}>
-              {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
-            </span>
-            <span className="pr-3 text-text">
-              {segments
-                ? segments.map((seg, i) => <span key={i} className={seg.className}>{seg.text}</span>)
-                : line.text}
-            </span>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
+

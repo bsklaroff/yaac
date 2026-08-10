@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { parseUnifiedDiff, indexDiffsByPath, changeMatchesQuery } from '#lib/diff'
+import {
+  parseUnifiedDiff, indexDiffsByPath, changeMatchesQuery, diffTextPair, diffStats,
+} from '#lib/diff'
 
 const DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -93,5 +95,93 @@ describe('changeMatchesQuery', () => {
 
   it('is false for a content query with no diff to search', () => {
     expect(changeMatchesQuery({ path: 'logo.png' }, undefined, 'line1')).toBe(false)
+  })
+})
+
+/**
+ * The other source of a diff: an ACP edit tool call, which hands over the two
+ * versions of a fragment rather than a unified diff. What matters is that
+ * context survives as context — an agent's edit block is mostly unchanged
+ * lines, and rendering them as a delete plus an add would bury the change.
+ */
+describe('diffTextPair', () => {
+  const kinds = (oldText: string | undefined, newText: string): string =>
+    diffTextPair(oldText, newText).map((l) => l.kind[0]).join('')
+
+  it('keeps common lines as context around a change', () => {
+    const lines = diffTextPair('one\ntwo\nthree\n', 'one\nTWO\nthree\n')
+    expect(lines.map((l) => [l.kind, l.text])).toEqual([
+      ['context', 'one'],
+      ['del', 'two'],
+      ['add', 'TWO'],
+      ['context', 'three'],
+    ])
+  })
+
+  it('reports a whole file as added when there is no before text', () => {
+    // What a `Write` of a new file sends: oldText absent, not empty.
+    const lines = diffTextPair(undefined, 'a\nb\n')
+    expect(lines.map((l) => [l.kind, l.text, l.newNo])).toEqual([
+      ['add', 'a', 1],
+      ['add', 'b', 2],
+    ])
+  })
+
+  it('numbers lines within the fragment, per side', () => {
+    const lines = diffTextPair('a\nb\nc', 'a\nc')
+    expect(lines.map((l) => [l.kind, l.oldNo, l.newNo])).toEqual([
+      ['context', 1, 1],
+      ['del', 2, null],
+      ['context', 3, 2],
+    ])
+  })
+
+  it('handles insertions and deletions at either end', () => {
+    expect(kinds('b\nc', 'a\nb\nc')).toBe('acc')
+    expect(kinds('a\nb\nc', 'a\nb')).toBe('ccd')
+    expect(kinds('a\nb', 'a\nb\nc')).toBe('cca')
+  })
+
+  it('is empty for an unchanged pair only in the sense of having no +/−', () => {
+    expect(kinds('same\nlines', 'same\nlines')).toBe('cc')
+    expect(diffStats(diffTextPair('same', 'same'))).toEqual({ additions: 0, deletions: 0 })
+  })
+
+  it('ignores the trailing newline that ends a fragment', () => {
+    // "a\n" is one line, not a line and an empty one — otherwise every block
+    // would show a phantom last line.
+    expect(diffTextPair(undefined, 'a\n').map((l) => l.text)).toEqual(['a'])
+    expect(kinds('a\n', 'a')).toBe('c')
+  })
+
+  it('treats an empty side as no lines, not one blank one', () => {
+    // `oldText: ''` is an empty file being filled in, which is not the same
+    // thing as a file whose first line was deleted.
+    expect(diffTextPair('', 'a\n')).toEqual([{ kind: 'add', text: 'a', oldNo: null, newNo: 1 }])
+    expect(diffStats(diffTextPair('', 'a\nb\n'))).toEqual({ additions: 2, deletions: 0 })
+    expect(diffTextPair('', '')).toEqual([])
+  })
+
+  it('matches repeated lines by content, not by position', () => {
+    // The interning the matcher runs on has to preserve equality exactly: two
+    // identical lines far apart are the same line as far as the LCS goes.
+    expect(kinds('x\nsame\ny\nsame', 'x\nsame\nY\nsame')).toBe('ccdac')
+  })
+
+  it('falls back to a whole-side rewrite when the pair is too large to match', () => {
+    // Past the matching table's ceiling the result is still complete and still
+    // renderable — every old line, then every new one.
+    const big = (n: number, tag: string): string =>
+      Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n')
+    const lines = diffTextPair(big(1200, 'a'), big(1200, 'b'))
+    expect(lines).toHaveLength(2400)
+    expect(lines[0]).toMatchObject({ kind: 'del', text: 'a0', oldNo: 1 })
+    expect(lines[1200]).toMatchObject({ kind: 'add', text: 'b0', newNo: 1 })
+  })
+})
+
+describe('diffStats', () => {
+  it('counts added and removed lines, ignoring context', () => {
+    expect(diffStats(diffTextPair('a\nb\nc', 'a\nB\nc\nd'))).toEqual({ additions: 2, deletions: 1 })
   })
 })

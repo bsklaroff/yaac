@@ -28,6 +28,30 @@ export type AcpContent =
   | { type: 'text'; text: string }
   | { type: 'image'; mimeType: string; data: string }
 
+/**
+ * A file edit, as the before/after texts the agent is writing.
+ *
+ * Kept structured rather than flattened into a text block, because it is the
+ * one thing in the stream a pane can render *better* than prose: the same
+ * syntax-highlighted diff the changes pane shows. The texts are a fragment of
+ * the file, not the whole of it — an agent reports one hunk per block, with
+ * context lines around the change — so a pane diffs the pair it is given,
+ * never assumes it is looking at a complete file, and cannot honestly put
+ * file line numbers next to it.
+ *
+ * `oldText` absent means the file is being created.
+ */
+export interface AcpDiff {
+  type: 'diff'
+  path: string
+  oldText?: string
+  newText: string
+}
+
+/** What a tool call can produce. A superset of `AcpContent`: a message is
+ *  prose, but a tool call can also be an edit. */
+export type AcpToolContent = AcpContent | AcpDiff
+
 /** What a tool call is doing, as ACP reports it. */
 export type AcpToolStatus = 'pending' | 'in_progress' | 'completed' | 'failed'
 
@@ -48,7 +72,7 @@ export interface AcpToolCall {
   kind: AcpToolKind
   status: AcpToolStatus
   /** Output produced so far — a diff, command output, or free text. */
-  content?: AcpContent[]
+  content?: AcpToolContent[]
   /** Files the call touched, for a "follow along" jump. */
   locations?: Array<{ path: string; line?: number }>
 }
