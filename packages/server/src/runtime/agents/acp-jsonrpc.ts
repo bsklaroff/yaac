@@ -57,9 +57,14 @@ export interface JsonRpcPeerHandlers {
   onNotification?: (method: string, params: unknown) => void
   /**
    * A response arrived for an id this peer never sent. Only possible after a
-   * reconnect: acpd buffers whatever the agent produced while detached, so the
-   * reply to a request the *previous* connection made is delivered to us. The
-   * ACP client reads it as "the turn that was running has ended".
+   * reconnect: acpd hands the agent's output to whichever client is attached
+   * when it is produced, so the reply to a request the *previous* connection
+   * made is delivered to us if that turn finishes after we take over. The ACP
+   * client reads it as "the turn that was running has ended".
+   *
+   * Nothing is held for an absent client, so a reply produced while nobody was
+   * attached never arrives here at all — it exists only in the record, which is
+   * where the client recovers a reattached conversation's status from instead.
    */
   onOrphanResponse?: (id: string | number, result: unknown, error?: JsonRpcError) => void
   onClose?: (reason: string) => void
@@ -68,11 +73,12 @@ export interface JsonRpcPeerHandlers {
 export class JsonRpcPeer {
   private nextId = 1
   /**
-   * Namespaces this connection's request ids. acpd replays whatever the agent
-   * produced while detached, so a reply to the PREVIOUS connection's request N
-   * can arrive here — and a bare counter restarting at 1 would let it resolve
-   * this connection's unrelated request N (a live turn reported as ended, say).
-   * With a per-connection prefix an orphan is always recognisable as one.
+   * Namespaces this connection's request ids. A reply to the PREVIOUS
+   * connection's request N can arrive here — acpd relays the agent's output to
+   * whoever is attached when it is produced — and a bare counter restarting at
+   * 1 would let it resolve this connection's unrelated request N (a live turn
+   * reported as ended, say). With a per-connection prefix an orphan is always
+   * recognisable as one.
    */
   private readonly idPrefix = crypto.randomUUID().slice(0, 8)
   private readonly pending = new Map<string, Pending>()

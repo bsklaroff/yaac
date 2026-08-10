@@ -56,12 +56,14 @@ function promptText(content: AcpContent[]): string {
  *
  * `turn-end` is dropped unless it says something — a plain `end_turn` is the
  * expected outcome and rendering it would put a divider under every reply.
+ * `turn-start` is dropped outright: it drives the working indicator, and a
+ * turn beginning is already visible as the reply that follows it.
  */
 export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
   for (const e of events) {
-    if (e.type === 'commands') continue
+    if (e.type === 'commands' || e.type === 'turn-start') continue
     if (e.type === 'turn-end') {
       if (e.stopReason !== 'end_turn') {
         groups.push({ kind: 'turn-end', seq: e.seq, stopReason: e.stopReason })

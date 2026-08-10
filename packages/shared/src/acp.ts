@@ -91,6 +91,12 @@ export type AcpEvent =
   /** The slash commands this session accepts, pushed on connect and whenever
    *  they change. */
   | { type: 'commands'; seq: number; commands: Array<{ name: string; description?: string }> }
+  /**
+   * A prompt turn began. A pane can usually infer this from the `user` message
+   * it just sent, so this exists for the turns it cannot: one already running
+   * when the server reattached to the agent, which nobody in this pane started.
+   */
+  | { type: 'turn-start'; seq: number }
   /** A prompt turn finished; the agent is idle until the next prompt. */
   | { type: 'turn-end'; seq: number; stopReason: AcpStopReason }
   /** The agent, adapter, or transport failed. Terminal for the turn, not for
@@ -116,8 +122,8 @@ export type AcpServerMessage =
   | { type: 'hello'; agentSessionId: string; busy: boolean; events: AcpEvent[] }
   | { type: 'event'; event: AcpEvent }
   /** The conversation's connection to the pod dropped or came back. The pane
-   *  greys out rather than tearing down: acpd keeps the agent alive and
-   *  buffers, so a reconnect resumes mid-turn. */
+   *  greys out rather than tearing down: acpd keeps the agent alive and keeps
+   *  recording it, so a reconnect resumes mid-turn. */
   | { type: 'health'; connected: boolean }
 
 /** Pane → server. */

@@ -145,7 +145,7 @@ answers.
 ## Reconnect
 
 acpd keeps the agent alive across detaches, so a reconnect lands on a process
-mid-conversation, possibly mid-turn. Two things follow.
+mid-conversation, possibly mid-turn. Three things follow.
 
 **The handshake runs once per agent process, not per connection.** acpd's first
 line on every attach is `_acpd/hello {firstAttach}`; when false, the client
@@ -155,12 +155,27 @@ the worktree id it already holds. `firstAttach` tracks whether a client ever
 adapter's cold start ran no handshake, and telling its successor otherwise
 would send it to address a worktree that was never created.
 
+**Busy state is recovered from the record.** ACP scopes turn state to the
+request: a turn is running iff *your* `session/prompt` is unanswered, and the
+protocol offers no status query, no busy notification, and no `session/load`
+semantics for a turn already in progress. So a connection that takes over a
+live agent cannot be told whether it is working — it reads the record instead,
+which holds both directions and therefore says whether the last prompt was
+ever answered. Until that resolves the conversation is *unclassified* rather
+than idle, and nothing publishes a status for it: guessing `waiting` is what
+paints a working agent idle. A recovered turn is announced to attached panes as
+a `turn-start` event, since a pane otherwise infers "a turn began" from the
+message it sent, and nobody sent this one.
+
 **An in-flight `session/prompt` reply arrives as an orphan.** Its request id
-belonged to the previous connection, so it is read as "that turn ended" — the
-conservative direction, since the alternative leaves a conversation permanently
-showing as busy. Request ids carry a per-connection prefix, so a *duplicate* of
-this connection's own reply is told apart from a genuine orphan and dropped
-rather than ending a live turn.
+belonged to the previous connection, so it is read as "that turn ended".
+Request ids carry a per-connection prefix, so a *duplicate* of this
+connection's own reply is told apart from a genuine orphan and dropped rather
+than ending a live turn. The orphan and the record cover disjoint halves of the
+same window: a reply produced while nobody was attached is never delivered
+(acpd holds nothing for an absent client) and only the record has it, while a
+reply that lands after the reattach beats the scan — first classification wins,
+so a scan returning stale news is dropped.
 
 ## State
 
@@ -194,15 +209,21 @@ conversation `running` indefinitely: nothing times out a `session/prompt`, and
 `worktree/cancel` is a notification a wedged agent will not act on. The way out
 is the pane's stop button, then a worktree restart.
 
+A **torn record** can pin a reattached conversation `running`. Recovery reads
+"last prompt unanswered" as a turn in flight, so a reply whose bytes never
+landed leaves nothing to reclassify it — the agent's exit is recorded and
+clears it, but a lost write is not. It shows as working with nothing
+streaming, and nothing the pane can do releases it: a message queues behind
+the phantom turn, and Stop's `session/cancel` names a turn the adapter does
+not have, so it draws no reply. The way out is a worktree restart, which
+starts a fresh acpd life and is therefore classified idle.
+
 **Stop cancels the running turn, not the queue.** Messages sent while the agent
 works queue rather than overlap, and cancelling interrupts only the turn in
 flight, so stopping a backlog takes one press per message. Deliberate: a queued
 prompt is input the user asked for, and a Stop aimed at the current turn
-shouldn't discard it.
-
-A **reattach mid-turn** shows `waiting` while the turn still runs, because the
-reply belongs to the previous connection. Understating is the deliberate
-direction — the alternative leaves a finished conversation busy forever.
+shouldn't discard it. A turn recovered after a reattach queues the same way,
+even though this server never sent it.
 
 ## Capabilities yaac declines
 

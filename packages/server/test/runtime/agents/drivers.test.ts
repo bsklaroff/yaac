@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
+import { setDataDir } from '@yaac/shared/paths'
+import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentDriver, type AgentObservation, type DrivenWorktree } from '#runtime/agents/drivers'
 // A bound, imported rather than duplicated: a test that hard-codes the budget
 // passes against a driver that changed it.
@@ -83,14 +88,57 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
   return events
 }
 
-beforeEach(() => {
+/**
+ * Write the record acpd would have left for a conversation. A reattaching
+ * connection has no other way to learn what the agent it just took over is
+ * doing — see the reattach tests below — so a test about that has to put one
+ * on disk.
+ */
+async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
+  const dir = acpLogDir(session.slug, session.worktreeId)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(
+    path.join(dir, `${agentSessionId}.jsonl`),
+    lines.map((l) => `${JSON.stringify(l)}\n`).join(''),
+  )
+}
+
+/** acpd stamps every record with the life that wrote it. */
+const lifeLine = {
+  jsonrpc: '2.0',
+  method: '_acpd/life',
+  params: { id: 'life-1', startedAt: '2026-01-01T00:00:00.000Z' },
+}
+
+/** A prompt as the record holds it: the client's own request, carrying the id
+ *  its reply will arrive under. */
+const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
+  jsonrpc: '2.0',
+  id,
+  method: 'session/prompt',
+  params: { sessionId: agentSessionId, prompt: [{ type: 'text', text }] },
+})
+
+const helloLine = (firstAttach: boolean): string =>
+  `${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach } })}\n`
+
+/** Every status this connection published, in order. */
+const statuses = (seen: AgentObservation[]): string[] =>
+  seen.flatMap((o) => (o.kind === 'status' ? [o.status] : []))
+
+let dataDir: string
+
+beforeEach(async () => {
+  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-drivers-'))
+  setDataDir(dataDir)
   _resetAcpRegistryForTests()
   vi.mocked(podExec).mockReset()
   vi.mocked(podExec).mockResolvedValue({ stdout: '', stderr: '' } as never)
 })
 
-afterEach(() => {
+afterEach(async () => {
   for (const c of connections.splice(0)) c.close()
+  await fs.rm(dataDir, { recursive: true, force: true })
 })
 
 describe('agentDriver', () => {
@@ -229,8 +277,8 @@ describe('agentDriver', () => {
 
     // Agent output is deliberately NOT observed here: `session/update`
     // notifications reach a pane through acpd's record, not this socket, so a
-    // conversation emits only what the record cannot carry — the turn boundary
-    // below. What the record produces is covered in acp-log.test.ts.
+    // conversation emits only what the record cannot carry — the turn
+    // boundaries. What the record produces is covered in acp-log.test.ts.
     const update = (u: unknown): string =>
       `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'acp-1', update: u } })}\n`
     stream.feed(update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } }))
@@ -238,8 +286,8 @@ describe('agentDriver', () => {
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
     await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'waiting' }))
 
-    expect(events.map((e) => e.type)).toEqual(['turn-end'])
-    expect(events[0]).toMatchObject({ stopReason: 'end_turn' })
+    expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
+    expect(events[1]).toMatchObject({ stopReason: 'end_turn' })
   })
 
   it('resumes a recorded acp conversation with session/load instead of a new one', async () => {
@@ -280,6 +328,168 @@ describe('agentDriver', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(stream.sent().some((m) => m.method === 'initialize')).toBe(false)
     expect(stream.sent().some((m) => m.method === 'session/new')).toBe(false)
+  })
+
+  it('recovers a turn the previous connection started, and ends it on the orphan reply', async () => {
+    // The agent outlives the connection watching it, so a reattach — after a
+    // relay drop, a streamd self-heal, a server restart — can land mid-turn.
+    // ACP cannot say so: a turn is running iff YOUR `session/prompt` is
+    // unanswered, and this connection sent none. acpd's record is the only
+    // thing that knows, because it holds both directions of the dialogue.
+    await record('acp-live', [
+      lifeLine,
+      promptLine('acp-live', 'old-1', 'refactor the thing'),
+      {
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: 'acp-1',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } },
+        },
+      },
+    ])
+    const stream = new FakeStream()
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-live')!
+    // Subscribed before the greeting, which is where a pane that stayed open
+    // across the drop sits: it must not miss the boundary it never sent.
+    const events = collect(conversation)
+
+    stream.feed(helloLine(false))
+
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'status', handle: 'claude', status: 'running',
+    }))
+    // Nothing was guessed in the meantime. A sweep publishing `waiting` for a
+    // conversation that had not classified itself is what painted a working
+    // agent idle — every 20s, for as long as the turn ran.
+    expect(statuses(seen)).toEqual(['running'])
+    // A pane has no `user` event of its own for this turn, so the turn
+    // beginning has to be announced rather than inferred.
+    expect(events.map((e) => e.type)).toEqual(['turn-start'])
+
+    // And the recovered turn is interruptible: cancel guards on the
+    // conversation believing itself busy, so it used to be a silent no-op here.
+    conversation.cancel()
+    expect(stream.sent().some((m) => m.method === 'session/cancel')).toBe(true)
+
+    // The reply carries the dead connection's request id, so it arrives as an
+    // orphan — which is what ends the turn recovery started.
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'status', handle: 'claude', status: 'waiting',
+    }))
+    expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
+  })
+
+  it('classifies a reattach as waiting when the record shows the turn was answered', async () => {
+    // The reply can land while nothing is attached — acpd holds nothing for an
+    // absent client — in which case no orphan ever arrives and the record is
+    // the only evidence the turn finished.
+    await record('acp-done', [
+      lifeLine,
+      promptLine('acp-done', 'old-1', 'what changed?'),
+      { jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } },
+    ])
+    const stream = new FakeStream()
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-done' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-done')).toBeDefined())
+    stream.feed(helloLine(false))
+
+    // Still classified, rather than left unclassified forever: an idle
+    // conversation nobody publishes is one the sidebar cannot show either.
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
+  })
+
+  it('reads a turn whose agent died as ended, not as still running', async () => {
+    // The bound on "last prompt unanswered ⇒ in flight": a turn whose agent
+    // exited has no reply and never will, so without acpd's exit line the scan
+    // would pin the conversation `running` with nothing left to release it.
+    await record('acp-dead', [
+      lifeLine,
+      promptLine('acp-dead', 'old-1', 'do the thing'),
+      { jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } },
+    ])
+    const stream = new FakeStream()
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-dead' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-dead')).toBeDefined())
+    stream.feed(helloLine(false))
+
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
+  })
+
+  it('holds a prompt sent straight after a reattach behind the turn it recovered', async () => {
+    // The recovered turn is running at the adapter but was never put in the
+    // queue — nothing in this connection started it. Dispatching over it would
+    // overlap two turns at an adapter that assumes one, and the first reply
+    // back would end the wrong one.
+    await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'the running turn')])
+    const stream = new FakeStream()
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-live')!
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(conversation.isBusy).toBe(true))
+
+    void conversation.prompt('and now this').catch(() => {})
+    await new Promise((r) => setTimeout(r, 50))
+    expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(false)
+
+    // The orphan ends the recovered turn, which is what releases the queue.
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+    expect((stream.sent().find((m) => m.method === 'session/prompt')!
+      .params as { prompt: Array<{ text: string }> }).prompt[0].text).toBe('and now this')
+  })
+
+  it('lets a reply that beats the record scan settle the status, rather than stranding it busy', async () => {
+    // Recovery is a file read, so anything that resolves the status first knows
+    // something newer than the record does. A late `true` overwriting it would
+    // pin a conversation busy with no event left to release it.
+    await record('acp-live', [lifeLine, promptLine('acp-live', 'old-1', 'go')])
+    const stream = new FakeStream()
+    vi.mocked(podExec).mockResolvedValue({ stdout: 'claude\n', stderr: '' } as never)
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-live' }]),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-live')).toBeDefined())
+
+    stream.feed(helloLine(false))
+    // Same tick as the greeting: the scan cannot have answered yet, because it
+    // has not been off the event loop.
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: 'old-1', result: { stopReason: 'end_turn' } })}\n`)
+
+    await vi.waitFor(() => expect(statuses(seen)).toEqual(['waiting']))
+    // Long enough for the scan to come back and be ignored.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(statuses(seen)).toEqual(['waiting'])
   })
 
   it('grants tool permission rather than prompting, matching the sandbox posture', async () => {
