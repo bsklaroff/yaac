@@ -49,8 +49,12 @@ nested, its pod gains:
   data out of pod memory (reclaimable node page cache, not cgroup-pinned
   tmpfs pages). Root-owned, so no fsGroup/chown. The sentry's `size=` cap
   ENOSPCs oversized builds before kubelet eviction can fire.
-- **cross-worktree image cache**: no extra mount — the project's registry
-  is the cache (below), so a nested worktree can be scheduled on any node.
+- **cross-worktree image cache**: the project's registry is the cache
+  (below), so a nested worktree can be scheduled on any node. A pod
+  additionally mounts its node's *generation* of that cache read-only at
+  `/var/lib/shared-images`, which storage.conf names as the engine's one
+  `additionalimagestores` lower — a per-node materialization of the same
+  registry, never a second source of truth.
 
 The pod's postStart setup script (`worktree-bin/yaac-worktree-init`) starts
 the engine in the background with one sudo'd shell: `podman system
@@ -69,14 +73,15 @@ until recreated.
 ### Image cache (cross-worktree build cache)
 
 A worktree's built and pulled images are salvaged into the **project's own
-registry**, and pulled back into the next worktree's engine, so `docker
-build` gets real layer-cache hits across a project's worktrees. The registry
-is the only distribution mechanism: there is no node-local store, so
-nothing ties a worktree to the node its predecessor ran on. Every nested
-worktree therefore ensures the per-project registry, not just
-`virtualCluster` ones — an inner yaac is the exception (its vcluster denies
-the node hostPath the registry's `hosts.toml` writer pods need), and its
-worktrees run uncached.
+registry**, and reach the next worktree's engine as a read-only lower layer
+store, so `docker build` gets real layer-cache hits across a project's
+worktrees. The registry is the source of truth and the only thing that
+travels between nodes; the node store below is a cache of it, so a worktree
+landing on a cold node just runs cold rather than being tied to the node
+its predecessor ran on. Every nested worktree therefore ensures the
+per-project registry, not just `virtualCluster` ones — an inner yaac is the
+exception (its vcluster denies the node hostPath the registry's
+`hosts.toml` writer pods need), and its worktrees run uncached.
 
 The push runs **inside the sandbox**, and the constraint it respects is
 that no layer may be extracted file-by-file through the gVisor gofer
@@ -96,7 +101,7 @@ docker-schema2, while a bare `podman build` emits OCI. A push must
 therefore hand each image back as what it was, and the compression format
 decides that — schema2 has no zstd layer media type, so a zstd push
 silently rewrites a schema2 image as OCI and every later `docker build`
-skips the whole primed cache. gzip has media types in both schemas, so it
+skips the whole cache. gzip has media types in both schemas, so it
 leaves either in place and the image id survives the round trip
 unchanged. Level 1 within gzip, because this compression runs inside the
 worktree sandbox where CPU is the scarce resource and the bytes land in a
@@ -111,8 +116,8 @@ One salvage is two sudo-gated execs:
    goes under its own name (`<registry>/<repo>:<tag>`), stripped of
    podman's `localhost/` local-registry prefix so that one image is one
    repo whichever side pushed it — the server's own pushes into this
-   registry use the bare tag, and the pull side's restore round-trips
-   back through the prefix. Its ancestor chain goes into the SAME repo
+   registry use the bare tag, and the store builder's restore
+   round-trips back through the prefix. Its ancestor chain goes into the SAME repo
    under `yaac-cache-<tag>-<n>` tags: those
    intermediates are what a step-by-step `docker build` matches, and
    tagging them per named image keeps the tag set bounded — a rebuilt
@@ -121,46 +126,132 @@ One salvage is two sudo-gated execs:
    only. Successful pushes append to the ledger, so the 10-minute
    reconciler never re-compresses what it already sent.
 
-The pull side (`primeWorktreeImages`) runs once during worktree setup, right
-after the engine-ready gate: it walks the registry catalog, pulls each
-tag, restores each named image's original name, and untags the
-`yaac-cache-` entries so they sit in the store as dangling cache entries
-exactly like a local `--layers` build's. It stops early once the graphroot
-passes half full — pulled layers live in the worktree's 12GiB sentry tmpfs,
-which the worktree's own builds have to share, so an oversized project
-cache degrades to a partial warm-up instead of ENOSPC'ing the engine.
+### The node-local image store
 
-Stopping at half full bounds what the prime *spends*; a second rule bounds
-what it spends it *on*. A repo holds up to `REGISTRY_GENERATIONS_KEPT`
-content-hash generations and the catalog walk reaches them in no
-meaningful order, so the prime first ranks a repo's content-hash tags
-newest-first — by the build time in each image's own config, the same
-"content-hash tags are write-once, so creation order is generation order"
-the retention pass leans on — and keeps only the newest
-`PRIME_GENERATIONS_KEPT`, dropping the chain slots of the generations it
-drops with them. Without it a worktree can spend its whole budget on
-generations no build will cache-hit and then ENOSPC building the one it
-needs.
+The read side is not a per-worktree pull at all: the registry's contents
+are materialized ONCE PER NODE as a read-only containers/storage directory that
+every nested worktree of the project mounts at `/var/lib/shared-images`.
+A fresh worktree therefore sees the project's warm layers at first touch —
+no per-worktree pull, no decompression competing with the agent, and none
+of the 12GiB sentry graphroot spent on layers it did not build. Concurrent
+worktrees on a node share one copy of the bytes.
 
-What counts as a generation is the retention pass's guard, both halves:
-a yaac-built repo (optionally under a push prefix) carrying a content-hash
-tag. The upstream mirrors and a worktree's own repo are left alone even
-when their tags happen to have the content-hash shape — a repo retention
-has no say over is not one the prime narrows either. A generation whose
-config will not scrape ranks NEWEST rather than oldest: ranking is
-best-effort, and one transient fetch failure must not be what costs a
-worktree the generation its next build would have cache-hit.
+`store-writer.ts` owns it. A **generation** is a complete store under
+`<node-local root>/shared-images/<project>/gen-<stamp>/`, written by a
+node-side pod and made publishable only by the `.yaac-store-done` marker
+written last. It sits outside the project tree, alone among per-project
+paths, because a node-side pod writes it as root and the server's own uid
+could not `rm -rf` it at project removal; a one-shot pod does that instead. Generations are write-once: worktree create pins the newest
+complete generation's *path* into the pod, so a running worktree's store
+can never change underneath it, and the writer's GC can read the live set
+straight off pod specs — a generation is droppable exactly when no pod
+mounts it.
 
-Both directions are best-effort and self-gating (no podman, no sudo, or no
-registry ⇒ a single cheap exec that does nothing); a cold cache only ever
-costs a rebuild. Salvage runs **mid-worktree** (a periodic reconciler, so a
-project's large first salvage lands during the run) and at **worktree
-cleanup**, before the Job is deleted.
+The writer pod **builds nothing** — it pulls what the registry already
+holds and rearranges it on a node path — which is why it is not one of the
+trust-split *builder* pods and carries none of their identity; it borrows
+only their pinned `quay.io/podman/stable` image. Its shape is the
+registry's `hosts.toml` writers': runc, plain root, `nodeName`, tolerating
+everything, store parent hostPath-mounted rw. Two of its properties are
+deliberate:
+
+- **hostNetwork**, because the project registry's ingress policy already
+  admits the node's own address range for containerd's pulls. In the host
+  netns the pod *is* the node, so the store needs no NetworkPolicy of its
+  own — and must name the registry by ClusterIP, the node not being a
+  cluster-DNS client.
+- **no CAP_SYS_ADMIN**, because `podman pull --root` needs none (a pull
+  untars into the layer's diff dir; nothing is mounted) and withholding it
+  is load-bearing for the xattr shape below.
+
+Each refresh seeds from the previous generation with `cp -al`, so a
+generation costs disk proportional to what changed — a pull only adds layer
+directories and rewrites metadata via temp+rename, never mutating a layer
+diff in place. (podman's own state is dropped from the copy: its database
+records the absolute graphroot it was created under and refuses to open
+under another.) It then pulls the project's working set under the same
+ranking rule as the registry's retention pass, restores each named image's
+bare name, and leaves the `yaac-cache-` chain slots dangling exactly as a
+local `--layers` build's intermediates are.
+
+What that ranking is: a repo holds up to `REGISTRY_GENERATIONS_KEPT`
+content-hash generations and the catalog walk reaches them in no meaningful
+order, so a repo's content-hash tags are ranked newest-first — by the build
+time in each image's own config, the same "content-hash tags are
+write-once, so creation order is generation order" the retention pass leans
+on — and only the newest `CACHED_GENERATIONS_KEPT` are taken, dropping the
+chain slots of the generations dropped with them: an old generation's
+intermediates cache-hit nothing once its named image is gone. What counts
+as a generation is the retention pass's guard, both halves: a yaac-built
+repo (optionally under a push prefix) carrying a content-hash tag. The
+upstream mirrors and a worktree's own repo are left alone even when their
+tags happen to have the content-hash shape — a repo retention has no say
+over is not one this narrows either. A generation whose config will not
+scrape ranks NEWEST rather than oldest: ranking is best-effort, and one
+transient fetch failure must not be what costs a worktree the generation
+its next build would have cache-hit.
+
+Two post-passes run before the marker. A **metadata assertion** fails the
+build if any layer lacks a recorded diff size — without one `podman images`
+reconstructs it by decompressing the layer's tar-split, which across the
+gofer is the classic "images takes minutes" bug. And an **opaque-directory
+rewrite**, which is the one place this design is not simply "the registry,
+locally":
+
+> A layer that REPLACES a directory records that as an overlay xattr on the
+> diff dir rather than as a file, and neither spelling survives the trip
+> into a worktree. `trusted.overlay.opaque` is invisible through gVisor's
+> gofer filesystem — every read of the `trusted.` namespace answers
+> EOPNOTSUPP. `user.overlay.opaque` *is* readable through the gofer, but the
+> worktree engine holds CAP_SYS_ADMIN in-sandbox, so containers/storage
+> takes its rootful path and mounts overlay without `userxattr`, reading
+> the `trusted.` name. Either way the marker goes unhonored and the
+> replaced directory's old entries resurrect in the merged view — a
+> silently wrong image, not a slow one.
+>
+> So the builder rewrites every opaque marker into the explicit per-entry
+> whiteouts it stands for, computed against the layer's own (fixed,
+> write-once) parent chain. Those are 0:0 character devices — plain
+> metadata, which the gofer passes through, as do `security.capability`
+> file caps. This is why the writer runs without CAP_SYS_ADMIN: that is
+> what makes containers/storage record the markers in the `user.` namespace
+> the rewrite can read back. The pass is incremental (a per-layer marker
+> file, hardlinked forward by `cp -al`), so each layer is walked once in
+> the life of a store.
+
+The store is refreshed by a reconcile step, throttled per project, and
+immediately after a salvage that actually pushed — the one moment the
+registry gained content. A refresh that publishes nothing retries on a
+shorter backoff, because the commonest cause is racing the registry's own
+maintenance rollout, which lasts seconds; an unreachable registry fails the
+refresh outright rather than publishing an empty result, so the last good
+generation stays mounted.
+
+Because the mount is chosen at pod create, a PREWARMED spare carries the
+generation that existed when the spare was created, not when it is claimed
+— a spare that predates a refresh runs slightly colder than a fresh create
+would. That is the same trade the pinning buys everywhere else: a store
+that cannot change under a running engine. A cold node has no generation, mounts nothing, and
+warms on the next build; `/var/lib/shared-images` is baked into the image
+as an empty directory so that case needs no special-casing (containers/
+storage treats an empty additional store as no images). The engine loads an
+additional store once and afterwards revalidates by statting its lockfile,
+so the postStart script pays the single cold walk with a background
+`podman image ls` and every later `image ls` is answered from the daemon's
+memory.
+
+Both halves are best-effort and self-gating (no podman, no sudo, or no
+registry ⇒ a single cheap exec that does nothing; no generation ⇒ an empty
+store); a cold cache only ever costs a rebuild. Salvage runs
+**mid-worktree** (a periodic reconciler, so a project's large first salvage
+lands during the run) and at **worktree cleanup**, before the Job is
+deleted.
 
 Destinations carry no content hash: they are name-for-name, and the chain
 tags are slots keyed by (repo, tag, depth). That is what bounds the tag
 set, and it makes concurrent worktrees of one project last-salvage-wins on
-a shared name — the same semantics the node-local store's tag restore had.
+a shared name — and the node store, being a materialization of the
+registry, inherits exactly those semantics.
 Nothing corrupts (layers are content-addressed and a manifest PUT is
 atomic), and a chain left interleaved between two worktrees costs a wasted
 pull, never a wrong cache hit: buildah matches a cache candidate on layer
@@ -170,7 +261,7 @@ parentage *and* history, so a foreign intermediate never matches.
 
 A salvage also retires chain slots a shorter rebuild no longer fills
 (`DELETE /manifests/<digest>`, bounded by contiguity), so a stranded tail
-cannot make every future prime pull dead intermediates.
+cannot make every future store generation carry dead intermediates.
 
 Because both flows reuse tags, every rebuild leaves the previous manifest
 referenced by no tag — so the reclaim is just `registry garbage-collect

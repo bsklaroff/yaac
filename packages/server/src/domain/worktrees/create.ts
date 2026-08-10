@@ -2,7 +2,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureImage, primeWorktreeImages, pushImageShared } from '#runtime/k8s/images'
+import {
+  ensureImage,
+  ensureNodeImageStore,
+  nodeImageStoreMount,
+  pushImageShared,
+} from '#runtime/k8s/images'
 import {
   buildWorktreeRegistration,
   hostMatchesPattern,
@@ -438,16 +443,6 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
       }
     }
 
-    // Warm the engine from the project registry — the pull half of the
-    // image salvage, so an agent's first `docker build` hits the layers
-    // this project's earlier worktrees built. Deliberately NOT awaited: the
-    // registry can hold gigabytes, and a pull decompressing inside the
-    // sandbox takes minutes — the agent must not wait on it. An agent
-    // build racing the prime is benign (the engine's store locking
-    // serializes them; worst case a layer is rebuilt instead of pulled).
-    // Best-effort and bounded either way, so a registry-less or slow
-    // project ends up with a cold cache, never a failed create.
-    void primeWorktreeImages({ jobName, projectSlug, worktreeId })
   }
 
   // Open the init windows and swap the keepalive placeholder for the real
@@ -850,9 +845,26 @@ export async function createWorktree(
     // and its vcluster's pod guard denies any hostPath outside the worktree's
     // own data dir — so the ensure could not finish. Those worktrees run
     // without a cross-worktree image cache (image-promoter self-gates too).
+    const storeMounts: PodMount[] = []
     if (projectRegistry) {
       emit('Ensuring project registry...', options)
       await ensureProjectRegistry(projectSlug)
+
+      // The node-local image store: the read-only containers/storage lower
+      // this pod mounts at /var/lib/shared-images, so the project's warm
+      // layers are visible to its engine at first touch with no pull and no
+      // graphroot spend (store-writer.ts).
+      //
+      // The generation is PINNED here, at pod create, and never changes for
+      // this pod's life — which is what lets the builder's GC tell a store
+      // in use from a stale one. A cold node has none yet and simply mounts
+      // nothing. The refresh is fired DETACHED because a build is a pod run
+      // of minutes whose product this pod could not adopt anyway (its mount
+      // is already chosen); what it buys is the generation the NEXT worktree
+      // of the project mounts.
+      const storeMount = await nodeImageStoreMount(projectSlug)
+      if (storeMount) storeMounts.push(storeMount)
+      void ensureNodeImageStore(projectSlug)
     }
 
     // virtualCluster worktrees additionally get their own virtual cluster,
@@ -959,7 +971,7 @@ export async function createWorktree(
       vclusterEnv.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
     }
 
-    return { proxyHost, streamToken, vclusterMounts, vclusterEnv }
+    return { proxyHost, streamToken, vclusterMounts, vclusterEnv, storeMounts }
   })()
 
   const prepTask = (async () => {
@@ -1430,6 +1442,8 @@ export async function createWorktree(
     ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
     ...worktreeBinMounts(worktreeBinStaging, worktreeBinNames),
     ...cluster.vclusterMounts,
+    // NODE-LOCAL, read-only: this node's image store generation.
+    ...cluster.storeMounts,
     ...sshMounts,
   ]
 

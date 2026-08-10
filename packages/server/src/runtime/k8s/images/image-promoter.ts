@@ -2,15 +2,17 @@ import { containerExec } from '#platform/k8s'
 import { projectRegistryHost } from '#runtime/k8s/cluster'
 import { shellQuote } from '#platform/shell'
 import { env as yaacEnv } from '@yaac/shared/env'
+import { ensureNodeImageStore } from './store-writer'
 import { serverLog } from '#log'
 
 /**
- * Cross-worktree image cache for nested worktrees, carried by the project's
- * in-cluster registry: a worktree PUSHES the images its in-pod engine built
- * or pulled, and a later worktree PULLS them back into its own engine before
- * the agent starts. The registry is the only distribution mechanism — there
- * is no node-local store and no node affinity, so a worktree scheduled on a
- * different node than the one that built the images still gets the cache.
+ * The PUSH half of the cross-worktree image cache for nested worktrees: a
+ * worktree salvages the images its in-pod engine built or pulled into the
+ * project's own in-cluster registry. The registry is the source of truth
+ * and the only thing that travels between nodes; what a later worktree
+ * READS is a per-node materialization of it, mounted read-only
+ * (store-writer.ts), so nothing here pins a worktree to the node its
+ * predecessor ran on.
  *
  * WHY THE PUSH RUNS INSIDE THE SANDBOX (measured, 2026-07): the salvage's
  * one hard constraint is that no layer may be extracted FILE-BY-FILE
@@ -19,13 +21,13 @@ import { serverLog } from '#log'
  * never touches the gofer: the engine's graphroot is a sentry-INTERNAL
  * tmpfs (NESTED_GRAPHROOT_ANNOTATIONS), so `podman push` reads layers at
  * native speed, compresses them in-sandbox, and streams them out over
- * netstack as bulk blob uploads. Same shape the trust-split builder pods
+ * netstack as bulk blob uploads. Same shape the trust-split writer pods
  * already push their products with (docs/trust-split-builds.md), which is
  * why the salvage needs no node-side writer at all.
  *
  * What travels:
  *  - every NAMED image, under its own name (`<registry>/<repo>:<tag>`), so
- *    the pull side can restore the name a worktree referred to it by —
+ *    the read side can restore the name a worktree referred to it by —
  *    canonicalized first, see LOCAL_REGISTRY_PREFIX;
  *  - each named image's ANCESTOR chain, under `<repo>:yaac-cache-<tag>-<n>`
  *    in the SAME repo (so its blobs are already there and only manifests
@@ -34,8 +36,9 @@ import { serverLog } from '#log'
  *    Tagging them per named image keeps the tag set BOUNDED: a rebuilt
  *    `app:v1` overwrites the same `yaac-cache-v1-<n>` tags.
  *
- * The pull side untags the cache tags after pulling, leaving the
- * intermediates dangling exactly as a local `--layers` build would.
+ * The read side untags the cache tags after pulling them into a store
+ * generation, leaving the intermediates dangling exactly as a local
+ * `--layers` build would.
  *
  * Destinations carry NO content hash — they are name-for-name, and the
  * chain tags are slots keyed by (repo, tag, depth). That is what bounds
@@ -47,19 +50,19 @@ import { serverLog } from '#log'
  * never matches. Clobbered manifests become untagged, which is what
  * reconcileProjectRegistryGc reclaims.
  *
- * Both directions are self-gating: a non-nested worktree pod has no podman,
- * so each is a single cheap exec that reports nothing.
+ * Self-gating: a non-nested worktree pod has no podman, so a salvage is a
+ * single cheap exec that reports nothing.
  */
 
 /**
  * Tag prefix for an ancestor-chain entry. Never a name a user's image
- * carries: the pull side untags exactly these so they stay dangling
+ * carries: the read side untags exactly these so they stay dangling
  * cache entries.
  */
 export const CACHE_TAG_PREFIX = 'yaac-cache-'
 
 /**
- * What the pull side counts as a generation, in the two halves the
+ * What a consumer counts as a generation, in the two halves the
  * registry's retention pass (buildRegistryRetentionScript) uses: a
  * yaac-built repo, optionally under a push prefix, carrying a content-hash
  * tag. Both must be mirrored — the repo glob is what keeps a worktree's own
@@ -82,11 +85,12 @@ const GENERATION_TAG_RE = '[0-9a-f]{16}'
 
 /**
  * Ledger of `<image id> <destination ref>` pairs this pod has already put
- * in the registry — written by both the push and the pull side, read by
- * the survey. Without it every 10-minute salvage would re-compress (and
- * the pull side's own images would be pushed straight back). Lives in the
- * graphroot, so it dies with the pod exactly like the storage it
- * describes.
+ * in the registry — written by the push, read by the survey. Without it
+ * every 10-minute salvage would re-compress what the last one sent. Lives
+ * in the graphroot, so it dies with the pod exactly like the storage it
+ * describes. It says nothing about what the NODE STORE provided: that is
+ * a property of the image, not of this pod's history, and the survey
+ * reports it per image (EngineImage.readOnly).
  *
  * The ID is half the key on purpose: a rebuilt `app:v1` is a NEW image
  * under a destination the ledger already lists, and skipping it would lose
@@ -102,27 +106,17 @@ const PUSHED_LEDGER = '/var/lib/containers/.yaac-pushed-refs'
 export const MAX_CHAIN_DEPTH = 64
 
 /**
- * Graphroot fill level at which the pull side stops. Pulled images land in
- * the worktree's sentry tmpfs (NESTED_GRAPHROOT_TMPFS_BYTES), so a project
- * registry holding more cache than the worktree can carry degrades to a
- * partial warm-up rather than ENOSPC'ing the engine before the agent has
- * built anything.
- */
-export const PRIME_MAX_GRAPHROOT_PERCENT = 50
-
-/**
- * Content-hash generations the pull side takes per repo, newest first.
+ * Content-hash generations a CONSUMER of this registry takes per repo,
+ * newest first — what the node image store spends its disk on.
  *
- * The cap above bounds how much the prime spends; this bounds what it
- * spends it ON. A repo carries up to REGISTRY_GENERATIONS_KEPT
- * generations, and the catalog walk has no inherent reason to reach the
- * current one first — so without this a worktree could fill its whole
- * budget with generations no build will cache-hit, and then ENOSPC
- * building the one it actually needs. Two, not one: a worktree on a branch
- * that has since moved still wants its own generation, and the second slot
- * is what keeps the newest push from evicting it.
+ * A repo carries up to REGISTRY_GENERATIONS_KEPT generations (as wide as
+ * the concurrently-live fleet), and the catalog walk has no inherent
+ * reason to reach the current one first, so without this a node would
+ * warm generations no build will ever cache-hit. Two, not one: a worktree
+ * on a branch that has since moved still wants its own generation, and the
+ * second slot is what keeps the newest push from evicting it.
  */
-export const PRIME_GENERATIONS_KEPT = 2
+export const CACHED_GENERATIONS_KEPT = 2
 
 /**
  * Whether this install can host a project registry at all. An INNER yaac
@@ -162,13 +156,13 @@ const IMAGE_REF_MAX = 255
  * `localhost/<repo>`. That is not free — the copies share no LAYER blobs,
  * since the salvage compresses at level 1 where the host push writes
  * gzip's default level (SALVAGE_COMPRESSION_LEVEL) — and it costs every
- * later prime a second pull, a second ledger line and a second graphroot
- * budget check for bytes it already has.
+ * later store generation a second pull and a second ledger line for bytes
+ * it already has.
  *
- * Stripping it round-trips losslessly: the pull side restores the bare
+ * Stripping it round-trips losslessly: the store builder restores the bare
  * name, podman puts the prefix straight back, and the next survey's ref
  * canonicalizes onto the destination already in the ledger — which is what
- * stops the image travelling again. Without that the prime→salvage cycle
+ * stops the image travelling again. Without that the restore→salvage cycle
  * MANUFACTURES the alias on its own, with no second producer needed.
  *
  * Anchored on the slash, and applied exactly once. `localhost:5000/foo:v1`
@@ -196,6 +190,15 @@ export interface EngineImage {
   /** Every `repo:tag` the engine knows this image by, canonicalized
    *  (dangling: empty). */
   refs: string[]
+  /**
+   * True when the engine holds this image ONLY in the read-only node image
+   * store — i.e. it arrived from this very registry (store-writer.ts
+   * materializes nothing else), so pushing it back would re-compress the
+   * project's whole working set inside the sandbox for bytes the registry
+   * already has. An id the worktree ALSO holds writably (it rebuilt or
+   * re-tagged it) is not read-only here: that name is new and does travel.
+   */
+  readOnly: boolean
 }
 
 export interface SurveyReport {
@@ -237,7 +240,18 @@ function validRef(ref: string): boolean {
 export function parseSurveyReport(stdout: string): SurveyReport {
   const images: EngineImage[] = []
   const have = new Set<string>()
-  for (const line of stdout.split('\n')) {
+  // Collected first because a `ro` line may precede or follow its `img`
+  // row; the script emits all of them ahead of the inspect output today,
+  // but nothing about the format promises that.
+  const readOnly = new Set<string>()
+  const lines = stdout.split('\n')
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('ro ')) continue
+    const id = trimmed.slice(3).trim().replace(/^sha256:/, '')
+    if (IMAGE_ID.test(id)) readOnly.add(id)
+  }
+  for (const line of lines) {
     const trimmed = line.trim()
     if (trimmed.startsWith('have ')) {
       const [rawId = '', dest = ''] = trimmed.slice(5).trim().split(/\s+/)
@@ -252,6 +266,7 @@ export function parseSurveyReport(stdout: string): SurveyReport {
     const parent = rawParent.trim().replace(/^sha256:/, '')
     images.push({
       id,
+      readOnly: readOnly.has(id),
       parent: IMAGE_ID.test(parent) ? parent : null,
       // Canonicalized before the sort, so a multi-named image's PRIMARY
       // name — the one its chain slots hang off — is the same in every
@@ -273,8 +288,15 @@ export function buildSurveyScript(): string {
     'set -u',
     'command -v podman >/dev/null 2>&1 || exit 0',
     `[ -f ${PUSHED_LEDGER} ] && sed 's/^/have /' ${PUSHED_LEDGER}`,
-    "ids=$(podman image ls -a --no-trunc --format '{{.ID}}' 2>/dev/null | sort -u)",
-    '[ -n "$ids" ] || exit 0',
+    // One row per NAME, so an id can appear both writably and read-only
+    // (a build that cache-hit the store then tagged its product). Only an
+    // id with no writable row at all is store-provided; the awk pass is
+    // what turns per-name rows into that per-id answer.
+    "rows=$(podman image ls -a --no-trunc --format '{{.ID}} {{.ReadOnly}}' 2>/dev/null)",
+    '[ -n "$rows" ] || exit 0',
+    `ids=$(printf '%s\\n' "$rows" | awk '{ print $1 }' | sort -u)`,
+    `printf '%s\\n' "$rows" | awk '{ if ($2 == "false") w[$1] = 1; all[$1] = 1 } `
+    + `END { for (i in all) if (!(i in w)) print "ro " i }'`,
     // shellcheck disable=SC2086 — word splitting of $ids is the point.
     'podman image inspect --format '
     + "'img {{.Id}}|{{.Parent}}|{{range .RepoTags}}{{.}},{{end}}' $ids 2>/dev/null || true",
@@ -296,7 +318,7 @@ export function buildSurveyScript(): string {
  * zstd forces exactly that conversion: schema2 has no zstd layer media
  * type, so a zstd push rewrites a schema2 image as OCI (silently — the
  * push succeeds and the layers are intact), and every `docker build` in
- * the next worktree then skips the entire primed cache. gzip has media types
+ * the next worktree then skips the entire cache. gzip has media types
  * in both schemas, so it preserves either one in place, and the image id
  * survives the round trip unchanged with it.
  *
@@ -310,7 +332,7 @@ export function buildSurveyScript(): string {
  * The consequence to know: a level-1 blob does not dedupe against the
  * default-level blob a host-side push of the same layer writes. That
  * costs registry bytes when both producers push one image, never a wrong
- * hit — and the ledger already keeps a primed image from being pushed
+ * hit — and the ledger already keeps a restored image from being pushed
  * back, which is where the two sides would otherwise meet.
  *
  * Deliberately not `--disable-compression`, which would trade the disk
@@ -357,13 +379,6 @@ const MANIFEST_ACCEPT = [
 ].join(',')
 
 /**
- * Headroom multiplier applied to a manifest's (compressed) layer sizes
- * before pulling it. Layers land in the graphroot decompressed, and 3x is
- * the conservative end of what a gzipped image expands to.
- */
-export const PRIME_DECOMPRESSION_FACTOR = 3
-
-/**
  * The retire script: drop chain slots a rebuild no longer fills.
  *
  * `repo tag depth` triples arrive as argv. A chain is always pushed as a
@@ -373,13 +388,13 @@ export const PRIME_DECOMPRESSION_FACTOR = 3
  * the Deployment) and stops at the first slot that is already empty. The
  * blobs behind them are reclaimed by the registry GC's `--delete-untagged`
  * pass. Without this, a shorter rebuild would strand its tail forever and
- * every future prime would pull dead intermediates.
+ * every future store generation would carry dead intermediates.
  *
  * Accepted imprecision: registry:2 can only delete a MANIFEST by digest,
  * which drops every tag in the repo pointing at it. Two names in one repo
  * share their prefix intermediates, so retiring `app:v1`'s tail can untag
- * a slot `app:v2` still fills. That costs the next prime a cold slot — a
- * rebuild, never a wrong hit — and a later worktree refills it; the pod
+ * a slot `app:v2` still fills. That costs the next generation a cold slot
+ * — a rebuild, never a wrong hit — and a later worktree refills it; the pod
  * that pushed it will not, since its ledger already lists the pair.
  *
  * Failures are counted, not swallowed. The registry refuses DELETE with a
@@ -417,27 +432,24 @@ export function buildRetireScript(registryHost: string): string {
 }
 
 /**
- * The pull script: walk the project registry's catalog and pull every tag
- * into the engine, restoring each named image's original name and leaving
- * the `yaac-cache-` chain entries dangling (their layers are the point,
- * not their names). Every ref pulled is recorded in the ledger, with its
- * id, so this worktree's own salvage does not push it straight back.
+ * The sh fragment that turns a project registry into the WORKING SET a
+ * consumer should take: it sets `$repos` to the catalog and defines
+ * `ranked_tags <repo>`, which prints that repo's tags in pull order with
+ * the dead generations dropped. Requires `$REG` and `curl` in scope.
  *
- * Two budgets keep a fat registry from filling the sentry tmpfs before the
- * agent has built anything: the store must stay under
- * PRIME_MAX_GRAPHROOT_PERCENT, AND each image's own (compressed) manifest
- * size, scaled for decompression, must fit in what is actually free — a
- * pre-pull-only check would let one oversized image blow straight through
- * the cap. A skipped image is a cold entry, never a failure.
+ * Shared rather than duplicated because it is the mirror image of what
+ * salvage writes: the `yaac-cache-` slots, the content-hash generation
+ * shape, and the repo glob all come from this module, and a consumer that
+ * disagreed with any of them would either miss live layers or warm dead
+ * ones. The node image store (store-writer.ts) is the consumer today.
  *
- * What the budget is spent on is narrowed twice over. A yaac-built repo's
- * content-hash tags (GENERATION_REPO_GLOBS, GENERATION_TAG_RE) are ranked
- * newest-first and all but PRIME_GENERATIONS_KEPT dropped, along with the
- * chain slots of the generations dropped — an old generation's
- * intermediates cache-hit nothing once its named image is gone. And within
- * what survives, the named tag is pulled before its chain slots, so the
- * image a worktree actually refers to wins over the intermediates that only
- * accelerate a rebuild.
+ * A yaac-built repo's content-hash tags (GENERATION_REPO_GLOBS,
+ * GENERATION_TAG_RE) are ranked newest-first and all but
+ * CACHED_GENERATIONS_KEPT dropped, along with the chain slots of the
+ * generations dropped — an old generation's intermediates cache-hit
+ * nothing once its named image is gone. Within what survives, a named tag
+ * comes before its chain slots, so the image a worktree actually refers to
+ * is warmed before the intermediates that only accelerate a rebuild.
  *
  * Catalog/tag JSON is scraped with `tr`/`sed` rather than a JSON parser:
  * both documents are a single flat array, and every value is re-validated
@@ -446,24 +458,25 @@ export function buildRetireScript(registryHost: string): string {
  * is scraped by taking the LATEST of every `created` in the document
  * (config plus history entries), which needs no field ordering to hold.
  */
-export function buildPrimeScript(registryHost: string): string {
+export function rankedRegistryTagsScript(): string {
   const curl = 'curl -fsS --max-time 20'
   const arrayScrape = `tr -d ' "' | sed -e 's/.*\\[//' -e 's/\\].*//' | tr ',' '\\n'`
   return [
-    'set -u',
-    // The prime runs while the agent works (create does not await it), so
-    // take the lowest scheduling priority — the pulls' decompression must
-    // never compete with the agent for CPU. Children inherit the niceness.
-    'command -v renice >/dev/null 2>&1 && renice -n 19 $$ >/dev/null 2>&1 || true',
-    'command -v podman >/dev/null 2>&1 || exit 0',
-    'command -v curl >/dev/null 2>&1 || exit 0',
-    `REG=${registryHost}`,
-    `repos=$(${curl} "http://$REG/v2/_catalog?n=1000" 2>/dev/null | ${arrayScrape})`,
-    'n=0',
-    'for repo in $repos; do',
-    "  case \"$repo\" in ''|*[!a-z0-9./_-]*) continue;; esac",
-    `  tags=$(${curl} "http://$REG/v2/$repo/tags/list" 2>/dev/null | ${arrayScrape})`,
-    // Keep only the newest PRIME_GENERATIONS_KEPT content-hash generations
+    // A registry that cannot be REACHED must not read as a registry that is
+    // EMPTY: the difference is "retry" versus "this project has nothing to
+    // warm", and a consumer that confused them would publish a no-content
+    // result every time it raced the registry's maintenance rollout. The
+    // fetch's own exit status is therefore the gate, while the scrape is
+    // allowed to come back empty.
+    `catalog=$(${curl} "http://$REG/v2/_catalog?n=1000" 2>/dev/null) `
+    + '|| { echo "registry-unreachable" >&2; exit 1; }',
+    `repos=$(printf '%s' "$catalog" | ${arrayScrape} | grep -Ex '[a-z0-9./_-]+' || true)`,
+    'ranked_tags() {',
+    '  repo="$1"',
+    `  tags=$(${curl} "http://$REG/v2/$repo/tags/list" 2>/dev/null | ${arrayScrape} `
+    + `| grep -Ex '[A-Za-z0-9._-]+' || true)`,
+    '  [ -n "$tags" ] || return 0',
+    // Keep only the newest CACHED_GENERATIONS_KEPT content-hash generations
     // and their chain slots. Ranked by the image config's own build time,
     // the same "creation order IS generation order" the registry's
     // retention pass relies on — content-hash tags are write-once, so the
@@ -472,12 +485,13 @@ export function buildPrimeScript(registryHost: string): string {
     // Gated on BOTH halves of that pass's guard, repo shape and tag shape,
     // so the two agree on what a generation is. Tag shape alone would rank
     // a worktree's own `myapp:$(git rev-parse --short=16 HEAD)` as
-    // generations and leave its older tags cold — the prime deletes
-    // nothing, so that costs a warm-up, but it is a repo retention has no
-    // say over either.
+    // generations and leave its older tags cold — this deletes nothing, so
+    // that costs a warm-up, but it is a repo retention has no say over
+    // either.
     `  gens=''`,
+    `  keep=''`,
     '  case "$repo" in',
-    `    ${GENERATION_REPO_GLOBS}) gens=$(printf '%s\\n' $tags | grep -Ex '${GENERATION_TAG_RE}');;`,
+    `    ${GENERATION_REPO_GLOBS}) gens=$(printf '%s\\n' $tags | grep -Ex '${GENERATION_TAG_RE}' || true);;`,
     '  esac',
     '  if [ -n "$gens" ]; then',
     '    keep=$(for g in $gens; do',
@@ -486,48 +500,30 @@ export function buildPrimeScript(registryHost: string): string {
     `      c=$(${curl} "http://$REG/v2/$repo/blobs/$cfg" 2>/dev/null`
     + ` | grep -o '"created":"[^"]*"' | cut -d'"' -f4 | sort -r | head -1)`,
     // A config that would not scrape sorts NEWEST, not oldest. Ranking is
-    // best-effort and one transient curl error must not cost the worktree
+    // best-effort and one transient curl error must not cost the consumer
     // the generation its next build would have cache-hit — which sorting
     // the unrankable last does exactly, and silently. Erring the other way
     // costs at worst a slot spent on a candidate whose pull then fails,
-    // which the walk already handles. `9` outranks any RFC3339 year.
+    // which every caller already handles. `9` outranks any RFC3339 year.
     '      echo "${c:-9} $g"',
-    `    done | sort -r | head -n ${PRIME_GENERATIONS_KEPT}`
+    `    done | sort -r | head -n ${CACHED_GENERATIONS_KEPT}`
     + ` | awk '{print $2}' | tr '\\n' '|' | sed 's/|$//')`,
+    '  fi',
     // Everything that is not generation-shaped, plus the generations kept
     // and the chain slots belonging to them.
-    `    tags=$(printf '%s\\n' $tags | grep -Ev '^(${GENERATION_TAG_RE}|${CACHE_TAG_PREFIX}${GENERATION_TAG_RE}-[0-9]+)$'; `
-    + `printf '%s\\n' $tags | grep -E "^($keep)\\$|^${CACHE_TAG_PREFIX}($keep)-[0-9]+\\$")`,
+    //
+    // Gated on a NON-EMPTY `keep`: an empty one means every ranking fetch
+    // failed, and this filter would then match nothing and retire a repo's
+    // whole generation set on one bad minute. Warming the repo whole is the
+    // right answer to "I could not rank it".
+    '  if [ -n "$keep" ]; then',
+    `    tags=$(printf '%s\\n' $tags | grep -Ev '^(${GENERATION_TAG_RE}|${CACHE_TAG_PREFIX}${GENERATION_TAG_RE}-[0-9]+)$' || true; `
+    + `printf '%s\\n' $tags | grep -E "^($keep)\\$|^${CACHE_TAG_PREFIX}($keep)-[0-9]+\\$" || true)`,
     '  fi',
     // Named tags first, then the chain slots that only speed up a rebuild.
-    `  ordered=$(printf '%s\\n' $tags | grep -v "^${CACHE_TAG_PREFIX}"; `
-    + `printf '%s\\n' $tags | grep "^${CACHE_TAG_PREFIX}")`,
-    '  for tag in $ordered; do',
-    "    case \"$tag\" in ''|*[!A-Za-z0-9._-]*) continue;; esac",
-    // Leave headroom for the worktree's own builds: the graphroot is a
-    // capped sentry tmpfs, not a free node-local store.
-    "    used=$(df -P /var/lib/containers 2>/dev/null | awk 'NR==2{print $5+0}')",
-    `    [ "\${used:-0}" -lt ${PRIME_MAX_GRAPHROOT_PERCENT} ] || { echo "primed-full"; break 2; }`,
-    // …and this one image has to fit in what is left, decompressed.
-    "    free=$(df -P /var/lib/containers 2>/dev/null | awk 'NR==2{print $4}')",
-    `    want=$(${curl} -H "Accept: ${MANIFEST_ACCEPT}" "http://$REG/v2/$repo/manifests/$tag" 2>/dev/null`
-    + ` | tr ',' '\\n' | grep -o '"size":[0-9]*' | cut -d: -f2`
-    + " | awk '{ s += $1 } END { print int(s / 1024) }')",
-    `    [ "\${want:-0}" -eq 0 ] || [ $((want * ${PRIME_DECOMPRESSION_FACTOR})) -lt "\${free:-0}" ] \\`,
-    '      || { echo "skipped-large $repo:$tag"; continue; }',
-    '    ref="$REG/$repo:$tag"',
-    '    podman pull --tls-verify=false "$ref" >/dev/null 2>&1 || continue',
-    `    id=$(podman image inspect --format '{{.Id}}' "$ref" 2>/dev/null | sed 's/^sha256://')`,
-    `    echo "$id $ref" >> ${PUSHED_LEDGER}`,
-    `    case "$tag" in ${CACHE_TAG_PREFIX}*) ;; *) podman tag "$ref" "$repo:$tag" >/dev/null 2>&1 || true;; esac`,
-    // The registry-qualified name is dropped so the store reads like a
-    // local build's. `untag` is passed the name explicitly: given only an
-    // image it removes EVERY name, which would drop the one just restored.
-    '    podman untag "$ref" "$ref" >/dev/null 2>&1 || true',
-    '    n=$((n+1))',
-    '  done',
-    'done',
-    'echo "primed $n"',
+    `  printf '%s\\n' $tags | grep -v "^${CACHE_TAG_PREFIX}" || true`,
+    `  printf '%s\\n' $tags | grep "^${CACHE_TAG_PREFIX}" || true`,
+    '}',
   ].join('\n')
 }
 
@@ -555,14 +551,27 @@ export function sudoExecCommand(script: string, argv: string[] = []): string {
  * A named image is planned before its own chain on purpose — its layers
  * land in the repo the chain entries then reuse, so the intermediates
  * upload manifests only. The walk stops at an ancestor that is itself
- * named (it gets its own push, and the pull side restores the link), at
+ * named (it gets its own push, and the restore side re-links it), at one
+ * the node image store provided (see EngineImage.readOnly), at
  * MAX_CHAIN_DEPTH, and at any id/dest pair already in the ledger.
+ *
+ * Only a walk that ran the chain OUT yields a retire entry. The retire leg
+ * exists on the premise that a chain is pushed as a contiguous 1..depth, so
+ * anything past `depth` belongs to a longer previous generation and can
+ * never be reached again — and a walk that stopped at a STORE-PROVIDED
+ * ancestor breaks exactly that premise: the chain continues in the
+ * registry above the stop, and those upper slots are the shared, rarely
+ * changing prefix a cold node's cache is mostly made of. Retiring them
+ * would be permanent (salvage skips read-only images, so nothing re-pushes
+ * them) and would compound, since a build's cache misses cascade from the
+ * first missed step. The cost of not retiring is a few stranded tags,
+ * which the ranking already tolerates.
  *
  * Refs arrive already canonicalized (LOCAL_REGISTRY_PREFIX), which is what
  * keeps one image to one repo no matter which side pushed it first. Three
  * kinds never become a destination, all of them "there is no name to push
- * this under": one already inside this registry (the pull side's own
- * images coming back around); one whose repo carries a `host:port`, which
+ * this under": one already inside this registry (an image the worktree
+ * pulled from it by ref); one whose repo carries a `host:port`, which
  * a destination repo path cannot hold; and one still prefixed after
  * canonicalization, i.e. an engine name of `localhost/localhost/…`, whose
  * only canonical destination is a repo path the registry GC treats as a
@@ -589,6 +598,11 @@ export function planSalvagePushes(report: SurveyReport, registryHost: string): S
   }
 
   for (const img of report.images) {
+    // A store-provided image is already in this registry by construction —
+    // the node store is nothing but a materialization of it — so pushing
+    // it back would re-compress the project's whole working set inside the
+    // sandbox for bytes that are already there.
+    if (img.readOnly) continue
     const refs = img.refs.filter((ref) =>
       !ref.startsWith(`${registryHost}/`)
       && !ref.startsWith(LOCAL_REGISTRY_PREFIX)
@@ -605,13 +619,25 @@ export function planSalvagePushes(report: SurveyReport, registryHost: string): S
     const tag = primary.slice(colon + 1)
     let cursor = byId.get(img.id)?.parent ?? null
     let depth = 0
+    // Whether the walk ended because the chain genuinely ran out — which is
+    // what makes "everything past `depth` is unreachable" true, and so what
+    // licenses the retire below.
+    let ended = true
     for (; cursor && depth < MAX_CHAIN_DEPTH; ) {
+      // Stop at an ancestor that already travelled: one with a name of its
+      // own (it gets its own push, and the restore side re-links it), or
+      // one the node store provided — the next worktree's store carries
+      // that ancestor too, so a slot tag for it would buy nothing.
       if (named.has(cursor)) break
+      if (byId.get(cursor)?.readOnly) {
+        ended = false
+        break
+      }
       depth += 1
       add(cursor, `${registryHost}/${repo}:${CACHE_TAG_PREFIX}${tag}-${depth}`)
       cursor = byId.get(cursor)?.parent ?? null
     }
-    retire.push({ repo, tag, depth })
+    if (ended) retire.push({ repo, tag, depth })
   }
   return { pairs, retire }
 }
@@ -725,7 +751,7 @@ async function salvageWorktreeImagesUncoalesced(params: {
   }
 
   // Slots a shorter rebuild left behind. Best-effort on its own: a stranded
-  // tag costs future primes a wasted pull, never correctness.
+  // tag costs future store generations a wasted pull, never correctness.
   let retired = 0
   if (retireNeeded) {
     const triples = retire.flatMap(({ repo, tag, depth }) => [repo, tag, String(depth)])
@@ -752,45 +778,17 @@ async function salvageWorktreeImagesUncoalesced(params: {
     `[server] image salvage: session=${worktreeId} planned=${pairs.length} `
     + `pushed=${pushed} failed=${failed} retired=${retired} registry=${registryHost}`,
   )
+
+  // A push that landed is the one moment this project's registry gained
+  // content, so it is the moment worth rebuilding the node image store on —
+  // otherwise the next worktree would mount a generation predating the work
+  // its predecessor just salvaged, and wait out the reconcile throttle for
+  // it. Detached and forced past that throttle; the store builder still
+  // serializes per project.
+  //
+  // The relative import back into the folder's other half is call-time
+  // only (store-writer reads this module's ranking fragment to decide what
+  // to pull), which is what keeps the two-way edge harmless.
+  if (pushed > 0) void ensureNodeImageStore(projectSlug, { force: true })
   return true
-}
-
-/** Parse the pull script's trailing `primed <n>` line. */
-export function parsePrimeReport(stdout: string): { primed: number; full: boolean } {
-  const m = /primed (\d+)/.exec(stdout)
-  return { primed: Number(m?.[1] ?? 0), full: stdout.includes('primed-full') }
-}
-
-/**
- * Warm a fresh nested worktree's engine from the project registry — the
- * pull half of the salvage. Runs once during worktree setup, after the
- * engine is up: an agent's first `docker build` then hits the same layers
- * the project's earlier worktrees built. Best-effort and bounded; a cold
- * cache only costs a rebuild.
- */
-export async function primeWorktreeImages(params: {
-  jobName: string
-  projectSlug: string
-  worktreeId: string
-  timeoutMs?: number
-}): Promise<boolean> {
-  const { jobName, projectSlug, worktreeId } = params
-  if (!registryAvailable()) return true
-  const registryHost = projectRegistryHost(projectSlug)
-  try {
-    const { stdout } = await containerExec(
-      jobName,
-      sudoExecCommand(buildPrimeScript(registryHost)),
-      { timeout: params.timeoutMs ?? 300_000, maxAttempts: 1 },
-    )
-    const { primed, full } = parsePrimeReport(stdout)
-    serverLog(
-      `[server] image prime: session=${worktreeId} pulled=${primed}`
-      + `${full ? ' (stopped — graphroot budget)' : ''} registry=${registryHost}`,
-    )
-    return true
-  } catch (err) {
-    console.warn(`Image prime for ${jobName} failed: ${(err as Error).message}`)
-    return false
-  }
 }

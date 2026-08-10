@@ -13,7 +13,12 @@ import {
   reconcileRedirectClaims,
   reconcileVclusters,
 } from '#runtime/k8s/cluster'
-import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#runtime/k8s/images'
+import {
+  reconcileBuildCacheGc,
+  reconcileBuilderPodGc,
+  reconcileImagePrewarm,
+  reconcileNodeImageStores,
+} from '#runtime/k8s/images'
 import { reconcileHostImageGc } from '#runtime/k8s/image-engine'
 import { reconcileGeneratedTitles } from '#domain/titles'
 import { listProjectRows } from '#records'
@@ -101,6 +106,17 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Mid-worktree image salvage (nested engines → project registry).
     // Throttled internally per worktree; salvages run detached.
     { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
+    // Rebuild each project's node-local image store from its registry —
+    // the read-only lower a fresh nested worktree mounts. After the salvage
+    // so a just-pushed generation is the one a build picks up, and before
+    // the registry collect, which holds that registry read-only for
+    // minutes. Fires detached per project and is throttled internally; the
+    // slug list is a row question, so it is resolved here like the prewarm
+    // sweep's rather than in the runtime.
+    { name: 'image-store', triggers: [], run: async () => {
+      const slugs = (await listProjectRows().catch(() => [])).map((r) => r.slug)
+      reconcileNodeImageStores(slugs)
+    } },
     // Blob reclaim in one project registry per pass. It cannot wait for a
     // project to go idle — an active one never does — so it takes a
     // read-only maintenance window instead, and detaches. Throttled

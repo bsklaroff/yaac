@@ -283,8 +283,10 @@ reachable on a real managed cluster without further design work here.
   file-by-file through the gVisor gofer (~2ms/file; a 4GB salvage took 16+
   minutes) — the engine's graphroot is a sentry-internal tmpfs, so the push
   reads at native speed and streams blobs out over netstack, the same shape
-  the trust-split builder pods already push with. No node-local store, no
-  node affinity, no node-side writer.
+  the trust-split builder pods already push with. The read side is a
+  per-node read-only materialization of that registry (store-writer.ts):
+  a cache, so still no node affinity — a session on a cold node runs cold
+  rather than being pinned.
 - **Builder pods** carry a reserved `yaac.role=builder` label, kept
   unforgeable by the stock-k8s builder-role `ValidatingAdmissionPolicy` (no
   ServiceAccount may set it; the pod must be gvisor). The node agent gives a

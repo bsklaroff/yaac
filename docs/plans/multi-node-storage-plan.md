@@ -129,14 +129,16 @@ uid_map failed`), verified on the dev cluster. Decisions:
   service exports `SSL_CERT_FILE=<combined bundle>` inside its own shell to
   trust the MITM proxy CA on registry pulls. Nested containers and build RUN
   steps get their CA trust from the mounted containers.conf.
-- **Cross-session image cache needs no node-local mount.** It rides the
-  project's own in-cluster registry: the session pushes its images out over
-  netstack and a later session pulls them back in (image-promoter.ts, and
-  docs/nested-containers.md for the manifest-type constraint the push
-  respects). Nothing about it pins a session to the node its predecessor
-  ran on, and the gofer is not in the path — the graphroot is a sentry
-  tmpfs, so pushes read layers at native speed instead of extracting them
-  file-by-file.
+- **Cross-session image cache travels through the registry, not the node.**
+  The session pushes its images into the project's own in-cluster registry
+  out over netstack (image-promoter.ts, and docs/nested-containers.md for
+  the manifest-type constraint the push respects); the gofer is not in that
+  path, since the graphroot is a sentry tmpfs and the push reads layers at
+  native speed instead of extracting them file-by-file. What a later
+  session reads is a per-NODE materialization of that registry, mounted
+  read-only (store-writer.ts) — a cache, so nothing pins a session to the
+  node its predecessor ran on; landing on a cold node just means a cold
+  engine.
 
 ### vcluster
 

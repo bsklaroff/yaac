@@ -4,6 +4,7 @@ import {
   ensureDataDir,
   getNodeLocalProjectsDir,
   getProjectsDir,
+  nodeLocalPath,
   nodeLocalProjectPath,
   nodeLocalRoot,
   projectConfigDir,
@@ -27,6 +28,7 @@ export {
   ensureDataDir,
   getNodeLocalProjectsDir,
   getProjectsDir,
+  nodeLocalPath,
   nodeLocalProjectPath,
   nodeLocalRoot,
   projectConfigDir,
@@ -150,6 +152,24 @@ export function proxySecretsCredentialsPath(): string {
  */
 export function projectDir(slug: string): string {
   return sharedProjectPath(slug)
+}
+
+/**
+ * NODE-LOCAL. Parent of a project's node-local image store generations —
+ * the read-only containers/storage lower that every nested worktree of the
+ * project mounts at `/var/lib/shared-images` (docs/nested-containers.md).
+ * Per node because a store is a cache of the project registry, not a
+ * second source of truth: a cold node simply mounts nothing.
+ *
+ * DELIBERATELY OUTSIDE the project tree, unlike every other per-project
+ * path. Its contents are written by a root-running node-side pod, so they
+ * are root-owned and unreadable to the server's own uid — and
+ * {@link projectRoots}, which project removal `rm -rf`s as the server user,
+ * would fail on them. The store's own removal goes through a node-side pod
+ * instead (the same shape the registry's `certs.d` cleanup uses).
+ */
+export function imageStoreDir(slug: string): string {
+  return nodeLocalPath('shared-images', slug)
 }
 
 /** SHARED: the bare git repo. `repo/.git` is mounted into every worktree. */

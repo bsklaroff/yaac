@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises'
 import { type PodInfo, listWorktreePods } from '#platform/k8s'
 import { removeProjectRegistry } from '#runtime/k8s/cluster'
+import { removeNodeImageStore } from '#runtime/k8s/images'
 import { projectRoots } from '@yaac/shared/project-paths'
 import { cleanupWorktreeDetached } from './cleanup'
 
 /**
  * Delete every byte a project has on the substrate: its live worktrees, its
- * per-project push registry, and both of its storage-tier roots.
+ * per-project push registry, its node-local image stores, and both of its
+ * storage-tier roots.
  *
  * The bytes half of `project remove`. The rows that say the project exists
  * are the server's and it deletes them itself (see `project-teardown.ts`);
@@ -41,6 +43,16 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
     await removeProjectRegistry(slug)
   } catch {
     // cluster unavailable — the orphan GC will catch it
+  }
+
+  // The node-local image store on every node. A separate pass from the rm
+  // below because its bytes are ROOT-owned (a node-side pod wrote them) and
+  // live outside the project tree for exactly that reason — the server's
+  // own uid could not remove them (see `imageStoreDir`).
+  try {
+    await removeNodeImageStore(slug)
+  } catch {
+    // cluster unavailable — a stale store is a cache nothing will mount
   }
 
   // Both tier roots: the project's node-local tree (the pnpm store and
