@@ -42,14 +42,14 @@ project whose build dir has actually been resolved — a project that has never
 built since the change still holds its Dockerfile at the old path, and deleting
 this silently ignores it.
 
-`adoptProjectDirs` (`features/records/project-store.ts`) turns a `project.json`
+`adoptProjectDirs` (`records/project-store.ts`) turns a `project.json`
 with no row into a row on every `listProjectRows`. **Not on this list to be
 deleted** — it is deliberately not one-shot, because a project directory can
 appear after any given read (a second yaac on the same data dir, a restored
 backup, a manual copy) and a durable flag would make those invisible forever.
 It retires architecturally, when the substrate stops sharing the server's
 filesystem and every project arrives through `recordProject`
-(docs/plans/herd-split.md). `features/projects/add.ts` writes `project.json`
+(docs/plans/layered-server.md). `domain/projects/add.ts` writes `project.json`
 beside the row specifically to keep feeding it, so the two go together.
 
 ## 3. Cluster-object sweeps
@@ -148,14 +148,14 @@ is the part worth keeping.
 | `platform/k8s/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
 | `platform/k8s/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
 | `k8s/proxy/state-files.ts` — why `readJsonEither` takes a legacy path | section 4 |
-| `features/records/agent-session-store.ts` (`firstAgentSession`) and `features/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
+| `records/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
 
 Two neighbours that are **not** cruft and should not be swept with them:
 
 - `LABEL_MODE`'s absence-reads-as-`tui` (`platform/k8s/pods.ts`,
   `runtime/status/status-watcher.ts`) is an encoding choice: the label is
   stamped only for `acp`, so a TUI pod created by this build lacks it too.
-- The local named `legacy` in `features/worktrees/agent-session-registry.ts` is
+- The local named `legacy` in `domain/worktrees/agent-session-registry.ts` is
   the live pinned-conversation path for a worktree whose hook has not reported
   yet. It wants renaming, not deleting.
 
