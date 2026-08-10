@@ -540,7 +540,7 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
 
 /**
  * A pinned worktree whose container is gone — the Background section keeps its
- * row (deleted worktrees still appear in the full "Deleted worktrees" overlay
+ * row (deleted worktrees still appear in the full "Stopped worktrees" overlay
  * too). Non-selectable: there's nothing to open until it's restarted. Hover
  * offers the same pin toggle as live rows (unpinning drops the row) and a
  * restart, which reuses the deleted-overlay flow: a provisioning row replaces
@@ -575,8 +575,8 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
   const deletedLine = entry.deathReason
     ? `died${entry.stoppedAt ? ` ${relativeAge(entry.stoppedAt)}` : ''} — ${describeWorktreeDeathReason(entry.deathReason)}`
     : entry.stoppedAt
-      ? `deleted ${relativeAge(entry.stoppedAt)}`
-      : 'deleted'
+      ? `stopped ${relativeAge(entry.stoppedAt)}`
+      : 'stopped'
 
   return (
     <div className="group relative mx-2">

@@ -159,7 +159,7 @@ export function StoppedWorktreesButton({
             outline-none transition hover:text-text-dim"
         >
           <DeleteIcon size={13} className="shrink-0" />
-          <span>Deleted worktrees</span>
+          <span>Stopped worktrees</span>
           {/* Decorative unread dot (aria-hidden so it stays out of the button's
               accessible name); the title is a hover tooltip. */}
           {unseenDeaths > 0 && (
@@ -180,7 +180,7 @@ export function StoppedWorktreesButton({
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
           <div className="flex items-center justify-between">
-            <Dialog.Title className="text-xs font-semibold text-text-dim">Deleted worktrees</Dialog.Title>
+            <Dialog.Title className="text-xs font-semibold text-text-dim">Stopped worktrees</Dialog.Title>
             <div className="flex items-center gap-2">
               {/* Only offered when there is something unread to clear. */}
               {unseenDeaths > 0 && (
@@ -207,8 +207,8 @@ export function StoppedWorktreesButton({
           {merged.length === 0 ? (
             <EmptyState
               className="flex-1"
-              title="No deleted worktrees"
-              description="Worktrees you delete are kept here so you can restart them."
+              title="No stopped worktrees"
+              description="Worktrees you stop are kept here so you can restart them."
             />
           ) : (
             <div className="flex min-h-0 flex-1 gap-3">
@@ -247,7 +247,7 @@ export function StoppedWorktreesButton({
                           <span className="truncate">
                             {d.deathReason
                               ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
-                              : d.stoppedAt ? `deleted ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
+                              : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
                           </span>
                           <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
                         </span>
@@ -267,7 +267,7 @@ export function StoppedWorktreesButton({
                       <dt>Tool</dt><dd className="text-text-dim">{TOOL_LABEL[selected.tool]}</dd>
                       <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
                       <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
-                      <dt>{selected.deathReason ? 'Died' : 'Deleted'}</dt>
+                      <dt>{selected.deathReason ? 'Died' : 'Stopped'}</dt>
                       <dd className="text-text-dim">{relativeAge(selected.stoppedAt) || '—'}</dd>
                       {selected.deathReason && (
                         <>

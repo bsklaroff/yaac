@@ -64,7 +64,7 @@ function renderButton(): void {
 /** Render, wait for the (data-gated) sidebar entry point, and open the overlay. */
 async function open(): Promise<void> {
   renderButton()
-  fireEvent.click(await screen.findByRole('button', { name: 'Deleted worktrees' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Stopped worktrees' }))
 }
 
 describe('StoppedWorktreesButton', () => {
@@ -78,12 +78,12 @@ describe('StoppedWorktreesButton', () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([])
     renderButton()
     await waitFor(() => expect(getStoppedWorktrees).toHaveBeenCalled())
-    expect(screen.queryByRole('button', { name: 'Deleted worktrees' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stopped worktrees' })).toBeNull()
   })
 
   it('shows the entry point once deleted worktrees exist', async () => {
     renderButton()
-    expect(await screen.findByRole('button', { name: 'Deleted worktrees' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Stopped worktrees' })).toBeTruthy()
   })
 
   it('lists deleted worktrees and shows the selected one in the detail pane', async () => {
@@ -140,7 +140,7 @@ describe('StoppedWorktreesButton', () => {
 
   it('shows no notification dot when every deletion was user-initiated', async () => {
     renderButton() // TWO are plain deletes (no deathReason)
-    await screen.findByRole('button', { name: 'Deleted worktrees' })
+    await screen.findByRole('button', { name: 'Stopped worktrees' })
     expect(screen.queryByTitle(/died unexpectedly/)).toBeNull()
   })
 
@@ -195,10 +195,10 @@ describe('StoppedWorktreesButton', () => {
     expect(screen.queryByRole('button', { name: 'Mark all as read' })).toBeNull()
   })
 
-  it('labels a plain delete as Deleted with no Cause row', async () => {
+  it('labels a plain delete as Stopped with no Cause row', async () => {
     await open()
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
-    expect(screen.getByText('Deleted')).toBeTruthy()
+    expect(screen.getByText('Stopped')).toBeTruthy()
     expect(screen.queryByText('Cause')).toBeNull()
   })
 
@@ -238,7 +238,7 @@ describe('StoppedWorktreesButton', () => {
     expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
 
     // Restart s1 from the overlay → records it mid-restart and closes the overlay.
-    fireEvent.click(await screen.findByRole('button', { name: 'Deleted worktrees' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stopped worktrees' }))
     fireEvent.click(await screen.findByRole('button', { name: /Restart/ }))
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restart' }))
     expect(provision).toHaveBeenCalledTimes(1)
@@ -253,7 +253,7 @@ describe('StoppedWorktreesButton', () => {
       </QueryClientProvider>,
     )
     await waitFor(() => expect(client.getQueryData(['deleted', 'proj', 'sig-b'])).toEqual([]))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleted worktrees' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stopped worktrees' })).toBeNull())
 
     // s1 dies again and re-enters the deleted list. With the stale filter pruned,
     // the death dot must reappear immediately — no browser reload needed.
