@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import { desiredWorktrees } from '#records/desired-worktrees'
 import {
   recordWorktreeCreated,

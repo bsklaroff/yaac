@@ -42,6 +42,39 @@ project whose build dir has actually been resolved — a project that has never
 built since the change still holds its Dockerfile at the old path, and deleting
 this silently ignores it.
 
+`importLegacyMeta` (`domain/worktrees/meta-import.ts`, run as the
+`legacy-meta-import` reconcile step, reading through
+`store/worktrees/meta-import.ts`) folds the per-worktree metadata documents an
+older yaac kept at `projects/<slug>/meta/<worktreeId>.json` into rows, then
+deletes them. One-shot per server life, and idempotent because everything it
+writes goes through `applyWorktreeEvent` — so a run that dies half way is
+retried by the next start, and an install that has started once is done with it.
+
+Two of the facts it carries cannot be rediscovered, which is the whole reason
+it exists rather than letting the documents rot. A spare's `spare` flag: lose
+it and the checkout is never collected, because nothing can then tell an
+unclaimed spare from a stopped worktree the user means to restart into. And the
+current life's log offset: lose it and the first fold after the upgrade reads
+the whole session-starts log as this pod's, so a pane id an earlier life
+recorded can be attributed to whichever live pane inherited its number. The
+conversations it imports would be rediscovered from the log anyway.
+
+It must stay **ahead of the reaper and the conversation sweep in the step
+list**, since both read columns it fills — which is why it is first rather than
+beside the other startup sweeps. A document it cannot parse is renamed
+`<id>.json.bad` and never deleted, because those same two facts are the ones no
+sweep could reconstruct; a `.bad` file left in a `meta/` directory is a hand
+recovery someone still owes, not junk.
+
+Deleting the module is safe once no install can still hold a `meta/<id>.json`;
+the tell is a `meta/` directory containing only `*.session-starts.jsonl` (and
+possibly `.bad` files, which are somebody's to look at first). It takes
+`worktreeMetaPath` in
+`@yaac/shared/project-paths` with it, along with both `meta-import.ts` modules
+and their tests — but **not** `worktreeMetaDir`, which the log sweep in
+`domain/worktrees/cleanup.ts` still enumerates, and **not** the log itself,
+which is the live pod→host channel and no part of this.
+
 `adoptProjectDirs` (`records/project-store.ts`) turns a `project.json`
 with no row into a row on every `listProjectRows`. **Not on this list to be
 deleted** — it is deliberately not one-shot, because a project directory can
@@ -165,3 +198,9 @@ No test here can fail. The suite runs against a database and disk it just
 created — the state in which every one of these is already a no-op — so green
 says nothing about any of them, and section 6 has no executable form at all.
 That is the reason this is a list rather than a check.
+
+The one partial exception is `readLegacyMetaDocuments`, whose tests author the
+old documents deliberately and assert what comes back. That covers the
+*reader*, not the question this document is about: nothing anywhere fails when
+the last install stops needing it, so it leaves on the strength of an entry
+here or not at all.

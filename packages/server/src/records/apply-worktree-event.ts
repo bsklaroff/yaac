@@ -4,6 +4,7 @@ import {
   getWorktreeRow,
   priorStopOf,
   recordWorktreeCreated,
+  recordWorktreeLife,
   recordWorktreeStopped,
   restoreWorktreeStop,
   setWorktreeBaseBranch,
@@ -28,6 +29,12 @@ export async function applyWorktreeEvent(event: WorktreeEvent): Promise<void> {
       return
     case 'worktree-create-failed':
       await applyCreateFailed(event)
+      return
+    case 'worktree-life-started':
+      // Propagates, unlike most of this fan-out: a life that was not stamped
+      // leaves the fold trusting a dead pod's panes, and the create that
+      // emitted this should fail rather than run on with them.
+      await recordWorktreeLife(event.projectSlug, event.worktreeId, event.logBytes)
       return
     case 'base-branch-resolved':
       await setWorktreeBaseBranch(event.projectSlug, event.worktreeId, event.baseBranch)
@@ -92,6 +99,7 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     projectSlug,
     worktreeId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(event.spare === true ? { spare: true } : {}),
   })
 }
 

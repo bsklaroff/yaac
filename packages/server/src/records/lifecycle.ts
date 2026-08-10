@@ -1,4 +1,4 @@
-import { closeDb, getDb } from '#platform/db'
+import { closeDb, getDb } from './client'
 
 /**
  * Open the database, running any pending migrations. The composition root

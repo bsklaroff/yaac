@@ -154,10 +154,8 @@ vi.mock('@yaac/shared/project-paths', () => ({
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   worktreeDir: vi.fn((slug: string, worktreeId: string) => `/tmp/${slug}/worktrees/${worktreeId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
-  // The worktree's own record of itself, and the log the in-pod hook appends
-  // its session starts to — create writes the first and pre-creates the
-  // second so the pod's `File` mount resolves on the first attempt.
-  worktreeMetaPath: vi.fn((slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.json`),
+  // The log the in-pod hook appends its session starts to — create
+  // pre-creates it so the pod's `File` mount resolves on the first attempt.
   worktreeSessionStartsPath: vi.fn(
     (slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.session-starts.jsonl`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
@@ -236,6 +234,7 @@ vi.mock('@yaac/server/runtime/k8s/forwarders/port-forwarders', () => ({
 // is a failed create (see the teardown case below), not a swallowed hiccup.
 vi.mock('@yaac/server/records/worktree-store', () => ({
   recordWorktreeCreated: vi.fn(),
+  recordWorktreeLife: vi.fn(),
   recordWorktreeStopped: vi.fn(),
   deleteWorktreeRow: vi.fn(),
   setWorktreeBaseBranch: vi.fn(),
@@ -507,9 +506,18 @@ describe('createWorktree', () => {
     expect(vi.mocked(setWorktreeBaseBranch)).toHaveBeenCalledWith('demo', result?.worktreeId, 'dev')
   })
 
-  it('does not record a prewarmed spare — a spare is not a session until claimed', async () => {
+  it('flags a prewarmed spare — a spare is not a worktree until claimed', async () => {
+    // It gets a row, because once its pod is gone nothing else could tell a
+    // reaped spare from a stopped worktree, and deleting the wrong one takes
+    // uncommitted work with it. The flag is what keeps it out of every
+    // listing until the claim clears it — and the claim is what records the
+    // conversation, so a warm never reports one.
     await createWorktree('demo', { tool: 'claude', prewarm: true })
-    expect(vi.mocked(recordWorktreeCreated)).not.toHaveBeenCalled()
+
+    expect(vi.mocked(recordWorktreeCreated)).toHaveBeenCalledWith(
+      expect.objectContaining({ projectSlug: 'demo', spare: true }),
+    )
+    expect(vi.mocked(recordAgentSessions)).not.toHaveBeenCalled()
   })
 
   it('falls back to the configured referenceBranch, with an explicit branch winning', async () => {

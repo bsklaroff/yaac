@@ -1,4 +1,5 @@
-import { getDb, tokens as tokensTable } from '#platform/db'
+import { getDb } from './client'
+import { tokens as tokensTable } from './schema'
 
 /**
  * The persisted half of the HTTP token store (`#http`): the rows that let

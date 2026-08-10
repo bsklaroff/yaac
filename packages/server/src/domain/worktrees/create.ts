@@ -106,13 +106,12 @@ import {
   type InitWindow,
 } from '#runtime/agents'
 import { applyWorktreeEvent } from '#records'
-import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from '#store/worktrees'
 import {
   ensureSessionStartsLog,
-  mergeSessions,
-  newWorktreeMeta,
-  recordWorktreeLife,
-  updateWorktreeMeta,
+  prepareEphemeralMounts,
+  seedClaudeJson,
+  seedClaudeSettings,
+  sessionStartsLogSize,
 } from '#store/worktrees'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#domain/skills'
 import {
@@ -667,47 +666,43 @@ export async function createWorktree(
     resolveEphemeralModulesPaths(config),
   )
 
-  // The worktree's own record, written for a prewarmed spare too — unlike a row,
-  // which a spare only gets when it is claimed. A spare is a checkout, a branch
-  // and a pod from the moment it is warmed, and this document is what the delete
-  // path reads to take all of it away again if it is reaped unclaimed.
-  await updateWorktreeMeta(projectSlug, worktreeId, (current) =>
-    current !== undefined && options.resume === true
-      ? current
-      : newWorktreeMeta({
-        projectSlug,
-        worktreeId,
-        branch: `agent/${worktreeId}`,
-        createdAtMs: Date.now(),
-        spare: options.prewarm === true,
-      }))
-  // Stamped before any handle is recorded, because a life is exactly the
-  // boundary that invalidates the previous one's handles: tmux pane ids
-  // restart at %0, so last life's handle would otherwise name this life's
-  // pane. Removing the pane pointers from three tool homes is what worktree
-  // create used to do here instead.
-  const lifeId = await recordWorktreeLife(projectSlug, worktreeId, jobName, Date.now())
-
-  // Report the worktree BEFORE anything is provisioned, so no pod can ever
+  // Record the worktree BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
   // reads recorded state (titles, background, the deleted listing, restart)
   // and there is no safe way to tell one from an unclaimed spare later.
   // A failure to record therefore fails the create before it has built
   // anything, and a create that fails later reports that too (see
-  // `reportCreateFailed`). Prewarmed spares are not worktrees until claimed,
-  // so the claim reports their row instead (see tryClaimPrewarmed).
+  // `reportCreateFailed`).
+  //
+  // A prewarmed spare is recorded too, flagged `spare`: it is a checkout, a
+  // branch and a pod from the moment it is warmed, and the flag is what lets
+  // a reap tell it from a stopped worktree once its pod is gone. Every
+  // listing filters it out until the claim clears the flag.
   //
   // `baseBranch` is deliberately not here: it comes from the worktree leg
   // that runs concurrently with the pod boot, and waiting for it would undo
   // that overlap. It is reported at the end.
+  await applyWorktreeEvent({
+    type: 'worktree-created',
+    projectSlug,
+    worktreeId,
+    resume: options.resume,
+    ...(options.prewarm === true ? { spare: true } : {}),
+  })
+
+  // The life this create is starting, stamped after the row exists (it is an
+  // UPDATE) and before any handle can be recorded — a life is exactly the
+  // boundary that invalidates the previous one's handles, and stamping it
+  // clears them in the same transaction. Removing the pane pointers from
+  // three tool homes is what worktree create used to do here instead.
+  await applyWorktreeEvent({
+    type: 'worktree-life-started',
+    projectSlug,
+    worktreeId,
+    logBytes: await sessionStartsLogSize(projectSlug, worktreeId),
+  })
 
   if (!options.prewarm) {
-    await applyWorktreeEvent({
-      type: 'worktree-created',
-      projectSlug,
-      worktreeId,
-      resume: options.resume,
-    })
     // The worktree's tool and founding ask are read off this, so it is
     // recorded with the row rather than left to discovery. An initial prompt
     // is the first conversation's opening message by definition — the user
@@ -741,20 +736,6 @@ export async function createWorktree(
             : {}),
         })),
       })
-      await updateWorktreeMeta(projectSlug, worktreeId, (current) =>
-        current === undefined ? undefined : mergeSessions(current, launching.map((a, i) => ({
-          tool: a.tool,
-          agentSessionId: a.agentSessionId,
-          mode,
-          // Only `acp` knows its handle this early: it is the window name the
-          // driver addresses the worktree by. A tmux pane does not exist yet.
-          ...(mode === 'acp'
-            ? { handle: agentWindowName(a.tool, i), handleLifeId: lifeId }
-            : {}),
-          ...(i === 0 && options.initialPrompt !== undefined
-            ? { firstPrompt: options.initialPrompt }
-            : {}),
-        })), Date.now()))
     }
   }
 
@@ -1397,9 +1378,9 @@ export async function createWorktree(
       mountPath: '/home/yaac/.claude.json',
     },
     // SHARED, and the one file the pod writes that the server reads back. A
-    // `File` mount is safe here precisely because both ends only ever append
-    // — the metadata document beside it is rewritten whole, which is why that
-    // one is never mounted anywhere.
+    // `File` mount is safe here precisely because nothing ever renames it: a
+    // rename would replace the inode the mount pins, and the pod would go on
+    // writing to a file nobody reads.
     {
       source: { kind: 'hostPath', path: sessionStarts, type: 'File' },
       mountPath: CONTAINER_SESSION_STARTS_LOG,
@@ -1520,16 +1501,6 @@ export async function createWorktree(
         worktreeId,
         baseBranch: upstreamStartPoint.replace(/^origin\//, ''),
       })
-    }
-  }
-  // Mirrored into the metadata document for the same reason it is reported: it
-  // is only knowable once the concurrent checkout resolves it.
-  {
-    const { upstreamStartPoint } = await worktreeTask
-    if (upstreamStartPoint !== undefined) {
-      const baseBranch = upstreamStartPoint.replace(/^origin\//, '')
-      await updateWorktreeMeta(projectSlug, worktreeId, (current) =>
-        current === undefined ? undefined : { ...current, baseBranch })
     }
   }
 

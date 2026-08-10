@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#platform/db/client'
-import { agentSessions, getDb } from '#platform/db'
+import { closeDb } from '#records/client'
+import { getDb } from '#records/client'
+import { agentSessions } from '#records/schema'
 import {
   recordedConversationHandles,
   deleteWorktreeAgentSessions,

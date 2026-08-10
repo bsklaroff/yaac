@@ -22,6 +22,7 @@
 // internal: the seed/spawn-script staging is covered through `createWorktree`.
 
 export { reconcileAgentSessions } from './agent-session-registry'
+export { importLegacyMeta } from './meta-import'
 export {
   cleanupWorktreeDetached,
   gcOrphanEphemeralModuleDirs,

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as changesModule from '#runtime/k8s/worktrees/changes'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import { recordWorktreeCreated } from '#records/worktree-store'
 import { worktreeForkBranch } from '#domain/worktrees/fork-branch'
 

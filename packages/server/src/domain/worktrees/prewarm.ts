@@ -41,7 +41,7 @@ import {
 import { cleanupWorktreeDetached } from './cleanup'
 import { applyWorktreeEvent } from '#records'
 import { rebranchSpare, retoolSpare } from './spare-pool'
-import { clearSpareFlag, mergeSessions, updateWorktreeMeta } from '#store/worktrees'
+import { claimSpareWorktree, restoreSpareWorktree } from '#records'
 import type { WorktreeCreateResult } from './create'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
@@ -266,16 +266,33 @@ export async function tryClaimPrewarmed(
       defaultBranch: await getDefaultBranch(repo),
     })
 
-    // Record the worktree before the spare is touched: from the moment the
-    // claim mutates it, the pod is a worktree, and a worktree with no row is
-    // invisible to every path that reads recorded state. A write failure
-    // here aborts the claim before any mutation, so the spare stays a spare
-    // and the caller falls back to a cold create.
+    // Claim the spare's row before the spare is touched: from the moment the
+    // claim mutates it, the pod is a worktree, and a worktree still flagged
+    // `spare` is invisible to every path that reads recorded state — and
+    // worse, reapable. A write failure here aborts the claim before any
+    // mutation, so the spare stays a spare and the caller falls back to a
+    // cold create.
+    //
+    // This write is CHECKED, unlike every other one: the startup sweep
+    // deletes a checkout on the strength of the flag, so a flip that failed
+    // silently would leave the worktree the user is about to be handed
+    // looking reapable, and their work would go with it the next time the
+    // server started. `claimSpareWorktree` throws rather than shrugging,
+    // which is what makes the catch below a fallback rather than a loss.
+    const claimedId = chosen.worktreeId
     recordedRow = true
+    await claimSpareWorktree(
+      projectSlug,
+      claimedId,
+      spareUpstreamBranch !== null ? spareUpstreamBranch : undefined,
+    )
+    // Now that it is a worktree, record it as created: warming inserted the
+    // row, but the live fields (no stop, no death) belong to the life the
+    // claimant is about to be handed.
     await applyWorktreeEvent({
       type: 'worktree-created',
       projectSlug,
-      worktreeId: chosen.worktreeId,
+      worktreeId: claimedId,
       ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
     })
     // The spare's agent is already running, pinned to its own id — report it
@@ -284,30 +301,9 @@ export async function tryClaimPrewarmed(
     await applyWorktreeEvent({
       type: 'sessions-launched',
       projectSlug,
-      worktreeId: chosen.worktreeId,
-      sessions: [{ tool, agentSessionId: chosen.worktreeId }],
+      worktreeId: claimedId,
+      sessions: [{ tool, agentSessionId: claimedId }],
     })
-    // The spare's document already exists — warming wrote it. Claiming makes
-    // it a worktree, which is the one thing it was not.
-    //
-    // This write is CHECKED, unlike every other one to the document: the
-    // startup sweep deletes a checkout on the strength of `spare: true`, so a
-    // flip that failed silently would leave the worktree the user is about to
-    // be handed looking like a spare, and their work would go with it the next
-    // time the server started. Still before any mutation of the spare, so
-    // failing here costs nothing but a cold create — the spare stays a spare
-    // and the ordinary reap collects it.
-    const claimedId = chosen.worktreeId
-    if (!await clearSpareFlag(projectSlug, claimedId,
-      spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {})) {
-      throw new Error(`could not clear the spare flag for ${claimedId}`)
-    }
-    // The agent already running in it, recorded best-effort like every other
-    // sighting: a missed one is re-discovered on the next reconcile tick.
-    await updateWorktreeMeta(projectSlug, claimedId, (current) =>
-      current === undefined
-        ? undefined
-        : mergeSessions(current, [{ tool, agentSessionId: claimedId }], Date.now()))
 
     if (rebranchTo !== null) {
       // The claim path is otherwise zero-network; a re-branch must fetch so
@@ -390,8 +386,13 @@ export async function tryClaimPrewarmed(
     return { worktreeId: chosen.worktreeId, jobName: chosen.jobName, tool, mode: 'tui', forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to
-    // see — a cold create would fail identically, so don't degrade.
-    if (!mutated && err instanceof ServerError && err.code === 'VALIDATION') throw err
+    // see — a cold create would fail identically, so don't degrade to one.
+    // Decided here but rethrown at the BOTTOM: the row has already been
+    // claimed by this point, and propagating before undoing that would
+    // leave a spare whose pod is still labeled and pooled but whose row says
+    // it is somebody's worktree — reapable as neither, and eventually a
+    // phantom `never-started` stop pointing at a deleted checkout.
+    const propagate = !mutated && err instanceof ServerError && err.code === 'VALIDATION'
     // Any other failure (cluster unreachable, label race lost) → cold
     // create. A spare that failed mid-retool/re-branch is tainted — reap it
     // so a later claim can't pick up its inconsistent state; the reconciler
@@ -405,13 +406,28 @@ export async function tryClaimPrewarmed(
       reserved = undefined
     }
     // The claim never completed, so its row describes a worktree that never
-    // existed — the caller is about to cold-create a different one. A claim
-    // is always a fresh worktree, never a resume, so the row is erased.
+    // existed — the caller is about to cold-create a different one.
+    //
+    // Which undo applies depends on whether the spare survived. A mutated
+    // spare is being torn down above, so its row is erased like any failed
+    // create's (a claim is always a fresh worktree, never a resume). An
+    // untouched one is still a perfectly good spare — putting the flag back
+    // returns it to the pool rather than stranding a pod whose row no longer
+    // says it is reapable.
     if (chosen && recordedRow) {
-      await applyWorktreeEvent({
-        type: 'worktree-create-failed', projectSlug, worktreeId: chosen.worktreeId,
-      }).catch(() => { /* best-effort; the row has no pod to back it */ })
+      try {
+        if (mutated) {
+          await applyWorktreeEvent({
+            type: 'worktree-create-failed', projectSlug, worktreeId: chosen.worktreeId,
+          })
+        } else {
+          await restoreSpareWorktree(projectSlug, chosen.worktreeId)
+        }
+      } catch {
+        // Best-effort; the row has no pod to back it either way.
+      }
     }
+    if (propagate) throw err
     return undefined
   } finally {
     if (reserved) claiming.delete(reserved)

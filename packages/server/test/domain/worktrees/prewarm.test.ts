@@ -4,6 +4,8 @@ import type * as recordsModule from '#records'
 vi.mock('#records', async (importOriginal) => ({
   ...(await importOriginal<typeof recordsModule>()),
   applyWorktreeEvent: vi.fn(),
+  claimSpareWorktree: vi.fn(),
+  restoreSpareWorktree: vi.fn(),
 }))
 
 vi.mock('#runtime/agents/agent-command', () => ({
@@ -70,7 +72,7 @@ import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBran
 import { resolveProjectConfig } from '#store/projects/config'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#records'
-import { applyWorktreeEvent } from '#records'
+import { applyWorktreeEvent, claimSpareWorktree, restoreSpareWorktree } from '#records'
 
 const mockListPods = vi.mocked(listWorktreePods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
@@ -393,6 +395,14 @@ describe('tryClaimPrewarmed', () => {
     expect(mockRebranch).not.toHaveBeenCalled()
     expect(mockCleanupDetached).not.toHaveBeenCalled() // pre-mutation: not tainted
     expect(claiming.size).toBe(0) // released for the next claim
+    // The row is claimed before the branch is validated, so propagating has
+    // to undo it first. Left flagged claimed, the pod would still be labeled
+    // prewarmed and back in the pool while its row says it is somebody's
+    // worktree: `deleteSpareWorktreeRow` no-ops on the flag guard when the
+    // pool reaps it, the checkout goes, and the stale reaper later stamps a
+    // phantom `never-started` stop whose restart resolves into nothing.
+    expect(vi.mocked(claimSpareWorktree)).toHaveBeenCalledWith('p', 'spare1', 'main')
+    expect(vi.mocked(restoreSpareWorktree)).toHaveBeenCalledWith('p', 'spare1')
   })
 
   it('reaps the tainted spare and falls back to cold create when the re-branch fails', async () => {

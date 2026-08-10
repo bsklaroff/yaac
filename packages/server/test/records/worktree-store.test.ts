@@ -2,7 +2,7 @@ import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { claudeDir } from '@yaac/shared/project-paths'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import {
   deleteProjectWorktrees,
   deleteWorktreeRow,

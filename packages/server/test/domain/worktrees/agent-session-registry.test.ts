@@ -16,7 +16,11 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listWorktreePods: vi.fn().mockResolvedValue([]),
 }))
-import { closeDb } from '#platform/db/client'
+
+// The shrunk-log tripwire below is a log line and nothing else, so the log
+// is the only place its firing (or its silence) can be asserted.
+vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
+import { closeDb } from '#records/client'
 import { claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   reconcileAgentSessions,
@@ -27,12 +31,9 @@ import {
   recordAgentSessions,
 } from '#records/agent-session-store'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
-import { recordWorktreeCreated } from '#records/worktree-store'
-import {
-  newWorktreeMeta,
-  recordWorktreeLife,
-  updateWorktreeMeta,
-} from '#store/worktrees/worktree-meta'
+import { recordWorktreeCreated, recordWorktreeLife } from '#records/worktree-store'
+import { sessionStartsLogSize } from '#store/worktrees/session-starts'
+import { serverLog } from '#log'
 import { listWorktreePods } from '#platform/k8s/pods'
 import { podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
@@ -43,10 +44,11 @@ import {
 } from '#runtime/status/status-store'
 
 /**
- * The registry is the join: the worktree's metadata document says which agent
- * sessions it has hosted and which handle each sat on; the status watcher says
- * which handles are alive right now. Only their intersection is "active", and
- * only `active` survives teardown to drive a restart.
+ * The registry is the join: the worktree's rows say which agent sessions it
+ * has hosted and which handle each sat on — fed by the in-pod hook's log —
+ * and the status watcher says which handles are alive right now. Only their
+ * intersection is "active", and only `active` survives teardown to drive a
+ * restart.
  *
  * Sightings are appended to the session-starts log here rather than by running
  * the in-pod hook — its line format is covered by
@@ -64,15 +66,9 @@ describe('reconcileWorktreeAgentSessions', () => {
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
-    // The document create would have written, plus the life whose id every
-    // handle below is stamped with.
-    await updateWorktreeMeta('demo', 'wt-1', () => newWorktreeMeta({
-      projectSlug: 'demo',
-      worktreeId: 'wt-1',
-      branch: 'agent/wt-1',
-      createdAtMs: Date.now(),
-    }))
-    await recordWorktreeLife('demo', 'wt-1', 'job-1', Date.now())
+    // The life create would have stamped. The log is empty at this point, so
+    // every sighting below belongs to it.
+    await recordWorktreeLife('demo', 'wt-1', 0)
   })
 
   afterEach(async () => {
@@ -165,6 +161,84 @@ describe('reconcileWorktreeAgentSessions', () => {
     await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
 
     expect(await states()).toEqual([['conv-a', true]])
+  })
+
+  it('does not revive the previous life\'s pane after a restart', async () => {
+    // Nothing truncates the log, so the old pod's lines are re-folded on every
+    // tick of the new one. Carrying their handles forward would be worse than
+    // useless: tmux pane ids restart at %0, so the dead conversation's pane
+    // number now belongs to whatever the new pod opened there, and the
+    // intersection below would report it active on another conversation's
+    // pane — then freeze that at teardown for the next restart to resume.
+    await link('cleared-away', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await states()).toEqual([['cleared-away', true]])
+
+    // The pod restarts: a new life, stamped at the log's current length. The
+    // old line stays on disk, and the new pod hands the same pane number to a
+    // different conversation.
+    await recordWorktreeLife('demo', 'wt-1', await sessionStartsLogSize('demo', 'wt-1'))
+    await link('the-new-one', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    // Both are still part of the worktree's history, with their transcripts.
+    // Only the one this life actually opened is on the pane.
+    expect(await states()).toEqual([['cleared-away', false], ['the-new-one', true]])
+  })
+
+  it('stays quiet about the log while a restarted pod has yet to append', async () => {
+    // The routine post-restart state: every existing line sits BELOW the new
+    // boundary, and the first new-life line will land exactly ON it. A
+    // tripwire that fires here would fire on every fold during pod boot —
+    // and forever for a worktree whose current life never appends at all
+    // (an opencode conversation, which no hook fires for) — which trains
+    // everyone to ignore it.
+    await link('conv-a', '%0')
+    await recordWorktreeLife('demo', 'wt-1', await sessionStartsLogSize('demo', 'wt-1'))
+    setLiveAgents('demo', 'wt-1', [])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(vi.mocked(serverLog).mock.calls.flat().join('\n'))
+      .not.toContain('session-starts log')
+  })
+
+  it('reports a log that shrank below the boundary recorded into it', async () => {
+    // Nothing yaac does can produce this — the log is only ever appended to —
+    // so it means something outside replaced or rotated it. Worth saying,
+    // because the symptom is otherwise silent: every line falls below the
+    // boundary, loses its handle, and the worktree reports no live agents at
+    // all until its next restart.
+    await link('conv-a', '%0')
+    await recordWorktreeLife('demo', 'wt-1', await sessionStartsLogSize('demo', 'wt-1'))
+    await fs.writeFile(worktreeSessionStartsPath('demo', 'wt-1'), '')
+    setLiveAgents('demo', 'wt-1', [])
+
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(vi.mocked(serverLog).mock.calls.flat().join('\n'))
+      .toContain('shorter than the recorded life boundary')
+  })
+
+  it('clears the handles of a life that has ended, so a stale pane cannot resume', async () => {
+    // The clear happens in the same transaction that stamps the life, which is
+    // what stops a crash between the two from leaving a dead pod's handles
+    // against a fresh one.
+    await link('conv-a', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect((await listWorktreeAgentSessions('demo', 'wt-1'))[0]?.paneId).toBe('%0')
+
+    await recordWorktreeLife('demo', 'wt-1', await sessionStartsLogSize('demo', 'wt-1'))
+
+    const [link0] = await listWorktreeAgentSessions('demo', 'wt-1')
+    expect(link0?.paneId).toBeUndefined()
+    // The conversation itself survives — and so does the frozen active set a
+    // restart reads back. Only the pane it sat on is forgotten.
+    expect(link0?.active).toBe(true)
   })
 
   it('records the pinned conversation for a pod that predates the hook', async () => {

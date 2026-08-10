@@ -24,7 +24,7 @@ import {
   setWorktreeTitle,
 } from '#records/worktree-store'
 import { recordAgentSessions } from '#records/agent-session-store'
-import { closeDb } from '#platform/db/client'
+import { closeDb } from '#records/client'
 import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { listStoppedWorktrees } from '#domain/worktrees/stopped-list'
 import type { AgentTool, ProjectMeta } from '@yaac/shared/types'

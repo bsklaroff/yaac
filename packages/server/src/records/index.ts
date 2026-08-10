@@ -9,8 +9,11 @@
 // the conversations a worktree has hosted and what each opened with, and
 // how it died.
 //
-// It is the only feature allowed to touch `#platform/db`, and that is the
-// point (docs/layered-server.md). Observed facts enter through
+// It owns the database outright — the handle (`client.ts`) and the schema
+// (`schema.ts`) are internal modules here, and neither is on this barrel: a
+// layer that could reach `getDb` or a table could build its own queries, and
+// that is the one thing the discipline exists to prevent. Observed facts
+// enter through
 // exactly one door: code that watches the substrate or reads a worktree's
 // disk emits a `WorktreeEvent`, and `applyWorktreeEvent` alone decides
 // which rows that lands in — its per-event mutators are internal, off this
@@ -23,7 +26,7 @@
 // in through this barrel like anything else.
 //
 // Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/features/records/.
+// packages/server/test/records/.
 
 export {
   deleteProjectAgentSessions,
@@ -66,14 +69,18 @@ export {
   recordProject,
 } from './project-store'
 export {
+  claimSpareWorktree,
   clearWorktreeStopped,
   deleteProjectWorktrees,
+  deleteSpareWorktreeRow,
   findWorktreeRow,
   getProjectWorktreeRows,
   getWorktreeRow,
+  listSpareWorktreeIds,
   listWorktreeRows,
   recordAllDeathsSeen,
   recordDeathSeen,
+  restoreSpareWorktree,
   setWorktreeBackground,
   setWorktreeTitle,
   type PriorStop,

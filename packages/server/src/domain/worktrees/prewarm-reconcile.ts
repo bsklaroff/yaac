@@ -14,6 +14,7 @@ import {
   computePrewarmPlan,
   inFlight,
 } from './prewarm'
+import { deleteSpareWorktreeRow } from '#records'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
@@ -55,9 +56,9 @@ export async function reconcilePrewarmPool(
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, defaultTool, inFlight, claiming)
 
   for (const target of toReap) {
-    // A spare that is reaped unclaimed never became a worktree, so nothing
-    // else would ever collect its checkout, its git admin dir or its
-    // metadata document — there is no row to make any of it visible.
+    // A spare that is reaped unclaimed never became a worktree, so no
+    // worktree sweep would ever collect its checkout or its git admin dir —
+    // its row is flagged `spare` and filtered out of every listing.
     //
     // The AWAITED teardown, not the detached one: the detached variant
     // resolves before its `kubectl delete job` has even started, so removing
@@ -69,8 +70,14 @@ export async function reconcilePrewarmPool(
     // Not awaited by the tick, so a slow teardown never stalls the pool; a
     // failure here is collected by the startup sweep instead, since once the
     // pod is gone the planner (which sees only pods) can never retry it.
+    // The row goes last, and only after the bytes: while it survives, the
+    // spare flag is what tells the startup sweep this checkout was never a
+    // worktree, so dropping it first would strand whatever the teardown then
+    // failed to remove. `deleteSpareWorktreeRow` is guarded on the flag, so
+    // it can only ever take the row it was warmed with.
     void cleanupWorktree(target)
       .then(() => deleteWorktreeState(target.projectSlug, target.worktreeId))
+      .then(() => deleteSpareWorktreeRow(target.projectSlug, target.worktreeId))
       .catch(() => { /* swept at startup — see gcOrphanWorktreeState */ })
   }
 

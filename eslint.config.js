@@ -39,19 +39,20 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|db|k8s))/.',
+  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
-// A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
-// the leading `#` as a comment and silently matches nothing. The driver
-// packages are named too, so the ban cannot be walked around by opening
-// PGlite directly instead of going through the barrel. `#features/records`
-// is the ONE feature allowed past this: rows live behind its barrel, and
-// observed facts enter it through `applyWorktreeEvent` rather than through a
-// caller-side write (docs/layered-server.md).
+// The database drivers themselves, banned everywhere but records. The handle
+// and the schema are records' own internal modules (`records/client.ts`,
+// `records/schema.ts`) rather than a specifier any layer could name, so this
+// is all that is left to ban: rows live behind the records barrel, and
+// observed facts enter through `applyWorktreeEvent` rather than through a
+// caller-side write (docs/layered-server.md). Reaching the tables from
+// outside would take a deep `#records/schema` import, which SEALED_FOLDERS
+// already refuses in src.
 const NO_DATABASE_DIRECT = {
-  regex: '^(#platform/db|@electric-sql/pglite|drizzle-orm)(/|$)',
+  regex: '^(@electric-sql/pglite|drizzle-orm)(/|$)',
   message: 'Only #records opens the database (docs/layered-server.md): read or write rows through its barrel.',
 }
 
@@ -149,15 +150,12 @@ export default tseslint.config(
     },
   },
 
-  // The one feature allowed to open the database, and the db platform it
-  // opens. Later than the base zone on purpose — flat-config rule options
-  // replace rather than merge, so this re-states every pattern minus the
-  // database ban.
+  // The one layer allowed to open the database — it owns the handle and the
+  // schema outright. Later than the base zone on purpose — flat-config rule
+  // options replace rather than merge, so this re-states every pattern minus
+  // the database ban.
   {
-    files: [
-      'packages/server/src/records/**/*.ts',
-      'packages/server/src/platform/db/**/*.ts',
-    ],
+    files: ['packages/server/src/records/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',

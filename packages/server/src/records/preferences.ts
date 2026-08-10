@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
-import { getDb, preferences, shortcutOverrides } from '#platform/db'
+import { getDb } from './client'
+import { preferences, shortcutOverrides } from './schema'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
 

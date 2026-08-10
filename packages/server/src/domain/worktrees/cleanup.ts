@@ -8,7 +8,12 @@ import {
   listWorktreePods,
 } from '#platform/k8s'
 import { inFlightWorktreeIds } from './provisioning'
-import { applyWorktreeEvent } from '#records'
+import {
+  applyWorktreeEvent,
+  deleteSpareWorktreeRow,
+  getWorktreeRow,
+  listSpareWorktreeIds,
+} from '#records'
 import {
   clearWorktreeTerminating,
   evictWorktreeStatus,
@@ -32,10 +37,9 @@ import {
   projectWorktreeStateRoots,
   worktreeDir,
   worktreeMetaDir,
-  worktreeMetaPath,
   worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
-import { deleteWorktreeMeta, readWorktreeMeta } from '#store/worktrees'
+import { deleteSessionStartsLog } from '#store/worktrees'
 import { shellQuote } from '#platform/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import { stopWorktreeForwarders } from '#runtime/k8s/forwarders'
@@ -55,7 +59,7 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  * Remove everything on disk that belongs to one worktree, in one call.
  *
  * The counterpart to a create: the checkout, git's admin dir for it, the
- * worktree's metadata document and the in-pod hook's log beside it, and the
+ * in-pod hook's session-starts log, and the
  * per-worktree opencode database. Every one of them is keyed by the worktree
  * id, which is what makes this a single function rather than a list each
  * caller has to remember — and `opencode-data` is here because until now
@@ -73,8 +77,7 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  *
  * Transcripts are deliberately left. The tool homes are shared across a
  * project, so a worktree resumed into a second worktree would lose its history
- * to the first one's deletion — and the document that names them is going
- * away, so nothing would be able to find them to finish the job later either.
+ * to the first one's deletion.
  */
 export async function deleteWorktreeState(
   projectSlug: string,
@@ -86,7 +89,7 @@ export async function deleteWorktreeState(
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
-    deleteWorktreeMeta(projectSlug, worktreeId),
+    deleteSessionStartsLog(projectSlug, worktreeId),
   ].map((p) => p.catch((err: unknown) => {
     // Best-effort per path: a worktree that half-goes-away is better than a
     // reap that aborts and leaves the rest behind for nobody to collect.
@@ -321,29 +324,45 @@ export function _resetOrphanModulesSweepForTests(): void {
   orphanModulesSwept = false
 }
 
-/**
- * Collect the worktree state of prewarmed spares whose pod is gone.
- *
- * The reap path removes both together, but only while it is running: its plan
- * is derived from live pods, so a spare whose pod died out from under it — a
- * crash, a reboot, the server down in that window — leaves a checkout, a git
- * admin dir and a metadata document that nothing else can even see. A spare
- * has no row, which is exactly what makes it invisible to every other sweep.
- *
- * The document's `spare` flag is what makes this answerable after the fact:
- * the pod that carried the label is gone, so the flag is the only surviving
- * record that this checkout was never a worktree. A real worktree is never
- * touched here — its document says `spare: false`, and a stopped one is a
- * checkout the user is expected to restart into.
- */
 /** Suffix of the in-pod hook's log, as `worktreeSessionStartsPath` names it. */
 const SESSION_STARTS_SUFFIX = '.session-starts.jsonl'
 
+/**
+ * Collect the worktree state of prewarmed spares whose pod is gone, and the
+ * session-starts logs of worktrees that no longer exist.
+ *
+ * The reap path removes a spare's state with its pod, but only while it is
+ * running: its plan is derived from live pods, so a spare whose pod died out
+ * from under it — a crash, a reboot, the server down in that window — leaves
+ * a checkout and a git admin dir that no other sweep can even see. Every
+ * other sweep works from worktrees, and a spare is not one.
+ *
+ * The `spare` flag is what makes this answerable after the fact: the pod that
+ * carried the label is gone, so the row is the only surviving record that
+ * this checkout was never a worktree. A real worktree is never touched here —
+ * a stopped one is a checkout the user is expected to restart into.
+ */
 async function gcOrphanSpares(
   slug: string,
   liveWorktreeIds: Set<string>,
   sweepStartedAtMs: number,
 ): Promise<void> {
+  const spares = await listSpareWorktreeIds(slug).catch(() => undefined)
+  // A failed read must not reap: every id would look like "not a spare" to
+  // the log sweep below and like nothing at all to the spare sweep, and
+  // guessing here deletes checkouts.
+  if (spares === undefined) return
+  for (const sid of spares) {
+    if (liveWorktreeIds.has(sid)) continue
+    if (await inUseBySweep(worktreeDir(slug, sid), sid, sweepStartedAtMs)) continue
+    await deleteWorktreeState(slug, sid)
+    await deleteSpareWorktreeRow(slug, sid).catch(() => { /* next sweep */ })
+    console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
+  }
+
+  // A log whose worktree has no row is a delete that got half way: the row
+  // and the log go together, so a survivor answers to nothing and nothing
+  // else will ever name it again.
   let entries: string[] = []
   try {
     entries = await fs.readdir(worktreeMetaDir(slug))
@@ -351,34 +370,13 @@ async function gcOrphanSpares(
     return // no meta dir → nothing to sweep
   }
   for (const name of entries) {
-    // A `.tmp-*` file is a rewrite that died between write and rename. It
-    // belongs to no worktree and nothing else will ever collect it.
-    if (name.includes('.tmp-')) {
-      const tmp = path.join(worktreeMetaDir(slug), name)
-      if (await inUseBySweep(tmp, '', sweepStartedAtMs)) continue
-      await fs.rm(tmp, { force: true }).catch(() => { /* next sweep */ })
-      continue
-    }
-    // A log whose document is gone is a delete that got half way — the pair
-    // is removed together, so the survivor answers to nothing and no `.json`
-    // entry will ever name it again.
-    if (name.endsWith(SESSION_STARTS_SUFFIX)) {
-      const sid = name.slice(0, -SESSION_STARTS_SUFFIX.length)
-      if (liveWorktreeIds.has(sid)) continue
-      if (await readWorktreeMeta(slug, sid) !== undefined) continue
-      const log = worktreeSessionStartsPath(slug, sid)
-      if (await inUseBySweep(log, sid, sweepStartedAtMs)) continue
-      await fs.rm(log, { force: true }).catch(() => { /* next sweep */ })
-      continue
-    }
-    if (!name.endsWith('.json')) continue
-    const sid = name.slice(0, -'.json'.length)
+    if (!name.endsWith(SESSION_STARTS_SUFFIX)) continue
+    const sid = name.slice(0, -SESSION_STARTS_SUFFIX.length)
     if (liveWorktreeIds.has(sid)) continue
-    const meta = await readWorktreeMeta(slug, sid)
-    if (meta?.spare !== true) continue
-    if (await inUseBySweep(worktreeMetaPath(slug, sid), sid, sweepStartedAtMs)) continue
-    await deleteWorktreeState(slug, sid)
-    console.log(`Removed orphan prewarmed spare ${slug}/${sid}`)
+    if (await getWorktreeRow(slug, sid) !== undefined) continue
+    const log = worktreeSessionStartsPath(slug, sid)
+    if (await inUseBySweep(log, sid, sweepStartedAtMs)) continue
+    await fs.rm(log, { force: true }).catch(() => { /* next sweep */ })
   }
 }
 

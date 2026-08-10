@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
-import { readSessionStarts } from '#store/worktrees/worktree-meta'
+import { readSessionStarts } from '#store/worktrees/session-starts'
 import { setDataDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 
 /**
@@ -97,7 +97,7 @@ describe('the SessionStart hook', () => {
       transcript_path: `${home}/projects/-workspace/conv-a.jsonl`,
     }, { TMUX_PANE: '%3' })
 
-    expect(await readSessionStarts(slug, wt)).toEqual([{
+    expect((await readSessionStarts(slug, wt)).sightings).toEqual([{
       atByte: 0,
       agentSessionId: 'conv-a',
       tool: 'claude',
@@ -111,7 +111,7 @@ describe('the SessionStart hook', () => {
     // why the hook writes an empty field rather than skipping the line.
     await runHook({ session_id: 'conv-b', transcript_path: '/somewhere/else.jsonl' })
 
-    const [seen] = await readSessionStarts(slug, wt)
+    const [seen] = (await readSessionStarts(slug, wt)).sightings
     expect(seen).toMatchObject({ agentSessionId: 'conv-b', tool: 'claude' })
     expect(seen?.transcriptPath).toBeUndefined()
     // No tmux pane in this environment, so nothing is attributed to one.
@@ -122,16 +122,17 @@ describe('the SessionStart hook', () => {
     // codex names its rollout files after the session, so the basename still
     // identifies it if a tool ever drops the field.
     await runHook({ transcript_path: `${home}/sessions/rollout-xyz.jsonl` })
-    expect((await readSessionStarts(slug, wt))[0]?.agentSessionId).toBe('rollout-xyz')
+    expect((await readSessionStarts(slug, wt)).sightings[0]?.agentSessionId).toBe('rollout-xyz')
   })
 
   it('appends rather than replacing, and every line stays parseable', async () => {
     // The whole two-writer design rests on this: the pod only ever appends,
-    // so the server can rewrite its document beside it without a lock.
+    // so the server can fold the log into rows without a lock crossing the
+    // pod boundary.
     await runHook({ session_id: 'a', transcript_path: `${home}/projects/a.jsonl` })
     await runHook({ session_id: 'b', transcript_path: `${home}/projects/b.jsonl` })
 
-    const seen = await readSessionStarts(slug, wt)
+    const { sightings: seen } = await readSessionStarts(slug, wt)
     expect(seen.map((s) => s.agentSessionId)).toEqual(['a', 'b'])
     // Offsets are what let the fold tell this life's lines from the last
     // one's, so they must be real byte positions in the file.
@@ -156,7 +157,7 @@ describe('the SessionStart hook', () => {
       session_id: 'conv-q',
       transcript_path: `${home}/projects/we"ird.jsonl`,
     })
-    const [seen] = await readSessionStarts(slug, wt)
+    const [seen] = (await readSessionStarts(slug, wt)).sightings
     expect(seen?.agentSessionId).toBe('conv-q')
     expect(seen?.transcriptPath).toMatch(/^claude\/projects\//)
   })
