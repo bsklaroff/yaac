@@ -41,7 +41,7 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  * that runs worktrees, and none of them can be reproduced from here. What is
  * here is the ANSWER to "which projects exist" — so the server can list them,
  * refuse a duplicate add, and 404 an unknown slug without asking anything
- * that might be unreachable (docs/plans/herd-split.md).
+ * that might be unreachable (docs/plans/layered-server.md).
  *
  * `addedAt` is text, not a timestamp, because it is handed to clients
  * verbatim as the ISO string `project.json` has always carried; parsing and

@@ -17,7 +17,7 @@ export interface ResolvedWorktree {
  * Every worktree endpoint resolves through here and several of them are
  * polled, so it asks for the herd's cache-preferred match: the informer's
  * push-fed view answers without a subprocess, and the herd falls back to a
- * live listing on a miss (docs/plans/herd-split.md).
+ * live listing on a miss (docs/plans/layered-server.md).
  */
 export async function resolveWorktreeContainer(
   idOrName: string,

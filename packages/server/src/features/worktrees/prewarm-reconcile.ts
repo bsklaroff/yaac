@@ -38,7 +38,7 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
 export async function reconcilePrewarmPool(
   // Which tool to warm spares with is a user preference — a row, and so the
   // server's to resolve and hand down. A herd is told what to run, never
-  // where the answer is kept (docs/plans/herd-split.md).
+  // where the answer is kept (docs/plans/layered-server.md).
   defaultTool: AgentTool,
   snapshot?: TickSnapshot,
 ): Promise<void> {

@@ -60,7 +60,7 @@ import type { HerdClient } from './contract'
  * The herd that runs inside this process — the ONE module under
  * `packages/server/src` allowed to import the herd's features, which is what
  * the `SERVER_SRC` lint zone in eslint.config.js enforces
- * (docs/plans/herd-split.md).
+ * (docs/plans/layered-server.md).
  *
  * Every method is the thinnest possible translation between the contract's
  * vocabulary and today's functions, and that thinness is load-bearing rather

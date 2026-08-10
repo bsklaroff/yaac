@@ -20,7 +20,7 @@ import type { WorkspaceHandle } from '@yaac/shared/herd'
  * what a listing failure means), and the boundary's implementation is the
  * file that gets replaced by an RPC client. Anything left there vanishes at
  * that swap; anything here moves into the herd package with its feature
- * (docs/plans/herd-split.md).
+ * (docs/plans/layered-server.md).
  */
 
 /**

@@ -12,7 +12,7 @@
  * runs, how many a caller may have in flight, what id it gets and what
  * sidebar row it provisions under are all the server's — a herd's whole
  * contribution is that the queue and the caller's labels are on its side of
- * the boundary (docs/plans/herd-split.md).
+ * the boundary (docs/plans/layered-server.md).
  */
 import {
   proxyClient,

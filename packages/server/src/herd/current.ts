@@ -6,7 +6,7 @@ import type { HerdClient } from './contract'
  * A module-level handle rather than a constructor argument threaded through
  * every route: the callers are Hono apps and reconcile steps built at module
  * scope, and the server drives exactly one herd (more than one is deferred —
- * see docs/plans/herd-split.md). The accessor is what keeps the swap to a
+ * see docs/plans/layered-server.md). The accessor is what keeps the swap to a
  * remote implementation a one-line change at startup.
  */
 let client: HerdClient | null = null

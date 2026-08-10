@@ -14,7 +14,7 @@ import type { ServerLink } from '#server-link'
  * Built here because `#main` is the one place allowed to know both halves —
  * it is where the DB is opened and the event hub lives — and installed at
  * startup right after the DB, since every handler needs one
- * (docs/plans/herd-split.md).
+ * (docs/plans/layered-server.md).
  */
 export function createServerLink(): ServerLink {
   return {

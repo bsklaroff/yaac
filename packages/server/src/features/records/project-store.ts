@@ -10,7 +10,7 @@ import type { ProjectMeta } from '@yaac/shared/types'
  *
  * The clone, the config and the tool homes are the substrate's bytes; this is
  * the metadata, so that answering "which projects are there" never depends on
- * a filesystem the server may not share (docs/plans/herd-split.md).
+ * a filesystem the server may not share (docs/plans/layered-server.md).
  */
 export async function recordProject(meta: ProjectMeta): Promise<void> {
   const db = await getDb()

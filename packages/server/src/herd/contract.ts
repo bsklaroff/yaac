@@ -19,7 +19,7 @@ import type { BuildFileContent, BuildFileEntry, ProjectBranches } from '#feature
 import type { DeltaSource } from '#platform/k8s'
 
 /**
- * Everything the server asks of a herd (docs/plans/herd-split.md).
+ * Everything the server asks of a herd (docs/plans/layered-server.md).
  *
  * A herd is the cluster and its lifecycle, the git worktrees and repo clones,
  * the tool homes and their transcripts, the in-pod tmux sessions, image

@@ -16,7 +16,7 @@ import { serverLog } from '#log'
  * sessions it has hosted (docs/worktree-storage.md).
  *
  * This is the file that replaces the per-tool `.yaac-links` trees. The herd may
- * not read the database (docs/plans/herd-split.md), so it needs somewhere of
+ * not read the database (docs/plans/layered-server.md), so it needs somewhere of
  * its own to remember what it has discovered — and one document per worktree,
  * rewritten whole, is a great deal easier to reason about than a tree of
  * pointer files spread across three tool homes.

@@ -141,7 +141,7 @@ export interface DesiredWorkspace {
  * every durable fact a client can ask about. So the two halves meet twice:
  * data the herd needs is *delivered* to it, and facts the herd discovers are
  * *reported* here for the server to persist. It never looks a row up itself
- * (docs/plans/herd-split.md).
+ * (docs/plans/layered-server.md).
  *
  * A `HerdEvent` is discrete and past-tense — something that happened, applied
  * once to a row. That is what separates it from `#features/status`, which

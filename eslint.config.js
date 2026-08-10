@@ -45,7 +45,7 @@ const SEALED_FOLDERS = {
 
 // The HERD half — everything that touches the cluster, a git worktree, a
 // transcript or tmux — is being split into its own process
-// (docs/plans/herd-split.md). It will talk to the server over JSON-RPC and
+// (docs/plans/layered-server.md). It will talk to the server over JSON-RPC and
 // never open the database: PGlite is single-writer and the server holds it,
 // so a DB read left in here is a crash the day the split lands rather than a
 // style question. A herd reports what it discovered and is handed what it
@@ -120,7 +120,7 @@ const HERD_SRC = [
 // this covers the barrel as well as the driver packages beneath it.
 const NO_DATABASE = {
   regex: '^(#features/records|#platform/db|@electric-sql/pglite|drizzle-orm)',
-  message: 'The herd must not read the database (docs/plans/herd-split.md): emit a HerdEvent for the server to persist, or take the value as an argument.',
+  message: 'The herd must not read the database (docs/plans/layered-server.md): emit a HerdEvent for the server to persist, or take the value as an argument.',
 }
 
 // The other half of the same boundary. A herd reports upward through
@@ -130,7 +130,7 @@ const NO_DATABASE = {
 // and a herd reaching for it would be calling itself through the boundary.
 const NO_SERVER = {
   regex: '^(#main|#routes|#http|#notify|#herd)(/|$)',
-  message: 'The herd must not import the server (docs/plans/herd-split.md): report it through #server-link instead.',
+  message: 'The herd must not import the server (docs/plans/layered-server.md): report it through #server-link instead.',
 }
 
 // The server half, and the mirror of HERD_SRC: these paths may not reach
@@ -182,7 +182,7 @@ const SERVER_SRC = [
 const NO_HERD_FEATURES = {
   regex: '^(#features/(agents|cluster|egress|forwarders|image-engine|images|status|terminals)|#platform/(container|k8s)|#herd-desired)(/|$)',
   allowTypeImports: true,
-  message: 'The server must not call a herd feature directly (docs/plans/herd-split.md): add it to HerdClient and go through #herd.',
+  message: 'The server must not call a herd feature directly (docs/plans/layered-server.md): add it to HerdClient and go through #herd.',
 }
 
 export default tseslint.config(

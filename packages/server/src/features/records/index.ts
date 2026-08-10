@@ -12,7 +12,7 @@
 // It is the only feature allowed to touch `#platform/db`, and that is the
 // point. Everything that touches the cluster, a git worktree, a transcript
 // or tmux is being split into a separate process that has no database
-// (docs/plans/herd-split.md), so the two halves meet twice and only twice:
+// (docs/plans/layered-server.md), so the two halves meet twice and only twice:
 // `applyHerdEvent` persists what a herd reports, and `pushDesiredWorkspaces`
 // tells it what the server records as existing. Neither direction is a
 // query — a herd never looks a row up.

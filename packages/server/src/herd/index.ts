@@ -1,5 +1,5 @@
 /**
- * The boundary between the server and its herd (docs/plans/herd-split.md).
+ * The boundary between the server and its herd (docs/plans/layered-server.md).
  *
  * `contract.ts` is the whole of what the server may ask a herd to do;
  * `in-process.ts` is the implementation that calls today's functions, and the

@@ -30,7 +30,7 @@ export interface SpawnPolicyDeps {
  * Every decision in a spawn is here rather than in the herd that drained it:
  * the tool precedence ends at a preference row, the fan-out cap is a policy,
  * and the id and its sidebar row are the server's to mint
- * (docs/plans/herd-split.md). The herd contributed the one thing it alone
+ * (docs/plans/layered-server.md). The herd contributed the one thing it alone
  * knows — which workspace called, in which project, running what.
  *
  * The create is detached: the caller's pod is blocked at the proxy on the

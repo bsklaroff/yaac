@@ -28,7 +28,7 @@ import type { HerdChangeSource, HerdReconcileOptions } from './contract'
  * everything that touches the substrate is here, sharing one view of it
  * (`TickSnapshot`) and isolating its own errors, so a wedged GC cannot stop a
  * reap. Moving the loop itself down is what makes the herd a process
- * (docs/plans/herd-split.md); until then this is the whole of what it would
+ * (docs/plans/layered-server.md); until then this is the whole of what it would
  * carry with it.
  */
 interface HerdStep {

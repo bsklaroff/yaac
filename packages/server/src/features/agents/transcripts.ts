@@ -34,7 +34,7 @@ function claudeTranscriptDir(slug: string): string {
  * longer exists, silently, because the readers only ever stat these paths.
  * And an absolute path in a herd event names a path on the *herd's* machine,
  * which the server can neither resolve nor meaningfully store once the two
- * are separate processes (docs/plans/herd-split.md).
+ * are separate processes (docs/plans/layered-server.md).
  *
  * Project-relative rather than tool-home-relative because it needs no tool:
  * every tool home is `<projectDir>/<tool>`, so the tool segment is simply the

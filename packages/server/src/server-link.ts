@@ -4,7 +4,7 @@ import type { HerdEvent } from '@yaac/shared/herd'
 
 /**
  * The herd's handle on the server — the only direction of traffic a herd
- * initiates, and the mirror of `#herd` (docs/plans/herd-split.md).
+ * initiates, and the mirror of `#herd` (docs/plans/layered-server.md).
  *
  * A herd owns bulk bytes and live runtime state; the server owns every
  * durable fact a client can ask about. So a herd never writes a row, never

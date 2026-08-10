@@ -1,7 +1,7 @@
 # Dissolving the herd boundary into a layered server
 
-The herd/server split (docs/plans/herd-split.md, phases 1–2 landed) was built
-so the herd could one day be its own process — a JSON-RPC peer, eventually on
+The herd/server split (phases 1–2 of the now-deleted herd-split plan) was
+built so the herd could one day be its own process — a JSON-RPC peer, on
 another machine. That destination has been dropped: yaac's unit of deployment
 is the whole server (an "instance" — store, database, API and runtimes
 together, one per place), so there will never be a wire inside this package,

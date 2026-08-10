@@ -358,7 +358,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Both ends of the boundary, wired now rather than beside the listeners
   // above because the link's handlers write rows: they cannot exist before
   // the DB is open, and nothing can report until the reconcile loop and the
-  // routes below are live (docs/plans/herd-split.md).
+  // routes below are live (docs/plans/layered-server.md).
   setServerLink(createServerLink())
   setHerd(createInProcessHerd())
 

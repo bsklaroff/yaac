@@ -25,7 +25,7 @@ import { serverLog } from '#log'
  *
  * There are only three steps, because the substrate half of a pass is one of
  * them: the herd runs its own ordered steps over its own view of the
- * substrate (docs/plans/herd-split.md). What is left here is what reads or
+ * substrate (docs/plans/layered-server.md). What is left here is what reads or
  * writes rows, and it brackets the herd's pass — the desired set has to be
  * published before the reaper can judge an absence against it, and titles
  * are generated after the conversation sweep so a just-captured opening

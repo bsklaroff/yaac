@@ -19,7 +19,7 @@ export interface InProcessServer {
  * The server is attached to an in-process herd, as `yaac server run` would
  * attach it: the routes reach the cluster, the worktrees and the transcripts
  * only through that boundary, so one with no herd answers nothing
- * (docs/plans/herd-split.md). Nothing is converged — `lifecycle.attach` is
+ * (docs/plans/layered-server.md). Nothing is converged — `lifecycle.attach` is
  * the server's own startup step and is deliberately not run here.
  */
 export async function bootInProcessServer(

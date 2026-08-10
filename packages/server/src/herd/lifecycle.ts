@@ -33,7 +33,7 @@ import type { HerdChangeSource, HerdLifecycle, HerdReconcileOptions } from './co
  * still lives above the boundary today and calls in through
  * `HerdLifecycle.reconcile`, but the state it converges over is all held on
  * this side, which is what makes moving the loop down a mechanical step
- * later (docs/plans/herd-split.md).
+ * later (docs/plans/layered-server.md).
  */
 export function createLifecycle(
   reconcile: (opts: HerdReconcileOptions) => Promise<void>,

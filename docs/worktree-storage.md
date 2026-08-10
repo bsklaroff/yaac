@@ -89,7 +89,7 @@ the current process are exempt via the provisioning registry.
 
 A worktree's agent sessions are *discovered*, not authored. The herd keeps its
 own record of what it found, because after the database split
-(docs/plans/herd-split.md) it may not read a row: one **metadata document** per
+(docs/plans/layered-server.md) it may not read a row: one **metadata document** per
 worktree, `projects/<slug>/meta/<worktreeId>.json`, owned and rewritten whole by
 the server process and validated by a zod schema
 (`features/worktrees/worktree-meta.ts`).

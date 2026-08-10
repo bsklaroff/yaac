@@ -12,7 +12,7 @@ getting it wrong is how a rename turns into a second rename.
 |---|---|---|
 | **session** | one conversation with an agent | the tool's own id, transcripts, first prompts, `mode`, the webapp's auth cookie, tmux's own |
 | **worktree** | the durable thing: a checkout, its history, its record | storage, the CLI, the database, the webapp, anything a user names |
-| **workspace** | the same thing seen by a herd, substrate-neutrally | the herd contract only — deliberately free of git and Kubernetes nouns (docs/plans/herd-split.md) |
+| **workspace** | the same thing seen by a herd, substrate-neutrally | the herd contract only — deliberately free of git and Kubernetes nouns (docs/plans/layered-server.md) |
 | **pod** | the Kubernetes object a worktree currently runs in | `#platform/k8s` and nothing above it |
 
 The pod tier is the one that reads as a distinction without a difference until
