@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, projectConfigDir } from '@yaac/shared/project-paths'
-import { PROJECT_DOCKERFILE, USER_DOCKERFILE, resolveProjectBuildDir, resolveUserBuildDir } from '#features/projects'
+import { PROJECT_DOCKERFILE, USER_DOCKERFILE, resolveProjectBuildDir, resolveUserBuildDir } from '#store/projects'
 
 let tmpDir: string
 beforeEach(async () => { tmpDir = await createTempDataDir() })

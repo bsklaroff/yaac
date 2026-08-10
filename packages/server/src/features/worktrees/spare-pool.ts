@@ -2,10 +2,7 @@ import simpleGit from 'simple-git'
 import { podExec } from '#platform/k8s'
 import { buildWorktreeRegistration, proxyClient } from '#runtime/k8s/egress'
 import { repoDir } from '@yaac/shared/project-paths'
-import {
-  resolveProjectConfig,
-  resolveEphemeralModulesPaths,
-} from '#features/projects'
+import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#store/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#platform/shell'
 import {

@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { agentSessions, getDb, worktreeAgentSessions } from '#platform/db'
-import { MAX_PROMPT_LENGTH } from './events'
-import { resolveProjectPath, toProjectRelative } from '#runtime/agents'
+import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import { resolveProjectPath, toProjectRelative } from '#store/transcripts'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 

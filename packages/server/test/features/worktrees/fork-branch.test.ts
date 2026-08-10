@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as changesModule from '#features/worktrees/changes'
+import type * as changesModule from '#runtime/k8s/worktrees/changes'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { closeDb } from '#platform/db/client'
@@ -9,11 +9,11 @@ import { worktreeForkBranch } from '#features/worktrees/fork-branch'
 // The row is one source; the checkout is the other. Stubbing the fallback
 // is what lets these tests assert the ORDER of the two, which is the whole
 // point of the module.
-vi.mock('#features/worktrees/changes', async (importOriginal) => ({
+vi.mock('#runtime/k8s/worktrees/changes', async (importOriginal) => ({
   ...(await importOriginal<typeof changesModule>()),
   worktreeForkFallback: vi.fn(),
 }))
-import { worktreeForkFallback } from '#features/worktrees/changes'
+import { worktreeForkFallback } from '#runtime/k8s/worktrees/changes'
 const fallback = vi.mocked(worktreeForkFallback)
 
 describe('worktreeForkBranch', () => {

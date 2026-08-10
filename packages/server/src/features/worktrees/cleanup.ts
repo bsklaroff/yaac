@@ -35,7 +35,7 @@ import {
   worktreeMetaPath,
   worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
-import { deleteWorktreeMeta, readWorktreeMeta } from './worktree-meta'
+import { deleteWorktreeMeta, readWorktreeMeta } from '#store/worktrees'
 import { shellQuote } from '#platform/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import { stopWorktreeForwarders } from '#runtime/k8s/forwarders'

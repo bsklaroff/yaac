@@ -8,7 +8,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('#features/projects/config', () => ({
+vi.mock('#store/projects/config', () => ({
   resolveProjectConfig: vi.fn(),
 }))
 
@@ -23,7 +23,7 @@ vi.mock('#runtime/k8s/forwarders/port-forwarders', () => ({
 
 import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import { resolveProjectConfig } from '#features/projects/config'
+import { resolveProjectConfig } from '#store/projects/config'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'
 import { restoreAllWorktreeForwarders } from '#runtime/k8s/forwarders/restore'

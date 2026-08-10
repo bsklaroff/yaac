@@ -1,9 +1,6 @@
 import { listWorkspaces } from '#runtime/k8s/worktrees'
-import {
-  getAgentSessionFirstMessage,
-  sessionTranscriptPath,
-  transcriptLastActiveMs,
-} from '#runtime/agents'
+import { getAgentSessionFirstMessage } from '#runtime/agents'
+import { sessionTranscriptPath, transcriptLastActiveMs } from '#store/transcripts'
 import { listWorktreeRows, type WorktreeRow } from '#features/records'
 import {
   getAgentSessionsFor,

@@ -18,7 +18,7 @@ import {
 } from '#runtime/status'
 import { getWorktreePorts, getUnforwardedPorts } from '#runtime/k8s/forwarders'
 import { readBlockedHosts } from '#runtime/k8s/egress'
-import { readAllGitAuthFailures } from '#features/projects'
+import { readAllGitAuthFailures } from '#store/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentLiveness, RuntimeReport, WorktreeRuntimeReport } from '#runtime/contract'

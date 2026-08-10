@@ -1,7 +1,6 @@
 import simpleGit from 'simple-git'
 import { fetchOrigin, getDefaultBranch, isGitAuthError, listRemoteBranches } from '#platform/git'
 import { resolveProjectConfig } from './config'
-import { assertProjectExists } from './detail'
 import { resolveCredentialForUrl } from './credentials'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -24,7 +23,6 @@ export interface ProjectBranches {
  * work at create time, which re-fetches and validates itself.
  */
 export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
-  await assertProjectExists(slug)
   const repo = repoDir(slug)
 
   if (opts.refresh) {

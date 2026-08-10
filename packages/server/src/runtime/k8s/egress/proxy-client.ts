@@ -20,7 +20,7 @@ import {
   kubectlWithRetry,
 } from '#platform/k8s'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
-import { listSshEntries } from '#features/projects'
+import { listSshEntries } from '#store/projects'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 

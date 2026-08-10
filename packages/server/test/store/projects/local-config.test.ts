@@ -3,14 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
-import {
-  addAllowedHostToProjectConfig,
-  addPortForwardToProjectConfig,
-  readProjectConfigRaw,
-  removeProjectConfig,
-  setProjectReferenceBranch,
-  writeProjectConfig,
-} from '#features/projects'
+import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, setProjectReferenceBranch, writeProjectConfig } from '#store/projects'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
 const slug = 'demo'

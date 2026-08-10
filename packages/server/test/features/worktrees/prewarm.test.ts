@@ -43,8 +43,8 @@ vi.mock('#platform/git', () => ({
   remoteBranchExists: vi.fn(),
   worktreeUpstreamBranch: vi.fn(),
 }))
-vi.mock('#features/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
-vi.mock('#features/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
+vi.mock('#store/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
+vi.mock('#store/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
 vi.mock('simple-git', () => ({
   default: vi.fn(() => ({
     remote: vi.fn().mockResolvedValue('https://example.com/p.git\n'),
@@ -67,7 +67,7 @@ import { kubectlWithRetry } from '#platform/k8s/kubectl'
 import { podExec, waitForStreamd } from '#platform/k8s/stream-relay'
 import { rebranchSpare, retoolSpare } from '#features/worktrees/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
-import { resolveProjectConfig } from '#features/projects/config'
+import { resolveProjectConfig } from '#store/projects/config'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#features/records'
 import { applyWorktreeEvent } from '#features/records'

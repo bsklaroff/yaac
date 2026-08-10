@@ -13,7 +13,7 @@ vi.mock('#runtime/k8s/forwarders/port-detector', () => ({
   getUnforwardedPorts: vi.fn().mockReturnValue([]),
 }))
 
-vi.mock('#features/projects/local-config', () => ({
+vi.mock('#store/projects/local-config', () => ({
   addPortForwardToProjectConfig: vi.fn().mockResolvedValue({}),
 }))
 
@@ -23,7 +23,7 @@ import type * as podsModule from '#platform/k8s/pods'
 import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import { addWorktreeForwarder } from '#runtime/k8s/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#runtime/k8s/forwarders/port-detector'
-import { addPortForwardToProjectConfig } from '#features/projects/local-config'
+import { addPortForwardToProjectConfig } from '#store/projects/local-config'
 import { forwardWorktreePort } from '#runtime/k8s/forwarders/forward-port'
 
 const mockList = vi.mocked(listWorktreePods)

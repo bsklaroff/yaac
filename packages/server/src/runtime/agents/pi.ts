@@ -1,5 +1,5 @@
-import { piSessionLogs } from './transcripts'
-import { scanJsonlForward } from './jsonl'
+import { piSessionLogs } from '#store/transcripts'
+import { scanJsonlForward } from '#store/transcripts'
 
 /**
  * Status classification + first-message lookup for pi (earendil) sessions.

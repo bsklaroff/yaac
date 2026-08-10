@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
-import { readSessionStarts } from '#features/worktrees/worktree-meta'
+import { readSessionStarts } from '#store/worktrees/worktree-meta'
 import { setDataDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 
 /**

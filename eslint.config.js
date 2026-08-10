@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(auth|projects|records|skills|titles|worktrees)|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(auth|projects|records|skills|titles|worktrees)|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 
@@ -52,29 +52,14 @@ const SEALED_FOLDERS = {
 const BYTES_SRC = [
   'packages/server/src/platform/container/**/*.ts',
   'packages/server/src/platform/k8s/**/*.ts',
-  // #features/projects: everything that touches the clone, its config
-  // files, its credentials or its build context. `add`, `detail` and `list`
-  // answer "which projects exist" from rows, so they stay out.
-  'packages/server/src/features/projects/branches.ts',
-  'packages/server/src/features/projects/build-dirs.ts',
-  'packages/server/src/features/projects/build-files.ts',
-  'packages/server/src/features/projects/config.ts',
-  'packages/server/src/features/projects/credentials.ts',
-  'packages/server/src/features/projects/dockerfile.ts',
-  'packages/server/src/features/projects/fake-auth.ts',
-  'packages/server/src/features/projects/git-auth-failures.ts',
-  'packages/server/src/features/projects/local-config.ts',
-  // #features/worktrees: everything that acts on the substrate or the
-  // worktree's disk; the JOIN paths that read rows alongside an
-  // observation (list, detail, resolve, restart, the stopped listing,
-  // project teardown) and the mediators that apply events (create,
-  // cleanup, prewarm, the sweeps, the reaper) answer to the base zone.
-  'packages/server/src/features/worktrees/changes.ts',
+  // #features/worktrees leftovers that act on the substrate or the
+  // worktree's disk but still live beside `create`, whose
+  // orchestration/pod-mechanics split they wait on. The JOIN paths that
+  // read rows alongside an observation and the mediators that apply
+  // events answer to the base zone.
   'packages/server/src/features/worktrees/project-purge.ts',
-  'packages/server/src/features/worktrees/seed.ts',
   'packages/server/src/features/worktrees/spare-pool.ts',
   'packages/server/src/features/worktrees/spawn-script.ts',
-  'packages/server/src/features/worktrees/worktree-meta.ts',
 ]
 
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
@@ -226,6 +211,36 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
             NO_SERVER,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The store layer: worktrees, clones, transcripts and config on disk
+  // (docs/plans/layered-server.md). Pure disk mechanics — it never reads
+  // rows, never touches the substrate, and never imports the mediators or
+  // the runtime above it.
+  {
+    files: ['packages/server/src/store/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_SERVER,
+            {
+              regex: '^(#features/(records|worktrees|projects|titles)|#runtime)(/|$)',
+              message: 'The store layer must not import records, the runtime, or the mediators above it (docs/plans/layered-server.md).',
+            },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

@@ -169,13 +169,13 @@ vi.mock('@yaac/shared/project-paths', () => ({
   PACKAGE_ROOT: '/tmp/yaac-package',
 }))
 
-vi.mock('@yaac/server/features/projects/config', () => ({
+vi.mock('@yaac/server/store/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
   resolveEphemeralModulesPaths: () => [],
   ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 } satisfies Partial<typeof projectConfigModule>))
 
-vi.mock('@yaac/server/features/projects/credentials', () => ({
+vi.mock('@yaac/server/store/projects/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
@@ -276,9 +276,9 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/pla
 import { containerExec } from '@yaac/server/platform/k8s/exec'
 import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { proxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
-import { resolveProjectConfig } from '@yaac/server/features/projects/config'
+import { resolveProjectConfig } from '@yaac/server/store/projects/config'
 import simpleGit from 'simple-git'
-import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/features/projects/credentials'
+import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/store/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/runtime/k8s/egress/default-allowed-hosts'
@@ -1236,8 +1236,8 @@ import type * as buildCoordinatorModule from '@yaac/server/runtime/k8s/images/bu
 import type * as kubectlModule from '@yaac/server/platform/k8s/kubectl'
 import type * as execModule from '@yaac/server/platform/k8s/exec'
 import type * as portModule from '@yaac/server/platform/port'
-import type * as projectConfigModule from '@yaac/server/features/projects/config'
-import type * as credentialsModule from '@yaac/server/features/projects/credentials'
+import type * as projectConfigModule from '@yaac/server/store/projects/config'
+import type * as credentialsModule from '@yaac/server/store/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
 import type * as portForwardersModule from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/features/records/worktree-store'

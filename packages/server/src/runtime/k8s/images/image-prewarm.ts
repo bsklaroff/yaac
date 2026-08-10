@@ -16,7 +16,8 @@
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
-import { listProjects, resolveProjectConfig } from '#features/projects'
+import { listProjects } from '#features/projects'
+import { resolveProjectConfig } from '#store/projects'
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'

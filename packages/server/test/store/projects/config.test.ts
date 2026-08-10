@@ -2,11 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  ephemeralModulesSlotKey,
-  resolveEphemeralModulesPaths,
-  resolveProjectConfig,
-} from '#features/projects'
+import { ephemeralModulesSlotKey, resolveEphemeralModulesPaths, resolveProjectConfig } from '#store/projects'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 

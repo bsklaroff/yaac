@@ -11,8 +11,8 @@ import {
   TEST_IMAGE_PREFIX,
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
-import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/build-dirs'
-import { writeBuildFile } from '@yaac/server/features/projects/build-files'
+import { projectBuildDir, userBuildDir } from '@yaac/server/store/projects/build-dirs'
+import { writeBuildFile } from '@yaac/server/store/projects/build-files'
 import { ensureImage } from '@yaac/server/runtime/k8s/images/build-coordinator'
 import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'

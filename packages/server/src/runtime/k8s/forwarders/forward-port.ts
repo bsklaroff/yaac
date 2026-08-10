@@ -1,7 +1,7 @@
 import { isPrewarmed, listWorktreePods } from '#platform/k8s'
 import { addWorktreeForwarder } from './port-forwarders'
 import { getUnforwardedPorts } from './port-detector'
-import { addPortForwardToProjectConfig } from '#features/projects'
+import { addPortForwardToProjectConfig } from '#store/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
 import type { PortMapping } from '@yaac/shared/types'

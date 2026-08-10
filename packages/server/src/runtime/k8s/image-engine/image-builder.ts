@@ -2,12 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import {
-  PROJECT_DOCKERFILE,
-  USER_DOCKERFILE,
-  resolveProjectBuildDir,
-  resolveUserBuildDir,
-} from '#features/projects'
+import { PROJECT_DOCKERFILE, USER_DOCKERFILE, resolveProjectBuildDir, resolveUserBuildDir } from '#store/projects'
 import { imageExists, runTrackedPodman } from '#platform/container'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#platform/build-context'
 import { podUid } from '#platform/k8s'

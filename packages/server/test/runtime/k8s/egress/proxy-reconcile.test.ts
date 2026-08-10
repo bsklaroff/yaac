@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ProxyClient } from '#runtime/k8s/egress/proxy-client'
 
 const mockListSshEntries = vi.hoisted(() => vi.fn())
-vi.mock('#features/projects/credentials', () => ({
+vi.mock('#store/projects/credentials', () => ({
   listSshEntries: mockListSshEntries,
 }))
 

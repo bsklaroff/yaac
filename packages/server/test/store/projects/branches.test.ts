@@ -6,7 +6,7 @@ import simpleGit from 'simple-git'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectBranches, setProjectReferenceBranch } from '#features/projects'
+import { getProjectBranches, setProjectReferenceBranch } from '#store/projects'
 import { cloneRepo } from '#platform/git'
 
 const execFileAsync = promisify(execFile)
@@ -95,7 +95,4 @@ describe('getProjectBranches', () => {
     })
   })
 
-  it('throws NOT_FOUND for an unknown project', async () => {
-    await expect(getProjectBranches('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
 })

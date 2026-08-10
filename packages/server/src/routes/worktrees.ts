@@ -16,7 +16,8 @@ import {
   worktreeForkBranch,
   type WorktreeCreateOptions,
 } from '#features/worktrees'
-import { createWorktree, getWorktreeChanges, stopWorktree, tryClaimPrewarmed } from '#features/worktrees'
+import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#features/worktrees'
+import { getWorktreeChanges } from '#runtime/k8s/worktrees'
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import { allowWorktreeHost } from '#runtime/k8s/egress'

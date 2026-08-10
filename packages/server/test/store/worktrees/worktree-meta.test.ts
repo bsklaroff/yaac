@@ -17,7 +17,7 @@ import {
   worktreesOnCurrentLife,
   updateWorktreeMeta,
   type WorktreeMeta,
-} from '#features/worktrees/worktree-meta'
+} from '#store/worktrees/worktree-meta'
 
 /**
  * The herd's own record of a worktree — what it reads back when it may not

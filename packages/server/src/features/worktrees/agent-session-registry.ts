@@ -1,13 +1,7 @@
 import { isPrewarmed, listWorktreePods, type TickSnapshot } from '#platform/k8s'
 import { classifyWorktreePods, liveAgents, podAgentMode, probeTmuxLiveness } from '#runtime/status'
-import {
-  normalizeTool,
-  readAcpFirstPrompt,
-  resolveProjectPath,
-  sessionTranscriptPath,
-  toProjectRelative,
-  transcriptLastActiveMs,
-} from '#runtime/agents'
+import { normalizeTool, readAcpFirstPrompt } from '#runtime/agents'
+import { resolveProjectPath, sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
 import { applyWorktreeEvent } from '#features/records'
 import { captureFirstPrompt } from './prompt-capture'
 import {
@@ -15,7 +9,7 @@ import {
   mergeSessions,
   worktreesOnCurrentLife,
   updateWorktreeMeta,
-} from './worktree-meta'
+} from '#store/worktrees'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'

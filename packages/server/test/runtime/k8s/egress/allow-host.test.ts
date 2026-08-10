@@ -7,7 +7,7 @@ vi.mock('#runtime/k8s/egress/proxy-client', () => ({
     allowHost: vi.fn(() => Promise.resolve(true)),
   },
 }))
-vi.mock('#features/projects/local-config', () => ({
+vi.mock('#store/projects/local-config', () => ({
   addAllowedHostToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
 vi.mock('#platform/k8s/pods', async (importOriginal) => ({
@@ -16,7 +16,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
 }))
 
 import { proxyClient } from '#runtime/k8s/egress/proxy-client'
-import { addAllowedHostToProjectConfig } from '#features/projects/local-config'
+import { addAllowedHostToProjectConfig } from '#store/projects/local-config'
 import { listWorktreePods, LABEL_PREWARMED, type PodInfo } from '#platform/k8s/pods'
 import { allowWorktreeHost } from '#runtime/k8s/egress/allow-host'
 

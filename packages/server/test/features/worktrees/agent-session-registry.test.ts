@@ -32,7 +32,7 @@ import {
   newWorktreeMeta,
   recordWorktreeLife,
   updateWorktreeMeta,
-} from '#features/worktrees/worktree-meta'
+} from '#store/worktrees/worktree-meta'
 import { listWorktreePods } from '#platform/k8s/pods'
 import { podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'

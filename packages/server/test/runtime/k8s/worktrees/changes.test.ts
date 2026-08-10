@@ -23,7 +23,7 @@ import {
   buildChangesScript,
   getWorktreeChanges,
   worktreeForkFallback,
-} from '#features/worktrees/changes'
+} from '#runtime/k8s/worktrees/changes'
 
 const mockExec = vi.mocked(podExec)
 const mockUpstream = vi.mocked(worktreeUpstreamBranch)

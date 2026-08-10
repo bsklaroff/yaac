@@ -77,13 +77,7 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import {
-  loadKnownHostsEntryForHost,
-  parseGitRemote,
-  resolveCredentialForUrl,
-  resolveEphemeralModulesPaths,
-  resolveProjectConfig,
-} from '#features/projects'
+import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#store/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { writeKnownHostsFile } from '#platform/git'
 import { formatSshCommand, getGitUserConfig } from '@yaac/shared/git'
@@ -112,14 +106,14 @@ import {
   type InitWindow,
 } from '#runtime/agents'
 import { applyWorktreeEvent } from '#features/records'
-import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
+import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from '#store/worktrees'
 import {
   ensureSessionStartsLog,
   mergeSessions,
   newWorktreeMeta,
   recordWorktreeLife,
   updateWorktreeMeta,
-} from './worktree-meta'
+} from '#store/worktrees'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
   WORKTREE_INIT_SCRIPT,

@@ -13,7 +13,8 @@ vi.mock('#platform/git', async (importOriginal) => ({
 
 import { cloneRepo } from '#platform/git'
 import type * as gitModule from '#platform/git'
-import { addProject, addEntry, saveCredentials } from '#features/projects'
+import { addProject } from '#features/projects'
+import { addEntry, saveCredentials } from '#store/projects'
 import {
   projectDir,
   repoDir,

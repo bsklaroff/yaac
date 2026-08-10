@@ -16,7 +16,7 @@ import {
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
-} from '#runtime/agents/transcripts'
+} from '#store/transcripts/transcripts'
 
 const slug = 'demo'
 

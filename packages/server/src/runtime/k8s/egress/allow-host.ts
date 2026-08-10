@@ -1,6 +1,6 @@
 import { isPrewarmed, listWorktreePods } from '#platform/k8s'
 import { proxyClient } from './proxy-client'
-import { addAllowedHostToProjectConfig } from '#features/projects'
+import { addAllowedHostToProjectConfig } from '#store/projects'
 import { ServerError } from '@yaac/shared/errors'
 
 /**

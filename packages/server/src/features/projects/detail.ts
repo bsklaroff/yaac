@@ -1,7 +1,7 @@
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow } from '#features/records'
 import { countProjectWorkspaces } from '#runtime/k8s/worktrees'
-import { loadProjectConfig } from './config'
+import { loadProjectConfig } from '#store/projects'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 

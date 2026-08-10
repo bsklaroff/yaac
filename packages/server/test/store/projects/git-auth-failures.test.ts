@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@yaac/shared/project-paths'
-import { readAllGitAuthFailures, readGitAuthFailures } from '#features/projects'
+import { readAllGitAuthFailures, readGitAuthFailures } from '#store/projects'
 
 let tmpDir: string
 

@@ -11,16 +11,7 @@ import {
 } from '#features/projects'
 import { removeProject } from '#features/worktrees'
 import { getProjectSkills, getSkillDetail } from '#features/skills'
-import {
-  getProjectBranches,
-  readProjectConfigRaw,
-  readProjectDockerfile,
-  removeProjectConfig,
-  resolveProjectBuildDir,
-  setProjectReferenceBranch,
-  writeProjectConfig,
-  writeProjectDockerfile,
-} from '#features/projects'
+import { getProjectBranches, readProjectConfigRaw, readProjectDockerfile, removeProjectConfig, resolveProjectBuildDir, setProjectReferenceBranch, writeProjectConfig, writeProjectDockerfile } from '#store/projects'
 import { pushImageShared, rebuildProjectImage } from '#runtime/k8s/images'
 import { remoteBranchExists } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -75,8 +66,12 @@ export const projectApp = new Hono()
     '/:slug/branches',
     zv('query', z.object({ refresh: z.string().optional() })),
     async (c) => {
+      const slug = c.req.param('slug')
+      // Existence is a row question, answered before the clone is touched —
+      // an unknown slug must 404, not probe a repo dir that isn't there.
+      await assertProjectExists(slug)
       const refresh = c.req.valid('query').refresh === '1'
-      return c.json(await getProjectBranches(c.req.param('slug'), { refresh }))
+      return c.json(await getProjectBranches(slug, { refresh }))
     },
   )
   // Set (or clear, with null) the project's default reference branch —
@@ -141,12 +136,15 @@ export const projectApp = new Hono()
     await assertProjectExists(slug)
     return resolveProjectBuildDir(slug)
   }))
-  .get('/:slug/dockerfile', async (c) =>
-    c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
+  .get('/:slug/dockerfile', async (c) => {
+    await assertProjectExists(c.req.param('slug'))
+    return c.json({ content: await readProjectDockerfile(c.req.param('slug')) })
+  })
   .put(
     '/:slug/dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
+      await assertProjectExists(c.req.param('slug'))
       const { content } = c.req.valid('json')
       await writeProjectDockerfile(c.req.param('slug'), content)
       return c.json({ content })

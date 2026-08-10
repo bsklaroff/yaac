@@ -1,6 +1,6 @@
 import { listWorktreePods } from '#platform/k8s'
 import { isTmuxSessionAlive } from '#runtime/status'
-import { resolveProjectConfig } from '#features/projects'
+import { resolveProjectConfig } from '#store/projects'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from './port-forwarders'
 
 interface RestoreCandidate {

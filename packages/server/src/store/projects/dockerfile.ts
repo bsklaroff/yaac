@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { assertProjectExists } from './detail'
 import { isLayered } from '#platform/build-context'
 import {
   PROJECT_DOCKERFILE,
@@ -33,7 +32,6 @@ async function readFileOrEmpty(filePath: string): Promise<string> {
  * none — the image then builds from the bundled base stack.
  */
 export async function readProjectDockerfile(slug: string): Promise<string> {
-  await assertProjectExists(slug)
   return readFileOrEmpty(await projectDockerfilePath(slug))
 }
 
@@ -43,7 +41,6 @@ export async function readProjectDockerfile(slug: string): Promise<string> {
  * The image only changes on the next `yaac project rebuild`.
  */
 export async function writeProjectDockerfile(slug: string, content: string): Promise<void> {
-  await assertProjectExists(slug)
   const filePath = await projectDockerfilePath(slug)
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })

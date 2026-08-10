@@ -3,14 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
-import {
-  PROJECT_DOCKERFILE,
-  USER_DOCKERFILE,
-  readProjectDockerfile,
-  readUserDockerfile,
-  writeProjectDockerfile,
-  writeUserDockerfile,
-} from '#features/projects'
+import { PROJECT_DOCKERFILE, USER_DOCKERFILE, readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from '#store/projects'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
@@ -40,10 +33,8 @@ beforeEach(async () => {
 afterEach(async () => { await cleanupTempDir(tmpDir) })
 
 describe('readProjectDockerfile', () => {
-  it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(readProjectDockerfile('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
+  // Whether the project EXISTS is a row question the route answers before
+  // touching disk; the store read itself treats an absent file as empty.
   it('returns empty string when the project has no Dockerfile', async () => {
     expect(await readProjectDockerfile(slug)).toBe('')
   })
@@ -55,10 +46,6 @@ describe('readProjectDockerfile', () => {
 })
 
 describe('writeProjectDockerfile', () => {
-  it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(writeProjectDockerfile('missing', LAYERED)).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
   it('writes the content to config/build/Dockerfile.yaac', async () => {
     await writeProjectDockerfile(slug, LAYERED)
     expect(await fs.readFile(projectDockerfilePath(), 'utf8')).toBe(LAYERED)

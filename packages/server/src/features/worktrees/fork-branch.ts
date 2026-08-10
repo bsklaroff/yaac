@@ -1,5 +1,5 @@
 import { getWorktreeRow } from '#features/records'
-import { worktreeForkFallback } from './changes'
+import { worktreeForkFallback } from '#runtime/k8s/worktrees'
 
 /**
  * How long a worktree's fork branch is trusted without re-reading it. Reading

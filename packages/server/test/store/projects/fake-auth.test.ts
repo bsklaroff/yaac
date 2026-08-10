@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { listEntries, saveCredentials, seedFakeAuth } from '#features/projects'
+import { listEntries, saveCredentials, seedFakeAuth } from '#store/projects'
 // The pattern `auth fake github` claims. Not under test here.
-import { FAKE_GITHUB_PATTERN } from '#features/projects/fake-auth'
+import { FAKE_GITHUB_PATTERN } from '#store/projects/fake-auth'
 import {
   loadClaudeCredentialsFile,
   loadOpencodeCredentialsFile,

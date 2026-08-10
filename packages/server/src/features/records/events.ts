@@ -176,13 +176,4 @@ export interface WorktreeStopped {
   cause?: WorktreeDeathCause
 }
 
-/**
- * Cap on a reported opening message, applied by whoever stores it. Generous
- * next to a title — the sidebar truncates for display, but the prompt also
- * feeds title generation, which reads the opening ~1000 chars.
- *
- * Here rather than beside the table because it bounds what an emitter
- * reports: a sweep caches what it read at this length, so the copy it
- * re-reports and the copy the row keeps cannot disagree.
- */
-export const MAX_PROMPT_LENGTH = 4000
+export { MAX_PROMPT_LENGTH } from '@yaac/shared/types'

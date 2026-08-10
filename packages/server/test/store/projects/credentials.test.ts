@@ -5,18 +5,7 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import {
-  addEntry,
-  listEntries,
-  listSshEntries,
-  loadKnownHostsEntryForHost,
-  parseGitRemote,
-  removeEntryChecked,
-  replaceEntries,
-  resolveCredentialForUrl,
-  saveCredentials,
-  writeProxySecrets,
-} from '#features/projects'
+import { addEntry, listEntries, listSshEntries, loadKnownHostsEntryForHost, parseGitRemote, removeEntryChecked, replaceEntries, resolveCredentialForUrl, saveCredentials, writeProxySecrets } from '#store/projects'
 import { githubCredentialsPath, proxySecretsCredentialsPath } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 

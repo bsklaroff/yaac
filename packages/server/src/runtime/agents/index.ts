@@ -72,9 +72,3 @@ export {
   validateInitWindows,
   type AgentWindowSpec,
 } from './setup-commands'
-export {
-  resolveProjectPath,
-  sessionTranscriptPath,
-  toProjectRelative,
-  transcriptLastActiveMs,
-} from './transcripts'

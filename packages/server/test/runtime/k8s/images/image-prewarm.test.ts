@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#features/projects/list', () => ({ listProjects: vi.fn() }))
-vi.mock('#features/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
+vi.mock('#store/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#runtime/k8s/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
 vi.mock('#runtime/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
@@ -19,7 +19,7 @@ import {
   _resetImagePrewarmForTests,
 } from '#runtime/k8s/images/image-prewarm'
 import { listProjects } from '#features/projects/list'
-import { resolveProjectConfig } from '#features/projects/config'
+import { resolveProjectConfig } from '#store/projects/config'
 import { resolveImageChain } from '#runtime/k8s/image-engine/image-builder'
 import { ensureImage, pushImageShared } from '#runtime/k8s/images/build-coordinator'
 import {

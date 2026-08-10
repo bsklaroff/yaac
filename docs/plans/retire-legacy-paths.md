@@ -24,7 +24,7 @@ anyone whose on-disk file is still in the old shape.
 
 | site | what it does |
 |---|---|
-| `normalizeLegacyPattern` — `features/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
+| `normalizeLegacyPattern` — `store/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
 | `removeLegacyCodexHook` — `runtime/agents/codex.ts`, called from `createWorktree` | strips the pre-managed-hook SessionStart entry from a project's mounted `~/.codex/hooks.json`. Left there, it re-triggers Codex's `/hooks` trust prompt every session |
 
 Both become ordinary one-shots the moment something rewrites what they read:
@@ -35,7 +35,7 @@ either is deleted rather than converted — otherwise the failure is silent.
 
 ## 2. On-disk migrations
 
-`migrateLegacyDockerfile` (`features/projects/build-dirs.ts`) renames
+`migrateLegacyDockerfile` (`store/projects/build-dirs.ts`) renames
 `config/Dockerfile.yaac` into the project build dir on first touch, through
 `resolveProjectBuildDir` / `resolveUserBuildDir`. Self-healing, but only for a
 project whose build dir has actually been resolved — a project that has never
@@ -117,7 +117,7 @@ once nobody is upgrading across that gap.
 | site | what it does |
 |---|---|
 | `warnAboutUnimportedLegacyData` — `main/legacy-data-check.ts` | stats the four retired JSON stores at startup and warns, naming each unread file |
-| the refused-absolute `serverLog` in `resolveProjectPath` — `runtime/agents/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
+| the refused-absolute `serverLog` in `resolveProjectPath` — `store/transcripts/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
 
 ## 6. Prose that outlives what it describes
 

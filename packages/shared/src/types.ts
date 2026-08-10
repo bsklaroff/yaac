@@ -853,3 +853,13 @@ export interface DesktopServerTargets {
 export type DesktopServerOutcome =
   | { ok: true; changed: boolean }
   | { ok: false; error: string }
+
+/**
+ * Cap on a recorded opening message, applied by whoever stores it. Generous
+ * next to a title — the sidebar truncates for display, but the prompt also
+ * feeds title generation, which reads the opening ~1000 chars. Shared
+ * vocabulary rather than a records-private constant because it bounds what
+ * the store and the discovery sweeps cache as well as what the row keeps,
+ * so the copies cannot disagree.
+ */
+export const MAX_PROMPT_LENGTH = 4000
