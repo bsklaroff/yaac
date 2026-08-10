@@ -1,9 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
+import { DiffView } from '#components/DiffView'
+import { Markdown } from '#components/Markdown'
+import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
+import { languageForPath } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#store'
-import type { AcpContent, AcpEvent, AcpPlanEntry, AcpToolCall } from '@yaac/shared/acp'
+import type {
+  AcpContent, AcpDiff, AcpEvent, AcpPlanEntry, AcpToolCall, AcpToolContent,
+} from '@yaac/shared/acp'
 
 /**
  * The chat pane: an ACP conversation, rendered as messages instead of
@@ -37,6 +43,11 @@ type Group =
 
 function textOf(content: AcpContent[]): string {
   return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
+}
+
+/** A tool call's prose — everything it produced that isn't an edit. */
+function toolTextOf(content: AcpToolContent[] | undefined): string {
+  return textOf((content ?? []).filter((c): c is AcpContent => c.type !== 'diff'))
 }
 
 /** What the input box held when a `user` event was sent — the text parts only,
@@ -99,33 +110,135 @@ export function groupEvents(events: AcpEvent[]): Group[] {
   return groups
 }
 
+/**
+ * One file's edit, as the hunks the agent reported for it.
+ *
+ * An agent sends one diff block per hunk, each naming the same file, so
+ * consecutive blocks are gathered back into the file they describe — a reader
+ * wants "this file changed, in these three places", not three anonymous
+ * fragments.
+ */
+interface EditGroup {
+  path: string
+  hunks: DiffLine[][]
+}
+
+function groupDiffs(diffs: AcpDiff[]): EditGroup[] {
+  const groups: EditGroup[] = []
+  for (const d of diffs) {
+    const lines = diffTextPair(d.oldText, d.newText)
+    const last = groups[groups.length - 1]
+    if (last !== undefined && last.path === d.path) last.hunks.push(lines)
+    else groups.push({ path: d.path, hunks: [lines] })
+  }
+  return groups
+}
+
+/** Basename emphasized, directory faint — a long absolute path stays readable
+ *  at a glance. */
+function PathLabel({ path }: { path: string }): JSX.Element {
+  const cut = path.lastIndexOf('/')
+  return (
+    <>
+      {cut !== -1 && <span className="text-text-faint">{path.slice(0, cut + 1)}</span>}
+      <span className="text-text-dim">{path.slice(cut + 1)}</span>
+    </>
+  )
+}
+
+function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolean }): JSX.Element {
+  const language = languageForPath(group.path)
+  return (
+    <div>
+      {showPath && (
+        <div className="border-b border-hairline px-2.5 py-1 font-mono text-[10px]">
+          <PathLabel path={group.path} />
+        </div>
+      )}
+      {group.hunks.map((lines, i) => (
+        <div key={i} className={clsx('overflow-x-auto', i > 0 && 'border-t border-hairline')}>
+          {/* No line-number gutter: an edit block is a fragment, and its
+              positions are within the fragment rather than within the file. */}
+          <DiffView lines={lines} language={language} showLineNumbers={false} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
-  const [open, setOpen] = useState(false)
-  const body = call.content ? textOf(call.content) : ''
+  const diffs = useMemo(
+    () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
+    [call.content],
+  )
+  const edits = useMemo(() => groupDiffs(diffs), [diffs])
+  const body = toolTextOf(call.content)
+  const hasContent = body !== '' || edits.length > 0
+  /**
+   * The user's own choice, or `null` for "hasn't said". An edit opens by
+   * default because the diff is the thing worth reading; everything else stays
+   * a one-line row. This is derived per render rather than seeded into state
+   * because a tool call arrives `pending` and empty, and grows its content
+   * through later updates — an initial value would have been decided before
+   * there was anything to decide on.
+   */
+  const [choice, setChoice] = useState<boolean | null>(null)
+  const open = (choice ?? edits.length > 0) && hasContent
+  const stats = useMemo(
+    () => edits.flatMap((g) => g.hunks).reduce(
+      (a, lines) => {
+        const s = diffStats(lines)
+        return { additions: a.additions + s.additions, deletions: a.deletions + s.deletions }
+      },
+      { additions: 0, deletions: 0 },
+    ),
+    [edits],
+  )
   const dot = call.status === 'failed'
     ? 'bg-[#f85149]'
     : call.status === 'completed'
       ? 'bg-[#3fb950]'
       : 'bg-[#d29922]'
   return (
-    <div className="rounded-md border border-hairline bg-surface-2">
+    <div className="overflow-hidden rounded-md border border-hairline bg-surface-2">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={body === ''}
+        onClick={() => setChoice(!open)}
+        disabled={!hasContent}
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs disabled:cursor-default"
       >
         <span className={clsx('size-1.5 shrink-0 rounded-full', dot)} />
         <span className="text-text-dim">{call.kind}</span>
         <span className="truncate text-text">{call.title}</span>
-        {body !== '' && (
-          <ChevronIcon size={12} className={clsx('ml-auto shrink-0 text-text-faint', open && 'rotate-90')} />
+        {edits.length > 0 && (
+          <span className="ml-auto shrink-0 font-mono text-[10px]">
+            {stats.additions > 0 && <span className="text-[#3fb950]">+{stats.additions}</span>}
+            {stats.additions > 0 && stats.deletions > 0 && ' '}
+            {stats.deletions > 0 && <span className="text-[#f85149]">−{stats.deletions}</span>}
+          </span>
+        )}
+        {hasContent && (
+          <ChevronIcon
+            size={12}
+            className={clsx('shrink-0 text-text-faint', edits.length === 0 && 'ml-auto', open && 'rotate-90')}
+          />
         )}
       </button>
-      {open && body !== '' && (
-        <pre className="max-h-80 overflow-auto border-t border-hairline px-2.5 py-1.5 text-[11px] leading-snug text-text-dim">
-          {body}
-        </pre>
+      {open && (
+        <div className="max-h-96 overflow-auto border-t border-hairline bg-bg">
+          {edits.map((group, i) => (
+            <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
+              {/* The row's own title already names the file when there is only
+                  one, so a header there would say it twice. */}
+              <EditGroupView group={group} showPath={edits.length > 1} />
+            </div>
+          ))}
+          {body !== '' && (
+            <div className={clsx('px-2.5 py-1.5 text-[11px] leading-snug text-text-dim', edits.length > 0 && 'border-t border-hairline')}>
+              <Markdown>{body}</Markdown>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
@@ -144,7 +257,9 @@ function ThoughtRow({ text }: { text: string }): JSX.Element {
         thinking
       </button>
       {open && (
-        <div className="mt-1 whitespace-pre-wrap border-l border-hairline pl-2.5 text-text-faint">{text}</div>
+        <div className="mt-1 border-l border-hairline pl-2.5 text-text-faint">
+          <Markdown>{text}</Markdown>
+        </div>
       )}
     </div>
   )
@@ -328,8 +443,11 @@ export function WorktreeChat({
         )}
         {groups.map((g) => {
           if (g.kind === 'user') {
+            // Left, like everything else, and left literal: a bubble is what
+            // marks it as the user's, and what they typed is not the agent's
+            // markdown to reinterpret.
             return (
-              <div key={g.seq} className="flex justify-end">
+              <div key={g.seq} className="flex justify-start">
                 <div className="max-w-[85%] whitespace-pre-wrap rounded-md bg-surface-2 px-2.5 py-1.5 text-text">
                   {g.text}
                 </div>
@@ -338,8 +456,8 @@ export function WorktreeChat({
           }
           if (g.kind === 'agent') {
             return (
-              <div key={g.seq} className="whitespace-pre-wrap text-text">
-                {g.text}
+              <div key={g.seq} className="text-text">
+                <Markdown>{g.text}</Markdown>
               </div>
             )
           }

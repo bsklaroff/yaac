@@ -360,4 +360,62 @@ describe('replayAcpLog', () => {
     expect(events.map((e) => e.type)).toEqual(['agent'])
   })
 
+  it('hands an edit to the pane as a diff, not as prose about one', () => {
+    // An agent reports an edit as before/after texts — one entry per hunk, all
+    // naming the same file. Flattening that into a string would be
+    // irreversible: the pane renders it as a real diff, and no arrangement of
+    // markers in text gets the pair back.
+    const events = replayAcpLog([
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Edit a.ts',
+        kind: 'edit',
+        content: [
+          { type: 'diff', path: '/workspace/a.ts', oldText: 'one', newText: 'ONE' },
+          // `null` is how "this file is new" arrives; it must not become the
+          // string "null" in front of a reader.
+          { type: 'diff', path: '/workspace/b.ts', oldText: null, newText: 'fresh' },
+        ],
+      }),
+    ].join('\n'))
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      call: {
+        content: [
+          { type: 'diff', path: '/workspace/a.ts', oldText: 'one', newText: 'ONE' },
+          { type: 'diff', path: '/workspace/b.ts', newText: 'fresh' },
+        ],
+      },
+    })
+    const created = (events[0] as { call: { content: Array<Record<string, unknown>> } }).call.content[1]
+    expect('oldText' in created).toBe(false)
+  })
+
+  it('carries a tool call’s prose and its edits side by side', () => {
+    const events = replayAcpLog([
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Write a.ts',
+        kind: 'edit',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'writing the file' } },
+          { type: 'diff', path: '/workspace/a.ts', newText: 'body' },
+          // A terminal yaac declined to provide; there is nothing to show.
+          { type: 'terminal', terminalId: 'term-1' },
+        ],
+      }),
+    ].join('\n'))
+
+    expect(events[0]).toMatchObject({
+      call: {
+        content: [
+          { type: 'text', text: 'writing the file' },
+          { type: 'diff', path: '/workspace/a.ts', newText: 'body' },
+        ],
+      },
+    })
+  })
 })

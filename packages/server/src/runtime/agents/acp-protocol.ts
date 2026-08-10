@@ -27,6 +27,7 @@ import type {
   AcpPlanEntry,
   AcpStopReason,
   AcpToolCall,
+  AcpToolContent,
   AcpToolKind,
   AcpToolStatus,
 } from '@yaac/shared/acp'
@@ -141,13 +142,18 @@ function toContentList(value: unknown): AcpContent[] {
 /**
  * A tool call's content entries, which are *wrapped* blocks: `content`
  * carries a block, `diff` carries a before/after pair, `terminal` names a
- * terminal we never created. Diffs are rendered as text — a unified-diff
- * pane is a richer thing than this feature needs, and the raw texts are what
- * a reader wants to see either way.
+ * terminal we never created.
+ *
+ * A diff passes through as a diff. It is the one entry a pane can render
+ * better than prose, and flattening it here would be irreversible — the texts
+ * read as a diff only because a renderer lines them up, and no amount of
+ * markers in a string gets that back. `oldText: null` is how an agent says
+ * "new file", so it is dropped to absent rather than becoming the string
+ * "null".
  */
-function toToolContent(value: unknown): AcpContent[] {
+function toToolContent(value: unknown): AcpToolContent[] {
   if (!Array.isArray(value)) return []
-  const out: AcpContent[] = []
+  const out: AcpToolContent[] = []
   for (const raw of value) {
     const entry = asRecord(raw)
     if (!entry) continue
@@ -157,14 +163,12 @@ function toToolContent(value: unknown): AcpContent[] {
       continue
     }
     if (entry.type === 'diff') {
-      const path = asString(entry.path) ?? '(file)'
       const oldText = asString(entry.oldText)
-      const newText = asString(entry.newText) ?? ''
       out.push({
-        type: 'text',
-        text: oldText === undefined
-          ? `${path}\n${newText}`
-          : `${path}\n--- before\n${oldText}\n+++ after\n${newText}`,
+        type: 'diff',
+        path: asString(entry.path) ?? '(file)',
+        ...(oldText !== undefined ? { oldText } : {}),
+        newText: asString(entry.newText) ?? '',
       })
     }
     // `terminal` entries reference a terminal yaac declined to provide; there
@@ -211,7 +215,7 @@ export interface AcpToolCallPatch {
   title?: string
   kind?: AcpToolKind
   status?: AcpToolStatus
-  content?: AcpContent[]
+  content?: AcpToolContent[]
   locations?: Array<{ path: string; line?: number }>
 }
 
