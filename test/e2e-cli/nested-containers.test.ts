@@ -305,15 +305,6 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
       'cat', '/etc/containers/storage.conf',
     ])
     expect(storageConf).toContain('additionalimagestores = ["/var/lib/shared-images"]')
-    // And it is genuinely read-only to the session, enforced host-side by
-    // the gofer rather than by anything in-sandbox: the engine runs as real
-    // root with CAP_SYS_ADMIN inside the sentry, so nothing in the pod is
-    // what stops one session corrupting the store every other session on
-    // the node reads.
-    const { stdout: roProbe } = await execInJob(name1, [
-      'sh', '-c', 'sudo touch /var/lib/shared-images/probe 2>&1 || echo READ-ONLY',
-    ])
-    expect(roProbe).toContain('READ-ONLY')
     const { stdout: regConf } = await execInJob(name1, [
       'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
@@ -379,6 +370,20 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     // --- Session 2 ---
     const session2 = await createWorktree(slug)
     expect(session2.worktreeId).not.toBe(session1.worktreeId)
+
+    // The store is mounted, and genuinely read-only to the session —
+    // enforced host-side by the gofer rather than by anything in-sandbox:
+    // the engine runs as real root with CAP_SYS_ADMIN inside the sentry, so
+    // nothing in the pod is what stops one session corrupting the store
+    // every other session on the node reads. Probed on session 2, not
+    // session 1: a create only mounts a generation that is already
+    // complete, so session 1 (which is what triggers the first build) has
+    // no store mounted at all and its /var/lib/shared-images is the image's
+    // own writable directory.
+    const { stdout: roProbe } = await execInJob(session2.jobName, [
+      'sh', '-c', 'sudo touch /var/lib/shared-images/probe 2>&1 || echo READ-ONLY',
+    ])
+    expect(roProbe).toContain('READ-ONLY')
 
     // The salvage's product is visible in the project's registry: the image
     // under its own name, and its ancestor chain under bounded
