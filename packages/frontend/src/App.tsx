@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import clsx from 'clsx'
 import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
 import { createWorktree } from './lib/createWorktree'
 import { stopWorktreeOptimistic } from './lib/stopWorktreeFlow'
@@ -17,6 +18,11 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { WorktreeView } from './components/WorktreeView'
 import { ConnectSplash } from './components/ConnectSplash'
+import { MobileScreenLayer } from './components/mobile/MobileScreenLayer'
+import { ProjectsScreen } from './components/mobile/ProjectsScreen'
+import { WorktreesScreen } from './components/mobile/WorktreesScreen'
+import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
+import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
 import { newlyWaitingWorktrees, shouldChime, waitingSpellKeys } from './lib/attentionChime'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
@@ -114,17 +120,24 @@ function worktreeName(worktree: WorktreeListEntry | null): string {
 function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
+  const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const endDelete = useUiStore((s) => s.endDelete)
   const optimisticProvisioning = useUiStore((s) => s.optimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
-  const selectWorktree = useUiStore((s) => s.selectWorktree)
+  const autoSelectWorktree = useUiStore((s) => s.autoSelectWorktree)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const mobileScreen = useUiStore((s) => s.mobileScreen)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const markWaitingRead = useUiStore((s) => s.markWaitingRead)
   const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
+
+  // Phone-sized: the three columns become three screens (docs/mobile-layout.md).
+  const isMobile = useIsMobile()
+  useVisualViewportHeight(isMobile)
+  useMobileHistory(isMobile)
 
   const projects = snapshot?.projects ?? []
   const worktrees = snapshot?.worktrees ?? []
@@ -143,11 +156,13 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // recover from a persisted/active project that no longer exists (deleted, or
   // a stale link) by falling back to the first. Switching here clears the
   // worktree — correct, since the restored worktree belonged to that project.
+  // Through restoreActiveProject, not setActiveProject: nobody chose this
+  // project, so on mobile it must not also count as walking into it.
   useEffect(() => {
     if (projects.length === 0) return
     if (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)) return
-    setActiveProject(projects[0].slug)
-  }, [activeProjectSlug, projects, setActiveProject])
+    restoreActiveProject(projects[0].slug)
+  }, [activeProjectSlug, projects, restoreActiveProject])
 
   // Once the snapshot no longer lists an optimistically-deleted worktree, the
   // server's cleanup landed — stop tracking it so the set can't leak (or
@@ -267,6 +282,9 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // the first waiting one (else the first visible). But never override a
   // selected provisioning row (it's not in `scoped`, so it would otherwise be
   // stolen) — auto-open on create relies on the selection sticking.
+  // Goes through autoSelectWorktree, not selectWorktree: this is the app
+  // choosing, so on mobile it must fill the pane *behind* the worktree list
+  // rather than navigating the user onto it.
   useEffect(() => {
     if (!activeProjectSlug) return
     if (selectedWorktreeId && scopedProvisioning.some((p) => p.worktreeId === selectedWorktreeId)) return
@@ -277,8 +295,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     if (visible.length === 0) return
     if (selectedWorktreeId && visible.some((s) => s.worktreeId === selectedWorktreeId)) return
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
-    selectWorktree(pick.worktreeId)
-  }, [activeProjectSlug, scopedProvisioning, scoped, selectedWorktreeId, pendingDeleteIds, selectWorktree])
+    autoSelectWorktree(pick.worktreeId)
+  }, [activeProjectSlug, scopedProvisioning, scoped, selectedWorktreeId, pendingDeleteIds, autoSelectWorktree])
   // Viewing a waiting worktree marks its current spell read — the pane shows
   // it, so it no longer needs attention. Covers both selecting a waiting
   // worktree and the open worktree flipping running → waiting under the
@@ -320,27 +338,71 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // Per-project count of unread waiting worktrees → the rail attention badge.
   const attention = unreadWaitingBySlug(worktrees, readWaiting, pendingDeleteIds)
 
+  const projectRemoteUrl = projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''
+  const scopedGitAuthFailures = (activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []
+
   return (
-    // Rail + sidebar sit flush on the base layer; the worktree pane floats
-    // as an inset, rounded, bordered card.
-    <div className="flex h-full bg-base">
-      <ProjectRail
-        projects={projects}
-        activeProjectSlug={activeProjectSlug}
-        attentionBySlug={attention}
-        onSelect={setActiveProject}
-      />
-      {sidebarOpen && (
+    // Desktop: rail + sidebar sit flush on the base layer and the worktree
+    // pane floats as an inset, rounded, bordered card. Mobile: the same three
+    // regions become stacked full-screen layers, one visible at a time.
+    //
+    // The three children keep their slots across the switch, which is what
+    // keeps the pane's WorktreeView — and every kept-alive terminal under it —
+    // mounted when a phone is rotated across the breakpoint. Only the two
+    // navigation regions swap component (they're cheap); the pane's wrapper
+    // stays the same <div> and merely changes class.
+    <div className={clsx('bg-base', isMobile
+      ? 'safe-area-inset relative h-full overflow-hidden'
+      : 'flex h-full')}
+    >
+      {isMobile ? (
+        <MobileScreenLayer active={mobileScreen === 'projects'}>
+          <ProjectsScreen
+            projects={projects}
+            activeProjectSlug={activeProjectSlug}
+            attentionBySlug={attention}
+            connected={connected}
+            onSelect={setActiveProject}
+          />
+        </MobileScreenLayer>
+      ) : (
+        <ProjectRail
+          projects={projects}
+          activeProjectSlug={activeProjectSlug}
+          attentionBySlug={attention}
+          onSelect={setActiveProject}
+        />
+      )}
+
+      {isMobile ? (
+        <MobileScreenLayer active={mobileScreen === 'worktrees'}>
+          <WorktreesScreen
+            projectSlug={activeProjectSlug}
+            projectRemoteUrl={projectRemoteUrl}
+            worktrees={scoped}
+            provisioning={scopedProvisioning}
+            connected={connected}
+            gitAuthFailures={scopedGitAuthFailures}
+            onBack={goBackScreen}
+          />
+        </MobileScreenLayer>
+      ) : sidebarOpen && (
         <Sidebar
           projectSlug={activeProjectSlug}
-          projectRemoteUrl={projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''}
+          projectRemoteUrl={projectRemoteUrl}
           worktrees={scoped}
           provisioning={scopedProvisioning}
           connected={connected}
-          gitAuthFailures={(activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []}
+          gitAuthFailures={scopedGitAuthFailures}
         />
       )}
-      <div className="min-w-0 flex-1 p-2">
+
+      <div
+        inert={isMobile && mobileScreen !== 'pane'}
+        className={clsx(isMobile
+          ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
+          : 'min-w-0 flex-1 p-2')}
+      >
         <WorktreeView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
 

@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { createSettleGate } from '#lib/attach-settle'
 import { clipboardKeyAction } from '#lib/clipboard'
 import { LoadingIcon } from '#lib/icons'
+import { paneKey, registerPtyInput } from '#lib/ptyInput'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
@@ -277,6 +278,11 @@ export function WorktreeTerminal({
     })
     const resizeSub = term.onResize((): void => sendResize())
 
+    // Let the mobile accessory key bar type into this pane. Routed through
+    // xterm's own input() so a bar-pressed Esc takes exactly the path a typed
+    // one does (onData → this socket), including while it's reconnecting.
+    const unregisterInput = registerPtyInput(paneKey(worktreeId, target), (d) => term.input(d))
+
     // A suspended laptop drops the socket silently; the browser often doesn't
     // surface the close until the tab is refocused or the network returns.
     // These wake events re-attach immediately instead of waiting out backoff.
@@ -328,6 +334,7 @@ export function WorktreeTerminal({
       cancelAnimationFrame(fitRaf)
       dataSub.dispose()
       resizeSub.dispose()
+      unregisterInput()
       testHooks.__xterms?.delete(term)
       disposeWheelPacing?.()
       disposeClickForwarding?.()

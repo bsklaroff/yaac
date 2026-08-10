@@ -4,26 +4,8 @@ import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
 import { WindowControls } from '#components/WindowControls'
 import { isElectron } from '#lib/platform'
+import { projectColor, projectInitial } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
-
-/**
- * Deterministic per-project identity color from the slug. OKLCH (not HSL)
- * so every hue reads at the same perceived lightness/chroma — no hue is
- * harshly bright or muddy — with chroma/lightness tuned to sit calmly in
- * the muted dark palette. The hue is quantized to 24 evenly-spaced steps
- * to keep adjacent projects visually distinct.
- */
-function projectColor(slug: string): string {
-  let h = 0
-  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0
-  const hue = (h % 24) * 15
-  return `oklch(0.74 0.115 ${hue})`
-}
-
-function projectInitial(slug: string): string {
-  const c = slug.replace(/[^a-z0-9]/gi, '')[0]
-  return (c ?? '?').toUpperCase()
-}
 
 /**
  * Discord/Slack-style left rail of projects — the top-level navigation

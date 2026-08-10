@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover so env(safe-area-inset-*) reports real values and
+         the mobile shell can keep its chrome clear of the notch and the home
+         indicator; the page itself never scrolls (see index.css). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>yaac</title>
     <!-- Set the theme before first paint so a forced light/dark choice never
          flashes the other palette. Mirrors loadThemePref() in lib/theme.ts;

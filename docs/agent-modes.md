@@ -15,6 +15,12 @@ Mode is orthogonal to `AgentTool`: it selects the protocol, not which agent
 runs. Only tools with an adapter in the worktree image can use `acp`
 (`ACP_TOOLS` in `@yaac/shared/types`; today, claude).
 
+The choice matters most on a phone. A chat pane is a message list and a
+composer, so it needs nothing a soft keyboard can't provide; a TUI needs Esc,
+Tab, Ctrl and arrows, which is why the mobile shell gives a terminal pane an
+accessory key bar (`docs/mobile-layout.md`). `acp` is the mode to reach for
+when the worktree will be driven from one.
+
 ## tmux supervises both
 
 tmux is not a rendering choice — it is the process supervisor that outlives the

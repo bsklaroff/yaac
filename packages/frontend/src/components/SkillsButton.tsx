@@ -173,7 +173,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
         title="Skills"
         aria-label="Skills"
         className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-          hover:bg-surface-2 hover:text-text-dim"
+          hover:bg-surface-2 hover:text-text-dim max-md:h-9 max-md:w-9"
       >
         <SkillsIcon size={14} />
       </button>
@@ -181,7 +181,8 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <Dialog.Popup className="fixed inset-4 flex flex-col gap-3 rounded-xl border border-hairline
+        <Dialog.Popup className="fixed inset-4 flex flex-col gap-3
+          max-md:inset-0 max-md:rounded-none max-md:border-0 rounded-xl border border-hairline
           bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">

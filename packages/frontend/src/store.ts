@@ -13,6 +13,7 @@ const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
 const PINNED_USAGE_LS_KEY = 'yaac.pinnedusage.v1'
 const SOUND_LS_KEY = 'yaac.sound.v1'
 const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
+const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
 
 /** Whether the attention chime plays; defaults on (exported for tests). */
 export function loadSoundEnabled(): boolean {
@@ -26,6 +27,58 @@ export function loadSoundEnabled(): boolean {
 export function persistSoundEnabled(enabled: boolean): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Which of the three mobile screens is showing. Below the mobile breakpoint
+ * the desktop's rail / sidebar / pane columns become full-screen views the
+ * user moves between; above it this is inert and nothing reads it.
+ *
+ * Deliberately explicit rather than derived from
+ * `activeProjectSlug`/`selectedWorktreeId`, which it looks like it could be:
+ * App auto-selects a worktree as soon as a project has one, so a derived
+ * screen would jump straight past the worktree list on every project tap.
+ *
+ * Navigation follows user *intent* instead, which means each change has two
+ * actions: the one a tap goes through moves the screen (`setActiveProject`,
+ * `selectWorktree`, `openWorktree`) and the one the app's own effects go
+ * through does not (`restoreActiveProject`, `autoSelectWorktree`).
+ */
+export type MobileScreen = 'projects' | 'worktrees' | 'pane'
+
+/**
+ * Read the persisted mobile screen, so a reload on a phone comes back to the
+ * view it left (exported for tests).
+ *
+ * With nothing persisted, a `?worktree=` in the URL means this is a shared
+ * link being opened somewhere for the first time — the sender pointed at a
+ * worktree, so open it. The two conditions have to be taken together:
+ * persistSelection mirrors the selection into the URL on every change, so
+ * after any use the param is always there and on its own it would drag every
+ * reload back to the pane.
+ */
+export function loadMobileScreen(): MobileScreen {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(MOBILE_SCREEN_LS_KEY)
+      if (raw === 'projects' || raw === 'worktrees' || raw === 'pane') return raw
+    }
+  } catch { /* fall through — treat as never visited */ }
+  try {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('worktree')) return 'pane'
+      if (params.get('project')) return 'worktrees'
+    }
+  } catch { /* fall through to the default */ }
+  return 'projects'
+}
+
+/** Persist the mobile screen; best-effort (exported for tests). */
+export function persistMobileScreen(screen: MobileScreen): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(MOBILE_SCREEN_LS_KEY, screen)
   } catch { /* non-fatal */ }
 }
 
@@ -111,7 +164,10 @@ export function persistSelection(projectSlug: string | null, worktreeId: string 
       else url.searchParams.delete('project')
       if (worktreeId) url.searchParams.set('worktree', worktreeId)
       else url.searchParams.delete('worktree')
-      window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+      // Keep whatever state the current entry carries — the mobile shell
+      // stamps its screen there, and replacing it with {} would blank the
+      // entry the back button reads on the way out.
+      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
     }
   } catch { /* history failures are non-fatal */ }
 }
@@ -421,8 +477,15 @@ interface UiState {
   openPreview: (worktreeId: string, containerPort?: number) => void
   /** Open/focus the changes (review-diff) pane for a worktree. */
   openChanges: (worktreeId: string) => void
-  /** Whether the worktree sidebar is shown. */
+  /** Whether the worktree sidebar is shown. Desktop only — the mobile shell
+   *  gives the worktree list a screen of its own. */
   sidebarOpen: boolean
+  /** Which mobile screen is showing (inert above the mobile breakpoint).
+   *  Persisted. */
+  mobileScreen: MobileScreen
+  /** Move to a mobile screen directly. The back affordances go through
+   *  `history.back()` instead, so the history stack stays in step. */
+  setMobileScreen: (screen: MobileScreen) => void
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
    *  and reflects it onto <html data-theme> for the CSS palette (index.css). */
   themePref: ThemePref
@@ -557,7 +620,19 @@ interface UiState {
   /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
   removeOptimisticProvisioning: (worktreeId: string) => void
   setActiveProject: (slug: string | null) => void
+  /** The app picked a project on the user's behalf — App's recovery from a
+   *  missing or never-set `activeProjectSlug`. Like `setActiveProject` but it
+   *  leaves the mobile screen alone, so a cold load lands on the project list
+   *  rather than being thrown one screen in by a default nobody chose. */
+  restoreActiveProject: (slug: string) => void
+  /** The user picked a worktree (a sidebar/list tap) — on mobile this is what
+   *  advances to the pane screen. */
   selectWorktree: (id: string | null) => void
+  /** The app picked a worktree on the user's behalf (App's auto-select, which
+   *  never leaves the pane empty). Identical to `selectWorktree` except that
+   *  it leaves the mobile screen alone — otherwise merely opening a project
+   *  would fling the user past its worktree list. */
+  autoSelectWorktree: (id: string) => void
   /** Jump to a specific worktree, switching the active project to match. */
   openWorktree: (projectSlug: string, worktreeId: string) => void
   reconnectTerminal: (worktreeId: string) => void
@@ -603,6 +678,8 @@ export const useUiStore = create<UiState>((set) => ({
   layouts: loadPersistedLayouts(),
   previewPort: {},
   sidebarOpen: true,
+  mobileScreen: loadMobileScreen(),
+  setMobileScreen: (screen) => set((s) => (s.mobileScreen === screen ? s : { mobileScreen: screen })),
   themePref: loadThemePref(),
   soundEnabled: loadSoundEnabled(),
   viewMode: loadViewMode(),
@@ -661,10 +738,30 @@ export const useUiStore = create<UiState>((set) => ({
   )),
   // Switching projects clears the open worktree — the sidebar now shows a
   // different project's worktrees, so the old selection no longer belongs.
-  setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorktreeId: null }),
-  selectWorktree: (id) => set((s) => ({ selectedWorktreeId: id, focusNonce: s.focusNonce + 1 })),
-  openWorktree: (projectSlug, worktreeId) =>
-    set((s) => ({ activeProjectSlug: projectSlug, selectedWorktreeId: worktreeId, focusNonce: s.focusNonce + 1 })),
+  // On mobile that lands on the project's worktree list; clearing the project
+  // entirely (its removal) falls back to the project list, which is the only
+  // screen with anything left to do.
+  setActiveProject: (slug) => set({
+    activeProjectSlug: slug,
+    selectedWorktreeId: null,
+    mobileScreen: slug ? 'worktrees' : 'projects',
+  }),
+  restoreActiveProject: (slug) => set({ activeProjectSlug: slug, selectedWorktreeId: null }),
+  // Only a real selection navigates: `selectWorktree(null)` is a deselect
+  // (dismissing a failed provisioning row), which should leave the user on
+  // the list they dismissed it from.
+  selectWorktree: (id) => set((s) => ({
+    selectedWorktreeId: id,
+    focusNonce: s.focusNonce + 1,
+    mobileScreen: id ? 'pane' : s.mobileScreen,
+  })),
+  autoSelectWorktree: (id) => set((s) => ({ selectedWorktreeId: id, focusNonce: s.focusNonce + 1 })),
+  openWorktree: (projectSlug, worktreeId) => set((s) => ({
+    activeProjectSlug: projectSlug,
+    selectedWorktreeId: worktreeId,
+    focusNonce: s.focusNonce + 1,
+    mobileScreen: 'pane',
+  })),
   reconnectTerminal: (worktreeId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [worktreeId]: (s.terminalNonces[worktreeId] ?? 0) + 1 },
   })),
@@ -892,3 +989,9 @@ if (typeof window !== 'undefined') {
     if (document.visibilityState === 'hidden') flushChatDrafts()
   })
 }
+// The mobile screen survives reloads alongside the selection it goes with, so
+// a phone that reloads mid-conversation comes back to the pane rather than to
+// the project list.
+useUiStore.subscribe((state, prev) => {
+  if (state.mobileScreen !== prev.mobileScreen) persistMobileScreen(state.mobileScreen)
+})
