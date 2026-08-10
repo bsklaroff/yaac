@@ -34,6 +34,7 @@ export {
   listActiveAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
+  recordedConversationHandles,
   setActiveAgentSessions,
   setAgentSessionCapture,
   toAgentSessionEntry,
@@ -41,7 +42,9 @@ export {
   type DiscoveredAgentSession,
 } from './agent-session-store'
 export { applyHerdEvent } from './apply-herd-event'
-export { pushDesiredWorkspaces } from './desired-workspaces'
+export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-workspaces'
+export { closeRecords, openRecords } from './lifecycle'
+export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {
   DEFAULT_TOOL_KEY,
   clearShortcutOverrides,

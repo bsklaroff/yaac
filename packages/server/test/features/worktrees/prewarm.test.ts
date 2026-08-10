@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+vi.mock('#features/records', () => ({ applyHerdEvent: vi.fn() }))
+
 vi.mock('#features/agents/agent-command', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
 }))
@@ -63,8 +65,8 @@ import { rebranchSpare, retoolSpare } from '#features/worktrees/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
 import { ServerError } from '@yaac/shared/errors'
-import { _setServerLinkForTests } from '#server-link'
 import type { HerdEvent } from '@yaac/shared/herd'
+import { applyHerdEvent } from '#features/records'
 
 const mockListPods = vi.mocked(listWorktreePods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
@@ -109,11 +111,9 @@ describe('tryClaimPrewarmed', () => {
     // link stands in for the server: no DB is opened, and what a claim tells
     // it is asserted directly.
     herdEvents.length = 0
-    _setServerLinkForTests({
-      workspaceEvent: (event) => {
-        herdEvents.push(event)
-        return Promise.resolve()
-      },
+    vi.mocked(applyHerdEvent).mockImplementation((event) => {
+      herdEvents.push(event)
+      return Promise.resolve()
     })
     mockTmuxAlive.mockResolvedValue(true)
     mockKubectl.mockResolvedValue(undefined as never)

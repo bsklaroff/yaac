@@ -15,7 +15,7 @@
  * that backoff. A hard `MAX_ENTRIES` cap bounds memory; nothing ages out on a
  * timer.
  */
-import { serverLink } from '#server-link'
+import { notifyWorktreeListChanged } from '#notify'
 import { stripAnsi } from '@yaac/shared/ansi'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'
@@ -111,7 +111,7 @@ export function registerImageBuild(input: {
     startedAt: Date.now(),
   })
   prune()
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
   return id
 }
 
@@ -121,7 +121,7 @@ export function attachImageBuildProject(id: string, projectSlug: string): void {
   const e = entries.get(id)
   if (!e || e.projectSlugs.includes(projectSlug)) return
   e.projectSlugs.push(projectSlug)
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
 }
 
 /**
@@ -140,7 +140,7 @@ export function ingestImageBuildLine(id: string, line: string): void {
   e.stepCurrent = step.current
   e.stepTotal = step.total
   e.stepText = step.text
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
 }
 
 /** Mark an entry succeeded. No-op if absent. */
@@ -149,7 +149,7 @@ export function finishImageBuild(id: string): void {
   if (!e) return
   e.status = 'succeeded'
   e.finishedAt = Date.now()
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
 }
 
 /** Mark an entry failed; kept until dismissed or superseded by a retry. */
@@ -159,7 +159,7 @@ export function failImageBuild(id: string, error: string): void {
   e.status = 'failed'
   e.error = error
   e.finishedAt = Date.now()
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
 }
 
 /** Hide a finished row from the list (user dismissed the × ). The record is
@@ -171,7 +171,7 @@ export function dismissImageBuild(id: string): boolean {
   const e = entries.get(id)
   if (!e || e.status === 'running' || e.dismissed) return false
   e.dismissed = true
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
   return true
 }
 
@@ -183,7 +183,7 @@ export function forgetImageBuild(id: string): boolean {
   const e = entries.get(id)
   if (!e || e.status === 'running') return false
   entries.delete(id)
-  serverLink().workspacesChanged()
+  notifyWorktreeListChanged()
   return true
 }
 

@@ -44,11 +44,11 @@ const SEALED_FOLDERS = {
 }
 
 // Everything that touches the cluster, a git worktree, a transcript or tmux
-// — the future `runtime/` and `store/` layers (docs/plans/layered-server.md)
-// — must not open the database: rows live behind `#features/records`, and
-// code that observes the substrate or the disk reports an event for the
-// server half to persist rather than writing rows itself. This path list is
-// interim — it retires as the layer carve replaces it with per-layer globs.
+// — the future `runtime/` and `store/` layers (docs/plans/layered-server.md).
+// Code here never imports the api/main layers; observed facts it discovers
+// enter records through `applyHerdEvent`, not caller-side writes. This path
+// list is interim — it retires as the layer carve replaces it with
+// per-layer globs.
 const BYTES_SRC = [
   'packages/server/src/platform/container/**/*.ts',
   'packages/server/src/platform/k8s/**/*.ts',
@@ -99,22 +99,23 @@ const BYTES_SRC = [
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
 // the leading `#` as a comment and silently matches nothing. The driver
 // packages are named too, so the ban cannot be walked around by opening
-// PGlite directly instead of going through the barrel.
-// `#features/records` is the server's rows and the only feature allowed to
-// open the database, so banning it is banning the database — which is why
-// this covers the barrel as well as the driver packages beneath it.
-const NO_DATABASE = {
-  regex: '^(#features/records|#platform/db|@electric-sql/pglite|drizzle-orm)',
-  message: 'Substrate/disk code must not read the database (docs/plans/layered-server.md): emit an event for #features/records to persist, or take the value as an argument.',
+// PGlite directly instead of going through the barrel. `#features/records`
+// is the ONE feature allowed past this: rows live behind its barrel, and
+// observed facts enter it through `applyHerdEvent` rather than through a
+// caller-side write (docs/plans/layered-server.md).
+const NO_DATABASE_DIRECT = {
+  regex: '^(#platform/db|@electric-sql/pglite|drizzle-orm)(/|$)',
+  message: 'Only #features/records opens the database (docs/plans/layered-server.md): read or write rows through its barrel.',
 }
 
-// The other direction: substrate/disk code reports upward through
-// `#server-link` and knows nothing about the layers above it — not the HTTP
-// layer, not the routes, not the startup, and not the snapshot hub behind
-// `#notify`.
+// The other direction: substrate/disk code knows nothing about the layers
+// above it — not the HTTP layer, not the routes, not the startup. `#notify`
+// and `#log` stay importable from every layer: both are zero-dependency
+// outbound channels, and a change notification is not a dependency on the
+// hub that consumes it.
 const NO_SERVER = {
-  regex: '^(#main|#routes|#http|#notify)(/|$)',
-  message: 'Substrate/disk code must not import the api/main layers (docs/plans/layered-server.md): report it through #server-link instead.',
+  regex: '^(#main|#routes|#http)(/|$)',
+  message: 'Substrate/disk code must not import the api/main layers (docs/plans/layered-server.md): report through #features/records events or #notify instead.',
 }
 
 export default tseslint.config(
@@ -177,9 +178,39 @@ export default tseslint.config(
   },
 
   // server and auth-daemon: only @yaac/shared (+ self via #). They must never
-  // import each other — anything they share lives in @yaac/shared.
+  // import each other — anything they share lives in @yaac/shared. The
+  // database is records' alone (the zone below re-opens it for records and
+  // the db platform itself).
   {
     files: ['packages/server/src/**/*.ts', 'packages/auth-daemon/src/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The one feature allowed to open the database, and the db platform it
+  // opens. Later than the base zone on purpose — flat-config rule options
+  // replace rather than merge, so this re-states every pattern minus the
+  // database ban.
+  {
+    files: [
+      'packages/server/src/features/records/**/*.ts',
+      'packages/server/src/platform/db/**/*.ts',
+    ],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -212,7 +243,7 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
-            NO_DATABASE,
+            NO_DATABASE_DIRECT,
             NO_SERVER,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],

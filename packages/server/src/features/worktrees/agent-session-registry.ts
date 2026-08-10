@@ -8,7 +8,7 @@ import {
   toProjectRelative,
   transcriptLastActiveMs,
 } from '#features/agents'
-import { serverLink } from '#server-link'
+import { applyHerdEvent } from '#features/records'
 import { captureFirstPrompt } from './prompt-capture'
 import {
   foldSessionStarts,
@@ -133,7 +133,7 @@ export async function reconcileWorktreeAgentSessions(
       projectSlug,
       jobName,
     )]
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'sessions-discovered',
       projectSlug,
       worktreeId,
@@ -147,7 +147,7 @@ export async function reconcileWorktreeAgentSessions(
     // deactivating every session but the pin on each tick — and the set it
     // clobbers is the frozen one a restart reads back. Anything that makes a
     // second session reachable here must join against the live set first.
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'sessions-active',
       projectSlug,
       worktreeId,
@@ -176,7 +176,7 @@ export async function reconcileWorktreeAgentSessions(
       current === undefined ? undefined : mergeSessions(current, withPrompts, Date.now()))
   }
 
-  await serverLink().workspaceEvent({
+  await applyHerdEvent({
     type: 'sessions-discovered',
     projectSlug,
     worktreeId,
@@ -202,7 +202,7 @@ export async function reconcileWorktreeAgentSessions(
   const live = (meta === undefined ? [] : worktreesOnCurrentLife(meta))
     .filter((s) => s.handle !== undefined && handles.has(s.handle))
     .map((s) => ({ tool: s.tool, agentSessionId: s.agentSessionId, paneId: s.handle as string }))
-  await serverLink().workspaceEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+  await applyHerdEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
 }
 
 /**
@@ -309,11 +309,11 @@ async function reconcileAcpAgentSessions(
   // this data dir.
   const reported = live.map((c) => toReported(projectSlug, c))
   if (reported.length > 0) {
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'sessions-discovered', projectSlug, worktreeId, sessions: reported,
     })
   }
-  await serverLink().workspaceEvent({
+  await applyHerdEvent({
     type: 'sessions-active',
     projectSlug,
     worktreeId,

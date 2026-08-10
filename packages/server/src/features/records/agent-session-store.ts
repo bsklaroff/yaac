@@ -349,6 +349,26 @@ export async function listActiveAgentSessions(
 }
 
 /**
+ * The recorded conversations of a worktree that sit on a live handle —
+ * what an ACP driver attaching to a running pod needs to re-address agents
+ * it did not start (and to `session/load` after a restart). A link with no
+ * pane id names nothing it could attach to, so it is filtered here.
+ *
+ * Swallows a read failure: a watcher starting against an unreadable
+ * database must attach with no history rather than fail the whole
+ * worktree's status stream.
+ */
+export async function recordedConversationHandles(
+  projectSlug: string,
+  worktreeId: string,
+): Promise<Array<{ handle: string; agentSessionId: string }>> {
+  const links = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+  return links.flatMap((l) => (l.paneId === undefined
+    ? []
+    : [{ handle: l.paneId, agentSessionId: l.agentSessionId }]))
+}
+
+/**
  * The conversations of the named worktrees, grouped by worktree id — one
  * query per project per list build, so a snapshot never pays per row.
  *

@@ -2,17 +2,17 @@
  * Reconcile step that drains in-worktree `yaac-spawn` requests: the egress
  * proxy holds each worktree's `POST http://yaac.internal/spawn` open in an
  * in-memory queue; this step takes them off that queue over the control API,
- * resolves who called from the pod labels, reports each one to the server,
+ * resolves who called from the pod labels, hands each one to `decideSpawn`,
  * and posts the answers back so the proxy can release the waiting pods.
  *
  * A drain is a claim: a crash between drain and report loses the fire (the
  * pod's request 504s at the proxy TTL), never doubles it.
  *
- * What a request MEANS is deliberately not here. Which tool the new workspace
- * runs, how many a caller may have in flight, what id it gets and what
- * sidebar row it provisions under are all the server's — a herd's whole
- * contribution is that the queue and the caller's labels are on its side of
- * the boundary (docs/plans/layered-server.md).
+ * What a request MEANS is deliberately not here but in `decideSpawn`: which
+ * tool the new worktree runs, how many a caller may have in flight, what id
+ * it gets and what sidebar row it provisions under are policy — the drain's
+ * whole contribution is the queue and the caller's labels
+ * (docs/plans/layered-server.md).
  */
 import {
   proxyClient,
@@ -22,7 +22,7 @@ import {
 } from '#features/egress'
 import { type PodInfo, type TickSnapshot, listWorktreePods } from '#platform/k8s'
 import { normalizeTool } from '#features/agents'
-import { serverLink } from '#server-link'
+import { decideSpawn } from './spawn-policy'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#log'
 
@@ -64,7 +64,8 @@ export async function reconcileSpawnRequests(
 
 /**
  * Answer one spawn request: resolve the caller's project and tool from its
- * pod labels, report it, and relay the server's decision back to the proxy.
+ * pod labels, hand it to the spawn policy, and relay the decision back to
+ * the proxy.
  *
  * The caller lookup is the only judgement made here, and it is a substrate
  * one — a request from a worktree no pod matches cannot be attributed to a
@@ -89,7 +90,7 @@ async function reportSpawnRequest(
   }
   if (!caller) return fail('calling worktree not found')
 
-  const decision = await serverLink().spawnRequested({
+  const decision = await decideSpawn({
     requestId: req.requestId,
     callerWorkspaceId: callerId,
     callerProjectSlug: caller.projectSlug,

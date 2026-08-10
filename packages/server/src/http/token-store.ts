@@ -2,7 +2,10 @@ import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
 import { timingSafeStrEqual } from './web-auth'
 import { maskToken } from '@yaac/shared/mask'
-import { getDb, tokens as tokensTable } from '#platform/db'
+import type { TokenEntry, TokenKind } from '#features/records'
+
+export { loadTokens, saveTokens } from '#features/records'
+export type { TokenEntry, TokenKind } from '#features/records'
 
 /**
  * All client credentials the server hands out, in one store. Three kinds:
@@ -20,17 +23,6 @@ import { getDb, tokens as tokensTable } from '#platform/db'
  * Plaintext at rest, matching the lock-secret convention — persisted in
  * the server DB, whose directory is 0700 under the data dir.
  */
-export type TokenKind = 'durable' | 'one-time' | 'web'
-
-export interface TokenEntry {
-  name: string
-  token: string
-  kind: TokenKind
-  createdAt: string
-  /** Only on `one-time` entries: past this instant the token is dead. */
-  expiresAt?: string
-}
-
 /** What `list()` exposes: never the full token. */
 export interface TokenSummary {
   name: string
@@ -214,41 +206,4 @@ export function createTokenStore(opts: {
 
 function newToken(): string {
   return crypto.randomBytes(32).toString('hex')
-}
-
-/**
- * Read the persisted tokens from the DB. Ordered by (createdAt, name) —
- * deterministic and chronologically correct for the per-kind FIFO trim
- * except same-millisecond ties, where either eviction choice is harmless.
- */
-export async function loadTokens(): Promise<TokenEntry[]> {
-  const db = await getDb()
-  const rows = await db.select().from(tokensTable)
-    .orderBy(tokensTable.createdAt, tokensTable.name)
-  return rows.map((row) => ({
-    name: row.name,
-    token: row.token,
-    kind: row.kind as TokenKind,
-    createdAt: row.createdAt,
-    ...(row.expiresAt === null ? {} : { expiresAt: row.expiresAt }),
-  }))
-}
-
-/** Persist the full set — a transactional DELETE-all + INSERT, the DB port
- *  of the old whole-file rewrite. The in-memory `entries` array stays the
- *  live store of record. */
-export async function saveTokens(tokens: TokenEntry[]): Promise<void> {
-  const db = await getDb()
-  await db.transaction(async (tx) => {
-    await tx.delete(tokensTable)
-    if (tokens.length > 0) {
-      await tx.insert(tokensTable).values(tokens.map((e) => ({
-        name: e.name,
-        token: e.token,
-        kind: e.kind,
-        createdAt: e.createdAt,
-        expiresAt: e.expiresAt ?? null,
-      })))
-    }
-  })
 }

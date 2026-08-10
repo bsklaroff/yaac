@@ -6,8 +6,8 @@ import {
   probeTmuxLiveness,
 } from '#features/status'
 import { cleanupWorktreeDetached } from './cleanup'
-import { desiredWorkspaces, desiredWorkspacesGeneration } from '#herd-desired'
-import { serverLink } from '#server-link'
+import { inFlightWorktreeIds } from './provisioning'
+import { applyHerdEvent, desiredWorktrees } from '#features/records'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleWorktreeInfo } from '@yaac/shared/types'
@@ -32,42 +32,20 @@ export function _clearMissingPodTimersForTests(): void {
 }
 
 /**
- * The publish this reaper last ran against. Every pass publishes a desired
- * set before the reaper runs, so an unchanged generation means THIS pass's
- * publish did not land — and an exemption set that is even one pass stale
- * can miss a create started since, which is the one thing standing between
- * these sweeps and a workspace being built right now.
- *
- * 0 is also "nothing has ever been published", so a herd that has been told
- * nothing reaps nothing — herd-desired's own rule, applied to all of the
- * reaper rather than to the half of it that reads the set.
- */
-let reapedGeneration = 0
-
-/** Test helper: forget which publish was last reaped against. */
-export function _resetStaleReaperForTests(): void {
-  reapedGeneration = 0
-}
-
-/**
  * Tear down stale worktree Jobs (pod stopped, or running with a dead
  * tmux session) across every project. Swallows individual failures so
  * one broken worktree can't block the rest; designed to be called from
  * the server reconciler.
  */
 export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<void> {
-  // What the server says exists, for THIS pass. An unchanged generation
-  // means this pass's publish did not land — a herd that has been told
-  // nothing reaps nothing, and one told something stale is no better here:
-  // an exemption set one pass old can miss a create started since, and that
-  // set is the only thing between these sweeps and a workspace being built
-  // right now. Costs nothing in normal operation, since the publish step
-  // precedes this one in every pass that triggers either of them.
-  const generation = desiredWorkspacesGeneration()
-  if (generation === reapedGeneration) return
-  const desired = desiredWorkspaces()
+  // What the server records as existing, read at the top of THIS pass —
+  // so absence is only ever judged against a set from the same pass, by
+  // construction. A failed read stands every sweep down (reap nothing, say
+  // nothing): an exemption set that is even one pass stale can miss a
+  // create started since, and reaping on a guess destroys uncommitted work
+  // that exists in no other copy. The next pass retries.
+  const desired = await desiredWorktrees().catch(() => undefined)
   if (desired === undefined) return
-  reapedGeneration = generation
 
   let pods
   try {
@@ -80,15 +58,15 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
   const { running, stale: staleAll, indeterminate, terminating } =
     await classifyWorktreePods(pods, nowMs, probeTmuxLiveness, graceMs)
 
-  // Workspaces the server is still creating, delivered with the desired set
-  // (which failed creates it excludes is decided there). A create owns its
-  // pod's whole lifecycle, so every sweep below exempts one regardless of
-  // age: the grace window alone bounds nothing on a host where the image
-  // pull or the hostPath mounts outlast it, and reaping mid-create deletes
-  // the staged worktree dir out from under the starting pod — after which its
+  // Worktrees the server is still creating, read from the provisioning
+  // registry (which excludes failed creates: their rollback tore down what
+  // they left, so they shield nothing). A create owns its pod's whole
+  // lifecycle, so every sweep below exempts one regardless of age: the
+  // grace window alone bounds nothing on a host where the image pull or
+  // the hostPath mounts outlast it, and reaping mid-create deletes the
+  // staged worktree dir out from under the starting pod — after which its
   // Job can never mount and create fails on every retry.
-  //
-  const provisioningIds = new Set(desired.provisioning)
+  const provisioningIds = new Set(inFlightWorktreeIds())
 
   // A pod that has not reached Running yet — pulling its image, mounting its
   // hostPaths — reads as stopped to the classifier, which derives
@@ -228,7 +206,7 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
         `[server] stale-reaper: recording worktree=${row.worktreeId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
       )
-      await serverLink().workspaceEvent({
+      await applyHerdEvent({
         type: 'worktree-stopped',
         projectSlug: row.projectSlug,
         worktreeId: row.worktreeId,

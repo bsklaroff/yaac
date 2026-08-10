@@ -1,9 +1,30 @@
 import crypto from 'node:crypto'
-import { createWorktree, registerProvisioning, runProvisioned } from '#features/worktrees'
+import { registerProvisioning, runProvisioned } from './provisioning'
+import { createWorktree } from './create'
 import { getDefaultTool } from '#features/records'
 import { AGENT_TOOLS, MODEL_RE, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#log'
-import type { SpawnDecision, SpawnRequest } from '#server-link'
+
+/** A drained `yaac-spawn`, with everything the substrate could resolve. */
+export interface SpawnRequest {
+  /** Correlates the answer back to the pod blocked at the proxy. */
+  requestId: string
+  /** The worktree that called. */
+  callerWorkspaceId: string
+  /** Its project — the new worktree is created in the caller's project. */
+  callerProjectSlug: string
+  /** The tool the caller itself runs, when the substrate labelled it. Second
+   *  in the tool precedence, behind the request's own choice. */
+  callerTool?: AgentTool
+  prompt: string
+  tool?: string
+  model?: string
+}
+
+/** What the server decided about one spawn request. */
+export type SpawnDecision =
+  | { ok: true; workspaceId: string }
+  | { ok: false; error: string }
 
 /** Prompt character limit — mirrors the proxy's check. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000

@@ -16,7 +16,6 @@ vi.mock('#features/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
-vi.mock('#features/records/desired-workspaces', () => ({ pushDesiredWorkspaces: vi.fn() }))
 vi.mock('#features/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
 vi.mock('#features/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
 vi.mock('#features/images/image-prewarm', async (importOriginal) => ({
@@ -38,7 +37,6 @@ vi.mock('#features/titles/title-generation', async (importOriginal) => ({
 }))
 
 import {
-  DESIRED_SET_TRIGGERS,
   defaultReconcileSteps,
   startReconciler,
   type PassContext,
@@ -54,7 +52,6 @@ import { reconcilePrewarmPool } from '#features/worktrees/prewarm-reconcile'
 import { reconcileImageSalvage } from '#features/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#features/worktrees/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#features/worktrees/cleanup'
-import { pushDesiredWorkspaces } from '#features/records/desired-workspaces'
 import { reconcileBuilderPodGc } from '#features/images/builder-pod'
 import { reconcileBuildCacheGc } from '#features/images/build-cache-gc'
 import { reconcileImagePrewarm } from '#features/images/image-prewarm'
@@ -67,7 +64,7 @@ import { reconcileRedirectClaims } from '#features/cluster/redirect-claim-reconc
 import { reconcileGeneratedTitles } from '#features/titles/title-generation'
 
 const ALL_STEP_FNS = [
-  pushDesiredWorkspaces, reconcileStaleWorktrees, reconcileSpawnRequests,
+  reconcileStaleWorktrees, reconcileSpawnRequests,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileProjectRegistryGc, reconcileAgentSessions,
   reconcileProxySshKeys, reconcileVclusters, reconcileVclusterAttribution,
@@ -307,26 +304,13 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset().mockResolvedValue(undefined)
   })
 
-  // The two row-touching steps bracket the substrate steps: the desired set
-  // is published before the reaper can judge an absence against it, and
-  // titles are generated after the conversation sweep so a just-captured
-  // opening message is eligible in the same pass.
-  it('publishes the desired set first and generates titles last', () => {
+  // The reaper runs first (so counts reflect just-reaped worktrees by the
+  // time the prewarm pool runs) and titles run last, after the conversation
+  // sweep, so a just-captured opening message is eligible in the same pass.
+  it('reaps first and generates titles last', () => {
     const names = defaultReconcileSteps().map((s) => s.name)
-    expect(names[0]).toBe('desired-workspaces')
-    expect(names[1]).toBe('stale-worktrees')
+    expect(names[0]).toBe('stale-worktrees')
     expect(names[names.length - 1]).toBe('generated-titles')
-  })
-
-  // "Absence is only ever judged against a set from the same pass" holds by
-  // the two steps sharing one triggers constant — asserted here so a trigger
-  // added to one cannot silently diverge from the other.
-  it('refreshes the desired set on exactly the reaper’s triggers', () => {
-    const steps = defaultReconcileSteps()
-    expect(steps.find((s) => s.name === 'desired-workspaces')!.triggers)
-      .toBe(DESIRED_SET_TRIGGERS)
-    expect(steps.find((s) => s.name === 'stale-worktrees')!.triggers)
-      .toBe(DESIRED_SET_TRIGGERS)
   })
 
   // Titles run after the conversation sweep so a just-captured opening message

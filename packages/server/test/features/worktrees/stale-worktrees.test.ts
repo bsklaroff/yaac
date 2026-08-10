@@ -20,6 +20,14 @@ vi.mock('#features/worktrees/cleanup', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
+// The reaper reads the desired set from records at the top of its pass and
+// reports a death as an event rather than writing the row — both stubbed,
+// so these tests never open a DB.
+vi.mock('#features/records', () => ({
+  applyHerdEvent: vi.fn(),
+  desiredWorktrees: vi.fn(),
+}))
+
 // The reaper reads session rows to tell a yaac-issued delete (whose
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
@@ -29,13 +37,12 @@ import { probeTmuxLiveness, probeAgentPaneState } from '#features/status/livenes
 import { cleanupWorktreeDetached } from '#features/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { serverLog } from '#log'
-import { _setServerLinkForTests } from '#server-link'
-import { publishDesiredWorkspaces, _resetDesiredWorkspacesForTests } from '#herd-desired'
+import { applyHerdEvent, desiredWorktrees } from '#features/records'
+import { clearAllProvisioningForTests, registerProvisioning } from '#features/worktrees/provisioning'
 import type { DesiredWorkspaces, HerdEvent } from '@yaac/shared/herd'
 import {
   reconcileStaleWorktrees,
   _clearMissingPodTimersForTests,
-  _resetStaleReaperForTests,
 } from '#features/worktrees/stale-worktrees'
 
 const mockListPods = vi.mocked(listWorktreePods)
@@ -56,10 +63,16 @@ const stopsReported = (): Array<[string, string, unknown]> => herdEvents
 let lastDesired: DesiredWorkspaces = { live: [], stopped: [], provisioning: [] }
 const setDesired = (d: Partial<DesiredWorkspaces>): void => {
   lastDesired = { live: [], stopped: [], provisioning: [], ...d }
-  publishDesiredWorkspaces(lastDesired)
+  clearAllProvisioningForTests()
+  for (const worktreeId of lastDesired.provisioning) {
+    registerProvisioning({ worktreeId, projectSlug: 'proj', tool: 'claude', kind: 'create' })
+  }
+  vi.mocked(desiredWorktrees).mockResolvedValue({
+    live: lastDesired.live, stopped: lastDesired.stopped,
+  })
 }
 /** The next pass, with the same set republished. */
-const republish = (): void => publishDesiredWorkspaces(lastDesired)
+const republish = (): void => {}
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -84,19 +97,15 @@ function loggedLines(): string {
 
 describe('reconcileStaleWorktrees', () => {
   beforeEach(() => {
-    _resetDesiredWorkspacesForTests()
-    _resetStaleReaperForTests()
     mockListPods.mockReset()
     mockListJobs.mockReset().mockResolvedValue([])
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
     herdEvents.length = 0
-    _setServerLinkForTests({
-      workspaceEvent: (event) => {
-        herdEvents.push(event)
-        return Promise.resolve()
-      },
+    vi.mocked(applyHerdEvent).mockImplementation((event) => {
+      herdEvents.push(event)
+      return Promise.resolve()
     })
     setDesired({})
     mockLog.mockClear()
@@ -236,30 +245,17 @@ describe('reconcileStaleWorktrees', () => {
   // user delete as "removed outside yaac" without it, and the exemption set
   // would be empty — so a pass with no publish reaps nothing at all rather
   // than reaping on the half of the set it can still read.
-  it('stands down entirely when nothing has been published', async () => {
-    _resetDesiredWorkspacesForTests()
-    _resetStaleReaperForTests()
+  // Reaping on a guess destroys uncommitted work, so a desired set that
+  // cannot be read stands every sweep down — say nothing, reap nothing, and
+  // the next pass retries with a fresh read.
+  it('stands down entirely when the desired set cannot be read', async () => {
     mockListPods.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
+    vi.mocked(desiredWorktrees).mockRejectedValue(new Error('db is gone'))
 
     await reconcileStaleWorktrees()
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(stopsReported()).toEqual([])
-  })
-
-  // A set the LAST pass published is no better: an exemption one pass old
-  // can miss a create started since, and that set is the only thing between
-  // these sweeps and a workspace being built right now.
-  it('stands down on a pass whose publish did not land', async () => {
-    mockListPods.mockResolvedValue([{ ...pod('term-stuck'), terminating: true }])
-    setDesired({})
-    await reconcileStaleWorktrees()
-    mockCleanup.mockClear()
-
-    // Second pass, no publish (the step threw): same pods, no reaping.
-    await reconcileStaleWorktrees()
-
-    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
@@ -480,7 +476,6 @@ describe('reconcileStaleWorktrees', () => {
     // A herd that has been told nothing must reap nothing: an empty set would
     // condemn every running workspace at once, and nothing un-marks a death.
     it('stands down entirely until the server has published a set', async () => {
-      _resetDesiredWorkspacesForTests()
       mockListPods.mockResolvedValue([])
 
       await reconcileStaleWorktrees()

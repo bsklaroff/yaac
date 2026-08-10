@@ -20,7 +20,8 @@ import {
   stopAllWorktreeForwarders,
 } from '#features/forwarders'
 import { proxyClient } from '#features/egress'
-import { serverLink } from '#server-link'
+import { recordedConversationHandles } from '#features/records'
+import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -105,20 +106,16 @@ async function attachNow(): Promise<void> {
   // reconciler's delta triggers. Pod deltas fire a change notification, so
   // snapshots push the moment state changes.
   const cache = new ClusterCache()
-  // `recordedSessions` comes back through the link rather than being read
-  // here: the ACP driver needs a worktree's already-recorded
-  // conversations to re-address a live agent (and to `session/load` after
-  // a restart), and which conversation sits on a handle is a row.
+  // The ACP driver needs a worktree's already-recorded conversations to
+  // re-address a live agent (and to `session/load` after a restart), and
+  // which conversation sits on a handle is a row.
   const manager = new StatusWatcherManager({
     recordedSessions: (session) =>
-      serverLink().recordedConversations({
-        projectSlug: session.slug,
-        workspaceId: session.worktreeId,
-      }),
+      recordedConversationHandles(session.slug, session.worktreeId),
   })
   // Detected-listener streams (streamd `ports` pushes) feeding the
   // snapshot's unforwardedPorts; a set change pushes a fresh snapshot.
-  const detector = new PortDetectorManager(() => serverLink().workspacesChanged())
+  const detector = new PortDetectorManager(() => notifyWorktreeListChanged())
   clusterCache = cache
   statusWatchers = manager
   portDetector = detector
@@ -126,11 +123,11 @@ async function attachNow(): Promise<void> {
     if (source === 'worktree-pods') {
       manager.sync(cache.worktreePods())
       detector.sync(cache.worktreePods())
-      serverLink().workspacesChanged()
+      notifyWorktreeListChanged()
     }
     for (const fn of changeListeners) fn(source)
   })
-  onWorktreeStatusChanged(() => serverLink().workspacesChanged())
+  onWorktreeStatusChanged(() => notifyWorktreeListChanged())
   // A conversation appearing, going, or learning its id is a change the
   // reconcile steps owe work on, and no watch above can see it: for `acp`
   // the id comes from the in-pod handshake, well after the pod deltas

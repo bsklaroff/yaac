@@ -39,7 +39,7 @@ import {
   waitForStreamd,
 } from '#platform/k8s'
 import { cleanupWorktreeDetached } from './cleanup'
-import { serverLink } from '#server-link'
+import { applyHerdEvent } from '#features/records'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import { clearSpareFlag, mergeSessions, updateWorktreeMeta } from './worktree-meta'
 import type { WorktreeCreateResult } from './create'
@@ -272,7 +272,7 @@ export async function tryClaimPrewarmed(
     // here aborts the claim before any mutation, so the spare stays a spare
     // and the caller falls back to a cold create.
     recordedRow = true
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'worktree-created',
       projectSlug,
       worktreeId: chosen.worktreeId,
@@ -281,7 +281,7 @@ export async function tryClaimPrewarmed(
     // The spare's agent is already running, pinned to its own id — report it
     // as the worktree's first conversation, since that is where the
     // worktree's tool is read from.
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'sessions-launched',
       projectSlug,
       worktreeId: chosen.worktreeId,
@@ -376,7 +376,7 @@ export async function tryClaimPrewarmed(
     // A claim that moved the spare to another branch reports the branch it
     // ended on, not the one it was warmed from.
     if (rebranchTo !== null) {
-      await serverLink().workspaceEvent({
+      await applyHerdEvent({
         type: 'base-branch-resolved',
         projectSlug,
         worktreeId: chosen.worktreeId,
@@ -408,7 +408,7 @@ export async function tryClaimPrewarmed(
     // existed — the caller is about to cold-create a different one. A claim
     // is always a fresh worktree, never a resume, so the row is erased.
     if (chosen && recordedRow) {
-      await serverLink().workspaceEvent({
+      await applyHerdEvent({
         type: 'worktree-create-failed', projectSlug, worktreeId: chosen.worktreeId,
       }).catch(() => { /* best-effort; the row has no pod to back it */ })
     }

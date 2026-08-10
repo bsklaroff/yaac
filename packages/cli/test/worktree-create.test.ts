@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -257,8 +257,6 @@ vi.mock('@yaac/server/features/worktrees/cleanup', () => ({
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createWorktree } from '@yaac/server/features/worktrees/create'
-import { applyHerdEvent } from '@yaac/server/features/records/apply-herd-event'
-import { _resetServerLinkForTests, _setServerLinkForTests } from '@yaac/server/server-link'
 import {
   deleteWorktreeRow,
   getWorktreeRow,
@@ -370,7 +368,6 @@ describe('createWorktree', () => {
     // A create reports what it recorded rather than writing rows itself, so
     // the server's end of the link stands behind the boundary here — the
     // mocked stores below are what those reports land in.
-    _setServerLinkForTests({ workspaceEvent: applyHerdEvent })
 
     // Async store reads must resolve, not return undefined: createWorktree
     // awaits and `.catch()`es them.
@@ -426,7 +423,6 @@ describe('createWorktree', () => {
     } as never)
   })
 
-  afterEach(() => { _resetServerLinkForTests() })
 
   it('creates the worktree from an explicitly requested branch and tracks it', async () => {
     const result = await createWorktree('demo', { tool: 'claude', branch: 'dev' })

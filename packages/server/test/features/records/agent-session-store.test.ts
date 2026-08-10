@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#platform/db/client'
 import { agentSessions, getDb } from '#platform/db'
 import {
+  recordedConversationHandles,
   deleteWorktreeAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
@@ -63,5 +64,24 @@ describe('deleteWorktreeAgentSessions', () => {
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-bare' })
     await expect(deleteWorktreeAgentSessions('demo', 'wt-bare')).resolves.toBeUndefined()
     expect(await conversations()).toEqual([])
+  })
+})
+
+describe('recordedConversationHandles', () => {
+  // Keyed by the driver's handle, and only conversations that are on one:
+  // the ACP driver re-addresses a live agent by handle, so a link with no
+  // pane id names nothing it could attach to.
+  it('reports only the recorded conversations that sit on a handle', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-a', paneId: '%0' },
+      { tool: 'claude', agentSessionId: 'conv-b' },
+      { tool: 'claude', agentSessionId: 'conv-c', paneId: '%2' },
+    ])
+
+    expect(await recordedConversationHandles('demo', 'wt-1')).toEqual([
+      { handle: '%0', agentSessionId: 'conv-a' },
+      { handle: '%2', agentSessionId: 'conv-c' },
+    ])
   })
 })

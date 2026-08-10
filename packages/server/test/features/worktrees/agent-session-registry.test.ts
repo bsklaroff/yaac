@@ -26,7 +26,6 @@ import {
   listWorktreeAgentSessions,
   recordAgentSessions,
 } from '#features/records/agent-session-store'
-import { applyHerdEvent } from '#features/records/apply-herd-event'
 import { _resetPromptCaptureForTests } from '#features/worktrees/prompt-capture'
 import { recordWorktreeCreated } from '#features/records/worktree-store'
 import {
@@ -34,7 +33,6 @@ import {
   recordWorktreeLife,
   updateWorktreeMeta,
 } from '#features/worktrees/worktree-meta'
-import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
 import { listWorktreePods } from '#platform/k8s/pods'
 import { podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
@@ -65,7 +63,6 @@ describe('reconcileWorktreeAgentSessions', () => {
     tmpDir = await createTempDataDir()
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
-    _setServerLinkForTests({ workspaceEvent: applyHerdEvent })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
     // The document create would have written, plus the life whose id every
     // handle below is stamped with.
@@ -79,7 +76,6 @@ describe('reconcileWorktreeAgentSessions', () => {
   })
 
   afterEach(async () => {
-    _resetServerLinkForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
     vi.restoreAllMocks()

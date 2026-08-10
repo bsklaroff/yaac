@@ -5,13 +5,11 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
 import { authAgentHub } from '#features/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, getDb } from '#platform/db'
+import { closeRecords, openRecords } from '#features/records'
 import { EventHub } from '#main/events'
 import { resolveWorktreeContainer } from '#features/worktrees'
-import { createServerLink } from '#main/link'
 import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
-import { setServerLink } from '#server-link'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#features/skills'
 import { attachPty, type SocketLike } from '#features/terminals'
@@ -343,7 +341,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // in-memory set. A failure here means tokens would silently not persist,
   // so fail the start rather than run half-alive.
   try {
-    await getDb()
+    await openRecords()
     tokens.restoreTokens(await loadTokens())
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
@@ -356,12 +354,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // and returns — a failure to stat is not a reason to fail a start.
   await warnAboutUnimportedLegacyData()
     .catch((err: unknown) => serverLog(`[server] legacy-data check failed: ${String(err)}`))
-  // Wired now rather than beside the listeners above because the link's
-  // handlers write rows: they cannot exist before the DB is open, and
-  // nothing can report until the reconcile loop and the routes below are
-  // live (docs/plans/layered-server.md).
-  setServerLink(createServerLink())
-
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
   // control returns to the event loop and any queued request is processed.
@@ -420,7 +412,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Bounded like server.close(): a wedged close must not block lock
     // removal (WAL replay bounds any damage).
     await Promise.race([
-      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
+      closeRecords().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopServer's 3s

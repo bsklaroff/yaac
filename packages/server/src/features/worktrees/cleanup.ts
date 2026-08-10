@@ -7,8 +7,8 @@ import {
   listWorktreeJobs,
   listWorktreePods,
 } from '#platform/k8s'
-import { desiredWorkspaces } from '#herd-desired'
-import { serverLink } from '#server-link'
+import { inFlightWorktreeIds } from './provisioning'
+import { applyHerdEvent } from '#features/records'
 import {
   clearWorktreeTerminating,
   evictWorktreeStatus,
@@ -129,7 +129,7 @@ export async function cleanupWorktree(params: {
   // Report the stop (and death cause, when a reaper supplied one) so the
   // deleted-worktree view can order by recency and say why the worktree went
   // away (best-effort; falls back to transcript mtime if unrecorded).
-  await serverLink().workspaceEvent({
+  await applyHerdEvent({
     type: 'worktree-stopped', projectSlug, worktreeId, cause,
   })
 
@@ -233,7 +233,7 @@ export async function cleanupWorktreeDetached(params: {
   // when resuming a teardown yaac already recorded, so the existing cause
   // survives (see `preserveDeletedRecord`).
   if (!preserveDeletedRecord) {
-    await serverLink().workspaceEvent({
+    await applyHerdEvent({
       type: 'worktree-stopped', projectSlug, worktreeId, cause,
     })
   }
@@ -292,16 +292,15 @@ const RECENT_WRITE_SLACK_MS = 10_000
 /**
  * Is this worktree dir off-limits to the orphan sweep? Either the server is
  * still provisioning that worktree — its Job may not be applied yet, so no
- * cluster listing can vouch for it, and the in-flight set is delivered with
- * the desired set rather than read out of the server's registry — or the
- * directory has been written since
- * the sweep took its listing, which is what a create staging into it looks
- * like. Both mean "in use", and the sweep only ever wants genuine leftovers.
+ * cluster listing can vouch for it, and only the provisioning registry
+ * knows — or the directory has been written since the sweep took its
+ * listing, which is what a create staging into it looks like. Both mean
+ * "in use", and the sweep only ever wants genuine leftovers.
  * Unreadable stat is treated as in-use: refusing to delete costs a stale dir
  * the next sweep collects, deleting wrongly costs a live worktree.
  */
 async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number): Promise<boolean> {
-  if (desiredWorkspaces()?.provisioning.includes(sid) === true) return true
+  if (inFlightWorktreeIds().includes(sid)) return true
   try {
     const st = await fs.stat(dir)
     return st.mtimeMs >= sweepStartedAtMs - RECENT_WRITE_SLACK_MS
@@ -384,13 +383,9 @@ async function gcOrphanSpares(
 }
 
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
-  // Once per herd life: this collects what a previous process left behind,
-  // so a second pass has nothing new to find.
+  // Once per server life: this collects what a previous process left
+  // behind, so a second pass has nothing new to find.
   if (orphanModulesSwept) return
-  // Nothing published means nothing is known to be mid-create, and this
-  // sweep deletes directories a create may be staging into — so it stands
-  // down entirely rather than guessing, and runs on the next pass instead.
-  if (desiredWorkspaces() === undefined) return
   orphanModulesSwept = true
 
   // Everything this sweep deletes belongs to a worktree that no longer

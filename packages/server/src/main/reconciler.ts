@@ -1,7 +1,6 @@
-import { getDefaultTool, pushDesiredWorkspaces } from '#features/records'
+import { getDefaultTool } from '#features/records'
 import {
   gcOrphanEphemeralModuleDirs,
-  inFlightWorktreeIds,
   reconcileAgentSessions,
   reconcileImageSalvage,
   reconcilePrewarmPool,
@@ -69,37 +68,19 @@ export interface PassContext {
 }
 
 /**
- * The sources on which a worktree may have appeared or gone.
- *
- * ONE constant rather than two equal lists, because the equality is an
- * invariant: the desired set is refreshed on exactly these, and the stale
- * reaper judges an absence against it on exactly these, so "absence is
- * only ever judged against a set from the same pass" holds by
- * construction.
- */
-export const DESIRED_SET_TRIGGERS: readonly ReconcileTrigger[] = [
-  'worktree-pods',
-  'worktree-jobs',
-  'poll',
-]
-
-/**
- * One flat list, in the order a pass runs it. The two row-touching steps
- * bracket the substrate steps: the desired set is published before the
- * reaper can judge an absence against it, and titles are generated after
- * the conversation sweep so a just-captured opening message is eligible
- * in the same pass.
+ * One flat list, in the order a pass runs it. Titles are generated after
+ * the conversation sweep so a just-captured opening message is eligible in
+ * the same pass; the reaper needs no ordering against a publish, because
+ * it reads the desired set itself at the top of its own step.
  */
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
-    // What the server records as existing, and which of those it is still
-    // creating — published for the reaper, on the reaper's own triggers,
-    // so the two cannot drift apart.
-    { name: 'desired-workspaces', triggers: DESIRED_SET_TRIGGERS,
-      run: () => pushDesiredWorkspaces(inFlightWorktreeIds()) },
-    // The stale reaper. Poll is in its triggers because in-pod tmux death
-    // is not a substrate event.
-    { name: 'stale-worktrees', triggers: DESIRED_SET_TRIGGERS,
+    // The stale reaper — first, so counts reflect just-reaped worktrees by
+    // the time the prewarm pool runs. It reads what should exist from
+    // records at the top of its pass; the sources here are the ones on
+    // which a worktree may have appeared or gone, plus poll because in-pod
+    // tmux death is not a substrate event.
+    { name: 'stale-worktrees', triggers: ['worktree-pods', 'worktree-jobs', 'poll'],
       run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
     // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS

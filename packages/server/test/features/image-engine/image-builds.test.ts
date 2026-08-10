@@ -11,7 +11,13 @@ import {
   listImageBuilds,
   registerImageBuild,
 } from '#features/image-engine/image-builds'
-import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
+import type * as notifyModule from '#notify'
+
+vi.mock('#notify', async (importOriginal) => ({
+  ...(await importOriginal<typeof notifyModule>()),
+  notifyWorktreeListChanged: vi.fn(),
+}))
+import { notifyWorktreeListChanged } from '#notify'
 
 function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> = {}): string {
   return registerImageBuild({
@@ -27,7 +33,6 @@ function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> =
 beforeEach(() => { clearAllImageBuildsForTests() })
 afterEach(() => {
   clearAllImageBuildsForTests()
-  _resetServerLinkForTests()
   vi.useRealTimers()
 })
 
@@ -129,8 +134,8 @@ describe('ingestImageBuildLine', () => {
 
   it('publishes podman STEP progress, broadcasting only when it advances', () => {
     const id = register()
-    const notify = vi.fn()
-    _setServerLinkForTests({ workspacesChanged: notify })
+    const notify = vi.mocked(notifyWorktreeListChanged)
+    notify.mockClear()
 
     // Lines that aren't STEP progress leave the entry's step untouched —
     // including near-misses, so a changed podman format degrades to

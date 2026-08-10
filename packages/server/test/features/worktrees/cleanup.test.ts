@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+vi.mock('#features/records', () => ({ applyHerdEvent: vi.fn() }))
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -77,30 +79,26 @@ import {
   gcOrphanEphemeralModuleDirs,
   worktreeModulesDir,
 } from '#features/worktrees/cleanup'
-import {
-  _resetDesiredWorkspacesForTests,
-  publishDesiredWorkspaces,
-} from '#herd-desired'
+
 import { isWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/status/liveness'
 import { _resetWorktreeStatusStoreForTests } from '#features/status/status-store'
-import { _setServerLinkForTests } from '#server-link'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 import type { HerdEvent } from '@yaac/shared/herd'
+import { applyHerdEvent } from '#features/records'
+import { clearAllProvisioningForTests, registerProvisioning } from '#features/worktrees/provisioning'
 
 const podExecMock = vi.mocked(podExec)
 const mockServerLog = vi.mocked(serverLog)
 
-// Cleanup reports the stop rather than writing the row itself, so a stub
-// link stands in for the server: these tests never open a DB, and what the
-// herd half says about a teardown is asserted directly.
+// Cleanup reports the stop as an event rather than writing the row itself,
+// so applyHerdEvent is stubbed: these tests never open a DB, and what a
+// teardown says is asserted directly.
 const herdEvents: HerdEvent[] = []
-_setServerLinkForTests({
-  workspaceEvent: (event) => {
-    herdEvents.push(event)
-    return Promise.resolve()
-  },
+vi.mocked(applyHerdEvent).mockImplementation((event) => {
+  herdEvents.push(event)
+  return Promise.resolve()
 })
 const clearHerdEvents = (): void => { herdEvents.length = 0 }
 const stopsReported = (): Array<[string, string, unknown]> => herdEvents
@@ -342,11 +340,14 @@ describe('worktreeModulesDir', () => {
 describe('gcOrphanEphemeralModuleDirs', () => {
   let dataDir: string
 
-  /** Publish a desired set with the given in-flight ids. The sweep stands
-   *  down until the server has published one, so every case that expects it
-   *  to act publishes first. */
-  const publishInFlight = (provisioning: string[] = []): void =>
-    publishDesiredWorkspaces({ live: [], stopped: [], provisioning })
+  /** Register the given ids as creates in flight, in the real registry the
+   *  sweep reads. */
+  const publishInFlight = (provisioning: string[] = []): void => {
+    clearAllProvisioningForTests()
+    for (const worktreeId of provisioning) {
+      registerProvisioning({ worktreeId, projectSlug: 'proj-a', tool: 'claude', kind: 'create' })
+    }
+  }
 
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
@@ -355,12 +356,11 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     mockListJobs.mockReset()
     mockListJobs.mockResolvedValue([])
     _resetOrphanModulesSweepForTests()
-    _resetDesiredWorkspacesForTests()
     publishInFlight()
   })
 
   afterEach(async () => {
-    _resetDesiredWorkspacesForTests()
+    clearAllProvisioningForTests()
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
@@ -446,27 +446,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     const staging = await seedWorktreesDir('proj-a', 'creating-1')
     const modules = await seedModulesDir('proj-a', 'creating-1')
     mockListPods.mockResolvedValue([])
-    // Delivered with the desired set — the sweep never reads the server's
-    // provisioning registry.
     publishInFlight(['creating-1'])
 
     await gcOrphanEphemeralModuleDirs()
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
     await expect(fs.access(modules)).resolves.toBeUndefined()
-  })
-
-  // The in-flight set is the only thing standing between this sweep and a
-  // create's staged dirs, so with no set published it must not run at all —
-  // it runs on the next pass, once the server has said what exists.
-  it('stands down entirely until the server has published a set', async () => {
-    const dead = await seedWorktreesDir('proj-a', 'dead-1')
-    _resetDesiredWorkspacesForTests()
-    mockListPods.mockResolvedValue([])
-
-    await gcOrphanEphemeralModuleDirs()
-
-    await expect(fs.access(dead)).resolves.toBeUndefined()
   })
 
   // It collects what a PREVIOUS process left behind, so a second pass has

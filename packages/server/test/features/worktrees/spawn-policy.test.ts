@@ -1,18 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as worktreesModule from '#features/worktrees'
 import { listProvisioning, clearAllProvisioningForTests } from '#features/worktrees/provisioning'
-vi.mock('#features/worktrees', async (importOriginal) => ({
-  ...(await importOriginal<typeof worktreesModule>()),
-  createWorktree: vi.fn(),
-}))
-import { createWorktree } from '#features/worktrees'
+vi.mock('#features/worktrees/create', () => ({ createWorktree: vi.fn() }))
+import { createWorktree } from '#features/worktrees/create'
 import type { WorktreeCreateOptions, WorktreeCreateResult } from '#features/worktrees/create'
-import type { SpawnRequest } from '#server-link'
 import {
   SPAWN_MAX_IN_FLIGHT_PER_SESSION,
   SPAWN_MAX_PROMPT_CHARS,
   decideSpawn,
-} from '#main/spawn'
+  type SpawnRequest,
+} from '#features/worktrees/spawn-policy'
 
 type CreateFn = (slug: string, opts: WorktreeCreateOptions) => Promise<WorktreeCreateResult>
 

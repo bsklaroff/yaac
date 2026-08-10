@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { _resetServerLinkForTests, _setServerLinkForTests } from '#server-link'
-import type { SpawnDecision, SpawnRequest } from '#server-link'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { SpawnDecision, SpawnRequest } from '#features/worktrees/spawn-policy'
+
+vi.mock('#features/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
+import { decideSpawn } from '#features/worktrees/spawn-policy'
 import type { PendingSpawn, SpawnResultWire } from '#features/egress/proxy-client'
 import type { PodInfo } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
@@ -31,25 +33,19 @@ function makeReq(over: Partial<PendingSpawn> = {}): PendingSpawn {
   }
 }
 
-/** The reports the herd made, and what the server answered. Nothing about a
- *  spawn's MEANING is decided on this side, so the link is the whole of what
- *  these tests assert against. */
+/** What the drain handed to the policy, and what the policy answered.
+ *  Nothing about a spawn's MEANING is decided on this side, so the policy
+ *  seam is the whole of what these tests assert against. */
 const reports: SpawnRequest[] = []
 let answer: SpawnDecision = { ok: true, workspaceId: 'minted-id' }
 
 beforeEach(() => {
   reports.length = 0
   answer = { ok: true, workspaceId: 'minted-id' }
-  _setServerLinkForTests({
-    spawnRequested: (request) => {
-      reports.push(request)
-      return Promise.resolve(answer)
-    },
+  vi.mocked(decideSpawn).mockImplementation((request) => {
+    reports.push(request)
+    return Promise.resolve(answer)
   })
-})
-
-afterEach(() => {
-  _resetServerLinkForTests()
 })
 
 /** Drain exactly one request and hand back what was posted for it. The
