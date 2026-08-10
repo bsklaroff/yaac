@@ -107,6 +107,13 @@ describe('groupEvents', () => {
     ])).toEqual([{ kind: 'agent', seq: 1, text: 'hi' }])
   })
 
+  it('drops a turn start, which drives the indicator rather than the transcript', () => {
+    // It carries no content, and the turn beginning is already visible as the
+    // reply that follows it.
+    expect(groupEvents([{ type: 'turn-start', seq: 0 }, agent(1, 'hi')]))
+      .toEqual([{ kind: 'agent', seq: 1, text: 'hi' }])
+  })
+
   it('renders an image chunk as a placeholder rather than dropping the message', () => {
     const groups = groupEvents([
       { type: 'agent', seq: 0, content: [{ type: 'image', mimeType: 'image/png', data: 'AA==' }] },

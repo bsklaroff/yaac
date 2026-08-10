@@ -16,6 +16,10 @@
  * The record is not merely where history comes from — it is the ONLY path by
  * which conversation content reaches a pane, live content included. See
  * `tailAcpLog` for why that is forced rather than chosen.
+ *
+ * Being both directions verbatim, it also answers the question ACP gives a
+ * reconnecting client no way to ask: whether a turn is running right now. See
+ * `readAcpInFlight`.
  */
 
 import fs from 'node:fs/promises'
@@ -232,18 +236,28 @@ async function readLifeId(handle: fs.FileHandle): Promise<string | undefined> {
   }
 }
 
-/** One recorded line's contribution to the rendered conversation. */
-function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
-  if (line.trim() === '') return []
-  let msg: Record<string, unknown>
+/**
+ * One recorded line as an object, or undefined for anything that is not one.
+ *
+ * Every line is tolerated: a read can land while the writer is mid-line, and an
+ * adapter that printed something which is not JSON-RPC put that in here too.
+ * Neither is a reason to lose the conversation.
+ */
+function parseLine(line: string): Record<string, unknown> | undefined {
+  if (line.trim() === '') return undefined
   try {
     const parsed: unknown = JSON.parse(line)
-    if (typeof parsed !== 'object' || parsed === null) return []
-    msg = parsed as Record<string, unknown>
+    if (typeof parsed !== 'object' || parsed === null) return undefined
+    return parsed as Record<string, unknown>
   } catch {
-    // Adapter noise, or a line the writer had not finished when we read.
-    return []
+    return undefined
   }
+}
+
+/** One recorded line's contribution to the rendered conversation. */
+function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
+  const msg = parseLine(line)
+  if (msg === undefined) return []
   // The client's own prompts. The agent echoes a user message only when
   // replaying under `session/load`, so for anything said live these lines are
   // the only record that a user spoke at all.
@@ -258,6 +272,60 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   // Responses, `initialize`, `session/new` and acpd's control lines carry no
   // conversation content.
   return []
+}
+
+/**
+ * Whether a prompt turn was still in flight when the record was last written.
+ *
+ * This is how a *reconnecting* client learns what it cannot be told. ACP scopes
+ * turn state to the request: a turn is running iff your own `session/prompt` is
+ * unanswered, and the protocol has no status query, no busy notification and no
+ * `session/load` semantics for a turn already in progress. So a connection that
+ * takes over a live agent — after a relay drop, a streamd self-heal, or a server
+ * restart — has no way to ask whether the agent is working.
+ *
+ * The record answers it, because acpd tees both directions: the client's own
+ * `session/prompt` requests are in there with their ids, and so are the agent's
+ * replies. A turn is in flight iff the last recorded prompt has no recorded
+ * reply. Turns never overlap (`AcpConversation` queues them), so only the last
+ * one can be outstanding.
+ *
+ * A missing record means nothing has been said yet, which is not a turn.
+ */
+export async function readAcpInFlight(logPath: string): Promise<boolean> {
+  let raw: string
+  try {
+    raw = await fs.readFile(logPath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
+    }
+    return false
+  }
+  let pending: string | number | undefined
+  for (const line of raw.split('\n')) {
+    const msg = parseLine(line)
+    if (msg === undefined) continue
+    const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
+    if (msg.method === ACP.sessionPrompt) {
+      // A prompt sent without an id is a notification the agent will never
+      // answer, so it can never be the turn we are looking for.
+      if (id !== undefined) pending = id
+      continue
+    }
+    if (msg.method === ACPD.exit) {
+      // The agent process is gone; whatever it was doing died with it. acpd
+      // restarts under a fresh record, so this only ever refers to the life
+      // being scanned.
+      pending = undefined
+      continue
+    }
+    // Anything else carrying a method is a request or notification, not a
+    // reply; only a reply can close a turn.
+    if (msg.method !== undefined) continue
+    if (id !== undefined && id === pending) pending = undefined
+  }
+  return pending !== undefined
 }
 
 /**
@@ -293,17 +361,9 @@ export async function readAcpFirstPrompt(logPath: string): Promise<string | unde
     // is discarded with it: an incomplete trailing line is not an answer.
     const head = new StringDecoder('utf8').write(buf.subarray(0, bytesRead))
     for (const line of head.split('\n')) {
-      if (line.trim() === '') continue
-      let msg: Record<string, unknown>
-      try {
-        const parsed: unknown = JSON.parse(line)
-        if (typeof parsed !== 'object' || parsed === null) continue
-        msg = parsed as Record<string, unknown>
-      } catch {
-        // The scan can end mid-line; a truncated tail is not an answer.
-        continue
-      }
-      if (msg.method === ACP.sessionPrompt) return promptText(msg.params)
+      // The scan can end mid-line; a truncated tail is not an answer.
+      const msg = parseLine(line)
+      if (msg?.method === ACP.sessionPrompt) return promptText(msg.params)
     }
     return undefined
   } finally {

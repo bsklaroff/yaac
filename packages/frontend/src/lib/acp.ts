@@ -92,10 +92,12 @@ export function useAcpStream(
         }
         if (msg.type === 'event') {
           setEvents((prev) => mergeEvents(prev, [msg.event]))
-          // Turn boundaries are the authority on busy; a `user` event means
-          // the turn is starting (it precedes the agent's first chunk).
+          // Turn boundaries are the authority on busy. A `user` event means the
+          // turn is starting (it precedes the agent's first chunk); `turn-start`
+          // covers the turns that have no `user` event of ours to infer from —
+          // one already running when the server reattached to the agent.
           if (msg.event.type === 'turn-end' || msg.event.type === 'error') setBusy(false)
-          if (msg.event.type === 'user') setBusy(true)
+          if (msg.event.type === 'user' || msg.event.type === 'turn-start') setBusy(true)
           return
         }
         if (msg.type === 'health') setConnected(msg.connected)

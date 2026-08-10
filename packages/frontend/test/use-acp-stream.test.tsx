@@ -160,6 +160,25 @@ describe('useAcpStream', () => {
     await waitFor(() => expect(result.current.busy).toBe(false))
   })
 
+  it('starts working on a turn it did not send', async () => {
+    // A turn the server recovered after reattaching to the agent — the pane
+    // sent no message, so it has no `user` event of its own to infer from, and
+    // without the explicit boundary it would show an idle agent mid-reply.
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    act(() => {
+      latest().open()
+      latest().deliver(hello([]))
+    })
+    act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 0 } }))
+    await waitFor(() => expect(result.current.busy).toBe(true))
+
+    act(() => latest().deliver({
+      type: 'event',
+      event: { type: 'turn-end', seq: 1, stopReason: 'end_turn' },
+    }))
+    await waitFor(() => expect(result.current.busy).toBe(false))
+  })
+
   it('adopts the busy state the server reports on attach', async () => {
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
     act(() => {

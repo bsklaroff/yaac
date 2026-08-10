@@ -26,11 +26,20 @@
  *     *process*, not once per connection. Re-running it against a live agent
  *     is undefined; on a reattach this class skips straight to consuming
  *     notifications for the session id it already holds.
- *  2. The reply to the `session/prompt` that was in flight belongs to a
- *     request id the previous connection allocated. It arrives as an orphan
- *     response, which is read here as "that turn ended" — the conservative
- *     direction, since the alternative leaves a conversation permanently
- *     showing as busy.
+ *  2. Whether a turn is running is not something the new connection can be
+ *     told. ACP scopes turn state to the request — a turn is in flight iff
+ *     *your* `session/prompt` is unanswered — and offers no status query, no
+ *     busy notification, and no `session/load` semantics for a turn already in
+ *     progress. So a reattach reconstructs it from the record instead
+ *     (`recoverInFlight`), which has both directions and can therefore say
+ *     whether the last prompt was ever answered.
+ *
+ * Recovery is a file read, so two faster answers can beat it, and both are
+ * newer than the record: a prompt sent since the reattach, and the recovered
+ * turn's own reply arriving as an orphan response (its request id belongs to
+ * the previous connection, so it can only be read as "that turn ended"). The
+ * first classification wins and the scan's verdict is dropped — which is what
+ * keeps a stale `true` from pinning a finished conversation busy.
  */
 
 import { JsonRpcCallError, JsonRpcPeer, type JsonRpcTransport } from './acp-jsonrpc'
@@ -66,8 +75,22 @@ export interface AcpConversationDeps {
   /** Fired when the ACP session id is first known, so the caller can record
    *  it. Not fired on a resume, where the caller supplied it. */
   onSessionId: (agentSessionId: string) => void
-  /** Turn started / turn ended — this conversation's running/waiting. */
+  /**
+   * Turn started, turn ended, or the status was resolved for the first time —
+   * this conversation's running/waiting. The first call is what promotes it
+   * from unclassified (`status === undefined`) to something a caller can
+   * publish, so it fires even when the answer is the unremarkable `false`.
+   */
   onBusy: (busy: boolean) => void
+  /**
+   * Whether a prompt turn was still in flight when the record was last
+   * written — `readAcpInFlight` over this conversation's record. Consulted
+   * once, on a reattach, because that is the only case where a turn this
+   * connection did not start can be running. Absent (or throwing) means the
+   * conversation resolves to idle, which is what it did before recovery
+   * existed.
+   */
+  recoverInFlight?: () => Promise<boolean>
   onDown: (reason: string) => void
   log?: (msg: string) => void
 }
@@ -80,6 +103,13 @@ export class AcpConversation {
   private sessionId: string | undefined
   private busy = false
   /**
+   * Whether `busy` is an answer yet. A conversation that has only just
+   * attached knows nothing: it may have landed on an agent that is working,
+   * and saying "idle" in the meantime would stamp a waiting spell on it. So
+   * `status` stays undefined until the handshake — or recovery — settles it.
+   */
+  private statusKnown = false
+  /**
    * Tail of the prompt-turn chain. ACP adapters assume one turn at a time, and
    * nothing upstream enforces it — a second Enter mid-turn reaches here — so
    * turns queue rather than overlap. Without this the FIRST reply ends the
@@ -87,6 +117,13 @@ export class AcpConversation {
    * `waiting` while its agent is plainly working.
    */
   private turn: Promise<void> = Promise.resolve()
+  /**
+   * Woken when a turn ends. A *recovered* turn is running at the adapter but
+   * is not in `turn` — nothing here chained it, since nothing here started it —
+   * so this is the slot it occupies in the queue. Only ever waited on for that
+   * turn: this connection's own are already serialized.
+   */
+  private idleWaiters: Array<() => void> = []
   private ready = false
   /**
    * acpd's greeting is the first line of a connection, always. Accepting a
@@ -116,6 +153,18 @@ export class AcpConversation {
 
   get isBusy(): boolean {
     return this.busy
+  }
+
+  /**
+   * This conversation's classification, or undefined while it has none —
+   * mid-handshake, or reading the record to find out whether the agent it just
+   * reattached to is mid-turn. A caller that publishes status must skip an
+   * undefined rather than defaulting it: `waiting` for a working agent is the
+   * exact bug recovery exists to fix.
+   */
+  get status(): 'running' | 'waiting' | undefined {
+    if (!this.statusKnown) return undefined
+    return this.busy ? 'running' : 'waiting'
   }
 
   get isClosed(): boolean {
@@ -158,16 +207,59 @@ export class AcpConversation {
     for (const fn of this.subscribers) fn(event)
   }
 
+  /**
+   * Settle the conversation's status. The first call always publishes, even
+   * when it resolves to the same `false` the field started at: "idle" and "not
+   * classified yet" are different states to a caller, and the first is only
+   * reached by saying so.
+   */
   private setBusy(busy: boolean): void {
-    if (this.busy === busy) return
+    if (this.statusKnown && this.busy === busy) return
+    // A turn *beginning* — as opposed to a status merely being resolved as
+    // running. Only that is worth an event.
+    const started = busy && !this.busy
+    this.statusKnown = true
     this.busy = busy
+    // An attached pane infers "a turn started" from the `user` event it sent,
+    // and a recovered turn has none — nobody typed it into this connection. So
+    // the boundary is announced, and a pane that already knew treats it as the
+    // no-op it is.
+    if (started) this.emit({ type: 'turn-start' })
+    if (!busy) this.wakeIdleWaiters()
     this.deps.onBusy(busy)
   }
 
+  /** Release whatever is queued behind a turn this connection did not start. */
+  private wakeIdleWaiters(): void {
+    for (const fn of this.idleWaiters) fn()
+    this.idleWaiters = []
+  }
+
+  /**
+   * Resolve once no turn is running. This connection's own turns are already
+   * serialized by `turn`, so the only thing this ever waits out is a recovered
+   * one — which ends by the same routes that classify it: the orphan reply, the
+   * agent exiting, or the conversation closing.
+   *
+   * A turn recovered from a *torn* record has none of those routes, since the
+   * reply it is waiting for was already produced and lost. That conversation
+   * holds its queue until the worktree restarts (docs/agent-modes.md, "Where
+   * status can mislead"). Deliberate: the alternative is releasing the queue on
+   * a timer, which cannot tell a phantom from an agent that is simply taking a
+   * long time, and would dispatch over a turn that really is running.
+   */
+  private whenIdle(): Promise<void> {
+    if (!this.busy) return Promise.resolve()
+    return new Promise((resolve) => this.idleWaiters.push(resolve))
+  }
+
   private endTurn(stopReason: Parameters<typeof toStopReason>[0]): void {
-    if (!this.busy) return
+    const wasBusy = this.busy
+    // Unconditional, so an orphan reply (or the agent exiting) settles a
+    // conversation whose recovery has not answered yet — and, being first,
+    // beats it. There is nothing to end, but there is something to classify.
     this.setBusy(false)
-    this.emit({ type: 'turn-end', stopReason: toStopReason(stopReason) })
+    if (wasBusy) this.emit({ type: 'turn-end', stopReason: toStopReason(stopReason) })
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -232,7 +324,10 @@ export class AcpConversation {
           throw new Error('reattached to a live agent with no recorded session id')
         }
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
+        // Ready before recovery: a prompt typed into the pane must not wait on
+        // a file read to find out what the *previous* connection was doing.
         this.markReady()
+        await this.recover()
         return
       }
 
@@ -266,12 +361,41 @@ export class AcpConversation {
         this.deps.onSessionId(created.sessionId)
       }
       this.markReady()
+      // A first attach is a fresh agent process, so nothing can be in flight —
+      // said out loud, because a caller cannot publish an unclassified
+      // conversation and this one is done being unclassified.
+      this.setBusy(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.log(`[server] acp: handshake failed: ${message}`)
       this.emit({ type: 'error', message: `ACP handshake failed: ${message}` })
       this.deps.onDown(`handshake failed: ${message}`)
     }
+  }
+
+  /**
+   * Work out whether the agent this connection just took over is mid-turn, and
+   * classify accordingly.
+   *
+   * Deliberately last-writer-*loses*: anything that resolved the status while
+   * the record was being read knows something newer than the record does — a
+   * prompt sent since, or the in-flight turn's reply arriving as an orphan — so
+   * a scan that comes back afterwards is stale and says nothing.
+   */
+  private async recover(): Promise<void> {
+    let inFlight = false
+    if (this.deps.recoverInFlight !== undefined) {
+      try {
+        inFlight = await this.deps.recoverInFlight()
+      } catch (err) {
+        // Understating costs a `working…` label; overstating pins a finished
+        // conversation busy with no event left to release it.
+        this.log(`[server] acp: could not recover turn state: ${
+          err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (this.closed || this.statusKnown) return
+    this.setBusy(inFlight)
   }
 
   private markReady(): void {
@@ -332,6 +456,16 @@ export class AcpConversation {
   /** One prompt turn, run only once its predecessor has finished. */
   private async runTurn(text: string): Promise<void> {
     if (this.closed) throw new Error('conversation is closed')
+    // A turn recovered from the record is running at the adapter but was never
+    // put in `turn` — nothing here started it. Waiting it out is the same rule
+    // the queue enforces for this connection's own turns: sending now would
+    // overlap them at an adapter that assumes one at a time, and the first
+    // reply back would end the wrong turn. Nothing running is the ordinary
+    // case, and it costs no tick — the chain has already serialized our own.
+    if (this.busy) {
+      await this.whenIdle()
+      if (this.closed) throw new Error('conversation is closed')
+    }
     if (this.sessionId === undefined) throw new Error('no ACP session')
     this.setBusy(true)
     try {
@@ -368,6 +502,9 @@ export class AcpConversation {
     if (this.closed) return
     this.closed = true
     this.failWaiters(new Error('conversation is closed'))
+    // A prompt held behind a recovered turn would otherwise wait for a boundary
+    // that can no longer arrive; released, it fails on the closed check above it.
+    this.wakeIdleWaiters()
     this.peer.close()
     for (const fn of this.closeSubscribers) fn()
     this.closeSubscribers.clear()

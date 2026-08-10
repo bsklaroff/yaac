@@ -23,8 +23,11 @@
  * chat instead.
  *
  * Status is exact here, unlike the TUI mode's title scraping: a conversation is
- * `running` for precisely as long as its `session/prompt` request is in
- * flight, and `waiting` the moment the agent answers with a stop reason.
+ * `running` for precisely as long as a `session/prompt` request is in flight,
+ * and `waiting` the moment the agent answers with a stop reason. That holds
+ * across reconnects, where the request in flight belongs to a connection that
+ * is gone — acpd's record is what makes such a turn knowable, since ACP itself
+ * lets only the sender of a prompt know it is running.
  */
 
 import { StringDecoder } from 'node:string_decoder'
@@ -35,6 +38,7 @@ import { CONTAINER_TMUX_SOCK, containerAcpLog, containerAcpSock } from '@yaac/sh
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { AcpConversation } from './acp-client'
+import { readAcpInFlight } from './acp-log'
 import { agentWindowTool } from './agent-tools'
 import {
   acpConversationByHandle,
@@ -323,7 +327,13 @@ class AcpConnection implements AgentConnection {
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       cwd: '/workspace',
-      ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
+      ...(resumeSessionId !== undefined ? {
+        resumeSessionId,
+        // Only a conversation we can already name has a record to read, and it
+        // is exactly those that can be mid-turn: a reattach happens on a
+        // conversation yaac already recorded.
+        recoverInFlight: () => readAcpInFlight(this.recordPath(resumeSessionId)),
+      } : {}),
       onSessionId: (agentSessionId) => {
         entry.agentSessionId = agentSessionId
         // acpd opened the record before the agent had an id to give, so rename
@@ -356,6 +366,14 @@ class AcpConnection implements AgentConnection {
     }, entry.conversation)
   }
 
+  /** Where acpd is recording one of this worktree's conversations. */
+  private recordPath(agentSessionId: string): string {
+    return path.join(
+      acpLogDir(this.session.slug, this.session.worktreeId),
+      `${agentSessionId}.jsonl`,
+    )
+  }
+
   private detach(entry: Attached, reason: string): void {
     if (!this.attached.has(entry.handle)) return
     this.attached.delete(entry.handle)
@@ -386,8 +404,17 @@ class AcpConnection implements AgentConnection {
     // Each conversation's status is pushed on every turn boundary, but a
     // freshly attached one has never had a boundary — publish its current
     // state so the store is never left with an unclassified conversation.
+    //
+    // Unless it genuinely has none: a conversation still handshaking, or still
+    // reading the record to find out whether the agent it reattached to is
+    // mid-turn, has no answer to give. Guessing `waiting` here is what used to
+    // paint a working agent idle on every sweep — and stamp it with a waiting
+    // spell the sidebar reads as "wants attention". It publishes itself the
+    // moment it knows, through `onBusy`.
     for (const e of this.attached.values()) {
-      this.sink({ kind: 'status', handle: e.handle, status: e.conversation?.isBusy ? 'running' : 'waiting' })
+      const status = e.conversation?.status
+      if (status === undefined) continue
+      this.sink({ kind: 'status', handle: e.handle, status })
     }
   }
 

@@ -77,9 +77,14 @@ export function attachAcp(
   // joining them at an unknown point would duplicate the overlap or drop it.
   // One source has no join, so there is nothing here to get wrong.
   let seq = 0
+  let detached = false
   const tail = tailAcpLog(
     path.join(acpLogDir(slug, worktreeId), `${agentSessionId}.jsonl`),
     (events, reset) => {
+      // Closing the tail stops further passes, but not the one already reading:
+      // it checks for closure on entry and its chain serializes rather than
+      // aborts, so a pass that started before the pane left still reports.
+      if (detached) return
       if (reset) {
         // A fresh read of the whole record — the first pass, or a new agent
         // life that truncated it. Either way the pane replaces what it holds.
@@ -104,7 +109,14 @@ export function attachAcp(
   const unsubscribe = conversation.subscribe((event) => {
     void tail.flush()
       .catch(() => { /* the next pass retries */ })
-      .then(() => send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent }))
+      .then(() => {
+        // The flush is a file read, so the pane can leave between an event and
+        // its delivery — and unsubscribing cannot recall a send already on its
+        // way. A prompt is the common case: it starts a turn, and the boundary
+        // that announces it is still in flight when the tab closes.
+        if (detached) return
+        send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
+      })
   })
   const unsubscribeClose = conversation.onClosed(() => {
     send({ type: 'health', connected: false })
@@ -134,6 +146,7 @@ export function attachAcp(
   })
 
   sock.onClose(() => {
+    detached = true
     tail.close()
     unsubscribe()
     unsubscribeClose()
