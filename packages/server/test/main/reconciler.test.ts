@@ -391,4 +391,22 @@ describe('defaultReconcileSteps', () => {
     await runPass([], { resync: true })
     expect(vi.mocked(reconcilePrewarmPool).mock.calls[1][0]).toBe('claude')
   })
+
+  // A FAILED preference read is not an unset preference: falling back to
+  // claude on a transient records failure would retool a spare toward the
+  // wrong tool and churn it back next pass. The accessor rejects, the step
+  // fails (error-isolated by the engine), and the pool stands down for the
+  // pass instead.
+  it('stands the pool down when the preference read fails', async () => {
+    const pool = defaultReconcileSteps().find((s) => s.name === 'prewarm-pool')!
+    const ctx: PassContext = {
+      triggers: new Set<ReconcileTrigger>(['worktree-pods']),
+      resync: false,
+      signal: new AbortController().signal,
+      snapshot: () => ({} as TickSnapshot),
+      defaultTool: () => Promise.reject(new Error('db is gone')),
+    }
+    await expect(pool.run(ctx)).rejects.toThrow('db is gone')
+    expect(reconcilePrewarmPool).not.toHaveBeenCalled()
+  })
 })

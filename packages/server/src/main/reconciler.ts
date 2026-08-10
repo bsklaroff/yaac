@@ -24,8 +24,9 @@ import type { AgentTool } from '@yaac/shared/types'
  *
  * Passes never overlap (steps share module state) and preserve the step
  * order below; each pass isolates step errors. Substrate steps share one
- * point-in-time view (`TickSnapshot`), created lazily on first use so the
- * desired-set step ahead of them publishes before the view is taken.
+ * point-in-time view (`TickSnapshot`), created lazily so only a pass that
+ * actually runs a substrate step takes one — the first triggered step
+ * takes the view, and every later step in the pass sees the same instant.
  */
 export interface ReconcilerDeps {
   signal: AbortSignal
@@ -110,7 +111,13 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         resync,
         signal,
         snapshot: () => (snapshot ??= createTickSnapshot(resync)),
-        defaultTool: () => (defaultTool ??= getDefaultTool().catch(() => undefined)),
+        // No catch: a failed preference read rejects the accessor, which
+        // fails (and stands down) exactly the steps that needed the answer
+        // — churning a spare toward a fallback tool on a transient read
+        // failure would be worse than warming nothing for one pass. An
+        // UNSET preference resolves undefined, and the consumer's fallback
+        // is for that case alone.
+        defaultTool: () => (defaultTool ??= getDefaultTool()),
       }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight

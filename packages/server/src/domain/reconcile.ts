@@ -131,11 +131,12 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // stands down while anything is pushing.
     { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
     // Per-worktree `.cached-packages/modules/<id>` dirs whose runtime is
-    // gone — leftovers from crashes and host reboots. A startup sweep, run
-    // from the loop rather than from attach because it must not delete a
-    // dir a create is staging into, and which worktrees are mid-create is
-    // the desired set the pass published above. Self-gating: once per
-    // server life.
+    // gone — leftovers from crashes and host reboots. A startup sweep that
+    // must not delete a dir a create is staging into: which worktrees are
+    // mid-create comes straight from the provisioning registry, which is
+    // same-process and populated synchronously before a create stages
+    // anything, so the sweep can never see a fresher directory than the
+    // registry entry that shields it. Self-gating: once per server life.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
     // Model-generated titles for untitled worktrees, after the
     // conversation sweep so a freshly captured prompt is eligible the same

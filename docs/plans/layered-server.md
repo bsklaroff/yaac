@@ -181,7 +181,11 @@ globs over `src/<layer>/**`, no enumerated files:
   `drizzle-orm`, and no `#records`'s internal modules past the barrel (the
   existing sealed-folder rule already covers the latter).
 - `runtime/**` and `store/**`: no `#records`, `#domain`, `#api`, `#main`;
-  additionally `store/**`: no `#runtime`, and `runtime/**`: no `#store`.
+  additionally `store/**`: no `#runtime`. The reverse edge is sanctioned
+  and one-way: a driver may read the store (it mounts what the store
+  staged, launches with the config and credentials the store keeps, and
+  the per-tool transcript readers are store code its agents module
+  shares), and the DAG holds because the store never reads back.
 - `domain/**`: no `#api`, `#main`.
 - `#notify` and `#log` importable from any layer.
 

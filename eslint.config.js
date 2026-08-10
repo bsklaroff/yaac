@@ -40,7 +40,7 @@ const UNTIERED_DATA_DIR = [
 // nothing.
 const SEALED_FOLDERS = {
   regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|db|k8s))/.',
-  message: 'This folder is sealed; import its barrel (e.g. #features/images).',
+  message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
 // A `regex` for the same reason SEALED_FOLDERS is one: a `group` glob reads
@@ -52,7 +52,7 @@ const SEALED_FOLDERS = {
 // caller-side write (docs/plans/layered-server.md).
 const NO_DATABASE_DIRECT = {
   regex: '^(#platform/db|@electric-sql/pglite|drizzle-orm)(/|$)',
-  message: 'Only #features/records opens the database (docs/plans/layered-server.md): read or write rows through its barrel.',
+  message: 'Only #records opens the database (docs/plans/layered-server.md): read or write rows through its barrel.',
 }
 
 // Lower layers know nothing about the ones above them — not the HTTP
