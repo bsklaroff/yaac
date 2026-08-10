@@ -24,7 +24,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 // The salvage execs into pods via kubectl (real subprocesses) — stub the
 // module so cleanup unit tests never touch the cluster, and so the
 // hooks' presence/order can be asserted.
-vi.mock('#features/images/image-promoter', () => ({
+vi.mock('#runtime/k8s/images/image-promoter', () => ({
   salvageWorktreeImages: vi.fn().mockResolvedValue(true),
 }))
 
@@ -71,7 +71,7 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { salvageWorktreeImages } from '#features/images/image-promoter'
+import { salvageWorktreeImages } from '#runtime/k8s/images/image-promoter'
 import { RelayExecError, podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
 import { listWorktreePods, listWorktreeJobs } from '#platform/k8s/pods'
@@ -84,9 +84,9 @@ import {
   worktreeModulesDir,
 } from '#features/worktrees/cleanup'
 
-import { isWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
-import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/status/liveness'
-import { _resetWorktreeStatusStoreForTests } from '#features/status/status-store'
+import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
+import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
+import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#features/records'

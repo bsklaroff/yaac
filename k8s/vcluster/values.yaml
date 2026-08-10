@@ -1,6 +1,6 @@
 # Static Helm values for the vendored vcluster chart
 # (vcluster-<VERSION>.tgz). Applied at session-create time by
-# packages/server/src/features/cluster/vcluster.ts via `helm template`; the per-session values
+# packages/server/src/runtime/k8s/cluster/vcluster.ts via `helm template`; the per-session values
 # (registry, API host) are passed as `--set` overrides, so this file
 # carries no placeholders. The only post-render step is stamping the
 # yaac ownership labels onto every object (no global-labels knob in the
@@ -111,7 +111,7 @@ sync:
     # replacing yaac-session-egress for them. Every yaac label that DOES
     # propagate is forgeable, so nothing — neither policy nor the redirect —
     # relies on one: the inner redirect is driven by validated claims naming
-    # pod IPs (features/cluster/redirect-claims.ts), and pod IPs come from
+    # pod IPs (runtime/k8s/cluster/redirect-claims.ts), and pod IPs come from
     # host IPAM.
     #
     # The claim's own path does depend on two syncer defaults, both

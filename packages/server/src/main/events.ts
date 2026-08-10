@@ -1,6 +1,6 @@
 import { listActiveWorktrees, listProvisioning } from '#features/worktrees'
 import { listProjects } from '#features/projects'
-import { listImageBuilds } from '#features/image-engine'
+import { listImageBuilds } from '#runtime/k8s/image-engine'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

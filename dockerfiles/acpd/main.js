@@ -3,7 +3,7 @@
  *
  * Started inside a tmux window by session-create's agent launch command (see
  * `acpDriver.launchCmd` in
- * packages/server/src/features/agents/acp-driver.ts), so tmux supervises it
+ * packages/server/src/runtime/agents/acp-driver.ts), so tmux supervises it
  * exactly as it supervises a TUI agent. Nothing else launches it.
  */
 

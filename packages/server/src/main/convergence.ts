@@ -11,15 +11,15 @@ import {
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
-} from '#features/cluster'
+} from '#runtime/k8s/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
-import { StatusWatcherManager, onLiveAgentsChanged, onWorktreeStatusChanged } from '#features/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onWorktreeStatusChanged } from '#runtime/status'
 import {
   PortDetectorManager,
   restoreAllWorktreeForwarders,
   stopAllWorktreeForwarders,
-} from '#features/forwarders'
-import { proxyClient } from '#features/egress'
+} from '#runtime/k8s/forwarders'
+import { proxyClient } from '#runtime/k8s/egress'
 import { recordedConversationHandles } from '#features/records'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'

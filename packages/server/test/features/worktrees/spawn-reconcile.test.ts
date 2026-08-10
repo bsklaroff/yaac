@@ -3,7 +3,7 @@ import type { SpawnDecision, SpawnRequest } from '#features/worktrees/spawn-poli
 
 vi.mock('#features/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
 import { decideSpawn } from '#features/worktrees/spawn-policy'
-import type { PendingSpawn, SpawnResultWire } from '#features/egress/proxy-client'
+import type { PendingSpawn, SpawnResultWire } from '#runtime/k8s/egress/proxy-client'
 import type { PodInfo } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { reconcileSpawnRequests } from '#features/worktrees/spawn-reconcile'

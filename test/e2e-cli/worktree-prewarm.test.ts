@@ -6,7 +6,7 @@ import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/platform/git'
 import { listWorktreePods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
 import { listActiveWorktrees } from '@yaac/server/features/worktrees/list'
 import { listProjects } from '@yaac/server/features/projects/list'
-import { isTmuxSessionAlive } from '@yaac/server/features/status/liveness'
+import { isTmuxSessionAlive } from '@yaac/server/runtime/status/liveness'
 import {
   createYaacTestEnv,
   spawnYaacServer,

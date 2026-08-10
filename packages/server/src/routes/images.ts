@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
-import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#features/image-engine'
-import { retryImageBuild } from '#features/images'
-import { proxyClient } from '#features/egress'
+import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#runtime/k8s/image-engine'
+import { retryImageBuild } from '#runtime/k8s/images'
+import { proxyClient } from '#runtime/k8s/egress'
 import { serverLog } from '#log'
 
 /**

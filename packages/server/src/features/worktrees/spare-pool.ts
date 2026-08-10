@@ -1,6 +1,6 @@
 import simpleGit from 'simple-git'
 import { podExec } from '#platform/k8s'
-import { buildWorktreeRegistration, proxyClient } from '#features/egress'
+import { buildWorktreeRegistration, proxyClient } from '#runtime/k8s/egress'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
   resolveProjectConfig,
@@ -14,7 +14,7 @@ import {
   verifyAgentWindowAlive,
   initWindowCommand,
   TMUX,
-} from '#features/agents'
+} from '#runtime/agents'
 import { withUpstreamConfigLock } from './create'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'

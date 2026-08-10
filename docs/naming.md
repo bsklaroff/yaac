@@ -74,7 +74,7 @@ wire formats, parsed by the proxy.
 **Agent-facing names.** `--session-id`, the `SessionStart` hook and its
 session-starts log, pi's and opencode's session logs, and the ACP protocol's
 `sessionId` are all the tools' vocabulary, where a session genuinely is a
-conversation. `#features/agents/acp-client.ts` and `acp-protocol.ts` are the two
+conversation. `#runtime/agents/acp-client.ts` and `acp-protocol.ts` are the two
 modules where a bare `sessionId` is an agent's session and not a worktree.
 
 ## Compatibility windows still open

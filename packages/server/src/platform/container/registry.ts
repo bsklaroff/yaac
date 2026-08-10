@@ -8,7 +8,7 @@ import { usesRootfulPodman } from './runtime'
  * The CLIENT half of the main OCI registry — the one image bus between
  * host-side `podman build`, the sandboxed builder pods, and every node
  * pulling a worktree image. The registry itself is an in-cluster
- * Deployment + Service stood up by `#features/cluster` (main-registry.ts);
+ * Deployment + Service stood up by `#runtime/k8s/cluster` (main-registry.ts);
  * nothing here creates or owns it.
  *
  * THREE addresses, and keeping them apart is the whole point of this module:
@@ -81,7 +81,7 @@ const PODMAN_VM_HOST_ALIAS = 'host.containers.internal'
  * for the same reason the per-project registries use one: worktrees resolve
  * it through the proxy's split-horizon DNS, which forwards only
  * `.cluster.local` to CoreDNS. Node containerd never resolves it at all —
- * it matches the string against the hosts.toml `#features/cluster` writes.
+ * it matches the string against the hosts.toml `#runtime/k8s/cluster` writes.
  *
  * `YAAC_K8S_REGISTRY` overrides it wholesale; a nested yaac is the one
  * production setter (the outer install's per-project registry).

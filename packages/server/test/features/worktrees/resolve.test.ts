@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#features/worktrees/locate'
+import type * as locateModule from '#runtime/k8s/worktrees/locate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { resolveWorktreeContainer } from '#features/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
@@ -11,11 +11,11 @@ import type { RuntimeHandle } from '#runtime/contract'
  * locate.test.ts), and what this module adds is the error vocabulary the
  * routes above it rely on.
  */
-vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
   ...(await importOriginal<typeof locateModule>()),
   findWorkspace: vi.fn(),
 }))
-import { findWorkspace } from '#features/worktrees/locate'
+import { findWorkspace } from '#runtime/k8s/worktrees/locate'
 const find = vi.mocked(findWorkspace)
 
 function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {

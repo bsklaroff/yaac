@@ -272,10 +272,10 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 
 ## Server wiring
 
-- A `BuildEngine` seam (`features/images/build-engine.ts`,
+- A `BuildEngine` seam (`runtime/k8s/images/build-engine.ts`,
   `engineForLayer` keyed on `ImageLayer.name`): `host-podman` wraps the
   existing build/imageExists/remove; `cluster-pod`
-  (`features/images/builder-pod.ts`) drives the builder pod. Push is
+  (`runtime/k8s/images/builder-pod.ts`) drives the builder pod. Push is
   deliberately not routed per layer — a cluster-pod build's delta push is
   an inseparable build step, and the shared push path treats a forced push
   of a registry-only tag as already satisfied. The coordinator,

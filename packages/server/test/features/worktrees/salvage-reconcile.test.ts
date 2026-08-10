@@ -3,7 +3,7 @@ import type { PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 
 const mockSalvage = vi.hoisted(() => vi.fn())
-vi.mock('#features/images/image-promoter', () => ({
+vi.mock('#runtime/k8s/images/image-promoter', () => ({
   salvageWorktreeImages: mockSalvage,
 }))
 
@@ -22,8 +22,8 @@ import {
   reconcileImageSalvage,
   SALVAGE_INTERVAL_MS,
   _resetSalvageReconcileForTests,
-} from '#features/worktrees/salvage-reconcile'
-import { markWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
+} from '#runtime/k8s/worktrees/salvage-reconcile'
+import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 
 function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {

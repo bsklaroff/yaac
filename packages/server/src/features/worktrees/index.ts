@@ -7,9 +7,9 @@
 // vcluster, agent windows), restarting it, stopping it, reaping it when it
 // dies, and the rows that record all of that. It is the one place allowed
 // to compose the other feature verticals — it registers a worktree with
-// `#features/egress`, stands its forwards up through `#features/forwarders`,
-// builds its agent windows with `#features/agents`, and evicts its
-// observations from `#features/status` on teardown. Those four never import
+// `#runtime/k8s/egress`, stands its forwards up through `#runtime/k8s/forwarders`,
+// builds its agent windows with `#runtime/agents`, and evicts its
+// observations from `#runtime/status` on teardown. Those four never import
 // back, which is what keeps the graph acyclic and each of them testable
 // without a worktree.
 //
@@ -40,14 +40,7 @@ export {
   type WorktreeDetail,
 } from './detail'
 export { worktreeForkBranch } from './fork-branch'
-export {
-  countProjectWorkspaces,
-  countWorkspaces,
-  findWorkspace,
-  listWorkspaces,
-} from './locate'
 export { ensureProjectExists, listActiveWorktrees } from './list'
-export { observeWorkspaces } from './observe'
 export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'
 export { tryClaimPrewarmed } from './prewarm'
@@ -61,7 +54,6 @@ export {
 } from './provisioning'
 export { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
 export { restartWorktree } from './restart'
-export { reconcileImageSalvage } from './salvage-reconcile'
 export { rebranchSpare, retoolSpare } from './spare-pool'
 export { reconcileSpawnRequests } from './spawn-reconcile'
 export { reconcileStaleWorktrees } from './stale-worktrees'

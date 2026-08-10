@@ -19,9 +19,9 @@ import {
   pendingSpawnWorktreeId,
   type PendingSpawn,
   type SpawnResultWire,
-} from '#features/egress'
+} from '#runtime/k8s/egress'
 import { type PodInfo, type TickSnapshot, listWorktreePods } from '#platform/k8s'
-import { normalizeTool } from '#features/agents'
+import { normalizeTool } from '#runtime/agents'
 import { decideSpawn } from './spawn-policy'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#log'

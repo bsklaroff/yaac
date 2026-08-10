@@ -17,7 +17,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 // substrate is stubbed.
 import { listWorktreePods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
+import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { closeDb } from '#platform/db/client'
 import { recordWorktreeCreated } from '#features/records/worktree-store'
 import {
@@ -33,7 +33,7 @@ import {
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
 } from '#platform/k8s/deferred-boot'
-import { registerWorktreeForwarders, stopWorktreeForwarders } from '#features/forwarders/port-forwarders'
+import { registerWorktreeForwarders, stopWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 

@@ -1,5 +1,5 @@
 import { isPrewarmed, listWorktreePods, type TickSnapshot } from '#platform/k8s'
-import { classifyWorktreePods, liveAgents, podAgentMode, probeTmuxLiveness } from '#features/status'
+import { classifyWorktreePods, liveAgents, podAgentMode, probeTmuxLiveness } from '#runtime/status'
 import {
   normalizeTool,
   readAcpFirstPrompt,
@@ -7,7 +7,7 @@ import {
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
-} from '#features/agents'
+} from '#runtime/agents'
 import { applyWorktreeEvent } from '#features/records'
 import { captureFirstPrompt } from './prompt-capture'
 import {

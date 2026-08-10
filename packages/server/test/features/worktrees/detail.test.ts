@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#features/worktrees/locate'
+import type * as locateModule from '#runtime/k8s/worktrees/locate'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getWorktreeBlockedHosts, getWorktreeDetail, getWorktreePrompt } from '#features/worktrees/detail'
 import { ServerError } from '@yaac/shared/errors'
 
-vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
   ...(await importOriginal<typeof locateModule>()),
   findWorkspace: vi.fn(),
 }))
-import { findWorkspace } from '#features/worktrees/locate'
+import { findWorkspace } from '#runtime/k8s/worktrees/locate'
 
 describe('session detail helpers', () => {
   let tmpDir: string

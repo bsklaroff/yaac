@@ -4,9 +4,9 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { baseImageHash } from '@yaac/server/features/image-engine/image-builder'
+import { baseImageHash } from '@yaac/server/runtime/k8s/image-engine/image-builder'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { ensureNamespace } from '@yaac/server/features/cluster/proxy-apply'
+import { ensureNamespace } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import {
   k8sNamespace,
   kubectlApply,

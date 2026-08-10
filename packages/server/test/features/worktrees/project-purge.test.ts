@@ -12,12 +12,12 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   listWorktreePods: vi.fn(),
 }))
 vi.mock('#features/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }))
-vi.mock('#features/cluster/project-registry', () => ({ removeProjectRegistry: vi.fn() }))
+vi.mock('#runtime/k8s/cluster/project-registry', () => ({ removeProjectRegistry: vi.fn() }))
 
 import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupWorktreeDetached } from '#features/worktrees/cleanup'
-import { removeProjectRegistry } from '#features/cluster/project-registry'
+import { removeProjectRegistry } from '#runtime/k8s/cluster/project-registry'
 import { purgeProjectBytes } from '#features/worktrees'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
 

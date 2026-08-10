@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import { type PodInfo, listWorktreePods } from '#platform/k8s'
-import { removeProjectRegistry } from '#features/cluster'
+import { removeProjectRegistry } from '#runtime/k8s/cluster'
 import { projectRoots } from '@yaac/shared/project-paths'
 import { cleanupWorktreeDetached } from './cleanup'
 

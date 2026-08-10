@@ -40,7 +40,7 @@ import type * as podsModule from '#platform/k8s/pods'
 import {
   setLiveAgents,
   _resetWorktreeStatusStoreForTests,
-} from '#features/status/status-store'
+} from '#runtime/status/status-store'
 
 /**
  * The registry is the join: the worktree's metadata document says which agent

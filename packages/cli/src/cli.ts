@@ -40,7 +40,7 @@ import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
-import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/features/cluster/arg-guards'
+import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/runtime/k8s/cluster/arg-guards'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
 
 /**

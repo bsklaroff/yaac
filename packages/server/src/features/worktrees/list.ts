@@ -6,7 +6,7 @@ import {
   type AgentSessionLinkRow,
   type WorktreeRow,
 } from '#features/records'
-import { observeWorkspaces } from './observe'
+import { observeWorkspaces } from '#runtime/k8s/worktrees'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentLiveness, WorktreeRuntimeReport } from '#runtime/contract'

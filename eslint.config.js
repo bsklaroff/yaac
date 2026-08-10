@@ -39,12 +39,12 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(agents|auth|cluster|egress|forwarders|image-engine|images|projects|records|skills|status|terminals|titles|worktrees)|http|platform/(container|db|k8s))/.',
+  regex: '^#(features/(auth|projects|records|skills|titles|worktrees)|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|http|platform/(container|db|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 
-// Everything that touches the cluster, a git worktree, a transcript or tmux
-// — the future `runtime/` and `store/` layers (docs/plans/layered-server.md).
+// Everything that touches the cluster, a git worktree, a transcript or
+// tmux and has not yet moved into `src/runtime/` (docs/plans/layered-server.md).
 // Code here never imports the api/main layers; observed facts it discovers
 // enter records through `applyWorktreeEvent`, not caller-side writes. This
 // list is interim — it retires as the layer carve replaces it with
@@ -52,11 +52,6 @@ const SEALED_FOLDERS = {
 const BYTES_SRC = [
   'packages/server/src/platform/container/**/*.ts',
   'packages/server/src/platform/k8s/**/*.ts',
-  'packages/server/src/features/agents/**/*.ts',
-  'packages/server/src/features/cluster/**/*.ts',
-  'packages/server/src/features/egress/**/*.ts',
-  'packages/server/src/features/forwarders/**/*.ts',
-  'packages/server/src/features/image-engine/**/*.ts',
   // #features/projects: everything that touches the clone, its config
   // files, its credentials or its build context. `add`, `detail` and `list`
   // answer "which projects exist" from rows, so they stay out.
@@ -69,30 +64,16 @@ const BYTES_SRC = [
   'packages/server/src/features/projects/fake-auth.ts',
   'packages/server/src/features/projects/git-auth-failures.ts',
   'packages/server/src/features/projects/local-config.ts',
-  'packages/server/src/features/images/**/*.ts',
-  'packages/server/src/features/status/**/*.ts',
-  'packages/server/src/features/terminals/**/*.ts',
-  // #features/worktrees: everything that acts on the substrate is named
-  // here; the JOIN paths that read rows alongside an observation (list,
-  // detail, resolve, restart, the stopped listing, project teardown) stay
-  // out.
-  'packages/server/src/features/worktrees/agent-session-registry.ts',
-  'packages/server/src/features/worktrees/cleanup.ts',
-  'packages/server/src/features/worktrees/create.ts',
-  'packages/server/src/features/worktrees/observe.ts',
-  'packages/server/src/features/worktrees/prewarm.ts',
-  'packages/server/src/features/worktrees/prewarm-reconcile.ts',
+  // #features/worktrees: everything that acts on the substrate or the
+  // worktree's disk; the JOIN paths that read rows alongside an
+  // observation (list, detail, resolve, restart, the stopped listing,
+  // project teardown) and the mediators that apply events (create,
+  // cleanup, prewarm, the sweeps, the reaper) answer to the base zone.
   'packages/server/src/features/worktrees/changes.ts',
   'packages/server/src/features/worktrees/project-purge.ts',
-  'packages/server/src/features/worktrees/prompt-capture.ts',
-  'packages/server/src/features/worktrees/salvage-reconcile.ts',
   'packages/server/src/features/worktrees/seed.ts',
   'packages/server/src/features/worktrees/spare-pool.ts',
-  'packages/server/src/features/worktrees/spawn-reconcile.ts',
   'packages/server/src/features/worktrees/spawn-script.ts',
-  'packages/server/src/features/worktrees/locate.ts',
-  'packages/server/src/features/worktrees/stale-worktrees.ts',
-  'packages/server/src/features/worktrees/stop.ts',
   'packages/server/src/features/worktrees/worktree-meta.ts',
 ]
 
@@ -255,6 +236,35 @@ export default tseslint.config(
     },
   },
 
+  // The runtime layer: how agents run (docs/plans/layered-server.md). It
+  // never reads rows — an observed fact leaves as a `WorktreeEvent` from a
+  // mediator above it — and never imports the mediators themselves.
+  {
+    files: ['packages/server/src/runtime/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_SERVER,
+            {
+              regex: '^(#features/(records|worktrees|titles))(/|$)',
+              message: 'The runtime layer must not import records or the mediators above it (docs/plans/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // shared: no VALUE imports from other workspace packages; type-only is fine
   // (e.g. the Hono AppType from @yaac/server).
   {
@@ -340,9 +350,9 @@ export default tseslint.config(
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
   // @yaac/shared, and the four sanctioned host-side modules — exec
   // (platform/k8s/exec, attaches/streams via `kubectl exec -it`) and cluster
-  // check/setup/delete (features/cluster/*, run before any server exists). The
-  // negation chain re-includes each parent dir (gitignore semantics: a leaf
-  // can't be un-ignored while its parent is).
+  // check/setup/delete (runtime/k8s/cluster/*, run before any server
+  // exists). The negation chain re-includes each parent dir (gitignore
+  // semantics: a leaf can't be un-ignored while its parent is).
   {
     files: ['packages/cli/src/commands/**/*'],
     rules: {
@@ -360,13 +370,14 @@ export default tseslint.config(
                 '!@yaac/server/platform', '@yaac/server/platform/*',
                 '!@yaac/server/platform/k8s', '@yaac/server/platform/k8s/*',
                 '!@yaac/server/platform/k8s/exec',
-                '!@yaac/server/features', '@yaac/server/features/*',
-                '!@yaac/server/features/cluster', '@yaac/server/features/cluster/*',
-                '!@yaac/server/features/cluster/check',
-                '!@yaac/server/features/cluster/setup',
-                '!@yaac/server/features/cluster/delete',
+                '!@yaac/server/runtime', '@yaac/server/runtime/*',
+                '!@yaac/server/runtime/k8s', '@yaac/server/runtime/k8s/*',
+                '!@yaac/server/runtime/k8s/cluster', '@yaac/server/runtime/k8s/cluster/*',
+                '!@yaac/server/runtime/k8s/cluster/check',
+                '!@yaac/server/runtime/k8s/cluster/setup',
+                '!@yaac/server/runtime/k8s/cluster/delete',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/{platform/k8s/exec,features/cluster/{check,setup,delete}}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/{platform/k8s/exec,runtime/k8s/cluster/{check,setup,delete}}.',
             },
           ],
         },

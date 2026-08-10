@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as podsModule from '#platform/k8s/pods'
-import type { TmuxLiveness } from '#features/status/liveness'
+import type { TmuxLiveness } from '#runtime/status/liveness'
 
 vi.mock('#platform/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
@@ -10,7 +10,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 // probeTmuxLiveness / probeAgentPaneState are the injected oracles;
 // cleanupWorktreeDetached is the destructive action we assert (does/doesn't
 // fire).
-vi.mock('#features/status/liveness', () => ({
+vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn(),
   probeAgentPaneState: vi.fn(),
 }))
@@ -33,9 +33,9 @@ vi.mock('#features/records', () => ({
 // stub it so these tests never open a DB.
 
 import { listWorktreePods, listWorktreeJobs } from '#platform/k8s/pods'
-import { probeTmuxLiveness, probeAgentPaneState } from '#features/status/liveness'
+import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
 import { cleanupWorktreeDetached } from '#features/worktrees/cleanup'
-import { markWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
+import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#log'
 import { applyWorktreeEvent, desiredWorktrees } from '#features/records'
 import { clearAllProvisioningForTests, registerProvisioning } from '#features/worktrees/provisioning'

@@ -1,4 +1,4 @@
-import { findWorkspace } from './locate'
+import { findWorkspace } from '#runtime/k8s/worktrees'
 import { teardownForRestart } from './cleanup'
 import { createWorktree } from './create'
 import { clearWorktreeStopped, findWorktreeRow } from '#features/records'

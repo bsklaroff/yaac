@@ -11,7 +11,7 @@
 // registry.ts is the CLIENT of the main OCI registry — the two addresses it
 // has (the cluster ref every image name carries, and the port-forwarded
 // endpoint this process pushes and HEADs through) plus the push itself. The
-// registry workload lives in the cluster and is owned by `#features/cluster`.
+// registry workload lives in the cluster and is owned by `#runtime/k8s/cluster`.
 // host-procs.ts owns every long-running podman child (`build` / `push`): it
 // runs them, and it makes them die with the server rather than outliving it
 // into the next one, which is where duplicate builds come from.

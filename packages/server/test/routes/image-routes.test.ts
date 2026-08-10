@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as imagePrewarmModule from '#features/images/image-prewarm'
+import type * as imagePrewarmModule from '#runtime/k8s/images/image-prewarm'
 import { Hono } from 'hono'
 
 // These routes are pure translation: HTTP in, one feature call out, and a
@@ -7,24 +7,24 @@ import { Hono } from 'hono'
 // routes (so a case asserts on entries it registered); the retry outcome is
 // dictated, and the proxy kick an infra retry fires is asserted here because
 // the route owns that composition.
-vi.mock('#features/images/image-prewarm', async (importOriginal) => ({
+vi.mock('#runtime/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   retryImageBuild: vi.fn(),
 }))
 const { ensureRunning } = vi.hoisted(() => ({
   ensureRunning: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('#features/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
+vi.mock('#runtime/k8s/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
 
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
-import { retryImageBuild } from '#features/images/image-prewarm'
+import { retryImageBuild } from '#runtime/k8s/images/image-prewarm'
 import {
   clearAllImageBuildsForTests,
   failImageBuild,
   ingestImageBuildLine,
   registerImageBuild,
-} from '#features/image-engine/image-builds'
+} from '#runtime/k8s/image-engine/image-builds'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 const mockRetry = vi.mocked(retryImageBuild)

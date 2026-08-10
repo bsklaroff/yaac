@@ -10,7 +10,7 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('#features/agents/agent-tools', async (importOriginal) => {
+vi.mock('#runtime/agents/agent-tools', async (importOriginal) => {
   const actual = await importOriginal<typeof agentToolsModule>()
   return {
     ...actual,
@@ -23,11 +23,11 @@ vi.mock('#features/agents/agent-tools', async (importOriginal) => {
 // substrate is stubbed.
 import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import type * as agentToolsModule from '#features/agents/agent-tools'
+import type * as agentToolsModule from '#runtime/agents/agent-tools'
 import {
   setAgentStatus,
   _resetWorktreeStatusStoreForTests,
-} from '#features/status/status-store'
+} from '#runtime/status/status-store'
 import { listActiveWorktrees, _clearListActiveInflightForTests } from '#features/worktrees/list'
 
 const mockListPods = vi.mocked(listWorktreePods)

@@ -12,8 +12,8 @@ import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#features/skills'
-import { attachPty, type SocketLike } from '#features/terminals'
-import { attachAcp } from '#features/agents'
+import { attachPty, type SocketLike } from '#runtime/terminals'
+import { attachAcp } from '#runtime/agents'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,

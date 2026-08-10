@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type * as cleanupModule from '#features/worktrees/cleanup'
-import type * as imagePrewarmModule from '#features/images/image-prewarm'
-import type * as projectRegistryModule from '#features/cluster/project-registry'
+import type * as imagePrewarmModule from '#runtime/k8s/images/image-prewarm'
+import type * as projectRegistryModule from '#runtime/k8s/cluster/project-registry'
 import type * as titleGenerationModule from '#features/titles/title-generation'
 
 // One reconcile step per module, faked so a pass can be driven without a
@@ -10,27 +10,27 @@ import type * as titleGenerationModule from '#features/titles/title-generation'
 vi.mock('#features/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
 vi.mock('#features/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
 vi.mock('#features/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#features/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
+vi.mock('#runtime/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#features/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
 vi.mock('#features/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
-vi.mock('#features/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
-vi.mock('#features/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
-vi.mock('#features/images/image-prewarm', async (importOriginal) => ({
+vi.mock('#runtime/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
+vi.mock('#runtime/k8s/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
+vi.mock('#runtime/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   reconcileImagePrewarm: vi.fn(),
 }))
-vi.mock('#features/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
-vi.mock('#features/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
-vi.mock('#features/egress/vcluster-attribution', () => ({ reconcileVclusterAttribution: vi.fn() }))
-vi.mock('#features/cluster/vcluster-reconcile', () => ({ reconcileVclusters: vi.fn() }))
-vi.mock('#features/cluster/project-registry', async (importOriginal) => ({
+vi.mock('#runtime/k8s/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
+vi.mock('#runtime/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
+vi.mock('#runtime/k8s/egress/vcluster-attribution', () => ({ reconcileVclusterAttribution: vi.fn() }))
+vi.mock('#runtime/k8s/cluster/vcluster-reconcile', () => ({ reconcileVclusters: vi.fn() }))
+vi.mock('#runtime/k8s/cluster/project-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof projectRegistryModule>()),
   reconcileProjectRegistryGc: vi.fn(),
 }))
-vi.mock('#features/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
+vi.mock('#runtime/k8s/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
 vi.mock('#features/titles/title-generation', async (importOriginal) => ({
   ...(await importOriginal<typeof titleGenerationModule>()),
   reconcileGeneratedTitles: vi.fn(),
@@ -49,18 +49,18 @@ import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#features/worktrees/stale-worktrees'
 import { reconcileSpawnRequests } from '#features/worktrees/spawn-reconcile'
 import { reconcilePrewarmPool } from '#features/worktrees/prewarm-reconcile'
-import { reconcileImageSalvage } from '#features/worktrees/salvage-reconcile'
+import { reconcileImageSalvage } from '#runtime/k8s/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#features/worktrees/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#features/worktrees/cleanup'
-import { reconcileBuilderPodGc } from '#features/images/builder-pod'
-import { reconcileBuildCacheGc } from '#features/images/build-cache-gc'
-import { reconcileImagePrewarm } from '#features/images/image-prewarm'
-import { reconcileHostImageGc } from '#features/image-engine/image-gc'
-import { reconcileProxySshKeys } from '#features/egress/proxy-reconcile'
-import { reconcileVclusterAttribution } from '#features/egress/vcluster-attribution'
-import { reconcileVclusters } from '#features/cluster/vcluster-reconcile'
-import { reconcileProjectRegistryGc } from '#features/cluster/project-registry'
-import { reconcileRedirectClaims } from '#features/cluster/redirect-claim-reconcile'
+import { reconcileBuilderPodGc } from '#runtime/k8s/images/builder-pod'
+import { reconcileBuildCacheGc } from '#runtime/k8s/images/build-cache-gc'
+import { reconcileImagePrewarm } from '#runtime/k8s/images/image-prewarm'
+import { reconcileHostImageGc } from '#runtime/k8s/image-engine/image-gc'
+import { reconcileProxySshKeys } from '#runtime/k8s/egress/proxy-reconcile'
+import { reconcileVclusterAttribution } from '#runtime/k8s/egress/vcluster-attribution'
+import { reconcileVclusters } from '#runtime/k8s/cluster/vcluster-reconcile'
+import { reconcileProjectRegistryGc } from '#runtime/k8s/cluster/project-registry'
+import { reconcileRedirectClaims } from '#runtime/k8s/cluster/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#features/titles/title-generation'
 
 const ALL_STEP_FNS = [

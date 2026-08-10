@@ -2,19 +2,19 @@ import { getDefaultTool } from '#features/records'
 import {
   gcOrphanEphemeralModuleDirs,
   reconcileAgentSessions,
-  reconcileImageSalvage,
   reconcilePrewarmPool,
   reconcileSpawnRequests,
   reconcileStaleWorktrees,
 } from '#features/worktrees'
-import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#features/egress'
+import { reconcileImageSalvage } from '#runtime/k8s/worktrees'
+import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#runtime/k8s/egress'
 import {
   reconcileProjectRegistryGc,
   reconcileRedirectClaims,
   reconcileVclusters,
-} from '#features/cluster'
-import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#features/images'
-import { reconcileHostImageGc } from '#features/image-engine'
+} from '#runtime/k8s/cluster'
+import { reconcileBuildCacheGc, reconcileBuilderPodGc, reconcileImagePrewarm } from '#runtime/k8s/images'
+import { reconcileHostImageGc } from '#runtime/k8s/image-engine'
 import { reconcileGeneratedTitles } from '#features/titles'
 import { createTickSnapshot, type TickSnapshot } from '#platform/k8s'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'

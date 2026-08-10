@@ -1,4 +1,4 @@
-import { getAgentSessionFirstMessage } from '#features/agents'
+import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { MAX_PROMPT_LENGTH } from '#features/records'
 import type { AgentTool } from '@yaac/shared/types'
 

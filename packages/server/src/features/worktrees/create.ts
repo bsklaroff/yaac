@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureImage, primeWorktreeImages, pushImageShared } from '#features/images'
+import { ensureImage, primeWorktreeImages, pushImageShared } from '#runtime/k8s/images'
 import {
   buildWorktreeRegistration,
   hostMatchesPattern,
@@ -10,7 +10,7 @@ import {
   resolveAllowedHosts,
   resolveProxyImageTag,
   syncProxySecrets,
-} from '#features/egress'
+} from '#runtime/k8s/egress'
 import { ensureContainerRuntime } from '#platform/container'
 import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import {
@@ -54,7 +54,7 @@ import {
   sleepVcluster,
   vclusterName,
   waitForVclusterKubeconfig,
-} from '#features/cluster'
+} from '#runtime/k8s/cluster'
 import {
   repoDir,
   acpLogDir,
@@ -110,7 +110,7 @@ import {
   removeLegacyCodexHook,
   validateInitWindows,
   type InitWindow,
-} from '#features/agents'
+} from '#runtime/agents'
 import { applyWorktreeEvent } from '#features/records'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
 import {
@@ -131,7 +131,7 @@ import { ServerError } from '@yaac/shared/errors'
 import {
   buildStatusRight,
   registerWorktreeForwarders,
-} from '#features/forwarders'
+} from '#runtime/k8s/forwarders'
 import type { AgentMode, AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,

@@ -4,7 +4,7 @@ import {
   isWorktreeTerminating,
   probeAgentPaneState,
   probeTmuxLiveness,
-} from '#features/status'
+} from '#runtime/status'
 import { cleanupWorktreeDetached } from './cleanup'
 import { inFlightWorktreeIds } from './provisioning'
 import { applyWorktreeEvent, desiredWorktrees } from '#features/records'

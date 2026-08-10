@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as locateModule from '#features/worktrees/locate'
+import type * as locateModule from '#runtime/k8s/worktrees/locate'
 import type * as cleanupModule from '#features/worktrees/cleanup'
 import type * as createModule from '#features/worktrees/create'
 
@@ -11,7 +11,7 @@ vi.mock('#features/records/worktree-store', () => ({
 // A restart is three substrate calls bracketing two row reads, and the
 // ORDER is what this file pins: resolve, tear the old runtime down, create
 // against the same id, and only then clear the stop record.
-vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
   ...(await importOriginal<typeof locateModule>()),
   findWorkspace: vi.fn(),
 }))
@@ -26,7 +26,7 @@ vi.mock('#features/worktrees/create', async (importOriginal) => ({
 
 import { restartWorktree } from '#features/worktrees/restart'
 import { clearWorktreeStopped } from '#features/records/worktree-store'
-import { findWorkspace } from '#features/worktrees/locate'
+import { findWorkspace } from '#runtime/k8s/worktrees/locate'
 import { teardownForRestart } from '#features/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#features/worktrees/create'
 import type { RuntimeHandle } from '#runtime/contract'

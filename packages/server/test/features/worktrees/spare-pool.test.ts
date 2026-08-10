@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildRebranchPrep } from '#features/worktrees/spare-pool'
-import { initWindowCommand } from '#features/agents/agent-command'
+import { initWindowCommand } from '#runtime/agents/agent-command'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`

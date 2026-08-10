@@ -14,15 +14,15 @@ import {
   evictWorktreeStatus,
   forgetLiveness,
   markWorktreeTerminating,
-} from '#features/status'
-import { proxyClient } from '#features/egress'
-import { salvageWorktreeImages } from '#features/images'
+} from '#runtime/status'
+import { proxyClient } from '#runtime/k8s/egress'
+import { salvageWorktreeImages } from '#runtime/k8s/images'
 import {
   buildVclusterCleanupShellCommand,
   getVclusterStatus,
   removeWorktreeVcluster,
   vclusterName,
-} from '#features/cluster'
+} from '#runtime/k8s/cluster'
 import {
   cachedPackagesDir,
   opencodeDataDir,
@@ -38,7 +38,7 @@ import {
 import { deleteWorktreeMeta, readWorktreeMeta } from './worktree-meta'
 import { shellQuote } from '#platform/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
-import { stopWorktreeForwarders } from '#features/forwarders'
+import { stopWorktreeForwarders } from '#runtime/k8s/forwarders'
 import { serverLog } from '#log'
 
 /**

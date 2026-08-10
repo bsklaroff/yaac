@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#features/worktrees/locate'
+import type * as locateModule from '#runtime/k8s/worktrees/locate'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -11,11 +11,11 @@ import type { ProjectMeta } from '@yaac/shared/types'
 // Which projects exist is the server's own record; how many worktrees each
 // is running comes off the substrate, and what that count excludes (spares,
 // unlabelled pods) is asserted in locate.test.ts.
-vi.mock('#features/worktrees/locate', async (importOriginal) => ({
+vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
   ...(await importOriginal<typeof locateModule>()),
   countWorkspaces: vi.fn(),
 }))
-import { countWorkspaces } from '#features/worktrees/locate'
+import { countWorkspaces } from '#runtime/k8s/worktrees/locate'
 const counts = vi.mocked(countWorkspaces)
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {

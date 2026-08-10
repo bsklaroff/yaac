@@ -16,16 +16,16 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('#features/status/liveness', () => ({
+vi.mock('#runtime/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn().mockResolvedValue(true),
   probeTmuxLiveness: vi.fn().mockResolvedValue('alive'),
 }))
 
-vi.mock('#features/egress/blocked-hosts', () => ({
+vi.mock('#runtime/k8s/egress/blocked-hosts', () => ({
   readBlockedHosts: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('#features/agents/agent-tools', async (importOriginal) => ({
+vi.mock('#runtime/agents/agent-tools', async (importOriginal) => ({
   ...(await importOriginal<typeof agentToolsModule>()),
   getAgentSessionFirstMessage: vi.fn().mockResolvedValue(undefined),
   normalizeTool: vi.fn().mockReturnValue('claude'),
@@ -36,7 +36,7 @@ vi.mock('#features/agents/agent-tools', async (importOriginal) => ({
 // substrate is stubbed.
 import { listWorktreePods } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import type * as agentToolsModule from '#features/agents/agent-tools'
+import type * as agentToolsModule from '#runtime/agents/agent-tools'
 import {
   listActiveWorktrees,
   _clearListActiveInflightForTests,

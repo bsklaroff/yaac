@@ -1,4 +1,4 @@
-import { findWorkspace } from './locate'
+import { findWorkspace } from '#runtime/k8s/worktrees'
 import { findWorktreeRow } from '#features/records'
 import type { RuntimeHandle } from '#runtime/contract'
 import { ServerError } from '@yaac/shared/errors'

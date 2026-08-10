@@ -21,7 +21,7 @@ import {
   writeProjectConfig,
   writeProjectDockerfile,
 } from '#features/projects'
-import { pushImageShared, rebuildProjectImage } from '#features/images'
+import { pushImageShared, rebuildProjectImage } from '#runtime/k8s/images'
 import { remoteBranchExists } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'

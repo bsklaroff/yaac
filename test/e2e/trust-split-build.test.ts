@@ -13,10 +13,10 @@ import {
 } from '@yaac/test-utils/setup'
 import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/build-dirs'
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
-import { ensureImage } from '@yaac/server/features/images/build-coordinator'
-import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/features/cluster/proxy-apply'
+import { ensureImage } from '@yaac/server/runtime/k8s/images/build-coordinator'
+import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
-import { resolveImageChain } from '@yaac/server/features/image-engine/image-builder'
+import { resolveImageChain } from '@yaac/server/runtime/k8s/image-engine/image-builder'
 import { imageExists } from '@yaac/server/platform/container/runtime'
 import {
   REGISTRY_NAMESPACE,
@@ -29,7 +29,7 @@ import {
 import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
-} from '@yaac/server/features/cluster/main-registry'
+} from '@yaac/server/runtime/k8s/cluster/main-registry'
 import { RUNTIME_CLASS_GVISOR } from '@yaac/server/platform/k8s/gvisor'
 import { runPodToCompletion } from '@yaac/server/platform/k8s/pods'
 import {
@@ -38,7 +38,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '@yaac/server/platform/k8s/kubectl'
-import { getImageBuildLog, listImageBuilds } from '@yaac/server/features/image-engine/image-builds'
+import { getImageBuildLog, listImageBuilds } from '@yaac/server/runtime/k8s/image-engine/image-builds'
 
 /**
  * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):

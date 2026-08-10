@@ -179,7 +179,7 @@ hook is handed its home and that home's name (`agent-links.sh
 /home/yaac/.claude claude`), so producing the form stays parameter expansion
 with no interpreter.
 
-`toProjectRelative` / `resolveProjectPath` in `features/agents/transcripts.ts`
+`toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 are the only place the two forms meet. Disk code works in absolute paths
 internally — it stats transcripts and hands them to parsers — and converts at
 the last moment before an event, in `toReported`. The conversion is also
@@ -221,6 +221,6 @@ founding ask *is* the first worktree's opening message.
 
 The discovery sweep does this once per worktree per server life and folds the
 result back into the document, so a settled worktree costs one file read a tick. Where the transcripts live per tool
-is `features/agents/transcripts.ts`. A worktree that died before capture
+is `runtime/agents/transcripts.ts`. A worktree that died before capture
 parses its first conversation's transcript on demand from the stopped listing,
 and the result is persisted.

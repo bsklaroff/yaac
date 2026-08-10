@@ -10,10 +10,10 @@ import {
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/features/egress/proxy-client'
-import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
+import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/platform/k8s/proxy-constants'
-import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/features/cluster/redirect-claims'
+import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/runtime/k8s/cluster/redirect-claims'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
 import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'

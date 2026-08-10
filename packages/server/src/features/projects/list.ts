@@ -1,5 +1,5 @@
 import { listProjectRows } from '#features/records'
-import { countWorkspaces } from '#features/worktrees'
+import { countWorkspaces } from '#runtime/k8s/worktrees'
 
 export interface ProjectListEntry {
   slug: string

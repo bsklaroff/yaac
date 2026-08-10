@@ -6,7 +6,7 @@ vi.mock('#features/records', async (importOriginal) => ({
   applyWorktreeEvent: vi.fn(),
 }))
 
-vi.mock('#features/agents/agent-command', () => ({
+vi.mock('#runtime/agents/agent-command', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
 }))
 vi.mock('#features/worktrees/spare-pool', () => ({
@@ -16,7 +16,7 @@ vi.mock('#features/worktrees/spare-pool', () => ({
 vi.mock('#features/worktrees/cleanup', () => ({
   cleanupWorktreeDetached: vi.fn(),
 }))
-vi.mock('#features/status/liveness', () => ({
+vi.mock('#runtime/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn(),
 }))
 // execFileAsync/kubectlApply are read at module-eval time by the cluster
@@ -62,7 +62,7 @@ import {
 import { LABEL_PREWARMED, LABEL_TOOL, listWorktreePods, type PodInfo } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupWorktreeDetached } from '#features/worktrees/cleanup'
-import { isTmuxSessionAlive } from '#features/status/liveness'
+import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { kubectlWithRetry } from '#platform/k8s/kubectl'
 import { podExec, waitForStreamd } from '#platform/k8s/stream-relay'
 import { rebranchSpare, retoolSpare } from '#features/worktrees/spare-pool'

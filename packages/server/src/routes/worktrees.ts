@@ -17,10 +17,10 @@ import {
   type WorktreeCreateOptions,
 } from '#features/worktrees'
 import { createWorktree, getWorktreeChanges, stopWorktree, tryClaimPrewarmed } from '#features/worktrees'
-import { typeInitialPrompt } from '#features/agents'
-import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#features/terminals'
-import { allowWorktreeHost } from '#features/egress'
-import { dismissWorktreePort, forwardWorktreePort } from '#features/forwarders'
+import { typeInitialPrompt } from '#runtime/agents'
+import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
+import { allowWorktreeHost } from '#runtime/k8s/egress'
+import { dismissWorktreePort, forwardWorktreePort } from '#runtime/k8s/forwarders'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
