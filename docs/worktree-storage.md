@@ -87,18 +87,18 @@ the current process are exempt via the provisioning registry.
 
 ## Agent worktrees
 
-A worktree's agent sessions are *discovered*, not authored. The herd keeps its
+A worktree's agent sessions are *discovered*, not authored. The server keeps a
 own record of what it found, because after the database split
 (docs/plans/layered-server.md) it may not read a row: one **metadata document** per
 worktree, `projects/<slug>/meta/<worktreeId>.json`, owned and rewritten whole by
 the server process and validated by a zod schema
 (`features/worktrees/worktree-meta.ts`).
 
-It holds only what the herd needs to work without the database — which worktrees
+It holds only what discovery needs to work without the database — which worktrees
 a worktree has, where their transcripts are, their opening messages, and which
 handle each is on right now. Titles, background pins, `stoppedAt` and death
 causes are the server's; mirroring one here would make two sources of truth that
-drift. What the herd finds it reports as a `worktrees-discovered` /
+drift. What the sweep finds it reports as a `worktrees-discovered` /
 `worktrees-active` event, and the server writes the row.
 
 Discovery has one input the host cannot see for itself. Every tool with a
@@ -168,7 +168,7 @@ One form rather than three. An absolute path carries the data dir, so it pins a
 row to the directory that wrote it: move the data dir (a restored backup, a
 changed `YAAC_DATA_DIR`) and every row points somewhere that no longer exists,
 silently, since the readers only ever stat these paths. An absolute path in a
-herd event is worse still — it names a place on the *herd's* machine, which the
+event is worse still — it names a machine-absolute place, which the
 server can neither resolve nor meaningfully store once the two are separate
 processes.
 
@@ -180,7 +180,7 @@ hook is handed its home and that home's name (`agent-links.sh
 with no interpreter.
 
 `toProjectRelative` / `resolveProjectPath` in `features/agents/transcripts.ts`
-are the only place the two forms meet. The herd works in absolute paths
+are the only place the two forms meet. Disk code works in absolute paths
 internally — it stats transcripts and hands them to parsers — and converts at
 the last moment before an event, in `toReported`. The conversion is also
 applied at the *last write* before the column, because the on-demand
@@ -190,7 +190,7 @@ Decoding funnels through `toLinkRow`, the single projection every server-side
 reader comes through. That is where the shared-filesystem assumption between
 the halves still lives: the stopped listing stats a transcript for
 last-activity and the detail route parses one for a founding ask, both against
-files the herd owns.
+files on disk.
 
 The worktree-starts log is the one input yaac does not write, so it is the one
 place a path is *validated* rather than converted: it is an RW mount in a
@@ -219,7 +219,7 @@ Capture is per worktree: each gets its own opening message, read from the
 transcript the metadata document names. There is no separate worktree-level capture — the
 founding ask *is* the first worktree's opening message.
 
-The discovery sweep does this once per worktree per herd life and folds the
+The discovery sweep does this once per worktree per server life and folds the
 result back into the document, so a settled worktree costs one file read a tick. Where the transcripts live per tool
 is `features/agents/transcripts.ts`. A worktree that died before capture
 parses its first conversation's transcript on demand from the stopped listing,

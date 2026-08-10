@@ -21,7 +21,7 @@ import { readBlockedHosts } from '#features/egress'
 import { readAllGitAuthFailures } from '#features/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentLiveness, HerdReport, WorkspaceReport } from '@yaac/shared/herd'
+import type { AgentLiveness, RuntimeReport, WorktreeRuntimeReport } from '#runtime/contract'
 
 /**
  * The herd's half of a worktree listing: what the substrate can see right now.
@@ -38,7 +38,7 @@ import type { AgentLiveness, HerdReport, WorkspaceReport } from '@yaac/shared/he
  * server records and this half never learns. The join is what puts the two
  * back together.
  */
-export async function observeWorkspaces(projectFilter?: string): Promise<HerdReport> {
+export async function observeWorkspaces(projectFilter?: string): Promise<RuntimeReport> {
   // In the server the informer's push-fed cache answers instantly; the
   // one-shot kubectl list is the fallback for cache-less contexts (unit
   // tests, a cache that hasn't started yet).
@@ -79,19 +79,19 @@ export async function observeWorkspaces(projectFilter?: string): Promise<HerdRep
   // permanently-greyed row.
   pruneTerminating(new Set(pods.map((p) => p.worktreeId).filter((v): v is string => !!v)), Date.now())
 
-  const workspaces = await Promise.all([
+  const worktrees = await Promise.all([
     ...running.map((p) => observeRunning(p)),
     ...terminating.map((p) => observeTerminating(p)),
   ])
 
   return {
-    workspaces,
+    worktrees,
     stale,
     gitAuthFailures: await readAllGitAuthFailures(),
   }
 }
 
-async function observeRunning(p: PodInfo): Promise<WorkspaceReport> {
+async function observeRunning(p: PodInfo): Promise<WorktreeRuntimeReport> {
   const base = emptyReport(p, 'running')
   if (!p.worktreeId || !p.projectSlug) return base
   return {
@@ -114,11 +114,11 @@ async function observeRunning(p: PodInfo): Promise<WorkspaceReport> {
  * `waiting` — a spurious attention badge on a row that is disappearing — and
  * no waiting stamp is reported for the same reason.
  */
-function observeTerminating(p: PodInfo): Promise<WorkspaceReport> {
+function observeTerminating(p: PodInfo): Promise<WorktreeRuntimeReport> {
   return Promise.resolve(emptyReport(p, 'terminating'))
 }
 
-function emptyReport(p: PodInfo, phase: 'running' | 'terminating'): WorkspaceReport {
+function emptyReport(p: PodInfo, phase: 'running' | 'terminating'): WorktreeRuntimeReport {
   return {
     workspaceId: p.worktreeId,
     projectSlug: p.projectSlug,

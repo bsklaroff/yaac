@@ -7,7 +7,7 @@ import {
 } from '#features/status'
 import { cleanupWorktreeDetached } from './cleanup'
 import { inFlightWorktreeIds } from './provisioning'
-import { applyHerdEvent, desiredWorktrees } from '#features/records'
+import { applyWorktreeEvent, desiredWorktrees } from '#features/records'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleWorktreeInfo } from '@yaac/shared/types'
@@ -206,7 +206,7 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
         `[server] stale-reaper: recording worktree=${row.worktreeId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
       )
-      await applyHerdEvent({
+      await applyWorktreeEvent({
         type: 'worktree-stopped',
         projectSlug: row.projectSlug,
         worktreeId: row.worktreeId,

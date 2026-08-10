@@ -9,7 +9,7 @@ import {
 } from '#platform/k8s'
 import { normalizeTool } from '#features/agents'
 import { ServerError } from '@yaac/shared/errors'
-import type { WorkspaceHandle } from '@yaac/shared/herd'
+import type { RuntimeHandle } from '#runtime/contract'
 
 /**
  * Answering "which workspace does this id name", and "how many is each
@@ -40,21 +40,21 @@ import type { WorkspaceHandle } from '@yaac/shared/herd'
 export async function findWorkspace(
   idOrName: string,
   opts: { preferCache?: boolean } = {},
-): Promise<WorkspaceHandle | undefined> {
+): Promise<RuntimeHandle | undefined> {
   if (opts.preferCache) {
     const cache = getActiveClusterCache()
     if (cache?.healthy('worktree-pods')) {
       const hit = findWorktreePod(cache.worktreePods(), idOrName)
-      if (hit) return toWorkspaceHandle(hit)
+      if (hit) return toRuntimeHandle(hit)
     }
   }
   const pod = findWorktreePod(await listWorkspacePods(), idOrName)
-  return pod ? toWorkspaceHandle(pod) : undefined
+  return pod ? toRuntimeHandle(pod) : undefined
 }
 
 /** Every workspace the substrate is running, optionally one project's. */
-export async function listWorkspaces(projectSlug?: string): Promise<WorkspaceHandle[]> {
-  return (await listWorkspacePods(projectSlug)).map(toWorkspaceHandle)
+export async function listWorkspaces(projectSlug?: string): Promise<RuntimeHandle[]> {
+  return (await listWorkspacePods(projectSlug)).map(toRuntimeHandle)
 }
 
 /**
@@ -109,7 +109,7 @@ async function listWorkspacePods(projectSlug?: string): Promise<PodInfo[]> {
 
 /** A pod as the boundary describes a workspace. The tool label is normalized
  *  here so nothing above has to know a pod carries a raw string. */
-function toWorkspaceHandle(pod: PodInfo): WorkspaceHandle {
+function toRuntimeHandle(pod: PodInfo): RuntimeHandle {
   return {
     workspaceId: pod.worktreeId,
     projectSlug: pod.projectSlug,

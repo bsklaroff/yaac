@@ -111,7 +111,7 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#features/agents'
-import { applyHerdEvent } from '#features/records'
+import { applyWorktreeEvent } from '#features/records'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from './seed'
 import {
   ensureSessionStartsLog,
@@ -520,7 +520,7 @@ async function reportCreateFailed(
   worktreeId: string,
   options: WorktreeCreateOptions,
 ): Promise<void> {
-  await applyHerdEvent({
+  await applyWorktreeEvent({
     type: 'worktree-create-failed',
     projectSlug,
     worktreeId,
@@ -708,7 +708,7 @@ export async function createWorktree(
   // that overlap. It is reported at the end.
 
   if (!options.prewarm) {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'worktree-created',
       projectSlug,
       worktreeId,
@@ -733,7 +733,7 @@ export async function createWorktree(
       // a NEW worktree and silently abandons the history this row exists to
       // preserve. A tmux pane id (`tui`) genuinely is not knowable until the
       // pane exists, so that stays for the registry to fill in.
-      await applyHerdEvent({
+      await applyWorktreeEvent({
         type: 'sessions-launched',
         projectSlug,
         worktreeId,
@@ -1520,7 +1520,7 @@ export async function createWorktree(
   if (!options.prewarm) {
     const { upstreamStartPoint } = await worktreeTask
     if (upstreamStartPoint !== undefined) {
-      await applyHerdEvent({
+      await applyWorktreeEvent({
         type: 'base-branch-resolved',
         projectSlug,
         worktreeId,

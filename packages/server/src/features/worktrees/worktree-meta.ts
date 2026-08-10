@@ -7,7 +7,7 @@ import {
   worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import { MAX_PROMPT_LENGTH } from '@yaac/shared/herd'
+import { MAX_PROMPT_LENGTH } from '#features/records'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#log'
 

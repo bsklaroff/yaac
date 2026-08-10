@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type * as recordsModule from '#features/records'
 
-vi.mock('#features/records', () => ({ applyHerdEvent: vi.fn() }))
+vi.mock('#features/records', async (importOriginal) => ({
+  ...(await importOriginal<typeof recordsModule>()),
+  applyWorktreeEvent: vi.fn(),
+}))
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -85,22 +89,22 @@ import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#features/statu
 import { _resetWorktreeStatusStoreForTests } from '#features/status/status-store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
-import type { HerdEvent } from '@yaac/shared/herd'
-import { applyHerdEvent } from '#features/records'
+import type { WorktreeEvent } from '#features/records'
+import { applyWorktreeEvent } from '#features/records'
 import { clearAllProvisioningForTests, registerProvisioning } from '#features/worktrees/provisioning'
 
 const podExecMock = vi.mocked(podExec)
 const mockServerLog = vi.mocked(serverLog)
 
 // Cleanup reports the stop as an event rather than writing the row itself,
-// so applyHerdEvent is stubbed: these tests never open a DB, and what a
+// so applyWorktreeEvent is stubbed: these tests never open a DB, and what a
 // teardown says is asserted directly.
-const herdEvents: HerdEvent[] = []
-vi.mocked(applyHerdEvent).mockImplementation((event) => {
+const herdEvents: WorktreeEvent[] = []
+vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
   herdEvents.push(event)
   return Promise.resolve()
 })
-const clearHerdEvents = (): void => { herdEvents.length = 0 }
+const clearWorktreeEvents = (): void => { herdEvents.length = 0 }
 const stopsReported = (): Array<[string, string, unknown]> => herdEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
@@ -182,7 +186,7 @@ describe('cleanupWorktree', () => {
   })
 
   it('reports the death cause with the stop', async () => {
-    clearHerdEvents()
+    clearWorktreeEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupWorktree({
@@ -264,7 +268,7 @@ describe('cleanupWorktreeDetached', () => {
 
   it('reports the death cause and includes it in the audit line', async () => {
     mockServerLog.mockClear()
-    clearHerdEvents()
+    clearWorktreeEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
@@ -283,7 +287,7 @@ describe('cleanupWorktreeDetached', () => {
 
   it('a causeless teardown reports no cause and keeps the audit line bare', async () => {
     mockServerLog.mockClear()
-    clearHerdEvents()
+    clearWorktreeEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
@@ -300,7 +304,7 @@ describe('cleanupWorktreeDetached', () => {
   it('preserveDeletedRecord reports no stop, leaving the recorded cause intact', async () => {
     // Resuming a teardown yaac already recorded (its terminating mark was lost)
     // must not re-report — that would clobber the real cause with a stray one.
-    clearHerdEvents()
+    clearWorktreeEvents()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({

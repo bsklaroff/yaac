@@ -3,15 +3,15 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#platform/db/client'
 import {
   _resetPriorStopsForTests,
-  applyHerdEvent,
-} from '#features/records/apply-herd-event'
+  applyWorktreeEvent,
+} from '#features/records/apply-worktree-event'
 import {
   getProjectWorktreeRows,
   recordWorktreeCreated,
 } from '#features/records/worktree-store'
 import { listWorktreeAgentSessions } from '#features/records/agent-session-store'
 
-describe('applyHerdEvent', () => {
+describe('applyWorktreeEvent', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -29,17 +29,17 @@ describe('applyHerdEvent', () => {
     (await getProjectWorktreeRows('proj')).get(worktreeId)
 
   const created = (worktreeId: string, extra = {}): Promise<void> =>
-    applyHerdEvent({
+    applyWorktreeEvent({
       type: 'worktree-created', projectSlug: 'proj', worktreeId, ...extra,
     })
 
   const stopped = (worktreeId: string, extra = {}): Promise<void> =>
-    applyHerdEvent({
+    applyWorktreeEvent({
       type: 'worktree-stopped', projectSlug: 'proj', worktreeId, ...extra,
     })
 
   const failed = (worktreeId: string, extra = {}): Promise<void> =>
-    applyHerdEvent({
+    applyWorktreeEvent({
       type: 'worktree-create-failed', projectSlug: 'proj', worktreeId, ...extra,
     })
 
@@ -52,7 +52,7 @@ describe('applyHerdEvent', () => {
   })
 
   it('stamps a resolved base branch onto an existing row', async () => {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'base-branch-resolved',
       projectSlug: 'proj',
       worktreeId: 'wt-1',
@@ -65,7 +65,7 @@ describe('applyHerdEvent', () => {
   // One event carries both halves of the record, because a launch is the one
   // moment when the conversation list is complete and all of it is live.
   it('links launched conversations and marks them active, in launch order', async () => {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'sessions-launched',
       projectSlug: 'proj',
       worktreeId: 'wt-1',
@@ -84,7 +84,7 @@ describe('applyHerdEvent', () => {
   })
 
   it('stamps the stop, and the cause when a reaper supplied one', async () => {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'worktree-stopped',
       projectSlug: 'proj',
       worktreeId: 'wt-1',
@@ -103,7 +103,7 @@ describe('applyHerdEvent', () => {
   // A user stop is a stop with no cause: recording one would let the next
   // reader claim the session died of something.
   it('records a causeless stop without inventing a reason', async () => {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'worktree-stopped', projectSlug: 'proj', worktreeId: 'wt-1',
     })
 
@@ -116,7 +116,7 @@ describe('applyHerdEvent', () => {
   it('touches only the worktree the event names', async () => {
     await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'wt-2' })
 
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'worktree-stopped', projectSlug: 'proj', worktreeId: 'wt-1',
     })
 
@@ -132,7 +132,7 @@ describe('applyHerdEvent', () => {
 
   it('erases a failed fresh worktree, links and all', async () => {
     await created('wt-fresh')
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'sessions-launched',
       projectSlug: 'proj',
       worktreeId: 'wt-fresh',

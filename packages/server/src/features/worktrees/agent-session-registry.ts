@@ -8,7 +8,7 @@ import {
   toProjectRelative,
   transcriptLastActiveMs,
 } from '#features/agents'
-import { applyHerdEvent } from '#features/records'
+import { applyWorktreeEvent } from '#features/records'
 import { captureFirstPrompt } from './prompt-capture'
 import {
   foldSessionStarts,
@@ -19,7 +19,7 @@ import {
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
-import type { DiscoveredSession } from '@yaac/shared/herd'
+import type { DiscoveredSession } from '#features/records'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -133,7 +133,7 @@ export async function reconcileWorktreeAgentSessions(
       projectSlug,
       jobName,
     )]
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'sessions-discovered',
       projectSlug,
       worktreeId,
@@ -147,7 +147,7 @@ export async function reconcileWorktreeAgentSessions(
     // deactivating every session but the pin on each tick — and the set it
     // clobbers is the frozen one a restart reads back. Anything that makes a
     // second session reachable here must join against the live set first.
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'sessions-active',
       projectSlug,
       worktreeId,
@@ -176,7 +176,7 @@ export async function reconcileWorktreeAgentSessions(
       current === undefined ? undefined : mergeSessions(current, withPrompts, Date.now()))
   }
 
-  await applyHerdEvent({
+  await applyWorktreeEvent({
     type: 'sessions-discovered',
     projectSlug,
     worktreeId,
@@ -202,7 +202,7 @@ export async function reconcileWorktreeAgentSessions(
   const live = (meta === undefined ? [] : worktreesOnCurrentLife(meta))
     .filter((s) => s.handle !== undefined && handles.has(s.handle))
     .map((s) => ({ tool: s.tool, agentSessionId: s.agentSessionId, paneId: s.handle as string }))
-  await applyHerdEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
+  await applyWorktreeEvent({ type: 'sessions-active', projectSlug, worktreeId, active: live })
 }
 
 /**
@@ -309,11 +309,11 @@ async function reconcileAcpAgentSessions(
   // this data dir.
   const reported = live.map((c) => toReported(projectSlug, c))
   if (reported.length > 0) {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'sessions-discovered', projectSlug, worktreeId, sessions: reported,
     })
   }
-  await applyHerdEvent({
+  await applyWorktreeEvent({
     type: 'sessions-active',
     projectSlug,
     worktreeId,

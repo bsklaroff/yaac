@@ -8,7 +8,7 @@ import {
   listWorktreePods,
 } from '#platform/k8s'
 import { inFlightWorktreeIds } from './provisioning'
-import { applyHerdEvent } from '#features/records'
+import { applyWorktreeEvent } from '#features/records'
 import {
   clearWorktreeTerminating,
   evictWorktreeStatus,
@@ -129,7 +129,7 @@ export async function cleanupWorktree(params: {
   // Report the stop (and death cause, when a reaper supplied one) so the
   // deleted-worktree view can order by recency and say why the worktree went
   // away (best-effort; falls back to transcript mtime if unrecorded).
-  await applyHerdEvent({
+  await applyWorktreeEvent({
     type: 'worktree-stopped', projectSlug, worktreeId, cause,
   })
 
@@ -233,7 +233,7 @@ export async function cleanupWorktreeDetached(params: {
   // when resuming a teardown yaac already recorded, so the existing cause
   // survives (see `preserveDeletedRecord`).
   if (!preserveDeletedRecord) {
-    await applyHerdEvent({
+    await applyWorktreeEvent({
       type: 'worktree-stopped', projectSlug, worktreeId, cause,
     })
   }

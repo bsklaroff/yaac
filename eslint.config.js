@@ -46,7 +46,7 @@ const SEALED_FOLDERS = {
 // Everything that touches the cluster, a git worktree, a transcript or tmux
 // — the future `runtime/` and `store/` layers (docs/plans/layered-server.md).
 // Code here never imports the api/main layers; observed facts it discovers
-// enter records through `applyHerdEvent`, not caller-side writes. This path
+// enter records through `applyWorktreeEvent`, not caller-side writes. This
 // list is interim — it retires as the layer carve replaces it with
 // per-layer globs.
 const BYTES_SRC = [
@@ -101,7 +101,7 @@ const BYTES_SRC = [
 // packages are named too, so the ban cannot be walked around by opening
 // PGlite directly instead of going through the barrel. `#features/records`
 // is the ONE feature allowed past this: rows live behind its barrel, and
-// observed facts enter it through `applyHerdEvent` rather than through a
+// observed facts enter it through `applyWorktreeEvent` rather than through a
 // caller-side write (docs/plans/layered-server.md).
 const NO_DATABASE_DIRECT = {
   regex: '^(#platform/db|@electric-sql/pglite|drizzle-orm)(/|$)',

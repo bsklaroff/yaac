@@ -10,20 +10,18 @@ import {
   type PriorStop,
 } from './worktree-store'
 import { serverLog } from '#log'
-import type { HerdEvent, WorktreeCreateFailed, WorktreeCreated } from '@yaac/shared/herd'
+import type { WorktreeEvent, WorktreeCreateFailed, WorktreeCreated } from './events'
 
 /**
- * The server's end of a herd's reports (`ServerLink.workspaceEvent`):
- * persist what one found.
+ * The one door through which observed facts become rows: persist what an
+ * observer found.
  *
- * Nothing but row writes belongs here. A herd reports what it *found*, and
- * the decision of which table that lands in is the server's alone — which is
- * what lets the same event arrive from a herd in another process without a
- * single call site changing.
- *
- * Wired into the link `runServer` installs (`#main/link`).
+ * Nothing but row writes belongs here, and the row writes it fans out to
+ * live nowhere else — the per-event mutators are internal to this feature,
+ * off the barrel, so a caller cannot write an observed fact except by
+ * saying what happened (docs/plans/layered-server.md).
  */
-export async function applyHerdEvent(event: HerdEvent): Promise<void> {
+export async function applyWorktreeEvent(event: WorktreeEvent): Promise<void> {
   switch (event.type) {
     case 'worktree-created':
       await applyCreated(event)
@@ -54,8 +52,8 @@ export async function applyHerdEvent(event: HerdEvent): Promise<void> {
 
 /**
  * The stop a resumed worktree's row carried before its create cleared it,
- * keyed by worktree. Read here rather than reported, because it is the
- * server's own record of a death and no herd ever sees it.
+ * keyed by worktree. Read here rather than reported, because it is
+ * records' own memory of a death and no observer ever sees it.
  *
  * There is no third outcome to clear an entry on — a create either fails or
  * does not — so a successful resume leaves one behind until that worktree is
@@ -81,7 +79,7 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     // rather than looking like a worktree that simply had no stop.
     const row = await getWorktreeRow(projectSlug, worktreeId).catch((err: unknown) => {
       serverLog(
-        `[herd] ${projectSlug}/${worktreeId}: could not read the prior stop `
+        `[records] ${projectSlug}/${worktreeId}: could not read the prior stop `
         + `(${String(err)}); a failed resume will record a plain stop`,
       )
       return undefined

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type * as recordsModule from '#features/records'
 
-vi.mock('#features/records', () => ({ applyHerdEvent: vi.fn() }))
+vi.mock('#features/records', async (importOriginal) => ({
+  ...(await importOriginal<typeof recordsModule>()),
+  applyWorktreeEvent: vi.fn(),
+}))
 
 vi.mock('#features/agents/agent-command', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
@@ -65,8 +69,8 @@ import { rebranchSpare, retoolSpare } from '#features/worktrees/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
 import { ServerError } from '@yaac/shared/errors'
-import type { HerdEvent } from '@yaac/shared/herd'
-import { applyHerdEvent } from '#features/records'
+import type { WorktreeEvent } from '#features/records'
+import { applyWorktreeEvent } from '#features/records'
 
 const mockListPods = vi.mocked(listWorktreePods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
@@ -101,7 +105,7 @@ function spare(o: Partial<PodInfo> = {}): PodInfo {
   }
 }
 
-const herdEvents: HerdEvent[] = []
+const herdEvents: WorktreeEvent[] = []
 
 describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
@@ -111,7 +115,7 @@ describe('tryClaimPrewarmed', () => {
     // link stands in for the server: no DB is opened, and what a claim tells
     // it is asserted directly.
     herdEvents.length = 0
-    vi.mocked(applyHerdEvent).mockImplementation((event) => {
+    vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
       herdEvents.push(event)
       return Promise.resolve()
     })

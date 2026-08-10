@@ -5,7 +5,7 @@ import { readBlockedHosts } from '#features/egress'
 import { readGitAuthFailures } from '#features/projects'
 import { getVclusterStatus, type VclusterStatus } from '#features/cluster'
 import { findWorkspace } from './locate'
-import type { WorkspaceHandle } from '@yaac/shared/herd'
+import type { RuntimeHandle } from '#runtime/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
@@ -25,7 +25,7 @@ export interface WorktreeDetail {
   virtualCluster?: VclusterStatus
 }
 
-async function findWorktree(idOrName: string): Promise<WorkspaceHandle> {
+async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
   const match = await findWorkspace(idOrName)
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
   return match

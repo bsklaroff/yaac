@@ -29,14 +29,14 @@ import { clearWorktreeStopped } from '#features/records/worktree-store'
 import { findWorkspace } from '#features/worktrees/locate'
 import { teardownForRestart } from '#features/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#features/worktrees/create'
-import type { WorkspaceHandle } from '@yaac/shared/herd'
+import type { RuntimeHandle } from '#runtime/contract'
 
 const mockFind = vi.mocked(findWorkspace)
 const mockTeardown = vi.mocked(teardownForRestart)
 const mockCreate = vi.mocked(createWorktree)
 const mockClearDeleted = vi.mocked(clearWorktreeStopped)
 
-function handle(workspaceId: string): WorkspaceHandle {
+function handle(workspaceId: string): RuntimeHandle {
   return {
     workspaceId,
     projectSlug: 'proj',

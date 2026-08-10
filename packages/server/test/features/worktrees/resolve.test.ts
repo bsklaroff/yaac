@@ -3,7 +3,7 @@ import type * as locateModule from '#features/worktrees/locate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { resolveWorktreeContainer } from '#features/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
-import type { WorkspaceHandle } from '@yaac/shared/herd'
+import type { RuntimeHandle } from '#runtime/contract'
 
 /**
  * The substrate lookup is the boundary here: which workspace an id names,
@@ -18,7 +18,7 @@ vi.mock('#features/worktrees/locate', async (importOriginal) => ({
 import { findWorkspace } from '#features/worktrees/locate'
 const find = vi.mocked(findWorkspace)
 
-function handle(over: Partial<WorkspaceHandle> = {}): WorkspaceHandle {
+function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return {
     workspaceId: 'abc123def456',
     projectSlug: 'proj',

@@ -1,6 +1,6 @@
 import { findWorkspace } from './locate'
 import { findWorktreeRow } from '#features/records'
-import type { WorkspaceHandle } from '@yaac/shared/herd'
+import type { RuntimeHandle } from '#runtime/contract'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedWorktree {
@@ -24,7 +24,7 @@ export async function resolveWorktreeContainer(
   idOrName: string,
   opts: { requireRunning?: boolean } = {},
 ): Promise<ResolvedWorktree> {
-  const match: WorkspaceHandle | undefined =
+  const match: RuntimeHandle | undefined =
     await findWorkspace(idOrName, { preferCache: true })
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
 

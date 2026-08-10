@@ -24,7 +24,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // reports a death as an event rather than writing the row — both stubbed,
 // so these tests never open a DB.
 vi.mock('#features/records', () => ({
-  applyHerdEvent: vi.fn(),
+  applyWorktreeEvent: vi.fn(),
   desiredWorktrees: vi.fn(),
 }))
 
@@ -37,9 +37,9 @@ import { probeTmuxLiveness, probeAgentPaneState } from '#features/status/livenes
 import { cleanupWorktreeDetached } from '#features/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#features/status/terminating'
 import { serverLog } from '#log'
-import { applyHerdEvent, desiredWorktrees } from '#features/records'
+import { applyWorktreeEvent, desiredWorktrees } from '#features/records'
 import { clearAllProvisioningForTests, registerProvisioning } from '#features/worktrees/provisioning'
-import type { DesiredWorkspaces, HerdEvent } from '@yaac/shared/herd'
+import type { WorktreeEvent } from '#features/records'
 import {
   reconcileStaleWorktrees,
   _clearMissingPodTimersForTests,
@@ -50,18 +50,22 @@ const mockListJobs = vi.mocked(listWorktreeJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
-// The reaper is told what exists rather than reading rows, and reports a
-// death rather than writing one — so the desired set is published directly
-// and the sink stands in for the server.
-const herdEvents: HerdEvent[] = []
+// The reaper reads what should exist from records and reports a death as
+// an event rather than writing the row — both stubbed above, so what a
+// pass decided is asserted directly.
+const herdEvents: WorktreeEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => herdEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
-// Every real pass publishes a desired set before the reaper runs, and the
-// reaper stands down on a pass whose publish did not land — so a test that
-// ticks twice has to publish twice, exactly as the loop does.
-let lastDesired: DesiredWorkspaces = { live: [], stopped: [], provisioning: [] }
-const setDesired = (d: Partial<DesiredWorkspaces>): void => {
+/** What the reaper's records read answers, plus which creates are in
+ *  flight (registered in the real provisioning registry). */
+interface DesiredSetup {
+  live: Array<{ projectSlug: string; worktreeId: string; ran: boolean }>
+  stopped: string[]
+  provisioning: string[]
+}
+let lastDesired: DesiredSetup = { live: [], stopped: [], provisioning: [] }
+const setDesired = (d: Partial<DesiredSetup>): void => {
   lastDesired = { live: [], stopped: [], provisioning: [], ...d }
   clearAllProvisioningForTests()
   for (const worktreeId of lastDesired.provisioning) {
@@ -72,7 +76,6 @@ const setDesired = (d: Partial<DesiredWorkspaces>): void => {
   })
 }
 /** The next pass, with the same set republished. */
-const republish = (): void => {}
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -103,7 +106,7 @@ describe('reconcileStaleWorktrees', () => {
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
     herdEvents.length = 0
-    vi.mocked(applyHerdEvent).mockImplementation((event) => {
+    vi.mocked(applyWorktreeEvent).mockImplementation((event) => {
       herdEvents.push(event)
       return Promise.resolve()
     })
@@ -404,7 +407,6 @@ describe('reconcileStaleWorktrees', () => {
     /** Advance the clock past the grace and tick again. */
     async function tickPastGrace(): Promise<void> {
       vi.setSystemTime(Date.now() + 31 * 60_000)
-      republish()
       await reconcileStaleWorktrees()
     }
 

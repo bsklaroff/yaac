@@ -53,7 +53,7 @@ import {
  * session-start-hook.test.ts, which extracts and runs the real script — so this file can stay about the join.
  *
  * The sweep reports what it found rather than writing rows, so the real
- * `applyHerdEvent` is wired as the sink: every assertion below is on the rows
+ * `applyWorktreeEvent` is wired as the sink: every assertion below is on the rows
  * a herd's report actually produces, end to end.
  */
 describe('reconcileWorktreeAgentSessions', () => {

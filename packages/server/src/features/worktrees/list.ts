@@ -9,7 +9,7 @@ import {
 import { observeWorkspaces } from './observe'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentLiveness, WorkspaceReport } from '@yaac/shared/herd'
+import type { AgentLiveness, WorktreeRuntimeReport } from '#runtime/contract'
 import type { ActiveWorktreesResult, WorktreeListEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(slug: string): Promise<void> {
@@ -68,17 +68,17 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
   // Recorded state — prompt, title, base branch, pin — one query per project
   // for both live and terminating workspaces (the latter keep their title and
   // pin on the way out).
-  const rowSlugs = [...new Set(report.workspaces.map((w) => w.projectSlug).filter((v) => !!v))]
+  const rowSlugs = [...new Set(report.worktrees.map((w) => w.projectSlug).filter((v) => !!v))]
   const rowsBySlug = new Map(await Promise.all(
     rowSlugs.map(async (slug) => [slug, await getProjectWorktreeRows(slug)] as const),
   ))
-  const rowFor = (w: WorkspaceReport): WorktreeRow | undefined =>
+  const rowFor = (w: WorktreeRuntimeReport): WorktreeRow | undefined =>
     w.projectSlug && w.workspaceId ? rowsBySlug.get(w.projectSlug)?.get(w.workspaceId) : undefined
 
   // The conversations inside each workspace, one query per project — the same
   // shape as the rows above, so a snapshot never pays per row.
   const idsBySlug = new Map<string, string[]>()
-  for (const w of report.workspaces) {
+  for (const w of report.worktrees) {
     if (!w.projectSlug || !w.workspaceId) continue
     idsBySlug.set(w.projectSlug, [...(idsBySlug.get(w.projectSlug) ?? []), w.workspaceId])
   }
@@ -86,12 +86,12 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
     rowSlugs.map(async (slug) =>
       [slug, await getProjectAgentSessions(slug, idsBySlug.get(slug) ?? [])] as const),
   ))
-  const agentsFor = (w: WorkspaceReport): AgentSessionLinkRow[] =>
+  const agentsFor = (w: WorktreeRuntimeReport): AgentSessionLinkRow[] =>
     (w.projectSlug && w.workspaceId
       ? agentsBySlug.get(w.projectSlug)?.get(w.workspaceId)
       : undefined) ?? []
 
-  const worktrees = report.workspaces.map((w): WorktreeListEntry => {
+  const worktrees = report.worktrees.map((w): WorktreeListEntry => {
     const row = rowFor(w)
     const links = agentsFor(w)
     const base = {
