@@ -10,8 +10,8 @@ vi.mock('#domain/worktrees/spare-pool', () => ({
 vi.mock('#domain/worktrees/cleanup', () => ({
   // The AWAITED teardown: the reap removes the spare's checkout off the back
   // of it, so it must not resolve before the Job is actually gone.
-  cleanupWorktree: vi.fn().mockResolvedValue(undefined),
-  deleteWorktreeState: vi.fn().mockResolvedValue(undefined),
+  cleanupWorktree: vi.fn().mockResolvedValue(true),
+  deleteWorktreeState: vi.fn().mockResolvedValue(true),
   isTmuxSessionAlive: vi.fn(),
 }))
 vi.mock('#records/preferences', () => ({ getDefaultTool: vi.fn() }))
@@ -62,7 +62,11 @@ describe('reconcilePrewarmPool', () => {
     clearPrewarmStateForTests()
     mockDefaultTool.mockResolvedValue('claude')
     mockCreate.mockResolvedValue({ worktreeId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
-    mockCleanup.mockResolvedValue(undefined)
+    // Both report success by default: the reap chain gates each step on the
+    // one before it, so a falsy default would silently skip the deletions
+    // every case here is about.
+    mockCleanup.mockResolvedValue(true)
+    mockDeleteState.mockResolvedValue(true)
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
   })
   afterEach(() => vi.unstubAllEnvs())
@@ -93,8 +97,9 @@ describe('reconcilePrewarmPool', () => {
       order.push('teardown-started')
       await new Promise<void>((r) => { releaseTeardown = r })
       order.push('teardown-done')
+      return true
     })
-    mockDeleteState.mockImplementation(() => { order.push('state-deleted'); return Promise.resolve() })
+    mockDeleteState.mockImplementation(() => { order.push('state-deleted'); return Promise.resolve(true) })
     mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-spare', worktreeId: 's2', prewarmed: true })])
 
     await reconcilePrewarmPool('claude')
@@ -107,6 +112,19 @@ describe('reconcilePrewarmPool', () => {
     await flush()
     expect(order).toEqual(['teardown-started', 'teardown-done', 'state-deleted'])
     expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
+  })
+
+  it('keeps the checkout when the teardown could not confirm the pod is gone', async () => {
+    // A Job delete that timed out leaves a pod in its grace period still
+    // writing to /workspace. The spare keeps its flagged row, which is what
+    // lets the startup sweep recognize the checkout and try again.
+    mockCleanup.mockResolvedValue(false)
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-spare', worktreeId: 's3', prewarmed: true })])
+
+    await reconcilePrewarmPool('claude')
+    await flush()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockDeleteState).not.toHaveBeenCalled()
   })
 
   it('is a no-op when the pool size is 0', async () => {

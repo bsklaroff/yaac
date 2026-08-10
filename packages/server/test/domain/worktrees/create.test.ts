@@ -1,5 +1,24 @@
 import { describe, it, expect, vi } from 'vitest'
-import { withUpstreamConfigLock } from '#domain/worktrees/create'
+import { failedCreateCollectsCheckout, withUpstreamConfigLock } from '#domain/worktrees/create'
+
+// The rule a failed create's rollback consults before removing a checkout.
+// Both exclusions are here because getting either backwards destroys work
+// that exists in no other copy — a resumed worktree's diff, or a spare's
+// checkout pulled out from under the sweep that is about to collect it.
+describe('failedCreateCollectsCheckout', () => {
+  it('collects a fresh create’s own checkout', () => {
+    expect(failedCreateCollectsCheckout({})).toBe(true)
+    expect(failedCreateCollectsCheckout({ resume: false, prewarm: false })).toBe(true)
+  })
+
+  it('never collects a resumed worktree’s checkout — that is the work the user came back for', () => {
+    expect(failedCreateCollectsCheckout({ resume: true })).toBe(false)
+  })
+
+  it('leaves a warmed spare to the sweep that collects it on its flag', () => {
+    expect(failedCreateCollectsCheckout({ prewarm: true })).toBe(false)
+  })
+})
 
 describe('withUpstreamConfigLock', () => {
   it('serializes tasks on one project', async () => {

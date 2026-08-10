@@ -119,6 +119,7 @@ import {
   sessionStartsLogSize,
 } from '#store/worktrees'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#domain/skills'
+import { deleteWorktreeState } from './cleanup'
 import {
   WORKTREE_INIT_SCRIPT,
   worktreeBinDir,
@@ -495,6 +496,26 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
       serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
     })
   }
+}
+
+/**
+ * Does a create that gave up take its checkout with it?
+ *
+ * Only when the checkout is the create's OWN product, which is the whole of
+ * the rule and the reason it is written down rather than inlined: getting it
+ * backwards deletes work that exists in no other copy.
+ *
+ * - A *resume* keeps it. That checkout predates this create — it is the work
+ *   the user came back for — which is also why records puts a failed resume's
+ *   row back as the restart found it instead of deleting it.
+ * - A *prewarm* keeps it too, for the opposite reason: its row survives
+ *   flagged `spare`, and that flag is exactly what the startup sweep collects
+ *   a dead spare's checkout on. Removing it here would only race that sweep.
+ */
+export function failedCreateCollectsCheckout(
+  options: Pick<WorktreeCreateOptions, 'resume' | 'prewarm'>,
+): boolean {
+  return options.prewarm !== true && options.resume !== true
 }
 
 /**
@@ -1471,13 +1492,19 @@ export async function createWorktree(
       // so the dead pod is fully gone before a retry re-applies the Job —
       // waitForJobPodReady matches pods by the job-name label and must not
       // see the previous attempt's terminating pod.
+      let podGone = true
       try {
         await kubectlWithRetry([
           'delete', 'job', jobName, '-n', k8sNamespace(),
           '--ignore-not-found', '--cascade=foreground',
           '--wait=true', '--timeout=30s',
         ])
-      } catch { /* already gone */ }
+      } catch {
+        // Already gone, or the delete timed out with the pod still
+        // terminating. Only the rollback below cares which: it removes the
+        // checkout, and a pod in its grace period is still writing to it.
+        podGone = false
+      }
       // A worktree-provisioning failure (bad branch, fetch error) is not
       // the pod's fault — recreating the Job would just re-await the same
       // rejected promise, so fail fast with the original error.
@@ -1488,7 +1515,50 @@ export async function createWorktree(
       // Release any pre-bound host ports so a retry (or the reaper) can
       // rebind them.
       for (const p of forwardedPorts) p.server.close()
-      if (!options.prewarm) await reportCreateFailed(projectSlug, worktreeId, options)
+      if (!options.prewarm) {
+        // The staged checkout goes with the failed create. Nothing else
+        // would collect it: the rollback below erases the row, and every
+        // sweep that could name a leftover works from rows. What is removed
+        // is this create's own product — a checkout freshly made from
+        // `origin/<refBranch>`, holding at worst init-command build output
+        // and an unprompted agent's boot state, since the last step that can
+        // fail a create is the agent launch and prompt delivery after it is
+        // explicitly non-fatal.
+        //
+        // Only for a FRESH create. A resume keeps its worktree: that
+        // checkout predates this create and holds the work the user means
+        // to come back to, which is also why its rollback records a stop
+        // instead of deleting the row.
+        //
+        // Chained off the checkout leg rather than run here, because the two
+        // race in one direction that matters. The leg is usually the very
+        // thing that failed — then it has settled and this runs at once —
+        // but a POD-side failure (image pull, never Ready, all attempts
+        // burned) arrives while it can still be mid-fetch, and `addWorktree`
+        // re-creates its destination before checking out. Deleting first
+        // would leave a complete checkout staged *after* the rm: precisely
+        // the orphan this exists to prevent. Waiting for the leg inline would
+        // instead queue the caller's error behind a stuck fetch, so the
+        // create fails fast and the removal follows the leg.
+        //
+        // Each step gates the next on having happened, as on the claim path.
+        // A delete that timed out leaves a pod in its grace period still
+        // writing to /workspace, and a failed rm leaves bytes; either way the
+        // row stays, because it is the last name those bytes have. What stays
+        // is not lost — the stale reaper turns a row whose pod never arrived
+        // into an ordinary stopped worktree the user can see and delete.
+        if (failedCreateCollectsCheckout(options)) {
+          void worktreeTask
+            .catch(() => { /* the failure is already the caller's */ })
+            .then(() => podGone && deleteWorktreeState(projectSlug, worktreeId))
+            .then((removed) => (removed
+              ? reportCreateFailed(projectSlug, worktreeId, options)
+              : undefined))
+            .catch(() => { /* best-effort; nothing else can retry it */ })
+        } else {
+          await reportCreateFailed(projectSlug, worktreeId, options)
+        }
+      }
       throw err instanceof SetupInputError ? err.inner : err
     }
   }

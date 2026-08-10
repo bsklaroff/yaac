@@ -19,6 +19,16 @@ A row is 1-1 with a git worktree, and that is why stopping keeps it: teardown
 prunes the worktree dir but never `worktreeDir`, so a stopped row is a checkout
 still on disk, diff and all, waiting to be restarted.
 
+That correspondence is also the limit of what can be collected. A checkout
+whose row is gone answers to nothing — every sweep is row-driven — so the
+paths that erase a row are the ones that must take its bytes with them, and
+they do. Nothing hunts for rowless checkouts: inferring "garbage" from disk
+alone is how a sweep deletes the one copy of somebody's work. An install that
+predates this is the one place strays can exist, under
+`projects/<slug>/worktrees/<id>` with a matching `repo/.git/worktrees/<id>`;
+they are inert (ids are fresh UUIDs, so nothing collides with them) and are
+removed by hand or not at all.
+
 The agents *inside* a worktree are separate rows. `agent_sessions` holds one
 row per tool-native conversation — a claude/codex/pi/opencode session, keyed by
 the id the tool chose — and `worktree_agent_sessions` links the two, so a
@@ -59,6 +69,16 @@ goes through them, and they are the only writers.
   the spare, so a failure costs nothing but a cold create — and a claim that
   fails before any mutation puts the flag *back*, returning the pod to the
   pool rather than stranding it.
+
+  A claim that fails *after* mutating the spare cannot do that — the spare is
+  tainted — so it takes the whole thing down instead, in the same order the
+  ordinary reap uses: pod, then checkout and git admin dir, then row. The
+  order is the point, and each step gates the next on having actually
+  happened. The flag is already off by then, so the startup sweep can no
+  longer see this checkout, and the row is the last name anything has for it:
+  erase that over a pod still terminating or an rm that failed, and the bytes
+  left behind are ones nothing can ever reach again. Whatever survives keeps
+  its row and reaches the user as an ordinary stopped worktree instead.
 - **No stop deletes a row.** A row with `stoppedAt` set *is* the stopped
   listing. A restart reuses the id and clears the column, along with any death
   cause from the previous life; the title and the background pin survive,
@@ -66,7 +86,10 @@ goes through them, and they are the only writers.
   deletes are scoped to something other than a running worktree going away:
   `project remove`, which takes the checkouts and transcripts with it (rows
   left behind would list worktrees whose restart resolves into a directory that
-  no longer exists), and a create rolling back its own insert.
+  no longer exists), and a create rolling back its own insert — which takes
+  its staged checkout with it for the same reason the claim above does, and
+  only for a *fresh* create: a failed resume is put back as stopped, and its
+  checkout is the work the user came back for.
 - Writes are best-effort (a failed write degrades a listing, never blocks a
   create or a teardown); reads propagate their errors.
 

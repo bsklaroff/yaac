@@ -80,6 +80,7 @@ import {
   _resetOrphanModulesSweepForTests,
   cleanupWorktree,
   cleanupWorktreeDetached,
+  deleteWorktreeState,
   gcOrphanEphemeralModuleDirs,
   worktreeModulesDir,
 } from '#domain/worktrees/cleanup'
@@ -198,6 +199,81 @@ describe('cleanupWorktree', () => {
     expect(stopsReported()).toEqual([
       ['p', 's-cause', { reason: 'crashed', detail: 'exit code 1' }],
     ])
+  })
+
+  // Callers chain `deleteWorktreeState` off this, so "the Job is gone" has to
+  // mean "the pod is gone". Only a FOREGROUND cascade gives that: under
+  // kubectl's default background propagation `--wait` returns once the Job
+  // object is deleted, while the pod runs on through its grace period still
+  // writing to /workspace. Pinned here because the callers' unit tests mock
+  // this function whole and so can't see which flags it used.
+  it('deletes the Job with a waited foreground cascade, and says the pod is gone', async () => {
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+
+    await expect(cleanupWorktree({
+      jobName: 'yaac-p-s-casc', projectSlug: 'p', worktreeId: 's-casc',
+    })).resolves.toBe(true)
+
+    const [, args] = execFileMock.mock.calls.find(
+      ([cmd, a]) => cmd === 'kubectl' && a[0] === 'delete' && a.includes('yaac-p-s-casc'),
+    )!
+    expect(args).toEqual(expect.arrayContaining(['--cascade=foreground', '--wait=true']))
+  })
+
+  it('reports the pod is NOT gone when the Job delete times out', async () => {
+    // The teardown still finishes — the leftover Job is the reconcile loop's
+    // to sweep — but a caller about to remove the checkout must not, because
+    // a pod stuck terminating is a pod still writing to it.
+    execFileMock.mockReset()
+    execFileMock.mockImplementation((cmd, args) =>
+      cmd === 'kubectl' && args[0] === 'delete' && args.includes('yaac-p-s-slow')
+        ? Promise.reject(new Error('timed out waiting for the condition'))
+        : Promise.resolve(undefined))
+
+    await expect(cleanupWorktree({
+      jobName: 'yaac-p-s-slow', projectSlug: 'p', worktreeId: 's-slow',
+    })).resolves.toBe(false)
+  })
+})
+
+describe('deleteWorktreeState', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-delete-state-'))
+    setDataDir(dataDir)
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('removes the checkout, its git admin dir and its log, and confirms it', async () => {
+    const slug = 'dws'
+    const wt = path.join(dataDir, 'projects', slug, 'worktrees', 'w1')
+    const admin = path.join(dataDir, 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
+    await fs.mkdir(wt, { recursive: true })
+    await fs.mkdir(admin, { recursive: true })
+    // Worktree setup writes this precisely so `git worktree prune` can't reap
+    // a live worktree; it has to be cleared or it outlives what it protects.
+    await fs.writeFile(path.join(admin, 'locked'), 'yaac\n')
+
+    await expect(deleteWorktreeState(slug, 'w1')).resolves.toBe(true)
+    await expect(fs.access(wt)).rejects.toThrow()
+    await expect(fs.access(admin)).rejects.toThrow()
+  })
+
+  // Structural rather than incidental: every id that reaches this today is a
+  // server-minted UUID or one read back off a row or a pod label, but an empty
+  // one resolves to the worktrees ROOT — every worktree of the project.
+  it('refuses an empty worktree id instead of resolving to the worktrees root', async () => {
+    const slug = 'dws-empty'
+    const root = path.join(dataDir, 'projects', slug, 'worktrees')
+    await fs.mkdir(path.join(root, 'keeper'), { recursive: true })
+
+    await expect(deleteWorktreeState(slug, '')).resolves.toBe(false)
+    expect(await fs.readdir(root)).toEqual(['keeper'])
   })
 })
 
