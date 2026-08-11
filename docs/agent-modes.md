@@ -129,6 +129,15 @@ duplication needed one event with two sources, and no event has two. The tail
 is flushed before either is forwarded, so a turn cannot appear to end above the
 last words of the answer it ended.
 
+Those boundaries are also the *only* thing that moves a pane's working
+indicator. The messages themselves cannot be read as one, tempting as it is: a
+`user` message looks like a turn beginning, but a replay is made of them —
+`session/load` re-emits the whole conversation as live updates — and the record
+holds no boundary to close them with. A pane inferring from content would come
+back from a restart pinned at `working…`, offering a Stop button with no turn
+behind it. So the pane classifies on `turn-start`, `turn-end` and `error`, plus
+the busy flag its attach is greeted with, and on nothing else.
+
 acpd truncates the file when it starts, which is how a new agent life
 announces itself: a tail seeing the record shrink resets its position and its
 projection and starts again, and the pane replaces rather than appends. A
@@ -164,8 +173,15 @@ which holds both directions and therefore says whether the last prompt was
 ever answered. Until that resolves the conversation is *unclassified* rather
 than idle, and nothing publishes a status for it: guessing `waiting` is what
 paints a working agent idle. A recovered turn is announced to attached panes as
-a `turn-start` event, since a pane otherwise infers "a turn began" from the
-message it sent, and nobody sent this one.
+a `turn-start`, which is what lets a pane show a turn nobody there started.
+
+**A pane outlives its connection, not its conversation.** A conversation that
+is torn down takes its panes' sockets with it rather than only greying them
+out. A pane holds the conversation *object* it attached to, so a replacement
+registered under the same `acp:<id>` — which is what a worktree restart
+produces — is invisible to it: the new conversation's boundaries go to its own
+subscribers, and a Stop sent down the old socket reaches a closed peer. Closing
+is what makes the pane re-attach, and re-attaching is what rebinds it.
 
 **An in-flight `session/prompt` reply arrives as an orphan.** Its request id
 belonged to the previous connection, so it is read as "that turn ended".

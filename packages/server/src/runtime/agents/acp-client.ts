@@ -220,10 +220,11 @@ export class AcpConversation {
     const started = busy && !this.busy
     this.statusKnown = true
     this.busy = busy
-    // An attached pane infers "a turn started" from the `user` event it sent,
-    // and a recovered turn has none — nobody typed it into this connection. So
-    // the boundary is announced, and a pane that already knew treats it as the
-    // no-op it is.
+    // A pane's ONLY start signal, so every start is announced — the recovered
+    // turn nobody typed into this connection included. A pane deliberately
+    // infers nothing from content: a replay is made of `user` messages and the
+    // record carries no boundary to close them with, so reading one as a turn
+    // beginning latches it on history (docs/agent-modes.md).
     if (started) this.emit({ type: 'turn-start' })
     if (!busy) this.wakeIdleWaiters()
     this.deps.onBusy(busy)

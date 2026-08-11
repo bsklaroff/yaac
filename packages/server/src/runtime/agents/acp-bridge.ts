@@ -118,8 +118,17 @@ export function attachAcp(
         send({ type: 'event', event: { ...event, seq: seq++ } as AcpEvent })
       })
   })
+  // This conversation object will never speak again, and the pane is bound to
+  // *it* rather than to the name it attached by — so the socket goes with it.
+  // The replacement the driver registers under the same `acp:<id>` is a
+  // different object: it delivers its turn boundaries to its own subscribers,
+  // and a cancel sent down here would reach a closed peer. Only a re-attach
+  // rebinds, and a re-attach starts with the socket closing. The pane's backoff
+  // handles the rest — a worktree restarting has nothing to attach to for a
+  // while, which is the same "not live yet" a booting one reports below.
   const unsubscribeClose = conversation.onClosed(() => {
     send({ type: 'health', connected: false })
+    sock.close(1011, 'conversation closed')
   })
 
   sock.onMessage((data, isBinary) => {
