@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
 
 // The CLI shim's own collaborators. Only the `worktreeRestart` describe below
 // uses these; the pipeline describes drive the server modules directly.
@@ -23,6 +24,7 @@ import { recordWorktreeCreated } from '@yaac/server/records/worktree-store'
 import { recordAgentSessions } from '@yaac/server/records/agent-session-store'
 import { closeDb } from '@yaac/server/records/client'
 import { worktreeRestart } from '#commands/worktree-restart'
+import { clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
 
 import type { PodInfo } from '@yaac/server/platform/k8s/pods'
 
@@ -54,6 +56,9 @@ describe('resolveRestartTarget', () => {
   let listSpy: ReturnType<typeof vi.fn<() => Promise<PodInfo[]>>>
 
   beforeEach(async () => {
+    // The real driver, with only its pod listing mocked: this file is about
+    // the resolve-then-restart pipeline, so nothing in it may be faked.
+    installRealWorktreeRuntime()
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()
     vi.spyOn(pods, 'listWorktreePods').mockImplementation(
@@ -157,6 +162,8 @@ describe('restartWorktree', () => {
   let createSpy: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
+    installRealWorktreeRuntime()
+    clearAllProvisioningForTests()
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
@@ -179,6 +186,9 @@ describe('restartWorktree', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    // A restart holds its id against the reaper for the whole of itself, so
+    // the entry outlives a case that stopped short of the create returning.
+    clearAllProvisioningForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })

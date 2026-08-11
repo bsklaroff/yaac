@@ -38,6 +38,7 @@ import {
 import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#platform/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
+import type { VirtualClusterStatus } from '#runtime/contract'
 
 export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')
 
@@ -868,28 +869,20 @@ export async function removeWorktreeVcluster(name: string): Promise<void> {
   }
 }
 
-export interface VclusterStatus {
-  name: string
-  ready: boolean
-  /**
-   * asleep: scaled to zero, API intercepted by the activator (wakes on
-   * first touch). waking: scaled up but not yet serving — covers both
-   * the create-time boot and an activator-triggered wake; a wake that
-   * fails (apiserver won't boot) surfaces as a persistent `waking`
-   * rather than a hang. ready: serving.
-   */
-  phase: 'asleep' | 'waking' | 'ready'
-}
-
 /** Derive the status phase from the control-plane Deployment (exported
  *  for unit tests; `getVclusterStatus` reads the live object). */
-export function vclusterPhase(spec: { replicas?: number } | undefined, readyReplicas: number): VclusterStatus['phase'] {
+export function vclusterPhase(
+  spec: { replicas?: number } | undefined,
+  readyReplicas: number,
+): VirtualClusterStatus['phase'] {
   if ((spec?.replicas ?? 0) === 0) return 'asleep'
   return readyReplicas >= 1 ? 'ready' : 'waking'
 }
 
 /** Status block for `WorktreeDetail`; null when the worktree has no vcluster. */
-export async function getVclusterStatus(worktreeId: string): Promise<VclusterStatus | null> {
+export async function getVclusterStatus(
+  worktreeId: string,
+): Promise<VirtualClusterStatus | null> {
   const name = vclusterName(worktreeId)
   const dep = await kubectlGetJson<{
     spec?: { replicas?: number }

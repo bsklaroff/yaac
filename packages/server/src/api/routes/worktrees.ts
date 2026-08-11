@@ -132,9 +132,11 @@ export const worktreeApp = new Hono()
     zv('json', z.object({
       worktreeId: z.string().min(1),
       // The webapp passes the worktree's project + tool (known from the
-      // stopped entry) so the provisioning row can render while restart
-      // resolves the target authoritatively. The CLI omits them — it doesn't
-      // need the row.
+      // stopped entry) so its row renders during the resolve rather than
+      // after it. Optional, and only that: `restartWorktree` registers the
+      // entry itself once the resolve answers, so a caller that omits these
+      // is tracked too — being in the registry is what exempts a restart
+      // from the stale reaper, not a display detail.
       projectSlug: z.string().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // No `mode` here, deliberately: a worktree comes back the way it went
@@ -145,6 +147,10 @@ export const worktreeApp = new Hono()
     })),
     (c) => {
       const body = c.req.valid('json')
+      // Head start for a caller that already knows the answer, so the row is
+      // on screen while the resolve runs; `restartWorktree` registers for
+      // everyone else. Not the reaper interlock — that is the register
+      // inside restartWorktree, which no caller can skip.
       if (body.projectSlug) {
         registerProvisioning({
           worktreeId: body.worktreeId,

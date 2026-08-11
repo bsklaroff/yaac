@@ -1,11 +1,9 @@
 import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#records'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
-import { readBlockedHosts } from '#runtime/k8s/egress'
 import { readGitAuthFailures } from '#store/projects'
-import { getVclusterStatus, type VclusterStatus } from '#runtime/k8s/cluster'
 import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle, VirtualClusterStatus } from '#runtime/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
@@ -22,7 +20,7 @@ export interface WorktreeDetail {
   /** ISO timestamp of pod creation. */
   createdAt: string
   /** Present only for virtualCluster worktrees. */
-  virtualCluster?: VclusterStatus
+  virtualCluster?: VirtualClusterStatus
 }
 
 async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
@@ -32,16 +30,17 @@ async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
 }
 
 export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetail> {
+  const runtime = worktreeRuntime()
   const match = await findWorktree(idOrName)
   const blocked = match.workspaceId
-    ? await readBlockedHosts(match.workspaceId)
+    ? await runtime.blockedHosts(match.workspaceId)
     : []
   const gitAuthFailures = match.projectSlug
     ? await readGitAuthFailures(match.projectSlug)
     : []
-  // Best-effort: detail must render even when the vcluster lookup
-  // hiccups (it is one extra cluster read; null for non-vcluster worktrees).
-  const vcluster = await getVclusterStatus(match.workspaceId).catch(() => null)
+  // Best-effort: detail must render even when the lookup hiccups (it is one
+  // extra runtime read; null for a worktree with no nested cluster).
+  const vcluster = await runtime.virtualClusterStatus(match.workspaceId).catch(() => null)
   return {
     worktreeId: match.workspaceId,
     projectSlug: match.projectSlug,
@@ -59,7 +58,7 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
 export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {
   const match = await findWorktree(idOrName)
   if (!match.workspaceId) return []
-  return readBlockedHosts(match.workspaceId)
+  return worktreeRuntime().blockedHosts(match.workspaceId)
 }
 
 export async function getWorktreePrompt(idOrName: string): Promise<string | undefined> {

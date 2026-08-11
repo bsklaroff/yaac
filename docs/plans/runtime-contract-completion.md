@@ -1,13 +1,10 @@
 # Completing the runtime contract
 
-`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–3
-have delivered the observation, pass-view and scheduling halves of it (see
-"What has landed"); what remains is everything that MUTATES the substrate.
+`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–4
+have delivered observation, the pass view, scheduling and every mutation
+except one (see "What has landed"); what remains is the LAUNCH.
 `create.ts` still builds a Job manifest, applies it, and execs into the pod
-five times; `cleanup.ts` still deletes Jobs (once awaited, once as a raw
-`kubectl` string in a detached shell); `prewarm.ts` still commits a spare
-claim by flipping a pod label; `spare-pool.ts` still execs directly; and
-`PodMount` fragments are still built in `domain/skills` and
+five times, and `PodMount` fragments are still built in `domain/skills` and
 `domain/worktrees/spawn-script`.
 
 This plan finishes the carve-out: domain and api speak only
@@ -69,32 +66,23 @@ interface WorktreeRuntime {
   // Driver-contributed reconcile steps (stage 3)
   reconcileSteps(): { prePool: ReconcileStep[]; maintenance: ReconcileStep[] }
 
-  // Transport and mutation (stage 4)
-  exec(jobName: string, cmd: string,
-       opts?: { timeout?: number; maxAttempts?: number }):
-    Promise<{ stdout: string; stderr: string }>
-  awaitAgentTransport(jobName: string, opts?: { timeoutMs?: number }):
-    Promise<void>
-  claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
-  destroy(target: TeardownTarget,
-          opts?: { salvageImages?: boolean }): Promise<void>
-  detachedTeardownCommand(target: TeardownTarget): string
-  destroyProjectSubstrate(slug: string): Promise<void>
-  pendingSpawns(): Promise<PendingSpawn[]>
-  resolveSpawn(id: string, result: SpawnResult): Promise<void>
+  // Transport, claim, teardown, egress (stage 4 — see "What has landed"
+  // for the signatures as they actually shipped)
+  exec(...); awaitAgentTransport(...); claimSpare(...)
+  registerWorkspace(...); deregisterWorkspace(...); salvageImages(...)
+  destroy(...); detachedTeardownCommand(...); destroyProjectSubstrate(...)
+  pendingSpawns(); resolveSpawns(...)
+  blockedHosts(...); virtualClusterStatus(...)
 
   // Launch (stage 5)
   launch(spec: WorkspaceSpec): Promise<RuntimeHandle>
   awaitReady(handle: RuntimeHandle): Promise<void>
-  registerWorkspace(reg: WorkspaceRegistration): Promise<void>
 }
 ```
 
 `RuntimeHandle.jobName` stays "the runtime's own name for it, which is what
 an exec addresses" — a host-process driver would put a process-group id
-there. `TeardownTarget` is `{ projectSlug, workspaceId }` only: the unit
-name is derived deterministically by the driver (today `worktreeJobName`),
-so domain never needs to compute a Job name before or after a launch.
+there.
 
 ### The accessor
 
@@ -108,13 +96,13 @@ fake. This, not the interface, is what buys the test-time win: with direct
 `#runtime/k8s/worktrees` imports, domain tests would still transitively
 load the k8s client.
 
-The k8s driver object itself lives at
-`packages/server/src/runtime/k8s/runtime.ts` — above the sealed folders,
-assembling the interface from their barrels (`worktrees` for observation,
-`substrate` for exec/waits, `cluster`/`egress`/`images` for teardown,
-registration, and the contributed steps). It is deliberately thin: every
-method is a one-line delegation, so it needs no unit tests of its own — the
-functions it wraps keep theirs, and e2e covers the wiring.
+The k8s driver object assembles the interface from the sealed folders'
+barrels (`worktrees` for observation, claim and teardown, `#platform/k8s`
+for exec/waits, `cluster`/`egress`/`images` for the rest). It is
+deliberately thin: every method is a one-line delegation, so it needs no
+unit tests of its own — the functions it wraps keep theirs, and e2e covers
+the wiring. It lives in `main/`, not `runtime/k8s/` (see "What has
+landed").
 
 ### Enforcement is a ratchet, not a flip
 
@@ -144,10 +132,11 @@ modules or lean on the k8s stub switch to
 
 ## What has landed
 
-Stages 1–3 are in. The contract, the accessor, the boundary mapper and the
-pass view are real; the mediators' observation, snapshot and scheduling
-paths all go through them. Lint, `pnpm modularity --runtime-only` and the
-`unit:server` suite are green.
+Stages 1–4 are in. The contract, the accessor, the boundary mapper, the
+pass view and every mutation verb but the launch are real; the mediators'
+observation, snapshot, scheduling, teardown, claim and spawn-drain paths all
+go through them. Lint, `pnpm modularity --runtime-only` and the `unit:server`
+suite are green.
 
 **The pieces, and where they live.** `runtime/contract.ts` holds the
 `WorktreeRuntime` interface and its vocabulary; `runtime/driver.ts`
@@ -212,9 +201,103 @@ composition root the way e2e does.
 
 **The ratchet is live, for domain.** `NO_SUBSTRATE_ABOVE_RUNTIME` is on the
 domain zone, with a holdout override in `eslint.config.js` naming the files
-that have not moved. What is left there is exactly that list — stage 4's
-five files, stage 5's three, and `domain/worktrees/detail.ts`, which needs
-`readBlockedHosts` and `getVclusterStatus` as contract verbs.
+that have not moved. What is left there is exactly stage 5's three files.
+
+### Stage 4 is in too: the mutation verbs
+
+`exec`, `awaitAgentTransport`, `claimSpare`, `registerWorkspace`,
+`deregisterWorkspace`, `salvageImages`, `destroy`,
+`detachedTeardownCommand`, `destroyProjectSubstrate`, `pendingSpawns`,
+`resolveSpawns`, `blockedHosts` and `virtualClusterStatus` are on the
+contract, and `cleanup.ts`, `prewarm.ts`, `spare-pool.ts`,
+`spawn-reconcile.ts`, `project-purge.ts` and `detail.ts` left the holdout
+list. Where the shapes differ from the sketch above, the reason:
+
+- **`destroy` returns a boolean**, not void. The prewarm reap and the
+  failed-claim rollback gate checkout removal on "did the runtime really
+  go away" — what is still shutting down is still writing to /workspace.
+- **`deregisterWorkspace` and `salvageImages` sit beside it**, because the
+  DETACHED teardown needs the in-process half of a destroy (forwarders,
+  the egress registration; then the salvage, which reaches into the
+  workspace) without the awaited delete. `destroy` composes the same two
+  internally, so the ordering has one home either way.
+- **`resolveSpawns` takes the batch**, matching the single POST the proxy's
+  answer endpoint accepts.
+- **`blockedHosts` and `virtualClusterStatus` are on `WorktreeRuntime`**,
+  not a second display seam. The contract already carries `blockedHosts`
+  per workspace in its report and `changes()` is already a pure display
+  read, so a second accessor and a second fake would have bought nothing
+  for two verbs. If the api layer's own surface (an image-build feed, a
+  datapath surface) ever accumulates, that is the moment to split.
+
+**Types that moved with them.** `PendingSpawn`, `SpawnResultWire` and
+`pendingSpawnWorktreeId` are in `@yaac/shared/types` — they mirror the
+proxy's wire shapes, and the runtime that drains the queue and the mediator
+that answers each request both name them. `VclusterStatus` is
+`VirtualClusterStatus` in the contract: the config key is `virtualCluster`
+and the shape says nothing about how a driver realizes one, so
+`WorktreeDetail` no longer names a `#runtime/k8s` type (rule 3). Both are
+type-level moves; no wire changed.
+
+**Where the driver half lives.** `runtime/k8s/worktrees/teardown.ts`
+(destroy, deregister, salvage, the detached command, the project sweep) and
+`runtime/k8s/worktrees/claim.ts`, both inside the already-sealed folder —
+no new barrel, no `imports` entry. Teardown adds one folder edge,
+`worktrees → cluster`; it is safe because nothing inside `runtime/k8s`
+imports `worktrees` (only `main` does), so an outbound edge from it cannot
+close a cycle. `pnpm modularity --runtime-only` confirms it: the metrics are
+byte-identical to before the change. `registerWorkspace` and
+`drainPendingSpawns` are new barrel exports of `egress`, adding no edges.
+
+**The verb boundary at teardown.** The mediator keeps what is bookkeeping
+about the WORKSPACE — the terminating mark (before the status eviction, so
+the display renders "terminating…" rather than a stray waiting spell), the
+`worktree-stopped` record with its `preserveDeletedRecord` case, the
+evictions, and which directories a worktree owns. The driver owns the
+sequence over cluster objects, and the order is the substance: deregister
+(nothing routes at a dying workspace), salvage (it execs into the pod the
+delete destroys), foreground-cascade delete with its 30s wait (background
+propagation would return with the pod still writing), then the probe-gated
+vcluster removal. The mediator removes its dirs only after `destroy`
+resolves. `detachedTeardownCommand` returns the substrate fragment only —
+every line idempotent, since resuming a teardown re-issues the whole script
+— and the mediator appends its own removals and owns the spawn.
+
+**`claimSpare` is addressed by selector**, with `prewarmed=true` as a
+precondition rather than by pod name: a `RuntimeHandle` names no pod, and
+the precondition is what makes the commit at-most-once. `kubectl label -l`
+exits 0 on an empty match, so an empty match is checked and thrown —
+that throw is what keeps a lost race degrading to a cold create. The tool
+label is always stamped, which makes the guarantee unconditional: after the
+claim, every observed handle reports `declaredTool === tool`, which is what
+a `yaac-spawn` from the claimed workspace reads.
+
+**The restart/reaper race is closed.** `restartWorktree` now registers its
+own provisioning hold, from before `teardownForRestart` until the create
+returns. The gap it covers is real and was CLI-specific: the webapp route
+registers a row from what it knows, the CLI sends no `projectSlug` and so
+had no hold at all, and between the teardown and the create the workspace
+is terminating, unmarked and backed by nothing — long enough on a cold
+restart for the stuck-terminating sweep to prune the staged dirs out from
+under the create (PR #89). `registerProvisioning` is an idempotent
+overwrite, so the route's earlier row is refreshed with the resolved
+project and tool, and `runProvisioned` still owns dropping it. Safety is now
+a property of restarting rather than of which caller registered first.
+
+**Testing.** The driver half is tested where it lives —
+`test/runtime/k8s/worktrees/{teardown,claim}.test.ts` and the egress
+files — mocked at kubectl, the proxy client and the forwarder registry, and
+carrying the kubectl-argv assertions that used to sit in `cleanup.test.ts`.
+The migrated domain tests dropped their `#platform/k8s` mocks for
+`installFakeWorktreeRuntime` and keep asserting the domain sequencing:
+mark-before-evict, the verdict gates, the composed script, and that the
+detached spawn waits for the salvage. `prewarm.test.ts` runs in ~50ms now
+that it loads no cluster client.
+
+One residue, deliberately left for stage 5: `spare-pool.ts` still imports
+`withUpstreamConfigLock` from `./create`, so its module graph is only
+cluster-free once `create.ts` moves. The lint rule is per-file and green
+today; the wall-clock win for that file arrives with stage 5.
 
 The **api zone is not on the rule yet**, and its substrate use is a
 different shape from domain's: the image-build rows the webapp renders
@@ -232,77 +315,6 @@ config host-side and never touched the substrate; its tests now mock
 
 ---
 
-## Stage 4 — exec, claim, destroy, and the egress verbs
-
-Adds the mutation verbs and migrates every mutating domain file except
-`create.ts`. This is the second-largest stage because `cleanup.ts` touches
-four driver subsystems.
-
-**Contract additions**: `exec`, `awaitAgentTransport`, `claimSpare`,
-`destroy`, `detachedTeardownCommand`, `destroyProjectSubstrate`,
-`pendingSpawns`, `resolveSpawn`. The pending-spawn wire types
-(`PendingSpawn`, `SpawnResultWire`) move to `@yaac/shared/types` — they
-cross the proxy wire already and belong with the other wire types.
-
-The planner half of `prewarm.ts` is already on `RuntimeHandle`; what is
-left in that file is the claim, which is where the substrate calls are.
-
-**Consumers migrated**:
-
-- `prewarm.ts` (claim path): `waitForStreamd` → `awaitAgentTransport`
-  (re-booting a dead streamd stays driver semantics; a failed gate still
-  degrades to a cold create with the spare untouched). The label-flip
-  commit becomes `claimSpare(workspaceId, tool)` — the driver flips
-  `LABEL_PREWARMED`/`LABEL_TOOL` by label selector on the worktree id
-  rather than by pod name, so the handle needs no pod identity. Note the
-  claim also has to clear `declaredTool`'s source of truth consistently:
-  a retooled spare must report the tool it was claimed for. The
-  post-commit git-identity exec goes through `exec` and stays non-fatal.
-- `spare-pool.ts`: five `podExec` calls → `exec`, timeouts preserved
-  (including rebranch's widened 120s reset). Command strings keep coming
-  from `#runtime/agents` and the pure `buildRebranchPrep`; only transport
-  changes. Its `proxyClient`/`buildWorktreeRegistration` use becomes
-  `registerWorkspace` (defined this stage, shared with create in stage 5).
-- `cleanup.ts`: the awaited path becomes `destroy(target,
-  { salvageImages })`. `TeardownTarget` already carries the unit name (it
-  landed that way in stage 1), so nothing has to be re-derived at teardown
-  — the driver composes what cleanup sequences today:
-  image salvage, forwarder stop, proxy deregistration, the foreground
-  Job delete with its 30s wait, and vcluster removal. The detached path
-  composes `detachedTeardownCommand(target)` into its shell script exactly
-  as it already composes `buildVclusterCleanupShellCommand`; the vcluster
-  fragment folds into that command. Domain keeps: terminating marks and
-  status eviction (`#runtime/status`), the records event, provisioning
-  registry bookkeeping, and directory removal. This deletes cleanup's
-  imports from `#runtime/k8s/{cluster,egress,images,forwarders}` and
-  `#platform/k8s` in one motion — review it as a re-sequencing risk, and
-  lean on the e2e stop/teardown assertions, which must not change.
-- `spawn-reconcile.ts`: `proxyClient` drain/answer → `pendingSpawns` /
-  `resolveSpawn`. `decideSpawn` (tool precedence, fan-out cap, minted id)
-  stays domain.
-- `project-purge.ts`: `removeProjectRegistry` → `destroyProjectSubstrate`.
-- `stop.ts`: already observation-clean from stage 1; its teardown
-  delegation to cleanup is unchanged.
-
-**A live race this stage should fix, not just carry.** A restart tears down
-through `teardownForRestart` and then creates against the same id, and
-between those two the workspace is terminating, no longer marked, and not
-yet in the provisioning registry. A restart slow enough to spend minutes in
-that window — a cold one, pushing an image and creating a vcluster — gets
-its stuck-terminating sweep fired by the reaper, which runs the full
-teardown and prunes the checkout out from under the retrying create; the
-pod then wedges in `ContainerCreating` on a `hostPath type check failed`
-for a staged dir that is gone. Observed on a live cluster (PR #89), and
-pre-existing: the reaper's guards are untouched by the carve-out, and
-`cleanup.ts` is where the window lives. The fix belongs here because this
-stage is what gives teardown a verb — a restart's teardown should hold the
-id against the reaper for the whole gap, rather than relying on the
-provisioning registry to be populated before the sweep looks.
-
-**Error taxonomy**: no domain caller today branches on `RelayExecError`
-(that logic lives in `runtime/agents`), so `exec` surfaces plain errors
-and the contract defers an error taxonomy until a caller needs one.
-
 ## Stage 5 — launch
 
 The largest stage; `create.ts` (~1500 lines) is the whole scope, and the
@@ -313,8 +325,8 @@ any of it becomes cluster objects.
 
 **Contract additions**: `WorkspaceSpec`, `WorkspaceMount` (renamed
 `PodMount` — hostPath source, mount path, readOnly; a host-process driver
-reads it as a bind or symlink), `launch(spec)`, `awaitReady(handle)`,
-`WorkspaceRegistration` + `registerWorkspace` (from stage 4).
+reads it as a bind or symlink), `launch(spec)` and `awaitReady(handle)`.
+`registerWorkspace` is already there, from stage 4.
 
 The spec carries decisions, not k8s spellings: identity (project,
 workspaceId, tool, mode, prewarm), image ref, env, mounts, resources,
@@ -383,11 +395,12 @@ is a possible later refinement, not part of this plan.
 
 - `pnpm lint` and `pnpm modularity --runtime-only` stay green; the holdout
   list shrinks in the same PR as each migration.
-- Domain test wall-clock drops at stage 1 and again at stage 5 (the k8s
-  client import stops loading); migrated files' tests must pass with no
-  k8s stub registered.
+- Domain test wall-clock drops at stage 1, again at stage 4, and again at
+  stage 5 (the k8s client import stops loading); migrated files' tests must
+  pass with no k8s stub registered.
 - E2e is the behavioral backstop: worktree-create-suite, vcluster-suite,
-  and the stop/cleanup paths exercise every moved verb against a real
-  cluster, and none of their assertions should change — this refactor
-  moves code across a boundary and must not change what the substrate
-  sees. Stages 4 and 5 are the ones to run nested-vs-host both ways.
+  worktree-prewarm, worktree-spawn and the stop/cleanup paths exercise
+  every moved verb against a real cluster, and none of their assertions
+  should change — this refactor moves code across a boundary and must not
+  change what the substrate sees. Stage 5 is the remaining one to run
+  nested-vs-host both ways.

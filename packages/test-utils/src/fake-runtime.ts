@@ -103,6 +103,19 @@ export function installFakeWorktreeRuntime(
     changes: (j, b, d) => current.changes(j, b, d),
     snapshot: (r) => current.snapshot(r),
     reconcileSteps: () => current.reconcileSteps(),
+    blockedHosts: (w) => current.blockedHosts(w),
+    virtualClusterStatus: (w) => current.virtualClusterStatus(w),
+    exec: (j, c, o) => current.exec(j, c, o),
+    awaitAgentTransport: (j, o) => current.awaitAgentTransport(j, o),
+    claimSpare: (w, t) => current.claimSpare(w, t),
+    registerWorkspace: (r) => current.registerWorkspace(r),
+    deregisterWorkspace: (w) => current.deregisterWorkspace(w),
+    salvageImages: (t) => current.salvageImages(t),
+    destroy: (t, o) => current.destroy(t, o),
+    detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
+    destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
+    pendingSpawns: () => current.pendingSpawns(),
+    resolveSpawns: (r) => current.resolveSpawns(r),
     override(next) { current = { ...current, ...next } },
   }
   setWorktreeRuntime(fake)
@@ -127,5 +140,21 @@ function defaultRuntime(): WorktreeRuntime {
     }),
     snapshot: (resync) => snapshotFixture([], [], resync ?? true),
     reconcileSteps: () => ({ prePool: [], maintenance: [] }),
+    blockedHosts: () => Promise.resolve([]),
+    virtualClusterStatus: () => Promise.resolve(null),
+    exec: () => Promise.resolve({ stdout: '', stderr: '' }),
+    awaitAgentTransport: () => Promise.resolve(),
+    claimSpare: () => Promise.resolve(),
+    registerWorkspace: () => Promise.resolve(),
+    deregisterWorkspace: () => Promise.resolve(),
+    salvageImages: () => Promise.resolve(),
+    // The default is "it really went away": a mediator that gates checkout
+    // removal on this verdict must exercise its happy path without every
+    // test having to opt in, and a case about the timeout says so.
+    destroy: () => Promise.resolve(true),
+    detachedTeardownCommand: () => 'true',
+    destroyProjectSubstrate: () => Promise.resolve(),
+    pendingSpawns: () => Promise.resolve([]),
+    resolveSpawns: () => Promise.resolve(),
   }
 }

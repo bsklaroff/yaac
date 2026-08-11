@@ -1,8 +1,6 @@
 import fs from 'node:fs/promises'
 import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeHandle } from '#runtime/contract'
-import { removeProjectRegistry } from '#runtime/k8s/cluster'
-import { removeNodeImageStore } from '#runtime/k8s/images'
 import { projectRoots } from '@yaac/shared/project-paths'
 import { cleanupWorktreeDetached } from './cleanup'
 
@@ -37,23 +35,19 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
     }
   }
 
-  // Per-project push registry (virtualCluster worktrees). Best-effort —
-  // the server-start orphan GC sweeps anything this misses, since the
-  // project dir is gone after the rm below.
+  // Everything the runtime holds for the project beyond its worktrees —
+  // the push registry a virtualCluster worktree pushes to, and the
+  // node-local image stores. A separate pass from the rm below because
+  // those bytes live outside the project tree, ROOT-owned, precisely
+  // because the server's own uid could not remove them.
+  //
+  // Best-effort, like the rest of this function: the server-start orphan
+  // GCs sweep whatever a failure leaves, and an unreachable runtime must
+  // not stop the directories from going away.
   try {
-    await removeProjectRegistry(slug)
+    await worktreeRuntime().destroyProjectSubstrate(slug)
   } catch {
-    // cluster unavailable — the orphan GC will catch it
-  }
-
-  // The node-local image store on every node. A separate pass from the rm
-  // below because its bytes are ROOT-owned (a node-side pod wrote them) and
-  // live outside the project tree for exactly that reason — the server's
-  // own uid could not remove them (see `imageStoreDir`).
-  try {
-    await removeNodeImageStore(slug)
-  } catch {
-    // cluster unavailable — a stale store is a cache nothing will mount
+    // runtime unavailable — the orphan GCs will catch it
   }
 
   // Both tier roots: the project's node-local tree (the pnpm store and

@@ -2,10 +2,13 @@ import type {
   AgentMode,
   AgentTool,
   GitAuthFailure,
+  PendingSpawn,
   PortMapping,
+  SpawnResultWire,
   StaleWorktreeInfo,
   WorktreeChanges,
   WorktreeDeathCause,
+  YaacConfig,
 } from '@yaac/shared/types'
 
 /**
@@ -174,6 +177,47 @@ export interface RuntimeSnapshot {
 }
 
 /**
+ * What the runtime is doing for one workspace's nested cluster, when it
+ * runs one at all.
+ *
+ * Product vocabulary rather than substrate vocabulary — the config key is
+ * `virtualCluster`, and nothing here says how a driver realizes one. It is
+ * observation, not durable state: a runtime that runs no nested clusters
+ * answers `null` for every workspace, exactly as one with no blocked hosts
+ * answers an empty list.
+ */
+export interface VirtualClusterStatus {
+  name: string
+  ready: boolean
+  /**
+   * asleep: scaled to zero, its API intercepted by an activator that wakes
+   * it on first touch. waking: started but not yet serving — covers both
+   * the create-time boot and an activator-triggered wake, so a wake that
+   * never completes surfaces as a persistent `waking` rather than a hang.
+   * ready: serving.
+   */
+  phase: 'asleep' | 'waking' | 'ready'
+}
+
+/**
+ * What the egress path must be told about a workspace before it may reach
+ * anything: decisions only.
+ *
+ * Which config applies, which tool the workspace runs, and which remote it
+ * was cloned from are the caller's to resolve — they come from rows and
+ * from disk. How any of that becomes an allowlist, an injection rule or a
+ * stored secret is the runtime's, which is why none of it appears here.
+ */
+export interface WorkspaceRegistration {
+  workspaceId: string
+  projectSlug: string
+  tool: AgentTool
+  config: YaacConfig
+  /** The project's `origin` remote, as the workspace will see it. */
+  remoteUrl: string
+}
+
+/**
  * A source that can dirty a reconcile pass.
  *
  * The ones the mediators know are named: the two substrate edges a
@@ -282,4 +326,108 @@ export interface WorktreeRuntime {
    *  why is substrate detail, so the mediators order the groups and name
    *  none of the steps. */
   reconcileSteps(): RuntimeReconcileSteps
+
+  /** Which hosts this workspace has been denied. Empty for a workspace the
+   *  runtime mediates no egress for. */
+  blockedHosts(workspaceId: string): Promise<string[]>
+  /** The workspace's nested cluster, or `null` when it runs none. */
+  virtualClusterStatus(workspaceId: string): Promise<VirtualClusterStatus | null>
+
+  /**
+   * Run a shell command inside a workspace and collect its output.
+   *
+   * Errors surface plain: no caller above the runtime branches on WHY a
+   * command failed, so the contract declares no taxonomy until one does.
+   */
+  exec(
+    jobName: string,
+    cmd: string,
+    opts?: { timeout?: number; maxAttempts?: number },
+  ): Promise<{ stdout: string; stderr: string }>
+  /**
+   * Wait until the workspace can carry `exec` — and repair the transport if
+   * it can be repaired, which is why this is a verb and not a poll the
+   * caller writes. Rejects when the workspace is not reachable within the
+   * deadline, leaving the caller to decide what an unreachable workspace
+   * means.
+   */
+  awaitAgentTransport(jobName: string, opts?: { timeoutMs?: number }): Promise<void>
+
+  /**
+   * Turn a spare into the caller's workspace, running `tool`.
+   *
+   * The commit point of a claim, and at-most-once against concurrent
+   * callers: the runtime compares and swaps, so of two claims for the same
+   * spare exactly one resolves and the other REJECTS rather than quietly
+   * succeeding. A spare that vanished rejects the same way. A caller
+   * treats the rejection as "not claimed" and falls back to creating a
+   * workspace of its own — never as a failure to report.
+   *
+   * Afterwards the workspace is no longer prewarmed and declares `tool`:
+   * every `RuntimeHandle` observed from here on reports
+   * `declaredTool === tool`, which is what a spawn from the claimed
+   * workspace reads to decide what its own workspace should run.
+   */
+  claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
+
+  /** Tell the egress path what a workspace may reach. Idempotent — a
+   *  retooled spare re-registers under its new tool. */
+  registerWorkspace(reg: WorkspaceRegistration): Promise<void>
+  /**
+   * Stop routing for a workspace: its port forwards go down as a set and
+   * its egress registration is dropped.
+   *
+   * Best-effort by design — a workspace that is going away must not be held
+   * up by a datapath hiccup — and separate from `destroy` because a
+   * detached teardown wants this half in-process while the rest of the
+   * teardown outlives the caller.
+   */
+  deregisterWorkspace(workspaceId: string): Promise<void>
+  /**
+   * Preserve whatever the workspace built, before anything destroys it.
+   *
+   * Reaches INTO the workspace, so it must settle before the unit is
+   * deleted — `destroy` sequences it itself, and a caller composing
+   * `detachedTeardownCommand` has to await this first. Never throws: a
+   * salvage that fails costs a rebuild, and must not strand a teardown.
+   */
+  salvageImages(target: TeardownTarget): Promise<void>
+  /**
+   * Tear a workspace's runtime down and wait for it to really be gone.
+   *
+   * Resolves `true` when it is, `false` when the runtime could not confirm
+   * it — a unit still shutting down may still be writing to the workspace's
+   * files, so a caller that goes on to delete those MUST gate on the
+   * verdict. The runtime's own sweeps collect whatever a `false` left.
+   *
+   * `salvageImages` defaults on; pass `false` when the caller is about to
+   * destroy the salvage destination too.
+   */
+  destroy(target: TeardownTarget, opts?: { salvageImages?: boolean }): Promise<boolean>
+  /**
+   * The same teardown as a shell command, for a caller that must not wait
+   * for it — composed into a detached script the calling process outlives.
+   *
+   * Every command it returns is idempotent and tolerates having already
+   * run: the whole script is re-issued when a teardown has to be resumed.
+   * The caller may append its own commands, and must let `salvageImages`
+   * settle before running it — nothing here can reach into the workspace
+   * once it has.
+   */
+  detachedTeardownCommand(target: TeardownTarget): string
+  /** Everything the runtime holds for a whole project, beyond its
+   *  workspaces: the caller tears those down first. Best-effort per part,
+   *  so one unreachable piece cannot strand the rest. */
+  destroyProjectSubstrate(projectSlug: string): Promise<void>
+
+  /**
+   * Take the in-workspace spawn requests waiting to be answered.
+   *
+   * A drain is a CLAIM: each request is handed out once, and a crash before
+   * `resolveSpawns` loses the request (the caller's pod times out) rather
+   * than doubling it. Empty when the runtime has no channel for them.
+   */
+  pendingSpawns(): Promise<PendingSpawn[]>
+  /** Answer a drained batch, releasing the waiting workspaces. */
+  resolveSpawns(results: SpawnResultWire[]): Promise<void>
 }

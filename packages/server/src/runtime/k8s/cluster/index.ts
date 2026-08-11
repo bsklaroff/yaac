@@ -97,5 +97,4 @@ export {
   vclusterName,
   waitForVclusterKubeconfig,
 } from './vcluster'
-export type { VclusterStatus } from './vcluster'
 export { reconcileVclusters } from './vcluster-reconcile'
