@@ -1,7 +1,8 @@
-import { memo, type JSX, type ReactNode } from 'react'
+import { memo, useMemo, type JSX, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { highlightLine, languageForFence, type HighlightLanguage } from '#lib/highlight'
+import { CodeView } from '#components/CodeView'
+import { languageForFence, type HighlightLanguage } from '#lib/highlight'
 
 /**
  * Agent prose, rendered as the markdown it is.
@@ -32,26 +33,24 @@ function fencedCode(node: unknown): { text: string; language: HighlightLanguage 
 }
 
 /**
- * A fenced code block, highlighted with the same tokenizer the diff views use
- * — so a snippet in a message and the same code in the changes pane are the
- * same colors. Highlighting is per line for the same reason it is there: the
- * tokenizer sees one line at a time.
+ * A fenced code block, rendered by the same view a read tool call and the diff
+ * views use — so a snippet in a message and the same code shown as a file are
+ * the same colors. Only the chrome belongs to this component: a fence sits
+ * inside prose, so it gets a card.
  */
 function CodeBlock({ text, language }: { text: string; language: HighlightLanguage | null }): JSX.Element {
-  // A fence's trailing newline is the fence itself, not a blank last line.
-  const lines = text.replace(/\n$/, '').split('\n')
+  // A fence's trailing newline is the fence itself, not a blank last line. The
+  // lines are taken literally — never `codeLines` — because a fence is prose
+  // the agent wrote, so anything in it that looks like a line-number gutter is
+  // text it meant to show.
+  const lines = useMemo(
+    () => text.replace(/\n$/, '').split('\n').map((line) => ({ text: line })),
+    [text],
+  )
   return (
-    <pre className="diff-hl my-1.5 overflow-x-auto rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5
-      font-mono text-[11px] leading-[1.5] text-text">
+    <pre className="my-1.5 overflow-x-auto rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5">
       <code>
-        {lines.map((line, i) => (
-          <div key={i}>
-            {language
-              ? highlightLine(line, language).map((seg, j) => <span key={j} className={seg.className}>{seg.text}</span>)
-              : line}
-            {line === '' && ' '}
-          </div>
-        ))}
+        <CodeView lines={lines} language={language} />
       </code>
     </pre>
   )
