@@ -345,6 +345,26 @@ export function WorktreeChat({
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
   }, [groups])
 
+  // Grow the box to the message. A textarea is `rows` tall and scrolls its own
+  // content, so a five-line message would be written through a one-line slot;
+  // measuring instead makes the box show what is being typed, up to the
+  // max-height the class sets (past which it goes back to scrolling, so a
+  // pasted essay can't eat the conversation). Reset to `auto` first — the
+  // measurement is of the content, and a previous explicit height would be the
+  // floor scrollHeight reports. In a layout effect so the box is never painted
+  // at the wrong height, and keyed on the draft so a restored one (mount, or a
+  // send that failed) is sized on arrival rather than on the next keystroke.
+  // Growing takes the height out of the conversation above, so a reader at the
+  // tail is put back on it — the last message is what they were looking at.
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+    const list = scrollRef.current
+    if (list && pinnedRef.current) list.scrollTop = list.scrollHeight
+  }, [draft])
+
   useEffect(() => {
     if (visible) inputRef.current?.focus()
   }, [visible])
@@ -434,7 +454,15 @@ export function WorktreeChat({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5 text-sm"
+        // `break-words` here rather than on each bubble: overflow-wrap is
+        // inherited, so one declaration covers every message, plan entry and
+        // tool row. What it guards against is the agent's staple — a path, a
+        // URL, a hash — arriving as one unbreakable token, which on a phone is
+        // wider than the pane and would turn the conversation into a sideways
+        // scroller. Fenced code is exempt by construction: it carries its own
+        // horizontal scroller, because breaking a line of code is worse than
+        // scrolling it.
+        className="flex-1 space-y-2.5 overflow-y-auto break-words px-3 py-2.5 text-sm"
       >
         {groups.length === 0 && (
           <div className="flex h-full items-center justify-center text-xs text-text-faint">
@@ -508,7 +536,11 @@ export function WorktreeChat({
             }}
             placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
             readOnly={awaitingEcho !== null}
-            className="max-h-40 min-h-8 flex-1 resize-none rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none"
+            // (index.css raises this to 16px at phone width, along with every
+            // other text control — under that, focusing one zooms iOS Safari.)
+            className="max-h-40 min-h-8 flex-1 resize-none rounded-md border border-hairline
+              bg-surface-2 px-2.5 py-1.5 text-sm text-text placeholder:text-text-faint
+              focus:outline-none"
           />
           {busy ? (
             <button

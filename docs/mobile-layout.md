@@ -150,12 +150,15 @@ Three things change:
 
 `#root` is sized to `var(--app-height, 100dvh)`, and on mobile
 `useVisualViewportHeight` publishes `--app-height` from `window.visualViewport`.
-The layout viewport does not shrink when a soft keyboard opens (iOS Safari just
-slides the page), so sizing to it would leave the bottom of a terminal behind
-the keyboard. Sizing to the *visual* viewport makes the pane's ResizeObserver —
-and so the PTY's row count — track the space actually on screen. `html`/`body`
-are `overflow: hidden; overscroll-behavior: none` because every scroll in this
-app belongs to a pane, never the page.
+By default a soft keyboard shrinks only the *visual* viewport — the layout
+viewport stays full height behind the keyboard — so sizing to that would leave
+the bottom of a terminal out of sight. Sizing to the visual viewport makes the
+pane's ResizeObserver — and so the PTY's row count — track the space actually on
+screen. The page meta asks for `interactive-widget=resizes-content` as well, so
+that where it is supported the layout viewport shrinks too and the browser has
+no room left to pan the shell around while someone types. `html`/`body` are
+`overflow: hidden; overscroll-behavior: none` because every scroll in this app
+belongs to a pane, never the page.
 
 A phone keyboard has no Esc, Tab, Ctrl or arrows and every agent TUI needs all
 four, so a terminal pane on mobile grows `TerminalKeyBar`. It is a sibling of
@@ -174,6 +177,50 @@ xterm's own `input()`, the same path a real keypress takes.
 An **`acp` worktree needs none of this** — its pane is a chat composer, not a
 terminal (`docs/agent-modes.md`) — which makes it the mode that works best on a
 phone.
+
+## The chat composer
+
+Two rules keep `WorktreeChat` usable at 390px, on top of the 16px floor every
+control gets (below). Both are about width: on a phone there is nowhere for
+content to go but the pane.
+
+- **The message list is `break-words`.** Overflow-wrap is inherited, so one
+  declaration on the scroller covers every bubble, plan entry and tool row.
+  Agents emit shas, URLs and object names — tokens with no break opportunity in
+  them — and a single one is wide enough to turn the conversation into a
+  sideways scroller. Fenced code is exempt by construction: it carries its own
+  horizontal scroller, because breaking a line of code is worse than scrolling
+  it.
+- **The box grows with the message**, measured from its `scrollHeight` in a
+  layout effect, up to the max-height at which it goes back to scrolling. A
+  textarea is `rows` tall and scrolls its own content, which means writing a
+  five-line message through a one-line slot.
+
+## No text control under 16px
+
+Mobile Safari zooms the page whenever a control smaller than 16px takes focus,
+and it does not zoom back out. What the user is left with reads as a layout bug
+— the pane runs off to the right, the whole shell pans under a finger — but it
+is the browser scaling a page that no longer fits, and the control's font size
+is the only thing that prevents it. The app's type scale is `text-xs` and
+`text-[11px]`, so *every* input in it qualifies.
+
+`index.css` raises `input, textarea, select, .cm-content` (CodeMirror's editing
+surface is a contenteditable, which zooms the same way) to 16px below the
+breakpoint. One rule rather than a `max-md:` utility per control, because the
+failure is silent and the next input added would have to remember it. It wins
+over the utilities despite their higher specificity because Tailwind's live in
+`@layer utilities` and unlayered declarations outrank every layer — but not over
+CodeMirror's own theme rules, which are unlayered *and* scoped one class deeper,
+so an `EditorView.theme` setting a content font size would take the zoom back.
+
+The same block sets `min-width: 0` on those controls, which is the bump's other
+half: a control's automatic minimum size is its intrinsic width, which just
+grew, so a flex row holding one stops shrinking and pushes its own submit button
+off the screen. `min-width` only bites for flex and grid items, which is exactly
+where that failure lives. Global for the same reason the size is — some of the
+rows it protects (the remote-server form, reachable only from the desktop app)
+are not walkable by the sweep that would otherwise catch the regression.
 
 ## Scrolling a terminal by touch
 
@@ -238,6 +285,21 @@ surviving a widen, tap-target sizes — are verified only by
 program nothing in `pnpm test` runs. A regression in exactly those behaviors
 lands green. Re-run it by hand against a live server after any change to
 `MobileScreenLayer` or `WorktreeView`'s layout math.
+
+The 16px floor is the same kind of gap — a computed style, over a whole UI —
+and is covered by `test-playwright-scripts/mobile-input-zoom-test.js`, which
+walks the phone-width app, opens every dialog and pane that holds a control,
+and prints the inventory it measured along with the verdict. Read the inventory:
+a control the walk never reached passes vacuously, and the printed list (plus
+its "never opened" line) is what shows that.
+
+The chat composer's rules are the same kind of gap, and are covered by
+`test-playwright-scripts/acp-chat-mobile-layout-test.js`: it needs a live
+`acp` worktree, sends it one message carrying an unbreakable token, and
+measures the pane's horizontal overflow, the input's font size and how the box
+grows. It drives the built app rather than the Vite dev server, because
+`React.StrictMode` double-mounts in development and the chat pane's second ACP
+socket displaces its first, so a prompt sent from the box never arrives.
 
 Touch scrolling is the same kind of gap for the same reason — every claim it
 rests on is a browser fact jsdom has no opinion about. `touch-scroll.test.ts`
