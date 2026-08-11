@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { passViewFixture } from '@yaac/test-utils/fake-runtime'
 
 const mockAttach = vi.hoisted(() => vi.fn())
 const mockRegister = vi.hoisted(() => vi.fn())
@@ -23,7 +24,7 @@ const vc = (sid: string, ns: string): VclusterNamespaceInfo =>
   ({ name: `yvc-${sid}`, worktreeId: sid, namespace: ns, creationTimestamp: '' })
 
 /** Fake one pass's cluster view; only the vcluster getters matter here. */
-function snap(opts: {
+function tick(opts: {
   vclusters?: VclusterNamespaceInfo[]
   podsByNs?: Record<string, VclusterPod[]>
 } = {}): TickSnapshot {
@@ -38,6 +39,9 @@ function snap(opts: {
   }
 }
 
+/** The pass view a reconcile step is handed, over the substrate view above. */
+const snap = (opts: Parameters<typeof tick>[0] = {}) => passViewFixture(tick(opts))
+
 beforeEach(() => {
   vi.clearAllMocks()
   _resetVclusterAttributionForTests()
@@ -47,7 +51,7 @@ beforeEach(() => {
 
 describe('buildVclusterAttribution', () => {
   it('maps every vcluster pod IP to its owning outer session', async () => {
-    const snapshot = snap({
+    const snapshot = tick({
       vclusters: [vc('s1', 'yaac-vc-1'), vc('s2', 'yaac-vc-2')],
       podsByNs: {
         'yaac-vc-1': [{ name: 'p1', podIP: '10.0.0.1', labels: {} }, { name: 'p2', podIP: '10.0.0.2', labels: {} }],
@@ -60,13 +64,13 @@ describe('buildVclusterAttribution', () => {
   })
 
   it('skips pods with no IP and is empty with no vclusters', async () => {
-    const snapshot = snap({
+    const snapshot = tick({
       vclusters: [vc('s1', 'yaac-vc-1')],
       podsByNs: { 'yaac-vc-1': [{ name: 'no-ip-yet', labels: {} }] },
     })
     expect(await buildVclusterAttribution(snapshot)).toEqual({})
 
-    expect(await buildVclusterAttribution(snap())).toEqual({})
+    expect(await buildVclusterAttribution(tick())).toEqual({})
   })
 })
 

@@ -1,5 +1,7 @@
 import { proxyClient } from './proxy-client'
-import { type TickSnapshot, createTickSnapshot } from '#platform/k8s'
+import { createRuntimeSnapshot, k8sSnapshotOf } from '#runtime/k8s/view'
+import type { TickSnapshot } from '#platform/k8s'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import { serverLog } from '#log'
 
 /**
@@ -49,9 +51,9 @@ export function _resetVclusterAttributionForTests(): void {
  * (e.g. the last vcluster was deleted).
  */
 export async function reconcileVclusterAttribution(
-  snapshot: TickSnapshot = createTickSnapshot(),
+  snapshot: RuntimeSnapshot = createRuntimeSnapshot(),
 ): Promise<void> {
-  const map = await buildVclusterAttribution(snapshot)
+  const map = await buildVclusterAttribution(k8sSnapshotOf(snapshot))
   const serialized = serialize(map)
   if (Object.keys(map).length === 0 && serialized === lastPushed) return
   if (!(await proxyClient.attachIfRunning())) return

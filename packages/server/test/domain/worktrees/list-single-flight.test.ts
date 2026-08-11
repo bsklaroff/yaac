@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -49,6 +50,7 @@ describe('listActiveWorktrees single-flight', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installRealWorktreeRuntime()
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-single-flight-list-'))
     setDataDir(tmpDir)
     _clearListActiveInflightForTests()

@@ -11,6 +11,7 @@
     "#runtime/k8s/forwarders": "./src/runtime/k8s/forwarders/index.js",
     "#runtime/k8s/image-engine": "./src/runtime/k8s/image-engine/index.js",
     "#runtime/k8s/images": "./src/runtime/k8s/images/index.js",
+    "#runtime/k8s/view": "./src/runtime/k8s/view/index.js",
     "#runtime/k8s/worktrees": "./src/runtime/k8s/worktrees/index.js",
     "#domain/projects": "./src/domain/projects/index.js",
     "#store/projects": "./src/store/projects/index.js",

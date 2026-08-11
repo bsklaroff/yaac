@@ -3,13 +3,14 @@ import {
   getActiveClusterCache,
   isDeferredClusterBootPending,
   isPrewarmed,
+  listWorktreeJobs,
   listWorktreePods,
   triggerDeferredClusterBoot,
   type PodInfo,
 } from '#platform/k8s'
-import { normalizeTool } from '#runtime/agents'
+import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import { ServerError } from '@yaac/shared/errors'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle, TeardownTarget } from '#runtime/contract'
 
 /**
  * Answering "which workspace does this id name", and "how many is each
@@ -43,16 +44,50 @@ export async function findWorkspace(
     const cache = getActiveClusterCache()
     if (cache?.healthy('worktree-pods')) {
       const hit = findWorktreePod(cache.worktreePods(), idOrName)
-      if (hit) return toRuntimeHandle(hit)
+      if (hit) return runtimeHandleFromPod(hit)
     }
   }
   const pod = findWorktreePod(await listWorkspacePods(), idOrName)
-  return pod ? toRuntimeHandle(pod) : undefined
+  return pod ? runtimeHandleFromPod(pod) : undefined
 }
 
 /** Every workspace the substrate is running, optionally one project's. */
 export async function listWorkspaces(projectSlug?: string): Promise<RuntimeHandle[]> {
-  return (await listWorkspacePods(projectSlug)).map(toRuntimeHandle)
+  return (await listWorkspacePods(projectSlug)).map(runtimeHandleFromPod)
+}
+
+/**
+ * What a stop should address, including a workspace whose Job outlived its
+ * pod.
+ *
+ * A pod deleted out-of-band leaves a Job with nothing to match on, and that
+ * Job is exactly what still needs deleting — so a pod miss falls through to
+ * the Job listing with the same match semantics. Job names match exactly,
+ * never by prefix: every name starts with `yaac-`, so a short prefix would
+ * resolve to an arbitrary workspace.
+ */
+export async function findWorkspaceForTeardown(
+  idOrName: string,
+): Promise<TeardownTarget | undefined> {
+  const pod = findWorktreePod(await listWorkspacePods(), idOrName)
+  if (pod) {
+    return { projectSlug: pod.projectSlug, workspaceId: pod.worktreeId, unitName: pod.jobName }
+  }
+
+  let jobs
+  try {
+    jobs = await listWorktreeJobs()
+  } catch (err) {
+    throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+  }
+  const job = jobs.find((j) =>
+    j.worktreeId === idOrName
+    || j.jobName === idOrName
+    || j.worktreeId.startsWith(idOrName),
+  )
+  return job
+    ? { projectSlug: job.projectSlug, workspaceId: job.worktreeId, unitName: job.jobName }
+    : undefined
 }
 
 /**
@@ -102,21 +137,5 @@ async function listWorkspacePods(projectSlug?: string): Promise<PodInfo[]> {
     return await listWorktreePods(projectSlug)
   } catch (err) {
     throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
-  }
-}
-
-/** A pod as the boundary describes a workspace. The tool label is normalized
- *  here so nothing above has to know a pod carries a raw string. */
-function toRuntimeHandle(pod: PodInfo): RuntimeHandle {
-  return {
-    workspaceId: pod.worktreeId,
-    projectSlug: pod.projectSlug,
-    jobName: pod.jobName,
-    tool: normalizeTool(pod.tool),
-    running: pod.running,
-    state: pod.running ? 'running' : pod.phase.toLowerCase(),
-    labels: pod.labels,
-    createdAtMs: pod.createdAtMs,
-    prewarmed: isPrewarmed(pod),
   }
 }

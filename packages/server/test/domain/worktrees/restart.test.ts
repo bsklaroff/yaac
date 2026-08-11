@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as locateModule from '#runtime/k8s/worktrees/locate'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import type * as cleanupModule from '#domain/worktrees/cleanup'
 import type * as createModule from '#domain/worktrees/create'
 
@@ -11,10 +11,6 @@ vi.mock('#records/worktree-store', () => ({
 // A restart is three substrate calls bracketing two row reads, and the
 // ORDER is what this file pins: resolve, tear the old runtime down, create
 // against the same id, and only then clear the stop record.
-vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
-  ...(await importOriginal<typeof locateModule>()),
-  findWorkspace: vi.fn(),
-}))
 vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   teardownForRestart: vi.fn(),
@@ -26,12 +22,11 @@ vi.mock('#domain/worktrees/create', async (importOriginal) => ({
 
 import { restartWorktree } from '#domain/worktrees/restart'
 import { clearWorktreeStopped } from '#records/worktree-store'
-import { findWorkspace } from '#runtime/k8s/worktrees/locate'
 import { teardownForRestart } from '#domain/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#domain/worktrees/create'
 import type { RuntimeHandle } from '#runtime/contract'
 
-const mockFind = vi.mocked(findWorkspace)
+const mockFind = vi.fn()
 const mockTeardown = vi.mocked(teardownForRestart)
 const mockCreate = vi.mocked(createWorktree)
 const mockClearDeleted = vi.mocked(clearWorktreeStopped)
@@ -42,11 +37,14 @@ function handle(workspaceId: string): RuntimeHandle {
     projectSlug: 'proj',
     jobName: `yaac-proj-${workspaceId}`,
     tool: 'claude',
+    mode: 'tui',
     running: true,
     state: 'running',
     labels: {},
     createdAtMs: 0,
     prewarmed: false,
+    terminating: false,
+    deathCause: { reason: 'pod-stopped' },
   }
 }
 
@@ -61,6 +59,7 @@ const CREATED: WorktreeCreateResult = {
 describe('restartWorktree', () => {
   beforeEach(() => {
     mockFind.mockReset().mockResolvedValue(handle('sid-1'))
+    installFakeWorktreeRuntime({ find: mockFind })
     mockTeardown.mockReset().mockResolvedValue(undefined)
     mockCreate.mockReset().mockResolvedValue(CREATED)
     mockClearDeleted.mockClear()

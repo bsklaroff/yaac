@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { passViewFixture } from '@yaac/test-utils/fake-runtime'
 
 const mockApply = vi.hoisted(() => vi.fn())
 vi.mock('#platform/k8s/kubectl', () => ({
@@ -40,7 +41,7 @@ const claimCm = (claim: unknown, name = 'yaac-redirect-claim-x-yaac-x-yvc'): Vcl
 const CLAIM = { install: 'hash1', proxyPodIp: PROXY_IP, sources: [SESSION_IP] }
 const PODS = [synced('inner-proxy', PROXY_IP), synced('inner-sess', SESSION_IP)]
 
-function snap(opts: {
+function tick(opts: {
   vclusters?: VclusterNamespaceInfo[]
   podsByNs?: Record<string, VclusterPod[]>
   cmsByNs?: Record<string, VclusterConfigMap[]>
@@ -56,6 +57,9 @@ function snap(opts: {
   }
 }
 
+/** The pass view a reconcile step is handed, over the substrate view above. */
+const snap = (opts: Parameters<typeof tick>[0] = {}) => passViewFixture(tick(opts))
+
 const ONE_CLAIM = {
   vclusters: [vc()],
   podsByNs: { [VC_NS]: PODS },
@@ -70,7 +74,7 @@ beforeEach(() => {
 
 describe('buildValidatedClaimData', () => {
   it('keys a validated claim by its vcluster host namespace', async () => {
-    const data = await buildValidatedClaimData(snap(ONE_CLAIM))
+    const data = await buildValidatedClaimData(tick(ONE_CLAIM))
     expect(JSON.parse(data[VC_NS])).toEqual({ vcluster: VC_NAME, claims: [CLAIM] })
   })
 
@@ -79,7 +83,7 @@ describe('buildValidatedClaimData', () => {
     // proxy and its own claim-mode netd inside the same vcluster.
     const second = synced('proxy-b', '10.244.0.32')
     const secondSess = synced('sess-b', '10.244.0.45')
-    const data = await buildValidatedClaimData(snap({
+    const data = await buildValidatedClaimData(tick({
       vclusters: [vc()],
       podsByNs: { [VC_NS]: [...PODS, second, secondSess] },
       cmsByNs: {
@@ -97,7 +101,7 @@ describe('buildValidatedClaimData', () => {
   })
 
   it('omits a namespace whose claims all fail validation', async () => {
-    const data = await buildValidatedClaimData(snap({
+    const data = await buildValidatedClaimData(tick({
       vclusters: [vc()],
       podsByNs: { [VC_NS]: PODS },
       cmsByNs: { [VC_NS]: [claimCm({ ...CLAIM, proxyPodIp: '203.0.113.7' })] },
@@ -108,7 +112,7 @@ describe('buildValidatedClaimData', () => {
   it('ignores ConfigMaps that are not claims', async () => {
     // A vcluster namespace holds the syncer's own configmaps too; only the
     // claim ones (by name) are read.
-    const data = await buildValidatedClaimData(snap({
+    const data = await buildValidatedClaimData(tick({
       vclusters: [vc()],
       podsByNs: { [VC_NS]: PODS },
       cmsByNs: { [VC_NS]: [{ name: 'kube-root-ca.crt', data: { claim: JSON.stringify(CLAIM) } }] },
@@ -117,10 +121,10 @@ describe('buildValidatedClaimData', () => {
   })
 
   it('omits a namespace with no claim ConfigMap and one with an empty claim', async () => {
-    expect(await buildValidatedClaimData(snap({
+    expect(await buildValidatedClaimData(tick({
       vclusters: [vc()], podsByNs: { [VC_NS]: PODS },
     }))).toEqual({})
-    expect(await buildValidatedClaimData(snap({
+    expect(await buildValidatedClaimData(tick({
       vclusters: [vc()],
       podsByNs: { [VC_NS]: PODS },
       cmsByNs: { [VC_NS]: [claimCm('')] },
@@ -129,7 +133,7 @@ describe('buildValidatedClaimData', () => {
 
   it('validates each vcluster against its own pods only', async () => {
     const otherNs = 'test-ns-vc-2'
-    const data = await buildValidatedClaimData(snap({
+    const data = await buildValidatedClaimData(tick({
       vclusters: [vc(), vc(otherNs, 'yvc-s2')],
       podsByNs: { [VC_NS]: PODS, [otherNs]: [] },
       // The second vcluster claims the FIRST vcluster's proxy pod IP: no pod
@@ -140,7 +144,7 @@ describe('buildValidatedClaimData', () => {
   })
 
   it('is empty with no vclusters at all', async () => {
-    expect(await buildValidatedClaimData(snap())).toEqual({})
+    expect(await buildValidatedClaimData(tick())).toEqual({})
   })
 })
 

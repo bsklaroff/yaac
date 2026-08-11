@@ -6,7 +6,8 @@
  * `cleanupWorktreeDetached`. The decision is the pure `computePrewarmPlan`;
  * this wrapper just lists pods and drives the side effects.
  */
-import { type TickSnapshot, listWorktreePods } from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { createWorktree } from './create'
 import {
@@ -41,14 +42,14 @@ export async function reconcilePrewarmPool(
   // once per pass and handed down so no substrate step reads one
   // (docs/layered-server.md).
   defaultTool: AgentTool,
-  snapshot?: TickSnapshot,
+  snapshot?: RuntimeSnapshot,
 ): Promise<void> {
   const poolSize = env.prewarmPoolSize
   if (poolSize === 0) return
 
   let pods
   try {
-    pods = await (snapshot ? snapshot.pods() : listWorktreePods())
+    pods = await (snapshot ?? worktreeRuntime().snapshot()).workspaces()
   } catch {
     return
   }

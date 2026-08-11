@@ -5,11 +5,13 @@ vi.mock('#domain/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
 import { decideSpawn } from '#domain/worktrees/spawn-policy'
 import type { PendingSpawn, SpawnResultWire } from '#runtime/k8s/egress/proxy-client'
 import type { PodInfo } from '#platform/k8s/pods'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import { runtimeHandleFromPod } from '#runtime/k8s/view'
+import type { RuntimeHandle } from '#runtime/contract'
+import { snapshotFixture } from '@yaac/test-utils/fake-runtime'
 import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
 
-function makePod(over: Partial<PodInfo> = {}): PodInfo {
-  return {
+function makePod(over: Partial<PodInfo> = {}): RuntimeHandle {
+  return runtimeHandleFromPod({
     jobName: 'yaac-proj-caller',
     podName: 'yaac-proj-caller-abc12',
     worktreeId: 'caller-session',
@@ -21,7 +23,7 @@ function makePod(over: Partial<PodInfo> = {}): PodInfo {
     createdAtMs: 0,
     labels: {},
     ...over,
-  }
+  })
 }
 
 function makeReq(over: Partial<PendingSpawn> = {}): PendingSpawn {
@@ -53,11 +55,11 @@ beforeEach(() => {
  *  in, which is also the only way the proxy reaches it. */
 async function drainOne(
   req: PendingSpawn,
-  pods: () => Promise<PodInfo[]>,
+  pods: () => Promise<RuntimeHandle[]>,
 ): Promise<SpawnResultWire> {
   const posted: SpawnResultWire[][] = []
   await reconcileSpawnRequests({
-    listWorktreePodsFn: pods,
+    listWorkspacesFn: pods,
     attachIfRunningFn: () => Promise.resolve(true),
     fetchPendingFn: () => Promise.resolve([req]),
     postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
@@ -131,7 +133,7 @@ describe('reconcileSpawnRequests', () => {
   it('drains, reports, and posts one result per request', async () => {
     const posted: SpawnResultWire[][] = []
     await reconcileSpawnRequests({
-      listWorktreePodsFn: () => Promise.resolve([makePod()]),
+      listWorkspacesFn: () => Promise.resolve([makePod()]),
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a' }),
@@ -147,9 +149,9 @@ describe('reconcileSpawnRequests', () => {
   })
 
   it('lists session pods once per drain, not once per request', async () => {
-    const listWorktreePodsFn = vi.fn(() => Promise.resolve([makePod()]))
+    const listWorkspacesFn = vi.fn(() => Promise.resolve([makePod()]))
     await reconcileSpawnRequests({
-      listWorktreePodsFn,
+      listWorkspacesFn,
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a', worktreeId: 'nobody-1' }),
@@ -158,20 +160,20 @@ describe('reconcileSpawnRequests', () => {
       ]),
       postResultsFn: () => Promise.resolve(),
     })
-    expect(listWorktreePodsFn).toHaveBeenCalledTimes(1)
+    expect(listWorkspacesFn).toHaveBeenCalledTimes(1)
   })
 
-  it('resolves callers from the tick snapshot when one is given', async () => {
-    const pods = vi.fn(() => Promise.resolve([makePod()]))
+  it('resolves callers from the pass view when one is given', async () => {
+    const workspaces = vi.fn(() => Promise.resolve([makePod()]))
     const posted: SpawnResultWire[][] = []
     await reconcileSpawnRequests({
-      // No listWorktreePodsFn: the snapshot wins over the module-level list,
-      // so a leaked direct listing would fail the caller lookup.
+      // No listWorkspacesFn: the pass view wins over a view of its own, so
+      // a leaked second listing would fail the caller lookup.
       attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
       postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
-    }, { resync: true, pods } as unknown as TickSnapshot)
-    expect(pods).toHaveBeenCalledTimes(1)
+    }, { ...snapshotFixture(), workspaces })
+    expect(workspaces).toHaveBeenCalledTimes(1)
     expect(posted[0].every((r) => r.ok)).toBe(true)
   })
 

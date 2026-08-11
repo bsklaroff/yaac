@@ -27,7 +27,7 @@
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/status/.
 
-export { classifyWorktreePods, watcherDisplayLiveness } from './classify'
+export { classifyWorkspaces, watcherDisplayLiveness } from './classify'
 export { worktreeControlStreamSend, type ControlStreamSend } from './control-stream-registry'
 export {
   forgetLiveness,

@@ -23,8 +23,6 @@
 
 import { podExec } from '#platform/k8s'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import { worktreeUpstreamBranch } from '#platform/git'
-import { repoDir } from '@yaac/shared/project-paths'
 import type { ChangeStatus, WorktreeChange, WorktreeChanges } from '@yaac/shared/types'
 
 /** Cap the returned diff body so a huge changeset can't blow up the response;
@@ -317,19 +315,3 @@ export async function getWorktreeChanges(jobName: string, base?: string, default
   }
 }
 
-/**
- * The upstream of a worktree's own branch, read out of the checkout.
- *
- * Only ever a FALLBACK for the recorded fork branch, and the server is the
- * one that knows that (see `worktreeForkBranch`): this key lives in the shared
- * repo config the agent's own git writes to, so one `git push -u origin
- * HEAD:<pr-branch>` repoints it at the branch just pushed. Here because the
- * checkout is the herd's disk, and null on any failure — the pod script has
- * its own fallback.
- */
-export function worktreeForkFallback(
-  projectSlug: string,
-  workspaceId: string,
-): Promise<string | null> {
-  return worktreeUpstreamBranch(repoDir(projectSlug), `agent/${workspaceId}`).catch(() => null)
-}

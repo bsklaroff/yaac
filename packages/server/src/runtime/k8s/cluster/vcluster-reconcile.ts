@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { k8sSnapshotOf } from '#runtime/k8s/view'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import {
-  type TickSnapshot,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
@@ -87,8 +88,9 @@ export async function healVclusterSleepState(
  */
 export async function reconcileVclusters(
   nowMs: number = Date.now(),
-  snapshot?: TickSnapshot,
+  runtimeSnapshot?: RuntimeSnapshot,
 ): Promise<void> {
+  const snapshot = runtimeSnapshot ? k8sSnapshotOf(runtimeSnapshot) : undefined
   const vclusters = await (snapshot ? snapshot.vclusters() : listVclusterNamespaces())
   if (vclusters.length === 0) return
 

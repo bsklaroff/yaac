@@ -35,13 +35,23 @@ import { serverLog } from '#log'
  * the reconciler, the status-watcher sync, the display path — read the
  * caches and subscribe to `onDelta` instead of listing the cluster.
  */
-export type DeltaSource =
-  | 'worktree-pods'
-  | 'worktree-jobs'
-  | 'vcluster-namespaces'
-  | 'vcluster-pods'
-  | 'vcluster-services'
-  | 'vcluster-configmaps'
+/** The install-scoped informers: a workspace and the unit holding it. The
+ *  two the layers above have their own words for, and so the two anything
+ *  forwarding a delta upward has to translate. */
+export const WORKSPACE_DELTA_SOURCES = ['worktree-pods', 'worktree-jobs'] as const
+
+/** The per-vcluster informers. Nothing above the runtime has a word for
+ *  these, so they travel upward unchanged. */
+export const VCLUSTER_DELTA_SOURCES = [
+  'vcluster-namespaces',
+  'vcluster-pods',
+  'vcluster-services',
+  'vcluster-configmaps',
+] as const
+
+export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
+export type VclusterDeltaSource = typeof VCLUSTER_DELTA_SOURCES[number]
+export type DeltaSource = WorkspaceDeltaSource | VclusterDeltaSource
 
 export interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */

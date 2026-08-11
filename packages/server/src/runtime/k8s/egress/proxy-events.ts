@@ -22,7 +22,8 @@ import { serverLog } from '#log'
  */
 
 /** A change the reconciler owes a pass on, as this stream reports it. */
-export type ProxyChangeSource = 'spawn-requests' | 'proxy-reconnect'
+export const PROXY_CHANGE_SOURCES = ['spawn-requests', 'proxy-reconnect'] as const
+export type ProxyChangeSource = typeof PROXY_CHANGE_SOURCES[number]
 
 /** First respawn delay after a stream death; doubles to the cap. */
 const RESPAWN_BASE_MS = 250

@@ -20,17 +20,16 @@ import {
   type PendingSpawn,
   type SpawnResultWire,
 } from '#runtime/k8s/egress'
-import { type PodInfo, type TickSnapshot, listWorktreePods } from '#platform/k8s'
-import { normalizeTool } from '#runtime/agents'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeHandle, RuntimeSnapshot } from '#runtime/contract'
 import { decideSpawn } from './spawn-policy'
-import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serverLog } from '#log'
 
 export interface SpawnReconcileDeps {
   attachIfRunningFn?: () => Promise<boolean>
   fetchPendingFn?: () => Promise<PendingSpawn[]>
   postResultsFn?: (results: SpawnResultWire[]) => Promise<void>
-  listWorktreePodsFn?: () => Promise<PodInfo[]>
+  listWorkspacesFn?: () => Promise<RuntimeHandle[]>
 }
 
 /**
@@ -39,7 +38,7 @@ export interface SpawnReconcileDeps {
  */
 export async function reconcileSpawnRequests(
   deps: SpawnReconcileDeps = {},
-  snapshot?: TickSnapshot,
+  snapshot?: RuntimeSnapshot,
 ): Promise<void> {
   try {
     // attachIfRunning, not ensureRunning: this step must never bootstrap the
@@ -51,10 +50,10 @@ export async function reconcileSpawnRequests(
     // One pod listing per drain, shared by every request in the batch — the
     // informer cache when it is healthy, otherwise a single kubectl list. A
     // burst at the proxy's queue cap must not fan out into a fork per request.
-    const listPods = deps.listWorktreePodsFn
-      ?? (snapshot ? () => snapshot.pods() : listWorktreePods)
-    let pods: Promise<PodInfo[]> | undefined
-    const drainDeps: SpawnReconcileDeps = { ...deps, listWorktreePodsFn: () => (pods ??= listPods()) }
+    const listPods = deps.listWorkspacesFn
+      ?? (() => (snapshot ?? worktreeRuntime().snapshot()).workspaces())
+    let pods: Promise<RuntimeHandle[]> | undefined
+    const drainDeps: SpawnReconcileDeps = { ...deps, listWorkspacesFn: () => (pods ??= listPods()) }
     const results = await Promise.all(pending.map((req) => reportSpawnRequest(req, drainDeps)))
     await (deps.postResultsFn ?? ((r: SpawnResultWire[]) => proxyClient.postSpawnResults(r)))(results)
   } catch (err) {
@@ -81,10 +80,11 @@ async function reportSpawnRequest(
   const callerId = pendingSpawnWorktreeId(req)
   if (!callerId) return fail('spawn request names no calling worktree')
 
-  let caller: PodInfo | undefined
+  let caller: RuntimeHandle | undefined
   try {
-    const pods = await (deps.listWorktreePodsFn ?? listWorktreePods)()
-    caller = pods.find((p) => p.worktreeId === callerId)
+    const pods = await (deps.listWorkspacesFn
+      ?? (() => worktreeRuntime().snapshot().workspaces()))()
+    caller = pods.find((p) => p.workspaceId === callerId)
   } catch (err) {
     return fail(`cannot resolve calling worktree: ${String(err)}`)
   }
@@ -94,12 +94,10 @@ async function reportSpawnRequest(
     requestId: req.requestId,
     callerWorkspaceId: callerId,
     callerProjectSlug: caller.projectSlug,
-    // Only when the label is a tool yaac knows: a pod stamped with something
-    // else says nothing about what the spawned workspace should run, and
-    // reporting a guess would outrank the server's configured default.
-    ...((AGENT_TOOLS as readonly string[]).includes(caller.tool)
-      ? { callerTool: normalizeTool(caller.tool) }
-      : {}),
+    // Only when the caller actually declares a tool yaac knows: one running
+    // something else says nothing about what the spawned workspace should
+    // run, and a guess would outrank the server's configured default.
+    ...(caller.declaredTool !== undefined ? { callerTool: caller.declaredTool } : {}),
     prompt: req.prompt,
     ...(req.tool !== undefined ? { tool: req.tool } : {}),
     ...(req.model !== undefined ? { model: req.model } : {}),

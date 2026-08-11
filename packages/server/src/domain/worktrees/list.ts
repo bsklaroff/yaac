@@ -6,7 +6,7 @@ import {
   type AgentSessionLinkRow,
   type WorktreeRow,
 } from '#records'
-import { observeWorkspaces } from '#runtime/k8s/worktrees'
+import { worktreeRuntime } from '#runtime/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentLiveness, WorktreeRuntimeReport } from '#runtime/contract'
@@ -40,7 +40,7 @@ export function _clearListActiveInflightForTests(): void {
  * is expected to tear down.
  *
  * This is the JOIN. The runtime reports what its substrate can see right now
- * (`observeWorkspaces`); everything else here is what only the server knows —
+ * (the runtime's `observe`); everything else here is what only the server knows —
  * the title a user typed, the pin they set, the creation time that has to
  * survive a restart the runtime did not, and the conversations a workspace
  * has hosted with their opening messages. Neither half can answer alone
@@ -65,7 +65,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
   // here rather than derived from the runtime, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  const report = await observeWorkspaces(projectFilter)
+  const report = await worktreeRuntime().observe(projectFilter)
 
   // Recorded state — prompt, title, base branch, pin — one query per project
   // for both live and terminating workspaces (the latter keep their title and

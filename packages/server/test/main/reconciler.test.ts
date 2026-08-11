@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { snapshotFixture } from '@yaac/test-utils/fake-runtime'
+import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { RAISABLE_TRIGGERS } from '#main/convergence'
 import type * as cleanupModule from '#domain/worktrees/cleanup'
 import type * as imagePrewarmModule from '#runtime/k8s/images/image-prewarm'
 import type * as projectRegistryModule from '#runtime/k8s/cluster/project-registry'
@@ -45,7 +48,6 @@ import {
   type ReconcileStep,
   type ReconcileTrigger,
 } from '#main/reconciler'
-import type { TickSnapshot } from '#platform/k8s'
 import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
 import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
@@ -273,15 +275,16 @@ describe('startReconciler', () => {
  *  engine's own filtering is asserted above with injected steps). */
 async function runPass(
   triggers: ReconcileTrigger[],
-  opts: { resync?: boolean; defaultTool?: AgentTool } = {},
+  opts: { resync?: boolean; defaultTool?: AgentTool; projectSlugs?: string[] } = {},
 ): Promise<void> {
   const resync = opts.resync ?? false
   const ctx: PassContext = {
     triggers: new Set(triggers),
     resync,
     signal: new AbortController().signal,
-    snapshot: () => ({} as TickSnapshot),
+    snapshot: () => snapshotFixture(),
     defaultTool: () => Promise.resolve(opts.defaultTool),
+    projectSlugs: () => Promise.resolve(opts.projectSlugs ?? []),
   }
   for (const step of defaultReconcileSteps()) {
     if (!resync && !step.triggers.some((t) => ctx.triggers.has(t))) continue
@@ -291,6 +294,9 @@ async function runPass(
 
 describe('defaultReconcileSteps', () => {
   beforeEach(() => {
+    // The real driver, so its own contributed steps are the ones spliced
+    // in — the modules behind them are mocked at the top of this file.
+    installRealWorktreeRuntime()
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
@@ -316,7 +322,7 @@ describe('defaultReconcileSteps', () => {
     const titles = steps.find((s) => s.name === 'generated-titles')!
     const sweep = steps.find((s) => s.name === 'agent-sessions')!
     expect([...titles.triggers].sort()).toEqual([...sweep.triggers].sort())
-    expect([...titles.triggers].sort()).toEqual(['live-agents', 'worktree-pods'])
+    expect([...titles.triggers].sort()).toEqual(['live-agents', 'workspaces'])
   })
 
   /** Assert that `triggers` runs exactly `expected` and nothing else. The
@@ -400,6 +406,39 @@ describe('defaultReconcileSteps', () => {
     expect(order).toEqual(['gc', 'prewarm', 'pool'])
   })
 
+  // A step that declares a trigger nothing raises compiles fine and fails
+  // nothing — it just never runs on its edge and waits out the 60s resync,
+  // which is latency, not an error. That is the whole exposure of an
+  // open-ended `ReconcileTrigger`, and this is what closes it: the raise
+  // sites in convergence are typed against RAISABLE_TRIGGERS, and every
+  // trigger the assembled list declares has to be a member of it.
+  it('declares only triggers something can actually raise', () => {
+    const raisable = new Set<string>(RAISABLE_TRIGGERS)
+    const declared = new Set(defaultReconcileSteps().flatMap((s) => s.triggers))
+    expect([...declared].filter((t) => !raisable.has(t))).toEqual([])
+    // What makes the check cover the whole vocabulary rather than the
+    // mediators' quarter of it: the runtime's own groups are spliced in,
+    // which only holds while the REAL runtime is installed. Swap the
+    // beforeEach to the fake — whose `reconcileSteps()` returns empty
+    // groups — and the set above quietly shrinks to the mediator steps
+    // while still passing. So assert the runtime's own edges are in it.
+    expect(declared).toContain('vcluster-namespaces')
+    expect(declared).toContain('proxy-reconnect')
+  })
+
+  // The image-store rebuild is pinned between its two neighbours: after the
+  // salvage, so a just-pushed generation is the one a build picks up, and
+  // before the registry collect, which holds that registry read-only for
+  // minutes. All three are the runtime's own steps, so this is the one
+  // assertion that the group it hands back preserves an order stated only
+  // in its comments — a resequencing there would otherwise reach nothing
+  // that fails.
+  it('rebuilds the image store between the salvage and the registry collect', () => {
+    const names = defaultReconcileSteps().map((s) => s.name)
+    expect(names.filter((n) => ['image-salvage', 'image-store', 'registry-gc'].includes(n)))
+      .toEqual(['image-salvage', 'image-store', 'registry-gc'])
+  })
+
   // The configured default is a preference row, resolved once per pass and
   // handed down; claude is what a create falls back to.
   it('hands the pass’s default tool to the pool, defaulting to claude', async () => {
@@ -420,8 +459,9 @@ describe('defaultReconcileSteps', () => {
       triggers: new Set<ReconcileTrigger>(['worktree-pods']),
       resync: false,
       signal: new AbortController().signal,
-      snapshot: () => ({} as TickSnapshot),
+      snapshot: () => snapshotFixture(),
       defaultTool: () => Promise.reject(new Error('db is gone')),
+      projectSlugs: () => Promise.resolve([]),
     }
     await expect(pool.run(ctx)).rejects.toThrow('db is gone')
     expect(reconcilePrewarmPool).not.toHaveBeenCalled()

@@ -30,7 +30,7 @@ export {
   type ProxyClientConfig,
   type SpawnResultWire,
 } from './proxy-client'
-export { ProxyEventStream, type ProxyChangeSource } from './proxy-events'
+export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export { reconcileProxySshKeys } from './proxy-reconcile'
 export { buildWorktreeRegistration, syncProxySecrets } from './proxy-registration'
 export { reconcileVclusterAttribution } from './vcluster-attribution'

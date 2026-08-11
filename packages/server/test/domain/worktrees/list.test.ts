@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -54,6 +55,7 @@ describe('listActiveWorktrees', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installRealWorktreeRuntime()
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     _clearTerminatingForTests()
@@ -233,6 +235,7 @@ describe('listActiveWorktrees project filter', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installRealWorktreeRuntime()
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     mockListPods.mockReset()

@@ -1,6 +1,7 @@
-import { isPrewarmed, listWorktreePods, type TickSnapshot } from '#platform/k8s'
-import { classifyWorktreePods, liveAgents, podAgentMode, probeTmuxLiveness } from '#runtime/status'
-import { normalizeTool, readAcpFirstPrompt } from '#runtime/agents'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeSnapshot } from '#runtime/contract'
+import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
+import { readAcpFirstPrompt } from '#runtime/agents'
 import { sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
 import {
   applyWorktreeEvent,
@@ -48,31 +49,31 @@ import type { AgentMode, AgentTool } from '@yaac/shared/types'
  * worktrees are visited: a stopped worktree's active set is frozen, and it is
  * exactly what its restart reads back.
  */
-export async function reconcileAgentSessions(snapshot?: TickSnapshot): Promise<void> {
+export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promise<void> {
   let pods
   try {
-    pods = await (snapshot ? snapshot.pods() : listWorktreePods())
+    pods = await (snapshot ?? worktreeRuntime().snapshot()).workspaces()
   } catch {
     return
   }
-  const { running } = await classifyWorktreePods(
+  const { running } = await classifyWorkspaces(
     pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
   )
 
   await Promise.all(running.map(async (pod) => {
-    if (!pod.worktreeId || !pod.projectSlug) return
+    if (!pod.workspaceId || !pod.projectSlug) return
     // A prewarmed spare is not a worktree until claimed, and its warm-time
     // agent is not one of the claimant's conversations. Recording it would
     // leave permanently-active links (the status watcher skips spares, so
     // `liveAgentPanes` never corrects them) that a later restart resumes
     // instead of the real conversation — and outlive the reaped spare.
-    if (isPrewarmed(pod)) return
+    if (pod.prewarmed) return
     try {
       await reconcileWorktreeAgentSessions(
         pod.projectSlug,
-        pod.worktreeId,
-        normalizeTool(pod.tool),
-        podAgentMode(pod),
+        pod.workspaceId,
+        pod.tool,
+        pod.mode,
         pod.jobName,
       )
     } catch {

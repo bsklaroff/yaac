@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as podsModule from '#platform/k8s/pods'
+import { runtimeHandleFromPod } from '#runtime/k8s/view'
+import type { RuntimeHandle, StrayUnit } from '#runtime/contract'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import type { TmuxLiveness } from '#runtime/status/liveness'
 
 vi.mock('#platform/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
-  return { ...actual, listWorktreePods: vi.fn(), listWorktreeJobs: vi.fn() }
+  return { ...actual }
 })
 
 // probeTmuxLiveness / probeAgentPaneState are the injected oracles;
@@ -32,7 +35,6 @@ vi.mock('#records', () => ({
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
 
-import { listWorktreePods, listWorktreeJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
@@ -45,8 +47,11 @@ import {
   _clearMissingPodTimersForTests,
 } from '#domain/worktrees/stale-worktrees'
 
-const mockListPods = vi.mocked(listWorktreePods)
-const mockListJobs = vi.mocked(listWorktreeJobs)
+/** What the registered runtime reports for the pass. Stray units are the
+ *  view's own answer to "units with no workspace", so a case sets them
+ *  directly rather than restating the pod-vs-unit cross-reference. */
+const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
+const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
@@ -79,8 +84,8 @@ const setDesired = (d: Partial<DesiredSetup>): void => {
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
-function pod(worktreeId: string, running = true): podsModule.PodInfo {
-  return {
+function pod(worktreeId: string, running = true): RuntimeHandle {
+  return runtimeHandleFromPod({
     jobName: `yaac-proj-${worktreeId}`,
     podName: `yaac-proj-${worktreeId}-x1`,
     worktreeId,
@@ -91,7 +96,12 @@ function pod(worktreeId: string, running = true): podsModule.PodInfo {
     terminating: false,
     createdAtMs: 1,
     labels: {},
-  }
+  })
+}
+
+/** A unit the runtime still holds with no workspace behind it. */
+function stray(workspaceId: string, createdAtMs = 1): StrayUnit {
+  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectSlug: 'proj', createdAtMs }
 }
 
 function loggedLines(): string {
@@ -100,8 +110,11 @@ function loggedLines(): string {
 
 describe('reconcileStaleWorktrees', () => {
   beforeEach(() => {
-    mockListPods.mockReset()
-    mockListJobs.mockReset().mockResolvedValue([])
+    mockWorkspaces.mockReset().mockResolvedValue([])
+    mockStrays.mockReset().mockResolvedValue([])
+    installFakeWorktreeRuntime({
+      snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: mockStrays }),
+    })
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
@@ -116,7 +129,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('reaps a running pod whose tmux is conclusively dead, and audits it', async () => {
-    mockListPods.mockResolvedValue([pod('zombie-1')])
+    mockWorkspaces.mockResolvedValue([pod('zombie-1')])
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 
     await reconcileStaleWorktrees()
@@ -134,10 +147,13 @@ describe('reconcileStaleWorktrees', () => {
     expect(log).toContain('tmux gone')
   })
 
-  it('reaps a stopped pod with its derived death cause, and audits it', async () => {
-    mockListPods.mockResolvedValue([{
+  // The cause is derived at the runtime boundary (see the view's handle
+  // mapper); what the reaper owes is carrying it through to the teardown
+  // and the audit line, which is what this asserts.
+  it('reaps a stopped workspace with its derived death cause, and audits it', async () => {
+    mockWorkspaces.mockResolvedValue([{
       ...pod('oomed-1', false),
-      terminal: { containerReason: 'OOMKilled', exitCode: 137 },
+      deathCause: { reason: 'oom', detail: 'exit code 137' },
     }])
 
     await reconcileStaleWorktrees()
@@ -155,10 +171,7 @@ describe('reconcileStaleWorktrees', () => {
     // A pod still pulling its image or mounting its hostPaths carries no
     // terminal state, so the classifier reads it as `pod-stopped`. Reaping
     // it deletes the session dir the starting pod is mounting.
-    mockListPods.mockResolvedValue([pod('starting-1', false)])
-    mockListJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-starting-1', worktreeId: 'starting-1', projectSlug: 'proj', createdAtMs: 1 },
-    ])
+    mockWorkspaces.mockResolvedValue([pod('starting-1', false)])
     setDesired({ provisioning: ['starting-1'] })
 
     await reconcileStaleWorktrees()
@@ -169,7 +182,7 @@ describe('reconcileStaleWorktrees', () => {
   it('reaps a not-yet-Running pod once its create has failed', async () => {
     // A failed row lingers until dismissed, so it must not shield the
     // session the create already rolled back.
-    mockListPods.mockResolvedValue([pod('failed-1', false)])
+    mockWorkspaces.mockResolvedValue([pod('failed-1', false)])
     // A failed create is not reported as in flight (see inFlightWorktreeIds),
     // so nothing shields 'failed-1'.
     setDesired({ provisioning: [] })
@@ -182,10 +195,8 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('keeps an orphan Job whose pod has not been admitted yet while its create is in flight', async () => {
-    mockListPods.mockResolvedValue([])
-    mockListJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-pending-1', worktreeId: 'pending-1', projectSlug: 'proj', createdAtMs: 1 },
-    ])
+    mockWorkspaces.mockResolvedValue([])
+    mockStrays.mockResolvedValue([stray('pending-1')])
     setDesired({ provisioning: ['pending-1'] })
 
     await reconcileStaleWorktrees()
@@ -194,7 +205,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('does NOT reap on an inconclusive probe, and logs the near-miss', async () => {
-    mockListPods.mockResolvedValue([pod('blip-1')])
+    mockWorkspaces.mockResolvedValue([pod('blip-1')])
     mockProbe.mockResolvedValue('unknown' as TmuxLiveness)
 
     await reconcileStaleWorktrees()
@@ -206,7 +217,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('keeps a pod with a live tmux untouched and unlogged', async () => {
-    mockListPods.mockResolvedValue([pod('healthy-1')])
+    mockWorkspaces.mockResolvedValue([pod('healthy-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
 
     await reconcileStaleWorktrees()
@@ -219,7 +230,7 @@ describe('reconcileStaleWorktrees', () => {
     // deletionTimestamp set (terminating), never entered our registry, and no
     // deleted-store row — a genuine external delete stuck past grace. Re-issue
     // the idempotent teardown and stamp the out-of-band cause.
-    mockListPods.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
+    mockWorkspaces.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
 
     await reconcileStaleWorktrees()
 
@@ -236,7 +247,7 @@ describe('reconcileStaleWorktrees', () => {
   it('keeps a terminating pod past grace while its create is still provisioning', async () => {
     // create's own retry loop deletes the Job between attempts; the pod it
     // is about to recreate must not be torn down underneath it.
-    mockListPods.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
+    mockWorkspaces.mockResolvedValue([{ ...pod('retrying-1'), terminating: true }])
     setDesired({ provisioning: ['retrying-1'] })
 
     await reconcileStaleWorktrees()
@@ -252,7 +263,7 @@ describe('reconcileStaleWorktrees', () => {
   // cannot be read stands every sweep down — say nothing, reap nothing, and
   // the next pass retries with a fresh read.
   it('stands down entirely when the desired set cannot be read', async () => {
-    mockListPods.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
+    mockWorkspaces.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
     vi.mocked(desiredWorktrees).mockRejectedValue(new Error('db is gone'))
 
     await reconcileStaleWorktrees()
@@ -267,7 +278,7 @@ describe('reconcileStaleWorktrees', () => {
     // proves yaac issued this delete. Resume teardown WITHOUT restamping so
     // the real cause (a plain user delete) survives — no "removed outside
     // yaac".
-    mockListPods.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
+    mockWorkspaces.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
     setDesired({ stopped: ['proj/term-ours'] })
 
     await reconcileStaleWorktrees()
@@ -289,7 +300,7 @@ describe('reconcileStaleWorktrees', () => {
 
   it('does NOT re-reap a terminating pod whose teardown we already issued', async () => {
     markWorktreeTerminating('term-2')
-    mockListPods.mockResolvedValue([{ ...pod('term-2'), terminating: true }])
+    mockWorkspaces.mockResolvedValue([{ ...pod('term-2'), terminating: true }])
 
     await reconcileStaleWorktrees()
 
@@ -297,7 +308,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('reaps a live-tmux pod whose agent pane is still the placeholder past grace', async () => {
-    mockListPods.mockResolvedValue([pod('half-1')])
+    mockWorkspaces.mockResolvedValue([pod('half-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
 
@@ -312,7 +323,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('keeps a placeholder pane past grace while its create is still provisioning', async () => {
-    mockListPods.mockResolvedValue([pod('warming-1')])
+    mockWorkspaces.mockResolvedValue([pod('warming-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
     setDesired({ provisioning: ['warming-1'] })
@@ -324,7 +335,7 @@ describe('reconcileStaleWorktrees', () => {
 
   it('keeps a placeholder pane while the pod is inside the grace window', async () => {
     const fresh = { ...pod('fresh-1'), createdAtMs: Date.now() }
-    mockListPods.mockResolvedValue([fresh])
+    mockWorkspaces.mockResolvedValue([fresh])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('placeholder')
 
@@ -334,7 +345,7 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('does NOT reap on an inconclusive agent-pane probe', async () => {
-    mockListPods.mockResolvedValue([pod('pane-blip-1')])
+    mockWorkspaces.mockResolvedValue([pod('pane-blip-1')])
     mockProbe.mockResolvedValue('alive' as TmuxLiveness)
     mockPaneProbe.mockResolvedValue('unknown')
 
@@ -344,10 +355,8 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('reaps an orphan Job that has no backing pod, and labels the reason', async () => {
-    mockListPods.mockResolvedValue([])
-    mockListJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-orphan-1', worktreeId: 'orphan-1', projectSlug: 'proj', createdAtMs: 1 },
-    ])
+    mockWorkspaces.mockResolvedValue([])
+    mockStrays.mockResolvedValue([stray('orphan-1')])
 
     await reconcileStaleWorktrees()
 
@@ -362,30 +371,46 @@ describe('reconcileStaleWorktrees', () => {
   })
 
   it('returns quietly when pod listing fails (no throw, no reap)', async () => {
-    mockListPods.mockRejectedValue(new Error('cluster offline'))
+    mockWorkspaces.mockRejectedValue(new Error('cluster offline'))
 
     await expect(reconcileStaleWorktrees()).resolves.toBeUndefined()
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('reads pods and jobs from the tick snapshot when one is provided', async () => {
-    const snapshot = {
-      resync: true,
-      pods: vi.fn().mockResolvedValue([pod('zombie-1')]),
-      jobs: vi.fn().mockResolvedValue([]),
-      vclusters: vi.fn(),
-      vclusterPods: vi.fn(() => Promise.resolve([])),
-      vclusterServices: vi.fn(() => Promise.resolve([])),
-      vclusterConfigMaps: vi.fn(() => Promise.resolve([])),
-    }
+  // The two failures stand different amounts down, and the difference is
+  // the point: a workspace read that fails leaves the reaper unable to
+  // judge ANY absence, but a stray-unit read that fails only blinds the
+  // orphan sweep — the workspaces it did read are still conclusive about
+  // themselves. Collapsing this into the read above (or into one
+  // Promise.all) would silently turn a partial stand-down into a total
+  // one, and nothing else in the suite would notice.
+  it('stands only the orphan sweep down when the stray-unit read fails', async () => {
+    mockWorkspaces.mockResolvedValue([pod('zombie-1')])
+    mockStrays.mockRejectedValue(new Error('informer down'))
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 
-    await reconcileStaleWorktrees(snapshot)
+    await expect(reconcileStaleWorktrees()).resolves.toBeUndefined()
 
-    expect(mockListPods).not.toHaveBeenCalled()
-    expect(mockListJobs).not.toHaveBeenCalled()
-    expect(snapshot.pods).toHaveBeenCalledTimes(1)
-    expect(snapshot.jobs).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreeId: 'zombie-1' }),
+    )
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(loggedLines()).not.toContain('orphan Job')
+  })
+
+  it("reads the pass view it is handed, never taking the runtime's own", async () => {
+    const workspaces = vi.fn().mockResolvedValue([pod('zombie-1')])
+    const strayUnits = vi.fn().mockResolvedValue([])
+    mockProbe.mockResolvedValue('dead' as TmuxLiveness)
+
+    await reconcileStaleWorktrees({ resync: true, workspaces, strayUnits })
+
+    // Taking a second view mid-pass is what the shared snapshot exists to
+    // prevent: absence would then be judged against a different instant.
+    expect(mockWorkspaces).not.toHaveBeenCalled()
+    expect(mockStrays).not.toHaveBeenCalled()
+    expect(workspaces).toHaveBeenCalledTimes(1)
+    expect(strayUnits).toHaveBeenCalledTimes(1)
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ worktreeId: 'zombie-1' }),
     )
@@ -411,7 +436,7 @@ describe('reconcileStaleWorktrees', () => {
     }
 
     it('records nothing on the first tick a pod is missing', async () => {
-      mockListPods.mockResolvedValue([])
+      mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('abandoned')] })
 
       await reconcileStaleWorktrees()
@@ -420,7 +445,7 @@ describe('reconcileStaleWorktrees', () => {
     })
 
     it('records an abandoned create once it has stayed podless for the window', async () => {
-      mockListPods.mockResolvedValue([])
+      mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('abandoned')] })
 
       await reconcileStaleWorktrees()
@@ -434,7 +459,7 @@ describe('reconcileStaleWorktrees', () => {
     it('calls a session that ran orphaned, not never-started', async () => {
       // A captured prompt or transcript path proves the agent got going, so
       // its Job went away out-of-band rather than never arriving.
-      mockListPods.mockResolvedValue([])
+      mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('had-history', true)] })
 
       await reconcileStaleWorktrees()
@@ -450,15 +475,15 @@ describe('reconcileStaleWorktrees', () => {
       // returns [] without throwing. Every long-lived session looks podless
       // for one tick, and nothing un-marks a death but a restart.
       setDesired({ live: [row('old-1', true), row('old-2', true)] })
-      mockListPods.mockResolvedValue([pod('old-1'), pod('old-2')])
+      mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
       await reconcileStaleWorktrees()
 
-      mockListPods.mockResolvedValue([]) // the bad listing
+      mockWorkspaces.mockResolvedValue([]) // the bad listing
       await reconcileStaleWorktrees()
 
       // …and the pods are back on the next tick, well before the window.
-      mockListPods.mockResolvedValue([pod('old-1'), pod('old-2')])
+      mockWorkspaces.mockResolvedValue([pod('old-1'), pod('old-2')])
       vi.setSystemTime(Date.now() + 31 * 60_000)
       await reconcileStaleWorktrees()
 
@@ -466,7 +491,7 @@ describe('reconcileStaleWorktrees', () => {
     })
 
     it('exempts a session this process is still provisioning', async () => {
-      mockListPods.mockResolvedValue([])
+      mockWorkspaces.mockResolvedValue([])
       setDesired({ live: [row('slow-build')], provisioning: ['slow-build'] })
 
       await reconcileStaleWorktrees()
@@ -478,7 +503,7 @@ describe('reconcileStaleWorktrees', () => {
     // A reaper whose read failed must reap nothing: an empty set would
     // condemn every running workspace at once, and nothing un-marks a death.
     it('stands down entirely until the server has published a set', async () => {
-      mockListPods.mockResolvedValue([])
+      mockWorkspaces.mockResolvedValue([])
 
       await reconcileStaleWorktrees()
       await tickPastGrace()
@@ -487,7 +512,7 @@ describe('reconcileStaleWorktrees', () => {
     })
 
     it('leaves a row alone while its pod is running', async () => {
-      mockListPods.mockResolvedValue([pod('healthy')])
+      mockWorkspaces.mockResolvedValue([pod('healthy')])
       mockProbe.mockResolvedValue('alive' as TmuxLiveness)
       setDesired({ live: [row('healthy', true)] })
 

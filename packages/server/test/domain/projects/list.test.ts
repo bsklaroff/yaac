@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#runtime/k8s/worktrees/locate'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -11,12 +11,10 @@ import type { ProjectMeta } from '@yaac/shared/types'
 // Which projects exist is the server's own record; how many worktrees each
 // is running comes off the substrate, and what that count excludes (spares,
 // unlabelled pods) is asserted in locate.test.ts.
-vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
-  ...(await importOriginal<typeof locateModule>()),
-  countWorkspaces: vi.fn(),
-}))
-import { countWorkspaces } from '#runtime/k8s/worktrees/locate'
-const counts = vi.mocked(countWorkspaces)
+// Which projects exist is the server's own record; how many worktrees each
+// is running comes off the runtime, and what that count excludes (spares,
+// unlabelled workspaces) is asserted in locate.test.ts.
+const counts = vi.fn()
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
@@ -28,6 +26,7 @@ describe('listProjects', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installFakeWorktreeRuntime({ count: counts })
     tmpDir = await createTempDataDir()
     counts.mockReset().mockResolvedValue({})
   })

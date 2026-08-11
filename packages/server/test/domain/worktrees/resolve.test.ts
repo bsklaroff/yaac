@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#runtime/k8s/worktrees/locate'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { resolveWorktreeContainer } from '#domain/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
@@ -11,12 +11,7 @@ import type { RuntimeHandle } from '#runtime/contract'
  * locate.test.ts), and what this module adds is the error vocabulary the
  * routes above it rely on.
  */
-vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
-  ...(await importOriginal<typeof locateModule>()),
-  findWorkspace: vi.fn(),
-}))
-import { findWorkspace } from '#runtime/k8s/worktrees/locate'
-const find = vi.mocked(findWorkspace)
+const find = vi.fn()
 
 function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return {
@@ -24,11 +19,14 @@ function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
     projectSlug: 'proj',
     jobName: 'yaac-proj-abc123',
     tool: 'claude',
+    mode: 'tui',
     running: true,
     state: 'running',
     labels: {},
     createdAtMs: 0,
     prewarmed: false,
+    terminating: false,
+    deathCause: { reason: 'pod-stopped' },
     ...over,
   }
 }
@@ -37,6 +35,7 @@ describe('resolveWorktreeContainer', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installFakeWorktreeRuntime({ find })
     tmpDir = await createTempDataDir()
     find.mockReset().mockResolvedValue(undefined)
   })

@@ -35,10 +35,15 @@ turned back into bytes on disk.
 ## What lives where
 
 - **`main/`** — `server-run` (lock, DB open through records' lifecycle,
-  bind, attach), `convergence` (informer caches, per-worktree status
-  watchers, the port detector — everything push-fed), `reconciler` (the
-  pass engine; its step list comes from domain), `server`, `webapp`,
-  `lifecycle`.
+  bind, attach — and the one place the process's runtime is registered),
+  `runtime-k8s` + `runtime-k8s-steps` (the k8s `WorktreeRuntime`, assembled
+  from the sealed folders; here rather than under `runtime/k8s` because
+  assembling it means importing all of them, and they import the contract),
+  `convergence` (informer caches, per-worktree status watchers, the port
+  detector — everything push-fed; it also translates substrate deltas into
+  the pass's trigger vocabulary), `reconciler` (the pass engine; its step
+  list comes from domain, which splices in the runtime's own), `server`,
+  `webapp`, `lifecycle`.
 - **`api/`** — `routes/` (translation only; policy lives below), `http/`
   (auth middleware, the in-memory token store, the error envelope, static
   SPA serving), `events.ts` (the snapshot hub: coalesced pushes over
@@ -65,15 +70,28 @@ turned back into bytes on disk.
   `transcripts/` (per-tool readers, the JSONL scanner, and the
   project-relative path convention). Pure disk mechanics: no rows, no
   substrate, nothing above platform.
-- **`runtime/`** — `contract.ts` (the substrate-neutral observation
-  vocabulary: `RuntimeReport`, `RuntimeHandle`, handle-keyed
-  `AgentLiveness`), `status/` (control-mode watchers feeding the status
-  store), `terminals/` (PTY bridge), `agents/` (the tui/acp drivers,
-  acpd's JSON-RPC client, per-tool launch commands), and `k8s/` — the
-  driver's substance: `cluster`, `egress`, `forwarders`, `images`,
-  `image-engine`, and `worktrees` (observe, locate, the pod-side changes
-  diff, image salvage). The contract is the seam a second driver — a
-  host-process runtime with no cluster — implements.
+- **`runtime/`** — `contract.ts` (the `WorktreeRuntime` driver interface
+  and its substrate-neutral vocabulary: `RuntimeReport`, `RuntimeHandle`,
+  handle-keyed `AgentLiveness`, `RuntimeSnapshot`, and the pass
+  scheduling types), `driver.ts` (the registered instance, behind
+  `setWorktreeRuntime` / `worktreeRuntime`), `status/` (control-mode
+  watchers feeding the status store), `terminals/` (PTY bridge),
+  `agents/` (the tui/acp drivers, acpd's JSON-RPC client, per-tool launch
+  commands), and `k8s/` — the driver's substance: `cluster`, `egress`,
+  `forwarders`, `images`, `image-engine`, `worktrees` (observe, locate,
+  the pod-side changes diff, image salvage) and `view` (the one mapper
+  turning a pod into a `RuntimeHandle`, plus the pass snapshot). The
+  contract is the seam a second driver — a host-process runtime with no
+  cluster — implements.
+
+  `contract.ts` and `driver.ts` import nothing but shared types, and that
+  is load-bearing: a mediator reaching the runtime through them pulls no
+  cluster client into its module graph, which is what keeps domain unit
+  tests off the seconds-per-file cost of importing one. The carve-out is
+  partial — the mutating paths (create, cleanup, prewarm's claim, the
+  spare pool) still name substrate barrels, and
+  `docs/plans/runtime-contract-completion.md` is the remaining work, with
+  the holdout list in `eslint.config.js` as its ledger.
 - **`platform/`** — substrate primitives with no opinions about worktrees:
   `k8s/` (client, informers, exec, pod specs, the per-pass
   `TickSnapshot`), `container/` (podman, the local registry), git, shell,
@@ -140,16 +158,28 @@ from the driver connections) and `spawn-requests` / `proxy-reconnect`,
 which the egress proxy reports over the event stream described below.
 `domain/reconcile.ts` is the ordered step list:
 the stale reaper first (so counts reflect just-reaped worktrees by the
-time the prewarm pool runs), the substrate sweeps and GCs, the
-conversation sweep, and title generation last, so a just-captured opening
-message is eligible in the same pass.
+time the prewarm pool runs), the conversation sweep, and title generation
+last, so a just-captured opening message is eligible in the same pass.
 
-Substrate steps share one `TickSnapshot`, created lazily — the first
-triggered step takes the view and every later step sees the same instant.
+The runtime contributes its own steps — its GCs and datapath heals — in
+two groups the mediators splice in: `prePool` before the spare pool sizes
+itself, `maintenance` after the sweeps that read rows. Those are the only
+two orderings the mediators have a stake in; what the runtime's steps
+sweep, and how they order among themselves, is substrate detail and is not
+named in `domain/reconcile.ts`.
+
+Steps share one `RuntimeSnapshot`, created lazily — the first triggered
+step takes the view and every later step sees the same instant. Its
+`workspaces()` and `strayUnits()` come off one memoized substrate view, so
+"a unit with no workspace" is never a comparison across two instants,
+which is what makes the reaper's destructive sweep safe. The runtime's own
+steps recover the fuller substrate view from the same object.
 The configured default tool is a preference row, resolved through a lazy
 per-pass accessor and handed down so no substrate step reads a row; a
 FAILED read rejects the accessor and stands down exactly the steps that
-needed the answer, while an unset preference falls back to claude.
+needed the answer, while an unset preference falls back to claude. The
+project list is handed down the same way, so a runtime step never reads a
+row itself.
 
 The reaper reads `desiredWorktrees()` from records at the top of its own
 step, so absence is only ever judged against a set from the same pass, by

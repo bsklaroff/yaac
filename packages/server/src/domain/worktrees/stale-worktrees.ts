@@ -1,6 +1,7 @@
-import { type TickSnapshot, listWorktreeJobs, listWorktreePods } from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import {
-  classifyWorktreePods,
+  classifyWorkspaces,
   isWorktreeTerminating,
   probeAgentPaneState,
   probeTmuxLiveness,
@@ -37,7 +38,8 @@ export function _clearMissingPodTimersForTests(): void {
  * one broken worktree can't block the rest; designed to be called from
  * the server reconciler.
  */
-export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<void> {
+export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promise<void> {
+  const view = snapshot ?? worktreeRuntime().snapshot()
   // What the server records as existing, read at the top of THIS pass —
   // so absence is only ever judged against a set from the same pass, by
   // construction. A failed read stands every sweep down (reap nothing, say
@@ -49,14 +51,14 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
 
   let pods
   try {
-    pods = await (snapshot ? snapshot.pods() : listWorktreePods())
+    pods = await view.workspaces()
   } catch {
     return
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
   const { running, stale: staleAll, indeterminate, terminating } =
-    await classifyWorktreePods(pods, nowMs, probeTmuxLiveness, graceMs)
+    await classifyWorkspaces(pods, nowMs, probeTmuxLiveness, graceMs)
 
   // Worktrees the server is still creating, read from the provisioning
   // registry (which excludes failed creates: their rollback tore down what
@@ -80,7 +82,7 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
   // nothing happened.
   for (const p of indeterminate) {
     serverLog(
-      `[server] stale-reaper: keeping session=${p.worktreeId} job=${p.jobName}`
+      `[server] stale-reaper: keeping session=${p.workspaceId} job=${p.jobName}`
       + ' (tmux probe inconclusive; pod still running)',
     )
   }
@@ -97,33 +99,34 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
   // and the grace only bounds the crashed-create case.
   const placeholderStale: StaleWorktreeInfo[] = []
   await Promise.all(running.map(async (p) => {
-    if (!p.projectSlug || !p.worktreeId) return
-    if (provisioningIds.has(p.worktreeId)) return
+    if (!p.projectSlug || !p.workspaceId) return
+    if (provisioningIds.has(p.workspaceId)) return
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) return
-    if (await probeAgentPaneState(p.projectSlug, p.worktreeId) !== 'placeholder') return
+    if (await probeAgentPaneState(p.projectSlug, p.workspaceId) !== 'placeholder') return
     placeholderStale.push({
-      jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.worktreeId, zombie: true,
+      jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId, zombie: true,
     })
   }))
 
-  // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
-  // invisible to the pod-based classifier, so cross-reference the Job
-  // list and reap any job past the grace window with no backing pod. A
-  // create in flight is exempt here too — between the Job apply and the
-  // kubelet admitting its pod, a slow create looks exactly like an orphan.
+  // Stray-unit sweep: a runtime unit whose workspace was evicted or deleted
+  // out-of-band is invisible to the workspace classifier, so ask the pass
+  // view for the units it is still holding with no workspace behind them —
+  // computed off the same instant, so "no workspace" is never a comparison
+  // across two views. A create in flight is exempt here too: between the
+  // unit being applied and the workspace being admitted, a slow create looks
+  // exactly like an orphan.
   const orphanTargets: Array<{ jobName: string; projectSlug: string; worktreeId: string }> = []
   try {
-    const jobs = await (snapshot ? snapshot.jobs() : listWorktreeJobs())
-    const podWorktreeIds = new Set(pods.map((p) => p.worktreeId))
-    for (const j of jobs) {
-      if (podWorktreeIds.has(j.worktreeId)) continue
-      if (provisioningIds.has(j.worktreeId)) continue
-      if (nowMs - j.createdAtMs < graceMs) continue
-      orphanTargets.push({ jobName: j.jobName, projectSlug: j.projectSlug, worktreeId: j.worktreeId })
+    for (const u of await view.strayUnits()) {
+      if (provisioningIds.has(u.workspaceId)) continue
+      if (nowMs - u.createdAtMs < graceMs) continue
+      orphanTargets.push({
+        jobName: u.unitName, projectSlug: u.projectSlug, worktreeId: u.workspaceId,
+      })
     }
   } catch {
-    // Job list unavailable — the pod-based sweep below still runs.
+    // Unit list unavailable — the workspace-based sweep below still runs.
   }
 
   // Stuck-terminating sweep: a pod carrying a deletionTimestamp that this
@@ -135,16 +138,16 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
   // we're still marking stay skipped here.
   const stuckTerminating: Array<{ jobName: string; projectSlug: string; worktreeId: string }> = []
   for (const p of terminating) {
-    if (!p.terminating || !p.projectSlug || !p.worktreeId) continue
-    if (isWorktreeTerminating(p.worktreeId)) continue
+    if (!p.terminating || !p.projectSlug || !p.workspaceId) continue
+    if (isWorktreeTerminating(p.workspaceId)) continue
     // create's retry loop deletes the half-started Job itself before the next
     // attempt, which leaves exactly this shape: a terminating pod nothing is
     // marking. Tearing it down here runs the full teardown — worktree dir
     // included — against a create that is about to retry into it.
-    if (provisioningIds.has(p.worktreeId)) continue
+    if (provisioningIds.has(p.workspaceId)) continue
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
-    stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.worktreeId })
+    stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId })
   }
 
   // A stuck-terminating pod that yaac itself deleted (its in-memory mark was
@@ -179,7 +182,7 @@ export async function reconcileStaleWorktrees(snapshot?: TickSnapshot): Promise<
   // restart. Requiring the same row to look podless across the whole window
   // makes one bad listing cost nothing. The map is in-memory, so a server
   // restart re-arms every timer, which errs toward not recording.
-  const livePodIds = new Set(pods.map((p) => p.worktreeId))
+  const livePodIds = new Set(pods.map((p) => p.workspaceId))
   {
     const seen = new Set<string>()
     for (const row of desired.live) {

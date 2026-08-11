@@ -75,13 +75,18 @@ describe('findWorkspace', () => {
       projectSlug: 'proj',
       jobName: 'yaac-proj-abc123',
       // Normalized here so nothing above has to know that a pod carries a
-      // raw label string.
+      // raw label string. No `declaredTool`: 'Claude' is not one of the tool
+      // names yaac knows, so it resolves to something runnable without
+      // counting as a declaration a spawn could inherit.
       tool: 'claude',
+      mode: 'tui',
       running: true,
       state: 'running',
       labels: { [LABEL_PREWARMED]: 'true' },
       createdAtMs: 1_700_000_000_000,
       prewarmed: true,
+      terminating: false,
+      deathCause: { reason: 'pod-stopped' },
     })
   })
 

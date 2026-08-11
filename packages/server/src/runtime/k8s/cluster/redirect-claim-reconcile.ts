@@ -1,4 +1,7 @@
-import { type TickSnapshot, createTickSnapshot, kubectlApply } from '#platform/k8s'
+import { kubectlApply } from '#platform/k8s'
+import type { TickSnapshot } from '#platform/k8s'
+import { createRuntimeSnapshot, k8sSnapshotOf } from '#runtime/k8s/view'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import {
   CLAIM_KEY,
   buildRedirectClaimsConfigMapManifest,
@@ -66,9 +69,9 @@ export function _resetRedirectClaimsForTests(): void {
  * is always the answer to "what has the host been asked to redirect".
  */
 export async function reconcileRedirectClaims(
-  snapshot: TickSnapshot = createTickSnapshot(),
+  snapshot: RuntimeSnapshot = createRuntimeSnapshot(),
 ): Promise<void> {
-  const data = await buildValidatedClaimData(snapshot)
+  const data = await buildValidatedClaimData(k8sSnapshotOf(snapshot))
   const serialized = serialize(data)
   if (serialized === lastApplied) return
   try {

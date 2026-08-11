@@ -2,8 +2,22 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
+import { installRealWorktreeRuntime } from './real-runtime'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Register the k8s runtime for these projects.
+ *
+ * The server registers its own at startup, which covers e2e — those drive
+ * the real CLI, so the process under test does it for itself. The api
+ * project does NOT: it builds the Hono app in-process (`buildApp`) without
+ * going through the composition root, so nothing would have registered one
+ * and the first route to reach the substrate would throw. Doing it here is
+ * this project's stand-in for that root, and it installs the REAL runtime
+ * because these tests talk to a real cluster.
+ */
+installRealWorktreeRuntime()
 
 /**
  * Cluster hygiene for the api/e2e projects — NOT loaded by `unit:*`,

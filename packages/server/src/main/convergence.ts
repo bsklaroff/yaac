@@ -4,9 +4,11 @@ import {
   armDeferredClusterBoot,
   ensurePriorityClasses,
   invalidateRelayAddr,
+  VCLUSTER_DELTA_SOURCES,
   setActiveClusterCache,
   type DeltaSource,
 } from '#platform/k8s'
+import { MEDIATOR_TRIGGERS, type ReconcileTrigger } from '#runtime/contract'
 import {
   ensureMainRegistry,
   ensureNamespace,
@@ -19,7 +21,7 @@ import {
   restoreAllWorktreeForwarders,
   stopAllWorktreeForwarders,
 } from '#runtime/k8s/forwarders'
-import { ProxyEventStream, proxyClient, type ProxyChangeSource } from '#runtime/k8s/egress'
+import { PROXY_CHANGE_SOURCES, ProxyEventStream, proxyClient } from '#runtime/k8s/egress'
 import { recordedConversationHandles } from '#records'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
@@ -39,7 +41,48 @@ import { env } from '@yaac/shared/env'
  *   its event stream — a queued in-worktree spawn, and the reattach that
  *   says the proxy pod may have been replaced.
  */
-export type ChangeSource = DeltaSource | 'live-agents' | 'status-streams' | ProxyChangeSource
+export type ChangeSource = ReconcileTrigger
+
+/**
+ * Every trigger this module can actually raise — assembled from the three
+ * places the names are defined rather than restated here, so the list
+ * cannot drift from them.
+ *
+ * It exists because `ReconcileTrigger` is deliberately open-ended: a
+ * runtime declares sources the layers above have no word for, which also
+ * means a step can declare a trigger nothing raises and still compile. The
+ * cost of that is silent — the step simply never runs on its edge and waits
+ * out the 60s resync — so the raise sites below are typed against this
+ * list, and `reconciler.test.ts` asserts every trigger the assembled step
+ * list declares is a member of it.
+ */
+export const RAISABLE_TRIGGERS = [
+  // What the mediators name: the two translated substrate edges plus the
+  // two in-pod ones no watch of the substrate can see.
+  ...MEDIATOR_TRIGGERS,
+  // The runtime's own, travelling upward unchanged.
+  ...VCLUSTER_DELTA_SOURCES,
+  ...PROXY_CHANGE_SOURCES,
+] as const
+
+export type RaisableTrigger = typeof RAISABLE_TRIGGERS[number]
+
+/**
+ * The substrate's own delta sources, said in the vocabulary a pass
+ * schedules on. Only the two the mediators' steps name are translated: a
+ * pod is a workspace and a Job is the unit holding one. The vcluster
+ * sources pass through unchanged — they are the runtime's own, declared by
+ * its own steps, and no layer above has a word for them.
+ *
+ * The return type is what makes the translation checkable: rename a
+ * mediator trigger in the contract and these two literals stop compiling,
+ * rather than producing an edge no step answers.
+ */
+export function triggerFor(source: DeltaSource): RaisableTrigger {
+  if (source === 'worktree-pods') return 'workspaces'
+  if (source === 'worktree-jobs') return 'units'
+  return source
+}
 
 /**
  * Attaching the server to its substrate, and letting go of it again.
@@ -60,7 +103,7 @@ let portDetector: PortDetectorManager | null = null
 let proxyEvents: ProxyEventStream | null = null
 const changeListeners: ((source: ChangeSource) => void)[] = []
 
-function fireChange(source: ChangeSource): void {
+function fireChange(source: RaisableTrigger): void {
   for (const fn of changeListeners) fn(source)
 }
 
@@ -141,7 +184,7 @@ async function attachNow(): Promise<void> {
       // without any row write), so its delta handler is its mutation site.
       notifyWorktreeListChanged()
     }
-    fireChange(source)
+    fireChange(triggerFor(source))
   })
   // A conversation appearing, going, or learning its id is a change the
   // reconcile steps owe work on, and no watch above can see it: for `acp`

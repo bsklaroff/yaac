@@ -1,7 +1,7 @@
-import { createTickSnapshot } from '#platform/k8s'
-import type { TickSnapshot } from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeSnapshot } from '#runtime/contract'
 import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
-import { getDefaultTool } from '#records'
+import { getDefaultTool, listProjectRows } from '#records'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
 import type { AgentTool } from '@yaac/shared/types'
@@ -97,13 +97,14 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       const triggers = new Set<ReconcileTrigger>(
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
-      let snapshot: TickSnapshot | null = null
+      let snapshot: RuntimeSnapshot | null = null
       let defaultTool: Promise<AgentTool | undefined> | null = null
+      let projectSlugs: Promise<string[]> | null = null
       const ctx: PassContext = {
         triggers,
         resync,
         signal,
-        snapshot: () => (snapshot ??= createTickSnapshot(resync)),
+        snapshot: () => (snapshot ??= worktreeRuntime().snapshot(resync)),
         // No catch: a failed preference read rejects the accessor, which
         // fails (and stands down) exactly the steps that needed the answer
         // — churning a spare toward a fallback tool on a transient read
@@ -111,6 +112,14 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // UNSET preference resolves undefined, and the consumer's fallback
         // is for that case alone.
         defaultTool: () => (defaultTool ??= getDefaultTool()),
+        // Same arrangement, and for the same reason: which projects exist
+        // is a row question, so it is resolved once here and handed down —
+        // a runtime step never reads records itself. An unreadable list
+        // degrades to none rather than failing the pass, because every
+        // consumer of it is upkeep that the next pass retries.
+        projectSlugs: () => (projectSlugs ??= listProjectRows()
+          .then((rows) => rows.map((r) => r.slug))
+          .catch(() => [])),
       }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight

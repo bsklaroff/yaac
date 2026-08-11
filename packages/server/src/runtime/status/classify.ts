@@ -1,70 +1,41 @@
-import { type PodInfo } from '#platform/k8s'
 import { isWorktreeStreamHealthy } from './status-store'
 import { isWorktreeTerminating } from './terminating'
 import type { TmuxLiveness } from './liveness'
-import type { WorktreeDeathCause, StaleWorktreeInfo } from '@yaac/shared/types'
+import type { RuntimeHandle } from '#runtime/contract'
+import type { StaleWorktreeInfo } from '@yaac/shared/types'
 
 /**
- * Derive why a stopped worktree pod died from its captured terminal state
- * (`PodInfo.terminal`). This runs at reap time — the last moment the
- * evidence exists, since the reaper's own teardown deletes the Job and pod.
- * Only the pod-stopped family is derived here; reap classifications the
- * pod can't express (tmux gone, placeholder pane, orphan Job) are supplied
- * directly by the reap sites that detected them.
- */
-function deriveDeathCause(pod: PodInfo): WorktreeDeathCause {
-  const t = pod.terminal
-  if (t?.containerReason === 'OOMKilled') {
-    return {
-      reason: 'oom',
-      ...(t.exitCode !== undefined ? { detail: `exit code ${t.exitCode}` } : {}),
-    }
-  }
-  if (t?.podReason === 'Evicted') {
-    return { reason: 'evicted', ...(t.podMessage ? { detail: t.podMessage } : {}) }
-  }
-  if (t?.exitCode !== undefined && t.exitCode !== 0) {
-    // kubelet's generic terminated reason for a nonzero exit is 'Error' —
-    // it adds nothing over the exit code; any other reason is kept.
-    const parts = [`exit code ${t.exitCode}`]
-    if (t.containerReason && t.containerReason !== 'Error') parts.push(t.containerReason)
-    return { reason: 'crashed', detail: parts.join(', ') }
-  }
-  return { reason: 'pod-stopped' }
-}
-
-/**
- * Split the pod list into the ones the renderer should show as active
+ * Split the workspace list into the ones the renderer should show as active
  * worktrees, the ones the caller should tear down, and implicitly (by
  * omission) the ones that are still inside the startup grace window.
  * Production callers pass `testEnv.startingGraceMs` for `graceMs`.
  */
-export async function classifyWorktreePods(
-  pods: PodInfo[],
+export async function classifyWorkspaces(
+  workspaces: RuntimeHandle[],
   nowMs: number,
-  probeLiveness: (slug: string, worktreeId: string) => Promise<TmuxLiveness>,
+  probeLiveness: (slug: string, workspaceId: string) => Promise<TmuxLiveness>,
   graceMs: number,
 ): Promise<{
-  running: PodInfo[]
+  running: RuntimeHandle[]
   stale: StaleWorktreeInfo[]
-  indeterminate: PodInfo[]
-  terminating: PodInfo[]
+  indeterminate: RuntimeHandle[]
+  terminating: RuntimeHandle[]
 }> {
-  const running: PodInfo[] = []
+  const running: RuntimeHandle[] = []
   const stale: StaleWorktreeInfo[] = []
-  const indeterminate: PodInfo[] = []
-  const terminating: PodInfo[] = []
-  for (const p of pods) {
-    // A pod on its way out (deletionTimestamp set, or a delete just issued)
+  const indeterminate: RuntimeHandle[] = []
+  const terminating: RuntimeHandle[] = []
+  for (const p of workspaces) {
+    // A workspace on its way out (deletionTimestamp set, or a delete just issued)
     // is neither active nor stale: it renders as a "terminating…" row and is
     // already being torn down, so keep it out of both the probe path and the
     // reaper's targets.
-    if (p.terminating || (!!p.worktreeId && isWorktreeTerminating(p.worktreeId))) {
+    if (p.terminating || (!!p.workspaceId && isWorktreeTerminating(p.workspaceId))) {
       terminating.push(p)
       continue
     }
-    if (p.running && p.projectSlug && p.worktreeId) {
-      const liveness = await probeLiveness(p.projectSlug, p.worktreeId)
+    if (p.running && p.projectSlug && p.workspaceId) {
+      const liveness = await probeLiveness(p.projectSlug, p.workspaceId)
       if (liveness === 'alive') {
         running.push(p)
         continue
@@ -85,15 +56,15 @@ export async function classifyWorktreePods(
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
 
-    // Classify the death while the evidence still exists: a zombie's pod is
-    // healthy (only tmux died), a stopped pod carries terminal state.
+    // Classify the death while the evidence still exists: a zombie's runtime
+    // is healthy (only tmux died), a stopped one carries a derived cause.
     const zombie = p.running
     stale.push({
       jobName: p.jobName,
       projectSlug: p.projectSlug,
-      worktreeId: p.worktreeId,
+      worktreeId: p.workspaceId,
       zombie,
-      deathCause: zombie ? { reason: 'agent-exited' } : deriveDeathCause(p),
+      deathCause: zombie ? { reason: 'agent-exited' } : p.deathCause,
     })
   }
   return { running, stale, indeterminate, terminating }
