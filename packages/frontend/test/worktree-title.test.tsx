@@ -6,7 +6,7 @@ vi.mock('#lib/createWorktree', () => ({
   renameWorktree: vi.fn(),
 }))
 
-import { WorktreeTitle } from '#components/WorktreeTitle'
+import { WorktreeTitle, oneLine } from '#components/WorktreeTitle'
 import { renameWorktree } from '#lib/createWorktree'
 
 beforeEach(() => {
@@ -21,6 +21,24 @@ function openEditor(): HTMLInputElement {
   fireEvent.click(screen.getByRole('button', { name: 'Rename worktree' }))
   return screen.getByRole<HTMLInputElement>('textbox', { name: 'Worktree title' })
 }
+
+describe('oneLine', () => {
+  it('collapses internal whitespace runs, including newlines, to a single space', () => {
+    expect(oneLine('do a\n   thing')).toBe('do a thing')
+  })
+
+  it('trims leading and trailing whitespace', () => {
+    expect(oneLine('  padded  ')).toBe('padded')
+  })
+
+  it('leaves an already-single-line string unchanged', () => {
+    expect(oneLine('My title')).toBe('My title')
+  })
+
+  it('collapses an all-whitespace string to empty', () => {
+    expect(oneLine('   \n\t  ')).toBe('')
+  })
+})
 
 describe('WorktreeTitle', () => {
   it('shows the title as selectable text with a rename affordance', () => {
