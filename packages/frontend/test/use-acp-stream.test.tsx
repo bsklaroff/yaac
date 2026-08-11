@@ -129,16 +129,16 @@ describe('useAcpStream', () => {
   })
 
   it('tracks busy across a turn, and clears it on an error', async () => {
+    // Only the server's explicit boundaries move this. `turn-start` covers the
+    // turns the pane cannot infer as well as the ones it could: a turn already
+    // running when the server reattached to the agent was sent by nobody here.
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
     })
 
-    act(() => latest().deliver({
-      type: 'event',
-      event: { type: 'user', seq: 0, content: [{ type: 'text', text: 'go' }] },
-    }))
+    act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 0 } }))
     await waitFor(() => expect(result.current.busy).toBe(true))
 
     act(() => latest().deliver({
@@ -148,10 +148,7 @@ describe('useAcpStream', () => {
     await waitFor(() => expect(result.current.busy).toBe(false))
 
     // An error ends the turn too — otherwise a failed turn spins forever.
-    act(() => latest().deliver({
-      type: 'event',
-      event: { type: 'user', seq: 2, content: [{ type: 'text', text: 'again' }] },
-    }))
+    act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 2 } }))
     await waitFor(() => expect(result.current.busy).toBe(true))
     act(() => latest().deliver({
       type: 'event',
@@ -160,23 +157,38 @@ describe('useAcpStream', () => {
     await waitFor(() => expect(result.current.busy).toBe(false))
   })
 
-  it('starts working on a turn it did not send', async () => {
-    // A turn the server recovered after reattaching to the agent — the pane
-    // sent no message, so it has no `user` event of its own to infer from, and
-    // without the explicit boundary it would show an idle agent mid-reply.
+  it('stays idle through a replayed conversation, which carries no turn boundaries', async () => {
+    // What a restart looks like from here: `session/load` re-emits the whole
+    // conversation as live updates, so past user messages arrive one at a time
+    // exactly as a fresh one would. Nothing closes them — boundaries describe
+    // what is happening now and are never recorded — so a pane that read a
+    // `user` event as "a turn began" would sit at `working…` for good, offering
+    // a Stop button with no turn behind it.
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
     })
-    act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 0 } }))
-    await waitFor(() => expect(result.current.busy).toBe(true))
 
-    act(() => latest().deliver({
-      type: 'event',
-      event: { type: 'turn-end', seq: 1, stopReason: 'end_turn' },
-    }))
-    await waitFor(() => expect(result.current.busy).toBe(false))
+    act(() => {
+      latest().deliver({
+        type: 'event',
+        event: { type: 'user', seq: 0, content: [{ type: 'text', text: 'the old ask' }] },
+      })
+      latest().deliver({ type: 'event', event: agent(1, 'the old answer') })
+      latest().deliver({
+        type: 'event',
+        event: { type: 'user', seq: 2, content: [{ type: 'text', text: 'and another' }] },
+      })
+      latest().deliver({ type: 'event', event: agent(3, 'and its answer') })
+    })
+
+    await waitFor(() => expect(result.current.events).toHaveLength(4))
+    expect(result.current.busy).toBe(false)
+
+    // And the conversation is live again the moment a real turn starts.
+    act(() => latest().deliver({ type: 'event', event: { type: 'turn-start', seq: 4 } }))
+    await waitFor(() => expect(result.current.busy).toBe(true))
   })
 
   it('adopts the busy state the server reports on attach', async () => {

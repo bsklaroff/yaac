@@ -92,12 +92,16 @@ export function useAcpStream(
         }
         if (msg.type === 'event') {
           setEvents((prev) => mergeEvents(prev, [msg.event]))
-          // Turn boundaries are the authority on busy. A `user` event means the
-          // turn is starting (it precedes the agent's first chunk); `turn-start`
-          // covers the turns that have no `user` event of ours to infer from —
-          // one already running when the server reattached to the agent.
+          // Explicit boundaries only. A `user` event looks like a turn
+          // beginning and mostly is, but it is also what a *replay* is made of:
+          // `session/load` re-emits every past message as a live update, and
+          // the record carries no boundary to close them with — so inferring
+          // from it leaves a restarted worktree pinned at `working…` with a
+          // Stop button and no turn to stop. `turn-start` has no such second
+          // meaning: the server emits it when a turn actually begins, including
+          // one it recovered on reattaching to a working agent.
           if (msg.event.type === 'turn-end' || msg.event.type === 'error') setBusy(false)
-          if (msg.event.type === 'user' || msg.event.type === 'turn-start') setBusy(true)
+          if (msg.event.type === 'turn-start') setBusy(true)
           return
         }
         if (msg.type === 'health') setConnected(msg.connected)

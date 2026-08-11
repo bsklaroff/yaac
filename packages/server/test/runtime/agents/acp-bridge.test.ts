@@ -48,6 +48,23 @@ class FakeSocket {
   clientClose(): void { this.closeCb?.() }
 }
 
+/**
+ * What a pane folding these frames in order would conclude about the turn —
+ * the client's own rule (`useAcpStream`), modelled here because the property
+ * under test is the ORDER frames leave the bridge in, which only a consumer
+ * that folds them can express. A greeting sets the state; boundaries move it.
+ */
+function paneBusy(sent: AcpServerMessage[]): boolean {
+  let busy = false
+  for (const msg of sent) {
+    if (msg.type === 'hello') busy = msg.busy
+    if (msg.type !== 'event') continue
+    if (msg.event.type === 'turn-start') busy = true
+    if (msg.event.type === 'turn-end' || msg.event.type === 'error') busy = false
+  }
+  return busy
+}
+
 let transport: FakeTransport
 let conversation: AcpConversation
 let dataDir: string
@@ -190,6 +207,13 @@ describe('attachAcp', () => {
       prompt: [{ type: 'text', text: 'do the thing' }],
     })
 
+    // And the turn comes back to the pane that started it. This is the
+    // ordinary case the working indicator runs on: content is not read as a
+    // boundary, so a `turn-start` that never arrived would leave a live turn
+    // invisible on the very pane that asked for it.
+    await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'turn-start'))
+    expect(paneBusy(sock.sent)).toBe(true)
+
     // Detaching is free: the conversation (and the agent behind it) is
     // untouched — that is the whole reason acpd exists.
     sock.clientClose()
@@ -231,6 +255,34 @@ describe('attachAcp', () => {
     expect(sock.closedWith).toBeUndefined()
   })
 
+  it('lands a pane idle when the turn it is greeting ends underneath it', async () => {
+    // The no-latch guarantee is an ordering invariant rather than a counter,
+    // and it carries the whole fix: `hello` reads `isBusy` in the tick it is
+    // sent, and every boundary is delivered behind a flush of the same tail
+    // chain. So a turn ending around the greeting either shows up *in* it or
+    // arrives *after* it — a stale `busy: true` can never land on top of the
+    // `turn-end` that contradicts it, whichever side the boundary falls.
+    void conversation.prompt('long job').catch(() => { /* ended below */ })
+    await waitFor(() => transport.written.some((l) => l.includes('session/prompt')))
+    expect(conversation.isBusy).toBe(true)
+
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    // Answered inside the attach's own tick, so the reply is in flight while
+    // the first tail pass — the one that greets — is still reading the record.
+    const id = transport.written
+      .map((l) => JSON.parse(l.trim()) as { id?: string | number; method?: string })
+      .find((m) => m.method === 'session/prompt')?.id
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })}\n`)
+
+    await waitForHello(sock)
+    await waitFor(() => !conversation.isBusy)
+    // Long enough for a late frame to arrive and spoil it, if ordering let one.
+    await new Promise((r) => setTimeout(r, 250))
+    expect(paneBusy(sock.sent)).toBe(false)
+    sock.clientClose()
+  })
+
   it('tells a pane the conversation is not live rather than hanging it open', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'no-such-conversation', sock)
@@ -242,12 +294,35 @@ describe('attachAcp', () => {
     expect(sock.closedWith).toBe('no live conversation')
   })
 
-  it('greys the pane out when the conversation is torn down under it', async () => {
+  it('closes a pane whose conversation is torn down, so its re-attach finds the replacement', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)
     await waitForHello(sock)
-    conversation.close()
 
+    // What a worktree restart looks like from here: this conversation is
+    // dropped, and a fresh one is registered under the same name once the new
+    // pod's agent is up.
+    conversation.close()
     expect(sock.sent.some((m) => m.type === 'health' && !m.connected)).toBe(true)
+    // Greying out alone would stall the pane for good. It is bound to the
+    // conversation OBJECT, not to the name, and only a closed socket makes it
+    // come back — left open it holds a dead peer, so its Stop reaches nothing
+    // and the replacement's turn boundaries go to subscribers it is not among.
+    expect(sock.closedWith).toBe('conversation closed')
+    sock.clientClose()
+
+    const abandoned = transport
+    conversation = liveConversation()
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+
+    const next = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', next)
+    await waitForHello(next)
+    next.clientSend({ type: 'prompt', text: 'carry on' })
+
+    // The re-attached pane drives the live conversation, which is the whole
+    // point of making it reconnect.
+    await waitFor(() => transport.written.some((l) => l.includes('session/prompt')))
+    expect(abandoned.written.some((l) => l.includes('session/prompt'))).toBe(false)
   })
 })
