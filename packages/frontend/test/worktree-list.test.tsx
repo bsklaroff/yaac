@@ -8,13 +8,14 @@ vi.mock('#lib/stoppedApi', () => ({ getStoppedWorktrees: vi.fn(() => Promise.res
 vi.mock('#lib/createWorktree', () => ({
   dismissProvisioning: vi.fn(),
   restartWorktree: vi.fn(),
+  renameWorktree: vi.fn(() => Promise.resolve()),
   setWorktreeBackground: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('#lib/stopWorktreeFlow', () => ({ stopWorktreeOptimistic: vi.fn() }))
 vi.mock('#lib/useProvisionWorktree', () => ({ useProvisionWorktree: () => vi.fn() }))
 
 import { WorktreeList } from '#components/WorktreeList'
-import { setWorktreeBackground } from '#lib/createWorktree'
+import { renameWorktree, setWorktreeBackground } from '#lib/createWorktree'
 import { useUiStore } from '#store'
 
 beforeAll(() => {
@@ -109,5 +110,66 @@ describe('WorktreeList', () => {
     expect(screen.getByText('No project selected')).toBeTruthy()
     // jsdom's matchMedia stub reports desktop, so the copy points at the rail.
     expect(screen.getByText('Pick a project from the rail on the left.')).toBeTruthy()
+  })
+
+  describe('row rename', () => {
+    /** Click a row's rename pencil to open its inline editor and return the field. */
+    function openEditor(): HTMLInputElement {
+      fireEvent.click(screen.getByRole('button', { name: 'Rename worktree' }))
+      return screen.getByRole<HTMLInputElement>('textbox', { name: 'Worktree row title' })
+    }
+
+    it('seeds the editor from the title, falling back to the prompt', () => {
+      renderList([entry({ worktreeId: 'a', title: 'My worktree', prompt: 'do a thing' })])
+      expect(openEditor().value).toBe('My worktree')
+      cleanup()
+
+      renderList([entry({ worktreeId: 'a', title: '', prompt: 'do a thing' })])
+      expect(openEditor().value).toBe('do a thing')
+    })
+
+    it('commits a rename on Enter and closes the editor', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Old' })])
+      const input = openEditor()
+      fireEvent.change(input, { target: { value: 'New name' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(renameWorktree).toHaveBeenCalledWith('a', 'New name')
+      expect(screen.queryByRole('textbox')).toBeNull()
+    })
+
+    it('commits a rename on blur', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Old' })])
+      const input = openEditor()
+      fireEvent.change(input, { target: { value: 'Renamed' } })
+      fireEvent.blur(input)
+
+      expect(renameWorktree).toHaveBeenCalledWith('a', 'Renamed')
+    })
+
+    it('reverts on Escape without renaming', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Old' })])
+      const input = openEditor()
+      fireEvent.change(input, { target: { value: 'discard me' } })
+      fireEvent.keyDown(input, { key: 'Escape' })
+
+      expect(renameWorktree).not.toHaveBeenCalled()
+      expect(screen.queryByRole('textbox')).toBeNull()
+    })
+
+    it('does not rename when the value is unchanged', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Same' })])
+      const input = openEditor()
+      fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(renameWorktree).not.toHaveBeenCalled()
+    })
+
+    it('does not select the worktree when clicking the rename pencil', () => {
+      renderList([entry({ worktreeId: 'a', title: 'Old' })])
+      openEditor()
+
+      expect(useUiStore.getState().selectedWorktreeId).toBeNull()
+    })
   })
 })

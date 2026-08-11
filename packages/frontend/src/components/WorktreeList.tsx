@@ -2,12 +2,13 @@ import { useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RenameIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { dismissProvisioning, restartWorktree, setWorktreeBackground } from '#lib/createWorktree'
+import { useInlineRename } from '#lib/useInlineRename'
 import { getStoppedWorktrees } from '#lib/stoppedApi'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
@@ -336,9 +337,17 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hovered, setHovered] = useState(false)
-  // Touch has no hover, so the row's overlay actions (pin, delete) are always
-  // shown on mobile and the marquee never runs — a long title simply stays
-  // truncated, and the pane header shows it in full.
+  const {
+    editing: editingTitle,
+    seed,
+    inputRef,
+    start: startRename,
+    handleKeyDown: handleRenameKeyDown,
+    handleBlur: handleRenameBlur,
+  } = useInlineRename(worktree.worktreeId, worktree.title || worktree.prompt || '')
+  // Touch has no hover, so the row's overlay actions (rename, pin, delete) are
+  // always shown on mobile and the marquee never runs — a long title simply
+  // stays truncated, and the pane header shows it in full.
   const isMobile = useIsMobile()
   const unread = isUnreadWaiting(worktree, readWaiting)
   // The container is being torn down — server-marked, or an optimistic delete
@@ -385,113 +394,154 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
     )
   }
 
+  // The age/agents/branch/tool line, unchanged whether the title above it is
+  // the marquee display or the rename input.
+  const metaLine = (
+    <span className="flex items-center gap-2 text-xs text-text-faint">
+      <span className="shrink-0">{relativeAge(worktree.createdAt)}</span>
+      {/* Only when a worktree holds more than one live conversation —
+          one is the overwhelmingly common case and a column of "1
+          agent" would be pure noise. */}
+      {openAgentCount(worktree) > 1 && (
+        <span
+          className="shrink-0"
+          title={`${openAgentCount(worktree)} agent worktrees open in this worktree`}
+        >
+          {openAgentCount(worktree)} agents
+        </span>
+      )}
+      {/* The remote branch this worktree's worktree tracks. */}
+      {worktree.baseBranch && (
+        <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${worktree.baseBranch}`}>
+          <BranchIcon size={10} className="shrink-0" />
+          <span className="truncate font-mono text-[11px]">{worktree.baseBranch}</span>
+        </span>
+      )}
+      {/* Tool name moved off the title line so the title can run full-width;
+          hidden when the blocked-hosts badge claims the bottom-right. */}
+      {worktree.blockedHosts.length === 0 && (
+        <span className="ml-auto shrink-0">{TOOL_LABEL[worktree.tool]}</span>
+      )}
+    </span>
+  )
+
   return (
     <div
       className="group relative mx-2"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <button
-        onClick={() => selectWorktree(worktree.worktreeId)}
-        className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 text-left text-sm transition hover:bg-surface-2/60',
-          // A taller row on touch: the whole thing is the tap target.
-          'py-2 max-md:py-2.5',
-          selectedWorktreeId === worktree.worktreeId && 'bg-surface-2 hover:bg-surface-2',
-        )}
-      >
-        {/* Title fills the row; only on hover does it inset to clear the pin
-            + delete buttons and marquee-scroll when it's too long to fit.
-            On mobile those buttons never hide, so the inset is permanent. */}
-        <span className="flex items-center gap-2 group-hover:pr-12 max-md:pr-14">
-          {/* Braille spinner: the worktree's agent is actively running. The
-              cycling glyph reads as "working" and can't be mistaken for the
-              round unread bubble below (which is a solid, still dot). */}
-          {worktree.status === 'running' && (
-            <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
+      {editingTitle ? (
+        <div className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm">
+          <span className="flex items-center gap-2">
+            <input
+              ref={inputRef}
+              aria-label="Worktree row title"
+              defaultValue={seed}
+              placeholder="Worktree name"
+              onKeyDown={handleRenameKeyDown}
+              onBlur={handleRenameBlur}
+              className="min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
+                text-sm font-medium text-text outline-none"
+            />
+          </span>
+          {metaLine}
+        </div>
+      ) : (
+        <>
+          <button
+            onClick={() => selectWorktree(worktree.worktreeId)}
+            className={clsx(
+              'flex w-full flex-col gap-0.5 rounded-lg px-2.5 text-left text-sm transition hover:bg-surface-2/60',
+              // A taller row on touch: the whole thing is the tap target.
+              'py-2 max-md:py-2.5',
+              selectedWorktreeId === worktree.worktreeId && 'bg-surface-2 hover:bg-surface-2',
+            )}
+          >
+            {/* Title fills the row; only on hover does it inset to clear the
+                rename + pin + delete buttons and marquee-scroll when it's too
+                long to fit. On mobile those buttons never hide, so the inset
+                is permanent. */}
+            <span className="flex items-center gap-2 group-hover:pr-20 max-md:pr-24">
+              {/* Braille spinner: the worktree's agent is actively running. The
+                  cycling glyph reads as "working" and can't be mistaken for the
+                  round unread bubble below (which is a solid, still dot). */}
+              {worktree.status === 'running' && (
+                <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              )}
+              {/* Unread bubble: this worktree started waiting and hasn't been viewed. */}
+              {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+              <MarqueeTitle
+                text={worktree.title || worktree.prompt || 'New worktree'}
+                hovered={hovered && !isMobile}
+              />
             </span>
-          )}
-          {/* Unread bubble: this worktree started waiting and hasn't been viewed. */}
-          {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-          <MarqueeTitle
-            text={worktree.title || worktree.prompt || 'New worktree'}
-            hovered={hovered && !isMobile}
-          />
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="shrink-0">{relativeAge(worktree.createdAt)}</span>
-          {/* Only when a worktree holds more than one live conversation —
-              one is the overwhelmingly common case and a column of "1
-              agent" would be pure noise. */}
-          {openAgentCount(worktree) > 1 && (
-            <span
-              className="shrink-0"
-              title={`${openAgentCount(worktree)} agent worktrees open in this worktree`}
-            >
-              {openAgentCount(worktree)} agents
-            </span>
-          )}
-          {/* The remote branch this worktree's worktree tracks. */}
-          {worktree.baseBranch && (
-            <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${worktree.baseBranch}`}>
-              <BranchIcon size={10} className="shrink-0" />
-              <span className="truncate font-mono text-[11px]">{worktree.baseBranch}</span>
-            </span>
-          )}
-          {/* Tool name moved off the title line so the title can run full-width;
-              hidden when the blocked-hosts badge claims the bottom-right. */}
-          {worktree.blockedHosts.length === 0 && (
-            <span className="ml-auto shrink-0">{TOOL_LABEL[worktree.tool]}</span>
-          )}
-        </span>
-      </button>
+            {metaLine}
+          </button>
 
-      {/* Overlaid as a sibling for the same reason as the delete × below:
-          the badge is a button and can't nest inside the row button. The
-          wrapper is pointer-inert so only the badge itself takes clicks. */}
-      {worktree.blockedHosts.length > 0 && (
-        <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
-          <BlockedHostsBadge
-            hosts={worktree.blockedHosts}
-            worktreeId={worktree.worktreeId}
-            iconSize={11}
-            className="pointer-events-auto hover:bg-[#d65858]/25"
-          />
-        </span>
+          {/* Overlaid as a sibling for the same reason as the delete × below:
+              the badge is a button and can't nest inside the row button. The
+              wrapper is pointer-inert so only the badge itself takes clicks. */}
+          {worktree.blockedHosts.length > 0 && (
+            <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
+              <BlockedHostsBadge
+                hosts={worktree.blockedHosts}
+                worktreeId={worktree.worktreeId}
+                iconSize={11}
+                className="pointer-events-auto hover:bg-[#d65858]/25"
+              />
+            </span>
+          )}
+
+          {/* Overlaid as siblings (not nested in the row button) and pointer-inert
+              until hover, so they can't swallow clicks meant for selecting the row.
+              Touch has no hover: below md they are always live and always visible,
+              with a bigger target. Also revealed on focus-visible, so keyboard
+              users can see and reach them without a mouse. */}
+          <button
+            onClick={startRename}
+            title="Rename worktree"
+            aria-label="Rename worktree"
+            className="absolute right-14 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100
+              focus-visible:pointer-events-auto focus-visible:opacity-100
+              focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent
+              max-md:right-16 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+          >
+            <RenameIcon size={13} />
+          </button>
+          <button
+            onClick={toggleBackground}
+            title={worktree.background ? 'Remove from background' : 'Move to background'}
+            aria-label={worktree.background ? 'Remove from background' : 'Move to background'}
+            className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100
+              max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+          >
+            <PinIcon size={13} className={clsx(worktree.background && 'rotate-45')} />
+          </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            title="Delete worktree"
+            aria-label="Delete worktree"
+            className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100
+              max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </>
       )}
-
-      {/* Overlaid as siblings (not nested in the row button) and pointer-inert
-          until hover, so they can't swallow clicks meant for selecting the row.
-          Touch has no hover: below md they are always live and always visible,
-          with a bigger target. */}
-      <button
-        onClick={toggleBackground}
-        title={worktree.background ? 'Remove from background' : 'Move to background'}
-        aria-label={worktree.background ? 'Remove from background' : 'Move to background'}
-        className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100
-          max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-      >
-        <PinIcon size={13} className={clsx(worktree.background && 'rotate-45')} />
-      </button>
-      <button
-        onClick={() => setConfirmDelete(true)}
-        title="Delete worktree"
-        aria-label="Delete worktree"
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100
-          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-      >
-        <CloseIcon size={14} />
-      </button>
 
       <ConfirmDialog
         open={confirmDelete}
