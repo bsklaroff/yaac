@@ -286,6 +286,89 @@ describe('WorktreeChat rendering', () => {
     expect(screen.getByText('ls').closest('div')?.textContent).not.toContain('```')
   })
 
+  it('shows a read as the file, highlighted for its path', () => {
+    stream.events = [toolCall(0, {
+      toolCallId: 't1',
+      title: 'Read a.ts',
+      kind: 'read',
+      locations: [{ path: '/workspace/a.ts' }],
+      content: [{ type: 'text', text: '# not a heading\nconst x = 1\n' }],
+    })]
+    const { container } = show()
+    fireEvent.click(screen.getByText('Read a.ts'))
+    // Source, not prose: the `#` is a line of the file rather than a heading,
+    // and the code is tokenized the way the diff views tokenize it.
+    expect(container.querySelector('h1')).toBeNull()
+    expect(container.querySelector('.diff-hl')?.textContent).toContain('# not a heading')
+    expect(container.querySelector('.tok-keyword')?.textContent).toBe('const')
+  })
+
+  it('lifts a read’s line numbers into a gutter, out of the code', () => {
+    stream.events = [toolCall(0, {
+      toolCallId: 't1',
+      title: 'Read a.ts',
+      kind: 'read',
+      locations: [{ path: '/workspace/a.ts' }],
+      // What an agent's file reader prints: a numbered gutter, and — for some
+      // adapters — the whole thing inside a fence.
+      content: [{ type: 'text', text: '```\n   7→const x = 1\n   8→\n   9→export {}\n```\n' }],
+    })]
+    const { container } = show()
+    fireEvent.click(screen.getByText('Read a.ts'))
+    const block = container.querySelector('.diff-hl')
+    expect(block?.textContent).toContain('const x = 1')
+    expect(block?.textContent).toContain('export {}')
+    // The numbers are the gutter, and are no longer in the code.
+    expect([...container.querySelectorAll('.w-10')].map((e) => e.textContent)).toEqual(['7', '8', '9'])
+    expect(block?.textContent).not.toContain('→')
+    // Nor are the adapter's backticks part of the file.
+    expect(container.textContent).not.toContain('```')
+  })
+
+  it('shows a read that named no file as code anyway', () => {
+    // A read's body is a file's text whether or not the adapter said which
+    // file. Without a path there is nothing to color it by — but it is still
+    // the file's own lines, not a document to reinterpret.
+    stream.events = [toolCall(0, {
+      toolCallId: 't1',
+      title: 'Read something',
+      kind: 'read',
+      content: [{ type: 'text', text: '## not a heading\n' }],
+    })]
+    const { container } = show()
+    fireEvent.click(screen.getByText('Read something'))
+    expect(container.querySelector('h2')).toBeNull()
+    expect(screen.getByText('## not a heading')).toBeTruthy()
+  })
+
+  it('keeps a markdown file’s own fences', () => {
+    // Unwrapping a lone fence assumes the backticks are an adapter's wrapper.
+    // For a `.md` that assumption is wrong often enough to drop: a document
+    // whose body is one code sample would lose characters it really contains.
+    stream.events = [toolCall(0, {
+      toolCallId: 't1',
+      title: 'Read notes.md',
+      kind: 'read',
+      locations: [{ path: '/workspace/notes.md' }],
+      content: [{ type: 'text', text: '```ts\nconst x = 1\n```\n' }],
+    })]
+    const { container } = show()
+    fireEvent.click(screen.getByText('Read notes.md'))
+    expect(container.querySelector('.diff-hl')?.textContent).toContain('```ts')
+  })
+
+  it('takes a read’s language from the fence when it has no path', () => {
+    stream.events = [toolCall(0, {
+      toolCallId: 't1',
+      title: 'Read it',
+      kind: 'read',
+      content: [{ type: 'text', text: '```python\nimport os\n```\n' }],
+    })]
+    const { container } = show()
+    fireEvent.click(screen.getByText('Read it'))
+    expect(container.querySelector('.tok-keyword')?.textContent).toBe('import')
+  })
+
   it('names each file when one call edits several', () => {
     stream.events = [toolCall(0, {
       toolCallId: 't1',

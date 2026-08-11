@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
+import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
 import { Markdown } from '#components/Markdown'
+import { codeLines, unfence } from '#lib/code'
 import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
-import { languageForPath } from '#lib/highlight'
+import { languageForFence, languageForPath } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#store'
 import type {
@@ -166,6 +168,38 @@ function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolea
   )
 }
 
+/**
+ * A file read, shown as the file — highlighted for its own path, with the
+ * reader's line numbers when it printed any.
+ *
+ * The alternative is what every other tool call gets, which is markdown: fine
+ * for prose, wrong for source. A file's text is not a document to reinterpret,
+ * and running it through a markdown parser is actively lossy — a leading `#`
+ * becomes a heading, an underscore italicizes, indentation collapses. An edit
+ * already escapes that by being a diff; this is the same escape for the other
+ * half of what an agent does to a file.
+ */
+function ReadView({ path, text }: { path?: string; text: string }): JSX.Element {
+  const { lines, language } = useMemo(() => {
+    const byPath = path !== undefined ? languageForPath(path) : null
+    // Some adapters hand a tool's output back inside a markdown fence. Those
+    // backticks are the adapter's, not the file's — but the fence's info string
+    // is worth keeping: it is what names the language when the call reported no
+    // path, or a path whose extension we don't tokenize.
+    //
+    // Not for a markdown file, though. A `.md` whose whole body is one fenced
+    // block is an ordinary document, and unwrapping it would hide characters
+    // the file really contains; a `.ts` that is nothing but a fence is not a
+    // file that compiles.
+    const body = byPath === 'md' ? { text, fence: '' } : unfence(text)
+    return {
+      lines: codeLines(body.text),
+      language: byPath ?? languageForFence(body.fence),
+    }
+  }, [path, text])
+  return <CodeView lines={lines} language={language} className="px-2.5 py-1.5" />
+}
+
 function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
   const diffs = useMemo(
     () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
@@ -173,6 +207,10 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
   )
   const edits = useMemo(() => groupDiffs(diffs), [diffs])
   const body = toolTextOf(call.content)
+  /** A read's body is a file's own text, so it is rendered as source whether or
+   *  not the call said which file: the path picks the highlighting, and a call
+   *  that reported none is still code, just uncolored. */
+  const isRead = call.kind === 'read'
   const hasContent = body !== '' || edits.length > 0
   /**
    * The user's own choice, or `null` for "hasn't said". An edit opens by
@@ -233,11 +271,19 @@ function ToolRow({ call }: { call: AcpToolCall }): JSX.Element {
               <EditGroupView group={group} showPath={edits.length > 1} />
             </div>
           ))}
-          {body !== '' && (
+          {body !== '' && (isRead ? (
+            <div className={clsx('overflow-x-auto', edits.length > 0 && 'border-t border-hairline')}>
+              {/* First location, best-effort: `locations` and `content` are
+                  merged independently, so a call reporting several files may
+                  not name the one this body came from. Picking wrong costs
+                  colors and nothing else — the text is shown either way. */}
+              <ReadView path={call.locations?.[0]?.path} text={body} />
+            </div>
+          ) : (
             <div className={clsx('px-2.5 py-1.5 text-[11px] leading-snug text-text-dim', edits.length > 0 && 'border-t border-hairline')}>
               <Markdown>{body}</Markdown>
             </div>
-          )}
+          ))}
         </div>
       )}
     </div>
