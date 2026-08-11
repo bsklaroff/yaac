@@ -175,6 +175,43 @@ An **`acp` worktree needs none of this** — its pane is a chat composer, not a
 terminal (`docs/agent-modes.md`) — which makes it the mode that works best on a
 phone.
 
+## Scrolling a terminal by touch
+
+`lib/touch-scroll.ts` is what makes a swipe over a pane scroll it. Nothing
+below it does: xterm has no touch handling — its viewport is a
+transform-scrolled element with painted scrollbars, not a native overflow
+scroller — and a browser synthesizes no wheel event from a touch pan, so the
+wheel path (`lib/wheel-pacing.ts`) never fires either.
+
+A pane's scrollback lives in tmux, which runs with `mouse on`, so the handler
+translates finger travel into the same SGR wheel reports the mouse path sends —
+one per five cell-heights, tmux's own `scroll-up -N 5`, which puts the content
+roughly 1:1 under the finger. With nothing reporting — a pane app that turned
+the mouse off, or a graceful detach, which resets the mode on its way out — the
+same travel scrolls xterm's viewport instead. A *dropped* socket is not one of
+those cases: nothing resets the parser's DECSET state, so reporting stays
+nominally active and the reports are generated and then dropped at the closed
+socket. Which is the right outcome anyway — the pane is alternate-screen for
+the whole attach, so there is no local scrollback for the other branch to move.
+Unlike the wheel path it needs no pacing: a wheel gesture outruns the
+round trip because a trackpad keeps emitting after the fingers stop, whereas a
+drag *is* the finger and cannot earn reports faster than tmux answers them.
+
+Two details carry the rest of the behavior. `.xterm` is `touch-action: none`
+(in `index.css`) — a touchmove the browser has already claimed for its own
+panning is no longer cancelable, and canceling it is the whole mechanism. It is
+`none` rather than the weaker `pinch-zoom` that would keep two-finger zoom over
+the pane, because how long a browser leaves an unclaimed gesture cancelable is
+engine heuristics and `none` is the only value with no hand-off to race. And
+the gesture is only claimed past an 8px slop, so a tap stays a tap: below the
+threshold nothing is preventDefault'd and the browser still synthesizes the
+click `patchClickForwarding` hands to the TUI, while a swipe cancels that click
+and so cannot also press whatever it started over.
+
+There is deliberately no flick momentum. Every report is a round trip to the
+pod, and the wheel pacer exists precisely to stop a gesture's tail from
+scrolling the pane after the user stopped asking.
+
 ## Chrome
 
 `viewport-fit=cover` in the page meta, and the shell's positioned container
@@ -201,3 +238,11 @@ surviving a widen, tap-target sizes — are verified only by
 program nothing in `pnpm test` runs. A regression in exactly those behaviors
 lands green. Re-run it by hand against a live server after any change to
 `MobileScreenLayer` or `WorktreeView`'s layout math.
+
+Touch scrolling is the same kind of gap for the same reason — every claim it
+rests on is a browser fact jsdom has no opinion about. `touch-scroll.test.ts`
+covers the translation from travel to reports; that the gesture is cancelable
+at all, that canceling it suppresses the click, and that a swipe really moves a
+`mouse on` tmux pane are covered by
+`test-playwright-scripts/xterm-touch-scroll-test.js`, which drives real touch
+input against a real tmux and needs no cluster.

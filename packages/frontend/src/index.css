@@ -207,6 +207,31 @@ body {
 }
 
 /*
+ * A terminal's scrollback lives in tmux, not in the browser, so a swipe over
+ * one has to become a scroll report rather than a pan (lib/touch-scroll.ts).
+ * The handler can only claim the gesture — preventDefault a touchmove — if the
+ * browser has not already handed it to its own scrolling, which is what taking
+ * panning away guarantees.
+ *
+ * `none`, not the weaker `pinch-zoom` that would keep two-finger zoom over the
+ * pane. How long a browser leaves an unclaimed gesture cancelable is engine
+ * heuristics, and `none` is the only value that removes the question: it
+ * permits nothing, so there is nothing to hand off and no race for the handler
+ * to win. The cost is pinch-zoom over the pane, and the font-size setting,
+ * OS-level zoom (which sits below the browser and ignores `touch-action`) and
+ * a pinch started over the header or the key bar all still work.
+ *
+ * Unconditional, not scoped to the mobile breakpoint: that breakpoint is
+ * width-only, so a phone in landscape and a touch-screen laptop both land on
+ * the desktop layout with touch as an input, and scoping the rule while the
+ * handler stays unconditional would leave the two halves of one mechanism
+ * disagreeing.
+ */
+.xterm {
+  touch-action: none;
+}
+
+/*
  * `--app-height` is the *visual* viewport height, published by
  * useVisualViewportHeight() while the mobile shell is active. The layout
  * viewport doesn't shrink when a soft keyboard opens, so sizing to it would

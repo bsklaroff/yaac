@@ -8,6 +8,7 @@ import { clipboardKeyAction } from '#lib/clipboard'
 import { LoadingIcon } from '#lib/icons'
 import { paneKey, registerPtyInput } from '#lib/ptyInput'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
+import { patchTouchScroll } from '#lib/touch-scroll'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
@@ -151,6 +152,12 @@ export function WorktreeTerminal({
     const disposeWheelPacing = patchWheelPacing(term)
     if (!disposeWheelPacing) {
       console.warn('xterm internals changed: wheel reports reach tmux unpaced')
+    }
+    // xterm has no touch handling and a touch pan synthesizes no wheel event,
+    // so without this a swipe over a pane on a phone scrolls nothing at all.
+    const disposeTouchScroll = patchTouchScroll(term)
+    if (!disposeTouchScroll) {
+      console.warn('xterm internals changed: touch no longer scrolls the pane')
     }
     fit.fit()
     termRef.current = term
@@ -337,6 +344,7 @@ export function WorktreeTerminal({
       unregisterInput()
       testHooks.__xterms?.delete(term)
       disposeWheelPacing?.()
+      disposeTouchScroll?.()
       disposeClickForwarding?.()
       if (ws) {
         // Drop handlers so a late close event can't touch the disposed
