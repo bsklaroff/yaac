@@ -1,4 +1,4 @@
-import { listWorkspaces } from '#runtime/k8s/worktrees'
+import { worktreeRuntime } from '#runtime/driver'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { sessionTranscriptPath, transcriptLastActiveMs } from '#store/transcripts'
 import { listWorktreeRows, type WorktreeRow } from '#records'
@@ -30,7 +30,7 @@ export async function listStoppedWorktrees(
 
   const runningIds = new Set<string>()
   try {
-    for (const w of await listWorkspaces()) {
+    for (const w of await worktreeRuntime().list()) {
       if (w.workspaceId) runningIds.add(w.workspaceId)
     }
   } catch {

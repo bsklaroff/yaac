@@ -25,6 +25,8 @@ import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
+import { setWorktreeRuntime } from '#runtime/driver'
+import { k8sWorktreeRuntime } from '#main/runtime-k8s'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -119,6 +121,12 @@ function bindServer(
  *   port is recorded in the lock.
  */
 export async function runServer(opts: ServerRunOptions): Promise<void> {
+  // Which runtime this process runs is the composition root's one call to
+  // make, and it is made before anything can ask for one: every mediator
+  // reaches the substrate through the registered driver, so an unregistered
+  // one is a startup-order bug rather than a null branch downstream.
+  setWorktreeRuntime(k8sWorktreeRuntime())
+
   await preflightHostTor()
   await ensureDataDir()
 

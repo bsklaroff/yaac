@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { passViewFixture } from '@yaac/test-utils/fake-runtime'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -161,7 +162,7 @@ describe('reconcileVclusters', () => {
       vclusterServices: vi.fn(() => Promise.resolve([])),
       vclusterConfigMaps: vi.fn(() => Promise.resolve([])),
     }
-    await reconcileVclusters(NOW, snapshot)
+    await reconcileVclusters(NOW, passViewFixture(snapshot))
     expect(mockList).not.toHaveBeenCalled()
     expect(mockPods).not.toHaveBeenCalled()
     expect(mockJobs).not.toHaveBeenCalled()

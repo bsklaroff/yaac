@@ -7,13 +7,7 @@ import path from 'node:path'
 vi.mock('#platform/k8s/stream-relay', () => ({
   podExec: vi.fn(),
 }))
-vi.mock('#platform/git', () => ({
-  worktreeUpstreamBranch: vi.fn(),
-}))
-
 import { podExec } from '#platform/k8s/stream-relay'
-import { worktreeUpstreamBranch } from '#platform/git'
-import { repoDir } from '@yaac/shared/project-paths'
 import {
   statusFromCode,
   resolveRenamePath,
@@ -22,11 +16,9 @@ import {
   parseChangesOutput,
   buildChangesScript,
   getWorktreeChanges,
-  worktreeForkFallback,
 } from '#runtime/k8s/worktrees/changes'
 
 const mockExec = vi.mocked(podExec)
-const mockUpstream = vi.mocked(worktreeUpstreamBranch)
 
 describe('statusFromCode', () => {
   it('maps git status letters', () => {
@@ -526,24 +518,5 @@ describe('getWorktreeChanges', () => {
   it('throws rather than reporting no changes when the run failed partway', async () => {
     mockExec.mockResolvedValue({ stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n', stderr: '' })
     await expect(getWorktreeChanges('yaac-proj-abc')).rejects.toThrow(/completion marker/)
-  })
-})
-
-describe('worktreeForkFallback', () => {
-  beforeEach(() => { mockUpstream.mockReset() })
-
-  // The checkout's own idea of its fork point, which the server only asks for
-  // when no row records one (see fork-branch.ts for why that order).
-  it('reads the session branch’s upstream out of the checkout', async () => {
-    mockUpstream.mockResolvedValue('main')
-    expect(await worktreeForkFallback('demo', 'sid-a')).toBe('main')
-    expect(mockUpstream).toHaveBeenCalledWith(repoDir('demo'), 'agent/sid-a')
-  })
-
-  // Not fatal: the pod script has its own fallback, and a worktree whose git
-  // config cannot be read must not fail the whole changes request.
-  it('answers null when the checkout cannot be read', async () => {
-    mockUpstream.mockRejectedValue(new Error('not a git repo'))
-    expect(await worktreeForkFallback('demo', 'sid-b')).toBeNull()
   })
 })

@@ -1,5 +1,6 @@
 import { getWorktreeRow } from '#records'
-import { worktreeForkFallback } from '#runtime/k8s/worktrees'
+import { worktreeUpstreamBranch } from '#platform/git'
+import { repoDir } from '@yaac/shared/project-paths'
 
 /**
  * How long a worktree's fork branch is trusted without re-reading it. Reading
@@ -58,5 +59,12 @@ export async function worktreeForkBranch(projectSlug: string, worktreeId: string
 async function recordedForkBranch(projectSlug: string, worktreeId: string): Promise<string | null> {
   const row = await getWorktreeRow(projectSlug, worktreeId).catch(() => undefined)
   if (row?.baseBranch) return row.baseBranch
-  return worktreeForkFallback(projectSlug, worktreeId).catch(() => null)
+  return forkFallback(projectSlug, worktreeId).catch(() => null)
+}
+
+/** The checkout's own `branch.agent/<id>.merge`, read host-side. Not a
+ *  substrate call at all — the clone is on this disk — which is why it sits
+ *  beside its only caller rather than behind the runtime. */
+function forkFallback(projectSlug: string, workspaceId: string): Promise<string | null> {
+  return worktreeUpstreamBranch(repoDir(projectSlug), `agent/${workspaceId}`).catch(() => null)
 }

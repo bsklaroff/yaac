@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#platform/k8s/pods', async (importOriginal) => {
@@ -58,6 +59,7 @@ describe('listActiveWorktrees waitingSinceMs (store projection)', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installRealWorktreeRuntime()
     tmpDir = await createTempDataDir()
     _resetWorktreeStatusStoreForTests()
     mockListPods.mockReset()

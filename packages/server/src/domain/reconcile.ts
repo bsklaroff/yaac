@@ -6,71 +6,32 @@ import {
   reconcileSpawnRequests,
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
-import { reconcileImageSalvage } from '#runtime/k8s/worktrees'
-import {
-  reconcileProxySshKeys,
-  reconcileVclusterAttribution,
-  type ProxyChangeSource,
-} from '#runtime/k8s/egress'
-import {
-  reconcileProjectRegistryGc,
-  reconcileRedirectClaims,
-  reconcileVclusters,
-} from '#runtime/k8s/cluster'
-import {
-  reconcileBuildCacheGc,
-  reconcileBuilderPodGc,
-  reconcileImagePrewarm,
-  reconcileNodeImageStores,
-} from '#runtime/k8s/images'
-import { reconcileHostImageGc } from '#runtime/k8s/image-engine'
 import { reconcileGeneratedTitles } from '#domain/titles'
-import { listProjectRows } from '#records'
-import type { DeltaSource, TickSnapshot } from '#platform/k8s'
-import type { AgentTool } from '@yaac/shared/types'
+import { worktreeRuntime } from '#runtime/driver'
+import type { ReconcileStep } from '#runtime/contract'
+
+// The scheduling vocabulary is the contract's, because a runtime declares
+// steps in it too (docs/layered-server.md). Re-exported here so the
+// reconciler engine and the steps keep importing it from the layer that
+// owns the pass.
+export type { PassContext, ReconcileStep, ReconcileTrigger } from '#runtime/contract'
 
 /**
- * A source that can dirty a pass: an informer cache delta, or one of the
- * three edges no informer can see — the live-agent set and a worktree's
- * driver-stream health (both in-pod), and what the egress proxy reports
- * over its event stream.
- */
-export type ReconcileTrigger =
-  | DeltaSource
-  | 'live-agents'
-  | 'status-streams'
-  | ProxyChangeSource
-
-export interface ReconcileStep {
-  name: string
-  /** Sources that dirty this step; every step also runs on resync. */
-  triggers: readonly ReconcileTrigger[]
-  run: (ctx: PassContext) => Promise<void>
-}
-
-export interface PassContext {
-  /** Which sources dirtied this pass. */
-  triggers: ReadonlySet<ReconcileTrigger>
-  /** Whether this is the periodic run-everything pass. */
-  resync: boolean
-  /** Aborts the pass. Handed down so a step that fans out into many of its
-   *  own can stop starting them the moment shutdown signals. */
-  signal: AbortSignal
-  /** The pass's shared substrate view — memoized, created on first use. */
-  snapshot: () => TickSnapshot
-  /** The configured default tool — memoized, read from its preference row
-   *  on first use and handed to the steps that need it, so no substrate
-   *  step reads a row itself. */
-  defaultTool: () => Promise<AgentTool | undefined>
-}
-
-/**
- * One flat list, in the order a pass runs it. Titles are generated after
- * the conversation sweep so a just-captured opening message is eligible in
- * the same pass; the reaper needs no ordering against a publish, because
- * it reads the desired set itself at the top of its own step.
+ * One flat list, in the order a pass runs it.
+ *
+ * The mediators' own steps, with the runtime's upkeep spliced in at the two
+ * points where the ordering is genuinely theirs to state: its pre-pool group
+ * ahead of the spare pool, and its maintenance group after the sweeps that
+ * read rows. What those steps sweep, and how they are ordered among
+ * themselves, is the runtime's business and is not named here.
+ *
+ * Titles are generated after the conversation sweep so a just-captured
+ * opening message is eligible in the same pass; the reaper needs no ordering
+ * against a publish, because it reads the desired set itself at the top of
+ * its own step.
  */
 export function defaultReconcileSteps(): ReconcileStep[] {
+  const runtime = worktreeRuntime().reconcileSteps()
   return [
     // Carry a previous yaac's per-worktree metadata documents into rows.
     // FIRST, and self-gating to once per server life: the sweeps below read
@@ -98,7 +59,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // a reaping loop — the destructive path needs a conclusive in-pod
     // verdict, and a failed or timed-out probe reads `unknown` and keeps
     // the worktree.
-    { name: 'stale-worktrees', triggers: ['worktree-pods', 'worktree-jobs', 'status-streams'],
+    { name: 'stale-worktrees', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
     // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS
@@ -108,44 +69,14 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // caller wait out a poll.
     { name: 'spawn-requests', triggers: ['spawn-requests'],
       run: (ctx) => reconcileSpawnRequests({}, ctx.snapshot()) },
-    // Leaked trust-split builder pods (server restarted mid-build) — the
-    // label sweep backstop. Throttled internally. Ahead of image-prewarm on
-    // purpose: a leaked builder's memory reservation is what stops the next
-    // build from scheduling, so it has to go before builds are launched.
-    { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
-    // Keep every project's image chain built and pushed (detached tasks).
-    // Before the prewarm pool: a spare's create then joins the
-    // already-running builds. Throttled internally. Which projects exist is
-    // a row question, so the slugs are resolved here and handed down — the
-    // runtime sweep never reads records.
-    { name: 'image-prewarm', triggers: [], run: async () => {
-      const slugs = (await listProjectRows().catch(() => [])).map((r) => r.slug)
-      reconcileImagePrewarm(slugs)
-    } },
+    // The runtime's own work that has to precede the pool: a spare's create
+    // should join image builds already running, and anything holding
+    // capacity should be out of the way before those builds are launched.
+    ...runtime.prePool,
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped worktrees). No-op when the pool size is 0.
-    { name: 'prewarm-pool', triggers: ['worktree-pods'],
+    { name: 'prewarm-pool', triggers: ['workspaces'],
       run: async (ctx) => reconcilePrewarmPool((await ctx.defaultTool()) ?? 'claude', ctx.snapshot()) },
-    // Mid-worktree image salvage (nested engines → project registry).
-    // Throttled internally per worktree; salvages run detached.
-    { name: 'image-salvage', triggers: [], run: () => reconcileImageSalvage() },
-    // Rebuild each project's node-local image store from its registry —
-    // the read-only lower a fresh nested worktree mounts. After the salvage
-    // so a just-pushed generation is the one a build picks up, and before
-    // the registry collect, which holds that registry read-only for
-    // minutes. Fires detached per project and is throttled internally; the
-    // slug list is a row question, so it is resolved here like the prewarm
-    // sweep's rather than in the runtime.
-    { name: 'image-store', triggers: [], run: async () => {
-      const slugs = (await listProjectRows().catch(() => [])).map((r) => r.slug)
-      reconcileNodeImageStores(slugs)
-    } },
-    // Blob reclaim in one project registry per pass. It cannot wait for a
-    // project to go idle — an active one never does — so it takes a
-    // read-only maintenance window instead, and detaches. Throttled
-    // internally; after the salvage, so a just-pushed generation is the
-    // one that survives the collect.
-    { name: 'registry-gc', triggers: [], run: () => reconcileProjectRegistryGc() },
     // Which agent sessions each worktree holds, which are live, and what
     // each opened with — the in-pod hook's session-starts log folded into
     // rows and read back (or, under `acp`, the handshake), crossed with the
@@ -156,37 +87,19 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // the only step that reads the watcher's live set, and it is what turns
     // a fresh ACP handshake into a conversation row within a debounce
     // instead of within a resync.
-    { name: 'agent-sessions', triggers: ['worktree-pods', 'live-agents'],
+    { name: 'agent-sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
-    // ssh-agent heal only (attach-only probe, never bootstraps): agent
-    // identities are memory-only by design and need the server to re-upload
-    // them after a proxy pod replacement. A replacement necessarily kills
-    // the proxy event stream, so its reattach IS the heal's edge; the step
-    // still checks the loss signature itself, so a merely flaky tunnel
-    // re-uploads nothing.
-    { name: 'proxy-ssh-keys', triggers: ['proxy-reconnect'], run: () => reconcileProxySshKeys() },
-    // Per-worktree vclusters: orphan GC + host-side kubeconfig heal.
-    { name: 'vclusters', triggers: ['vcluster-namespaces', 'worktree-pods', 'worktree-jobs'],
-      run: (ctx) => reconcileVclusters(Date.now(), ctx.snapshot()) },
-    // yaac-in-yaac: tell the outer proxy which outer worktree owns each
-    // vcluster's pods. A stream reattach re-pushes, which is what covers an
-    // outer-proxy restart (the restart is what dropped the stream).
-    { name: 'vcluster-attribution',
-      triggers: ['vcluster-namespaces', 'vcluster-pods', 'proxy-reconnect'],
-      run: (ctx) => reconcileVclusterAttribution(ctx.snapshot()) },
-    // yaac-in-yaac: validate each vcluster's redirect claims and republish
-    // them for netd. Claim documents arrive through the vcluster syncer, so
-    // a ConfigMap delta is the signal; pod deltas matter too, since a claim
-    // is only as valid as the pod IPs it names.
-    { name: 'redirect-claims',
-      triggers: ['vcluster-namespaces', 'vcluster-configmaps', 'vcluster-pods'],
-      run: (ctx) => reconcileRedirectClaims(ctx.snapshot()) },
-    // Host podman image GC. Throttled internally to every few hours.
-    { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
-    // Registry-side counterpart: retire step-cache tags no build has used
-    // in a cache-ttl and collect their blobs. Throttled internally, and it
-    // stands down while anything is pushing.
-    { name: 'build-cache-gc', triggers: [], run: () => reconcileBuildCacheGc() },
+    // The runtime's upkeep — substrate GCs and datapath heals. After the
+    // sweeps above, so a just-reaped worktree's leavings are collectable in
+    // the same pass.
+    //
+    // This runs later than it used to: the image sweeps and the registry
+    // GC sat between the pool and the conversation sweep. They belong here
+    // because they are substrate upkeep and that is what the group is, and
+    // nothing couples them to the sweep — they throttle internally and
+    // detach their work, and the sweep reads transcripts and rows rather
+    // than images.
+    ...runtime.maintenance,
     // Per-worktree `.cached-packages/modules/<id>` dirs whose runtime is
     // gone — leftovers from crashes and host reboots. A startup sweep that
     // must not delete a dir a create is staging into: which worktrees are
@@ -199,8 +112,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // conversation sweep so a freshly captured prompt is eligible the same
     // pass — which means it owes a pass on whatever dirties that sweep.
     // Cheap when there is nothing to do.
-    { name: 'generated-titles', triggers: ['worktree-pods', 'live-agents'],
+    { name: 'generated-titles', triggers: ['workspaces', 'live-agents'],
       run: () => reconcileGeneratedTitles() },
   ]
 }
-

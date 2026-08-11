@@ -16,7 +16,8 @@
 // cache and the pod-readiness watch, which is where they are covered.
 
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
-export type { DeltaSource } from './cluster-cache'
+export { VCLUSTER_DELTA_SOURCES } from './cluster-cache'
+export type { DeltaSource, VclusterDeltaSource } from './cluster-cache'
 export {
   anyWorktreeDirsExist,
   armDeferredClusterBoot,

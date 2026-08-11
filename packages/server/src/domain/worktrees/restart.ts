@@ -1,4 +1,4 @@
-import { findWorkspace } from '#runtime/k8s/worktrees'
+import { worktreeRuntime } from '#runtime/driver'
 import { teardownForRestart } from './cleanup'
 import { createWorktree } from './create'
 import { clearWorktreeStopped, findWorktreeRow } from '#records'
@@ -25,7 +25,7 @@ export interface RestartResolution {
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
-    const match = await findWorkspace(idOrName)
+    const match = await worktreeRuntime().find(idOrName)
     if (match) {
       return {
         projectSlug: match.projectSlug,

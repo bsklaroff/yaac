@@ -3,11 +3,12 @@
 // vocabulary of `#runtime/contract` — plus the image-salvage sweep that
 // must run against live pods. Modules in here import each other by
 // relative path; everything outside imports `#runtime/k8s/worktrees`.
-export { getWorktreeChanges, worktreeForkFallback } from './changes'
+export { getWorktreeChanges } from './changes'
 export {
   countProjectWorkspaces,
   countWorkspaces,
   findWorkspace,
+  findWorkspaceForTeardown,
   listWorkspaces,
 } from './locate'
 export { observeWorkspaces } from './observe'

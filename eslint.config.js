@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|k8s))/.',
+  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|view|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|k8s))/.',
   message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
@@ -61,6 +61,28 @@ const NO_DATABASE_DIRECT = {
 // importable from every layer: both are zero-dependency outbound channels,
 // and a change notification is not a dependency on the hub that consumes
 // it.
+// The mediators name no substrate: they reach the runtime through
+// `#runtime/driver` (the registered driver) and `#runtime/contract` (its
+// vocabulary). `#runtime/{agents,status,terminals}` stay open: those are
+// runtime vocabulary, not substrate verbs. The api layer is NOT on this
+// rule yet — its substrate use is a different shape (image-build rows, the
+// proxy client, port forwards) and is staged separately in the plan.
+//
+// Two things this rule does not yet prove, both of which resolve when the
+// holdout list below empties. It is per-file, so a restricted file still
+// reaches the substrate TRANSITIVELY through a holdout sibling
+// (`stop.ts` → `./cleanup` → `#platform/k8s`) — a green rule is not yet
+// the claim that a mediator's module graph is cluster-free, and so not yet
+// the unit-test-speed guarantee either.
+//
+// docs/plans/runtime-contract-completion.md is the migration; the holdout
+// override below lists what has not moved yet, and the rule is enforced
+// outright once that list is empty.
+const NO_SUBSTRATE_ABOVE_RUNTIME = {
+  regex: '^(#platform/k8s|#runtime/k8s|#platform/container)(/|$)',
+  message: 'Reach the runtime through #runtime/driver and #runtime/contract, never a substrate barrel (docs/layered-server.md).',
+}
+
 const NO_API_OR_MAIN = {
   regex: '^(#main|#routes|#http|#api)(/|$)',
   message: 'Layers below api/main must not import them (docs/layered-server.md): report through #records events or #notify instead.',
@@ -238,6 +260,49 @@ export default tseslint.config(
   // the api surface or the composition root.
   {
     files: ['packages/server/src/domain/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_API_OR_MAIN,
+            NO_SUBSTRATE_ABOVE_RUNTIME,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The not-yet-migrated half of the runtime carve-out
+  // (docs/plans/runtime-contract-completion.md). Each of these still names a
+  // substrate barrel; the plan's stages empty the list, and the override
+  // below is deleted with the last entry. A new domain file is born
+  // restricted, because it is not on it.
+  //
+  // Everything except the rule under migration still applies here — this
+  // re-declares the domain zone minus NO_SUBSTRATE_ABOVE_RUNTIME.
+  {
+    files: [
+      // stage 4 — exec, claim, destroy
+      'packages/server/src/domain/worktrees/cleanup.ts',
+      'packages/server/src/domain/worktrees/prewarm.ts',
+      'packages/server/src/domain/worktrees/spare-pool.ts',
+      'packages/server/src/domain/worktrees/spawn-reconcile.ts',
+      'packages/server/src/domain/worktrees/project-purge.ts',
+      'packages/server/src/domain/worktrees/detail.ts',
+      // stage 5 — launch
+      'packages/server/src/domain/worktrees/create.ts',
+      'packages/server/src/domain/worktrees/spawn-script.ts',
+      'packages/server/src/domain/skills/builtin.ts',
+    ],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',

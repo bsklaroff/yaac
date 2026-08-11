@@ -1,20 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as changesModule from '#runtime/k8s/worktrees/changes'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { closeDb } from '#records/client'
 import { recordWorktreeCreated } from '#records/worktree-store'
 import { worktreeForkBranch } from '#domain/worktrees/fork-branch'
+import { repoDir } from '@yaac/shared/project-paths'
 
-// The row is one source; the checkout is the other. Stubbing the fallback
-// is what lets these tests assert the ORDER of the two, which is the whole
-// point of the module.
-vi.mock('#runtime/k8s/worktrees/changes', async (importOriginal) => ({
-  ...(await importOriginal<typeof changesModule>()),
-  worktreeForkFallback: vi.fn(),
-}))
-import { worktreeForkFallback } from '#runtime/k8s/worktrees/changes'
-const fallback = vi.mocked(worktreeForkFallback)
+// The row is one source; the checkout is the other. Stubbing the host-side
+// git read is what lets these tests assert the ORDER of the two, which is
+// the whole point of the module — and it is the process boundary, so the
+// fallback itself runs for real.
+vi.mock('#platform/git', () => ({ worktreeUpstreamBranch: vi.fn() }))
+import { worktreeUpstreamBranch } from '#platform/git'
+const fallback = vi.mocked(worktreeUpstreamBranch)
 
 describe('worktreeForkBranch', () => {
   let tmpDir: string
@@ -47,7 +45,7 @@ describe('worktreeForkBranch', () => {
   it('falls back to the checkout when no row records a base', async () => {
     fallback.mockResolvedValue('main')
     expect(await worktreeForkBranch('demo', 'sid-a')).toBe('main')
-    expect(fallback).toHaveBeenCalledWith('demo', 'sid-a')
+    expect(fallback).toHaveBeenCalledWith(repoDir('demo'), 'agent/sid-a')
   })
 
   // The changes endpoint is polled every few seconds and the fallback spawns

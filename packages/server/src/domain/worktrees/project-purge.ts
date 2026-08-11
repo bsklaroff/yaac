@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
-import { type PodInfo, listWorktreePods } from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
+import type { RuntimeHandle } from '#runtime/contract'
 import { removeProjectRegistry } from '#runtime/k8s/cluster'
 import { removeNodeImageStore } from '#runtime/k8s/images'
 import { projectRoots } from '@yaac/shared/project-paths'
@@ -17,9 +18,9 @@ import { cleanupWorktreeDetached } from './cleanup'
  * away, and the server-start orphan GCs sweep whatever a failure leaves.
  */
 export async function purgeProjectBytes(slug: string): Promise<void> {
-  let pods: PodInfo[] = []
+  let pods: RuntimeHandle[] = []
   try {
-    pods = await listWorktreePods(slug)
+    pods = await worktreeRuntime().list(slug)
   } catch {
     // cluster unavailable — skip worktree cleanup, still nuke the dirs.
   }
@@ -29,7 +30,7 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
       await cleanupWorktreeDetached({
         jobName: p.jobName,
         projectSlug: slug,
-        worktreeId: p.worktreeId,
+        worktreeId: p.workspaceId,
       })
     } catch {
       // best-effort cleanup — continue with the next worktree

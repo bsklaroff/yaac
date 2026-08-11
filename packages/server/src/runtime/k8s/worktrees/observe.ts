@@ -6,9 +6,9 @@ import {
   listWorktreePods,
   triggerDeferredClusterBoot,
 } from '#platform/k8s'
-import { normalizeTool } from '#runtime/agents'
+import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import {
-  classifyWorktreePods,
+  classifyWorkspaces,
   liveAgents,
   pruneTerminating,
   readAgentStatus,
@@ -21,7 +21,12 @@ import { readBlockedHosts } from '#runtime/k8s/egress'
 import { readAllGitAuthFailures } from '#store/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentLiveness, RuntimeReport, WorktreeRuntimeReport } from '#runtime/contract'
+import type {
+  AgentLiveness,
+  RuntimeHandle,
+  RuntimeReport,
+  WorktreeRuntimeReport,
+} from '#runtime/contract'
 
 /**
  * The runtime's half of a worktree listing: what the substrate can see right now.
@@ -68,16 +73,19 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
   // worktree list (and skip the status/first-message reads they'd trigger).
   // The stale reaper deliberately still sees them (it lists pods itself), so a
   // stuck spare is still reaped.
-  pods = pods.filter((p) => !isPrewarmed(p))
+  const workspaces = pods.filter((p) => !isPrewarmed(p)).map(runtimeHandleFromPod)
 
-  const { running, stale, terminating } = await classifyWorktreePods(
-    pods, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
+  const { running, stale, terminating } = await classifyWorkspaces(
+    workspaces, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
   )
 
   // Forget terminating marks whose pod is gone (teardown finished) or that
   // outlived the TTL (a failed teardown), so the set can't leak or strand a
   // permanently-greyed row.
-  pruneTerminating(new Set(pods.map((p) => p.worktreeId).filter((v): v is string => !!v)), Date.now())
+  pruneTerminating(
+    new Set(workspaces.map((w) => w.workspaceId).filter((v): v is string => !!v)),
+    Date.now(),
+  )
 
   const worktrees = await Promise.all([
     ...running.map((p) => observeRunning(p)),
@@ -91,20 +99,20 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
   }
 }
 
-async function observeRunning(p: PodInfo): Promise<WorktreeRuntimeReport> {
+async function observeRunning(p: RuntimeHandle): Promise<WorktreeRuntimeReport> {
   const base = emptyReport(p, 'running')
-  if (!p.worktreeId || !p.projectSlug) return base
+  if (!p.workspaceId || !p.projectSlug) return base
   return {
     ...base,
     // Aggregate over the workspace's live agents (see status-store).
-    status: readWorktreeStatus(p.projectSlug, p.worktreeId),
-    ...(readWorktreeWaitingSince(p.projectSlug, p.worktreeId) !== undefined
-      ? { waitingSinceMs: readWorktreeWaitingSince(p.projectSlug, p.worktreeId) }
+    status: readWorktreeStatus(p.projectSlug, p.workspaceId),
+    ...(readWorktreeWaitingSince(p.projectSlug, p.workspaceId) !== undefined
+      ? { waitingSinceMs: readWorktreeWaitingSince(p.projectSlug, p.workspaceId) }
       : {}),
-    agents: agentLiveness(p.projectSlug, p.worktreeId),
-    blockedHosts: await readBlockedHosts(p.worktreeId),
-    forwardedPorts: getWorktreePorts(p.worktreeId),
-    unforwardedPorts: getUnforwardedPorts(p.worktreeId),
+    agents: agentLiveness(p.projectSlug, p.workspaceId),
+    blockedHosts: await readBlockedHosts(p.workspaceId),
+    forwardedPorts: getWorktreePorts(p.workspaceId),
+    unforwardedPorts: getUnforwardedPorts(p.workspaceId),
   }
 }
 
@@ -114,15 +122,15 @@ async function observeRunning(p: PodInfo): Promise<WorktreeRuntimeReport> {
  * `waiting` — a spurious attention badge on a row that is disappearing — and
  * no waiting stamp is reported for the same reason.
  */
-function observeTerminating(p: PodInfo): Promise<WorktreeRuntimeReport> {
+function observeTerminating(p: RuntimeHandle): Promise<WorktreeRuntimeReport> {
   return Promise.resolve(emptyReport(p, 'terminating'))
 }
 
-function emptyReport(p: PodInfo, phase: 'running' | 'terminating'): WorktreeRuntimeReport {
+function emptyReport(p: RuntimeHandle, phase: 'running' | 'terminating'): WorktreeRuntimeReport {
   return {
-    workspaceId: p.worktreeId,
+    workspaceId: p.workspaceId,
     projectSlug: p.projectSlug,
-    tool: normalizeTool(p.tool),
+    tool: p.tool,
     phase,
     createdAtMs: p.createdAtMs,
     status: 'running',

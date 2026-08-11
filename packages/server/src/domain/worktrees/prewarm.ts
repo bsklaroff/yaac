@@ -51,6 +51,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
+import type { RuntimeHandle } from '#runtime/contract'
 
 /**
  * jobNames of spares currently being claimed. A claim reserves its target
@@ -92,7 +93,7 @@ export interface PrewarmPlan {
 /**
  * Pure planner: given the current worktree pods and the desired pool size +
  * default tool, decide which spares to spawn and which to reap. No side
- * effects (mirrors `classifyWorktreePods`) so the policy is unit-testable
+ * effects (mirrors `classifyWorkspaces`) so the policy is unit-testable
  * without a cluster.
  *
  * - "claimed" = running, non-prewarmed pods (the real user worktrees).
@@ -107,17 +108,17 @@ export interface PrewarmPlan {
  * - A project with 0 claimed worktrees drains all its spares.
  */
 export function computePrewarmPlan(
-  pods: PodInfo[],
+  pods: RuntimeHandle[],
   poolSize: number,
   defaultTool: AgentTool,
   inFlightCounts: Map<string, number>,
   claimingJobNames: Set<string>,
 ): PrewarmPlan {
   const claimedByProject = new Map<string, number>()
-  const sparesByProject = new Map<string, PodInfo[]>()
+  const sparesByProject = new Map<string, RuntimeHandle[]>()
   for (const p of pods) {
     if (!p.projectSlug) continue
-    if (isPrewarmed(p)) {
+    if (p.prewarmed) {
       if (claimingJobNames.has(p.jobName)) continue
       const arr = sparesByProject.get(p.projectSlug)
       if (arr) arr.push(p)
@@ -129,8 +130,8 @@ export function computePrewarmPlan(
 
   const toSpawn: PrewarmSpawn[] = []
   const toReap: PrewarmReapTarget[] = []
-  const reap = (p: PodInfo): void => {
-    toReap.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.worktreeId })
+  const reap = (p: RuntimeHandle): void => {
+    toReap.push({ jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId })
   }
 
   const projects = new Set([...claimedByProject.keys(), ...sparesByProject.keys()])

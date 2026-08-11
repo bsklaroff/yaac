@@ -1,5 +1,5 @@
 import { listProjectRows } from '#records'
-import { countWorkspaces } from '#runtime/k8s/worktrees'
+import { worktreeRuntime } from '#runtime/driver'
 
 export interface ProjectListEntry {
   slug: string
@@ -20,7 +20,7 @@ export interface ProjectListEntry {
 export async function listProjects(): Promise<ProjectListEntry[]> {
   const [rows, worktreeCounts] = await Promise.all([
     listProjectRows(),
-    countWorkspaces(),
+    worktreeRuntime().count(),
   ])
   return rows.map((meta) => ({
     slug: meta.slug,

@@ -4,7 +4,7 @@ import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { readBlockedHosts } from '#runtime/k8s/egress'
 import { readGitAuthFailures } from '#store/projects'
 import { getVclusterStatus, type VclusterStatus } from '#runtime/k8s/cluster'
-import { findWorkspace } from '#runtime/k8s/worktrees'
+import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeHandle } from '#runtime/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
@@ -26,7 +26,7 @@ export interface WorktreeDetail {
 }
 
 async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
-  const match = await findWorkspace(idOrName)
+  const match = await worktreeRuntime().find(idOrName)
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
   return match
 }

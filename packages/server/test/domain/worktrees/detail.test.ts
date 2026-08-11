@@ -1,25 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as locateModule from '#runtime/k8s/worktrees/locate'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getWorktreeBlockedHosts, getWorktreeDetail, getWorktreePrompt } from '#domain/worktrees/detail'
 import { ServerError } from '@yaac/shared/errors'
 
-vi.mock('#runtime/k8s/worktrees/locate', async (importOriginal) => ({
-  ...(await importOriginal<typeof locateModule>()),
-  findWorkspace: vi.fn(),
-}))
-import { findWorkspace } from '#runtime/k8s/worktrees/locate'
+// Every helper here resolves the workspace through the runtime first.
+const mockFind = vi.fn()
 
 describe('session detail helpers', () => {
   let tmpDir: string
 
   beforeEach(async () => {
+    installFakeWorktreeRuntime({ find: mockFind })
     tmpDir = await createTempDataDir()
     // A substrate running nothing: every helper here resolves the workspace
     // first, so this is what proves each one refuses rather than
     // half-answering.
-    vi.mocked(findWorkspace).mockReset().mockResolvedValue(undefined)
+    mockFind.mockReset().mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
