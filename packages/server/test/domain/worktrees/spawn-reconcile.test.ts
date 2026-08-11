@@ -3,25 +3,18 @@ import type { SpawnDecision, SpawnRequest } from '#domain/worktrees/spawn-policy
 
 vi.mock('#domain/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
 import { decideSpawn } from '#domain/worktrees/spawn-policy'
-import type { PendingSpawn, SpawnResultWire } from '#runtime/k8s/egress/proxy-client'
-import type { PodInfo } from '#platform/k8s/pods'
-import { runtimeHandleFromPod } from '#runtime/k8s/view'
+import type { PendingSpawn, SpawnResultWire } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#runtime/contract'
-import { snapshotFixture } from '@yaac/test-utils/fake-runtime'
+import { handleFixture, snapshotFixture } from '@yaac/test-utils/fake-runtime'
 import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
 
-function makePod(over: Partial<PodInfo> = {}): RuntimeHandle {
-  return runtimeHandleFromPod({
+function makeCaller(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
+  return handleFixture({
     jobName: 'yaac-proj-caller',
-    podName: 'yaac-proj-caller-abc12',
-    worktreeId: 'caller-session',
+    workspaceId: 'caller-session',
     projectSlug: 'proj',
     tool: 'codex',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {},
+    declaredTool: 'codex',
     ...over,
   })
 }
@@ -51,8 +44,8 @@ beforeEach(() => {
 })
 
 /** Drain exactly one request and hand back what was posted for it. The
- *  per-request path has no barrel entry of its own — a drain is the only way
- *  in, which is also the only way the proxy reaches it. */
+ *  per-request path has no entry point of its own — a drain is the only way
+ *  in, which is also the only way a request reaches it. */
 async function drainOne(
   req: PendingSpawn,
   pods: () => Promise<RuntimeHandle[]>,
@@ -60,7 +53,6 @@ async function drainOne(
   const posted: SpawnResultWire[][] = []
   await reconcileSpawnRequests({
     listWorkspacesFn: pods,
-    attachIfRunningFn: () => Promise.resolve(true),
     fetchPendingFn: () => Promise.resolve([req]),
     postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
   })
@@ -68,8 +60,8 @@ async function drainOne(
 }
 
 describe('reconcileSpawnRequests', () => {
-  it('reports the caller resolved from its pod and relays the minted id', async () => {
-    const result = await drainOne(makeReq(), () => Promise.resolve([makePod()]))
+  it('reports the caller resolved from the listing and relays the minted id', async () => {
+    const result = await drainOne(makeReq(), () => Promise.resolve([makeCaller()]))
     expect(result).toEqual({
       requestId: 'req-1', ok: true, worktreeId: 'minted-id', sessionId: 'minted-id',
     })
@@ -85,56 +77,48 @@ describe('reconcileSpawnRequests', () => {
   it('passes an explicit tool and model through without judging them', async () => {
     await drainOne(
       makeReq({ tool: 'not-a-tool', model: "opus'; rm -rf /" }),
-      () => Promise.resolve([makePod()]),
+      () => Promise.resolve([makeCaller()]),
     )
     expect(reports[0]).toMatchObject({ tool: 'not-a-tool', model: "opus'; rm -rf /" })
   })
 
-  // A label that is not a tool yaac knows says nothing about what the spawned
-  // workspace should run, and reporting a guess would outrank the server's
-  // own configured default.
-  it('omits the caller tool when the pod is labelled with something else', async () => {
-    await drainOne(makeReq(), () => Promise.resolve([makePod({ tool: 'bogus' })]))
+  // A caller running something yaac does not know says nothing about what
+  // the spawned workspace should run, and reporting a guess would outrank
+  // the server's own configured default.
+  it('omits the caller tool when the caller declares something else', async () => {
+    const caller = makeCaller()
+    delete caller.declaredTool
+    await drainOne(makeReq(), () => Promise.resolve([caller]))
     expect(reports[0].callerTool).toBeUndefined()
   })
 
-  it('relays the server’s refusal back to the proxy', async () => {
+  it('relays the server’s refusal back to the caller', async () => {
     answer = { ok: false, error: 'too many concurrent spawns' }
-    const result = await drainOne(makeReq(), () => Promise.resolve([makePod()]))
+    const result = await drainOne(makeReq(), () => Promise.resolve([makeCaller()]))
     expect(result).toEqual({
       requestId: 'req-1', ok: false, error: 'too many concurrent spawns',
     })
   })
 
-  // The one judgement this side makes, and it is a substrate one: a request
-  // from a session no pod matches cannot be attributed to a project.
-  it('rejects a caller with no live session pod, without reporting it', async () => {
+  // The one judgement this side makes: a request from a worktree the runtime
+  // does not report cannot be attributed to a project.
+  it('rejects a caller the runtime does not report, without reporting it', async () => {
     const result = await drainOne(makeReq(), () => Promise.resolve([]))
     expect(result).toEqual({ requestId: 'req-1', ok: false, error: 'calling worktree not found' })
     expect(reports).toEqual([])
   })
 
-  it('fails soft when pod listing throws', async () => {
+  it('fails soft when the workspace listing throws', async () => {
     const result = await drainOne(makeReq(), () => Promise.reject(new Error('apiserver down')))
     expect(result.ok).toBe(false)
     expect(result.ok ? '' : result.error).toContain('apiserver down')
     expect(reports).toEqual([])
   })
 
-  it('does nothing when the proxy is not attachable', async () => {
-    const fetchPendingFn = vi.fn()
-    await reconcileSpawnRequests({
-      attachIfRunningFn: () => Promise.resolve(false),
-      fetchPendingFn,
-    })
-    expect(fetchPendingFn).not.toHaveBeenCalled()
-  })
-
   it('drains, reports, and posts one result per request', async () => {
     const posted: SpawnResultWire[][] = []
     await reconcileSpawnRequests({
-      listWorkspacesFn: () => Promise.resolve([makePod()]),
-      attachIfRunningFn: () => Promise.resolve(true),
+      listWorkspacesFn: () => Promise.resolve([makeCaller()]),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a' }),
         makeReq({ requestId: 'b', worktreeId: 'nobody' }),
@@ -148,11 +132,10 @@ describe('reconcileSpawnRequests', () => {
     ])
   })
 
-  it('lists session pods once per drain, not once per request', async () => {
-    const listWorkspacesFn = vi.fn(() => Promise.resolve([makePod()]))
+  it('lists workspaces once per drain, not once per request', async () => {
+    const listWorkspacesFn = vi.fn(() => Promise.resolve([makeCaller()]))
     await reconcileSpawnRequests({
       listWorkspacesFn,
-      attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a', worktreeId: 'nobody-1' }),
         makeReq({ requestId: 'b', worktreeId: 'nobody-2' }),
@@ -164,12 +147,11 @@ describe('reconcileSpawnRequests', () => {
   })
 
   it('resolves callers from the pass view when one is given', async () => {
-    const workspaces = vi.fn(() => Promise.resolve([makePod()]))
+    const workspaces = vi.fn(() => Promise.resolve([makeCaller()]))
     const posted: SpawnResultWire[][] = []
     await reconcileSpawnRequests({
       // No listWorkspacesFn: the pass view wins over a view of its own, so
       // a leaked second listing would fail the caller lookup.
-      attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
       postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
     }, { ...snapshotFixture(), workspaces })
@@ -180,7 +162,6 @@ describe('reconcileSpawnRequests', () => {
   it('skips the post when nothing is pending', async () => {
     const postResultsFn = vi.fn()
     await reconcileSpawnRequests({
-      attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.resolve([]),
       postResultsFn,
     })
@@ -189,7 +170,6 @@ describe('reconcileSpawnRequests', () => {
 
   it('never throws when the proxy fetch fails', async () => {
     await expect(reconcileSpawnRequests({
-      attachIfRunningFn: () => Promise.resolve(true),
       fetchPendingFn: () => Promise.reject(new Error('tunnel down')),
     })).resolves.toBeUndefined()
   })

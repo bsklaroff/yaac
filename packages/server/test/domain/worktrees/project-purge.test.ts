@@ -1,39 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 
-// The two things erasing a project's bytes reaches outside the feature for.
-// Session teardown and the push-registry delete drive kubectl (and spawn a
-// detached script), so they are faked at that boundary; the directories
-// below are removed for real, under the temp data dir.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
-  ...(await importOriginal<typeof podsModule>()),
-  listWorktreePods: vi.fn(),
-}))
+// Session teardown spawns a detached script, so it is faked at the feature
+// boundary; everything the RUNTIME holds is faked at the contract, and the
+// directories below are removed for real, under the temp data dir.
 vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }))
-vi.mock('#runtime/k8s/cluster/project-registry', () => ({ removeProjectRegistry: vi.fn() }))
 
-import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
-import { removeProjectRegistry } from '#runtime/k8s/cluster/project-registry'
 import { purgeProjectBytes } from '#domain/worktrees'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
+import type { RuntimeHandle } from '#runtime/contract'
 
-const mockListPods = vi.mocked(listWorktreePods)
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
-const mockRemoveRegistry = vi.mocked(removeProjectRegistry)
+const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
+const mockDestroySubstrate = vi.fn<(projectSlug: string) => Promise<void>>()
 
 let tmpDir: string
 
 beforeEach(async () => {
-    installRealWorktreeRuntime()
   tmpDir = await createTempDataDir()
-  mockListPods.mockReset().mockResolvedValue([])
   mockCleanup.mockReset().mockResolvedValue(undefined)
-  mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
+  mockList.mockReset().mockResolvedValue([])
+  mockDestroySubstrate.mockReset().mockResolvedValue(undefined)
+  installFakeWorktreeRuntime({
+    list: mockList,
+    destroyProjectSubstrate: mockDestroySubstrate,
+  })
 })
 
 afterEach(async () => {
@@ -46,35 +41,28 @@ async function writeProject(slug: string): Promise<void> {
   }
 }
 
-function pod(projectSlug: string, worktreeId: string): PodInfo {
-  return {
-    jobName: `yaac-${projectSlug}-${worktreeId}`,
-    podName: `yaac-${projectSlug}-${worktreeId}-abcde`,
-    worktreeId,
+function workspace(projectSlug: string, workspaceId: string): RuntimeHandle {
+  return handleFixture({
+    jobName: `yaac-${projectSlug}-${workspaceId}`,
+    workspaceId,
     projectSlug,
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {},
-  }
+  })
 }
 
 describe('purgeProjectBytes', () => {
-  it('tears down every live session, drops the registry, then both tier roots', async () => {
+  it('tears down every live session, drops what the runtime holds, then both tier roots', async () => {
     await writeProject('demo')
     await writeProject('keeper')
-    mockListPods.mockResolvedValue([pod('demo', 'a'), pod('demo', 'b')])
+    mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
 
     await purgeProjectBytes('demo')
 
-    expect(mockListPods).toHaveBeenCalledWith('demo')
+    expect(mockList).toHaveBeenCalledWith('demo')
     expect(mockCleanup.mock.calls.map(([c]) => c)).toEqual([
       { jobName: 'yaac-demo-a', projectSlug: 'demo', worktreeId: 'a' },
       { jobName: 'yaac-demo-b', projectSlug: 'demo', worktreeId: 'b' },
     ])
-    expect(mockRemoveRegistry).toHaveBeenCalledWith('demo')
+    expect(mockDestroySubstrate).toHaveBeenCalledWith('demo')
 
     for (const root of projectRoots('demo')) {
       await expect(fs.access(root)).rejects.toThrow()
@@ -82,13 +70,13 @@ describe('purgeProjectBytes', () => {
     await expect(fs.access(projectDir('keeper'))).resolves.toBeUndefined()
   })
 
-  // Best-effort throughout: a cluster that cannot be reached must not stop
+  // Best-effort throughout: a runtime that cannot be reached must not stop
   // the directories going away, and the server-start orphan GCs sweep the
   // rest.
-  it('still removes the dirs when the cluster is unreachable', async () => {
+  it('still removes the dirs when the runtime is unreachable', async () => {
     await writeProject('demo')
-    mockListPods.mockRejectedValue(new Error('connection refused'))
-    mockRemoveRegistry.mockRejectedValue(new Error('connection refused'))
+    mockList.mockRejectedValue(new Error('connection refused'))
+    mockDestroySubstrate.mockRejectedValue(new Error('connection refused'))
 
     await purgeProjectBytes('demo')
 
@@ -98,7 +86,7 @@ describe('purgeProjectBytes', () => {
 
   it('carries on when one session fails to tear down', async () => {
     await writeProject('demo')
-    mockListPods.mockResolvedValue([pod('demo', 'a'), pod('demo', 'b')])
+    mockList.mockResolvedValue([workspace('demo', 'a'), workspace('demo', 'b')])
     mockCleanup.mockRejectedValueOnce(new Error('exec failed'))
 
     await purgeProjectBytes('demo')

@@ -3,20 +3,18 @@
  * state shared between the claim path (the create route) and the reconcile
  * loop (`packages/server/src/prewarm-reconcile.ts`).
  *
- * A prewarmed spare is a fully-provisioned worktree whose agent is booted and
- * waiting, stamped with the `yaac.prewarmed` pod label and hidden from
- * user-facing views. The reconciler keeps one spare per active project (see
- * the plan); a `worktree create` "claims" a spare by removing the label and
- * attaching — skipping all provisioning. A spare's identity (jobName, labels,
- * worktree, mounts) is baked at warm time and can't be re-keyed, so a claim
+ * A prewarmed spare is a fully-provisioned worktree whose agent is booted
+ * and waiting, reported by the runtime as `prewarmed` and hidden from
+ * user-facing views. The reconciler keeps one spare per active project; a
+ * `worktree create` "claims" one and attaches, skipping all provisioning. A
+ * spare's identity is baked at warm time and can't be re-keyed, so a claim
  * returns the spare's own id; the CLI and webapp adopt it.
  *
  * Spares are tool-agnostic: warm-time provisioning seeds every tool's config
  * and env placeholders, so a claim for a different tool than the one booted
- * just retools the spare (proxy re-registration + agent respawn + label
- * flip) instead of falling back to a cold create. The booted tool — the
- * configured default at warm time — is recorded in the `yaac.tool` label so
- * matching claims stay instant.
+ * just retools the spare (proxy re-registration + agent respawn) instead of
+ * falling back to a cold create. What a spare declares — the configured
+ * default at warm time — is what a matching claim reads to stay instant.
  *
  * Spares are branch-agnostic the same way: one warmed on a different
  * reference branch is re-branched at claim time (`rebranchSpare` — worktree
@@ -27,17 +25,7 @@
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
 import simpleGit from 'simple-git'
-import {
-  LABEL_PREWARMED,
-  LABEL_TOOL,
-  type PodInfo,
-  isPrewarmed,
-  k8sNamespace,
-  kubectlWithRetry,
-  listWorktreePods,
-  podExec,
-  waitForStreamd,
-} from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#records'
 import { rebranchSpare, retoolSpare } from './spare-pool'
@@ -54,16 +42,17 @@ import type { AgentTool } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#runtime/contract'
 
 /**
- * jobNames of spares currently being claimed. A claim reserves its target
- * here (synchronously, before any await) so a concurrent claim can't grab the
- * same pod and the reconciler never reaps a pod out from under a claim.
+ * Runtime handles of spares currently being claimed. A claim reserves its
+ * target here (synchronously, before any await) so a concurrent claim can't
+ * grab the same spare and the reconciler never reaps one out from under a
+ * claim.
  */
 export const claiming = new Set<string>()
 
 /**
  * In-flight prewarm spawns, keyed by projectSlug → count. `createWorktree`
- * only applies the Job near the very end, so a spawn is invisible to
- * `listWorktreePods` for seconds; counting it here stops successive ticks from
+ * only launches near the very end, so a spawn is invisible to the runtime's
+ * own listing for seconds; counting it here stops successive ticks from
  * stampeding duplicate spares.
  */
 export const inFlight = new Map<string, number>()
@@ -91,15 +80,15 @@ export interface PrewarmPlan {
 }
 
 /**
- * Pure planner: given the current worktree pods and the desired pool size +
+ * Pure planner: given the current workspaces and the desired pool size +
  * default tool, decide which spares to spawn and which to reap. No side
  * effects (mirrors `classifyWorkspaces`) so the policy is unit-testable
- * without a cluster.
+ * without a runtime.
  *
- * - "claimed" = running, non-prewarmed pods (the real user worktrees).
- * - "spares" = prewarmed pods (any phase, so a still-pulling spare counts),
- *   minus any jobName currently being claimed (never spawn against / reap one
- *   mid-claim).
+ * - "claimed" = running, non-prewarmed workspaces (the real user worktrees).
+ * - "spares" = prewarmed workspaces (any state, so a still-starting spare
+ *   counts), minus any currently being claimed (never spawn against / reap
+ *   one mid-claim).
  * - A project with ≥1 claimed worktree wants `poolSize` spares: spawn to fill
  *   (counting in-flight so we don't stampede) with `defaultTool` booted, and
  *   reap genuine excess. Spares are tool-agnostic — one warmed with a
@@ -190,11 +179,11 @@ export function resolveRebranchTarget(params: {
  * Spares are tool- and branch-agnostic, so any running spare is claimable:
  * one warmed on a different reference branch is re-branched first
  * (`rebranchSpare`), one booted with a different tool is retooled
- * (`retoolSpare`). The label call is the commit point: a crash after it
- * leaves a normal worktree (no orphaned state); a crash before it leaves the
- * spare reusable — except once re-branch/retool mutations have started, when
- * a failed spare is tainted (worktree, registration, window names, and label
- * may disagree) and is reaped instead of released.
+ * (`retoolSpare`). `claimSpare` is the commit point: a crash after it leaves
+ * a normal worktree (no orphaned state); a crash before it leaves the spare
+ * reusable — except once re-branch/retool mutations have started, when a
+ * failed spare is tainted (worktree, registration, and window names may
+ * disagree with what it declares) and is reaped instead of released.
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
@@ -208,17 +197,18 @@ export async function tryClaimPrewarmed(
    *  already matches). */
   model?: string,
 ): Promise<WorktreeCreateResult | undefined> {
+  const runtime = worktreeRuntime()
   let reserved: string | undefined
-  let chosen: PodInfo | undefined
+  let chosen: RuntimeHandle | undefined
   let mutated = false
   // Whether this claim inserted a worktree row that a failure must undo. A
   // spare's id is freshly minted and never reused, so the row can only be
   // this claim's.
   let recordedRow = false
   try {
-    const pods = await listWorktreePods(projectSlug)
-    const candidates = pods
-      .filter((p) => isPrewarmed(p) && p.running)
+    const workspaces = await runtime.list(projectSlug)
+    const candidates = workspaces
+      .filter((p) => p.prewarmed && p.running)
       // Prefer a spare whose booted agent already matches (skips the
       // respawn), newest first within each group.
       .sort((a, b) =>
@@ -228,10 +218,10 @@ export async function tryClaimPrewarmed(
     for (const c of candidates) {
       if (claiming.has(c.jobName)) continue
       // Reserve synchronously (no await between the check and the add) so a
-      // concurrent claim can't pick the same pod.
+      // concurrent claim can't pick the same spare.
       claiming.add(c.jobName)
       reserved = c.jobName
-      if (await isTmuxSessionAlive(c.projectSlug, c.worktreeId)) {
+      if (await isTmuxSessionAlive(c.projectSlug, c.workspaceId)) {
         chosen = c
         break
       }
@@ -242,15 +232,14 @@ export async function tryClaimPrewarmed(
     if (!chosen) return undefined
 
     // Every in-pod command below this line — re-branch, retool, the git
-    // identity re-apply — rides the spare's streamd over the relay, so gate
-    // on it once here, before the first mutation. The liveness check above
-    // is nearly always proof enough (it is itself a relay exec), but its
-    // verdict is cached for seconds and can be short-circuited by stream
-    // health, so it is not a guarantee. This is: it re-boots a streamd that
-    // died since (the same kubectl-exec self-heal the status watcher uses),
-    // and on failure aborts while the spare is still untouched, so the
-    // claim degrades to a cold create instead of burning the spare.
-    await waitForStreamd(chosen.jobName, { timeoutMs: 10_000 })
+    // identity re-apply — rides the spare's agent transport, so gate on it
+    // once here, before the first mutation. The liveness check above is
+    // nearly always proof enough (it is itself an exec), but its verdict is
+    // cached for seconds and can be short-circuited by transport health, so
+    // it is not a guarantee. This is: it repairs a transport that died
+    // since, and on failure aborts while the spare is still untouched, so
+    // the claim degrades to a cold create instead of burning the spare.
+    await runtime.awaitAgentTransport(chosen.jobName, { timeoutMs: 10_000 })
 
     // Branch prep: the spare's warmed branch is read from its recorded
     // upstream (`branch.agent/<id>.merge` in the shared /repo/.git/config —
@@ -259,7 +248,7 @@ export async function tryClaimPrewarmed(
     // the record current.
     const repo = repoDir(projectSlug)
     const config = await resolveProjectConfig(projectSlug) ?? {}
-    const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.worktreeId}`)
+    const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.workspaceId}`)
     const rebranchTo = resolveRebranchTarget({
       requestedBranch: branch,
       configReferenceBranch: config.referenceBranch,
@@ -268,7 +257,7 @@ export async function tryClaimPrewarmed(
     })
 
     // Claim the spare's row before the spare is touched: from the moment the
-    // claim mutates it, the pod is a worktree, and a worktree still flagged
+    // claim mutates it, the spare is a worktree, and a worktree still flagged
     // `spare` is invisible to every path that reads recorded state — and
     // worse, reapable. A write failure here aborts the claim before any
     // mutation, so the spare stays a spare and the caller falls back to a
@@ -280,7 +269,7 @@ export async function tryClaimPrewarmed(
     // looking reapable, and their work would go with it the next time the
     // server started. `claimSpareWorktree` throws rather than shrugging,
     // which is what makes the catch below a fallback rather than a loss.
-    const claimedId = chosen.worktreeId
+    const claimedId = chosen.workspaceId
     recordedRow = true
     await claimSpareWorktree(
       projectSlug,
@@ -337,14 +326,12 @@ export async function tryClaimPrewarmed(
       await retoolSpare(chosen, tool, model)
     }
 
-    // Commit: drop the prewarmed label (stamping the new tool in the same
-    // call when retooled), flipping the pod to a normal worktree. From here
-    // on the spare is spent either way — a failure past this point must reap
-    // it, not release it back to a pool it no longer belongs to.
-    await kubectlWithRetry([
-      'label', 'pod', chosen.podName, '-n', k8sNamespace(), `${LABEL_PREWARMED}-`,
-      ...(chosen.tool !== tool ? [`${LABEL_TOOL}=${tool}`, '--overwrite'] : []),
-    ])
+    // Commit: the spare stops being one and starts declaring the claimed
+    // tool. From here on it is spent either way — a failure past this point
+    // must reap it, not release it back to a pool it no longer belongs to.
+    // A lost race throws (the spare was already claimed, or is gone), which
+    // takes the same fallback-to-cold-create path as any other failure.
+    await runtime.claimSpare(claimedId, tool)
     mutated = true
 
     // Re-apply git identity so the claiming user's identity wins over the
@@ -352,13 +339,12 @@ export async function tryClaimPrewarmed(
     // (e.g. the webapp) sends no identity — the warmed-in global is correct.
     //
     // One exec, and non-fatal. This runs PAST the commit point, against a
-    // worktree that is already whole, over a relay whose readiness gate may
-    // be minutes old by now (a re-branch fetches and resets in between). A
-    // hiccup here would otherwise reap a perfectly good claimed worktree
+    // worktree that is already whole, over a transport whose readiness gate
+    // may be minutes old by now (a re-branch fetches and resets in between).
+    // A hiccup here would otherwise reap a perfectly good claimed worktree
     // over a step the no-identity path skips outright.
     if (gitUser) {
-      const { worktreeId: claimedId } = chosen
-      await podExec(
+      await runtime.exec(
         chosen.jobName,
         `git config --global user.name '${shellEscape(gitUser.name)}'`
         + ` && git config --global user.email '${shellEscape(gitUser.email)}'`,
@@ -376,7 +362,7 @@ export async function tryClaimPrewarmed(
       await applyWorktreeEvent({
         type: 'base-branch-resolved',
         projectSlug,
-        worktreeId: chosen.worktreeId,
+        worktreeId: chosen.workspaceId,
         baseBranch: rebranchTo,
       })
     }
@@ -384,34 +370,34 @@ export async function tryClaimPrewarmed(
     emit('Using prewarmed session...')
     // Always tui: spares are warmed with a TUI agent window, which is exactly
     // why the route refuses to let an acp create claim one.
-    return { worktreeId: chosen.worktreeId, jobName: chosen.jobName, tool, mode: 'tui', forwardedPorts: [] }
+    return { worktreeId: chosen.workspaceId, jobName: chosen.jobName, tool, mode: 'tui', forwardedPorts: [] }
   } catch (err) {
     // A pre-mutation VALIDATION error (unknown branch) is the user's to
     // see — a cold create would fail identically, so don't degrade to one.
     // Decided here but rethrown at the BOTTOM: the row has already been
     // claimed by this point, and propagating before undoing that would
-    // leave a spare whose pod is still labeled and pooled but whose row says
+    // leave a spare the runtime still reports as pooled but whose row says
     // it is somebody's worktree — reapable as neither, and eventually a
     // phantom `never-started` stop pointing at a deleted checkout.
     const propagate = !mutated && err instanceof ServerError && err.code === 'VALIDATION'
-    // Any other failure (cluster unreachable, label race lost) → cold
+    // Any other failure (runtime unreachable, claim race lost) → cold
     // create. A spare that failed mid-retool/re-branch is tainted — reap it
     // so a later claim can't pick up its inconsistent state; the reconciler
     // warms a fresh one. Keep the reservation (jobNames are never reused,
     // so the leaked entry is inert) so a concurrent claim can't grab the
-    // dying pod before the teardown lands.
+    // dying spare before the teardown lands.
     //
     // Everything the spare left goes, in the reap path's order
-    // (prewarm-reconcile.ts): pod, then checkout, then row. The checkout has
+    // (prewarm-reconcile.ts): runtime, then checkout, then row. The checkout has
     // to be removed here at all because the claim cleared the `spare` flag
     // before it mutated anything, putting these bytes beyond the startup
     // sweep that collects a dead spare's checkout on the strength of it.
     //
     // Each step gates the next on having actually happened, because each one
     // destroys the evidence the one before it relied on. `cleanupWorktree`
-    // resolves false when its delete timed out with the pod still
-    // terminating — and a pod in its grace period is still writing to
-    // /workspace, so the checkout stays. `deleteWorktreeState` resolves false
+    // resolves false when the runtime could not be confirmed gone — and one
+    // still shutting down is still writing to /workspace, so the checkout
+    // stays. `deleteWorktreeState` resolves false
     // when an rm failed, and then the row stays: the row is the last name
     // these bytes have, so erasing it over a failed rm is exactly how a
     // retryable leftover becomes a permanent one. Whatever is left in either
@@ -424,9 +410,9 @@ export async function tryClaimPrewarmed(
     // so the caller degrades to a cold create immediately — the row can
     // therefore linger, marked terminating, for as long as the teardown runs.
     if (chosen && mutated) {
-      const { jobName, projectSlug: slug, worktreeId } = chosen
+      const { jobName, projectSlug: slug, workspaceId: worktreeId } = chosen
       void cleanupWorktree({ jobName, projectSlug: slug, worktreeId })
-        .then((podGone) => podGone && deleteWorktreeState(slug, worktreeId))
+        .then((gone) => gone && deleteWorktreeState(slug, worktreeId))
         .then((removed) => (removed && recordedRow
           ? applyWorktreeEvent({ type: 'worktree-create-failed', projectSlug, worktreeId })
           : undefined))
@@ -434,12 +420,12 @@ export async function tryClaimPrewarmed(
       reserved = undefined
     } else if (chosen && recordedRow) {
       // An untouched spare is still a perfectly good spare — putting the flag
-      // back returns it to the pool rather than stranding a pod whose row no
+      // back returns it to the pool rather than stranding a spare whose row no
       // longer says it is reapable.
       try {
-        await restoreSpareWorktree(projectSlug, chosen.worktreeId)
+        await restoreSpareWorktree(projectSlug, chosen.workspaceId)
       } catch {
-        // Best-effort; the row has no pod to back it either way.
+        // Best-effort; the row has nothing running behind it either way.
       }
     }
     if (propagate) throw err

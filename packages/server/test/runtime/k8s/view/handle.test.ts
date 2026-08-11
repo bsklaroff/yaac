@@ -53,6 +53,16 @@ describe('runtimeHandleFromPod', () => {
     expect(runtimeHandleFromPod(pod({ tool: 'not-a-tool' })).tool).toBe('claude')
   })
 
+  // What a pod DECLARES is a separate question from what to run in it: a
+  // resolved guess would outrank the server's configured default for a
+  // workspace spawned from this one, so an unrecognized label declares
+  // nothing at all.
+  it('declares no tool when the pod is stamped with one this build does not know', () => {
+    const h = runtimeHandleFromPod(pod({ tool: 'not-a-tool' }))
+    expect(h.tool).toBe('claude')
+    expect(h.declaredTool).toBeUndefined()
+  })
+
   it('reads the prewarm label, so a spare is one by its own account', () => {
     expect(runtimeHandleFromPod(pod({ labels: { 'yaac.prewarmed': 'true' } })).prewarmed).toBe(true)
     expect(runtimeHandleFromPod(pod()).prewarmed).toBe(false)

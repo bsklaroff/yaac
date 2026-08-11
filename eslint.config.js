@@ -291,13 +291,6 @@ export default tseslint.config(
   // re-declares the domain zone minus NO_SUBSTRATE_ABOVE_RUNTIME.
   {
     files: [
-      // stage 4 — exec, claim, destroy
-      'packages/server/src/domain/worktrees/cleanup.ts',
-      'packages/server/src/domain/worktrees/prewarm.ts',
-      'packages/server/src/domain/worktrees/spare-pool.ts',
-      'packages/server/src/domain/worktrees/spawn-reconcile.ts',
-      'packages/server/src/domain/worktrees/project-purge.ts',
-      'packages/server/src/domain/worktrees/detail.ts',
       // stage 5 — launch
       'packages/server/src/domain/worktrees/create.ts',
       'packages/server/src/domain/worktrees/spawn-script.ts',

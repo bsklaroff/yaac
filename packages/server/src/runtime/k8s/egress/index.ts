@@ -23,14 +23,16 @@ export { readBlockedHosts } from './blocked-hosts'
 export { hostMatchesPattern, resolveAllowedHosts } from './default-allowed-hosts'
 export {
   ProxyClient,
-  pendingSpawnWorktreeId,
+  drainPendingSpawns,
   proxyClient,
   resolveProxyImageTag,
-  type PendingSpawn,
   type ProxyClientConfig,
-  type SpawnResultWire,
 } from './proxy-client'
 export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export { reconcileProxySshKeys } from './proxy-reconcile'
-export { buildWorktreeRegistration, syncProxySecrets } from './proxy-registration'
+export {
+  buildWorktreeRegistration,
+  registerWorkspace,
+  syncProxySecrets,
+} from './proxy-registration'
 export { reconcileVclusterAttribution } from './vcluster-attribution'

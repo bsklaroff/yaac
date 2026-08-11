@@ -1,6 +1,12 @@
 import { worktreeRuntime } from '#runtime/driver'
 import { teardownForRestart } from './cleanup'
 import { createWorktree } from './create'
+import {
+  ensureProvisioning,
+  failProvisioning,
+  removeProvisioning,
+  updateProvisioningMessage,
+} from './provisioning'
 import { clearWorktreeStopped, findWorktreeRow } from '#records'
 import {
   firstAgentSession,
@@ -85,42 +91,87 @@ export async function restartWorktree(
 ): Promise<WorktreeCreateResult> {
   const { projectSlug, worktreeId, tool, jobName } = await resolveRestartTarget(idOrName)
 
-  if (jobName) opts.onProgress?.(`Stopping session job ${jobName}...`)
-  // Always, not just when there was a Job: a terminating mark left by an
-  // earlier teardown would render the fresh worktree as "stopping…".
-  await teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
+  // Enter the provisioning registry before the teardown below, and here
+  // rather than only in the route: the registry is what `inFlightWorktreeIds`
+  // reads, and that is the ONLY thing standing between a restart and the
+  // stale reaper. A caller that skipped it — the CLI, which passes no
+  // projectSlug because it wants no row — spent its whole restart reapable,
+  // and the reaper's teardown `rm -rf`s the session dirs (staged skills,
+  // worktree bin) out from under the create that is about to mount them.
+  // Registering after the resolve is what makes it possible at all: the
+  // project and tool are the resolve's answer, which is exactly why the
+  // route could only do this for a caller that already knew them.
+  //
+  // `ensure`, not `register`: the webapp registers up front so its row
+  // renders during the resolve, and re-registering would reorder it.
+  //
+  // Registering here means retiring it here too, which `runProvisioned` above
+  // cannot do for us: that wrapper is keyed on the id the CALLER passed, and
+  // the CLI passes whatever the user typed — `yaac worktree restart eaa70e`
+  // keys it on a PREFIX, while the entry below is keyed on the resolved id.
+  // This is the only scope that holds both, so the resolve/fail pair is
+  // explicit rather than inherited. Both calls are idempotent, so the
+  // webapp's full-id path simply runs them twice.
+  ensureProvisioning({ worktreeId, projectSlug, tool, kind: 'restart' })
 
-  // Each conversation resumes under its OWN tool: a worktree can hold a
-  // codex conversation next to claude ones, and launching the wrong binary
-  // against an id it does not know kills the pane.
-  const active = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
-  const resume = active.map((l) => ({ agentSessionId: l.agentSessionId, tool: l.tool }))
-  if (resume.length > 1) opts.onProgress?.(`Restoring ${resume.length} agent sessions...`)
+  // Progress has to be mirrored here for the same keying reason: the route's
+  // mirror addresses the caller's id, so for a prefix restart it updates
+  // nothing and the row would sit at "Starting…" for the whole run.
+  const onProgress = (message: string): void => {
+    updateProvisioningMessage(worktreeId, message)
+    opts.onProgress?.(message)
+  }
 
-  // A worktree comes back the way it went down. Mode is per-conversation in
-  // the schema but per-pod at launch (the driver is chosen once, from the pod
-  // label), so the primary conversation's mode is the worktree's — which is
-  // exact, since nothing today can mix modes inside one worktree. A worktree
-  // with nothing recorded (an older row, or a create that never got an id)
-  // falls back to tui, the mode every pre-ACP worktree ran.
+  try {
+    if (jobName) onProgress(`Stopping session job ${jobName}...`)
+    // Always, not just when there was a Job: a terminating mark left by an
+    // earlier teardown would render the fresh worktree as "stopping…".
+    await teardownForRestart({ jobName, projectSlug, workspaceId: worktreeId })
 
-  const result = await createWorktree(projectSlug, {
-    // Always reuse the checkout — that is what a restart *is*. Clearing this
-    // would send the create down `git worktree add` against a checkout that
-    // is still there, fail, and roll the worktree row away with it.
-    resume: true,
-    worktreeId,
-    tool,
-    mode: active[0]?.mode ?? 'tui',
-    resumeAgentSessions: resume,
-    gitUser: opts.gitUser,
-    onProgress: opts.onProgress,
-  })
+    // Each conversation resumes under its OWN tool: a worktree can hold a
+    // codex conversation next to claude ones, and launching the wrong binary
+    // against an id it does not know kills the pane.
+    const active = await listActiveAgentSessions(projectSlug, worktreeId).catch(() => [])
+    const resume = active.map((l) => ({ agentSessionId: l.agentSessionId, tool: l.tool }))
+    if (resume.length > 1) onProgress(`Restoring ${resume.length} agent sessions...`)
 
-  // The worktree lives again — drop its stop record (and any death cause
-  // from its previous life) so the stopped view can't show it as died. Only
-  // after createWorktree succeeds: a failed restart leaves the record intact.
-  await clearWorktreeStopped(projectSlug, worktreeId)
+    // A worktree comes back the way it went down. Mode is per-conversation in
+    // the schema but per-pod at launch (the driver is chosen once, from the pod
+    // label), so the primary conversation's mode is the worktree's — which is
+    // exact, since nothing today can mix modes inside one worktree. A worktree
+    // with nothing recorded (an older row, or a create that never got an id)
+    // falls back to tui, the mode every pre-ACP worktree ran.
 
-  return result
+    const result = await createWorktree(projectSlug, {
+      // Always reuse the checkout — that is what a restart *is*. Clearing this
+      // would send the create down `git worktree add` against a checkout that
+      // is still there, fail, and roll the worktree row away with it.
+      resume: true,
+      worktreeId,
+      tool,
+      mode: active[0]?.mode ?? 'tui',
+      resumeAgentSessions: resume,
+      gitUser: opts.gitUser,
+      onProgress,
+    })
+
+    // The worktree lives again — drop its stop record (and any death cause
+    // from its previous life) so the stopped view can't show it as died. Only
+    // after createWorktree succeeds: a failed restart leaves the record intact.
+    await clearWorktreeStopped(projectSlug, worktreeId)
+
+    // Retire the row: the worktree is up, and `buildSnapshot` HIDES a
+    // worktree that still has one, so leaving it renders a permanently
+    // "Starting…" placeholder in place of the live worktree.
+    removeProvisioning(worktreeId)
+
+    return result
+  } catch (err) {
+    // Keep the row, marked failed — that is what the dismissable error state
+    // is for. It also stops shielding: `inFlightWorktreeIds` excludes an
+    // errored entry, and a failed restart's rollback has already torn down
+    // whatever it left, so it has nothing left to protect.
+    failProvisioning(worktreeId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
 }

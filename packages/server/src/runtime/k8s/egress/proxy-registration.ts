@@ -1,8 +1,9 @@
-import { buildRulesFromConfig, collectProxySecrets } from './proxy-client'
+import { buildRulesFromConfig, collectProxySecrets, proxyClient } from './proxy-client'
 import type { InjectionRule, UpstreamRedirect } from './proxy-client'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from './default-allowed-hosts'
 import { writeProxySecrets } from '#store/projects'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
+import type { WorkspaceRegistration } from '#runtime/contract'
 
 /**
  * Payload of `PUT /worktrees/:id` on the proxy. Registered by worktree-create
@@ -107,5 +108,29 @@ export async function syncProxySecrets(
 ): Promise<void> {
   if (!config.envSecretProxy) return
   await writeProxySecrets(collectProxySecrets(config.envSecretProxy, env))
+}
+
+/**
+ * Tell the egress path what a workspace may reach — the whole of it, in one
+ * call, from decisions the caller already resolved.
+ *
+ * The seam a mediator registers through: it supplies WHICH config, tool and
+ * remote apply (rows and disk answer those); everything about how they
+ * become an allowlist and a set of injection rules is assembled here.
+ *
+ * Idempotent, and re-called rather than patched — a spare retooled at claim
+ * time registers again under its new tool, because the proxy gates all
+ * credential injection on the registered one.
+ */
+export async function registerWorkspace(reg: WorkspaceRegistration): Promise<void> {
+  await proxyClient.registerWorktree(
+    reg.workspaceId,
+    buildWorktreeRegistration({
+      config: reg.config,
+      remoteUrl: reg.remoteUrl,
+      tool: reg.tool,
+      projectSlug: reg.projectSlug,
+    }),
+  )
 }
 

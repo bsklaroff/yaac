@@ -10,56 +10,20 @@ import os from 'node:os'
 import path from 'node:path'
 import type ChildProcessModule from 'node:child_process'
 
-// Pod/Job listing is mocked (gcOrphanEphemeralModuleDirs reads it);
-// worktreeJobName stays real so the tmux-probe argv assertions hold.
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listWorktreePods: vi.fn(),
-    listWorktreeJobs: vi.fn(),
-  }
-})
-
-// The salvage execs into pods via kubectl (real subprocesses) — stub the
-// module so cleanup unit tests never touch the cluster, and so the
-// hooks' presence/order can be asserted.
-vi.mock('#runtime/k8s/images/image-promoter', () => ({
-  salvageWorktreeImages: vi.fn().mockResolvedValue(true),
-}))
-
-// The tmux probes ride the stream relay now — stub only the transport;
-// the error classes stay real so classification is exercised for real.
+// The tmux probes ride the stream relay — stub only the transport; the
+// error classes stay real so classification is exercised for real. (Status
+// probing is runtime vocabulary this layer is allowed to reach, so it is
+// not part of what moved behind the driver.)
 vi.mock('#platform/k8s/stream-relay', async (importOriginal) => {
   const actual = await importOriginal<typeof relayModule>()
   return { ...actual, podExec: vi.fn() }
 })
 
-const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void | { stdout: string }>>()
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
-  // Real execFile carries util.promisify.custom so promisify(execFile)
-  // resolves `{ stdout, stderr }` — mirror that, or code destructuring
-  // stdout would silently get a bare string under test.
-  const execFile = Object.assign(
-    (cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
-      // promisify-less callers invoke the 4-arg form with opts.
-      execFileMock(cmd, args, opts).then(
-        (res) => { cb(null, res && typeof res === 'object' ? res.stdout : '', '') },
-        (err: Error) => { cb(err, '', '') },
-      )
-    },
-    {
-      [Symbol.for('nodejs.util.promisify.custom')]: (cmd: string, args: string[], opts: unknown) =>
-        execFileMock(cmd, args, opts).then(
-          (res) => ({ stdout: res && typeof res === 'object' ? res.stdout : '', stderr: '' }),
-        ),
-    },
-  )
   return {
     ...actual,
-    execFile,
     spawn: (cmd: string, args: string[], opts: unknown) => {
       spawnMock(cmd, args, opts)
       return { unref: () => { /* detached stub */ } }
@@ -71,11 +35,8 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { salvageWorktreeImages } from '#runtime/k8s/images/image-promoter'
 import { RelayExecError, podExec } from '#platform/k8s/stream-relay'
 import type * as relayModule from '#platform/k8s/stream-relay'
-import { listWorktreePods, listWorktreeJobs } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
 import {
   _resetOrphanModulesSweepForTests,
   cleanupWorktree,
@@ -89,10 +50,16 @@ import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/statu
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
-import { setDataDir } from '@yaac/shared/project-paths'
+import { setDataDir, worktreeStateRoots } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#records'
 import { applyWorktreeEvent } from '#records'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
+import {
+  handleFixture,
+  installFakeWorktreeRuntime,
+  snapshotFixture,
+} from '@yaac/test-utils/fake-runtime'
+import type { RuntimeHandle, StrayUnit, TeardownTarget } from '#runtime/contract'
 
 const podExecMock = vi.mocked(podExec)
 const mockServerLog = vi.mocked(serverLog)
@@ -110,55 +77,84 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
 
-const mockListPods = vi.mocked(listWorktreePods)
-const mockListJobs = vi.mocked(listWorktreeJobs)
+/**
+ * What the mediator asked the runtime to do, in the order it asked.
+ *
+ * The runtime's own sequencing (deregister, salvage, delete, vcluster) is
+ * asserted in `test/runtime/k8s/worktrees/teardown.test.ts`, where it lives.
+ * What these tests own is the half above it: what the mediator records and
+ * evicts before handing over, what it composes around the runtime's shell
+ * command, and how it treats the verdict it gets back.
+ */
+interface RuntimeCalls {
+  destroyed: TeardownTarget[]
+  deregistered: string[]
+  salvaged: TeardownTarget[]
+  /** Resolved by `salvageImages`, so a test can hold the chain open. */
+  releaseSalvage: () => void
+}
 
-function podWithSession(worktreeId: string): podsModule.PodInfo {
-  return {
-    jobName: `yaac-proj-${worktreeId}`,
-    podName: `yaac-proj-${worktreeId}-x1`,
-    worktreeId,
-    projectSlug: 'proj-a',
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {},
+const TEARDOWN_SENTINEL = 'runtime-teardown-here'
+
+/** Install a runtime whose teardown verbs record rather than act. */
+function installRuntime(opts: {
+  destroy?: (target: TeardownTarget) => Promise<boolean>
+  blockSalvage?: boolean
+} = {}): RuntimeCalls {
+  const calls: RuntimeCalls = {
+    destroyed: [], deregistered: [], salvaged: [], releaseSalvage: () => { /* replaced below */ },
   }
+  let release = (): void => { /* set per call */ }
+  calls.releaseSalvage = () => { release() }
+  installFakeWorktreeRuntime({
+    destroy: (target) => {
+      calls.destroyed.push(target)
+      return opts.destroy ? opts.destroy(target) : Promise.resolve(true)
+    },
+    deregisterWorkspace: (id) => { calls.deregistered.push(id); return Promise.resolve() },
+    salvageImages: (target) => {
+      calls.salvaged.push(target)
+      if (!opts.blockSalvage) return Promise.resolve()
+      return new Promise<void>((resolve) => { release = resolve })
+    },
+    detachedTeardownCommand: () => TEARDOWN_SENTINEL,
+  })
+  return calls
+}
+
+/** The script the detached teardown handed to `sh -c`. */
+function spawnedScript(): string | undefined {
+  const call = spawnMock.mock.calls.find(([cmd]) => cmd === 'sh')
+  return call ? call[1][1] : undefined
 }
 
 describe('cleanupWorktree', () => {
-  it('is exported as a function', () => {
-    expect(typeof cleanupWorktree).toBe('function')
+  let runtime: RuntimeCalls
+
+  beforeEach(() => {
+    clearWorktreeEvents()
+    runtime = installRuntime()
   })
 
-  it('runs the image salvage before deleting the Job', async () => {
-    const mockSalvage = vi.mocked(salvageWorktreeImages)
-    mockSalvage.mockClear()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
+  it('hands the runtime the workspace to destroy, and relays its verdict', async () => {
+    await expect(cleanupWorktree({
+      jobName: 'yaac-p-s-casc', projectSlug: 'p', worktreeId: 's-casc',
+    })).resolves.toBe(true)
 
-    await cleanupWorktree({
-      jobName: 'yaac-p-s-promote',
-      projectSlug: 'p',
-      worktreeId: 's-promote',
-    })
+    expect(runtime.destroyed).toEqual([
+      { projectSlug: 'p', workspaceId: 's-casc', unitName: 'yaac-p-s-casc' },
+    ])
+  })
 
-    expect(mockSalvage).toHaveBeenCalledWith({
-      jobName: 'yaac-p-s-promote', projectSlug: 'p', worktreeId: 's-promote',
-    })
-    // The pod (and its graphroot tmpfs) must still exist when the
-    // salvage runs — the Job delete has to come after.
-    const deleteCall = execFileMock.mock.calls.find(
-      ([cmd, args]) => cmd === 'kubectl' && args[0] === 'delete' && args.includes('yaac-p-s-promote'),
-    )
-    expect(deleteCall).toBeDefined()
-    const salvageOrder = mockSalvage.mock.invocationCallOrder[0]
-    const deleteOrder = execFileMock.mock.invocationCallOrder[
-      execFileMock.mock.calls.indexOf(deleteCall!)
-    ]
-    expect(salvageOrder).toBeLessThan(deleteOrder)
+  // Callers chain `deleteWorktreeState` off this, so a runtime the driver
+  // could not confirm gone has to read as "not gone" all the way up: what
+  // is still shutting down is still writing to /workspace.
+  it('reports NOT gone when the runtime could not confirm the teardown', async () => {
+    runtime = installRuntime({ destroy: () => Promise.resolve(false) })
+
+    await expect(cleanupWorktree({
+      jobName: 'yaac-p-s-slow', projectSlug: 'p', worktreeId: 's-slow',
+    })).resolves.toBe(false)
   })
 
   // Reaches across the seal on purpose. The liveness caches are keyed by
@@ -169,8 +165,6 @@ describe('cleanupWorktree', () => {
   it('evicts the liveness cache so a reused session id cannot read a stale verdict', async () => {
     _clearTmuxAliveCacheForTests()
     _resetWorktreeStatusStoreForTests()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
 
     podExecMock.mockReset()
     podExecMock.mockResolvedValue({ stdout: '', stderr: '' })
@@ -187,9 +181,6 @@ describe('cleanupWorktree', () => {
   })
 
   it('reports the death cause with the stop', async () => {
-    clearWorktreeEvents()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktree({
       jobName: 'yaac-p-s-cause',
       projectSlug: 'p',
@@ -201,39 +192,59 @@ describe('cleanupWorktree', () => {
     ])
   })
 
-  // Callers chain `deleteWorktreeState` off this, so "the Job is gone" has to
-  // mean "the pod is gone". Only a FOREGROUND cascade gives that: under
-  // kubectl's default background propagation `--wait` returns once the Job
-  // object is deleted, while the pod runs on through its grace period still
-  // writing to /workspace. Pinned here because the callers' unit tests mock
-  // this function whole and so can't see which flags it used.
-  it('deletes the Job with a waited foreground cascade, and says the pod is gone', async () => {
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
+  // The mount sources belong to a workspace that may still be running: a
+  // teardown that removed them first would pull /workspace's neighbours out
+  // from under a container still shutting down.
+  it('removes the workspace dirs only once the runtime is gone', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-order-'))
+    setDataDir(dataDir)
+    try {
+      const modules = worktreeModulesDir('p', 's-dirs')
+      await fs.mkdir(modules, { recursive: true })
+      let existedDuringDestroy: boolean | undefined
+      installRuntime({
+        destroy: async () => {
+          existedDuringDestroy = await fs.access(modules).then(() => true, () => false)
+          return true
+        },
+      })
 
-    await expect(cleanupWorktree({
-      jobName: 'yaac-p-s-casc', projectSlug: 'p', worktreeId: 's-casc',
-    })).resolves.toBe(true)
+      await cleanupWorktree({ jobName: 'yaac-p-s-dirs', projectSlug: 'p', worktreeId: 's-dirs' })
 
-    const [, args] = execFileMock.mock.calls.find(
-      ([cmd, a]) => cmd === 'kubectl' && a[0] === 'delete' && a.includes('yaac-p-s-casc'),
-    )!
-    expect(args).toEqual(expect.arrayContaining(['--cascade=foreground', '--wait=true']))
+      expect(existedDuringDestroy).toBe(true)
+      await expect(fs.access(modules)).rejects.toThrow()
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
   })
 
-  it('reports the pod is NOT gone when the Job delete times out', async () => {
-    // The teardown still finishes — the leftover Job is the reconcile loop's
-    // to sweep — but a caller about to remove the checkout must not, because
-    // a pod stuck terminating is a pod still writing to it.
-    execFileMock.mockReset()
-    execFileMock.mockImplementation((cmd, args) =>
-      cmd === 'kubectl' && args[0] === 'delete' && args.includes('yaac-p-s-slow')
-        ? Promise.reject(new Error('timed out waiting for the condition'))
-        : Promise.resolve(undefined))
+  // The dirs are mount sources, so an unconfirmed teardown keeps them: a
+  // delete that never landed leaves the workspace fully alive and running
+  // on them, and on the prewarm-reap path that spare stays claimable — its
+  // row survives on this same verdict — so a later claim would hand a user
+  // a workspace whose state dirs are gone. Both sweeps that resume the
+  // teardown remove them, so keeping them only delays it.
+  it('keeps the workspace dirs when the runtime could not be confirmed gone', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-keep-'))
+    setDataDir(dataDir)
+    try {
+      const modules = worktreeModulesDir('p', 's-kept')
+      const stateRoots = worktreeStateRoots('p', 's-kept')
+      await fs.mkdir(modules, { recursive: true })
+      for (const dir of stateRoots) await fs.mkdir(dir, { recursive: true })
+      installRuntime({ destroy: () => Promise.resolve(false) })
 
-    await expect(cleanupWorktree({
-      jobName: 'yaac-p-s-slow', projectSlug: 'p', worktreeId: 's-slow',
-    })).resolves.toBe(false)
+      await expect(cleanupWorktree({
+        jobName: 'yaac-p-s-kept', projectSlug: 'p', worktreeId: 's-kept',
+      })).resolves.toBe(false)
+
+      await expect(fs.access(modules)).resolves.toBeUndefined()
+      for (const dir of stateRoots) {
+        await expect(fs.access(dir)).resolves.toBeUndefined()
+      }
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -265,7 +276,7 @@ describe('deleteWorktreeState', () => {
   })
 
   // Structural rather than incidental: every id that reaches this today is a
-  // server-minted UUID or one read back off a row or a pod label, but an empty
+  // server-minted UUID or one read back off a row or the runtime, but an empty
   // one resolves to the worktrees ROOT — every worktree of the project.
   it('refuses an empty worktree id instead of resolving to the worktrees root', async () => {
     const slug = 'dws-empty'
@@ -278,48 +289,82 @@ describe('deleteWorktreeState', () => {
 })
 
 describe('cleanupWorktreeDetached', () => {
-  it('is exported as a function', () => {
-    expect(typeof cleanupWorktreeDetached).toBe('function')
+  let runtime: RuntimeCalls
+  let dataDir: string
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-detached-'))
+    setDataDir(dataDir)
+    spawnMock.mockClear()
+    mockServerLog.mockClear()
+    clearWorktreeEvents()
+    _clearTerminatingForTests()
+    runtime = installRuntime()
   })
 
-  it('completes the image salvage before spawning the Job-deleting script', async () => {
-    spawnMock.mockClear()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
-    const mockSalvage = vi.mocked(salvageWorktreeImages)
-    mockSalvage.mockClear()
+  afterEach(async () => {
+    _clearTerminatingForTests()
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  // The script composes both halves: the runtime tears its own objects down,
+  // this layer removes the dirs it owns, and the runtime's half goes first
+  // because those dirs are what the workspace has mounted.
+  it('composes the runtime teardown ahead of the dirs this layer owns', async () => {
     await cleanupWorktreeDetached({
-      jobName: 'yaac-p-s-detached',
-      projectSlug: 'p',
-      worktreeId: 's-detached',
+      jobName: 'yaac-p-s-script', projectSlug: 'p', worktreeId: 's-script',
+    })
+    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
+
+    const script = spawnedScript()!
+    expect(script.startsWith(TEARDOWN_SENTINEL)).toBe(true)
+    expect(script).toContain(`rm -rf '${worktreeModulesDir('p', 's-script')}'`)
+    expect(script.indexOf(TEARDOWN_SENTINEL)).toBeLessThan(script.indexOf('rm -rf'))
+  })
+
+  // Routing has to stop in-process: a detached shell can neither drop this
+  // server's port forwards nor speak to the egress registration.
+  it('stops routing before it spawns anything', async () => {
+    await cleanupWorktreeDetached({
+      jobName: 'yaac-p-s-dereg', projectSlug: 'p', worktreeId: 's-dereg',
     })
 
-    // The salvage → spawn chain runs after the function returns (the
-    // caller must not block on a multi-minute salvage).
-    await vi.waitFor(() => {
-      expect(spawnMock.mock.calls.some(([cmd]) => cmd === 'sh')).toBe(true)
-    })
-    expect(mockSalvage).toHaveBeenCalledWith({
+    expect(runtime.deregistered).toEqual(['s-dereg'])
+    expect(spawnMock).not.toHaveBeenCalled()
+    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
+  })
+
+  it('completes the image salvage before spawning the teardown script', async () => {
+    runtime = installRuntime({ blockSalvage: true })
+    await cleanupWorktreeDetached({
       jobName: 'yaac-p-s-detached', projectSlug: 'p', worktreeId: 's-detached',
     })
-    const call = spawnMock.mock.calls.find(([cmd]) => cmd === 'sh')!
-    const script = (call[1])[1]
-    // The pod must outlive the salvage: the delete is only ever spawned
-    // after the salvage settles.
-    expect(mockSalvage.mock.invocationCallOrder[0])
-      .toBeLessThan(spawnMock.mock.invocationCallOrder[0])
-    expect(script).toContain('kubectl delete job yaac-p-s-detached')
+
+    expect(runtime.salvaged).toEqual([
+      { projectSlug: 'p', workspaceId: 's-detached', unitName: 'yaac-p-s-detached' },
+    ])
+    // Held open: the workspace has to outlive the salvage, which reaches
+    // into it, so nothing may be spawned while it is still running.
+    expect(spawnedScript()).toBeUndefined()
+
+    runtime.releaseSalvage()
+    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
+  })
+
+  it('spawns the teardown even when the salvage fails', async () => {
+    installFakeWorktreeRuntime({
+      salvageImages: () => Promise.reject(new Error('registry down')),
+      detachedTeardownCommand: () => TEARDOWN_SENTINEL,
+    })
+    await cleanupWorktreeDetached({
+      jobName: 'yaac-p-s-salvfail', projectSlug: 'p', worktreeId: 's-salvfail',
+    })
+    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
   })
 
   it('audits the teardown so a reaped session is never silent', async () => {
-    spawnMock.mockClear()
-    mockServerLog.mockClear()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
-      jobName: 'yaac-p-s-audit',
-      projectSlug: 'proj-a',
-      worktreeId: 's-audit',
+      jobName: 'yaac-p-s-audit', projectSlug: 'proj-a', worktreeId: 's-audit',
     })
 
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
@@ -330,23 +375,13 @@ describe('cleanupWorktreeDetached', () => {
   })
 
   it('marks the session terminating so the display path can render it', async () => {
-    _clearTerminatingForTests()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
-      jobName: 'yaac-p-s-mark',
-      projectSlug: 'proj-a',
-      worktreeId: 's-mark',
+      jobName: 'yaac-p-s-mark', projectSlug: 'proj-a', worktreeId: 's-mark',
     })
     expect(isWorktreeTerminating('s-mark')).toBe(true)
-    _clearTerminatingForTests()
   })
 
   it('reports the death cause and includes it in the audit line', async () => {
-    mockServerLog.mockClear()
-    clearWorktreeEvents()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
       jobName: 'yaac-p-s-cause',
       projectSlug: 'proj-a',
@@ -362,14 +397,8 @@ describe('cleanupWorktreeDetached', () => {
   })
 
   it('a causeless teardown reports no cause and keeps the audit line bare', async () => {
-    mockServerLog.mockClear()
-    clearWorktreeEvents()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
-      jobName: 'yaac-p-s-nocause',
-      projectSlug: 'proj-a',
-      worktreeId: 's-nocause',
+      jobName: 'yaac-p-s-nocause', projectSlug: 'proj-a', worktreeId: 's-nocause',
     })
 
     expect(stopsReported()).toEqual([['proj-a', 's-nocause', undefined]])
@@ -380,9 +409,6 @@ describe('cleanupWorktreeDetached', () => {
   it('preserveDeletedRecord reports no stop, leaving the recorded cause intact', async () => {
     // Resuming a teardown yaac already recorded (its terminating mark was lost)
     // must not re-report — that would clobber the real cause with a stray one.
-    clearWorktreeEvents()
-    execFileMock.mockReset()
-    execFileMock.mockResolvedValue(undefined)
     await cleanupWorktreeDetached({
       jobName: 'yaac-p-s-resume',
       projectSlug: 'proj-a',
@@ -391,9 +417,9 @@ describe('cleanupWorktreeDetached', () => {
     })
 
     expect(stopsReported()).toEqual([])
-    // The teardown itself still runs (idempotent Job delete resumes).
-    const spawned = spawnMock.mock.calls.some(([cmd]) => cmd === 'sh')
-    expect(spawned).toBe(true)
+    // The teardown itself still runs (the runtime's command is idempotent,
+    // so re-issuing it is exactly how a lost teardown is resumed).
+    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
   })
 })
 
@@ -419,6 +445,8 @@ describe('worktreeModulesDir', () => {
 
 describe('gcOrphanEphemeralModuleDirs', () => {
   let dataDir: string
+  /** How many pass views the sweep took — it must take at most one, ever. */
+  let views: number
 
   /** Register the given ids as creates in flight, in the real registry the
    *  sweep reads. */
@@ -429,12 +457,32 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     }
   }
 
+  /** Install a runtime reporting these workspaces and stray units. */
+  function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
+    installFakeWorktreeRuntime({
+      snapshot: () => { views++; return snapshotFixture(workspaces, strays) },
+    })
+  }
+
+  /** Install a runtime whose view cannot be read — the sweep must stand down. */
+  function seeNothing(): void {
+    installFakeWorktreeRuntime({
+      snapshot: () => {
+        views++
+        return {
+          resync: true,
+          workspaces: () => Promise.reject(new Error('cluster offline')),
+          strayUnits: () => Promise.reject(new Error('cluster offline')),
+        }
+      },
+    })
+  }
+
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
     setDataDir(dataDir)
-    mockListPods.mockReset()
-    mockListJobs.mockReset()
-    mockListJobs.mockResolvedValue([])
+    views = 0
+    seeRunning([])
     _resetOrphanModulesSweepForTests()
     publishInFlight()
   })
@@ -464,12 +512,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     return dir
   }
 
-  it('removes dirs whose session pod is gone and leaves live ones', async () => {
+  it('removes dirs whose workspace is gone and leaves live ones', async () => {
     const live = await seedModulesDir('proj-a', 'live-1')
     const deadA = await seedModulesDir('proj-a', 'dead-1')
     const deadB = await seedModulesDir('proj-b', 'dead-2')
 
-    mockListPods.mockResolvedValue([podWithSession('live-1')])
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
 
     await gcOrphanEphemeralModuleDirs()
 
@@ -478,27 +526,29 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(deadB)).rejects.toThrow()
   })
 
-  it('keeps dirs whose session only shows up in the Job list (pod mid-recreate)', async () => {
-    const jobOnly = await seedModulesDir('proj-a', 'job-only-1')
+  // A unit mid-recreate (its workspace evicted, the replacement not scheduled
+  // yet) shows up ONLY as a stray, and its dirs are what the replacement is
+  // about to mount.
+  it('keeps dirs whose workspace survives only as a stray unit', async () => {
+    const strayOnly = await seedModulesDir('proj-a', 'job-only-1')
 
-    mockListPods.mockResolvedValue([])
-    mockListJobs.mockResolvedValue([{
-      jobName: 'yaac-proj-a-job-only-1',
-      worktreeId: 'job-only-1',
+    seeRunning([], [{
+      workspaceId: 'job-only-1',
+      unitName: 'yaac-proj-a-job-only-1',
       projectSlug: 'proj-a',
       createdAtMs: 0,
     }])
 
     await gcOrphanEphemeralModuleDirs()
 
-    await expect(fs.access(jobOnly)).resolves.toBeUndefined()
+    await expect(fs.access(strayOnly)).resolves.toBeUndefined()
   })
 
   it('also removes orphan per-session tmux dirs', async () => {
     const liveTmux = await seedWorktreesDir('proj-a', 'live-1')
     const deadTmux = await seedWorktreesDir('proj-a', 'dead-1')
 
-    mockListPods.mockResolvedValue([podWithSession('live-1')])
+    seeRunning([handleFixture({ workspaceId: 'live-1', projectSlug: 'proj-a' })])
 
     await gcOrphanEphemeralModuleDirs()
 
@@ -507,25 +557,21 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   it('is a no-op when the projects dir does not exist', async () => {
-    // No projects dir seeded at all.
-    mockListPods.mockResolvedValue([])
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
   })
 
   it('skips projects that have no modules dir', async () => {
     // Seed only the project dir, not .cached-packages/modules/.
     await fs.mkdir(path.join(dataDir, 'projects', 'proj-empty'), { recursive: true })
-    mockListPods.mockResolvedValue([])
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
   })
 
   it('spares a session the process is still provisioning', async () => {
-    // The create registers its row before it stages anything, and its Job is
-    // not applied yet — so no pod/Job listing can vouch for it. Sweeping here
-    // deletes the dirs the starting pod is about to mount.
+    // The create registers its row before it stages anything, and nothing is
+    // launched yet — so no listing can vouch for it. Sweeping here deletes
+    // the dirs the starting workspace is about to mount.
     const staging = await seedWorktreesDir('proj-a', 'creating-1')
     const modules = await seedModulesDir('proj-a', 'creating-1')
-    mockListPods.mockResolvedValue([])
     publishInFlight(['creating-1'])
 
     await gcOrphanEphemeralModuleDirs()
@@ -539,13 +585,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   // otherwise re-walk the tree on every tick forever.
   it('sweeps once per server life', async () => {
     await seedWorktreesDir('proj-a', 'dead-1')
-    mockListPods.mockResolvedValue([])
 
     await gcOrphanEphemeralModuleDirs()
-    const listings = mockListPods.mock.calls.length
+    const taken = views
     await gcOrphanEphemeralModuleDirs()
 
-    expect(mockListPods.mock.calls.length).toBe(listings)
+    expect(views).toBe(taken)
   })
 
   it('spares a dir written since the sweep took its listing', async () => {
@@ -553,19 +598,19 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     // spare): freshly written is the tell, so leave it for the next sweep.
     const fresh = await seedWorktreesDir('proj-a', 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
-    mockListPods.mockResolvedValue([])
 
     await gcOrphanEphemeralModuleDirs()
 
     await expect(fs.access(fresh)).resolves.toBeUndefined()
   })
 
-  it('returns quietly if pod listing fails', async () => {
+  // "I could not see" must never read as "nothing is there": the view
+  // rejects rather than resolving empty, and the sweep stands down.
+  it('returns quietly when the runtime view cannot be read', async () => {
     const dead = await seedModulesDir('proj-a', 'would-be-removed')
-    mockListPods.mockRejectedValue(new Error('cluster offline'))
+    seeNothing()
 
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
-    // Nothing was removed because we bailed out before the sweep.
     await expect(fs.access(dead)).resolves.toBeUndefined()
   })
 })

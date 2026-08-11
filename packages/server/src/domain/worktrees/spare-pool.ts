@@ -1,6 +1,5 @@
 import simpleGit from 'simple-git'
-import { podExec } from '#platform/k8s'
-import { buildWorktreeRegistration, proxyClient } from '#runtime/k8s/egress'
+import { worktreeRuntime } from '#runtime/driver'
 import { repoDir } from '@yaac/shared/project-paths'
 import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#store/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
@@ -22,16 +21,18 @@ import type { PiProvider } from '@yaac/shared/tool-providers'
  * per-tool config cover every tool), so only three things are keyed to the
  * booted tool: the proxy registration (drives credential injection), the
  * agent tmux window's name, and the process running in it. Re-registers the
- * proxy worktree, then renames + respawns the agent window and verifies the
- * respawned agent survived. The pod's tool label flips in the claim's
- * commit call. Throws on failure — the caller must treat the spare as
- * tainted (registration, window name, and label may disagree) and reap it.
+ * workspace, then renames + respawns the agent window and verifies the
+ * respawned agent survived. What the workspace DECLARES flips later, in the
+ * claim's own commit (`claimSpare`). Throws on failure — the caller must
+ * treat the spare as tainted (registration, window name, and what it
+ * declares may disagree) and reap it.
  *
- * The in-pod commands ride the stream relay, so the caller must have gated
- * on `waitForStreamd` (the claim path does, before its first mutation).
+ * The in-pod commands ride the runtime's transport, so the caller must have
+ * gated on `awaitAgentTransport` (the claim path does, before its first
+ * mutation).
  */
 export async function retoolSpare(
-  spare: { jobName: string; worktreeId: string; projectSlug: string; tool: string },
+  spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
   tool: AgentTool,
   /** Model for the respawned agent (see buildAgentCmd). Also the reason a
    *  claim may retool a spare to its *own* tool: the booted agent has no
@@ -43,24 +44,28 @@ export async function retoolSpare(
   // pi's launch command embeds its provider's default model, so a retool to pi
   // needs the stored provider (from the single pi.json credential).
   const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
-  await proxyClient.registerWorktree(
-    spare.worktreeId,
-    buildWorktreeRegistration({ config, remoteUrl, tool, projectSlug: spare.projectSlug }),
-  )
+  const runtime = worktreeRuntime()
+  await runtime.registerWorkspace({
+    workspaceId: spare.workspaceId,
+    projectSlug: spare.projectSlug,
+    tool,
+    config,
+    remoteUrl,
+  })
   // Written to tolerate having already run, so the dial retries stay on:
   // by the time a claim gets here any throw reaps the spare, and a blip on
   // the shared port-forward is far likelier than the rename failing for
   // real. The fallback passes only when the window already carries the new
   // name — a genuine failure still exits nonzero, with tmux's own stderr
   // (deliberately not silenced) explaining it.
-  await podExec(
+  await runtime.exec(
     spare.jobName,
     `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`
     + ` || ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}`,
   )
-  await podExec(
+  await runtime.exec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.worktreeId, false, piProvider, model)}'`,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.workspaceId, false, piProvider, model)}'`,
   )
   await verifyAgentWindowAlive(spare.jobName, tool)
 }
@@ -157,13 +162,13 @@ export function buildRebranchPrep(params: {
  * failure means the spare is tainted (worktree, upstream, and windows may
  * disagree) and the caller must reap it.
  *
- * Like `retoolSpare`, the in-pod commands ride the stream relay, so the
- * caller must have gated on `waitForStreamd` first. Each is written to be
- * a no-op when re-run (see `buildRebranchPrep`), so they keep the default
- * dial retries.
+ * Like `retoolSpare`, the in-pod commands ride the runtime's transport, so
+ * the caller must have gated on `awaitAgentTransport` first. Each is written
+ * to be a no-op when re-run (see `buildRebranchPrep`), so they keep the
+ * default retries.
  */
 export async function rebranchSpare(
-  spare: { jobName: string; worktreeId: string; projectSlug: string; tool: string },
+  spare: { jobName: string; workspaceId: string; projectSlug: string; tool: string },
   branch: string,
   sha: string,
   respawnAgent: boolean,
@@ -176,19 +181,20 @@ export async function rebranchSpare(
     branch,
     sha,
     config,
-    worktreeId: spare.worktreeId,
+    worktreeId: spare.workspaceId,
     respawnTool: respawnAgent ? spare.tool as AgentTool : null,
     piProvider,
   })
   // The reset+clean walks the whole worktree, so it gets a wider deadline
-  // than the relay's 30s default (kubectl exec ran it unbounded). Only the
-  // run phase widens — podExec caps the dial separately — and a read
-  // timeout past that is not retried, so a still-running git can't be
-  // raced by a second one over the same index.lock.
-  await podExec(spare.jobName, prep.resetExec, { timeout: 120_000 })
+  // than the runtime's 30s default. Only the run phase widens — the
+  // transport caps its own dial separately — and a read timeout past that
+  // is not retried, so a still-running git can't be raced by a second one
+  // over the same index.lock.
+  const runtime = worktreeRuntime()
+  await runtime.exec(spare.jobName, prep.resetExec, { timeout: 120_000 })
   await withUpstreamConfigLock(spare.projectSlug, async () => {
-    await podExec(spare.jobName, prep.upstreamExec)
+    await runtime.exec(spare.jobName, prep.upstreamExec)
   })
-  for (const cmd of prep.windowExecs) await podExec(spare.jobName, cmd)
+  for (const cmd of prep.windowExecs) await runtime.exec(spare.jobName, cmd)
   if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, spare.tool as AgentTool)
 }

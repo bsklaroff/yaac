@@ -1,74 +1,65 @@
 /**
- * Reconcile step that drains in-worktree `yaac-spawn` requests: the egress
- * proxy holds each worktree's `POST http://yaac.internal/spawn` open in an
- * in-memory queue; this step takes them off that queue over the control API,
- * resolves who called from the pod labels, hands each one to `decideSpawn`,
- * and posts the answers back so the proxy can release the waiting pods.
+ * Reconcile step that drains in-worktree `yaac-spawn` requests: the runtime
+ * holds each waiting worktree's request until someone answers it; this step
+ * takes them, resolves who called from the live workspace listing, hands
+ * each one to `decideSpawn`, and reports the answers back so the callers
+ * can be released.
  *
  * A drain is a claim: a crash between drain and report loses the fire (the
- * pod's request 504s at the proxy TTL), never doubles it.
+ * caller's request times out where it waits), never doubles it.
  *
  * What a request MEANS is deliberately not here but in `decideSpawn`: which
  * tool the new worktree runs, how many a caller may have in flight, what id
  * it gets and what sidebar row it provisions under are policy — the drain's
- * whole contribution is the queue and the caller's labels
- * (docs/layered-server.md).
+ * whole contribution is the queue and attributing each request to its
+ * caller (docs/layered-server.md).
  */
-import {
-  proxyClient,
-  pendingSpawnWorktreeId,
-  type PendingSpawn,
-  type SpawnResultWire,
-} from '#runtime/k8s/egress'
 import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeHandle, RuntimeSnapshot } from '#runtime/contract'
 import { decideSpawn } from './spawn-policy'
 import { serverLog } from '#log'
+import { pendingSpawnWorktreeId } from '@yaac/shared/types'
+import type { PendingSpawn, SpawnResultWire } from '@yaac/shared/types'
 
 export interface SpawnReconcileDeps {
-  attachIfRunningFn?: () => Promise<boolean>
   fetchPendingFn?: () => Promise<PendingSpawn[]>
   postResultsFn?: (results: SpawnResultWire[]) => Promise<void>
   listWorkspacesFn?: () => Promise<RuntimeHandle[]>
 }
 
 /**
- * Drain queued spawn requests from the proxy and answer each one.
- * `snapshot` keeps the caller lookup on the pass's shared cluster view.
+ * Drain queued spawn requests from the runtime and answer each one.
+ * `snapshot` keeps the caller lookup on the pass's shared runtime view.
  */
 export async function reconcileSpawnRequests(
   deps: SpawnReconcileDeps = {},
   snapshot?: RuntimeSnapshot,
 ): Promise<void> {
   try {
-    // attachIfRunning, not ensureRunning: this step must never bootstrap the
-    // proxy (it deploys lazily on the first worktree create). No proxy → no
-    // worktrees → nothing queued.
-    if (!(await (deps.attachIfRunningFn ?? (() => proxyClient.attachIfRunning()))())) return
-    const pending = await (deps.fetchPendingFn ?? (() => proxyClient.fetchPendingSpawns()))()
+    const pending = await (deps.fetchPendingFn ?? (() => worktreeRuntime().pendingSpawns()))()
     if (pending.length === 0) return
-    // One pod listing per drain, shared by every request in the batch — the
-    // informer cache when it is healthy, otherwise a single kubectl list. A
-    // burst at the proxy's queue cap must not fan out into a fork per request.
+    // One workspace listing per drain, shared by every request in the batch.
+    // A burst at the queue cap must not fan out into a listing per request.
     const listPods = deps.listWorkspacesFn
       ?? (() => (snapshot ?? worktreeRuntime().snapshot()).workspaces())
     let pods: Promise<RuntimeHandle[]> | undefined
     const drainDeps: SpawnReconcileDeps = { ...deps, listWorkspacesFn: () => (pods ??= listPods()) }
     const results = await Promise.all(pending.map((req) => reportSpawnRequest(req, drainDeps)))
-    await (deps.postResultsFn ?? ((r: SpawnResultWire[]) => proxyClient.postSpawnResults(r)))(results)
+    await (deps.postResultsFn
+      ?? ((r: SpawnResultWire[]) => worktreeRuntime().resolveSpawns(r)))(results)
   } catch (err) {
     serverLog(`[spawn] reconcile failed: ${String(err)}`)
   }
 }
 
 /**
- * Answer one spawn request: resolve the caller's project and tool from its
- * pod labels, hand it to the spawn policy, and relay the decision back to
- * the proxy.
+ * Answer one spawn request: resolve the caller's project and tool from the
+ * live workspace listing, hand it to the spawn policy, and relay the
+ * decision back.
  *
- * The caller lookup is the only judgement made here, and it is a substrate
- * one — a request from a worktree no pod matches cannot be attributed to a
- * project, so there is nothing to report.
+ * The caller lookup is the only judgement made here — a request from a
+ * worktree the runtime does not report cannot be attributed to a project,
+ * so there is nothing to report.
  */
 async function reportSpawnRequest(
   req: PendingSpawn,
@@ -76,7 +67,8 @@ async function reportSpawnRequest(
 ): Promise<SpawnResultWire> {
   const fail = (error: string): SpawnResultWire => ({ requestId: req.requestId, ok: false, error })
 
-  // Under either name: a proxy predating the rename sends `sessionId`.
+  // Under either name: a proxy predating the rename sends `sessionId`
+  // (see `pendingSpawnWorktreeId`).
   const callerId = pendingSpawnWorktreeId(req)
   if (!callerId) return fail('spawn request names no calling worktree')
 

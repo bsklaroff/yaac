@@ -249,8 +249,17 @@ vi.mock('@yaac/server/records/agent-session-store', () => ({
   deleteWorktreeAgentSessions: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof agentStoreModule>))
 
+// `deleteWorktreeState` is reached only by the rollback of a failed FRESH
+// create, and only once its checkout leg has settled — so a mock without it
+// does not fail the create, it silently swallows the rollback into the
+// chain's own catch and the row survives.
 vi.mock('@yaac/server/domain/worktrees/cleanup', () => ({
   cleanupWorktreeDetached: vi.fn(),
+  // Inline implementation, not `.mockResolvedValue()`: the suites'
+  // `resetAllMocks` strips anything configured after construction (see the
+  // fs mock above), and a rollback reading `undefined` here silently skips
+  // the row delete.
+  deleteWorktreeState: vi.fn(() => Promise.resolve(true)),
 } satisfies Partial<typeof cleanupModule>))
 
 import { spawn } from 'node:child_process'
@@ -287,6 +296,8 @@ import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/platform/
 import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
 import { buildStatusRight, registerWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
+import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import type { WorkspaceRegistration } from '@yaac/server/runtime/contract'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -467,7 +478,12 @@ describe('createWorktree', () => {
   it('rolls the row back when a fresh create gives up', async () => {
     mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
     await expect(createWorktree('demo', { tool: 'claude' })).rejects.toThrow()
-    expect(vi.mocked(deleteWorktreeRow)).toHaveBeenCalledWith('demo', expect.any(String))
+    // The rollback is chained off the checkout leg rather than awaited — the
+    // create fails fast and the removal follows it — so it lands after the
+    // caller's rejection, not before it.
+    await vi.waitFor(() => {
+      expect(vi.mocked(deleteWorktreeRow)).toHaveBeenCalledWith('demo', expect.any(String))
+    })
   })
 
   it('re-marks a failed restart as deleted instead of erasing its history', async () => {
@@ -1128,55 +1144,68 @@ describe('buildAgentCmd', () => {
 })
 
 describe('retoolSpare', () => {
-  const spare = { jobName: 'yaac-demo-spare1', worktreeId: 'spare1', projectSlug: 'demo', tool: 'claude' }
+  const spare = { jobName: 'yaac-demo-spare1', workspaceId: 'spare1', projectSlug: 'demo', tool: 'claude' }
+
+  /** Commands the retool ran, and the registration it sent, in order. */
+  let execs: Array<[string, string, { timeout?: number; maxAttempts?: number } | undefined]>
+  let registrations: WorkspaceRegistration[]
+
+  function installRuntime(registerWorkspace?: () => Promise<void>): void {
+    execs = []
+    registrations = []
+    installFakeWorktreeRuntime({
+      exec: (jobName, cmd, opts) => {
+        execs.push([jobName, cmd, opts])
+        return Promise.resolve({ stdout: '', stderr: '' })
+      },
+      registerWorkspace: registerWorkspace ?? ((reg) => {
+        registrations.push(reg)
+        return Promise.resolve()
+      }),
+    })
+  }
 
   beforeEach(() => {
     vi.resetAllMocks()
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.registerWorktree).mockResolvedValue(undefined)
-    mockPodExec.mockResolvedValue({ stdout: '', stderr: '' })
+    installRuntime()
   })
 
-  it('re-registers the proxy session for the new tool, then renames + respawns the agent window', async () => {
+  it('re-registers the session for the new tool, then renames + respawns the agent window', async () => {
     await retoolSpare(spare, 'codex')
 
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    expect(proxyClient.registerWorktree).toHaveBeenCalledWith(
-      'spare1',
-      expect.objectContaining({
-        tool: 'codex',
-        repoUrl: 'https://github.com/example/repo.git',
-        projectSlug: 'demo',
-      }),
-    )
-    const cmds = mockPodExec.mock.calls.map((c) => c[1])
+    expect(registrations).toEqual([expect.objectContaining({
+      workspaceId: 'spare1',
+      projectSlug: 'demo',
+      tool: 'codex',
+      remoteUrl: 'https://github.com/example/repo.git',
+    })])
+    const cmds = execs.map((c) => c[1])
     expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
     const respawn = cmds.find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:codex')
     expect(respawn).toContain('codex --yolo')
-    // The rename keeps its dial retries, so it has to survive having
-    // already run: the fallback passes when the window is already renamed.
+    // The rename keeps its retries, so it has to survive having already
+    // run: the fallback passes when the window is already renamed.
     const rename = cmds.find((c) => c.includes('rename-window'))!
     expect(rename).toContain('|| ')
     expect(rename).toContain('grep -qxF codex')
-    expect(mockPodExec.mock.calls.every((c) => c[2]?.maxAttempts === undefined)).toBe(true)
+    expect(execs.every((c) => c[2]?.maxAttempts === undefined)).toBe(true)
   })
 
   it('boots the new agent with the spare\'s own session id', async () => {
     await retoolSpare({ ...spare, tool: 'codex' }, 'claude')
 
-    const respawn = mockPodExec.mock.calls.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    const respawn = execs.map((c) => c[1]).find((c) => c.includes('respawn-window'))
     expect(respawn).toContain('-t yaac:claude')
     expect(respawn).toContain('--session-id spare1')
   })
 
   it('propagates registration failures without touching the tmux window', async () => {
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.registerWorktree).mockRejectedValue(new Error('proxy down'))
+    installRuntime(() => Promise.reject(new Error('proxy down')))
     await expect(retoolSpare(spare, 'codex')).rejects.toThrow('proxy down')
-    expect(mockPodExec).not.toHaveBeenCalled()
+    expect(execs).toEqual([])
   })
 })
 

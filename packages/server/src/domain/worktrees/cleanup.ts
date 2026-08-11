@@ -1,12 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import {
-  k8sNamespace,
-  kubectlWithRetry,
-  listWorktreeJobs,
-  listWorktreePods,
-} from '#platform/k8s'
+import { worktreeRuntime } from '#runtime/driver'
 import { inFlightWorktreeIds } from './provisioning'
 import {
   applyWorktreeEvent,
@@ -20,14 +15,6 @@ import {
   forgetLiveness,
   markWorktreeTerminating,
 } from '#runtime/status'
-import { proxyClient } from '#runtime/k8s/egress'
-import { salvageWorktreeImages } from '#runtime/k8s/images'
-import {
-  buildVclusterCleanupShellCommand,
-  getVclusterStatus,
-  removeWorktreeVcluster,
-  vclusterName,
-} from '#runtime/k8s/cluster'
 import {
   cachedPackagesDir,
   opencodeDataDir,
@@ -42,7 +29,7 @@ import {
 import { deleteSessionStartsLog } from '#store/worktrees'
 import { shellQuote } from '#platform/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
-import { stopWorktreeForwarders } from '#runtime/k8s/forwarders'
+import type { TeardownTarget } from '#runtime/contract'
 import { serverLog } from '#log'
 
 /**
@@ -118,27 +105,35 @@ export async function deleteWorktreeState(
 }
 
 /**
- * Best-effort removal of the worktree's state from the proxy sidecar. If
- * the sidecar isn't running there's nothing to clean up. Errors are
- * swallowed so cleanup never blocks container teardown on a sidecar hiccup.
+ * What a teardown addresses, from the identity a caller already holds.
+ *
+ * Assembling the struct is not deriving a name: every `jobName` reaching
+ * these functions came out of the runtime in the first place (a
+ * `findForTeardown`, a `RuntimeHandle`, the prewarm plan), so this only
+ * re-packages what the runtime already said.
  */
-async function removeWorktreeFromProxy(worktreeId: string): Promise<void> {
-  try {
-    const attached = await proxyClient.attachIfRunning()
-    if (!attached) return
-    await proxyClient.removeWorktree(worktreeId)
-  } catch (err) {
-    console.warn(
-      `Failed to remove session ${worktreeId} from proxy: ${(err as Error).message}`,
-    )
+function teardownTarget(params: {
+  jobName: string
+  projectSlug: string
+  worktreeId: string
+}): TeardownTarget {
+  return {
+    projectSlug: params.projectSlug,
+    workspaceId: params.worktreeId,
+    unitName: params.jobName,
   }
 }
 
 /**
- * Tear a running worktree's runtime down. Resolves `true` when the Job — and
- * with it the pod — is really gone, `false` when the delete timed out with the
- * pod still terminating. Callers that go on to remove the checkout must gate
- * on that: a pod in its grace period is still writing to /workspace.
+ * Tear a running worktree's runtime down. Resolves `true` when the runtime
+ * is really gone, `false` when it could not be confirmed — a unit still
+ * shutting down may still be writing to /workspace, so callers that go on
+ * to remove the checkout must gate on that.
+ *
+ * What stays here is bookkeeping about the WORKSPACE — the terminating
+ * mark, the stop record, the evictions, and the directories a worktree owns
+ * on disk. How the runtime itself comes down, and in what order, is
+ * `destroy`'s (docs/layered-server.md).
  */
 export async function cleanupWorktree(params: {
   jobName: string
@@ -148,10 +143,10 @@ export async function cleanupWorktree(params: {
    *  down — persisted so the deleted-worktree view can say so. */
   cause?: WorktreeDeathCause
 }): Promise<boolean> {
-  const { jobName, projectSlug, worktreeId, cause } = params
+  const { projectSlug, worktreeId, cause } = params
 
   // Mark terminating BEFORE evicting the status below: in the gap before
-  // Kubernetes stamps the pod's deletionTimestamp, this is what keeps the
+  // the runtime reports the workspace as going away, this is what keeps the
   // display path rendering "terminating…" instead of a stray waiting spell.
   markWorktreeTerminating(worktreeId)
 
@@ -169,75 +164,48 @@ export async function cleanupWorktree(params: {
   forgetLiveness(projectSlug, worktreeId)
   evictWorktreeStatus(projectSlug, worktreeId)
 
-  stopWorktreeForwarders(worktreeId)
-  await removeWorktreeFromProxy(worktreeId)
+  const runtimeGone = await worktreeRuntime().destroy(teardownTarget(params))
 
-  // Salvage built image layers into the project's registry before the
-  // pod (and its graphroot tmpfs) is destroyed. Best-effort, and the
-  // in-pod survey self-gates on podman, so non-nested worktrees (and
-  // already-dead pods) no-op.
-  await salvageWorktreeImages({ jobName, projectSlug, worktreeId })
-
-  // Delete the worktree Job; the pod's terminationGracePeriodSeconds (5s)
-  // covers the graceful-stop window, so no separate stop step is needed.
+  // Every removal below is gated on the verdict, for the same reason the
+  // CHECKOUT removal callers chain off it is: these are mount sources — the
+  // ephemeral-modules dir backing `/workspace/node_modules`, and the
+  // per-worktree dirs holding the vcluster kubeconfig, nested-yaac data and
+  // the staged skills / worktree bin. A workspace the runtime could not
+  // confirm gone may still be running on them.
   //
-  // --cascade=foreground --wait so the dirs below aren't yanked out from
-  // under a still-terminating pod. Both halves are needed and only the pair
-  // is enough: under kubectl's DEFAULT background propagation the API server
-  // drops the Job object and returns while the GC deletes the pod behind it,
-  // so `--wait` would return with the pod still running — and still writing
-  // into /workspace — for its whole grace period. Foreground holds the Job
-  // until its pod is really gone, which is what callers that go on to remove
-  // the checkout (`deleteWorktreeState`) are relying on.
-  let podGone = true
-  try {
-    await kubectlWithRetry([
-      'delete', 'job', jobName, '-n', k8sNamespace(),
-      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=30s',
-    ])
-  } catch {
-    // Already gone, or the delete timed out with the pod still terminating.
-    // Reported rather than swallowed: the caller may be about to delete the
-    // checkout, and a timeout is exactly the case where a live pod may still
-    // be writing to it. The background reconcile loop sweeps the leftover Job.
-    podGone = false
-  }
-
-  // Tear down the worktree's vcluster, if it had one. One cheap probe
-  // gates the label-selector deletes so non-vcluster worktrees pay a
-  // single kubectl get. Best-effort: the background vcluster reconcile
-  // sweeps anything this misses.
-  try {
-    if (await getVclusterStatus(worktreeId)) {
-      await removeWorktreeVcluster(vclusterName(worktreeId))
+  // `false` covers two cases and the worse one is not the obvious one. A
+  // delete that timed out leaves a workspace in its grace period, and
+  // removing its mounts is a narrowed race. A delete that never landed at
+  // all — the runtime unreachable through every attempt — leaves it fully
+  // alive and indefinitely so, and on the prewarm-reap path that spare is
+  // still claimable: its row survives (gated on this same verdict) and its
+  // agent is still up, so the next claim would hand a user a workspace
+  // whose state dirs were rm'd out from under it.
+  //
+  // Keeping them costs nothing. The runtime's own sweep resumes the
+  // teardown against the unit this left behind, and its detached script
+  // removes exactly these dirs; the server-start orphan sweep collects them
+  // too. Both are idempotent, so the only price is that they go later.
+  if (runtimeGone) {
+    // No-op when ephemeral modules were disabled for this worktree (the
+    // dir won't exist).
+    await fs.rm(worktreeModulesDir(projectSlug, worktreeId), {
+      recursive: true,
+      force: true,
+    })
+    for (const dir of worktreeStateRoots(projectSlug, worktreeId)) {
+      await fs.rm(dir, { recursive: true, force: true })
     }
-  } catch (err) {
-    console.warn(`vcluster cleanup for ${worktreeId} failed: ${(err as Error).message}`)
-  }
-
-  // Remove the per-worktree ephemeral-modules backing dir from
-  // `.cached-packages/modules/<sid>`. No-op if the feature was disabled
-  // for this worktree (dir won't exist).
-  await fs.rm(worktreeModulesDir(projectSlug, worktreeId), {
-    recursive: true,
-    force: true,
-  })
-
-  // Remove the per-worktree dirs (vcluster kubeconfig, nested-yaac data,
-  // staged skills / worktree bin). The pod is gone; the mount sources are
-  // garbage now.
-  for (const dir of worktreeStateRoots(projectSlug, worktreeId)) {
-    await fs.rm(dir, { recursive: true, force: true })
   }
 
   console.log(`Session ${worktreeId} cleaned up.`)
-  return podGone
+  return runtimeGone
 }
 
 /**
- * Remove the worktree's state from the proxy sidecar (in-process, fast),
- * then spawn a detached background process to do the slow Job teardown
- * so the calling process can exit immediately.
+ * Stop routing for the worktree (in-process, fast), then spawn a detached
+ * background process to do the slow runtime teardown so the calling process
+ * can return immediately.
  */
 export async function cleanupWorktreeDetached(params: {
   jobName: string
@@ -282,8 +250,13 @@ export async function cleanupWorktreeDetached(params: {
   forgetLiveness(projectSlug, worktreeId)
   evictWorktreeStatus(projectSlug, worktreeId)
 
-  stopWorktreeForwarders(worktreeId)
-  await removeWorktreeFromProxy(worktreeId)
+  const runtime = worktreeRuntime()
+  const target = teardownTarget(params)
+
+  // The half of a teardown that must happen in-process: host port forwards
+  // and the egress registration are this server's own state as much as the
+  // runtime's, and a detached shell could do neither.
+  await runtime.deregisterWorkspace(worktreeId)
 
   const modulesDir = worktreeModulesDir(projectSlug, worktreeId)
   const ephemeralModulesRm = `rm -rf ${shellQuote(modulesDir)} 2>/dev/null || true`
@@ -292,11 +265,12 @@ export async function cleanupWorktreeDetached(params: {
     (dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`,
   )
 
+  // The runtime's own teardown, then the dirs the worktree owns — which is
+  // this layer's half, and the reason the script is composed here rather
+  // than handed over whole. Every line on both sides tolerates having
+  // already run, so a resumed teardown re-issues the lot.
   const script = [
-    `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
-    // vcluster teardown: pure label-selector deletes, so non-vcluster
-    // worktrees no-op (every line carries --ignore-not-found + `|| true`).
-    buildVclusterCleanupShellCommand(vclusterName(worktreeId)),
+    runtime.detachedTeardownCommand(target),
     ephemeralModulesRm,
     ...worktreeDirRms,
   ].join('; ')
@@ -309,15 +283,14 @@ export async function cleanupWorktreeDetached(params: {
     child.unref()
   }
 
-  // Salvage first: it execs into the pod, which the Job delete destroys.
-  // Server-orchestrated (survey exec → node-side writer load — see
-  // salvageWorktreeImages) rather than part of the detached script, and
+  // Salvage first: it reaches INTO the workspace, which the script above
+  // destroys. Server-orchestrated rather than part of that script, and
   // bounded by its own timeouts so a wedged salvage can't strand the
-  // teardown. If the server dies in this window, the Job survives and the
-  // stale reaper resumes the (idempotent) teardown — the same recovery as
-  // a lost detached script. Failures are logged inside and never block.
-  void salvageWorktreeImages({ jobName, projectSlug, worktreeId })
-    .catch(() => false)
+  // teardown. If the server dies in this window the runtime survives and
+  // the stale reaper resumes the (idempotent) teardown — the same recovery
+  // as a lost detached script. Failures never block.
+  void runtime.salvageImages(target)
+    .catch(() => undefined)
     .then(() => { spawnDetachedTeardown() })
 }
 
@@ -442,16 +415,19 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   const sweepStartedAtMs = Date.now()
   let liveWorktreeIds: Set<string>
   try {
-    // Union of pod and Job worktree ids: a Job mid-recreate (pod evicted,
-    // replacement not scheduled yet) only shows up in the Job list, and
-    // must not have its dirs swept.
-    const [pods, jobs] = await Promise.all([listWorktreePods(), listWorktreeJobs()])
+    // Workspaces UNION the units holding no workspace: a unit mid-recreate
+    // (workspace evicted, replacement not scheduled yet) appears only as a
+    // stray, and must not have its dirs swept. Both reads reject rather
+    // than resolving empty, so "I could not see" never reads as "nothing is
+    // there" — which is what the catch below is for.
+    const view = worktreeRuntime().snapshot()
+    const [workspaces, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
     liveWorktreeIds = new Set(
-      [...pods.map((p) => p.worktreeId), ...jobs.map((j) => j.worktreeId)]
+      [...workspaces.map((w) => w.workspaceId), ...strays.map((s) => s.workspaceId)]
         .filter((id) => !!id),
     )
   } catch (err) {
-    console.warn(`Orphan modules GC: failed to list session pods/jobs: ${(err as Error).message}`)
+    console.warn(`Orphan modules GC: failed to list live sessions: ${(err as Error).message}`)
     return
   }
 
@@ -514,11 +490,22 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
  * what a restart needs before bringing the same workspace back up.
  *
  * Awaited rather than detached: a restart re-creates against this very id, so
- * the old Job has to be gone before the new one is applied. `jobName: null`
- * means nothing was running (a stopped workspace being restarted), and only
- * the marks are cleared — which still has to happen, because a terminating
- * mark left by an earlier teardown would render the fresh worktree as
- * "stopping…".
+ * the old runtime has to be gone before the new one is launched. `jobName:
+ * null` means nothing was running (a stopped workspace being restarted), and
+ * only the marks are cleared — which still has to happen, because a
+ * terminating mark left by an earlier teardown would render the fresh
+ * worktree as "stopping…".
+ *
+ * The one caller of `cleanupWorktree` that DISCARDS the verdict, deliberately.
+ * The two things a `false` endangers elsewhere are both absent here: a restart
+ * never removes the checkout (that is the work the user is coming back to),
+ * and the dirs are now kept on `false` anyway. What is left is a launch
+ * against a workspace that may not have finished going away, and the launch
+ * already owns that case — its retry loop re-deletes the half-started unit
+ * with a foreground cascade before each attempt. Failing the restart here
+ * instead would turn a slow teardown into a user-visible error for something
+ * the next attempt resolves on its own; the cost of absorbing it is one
+ * burned attempt.
  */
 export async function teardownForRestart(params: {
   jobName: string | null

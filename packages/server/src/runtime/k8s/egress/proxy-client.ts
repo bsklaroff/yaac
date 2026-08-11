@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
+import type {
+  AgentTool,
+  PendingSpawn,
+  SecretProxyRule,
+  SpawnResultWire,
+} from '@yaac/shared/types'
 import { imageExists } from '#platform/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#runtime/k8s/image-engine'
@@ -124,37 +129,16 @@ export function collectProxySecrets(
 }
 
 /**
- * A queued in-worktree `yaac-spawn` request, as drained from the proxy.
- * Wire shape mirrors k8s/proxy/spawn-queue.ts (SpawnRequest sans
- * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
+ * Take whatever in-worktree `yaac-spawn` requests the proxy is holding.
+ *
+ * `attachIfRunning`, never `ensureRunning`: this must not bootstrap the
+ * proxy, which deploys lazily on the first worktree create. No proxy means
+ * no worktrees means nothing queued, so an absent proxy is an empty queue
+ * rather than a reason to stand one up.
  */
-export interface PendingSpawn {
-  requestId: string
-  /** The CALLING worktree (attributed by the proxy from the pod source IP).
-   *  Absent from a proxy predating the rename, which sends `sessionId`. */
-  worktreeId?: string
-  /** `worktreeId` under the name it had before the rename. */
-  sessionId?: string
-  prompt: string
-  tool?: string
-  /** Model override for the spawned worktree's agent. */
-  model?: string
-}
-
-/** Mirror of k8s/proxy/spawn-queue.ts SpawnResult — keep in sync. */
-export interface SpawnResultWire {
-  requestId: string
-  ok: boolean
-  /** New worktree id when ok. Sent under both names — a proxy predating the
-   *  rename reads only `sessionId`, and completes the waiting pod with it. */
-  worktreeId?: string
-  sessionId?: string
-  error?: string
-}
-
-/** The calling worktree of a drained spawn, under whichever name it arrived. */
-export function pendingSpawnWorktreeId(p: PendingSpawn): string | undefined {
-  return p.worktreeId ?? p.sessionId
+export async function drainPendingSpawns(): Promise<PendingSpawn[]> {
+  if (!await proxyClient.attachIfRunning()) return []
+  return proxyClient.fetchPendingSpawns()
 }
 
 // --- ProxyClient ---

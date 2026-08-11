@@ -59,6 +59,28 @@ export function registerProvisioning(input: {
   notifyWorktreeListChanged()
 }
 
+/**
+ * Register only if this worktree has no entry yet.
+ *
+ * For a caller that must be tracked but may have been registered already by
+ * the route above it: re-registering would reset `startedAt` and take a
+ * fresh `seq`, which reorders a row the user is already watching, and would
+ * clear an `error` a failed attempt is still displaying.
+ *
+ * Distinct from `registerProvisioning`'s deliberate overwrite, which is what
+ * a genuine re-attempt on the same id wants.
+ */
+export function ensureProvisioning(input: {
+  worktreeId: string
+  projectSlug: string
+  tool: AgentTool
+  kind: ProvisioningKind
+  message?: string
+}): void {
+  if (entries.has(input.worktreeId)) return
+  registerProvisioning(input)
+}
+
 /** Update the progress message of a tracked entry. No-op if absent — a late
  *  progress callback must not resurrect a removed or dismissed entry. */
 export function updateProvisioningMessage(worktreeId: string, message: string): void {

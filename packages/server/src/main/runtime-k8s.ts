@@ -1,13 +1,27 @@
 import {
+  claimSpareWorkspace,
   countProjectWorkspaces,
   countWorkspaces,
+  deregisterWorkspace,
+  destroyProjectSubstrate,
+  destroyWorkspace,
+  detachedTeardownCommand,
   findWorkspace,
   findWorkspaceForTeardown,
   getWorktreeChanges,
   listWorkspaces,
   observeWorkspaces,
+  salvageWorkspaceImages,
 } from '#runtime/k8s/worktrees'
+import {
+  drainPendingSpawns,
+  proxyClient,
+  readBlockedHosts,
+  registerWorkspace,
+} from '#runtime/k8s/egress'
+import { getVclusterStatus } from '#runtime/k8s/cluster'
 import { createRuntimeSnapshot } from '#runtime/k8s/view'
+import { podExec, waitForStreamd } from '#platform/k8s'
 import { k8sReconcileSteps } from '#main/runtime-k8s-steps'
 import type { WorktreeRuntime } from '#runtime/contract'
 
@@ -35,5 +49,23 @@ export function k8sWorktreeRuntime(): WorktreeRuntime {
     changes: (jobName, base, defaultBase) => getWorktreeChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
+
+    blockedHosts: (workspaceId) => readBlockedHosts(workspaceId),
+    virtualClusterStatus: (workspaceId) => getVclusterStatus(workspaceId),
+
+    exec: (jobName, cmd, opts) => podExec(jobName, cmd, opts),
+    awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
+
+    claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
+
+    registerWorkspace: (reg) => registerWorkspace(reg),
+    deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),
+    salvageImages: (target) => salvageWorkspaceImages(target),
+    destroy: (target, opts) => destroyWorkspace(target, opts),
+    detachedTeardownCommand: (target) => detachedTeardownCommand(target),
+    destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
+
+    pendingSpawns: () => drainPendingSpawns(),
+    resolveSpawns: (results) => proxyClient.postSpawnResults(results),
   }
 }
