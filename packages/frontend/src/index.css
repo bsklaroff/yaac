@@ -207,6 +207,53 @@ body {
 }
 
 /*
+ * No text control smaller than 16px at phone width — the app's densest type
+ * scale (text-xs, text-[11px]) is exactly what triggers this.
+ *
+ * Mobile Safari zooms the page whenever a control below 16px takes focus, and
+ * it does not zoom back out. What the user is left with reads as a layout bug —
+ * the pane runs off to the right, the whole shell pans under a finger — but it
+ * is the browser scaling a page that no longer fits, and the control's font
+ * size is the only thing that prevents it. (`user-scalable=no` in the meta
+ * would too, at the cost of pinch-zoom for everyone.)
+ *
+ * One rule rather than a `max-md:` utility per control, because the failure is
+ * silent and the next input added would have to remember. It beats the
+ * utilities despite their higher specificity: Tailwind's live in
+ * `@layer utilities`, and unlayered declarations outrank every layer.
+ * `.cm-content` is CodeMirror's editing surface — a contenteditable, which
+ * zooms on focus the same way an input does. That reach has one limit worth
+ * knowing: CodeMirror injects its own theme rules scoped as `.ͼN .cm-content`,
+ * which are unlayered *and* more specific, so an `EditorView.theme` that sets a
+ * content font size would win here and bring the zoom back with no other
+ * signal. Nothing sets one today; a future theme must not.
+ *
+ * `min-width` is the same bump's other half. A control's automatic minimum size
+ * is its intrinsic width, which just grew, so a flex row holding one stops
+ * shrinking and pushes its own submit button off the screen — `min-width: 0`
+ * only bites for flex and grid items, which is exactly where that happens.
+ * Global for the same reason the size is: the rows this protects (a remote
+ * server form reachable only from the desktop app, say) are not all walkable by
+ * the sweep that would otherwise catch a regression.
+ *
+ * 767px, matching MOBILE_QUERY in lib/viewport.ts and Tailwind's `md`.
+ */
+@media (width < 48rem) {
+  input,
+  textarea,
+  select,
+  .cm-content {
+    font-size: 16px;
+  }
+
+  input,
+  textarea,
+  select {
+    min-width: 0;
+  }
+}
+
+/*
  * A terminal's scrollback lives in tmux, not in the browser, so a swipe over
  * one has to become a scroll report rather than a pan (lib/touch-scroll.ts).
  * The handler can only claim the gesture — preventDefault a touchmove — if the
