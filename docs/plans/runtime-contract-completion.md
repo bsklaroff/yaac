@@ -2,17 +2,19 @@
 
 `runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–5
 have delivered it for the WORKTREE lifecycle: observation, the pass view,
-scheduling, every mutation, and the launch. What remains is stage 6 — the
-api layer, which was never covered by stages 1–5 and needs its own pass
-over what belongs on the contract.
+scheduling, every mutation, and the launch. What remains is the layer
+consolidation the contract makes possible — stages 6–8: dissolve
+`platform` (6), dissolve `store` between domain and runtime (7), and flip
+the api zone to domain-and-records-only (8).
 
 This plan's goal was that domain and api speak only substrate-neutral
 runtime vocabulary, with every k8s verb, label, and type under
-`runtime/k8s`. Domain is there. It assumes the `platform/k8s` →
-`runtime/k8s/substrate` move (the file move, the `platform/container`
-inversion, the CLI/exports repointing) happens first or in parallel;
-nothing here depends on it beyond import specifiers, and this doc writes
-`#platform/k8s` for whatever that barrel is currently called.
+`runtime/k8s`. Domain is there. The endgame of stages 6–8 is one mediating
+layer: everything below domain is either rows (`records`) or a
+contract-fronted driver (`runtime`), over the dependency-free `src/lib`,
+with no sanctioned sideways edges left in the layer diagram and `platform`
+and `store` gone as layer names.
+This doc writes `#platform/k8s` for that barrel until stage 6 renames it.
 
 Two payoffs justify the work even if a second driver never ships:
 
@@ -33,10 +35,12 @@ Three rules, enforced by eslint zones once the stages land:
 
 1. `#runtime/k8s/**` is importable only from `runtime/**` and `main/**`
    (main is the composition root and may know which driver it composes).
-2. Domain and api reach the substrate only through `#runtime/contract`
-   (types) and `#runtime/driver` (the accessor). Their imports of
-   `#runtime/status` and `#runtime/agents` are unaffected — those are
-   runtime vocabulary, not k8s vocabulary.
+2. Domain reaches the substrate only through `#runtime/contract` (types)
+   and `#runtime/driver` (the accessor). Its imports of `#runtime/status`
+   and `#runtime/agents` are unaffected — those are runtime vocabulary,
+   not k8s vocabulary. Api is held to a stricter rule than this one:
+   stage 8 bans every value import below domain and records, driver
+   included; only type imports of `#runtime/contract` remain legal there.
 3. No type exported from `#runtime/k8s/**` appears in a domain or api
    signature. `PodInfo`, `PodMount`, `TickSnapshot` and `DeltaSource`
    disappear above the runtime boundary.
@@ -113,7 +117,7 @@ later flat-config object whose `files` list named the not-yet-migrated
 domain files and re-declared the rule without that pattern. Each stage
 deleted its files from the list; stage 5 emptied it and deleted the
 override, so the domain rule is enforced outright and a new domain file is
-born restricted. What is left for stage 6 is the api zone.
+born restricted. What is left for stage 8 is the api zone.
 
 ### The test fake
 
@@ -306,7 +310,7 @@ allow-host routes, the port-forward routes, and the project rebuild/push
 routes. None of that is worktree lifecycle, so none of it is covered by
 stages 4–5; it wants its own pass over what belongs on the contract (an
 image-build feed, a datapath surface) rather than being forced through the
-worktree verbs. Stage 6 should not flip api until that is decided.
+worktree verbs. Stage 8 makes that decision and flips the zone.
 
 **Also moved:** `worktreeForkFallback` left `runtime/k8s/worktrees/changes`
 for `domain/worktrees/fork-branch.ts`. It reads the checkout's own git
@@ -406,29 +410,196 @@ justify it. The decoupling did show up in the module graph, though:
 26.0% → 23.9%.
 
 
-## Stage 6 — the api layer
+## Stage 6 — dissolve platform
 
-The domain half of the enforcement flip landed with stage 5 (the holdout
-override is deleted and `docs/layered-server.md` describes the contract,
-the accessor and the launch split as real). What is left:
+`platform/k8s` becomes `runtime/k8s/substrate` and `platform/container`
+becomes `runtime/k8s/container` — two sealed folders like their new
+siblings, with `imports`-map entries and `SEALED_FOLDERS` additions to
+match. Stage 5 already did the hard part: outside `runtime/` and
+`platform/` itself, the only importers left are `main/convergence` and
+`main/runtime-k8s`, both composition-root code that rule 1 permits. So
+that half is mechanical — specifier updates, the server `exports` map
+(`./platform/k8s/*` and `./platform/container/*` entries repoint; the CLI
+and the test tree import several), and no behavior.
 
-- Decide what the api layer's substrate use should become. It is a
-  different shape from domain's — the image-build rows the webapp renders
-  (`api/events`, `api/routes/images`), the proxy client behind the auth
-  and allow-host routes, the port-forward routes, and the project
-  rebuild/push routes. None of it is worktree lifecycle, so none was
-  covered by stages 4–5, and forcing it through the worktree verbs would
-  buy nothing. It wants its own surface (an image-build feed, a datapath
-  surface) before the zone flips.
-- Then put `NO_SUBSTRATE_ABOVE_RUNTIME` on the api zone, and add the
-  mirror rule: `#runtime/k8s/**` importable only from
-  `packages/server/src/runtime/**` and `packages/server/src/main/**`.
-- Optional, separable: fold `main/convergence`'s cluster wiring
-  (`ClusterCache` construction, delta fan-out, priority classes, deferred
-  boot arming, relay invalidation) behind `runtime.start()` /
-  `runtime.stop()`. Main composes the concrete driver, so leaving
-  convergence k8s-aware breaks no rule; do this only if the wiring starts
-  duplicating for a second driver.
+The six non-k8s files do not stay behind as a rump layer, and they do not
+move as a group: trace where each one's consumers sit after stages 5–8
+and every file has exactly one natural home.
+
+- **`streaming-proc.ts` → a `runtime/k8s` module.** It is the child-process
+  runner for `podman build`/`push` and `kubectl exec` into builder pods,
+  and its only importers are `platform/container` and `runtime/k8s/images`
+  — both inside `runtime/k8s` once this stage lands.
+- **`port.ts` splits at its own seam.** `reserveAvailablePort` and
+  `ReservedPort` go to `src/lib`: reserving early is create policy, and
+  after stage 5 domain's create imports exactly those (the relays ride the
+  contract's `startForwarders`). The relay engine — `startPortForwarders`,
+  `RelayProcess`, `RelayFactory` — goes to `runtime/k8s`: its only
+  consumers are the substrate's exec-tunnel and stream-relay and the
+  forwarders folder.
+- **`shell.ts`, `keyed-mutex.ts`, `build-context.ts` → `src/lib`.** All
+  three already satisfy lib's zone (nothing but `@yaac/shared` and node
+  builtins): a POSIX quoter and one promisified `execFile`, a pure
+  promise-chain mutex, and the build-context file walk whose own header
+  says two features answer to it and neither owns it. Each is consumed
+  from both sides of the domain/runtime line, which is what lib is for.
+  This does widen lib's charter from "name-only vocabulary" to
+  "dependency-free vocabulary and host primitives" — the eslint zone that
+  enforces it is unchanged, and that zone is the substance.
+- **`git.ts` → `domain/git.ts`** (`#domain/git` via the `#*` catch-all,
+  like `#runtime/driver`). It has NO runtime consumers — its importers
+  are four domain folders, `store/projects`, and one api route — and it
+  cannot go to lib (it wraps the `simple-git` npm dep). It is domain's
+  process boundary the way kubectl is the driver's: fork-branch already
+  mocks it as such. The move happens WITH stage 7, not here — while
+  `store/projects` still exists, its `branches.ts`/`credentials.ts`
+  imports would point upward at domain — so stage 6 leaves `platform`
+  holding `git.ts` alone, and the store dissolution deletes the folder.
+  (`ResolvedGitCredential`'s "resolved in `#domain/projects`, consumed by
+  the git primitives" comment survives intact; both ends are then in
+  domain.) A side effect: the api route's `remoteBranchExists` import
+  becomes `#domain/git`, which stage 8's rule already permits.
+
+The rejected alternative, for the record: a `runtime/host` folder holding
+all six. It fails three ways. That name belongs to the future second
+driver — this plan's own hypothetical is "a host-process driver", and
+`runtime/host` is where it would live; squatting a box of primitives on it
+would make the contract story harder to tell, not easier. It would put
+`git.ts` — which no runtime code imports — inside runtime, so domain would
+import runtime for something that is not runtime vocabulary, widening rule
+2's exception list for nothing. And it would keep pretending the six files
+are one thing, when the consumer graph says they are three.
+
+## Stage 7 — dissolve store between domain and runtime
+
+`store` exists as a sibling layer so that both domain (above) and the
+driver (beside) can read disk, which is why the layer diagram carries a
+sanctioned sideways edge (runtime → store; the records → store edge is
+already gone — records speaks rows alone, and domain resolves the
+project-relative transcript column via `absoluteTranscriptPath`). With the
+contract real, each piece has exactly one natural owner, and dissolving
+the layer deletes the last sideways edge from the diagram. Three moves,
+in increasing order of substance:
+
+- **`store/worktrees` → `domain/worktrees`.** Only domain consumes it, and
+  stage 5 already declared checkout staging domain policy. `seed`,
+  `meta-import` and `session-starts` become internals of the sealed
+  folder whose callers (create, cleanup, the agent-session registry) are
+  already there. Purely a move.
+- **`store/transcripts` → `runtime/agents`.** The per-tool readers pair
+  one-to-one with the claude/codex/pi drivers, which already import them;
+  the JSONL scanner and the project-relative path convention go along.
+  Domain's readers (`agent-session-registry`, `stopped-list`) switch to
+  `#runtime/agents` — runtime vocabulary, permitted by rule 2. Purely a
+  move as well.
+- **`store/projects` → the disk half of `domain/projects`**, and this one
+  is design work, because eight runtime files still read it. Their
+  dispositions, by kind:
+  - `git-auth-failures.ts` is proxy data-plane state — a write-through
+    file the egress proxy owns and a replaced proxy re-reads — so it moves
+    INTO `runtime/k8s/egress` beside `blocked-hosts`. Its two readers
+    split the way that pair already did: `observe.ts` stays
+    runtime-internal, and `domain/worktrees/detail` gets a contract read
+    beside `blockedHosts`, which crossed this exact bridge in stage 4.
+  - Config WRITES issued from the driver (`addAllowedHostToProjectConfig`
+    in `egress/allow-host`, `addPortForwardToProjectConfig` in
+    `forwarders/forward-port`) move up: persistence is policy. Both flows
+    are api-triggered and become domain verbs in stage 8 anyway — the
+    mediator persists the config, then calls the runtime verb that
+    effects it (push the allow-list, start the relay). The driver stops
+    writing project config entirely.
+  - Config and credential READS in driver code stop being reads and
+    become arguments, the pattern stage 5 set with `WorkspaceSpec`:
+    the registration payload carries the credential material
+    (`listSshEntries` / `writeProxySecrets` callers), `prepareImage`
+    takes the resolved build-dir/dockerfile paths
+    (`image-engine/image-builder`), and the boot-time forwarder restore
+    and the prewarm sweep (`forwarders/restore`, `images/image-prewarm`)
+    take a domain-provided config accessor through `PassContext`, exactly
+    as `projectSlugs()` and the default tool are handed down today.
+
+  Do the first two subfolders first; they are unblocked now. The
+  `store/projects` half should land as its own PR (or several — the
+  argument-threading can go verb by verb), and the `./store/*` `exports`
+  entries repoint with it (only tests and test-utils import them). This
+  is also the PR that moves `git.ts` to `domain/git` — stage 6 left it as
+  `platform`'s last file because `store/projects` imported it — which
+  deletes the `platform` directory outright.
+
+## Stage 8 — flip api to domain and records only
+
+Stage 4 deferred the api decision; this stage makes it, and makes it
+STRICT: an api file may value-import only `#domain/*`, `#records`, its own
+`#http`/`#routes` internals, `#lib`, and `@yaac/shared` — not
+`#runtime/driver`, not `#runtime/agents` or `#runtime/terminals`
+(`#platform` and `#store` no longer exist by this stage). Type imports of
+`#runtime/contract` stay legal (it is import-free vocabulary, and domain
+signatures already speak it).
+
+Why strict rather than "api may use the driver like domain does": the
+contract's verbs are lifecycle-shaped, while api's residual needs are
+display-shaped, and letting routes call the driver directly is standing
+pressure to grow display verbs on the contract one at a time. Fronting
+them in domain keeps that pressure in the mediators, makes domain the
+complete use-case API of the server (routes become translation over one
+surface, testable against `installFakeWorktreeRuntime` plus rows), and
+means no route can quietly accumulate policy again.
+
+The migrations, enumerated from today's imports:
+
+- `routes/worktrees.ts`: its `worktreeRuntime()` calls, `typeInitialPrompt`,
+  the PTY verbs (`createShellWindow`, `killWindowTerminal`,
+  `listWorktreeTerminals`), `allowWorktreeHost` and the port-forward pair
+  become `domain/worktrees` verbs. The terminal and prompt façades are
+  thin by design; allow-host and forward-port are the stage-7 verbs that
+  persist config and then effect it.
+- `routes/auth.ts`: the proxy client and the credentials store move behind
+  `domain/auth`, which already fronts half of this surface.
+- `routes/projects.ts`, `routes/config.ts`, `routes/build-files.ts`: the
+  `#store/projects` reads/writes become `domain/projects` calls (stage 7
+  moves the code; this stage moves the callers), `remoteBranchExists` is
+  already legal once stage 7 lands git at `#domain/git`, and rebuild/push
+  land as domain verbs over the stage-5 image verbs.
+- `routes/images.ts` and `events.ts`: the image-build feed
+  (`listImageBuilds`, `getImageBuildLog`, `dismissImageBuild`,
+  `retryImageBuild`) is the one genuinely new surface. It goes ON the
+  contract, fronted by a domain façade — the same call `blockedHosts` and
+  `virtualClusterStatus` took in stage 4, for the same reason: a second
+  registered seam with its own fake buys nothing at this size. If display
+  verbs keep accumulating past the feed, that is the moment to split the
+  seam, and the stage-4 note stands. The snapshot hub keeps its shape;
+  `buildSnapshot` just gathers the feed through the façade.
+
+Enforcement, same ratchet as stage 1: put the api variant of
+`NO_SUBSTRATE_ABOVE_RUNTIME` (widened to ban `#runtime` value imports
+outright) on the api zone with a holdout override naming
+today's files, shrink it per PR, delete it at the end. Then the mirror
+rule lands: `#runtime/k8s/**` importable only from
+`packages/server/src/runtime/**` and `packages/server/src/main/**`.
+
+Optional, separable, unchanged from before: fold `main/convergence`'s
+cluster wiring (`ClusterCache` construction, delta fan-out, priority
+classes, deferred boot arming, relay invalidation) behind
+`runtime.start()` / `runtime.stop()`. Main composes the concrete driver,
+so leaving convergence k8s-aware breaks no rule; do this only if the
+wiring starts duplicating for a second driver.
+
+## The layer diagram, after stages 6–8
+
+```
+main       api
+   ↓        ↓   (api: domain and records only)
+      domain
+   ↓        ↓
+records   runtime    records: rows alone
+                     runtime: the contract, its drivers; k8s sealed inside
+```
+
+Three strata, no sanctioned sideways edges, with `#lib` (dependency-free
+vocabulary and host primitives) below everything and `#log`/`#notify` as
+the arrow-exempt outbound channels. `platform` and `store` are gone as
+layer names; `docs/layered-server.md` is rewritten at each stage so it
+keeps describing the present tense.
 
 ## Deliberately out of scope
 
@@ -438,9 +609,10 @@ direct bindings to the stream relay (`podExec`, `dialCtrlStream`,
 take an injectable `dial`, and rule 1 permits it. A true second driver
 would need the dial transport on the contract too; that extension has an
 obvious seat beside `exec` but no payoff until such a driver exists.
-Likewise the api layer keeps reaching `#runtime/terminals` for PTY routes,
-and sinking spare-pool's retool/rebranch sequences into `runtime/agents`
-is a possible later refinement, not part of this plan.
+(Stage 8 moves api's PTY routes behind a domain façade, but the façade
+calls `#runtime/terminals` — the relay bindings themselves stay where
+they are.) Sinking spare-pool's retool/rebranch sequences into
+`runtime/agents` is a possible later refinement, not part of this plan.
 
 ## Verification per stage
 
@@ -455,3 +627,16 @@ is a possible later refinement, not part of this plan.
   every moved verb against a real cluster, and none of their assertions
   should change — this refactor moves code across a boundary and must not
   change what the substrate sees.
+- Stage 6 is a pure move: lint and `pnpm modularity --runtime-only` green,
+  and since the `exports` map repoints, a CLI smoke (`yaac cluster check`)
+  proves the out-of-package importers still resolve.
+- Stage 7 moves each subfolder's tests with it (`test/store/<name>/` →
+  the mirror of its new home); coverage answers "is this internal still
+  exercised?" before any test is dropped. `pnpm modularity` should show
+  the runtime → store folder edges disappear rather than reappear as
+  runtime → domain (which would be a rule violation, not a metric
+  regression).
+- Stage 8's backstop is the api project (`pnpm vitest run --project api`):
+  routes change their imports, not their behavior, so its assertions
+  should not change. The holdout list shrinks in the same PR as each
+  route migration, as in stages 1–5.
