@@ -5,8 +5,8 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import simpleGit from 'simple-git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
-import { cloneRepo } from '@yaac/server/platform/git'
-import { addEntry, loadCredentials } from '@yaac/server/store/projects/credentials'
+import { cloneRepo } from '@yaac/server/domain/git'
+import { addEntry, loadCredentials } from '@yaac/server/domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,

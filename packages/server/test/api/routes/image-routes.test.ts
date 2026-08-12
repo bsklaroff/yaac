@@ -96,7 +96,7 @@ describe('image routes', () => {
     mockRetry.mockReturnValue({ retried: true, infra: false })
     const res = await app.request('/builds/build-1/retry', { method: 'POST' })
     expect(res.status).toBe(202)
-    expect(mockRetry).toHaveBeenCalledWith('build-1')
+    expect(mockRetry).toHaveBeenCalledWith('build-1', expect.any(Function))
     // A project build rebuilds through its own chain — no proxy kick.
     expect(ensureRunning).not.toHaveBeenCalled()
   })

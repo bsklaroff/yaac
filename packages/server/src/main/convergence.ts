@@ -23,6 +23,7 @@ import {
 } from '#runtime/k8s/forwarders'
 import { PROXY_CHANGE_SOURCES, ProxyEventStream, proxyClient } from '#runtime/k8s/egress'
 import { recordedConversationHandles } from '#db'
+import { resolveProjectConfig } from '#domain/projects'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -152,7 +153,7 @@ async function attachNow(): Promise<void> {
   // for every live worktree container before we process RPCs so the
   // displayed port mapping matches reality.
   try {
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders((slug) => resolveProjectConfig(slug).then((c) => c ?? undefined))
   } catch (err) {
     serverLog(`[server] restore forwarders failed: ${String(err)}`)
   }

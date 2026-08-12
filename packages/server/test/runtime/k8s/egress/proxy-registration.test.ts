@@ -1,15 +1,7 @@
-import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  buildWorktreeRegistration,
-  registerWorkspace,
-  syncProxySecrets,
-} from '#runtime/k8s/egress/proxy-registration'
+import { buildWorktreeRegistration, registerWorkspace } from '#runtime/k8s/egress/proxy-registration'
 import { proxyClient } from '#runtime/k8s/egress/proxy-client'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
-import { proxySecretsCredentialsPath, setDataDir } from '@yaac/shared/project-paths'
 
 describe('buildWorktreeRegistration', () => {
   afterEach(() => {
@@ -26,15 +18,16 @@ describe('buildWorktreeRegistration', () => {
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
       projectSlug: 'acme-repo',
-      env: { MY_KEY: 'sekrit' },
+      secretNames: ['MY_KEY'],
+      env: {},
     })
     expect(reg.rules).toEqual([{
       hostPattern: 'api.example.com',
       pathPattern: '/*',
       injections: [{ action: 'set_header', name: 'x-api-key', secretRef: 'MY_KEY' }],
     }])
-    // The registration is persisted by the proxy — it must never carry
-    // the secret value itself.
+    // The registration is persisted by the proxy — it never sees a value,
+    // which is now true by construction: only names reach this function.
     expect(JSON.stringify(reg)).not.toContain('sekrit')
     expect(reg.repoUrl).toBe('https://github.com/acme/repo')
     expect(reg.tool).toBe('claude')
@@ -47,6 +40,7 @@ describe('buildWorktreeRegistration', () => {
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
       projectSlug: 'acme-repo',
+      secretNames: [],
       env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
@@ -56,18 +50,18 @@ describe('buildWorktreeRegistration', () => {
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
     expect(buildWorktreeRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildWorktreeRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -84,7 +78,7 @@ describe('buildWorktreeRegistration', () => {
   it('still appends the pull hosts on top of addAllowedUrls', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -93,7 +87,7 @@ describe('buildWorktreeRegistration', () => {
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -101,7 +95,7 @@ describe('buildWorktreeRegistration', () => {
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildWorktreeRegistration({
       config: {},
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -114,6 +108,7 @@ describe('buildWorktreeRegistration', () => {
       remoteUrl: 'u',
       tool: 'opencode',
       projectSlug: 'p',
+      secretNames: [],
       env: {
         YAAC_E2E_UPSTREAM_REDIRECTS:
           '{"api.anthropic.com":{"host":"mock.yaac-test.svc","port":8080}}',
@@ -122,43 +117,6 @@ describe('buildWorktreeRegistration', () => {
     expect(reg.upstreamRedirects).toEqual({
       'api.anthropic.com': { host: 'mock.yaac-test.svc', port: 8080, tls: undefined },
     })
-  })
-})
-
-describe('syncProxySecrets', () => {
-  let tmpDir: string | null = null
-
-  afterEach(async () => {
-    vi.clearAllMocks()
-    if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true })
-      tmpDir = null
-    }
-  })
-
-  it('writes set envSecretProxy values to the proxy-secrets credentials file', async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-proxy-secrets-'))
-    setDataDir(tmpDir)
-    await syncProxySecrets(
-      {
-        envSecretProxy: {
-          MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
-          MISSING: { hosts: ['api.example.com'] },
-        },
-      },
-      { MY_KEY: 'sekrit' },
-    )
-    const raw = JSON.parse(await fs.readFile(proxySecretsCredentialsPath(), 'utf8')) as {
-      secrets: Record<string, string>
-    }
-    expect(raw.secrets).toEqual({ MY_KEY: 'sekrit' })
-  })
-
-  it('no-ops when the config has no envSecretProxy', async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-proxy-secrets-'))
-    setDataDir(tmpDir)
-    await syncProxySecrets({}, {})
-    await expect(fs.access(proxySecretsCredentialsPath())).rejects.toThrow()
   })
 })
 
@@ -182,6 +140,7 @@ describe('registerWorkspace', () => {
       tool: 'codex',
       config: { addAllowedUrls: ['api.example.com'] },
       remoteUrl: 'https://github.com/example/repo.git',
+      proxySecretNames: [],
     })
 
     expect(mockRegister).toHaveBeenCalledTimes(1)
@@ -212,6 +171,7 @@ describe('registerWorkspace', () => {
       tool: 'claude',
       config: {},
       remoteUrl: '',
+      proxySecretNames: [],
     })).rejects.toThrow('proxy down')
   })
 })

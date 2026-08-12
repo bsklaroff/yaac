@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
-import { cloneRepo, isGitAuthError } from '#platform/git'
-import { parseGitRemote, resolveCredentialForUrl } from '#store/projects'
+import { cloneRepo, isGitAuthError } from '#domain/git'
+import { parseGitRemote, resolveCredentialForUrl } from './credentials'
 import { getProjectRow, recordProject } from '#db'
 import {
   loadClaudeCredentialsFile,

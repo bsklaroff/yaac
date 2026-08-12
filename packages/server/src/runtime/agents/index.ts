@@ -62,6 +62,16 @@ export {
   verifyAgentWindowAlive,
   type InitWindow,
 } from './agent-command'
+// Where each tool keeps its transcript on disk, and the project-relative
+// form the path travels and is stored in. The per-tool readers in here are
+// the primary consumers; these four are what a mediator needs to record a
+// path, resolve one back, or stat it for last activity.
+export {
+  resolveProjectPath,
+  sessionTranscriptPath,
+  toProjectRelative,
+  transcriptLastActiveMs,
+} from './transcripts'
 export { ensureClaudeHooks } from './claude'
 export { removeLegacyCodexHook } from './codex'
 export { ensureOpencodeConfigJson } from './opencode'

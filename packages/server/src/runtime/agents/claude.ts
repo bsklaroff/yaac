@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import { scanJsonlForward } from '#store/transcripts'
+import { scanJsonlForward } from './jsonl'
 
 /**
  * Classifies Claude Code's "actively working" state from the pane's OSC

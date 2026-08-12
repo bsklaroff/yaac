@@ -26,6 +26,8 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorktreeRuntime } from '#runtime/driver'
+import { configureProxyCredentials } from '#runtime/k8s/egress'
+import { listSshEntries } from '#domain/projects'
 import { k8sWorktreeRuntime } from '#main/runtime-k8s'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -126,6 +128,19 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // reaches the substrate through the registered driver, so an unregistered
   // one is a startup-order bug rather than a null branch downstream.
   setWorktreeRuntime(k8sWorktreeRuntime())
+
+  // And where its egress path reads credential material from. SSH identities
+  // live in the credentials store above the runtime, but are re-read on the
+  // PROXY's schedule — an attach to a replaced pod, a reconnect heal — so no
+  // caller can hand them in.
+  //
+  // Here rather than inside `k8sWorktreeRuntime` deliberately: a factory that
+  // reached for this would make every importer of the driver assembly pull
+  // the whole projects barrel in eagerly, which is a real cost to anything
+  // that composes a runtime without being this process (the api tests build
+  // the Hono app in-process). Leaving it unwired degrades to "no ssh
+  // injection", which is what those want.
+  configureProxyCredentials({ listSshEntries })
 
   await preflightHostTor()
   await ensureDataDir()

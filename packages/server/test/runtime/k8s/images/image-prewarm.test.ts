@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { YaacConfig } from '@yaac/shared/types'
 
-vi.mock('#store/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#runtime/k8s/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
 vi.mock('#runtime/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
@@ -17,7 +17,6 @@ import {
   PREWARM_SWEEP_INTERVAL_MS,
   _resetImagePrewarmForTests,
 } from '#runtime/k8s/images/image-prewarm'
-import { resolveProjectConfig } from '#store/projects/config'
 import { resolveImageChain } from '#runtime/k8s/image-engine/image-builder'
 import { ensureImage, pushImageShared } from '#runtime/k8s/images/build-coordinator'
 import {
@@ -31,7 +30,8 @@ import {
 import { _resetWorktreeListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
-const mockResolveConfig = vi.mocked(resolveProjectConfig)
+// The pass's own accessor, which is what the step is handed in production.
+const mockResolveConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
 const mockPush = vi.mocked(pushImageShared)
@@ -51,7 +51,7 @@ describe('reconcileImagePrewarm', () => {
     vi.stubEnv('YAAC_IMAGE_PREWARM', undefined)
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', undefined)
     vi.stubEnv('YAAC_IMAGE_PREFIX', undefined)
-    mockResolveConfig.mockResolvedValue(null)
+    mockResolveConfig.mockResolvedValue(undefined)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
     mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
@@ -64,7 +64,7 @@ describe('reconcileImagePrewarm', () => {
 
   it('runs inside a nested yaac session (in-pod dockerfile edits are the hot path)', async () => {
     vi.stubEnv('YAAC_NESTED', '1')
-    reconcileImagePrewarm(['p'])
+    reconcileImagePrewarm(['p'], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledWith(
       'p', undefined, false, false, { reason: 'prewarm' })
@@ -72,26 +72,26 @@ describe('reconcileImagePrewarm', () => {
 
   it('is a no-op when YAAC_IMAGE_PREWARM=0', async () => {
     vi.stubEnv('YAAC_IMAGE_PREWARM', '0')
-    reconcileImagePrewarm(['p'])
+    reconcileImagePrewarm(['p'], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
   it('is a no-op under requirePrebuilt (e2e workers must never build)', async () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    reconcileImagePrewarm(['p'])
+    reconcileImagePrewarm(['p'], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).not.toHaveBeenCalled()
   })
 
   it('ensures and pushes every project, threading nestedContainers from config', async () => {
     mockResolveConfig.mockImplementation((slug) =>
-      Promise.resolve(slug === 'nested' ? { nestedContainers: true } : null))
+      Promise.resolve(slug === 'nested' ? { nestedContainers: true } : undefined))
     mockResolveChain.mockImplementation((slug: string) =>
       Promise.resolve({ layers: [], finalTag: `final-${slug}:x` }))
     mockEnsureImage.mockImplementation((slug: string) => Promise.resolve(`final-${slug}:x`))
 
-    reconcileImagePrewarm(['plain', 'nested'])
+    reconcileImagePrewarm(['plain', 'nested'], mockResolveConfig)
     await flush()
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
@@ -106,7 +106,7 @@ describe('reconcileImagePrewarm', () => {
 
   it('virtualCluster implies the nestable layer', async () => {
     mockResolveConfig.mockResolvedValue({ virtualCluster: true })
-    reconcileImagePrewarm(['vc'])
+    reconcileImagePrewarm(['vc'], mockResolveConfig)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledWith(
       'vc', undefined, false, true, { reason: 'prewarm' })
@@ -119,39 +119,55 @@ describe('reconcileImagePrewarm', () => {
 
     // Distinct past-interval timestamps so the sweep throttle never skips —
     // the in-flight mark is what must dedupe here.
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
     release()
     await flush()
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 3)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 3)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
+  })
+
+  it('builds NOTHING for a project whose config cannot be read', async () => {
+    // A config that exists and won't parse rejects the accessor, and that has
+    // to stand the project down rather than fall back to defaults: `{}` here
+    // would build a nestedContainers project's chain without its nestable
+    // layer and then push it — wrong, and successful at being wrong.
+    mockResolveConfig.mockRejectedValueOnce(new Error('yaac-config.json: invalid nestedContainers'))
+
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
+    await flush()
+
+    expect(mockEnsureImage).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
+      expect.stringContaining('[image-prewarm] p:'))
   })
 
   it('logs a failed prewarm and retries it on a later sweep', async () => {
     mockEnsureImage.mockRejectedValueOnce(new Error('podman build exited with code 1'))
 
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
     await flush()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
       expect.stringContaining('[image-prewarm] p:'))
 
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
 
   it('throttles: a sweep inside the interval is a no-op', async () => {
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS)
     await flush()
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS + 5_000)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS + 5_000)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
-    reconcileImagePrewarm(['p'], PREWARM_SWEEP_INTERVAL_MS * 2)
+    reconcileImagePrewarm(['p'], mockResolveConfig, PREWARM_SWEEP_INTERVAL_MS * 2)
     await flush()
     expect(mockEnsureImage).toHaveBeenCalledTimes(2)
   })
@@ -170,7 +186,7 @@ describe('reconcileImagePrewarm', () => {
     })
     failImageBuild(id, 'boom')
 
-    await prewarmProjectImage('p')
+    await prewarmProjectImage('p', {})
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
@@ -178,7 +194,7 @@ describe('reconcileImagePrewarm', () => {
 
   it('respects the test image prefix', async () => {
     vi.stubEnv('YAAC_IMAGE_PREFIX', 'yaac-test')
-    await prewarmProjectImage('p')
+    await prewarmProjectImage('p', {})
     expect(mockResolveChain).toHaveBeenCalledWith('p', 'yaac-test', false)
     expect(mockEnsureImage).toHaveBeenCalledWith(
       'p', 'yaac-test', false, false, { reason: 'prewarm' })
@@ -190,10 +206,10 @@ describe('retryImageBuild', () => {
     vi.clearAllMocks()
     clearAllImageBuildsForTests()
     // retry fires prewarmProjectImage fire-and-forget; keep its leaves inert
-    // so the background rebuild does no real work. The observable we assert on
-    // is that prewarmProjectImage was kicked off for the right slug — its
-    // first step is a resolveProjectConfig probe.
-    mockResolveConfig.mockResolvedValue(null)
+    // so the background rebuild does no real work. The observable we assert
+    // on is that prewarmProjectImage was kicked off for the right slug — its
+    // first step is asking the caller's reader for that project's config.
+    mockResolveConfig.mockResolvedValue(undefined)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
     mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
@@ -210,12 +226,12 @@ describe('retryImageBuild', () => {
     failImageBuild(id, 'boom')
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(true)
 
-    expect(retryImageBuild(id)).toEqual({ retried: true, infra: false })
+    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: false })
     // The entry is forgotten, so it no longer backs off the prewarm sweep.
     expect(getImageBuild(id)).toBeUndefined()
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(false)
     // retry kicked off prewarmProjectImage('proj-a'); its synchronous first
-    // step is the config probe.
+    // step is asking for that project's config.
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
   })
 
@@ -226,7 +242,7 @@ describe('retryImageBuild', () => {
     attachImageBuildProject(id, 'proj-b')
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id)).toEqual({ retried: true, infra: false })
+    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: false })
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-b')
   })
@@ -240,18 +256,18 @@ describe('retryImageBuild', () => {
     })
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id)).toEqual({ retried: true, infra: true })
+    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: true })
     expect(getImageBuild(id)).toBeUndefined()
     expect(mockResolveConfig).not.toHaveBeenCalled()
   })
 
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {
-    expect(retryImageBuild('missing')).toEqual({ retried: false, infra: false })
+    expect(retryImageBuild('missing', mockResolveConfig)).toEqual({ retried: false, infra: false })
 
     const running = registerImageBuild({
       tag: 'x:1', layer: 'base', action: 'build', projectSlug: 'p', reason: 'session',
     })
-    expect(retryImageBuild(running)).toEqual({ retried: false, infra: false })
+    expect(retryImageBuild(running, mockResolveConfig)).toEqual({ retried: false, infra: false })
     expect(getImageBuild(running)?.status).toBe('running') // still tracked
     expect(mockResolveConfig).not.toHaveBeenCalled()
   })

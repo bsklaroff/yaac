@@ -1,7 +1,6 @@
-import { buildRulesFromConfig, collectProxySecrets, proxyClient } from './proxy-client'
+import { buildRulesFromConfig, proxyClient } from './proxy-client'
 import type { InjectionRule, UpstreamRedirect } from './proxy-client'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
-import { writeProxySecrets } from '#store/projects'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 import type { WorkspaceRegistration } from '#runtime/contract'
 
@@ -61,13 +60,20 @@ export function parseUpstreamRedirectsEnv(
 
 /**
  * Assemble a worktree's proxy registration from already-loaded inputs.
- * Pure given (config, remoteUrl, tool, env).
+ * Pure given (config, remoteUrl, tool, secretNames, env).
+ *
+ * `secretNames` says which of the config's proxied env vars have a value
+ * behind them, and the caller is the only one who can say — the values
+ * themselves never come through here, which is what keeps the payload safe
+ * for the proxy to persist. `env` is left only for the e2e redirect wiring,
+ * which is the driver's own test seam rather than anything about a secret.
  */
 export function buildWorktreeRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
   projectSlug: string
+  secretNames: string[]
   env?: NodeJS.ProcessEnv
 }): WorktreeRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
@@ -84,7 +90,7 @@ export function buildWorktreeRegistration(input: {
   }
   return {
     rules: input.config.envSecretProxy
-      ? buildRulesFromConfig(input.config.envSecretProxy, env)
+      ? buildRulesFromConfig(input.config.envSecretProxy, input.secretNames)
       : [],
     allowedHosts,
     repoUrl: input.remoteUrl,
@@ -92,22 +98,6 @@ export function buildWorktreeRegistration(input: {
     projectSlug: input.projectSlug,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
   }
-}
-
-/**
- * Write the config's envSecretProxy values into the proxy-secrets
- * credentials file so the proxy can resolve the registration's secretRef
- * rules. Must complete before the matching `registerWorktree` call —
- * otherwise the proxy would drop the injections as unresolvable until
- * the file lands.
- */
-export async function syncProxySecrets(
-  config: YaacConfig,
-  // eslint-disable-next-line no-process-env -- DI seam: tests pass a fake env.
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
-  if (!config.envSecretProxy) return
-  await writeProxySecrets(collectProxySecrets(config.envSecretProxy, env))
 }
 
 /**
@@ -130,6 +120,7 @@ export async function registerWorkspace(reg: WorkspaceRegistration): Promise<voi
       remoteUrl: reg.remoteUrl,
       tool: reg.tool,
       projectSlug: reg.projectSlug,
+      secretNames: reg.proxySecretNames,
     }),
   )
 }

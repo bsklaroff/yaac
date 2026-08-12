@@ -33,7 +33,7 @@ import {
 import { absoluteTranscriptPath } from '#domain/worktrees/agent-session-paths'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
-import { sessionStartsLogSize } from '#store/worktrees/session-starts'
+import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
 import { serverLog } from '#log'
 import { listWorktreePods } from '#runtime/k8s/substrate/pods'
 import { podExec } from '#runtime/k8s/substrate/stream-relay'

@@ -1,6 +1,6 @@
 import { listWorktreePods } from '#runtime/k8s/substrate'
+import type { YaacConfig } from '@yaac/shared/types'
 import { isTmuxSessionAlive } from '#runtime/status'
-import { resolveProjectConfig } from '#store/projects'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from './port-forwarders'
 
 interface RestoreCandidate {
@@ -20,8 +20,15 @@ interface RestoreCandidate {
  * Every step is skipped rather than retried: a pod that isn't running, one
  * that already has forwarders (nothing was lost), and one whose tmux is gone
  * (the reaper's business, not this pass's).
+ *
+ * WHICH ports a workspace should carry comes from its project's config, so
+ * the caller supplies the reader — a plain parameter rather than a
+ * `PassContext` accessor, because this runs once as the server attaches and
+ * there is no pass to take one from.
  */
-export async function restoreAllWorktreeForwarders(): Promise<void> {
+export async function restoreAllWorktreeForwarders(
+  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+): Promise<void> {
   let pods
   try {
     pods = await listWorktreePods()
@@ -41,7 +48,7 @@ export async function restoreAllWorktreeForwarders(): Promise<void> {
 
   await Promise.allSettled(candidates.map(async ({ jobName, projectSlug, worktreeId }) => {
     try {
-      const config = await resolveProjectConfig(projectSlug) ?? {}
+      const config = await projectConfig(projectSlug) ?? {}
       await provisionWorktreeForwarders(projectSlug, worktreeId, jobName, config.portForward)
     } catch (err) {
       console.error(

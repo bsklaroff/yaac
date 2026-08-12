@@ -17,8 +17,7 @@ import {
   watcherDisplayLiveness,
 } from '#runtime/status'
 import { getWorktreePorts, getUnforwardedPorts } from '#runtime/k8s/forwarders'
-import { readBlockedHosts } from '#runtime/k8s/egress'
-import { readAllGitAuthFailures } from '#store/projects'
+import { readAllGitAuthFailures, readBlockedHosts } from '#runtime/k8s/egress'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import type {

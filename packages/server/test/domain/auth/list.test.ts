@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { addEntry } from '#store/projects/credentials'
+import { addEntry } from '#domain/projects/credentials'
 import { saveClaudeCredentialsFile, saveToolAuth } from '@yaac/shared/tool-auth'
 import { listAuth } from '#domain/auth'
 

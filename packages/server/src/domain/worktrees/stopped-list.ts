@@ -1,6 +1,10 @@
 import { worktreeRuntime } from '#runtime/driver'
-import { getAgentSessionFirstMessage } from '#runtime/agents'
-import { sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
+import {
+  getAgentSessionFirstMessage,
+  sessionTranscriptPath,
+  toProjectRelative,
+  transcriptLastActiveMs,
+} from '#runtime/agents'
 import { listWorktreeRows, type WorktreeRow } from '#db'
 import {
   getAgentSessionsFor,

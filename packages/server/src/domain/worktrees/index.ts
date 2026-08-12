@@ -41,6 +41,8 @@ export {
   getWorktreePrompt,
   type WorktreeDetail,
 } from './detail'
+export { allowWorktreeHost } from './allow-host'
+export { forwardWorktreePort } from './forward-port'
 export { worktreeForkBranch } from './fork-branch'
 export { ensureProjectExists, listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'

@@ -2,9 +2,10 @@ import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeSnapshot } from '#runtime/contract'
 import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
 import { getDefaultTool, listProjectRows } from '#db'
+import { resolveProjectConfig } from '#domain/projects'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
  * Event-driven reconciler. Steps run when something they watch changes,
@@ -100,6 +101,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       let snapshot: RuntimeSnapshot | null = null
       let defaultTool: Promise<AgentTool | undefined> | null = null
       let projectSlugs: Promise<string[]> | null = null
+      const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
         resync,
@@ -120,6 +122,29 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         projectSlugs: () => (projectSlugs ??= listProjectRows()
           .then((rows) => rows.map((r) => r.slug))
           .catch(() => [])),
+        // Memoized per project rather than per pass, since a pass reads a
+        // handful of different ones. Same reason as the two above: which
+        // config a project has is answered by the layers that own disk, so
+        // a runtime step is handed the answer.
+        //
+        // NO catch, unlike `projectSlugs` — and the difference is the point.
+        // A project with no config file resolves `undefined`, which genuinely
+        // means "all defaults". A config file that EXISTS and cannot be read
+        // (malformed JSON, an invalid field, a mid-edit save) rejects, and
+        // the rejection must reach the step: a consumer handed `{}` there
+        // would build the wrong artifact and succeed at it — a
+        // nestedContainers project's chain without its nestable layer — and
+        // then push it. Rejecting stands that step down for the pass with a
+        // log line, the way a failed `desiredWorktrees()` read stands the
+        // reaper down, and the next pass retries a fixed file.
+        projectConfig: (slug) => {
+          let pending = projectConfigs.get(slug)
+          if (!pending) {
+            pending = resolveProjectConfig(slug).then((c) => c ?? undefined)
+            projectConfigs.set(slug, pending)
+          }
+          return pending
+        },
       }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { scanJsonlForward } from '#store/transcripts'
+import { scanJsonlForward } from './jsonl'
 
 // ---------------------------------------------------------------------------
 // Status + first-message

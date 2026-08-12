@@ -6,15 +6,15 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 // The clone is the one thing this feature shells out for. Faking it (and
 // only it) keeps every credential lookup, slug derivation, and rollback
 // running for real, with `isGitAuthError` still classifying the failure.
-vi.mock('#platform/git', async (importOriginal) => ({
+vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
   cloneRepo: vi.fn(),
 }))
 
-import { cloneRepo } from '#platform/git'
-import type * as gitModule from '#platform/git'
+import { cloneRepo } from '#domain/git'
+import type * as gitModule from '#domain/git'
 import { addProject } from '#domain/projects'
-import { addEntry, saveCredentials } from '#store/projects'
+import { addEntry, saveCredentials } from '#domain/projects'
 import {
   projectDir,
   repoDir,

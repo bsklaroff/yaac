@@ -10,36 +10,41 @@ check that the runtime-edge graph stays cycle-free.
 main       composition root: startup, shutdown, the reconcile loop engine
 api        routes/, http/, events (the /events snapshot hub)
   ↓
-domain     the mediators: everything that reads rows and drives the
-           layers below
- ↓       ↓       ↓
-db       store  runtime     db: rows; owns the database outright
-                            store: worktrees/clones/transcripts/config on disk
-                            runtime: how agents run (k8s driver today);
-                            its substrate is sealed inside it
+domain     the mediators: everything that reads rows, owns what a project
+           and a worktree keep on disk, and drives the runtime
+ ↓             ↓
+db           runtime       db: rows; owns the database outright
+                           runtime: how agents run (k8s driver today);
+                           its substrate is sealed inside it
 ```
 
 `lib/` sits below all of it — dependency-free vocabulary and host
 primitives that name nothing back.
 
-Arrows only point down. Two package-root modules are exempt from the
-arrows: `#log`, and `#notify` — the zero-dependency outbound "something
-changed" channel. Anything may emit on `#notify`; only the api layer's
-snapshot hub listens, so a change notification is not a dependency on the
-hub that consumes it.
+Three strata, and no sanctioned sideways edges: arrows only point down.
+Two package-root modules are exempt from them: `#log`, and `#notify` — the
+zero-dependency outbound "something changed" channel. Anything may emit on
+`#notify`; only the api layer's snapshot hub listens, so a change
+notification is not a dependency on the hub that consumes it.
 
-One sideways edge is sanctioned, and it is one-way. A runtime driver may
-read the store — it mounts what the store staged, launches with the config
-and credentials the store keeps, and the per-tool transcript readers are
-store code its agents module shares — and the DAG holds because the store
-never reads back.
+Everything below domain is one of two things, which is the property worth
+protecting: rows, or a contract-fronted driver. Neither reads the other.
 
-`db` reaches nothing sideways at all. A column that names a place on
-disk holds the store's portable form (a transcript path is
-project-relative, so it stays true wherever the data dir sits); resolving
-one against the project directory takes layout knowledge, so it happens a
-layer up, in `absoluteTranscriptPath`. That keeps rows a vocabulary the
-db layer can speak alone.
+That shape is what decides where a disk read goes, and the answer is never
+"the runtime looks it up". A driver is HANDED what it needs — a launch
+intent carries the resolved config and the secrets it must deliver, a
+reconcile pass hands down the project list and each project's config, and a
+credential reader the proxy needs on its own schedule (an attach, a
+reconnect heal) is composed in at startup. So the driver's own file reads
+are confined to its datapath: the two files it write-throughs with the
+egress proxy, and the images it builds.
+
+`db` reaches nothing sideways at all. A column that names a place on disk
+holds a portable form (a transcript path is project-relative, so it stays
+true wherever the data dir sits); resolving one against the project
+directory takes layout knowledge, so it happens a layer up, in
+`absoluteTranscriptPath`. That keeps rows a vocabulary the db layer can
+speak alone.
 
 ## What lives where
 
@@ -61,9 +66,18 @@ db layer can speak alone.
   create, restart, stop, cleanup, list, detail, resolve, the stopped
   listing, project teardown — plus the prewarm pool, spawn policy and its
   proxy drain, the discovery sweeps, prompt capture, the provisioning
-  registry, and the stale reaper), `projects/` (add · detail · list,
-  row-backed), `titles/`, `auth/`, `skills/`, and `reconcile.ts` — the
-  ordered step list one pass runs.
+  registry, the stale reaper, and what a worktree keeps on disk: checkout
+  seeding and the in-pod hook's session-starts log), `projects/` (a project
+  whole — which exist, from rows, and what each one holds on disk: the
+  clone's branches, the two config layers, git credentials, dockerfiles and
+  build files), `git.ts` (the `simple-git` process boundary, domain's the
+  way kubectl is the driver's), `titles/`, `auth/`, `skills/`, and
+  `reconcile.ts` — the ordered step list one pass runs.
+
+  Config and credentials sit here rather than a layer down because writing
+  them is policy: a persisted allowed-host or port forward is inherited by
+  every future worktree of the project, and the verb that persists one then
+  asks the runtime to effect it live.
 - **`db/`** — the worktree, agent-session and project stores,
   preferences, token persistence, `desired-worktrees` (what the reaper
   judges absence against), the database's open/close pair, and the event
@@ -73,12 +87,6 @@ db layer can speak alone.
   What the rest of the server gets is `openDb`/`closeDb` and
   the row functions; the driver packages are eslint-banned everywhere
   else.
-- **`store/`** — `projects/` (the clone's branches, the two config layers,
-  git credentials, dockerfiles, build dirs and files), `worktrees/`
-  (checkout seeding, and the in-pod hook's session-starts log),
-  `transcripts/` (per-tool readers, the JSONL scanner, and the
-  project-relative path convention). Pure disk mechanics: no rows, no
-  substrate, nothing above it.
 - **`runtime/`** — `contract.ts` (the `WorktreeRuntime` driver interface
   and its substrate-neutral vocabulary: `RuntimeReport`, `RuntimeHandle`,
   handle-keyed `AgentLiveness`, `RuntimeSnapshot`, the launch types —
@@ -87,7 +95,10 @@ db layer can speak alone.
   `driver.ts` (the registered instance, behind `setWorktreeRuntime` /
   `worktreeRuntime`), `status/` (control-mode watchers feeding the status
   store), `terminals/` (PTY bridge), `agents/` (the tui/acp drivers,
-  acpd's JSON-RPC client, per-tool launch commands), and `k8s/` — the
+  acpd's JSON-RPC client, per-tool launch commands, and where each tool
+  keeps its transcript — the per-tool readers pair one-to-one with the
+  drivers, so the file layout and the path convention live with the
+  grammars), and `k8s/` — the
   driver's substance: `cluster`, `egress`, `forwarders`, `images`,
   `image-engine`, `worktrees` (launch, observe, locate, claim, teardown,
   the pod-side changes diff, image salvage), `view` (the one mapper
@@ -127,10 +138,6 @@ db layer can speak alone.
   and nothing else, third-party deps included, which is what keeps that
   true. Distinct from `@yaac/shared`, which is for vocabulary other
   PACKAGES read; nothing outside this package reads these.
-- **`platform/`** — `git.ts` alone, and only until the store dissolves:
-  it wraps the `simple-git` dep, has no runtime consumers, and is
-  domain's process boundary the way kubectl is the driver's. It moves to
-  `domain/git.ts` with `store/projects`, which deletes the directory.
 
 ## The event door
 
@@ -213,8 +220,11 @@ The configured default tool is a preference row, resolved through a lazy
 per-pass accessor and handed down so no substrate step reads a row; a
 FAILED read rejects the accessor and stands down exactly the steps that
 needed the answer, while an unset preference falls back to claude. The
-project list is handed down the same way, so a runtime step never reads a
-row itself.
+project list and each project's config are handed down the same way, so a
+runtime step never reads a row or a config file itself. A step that runs
+outside a pass — the boot-time forwarder restore, the webapp's build
+retry — takes the same reader as a plain parameter, since there is no
+context to draw one from.
 
 The reaper reads `desiredWorktrees()` from db at the top of its own
 step, so absence is only ever judged against a set from the same pass, by
