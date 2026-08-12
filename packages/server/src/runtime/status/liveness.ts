@@ -14,7 +14,7 @@ import {
   RelayExecError,
   podExec,
   worktreeJobName,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { isWorktreeStreamHealthy } from './status-store'
 

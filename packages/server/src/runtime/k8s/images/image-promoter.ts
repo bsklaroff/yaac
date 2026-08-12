@@ -1,6 +1,6 @@
-import { containerExec } from '#platform/k8s'
+import { containerExec } from '#runtime/k8s/substrate'
 import { projectRegistryHost } from '#runtime/k8s/cluster'
-import { shellQuote } from '#platform/shell'
+import { shellQuote } from '#lib/shell'
 import { env as yaacEnv } from '@yaac/shared/env'
 import { ensureNodeImageStore } from './store-writer'
 import { serverLog } from '#log'

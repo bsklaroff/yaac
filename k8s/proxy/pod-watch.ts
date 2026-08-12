@@ -30,7 +30,8 @@ import {
   type KubernetesObject,
 } from '@kubernetes/client-node'
 /**
- * Must match LABEL_WORKTREE_ID_LEGACY in packages/server/src/platform/k8s/pods.ts
+ * Must match LABEL_WORKTREE_ID_LEGACY in
+ * packages/server/src/runtime/k8s/substrate/pods.ts
  * (proxy can't import src/) — the key every live worktree pod carries, and the
  * one the server keeps selecting on until the compatibility window closes.
  */

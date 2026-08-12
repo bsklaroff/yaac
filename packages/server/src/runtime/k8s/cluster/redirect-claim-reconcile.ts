@@ -1,5 +1,5 @@
-import { kubectlApply } from '#platform/k8s'
-import type { TickSnapshot } from '#platform/k8s'
+import { kubectlApply } from '#runtime/k8s/substrate'
+import type { TickSnapshot } from '#runtime/k8s/substrate'
 import { createRuntimeSnapshot, k8sSnapshotOf } from '#runtime/k8s/view'
 import type { RuntimeSnapshot } from '#runtime/contract'
 import {

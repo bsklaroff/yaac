@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   // The REAL predicate: these suites drive the absent-vs-unevaluable
   // split, which is the whole point of the adoption gate's reads.
   isKubectlAbsentError: (await importOriginal<
@@ -23,7 +23,7 @@ import { ClusterSetupError, runClusterSetup } from '#runtime/k8s/cluster'
 // CALICO_VERSION is a pinned setup value for the assertions.
 import { CALICO_VERSION, type ClusterSetupDeps } from '#runtime/k8s/cluster/setup'
 import { nodeIpBlocks, resetClusterCidrCache } from '#runtime/k8s/cluster/cluster-cidrs'
-import { kubectlGetJson } from '#platform/k8s/kubectl'
+import { kubectlGetJson } from '#runtime/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#runtime/k8s/cluster/check'
 
 afterEach(() => {

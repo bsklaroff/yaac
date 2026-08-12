@@ -14,13 +14,13 @@
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
  */
-import { imageExists } from '#platform/container'
+import { imageExists } from '#runtime/k8s/container'
 import {
   engineForLayer,
   TRUSTED_PARENT_COMPRESSION,
 } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#runtime/k8s/container'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 import {

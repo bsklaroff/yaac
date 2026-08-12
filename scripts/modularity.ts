@@ -127,7 +127,7 @@ function resolveSpec(fromFile: string, spec: string): string | undefined {
 // ------------------------------------------------------------ module naming
 // A sealed folder is always its own module: its barrel is the interface the
 // repo has already committed to, so it is the boundary whether or not the
-// parent directory also holds loose files (platform/ is both). Everything else
+// parent directory also holds loose files (runtime/ is both). Everything else
 // falls back to the shallowest directory under src/ that holds source files
 // directly, which makes pure namespace directories transparent -- features/ is
 // not a module, features/worktrees is.

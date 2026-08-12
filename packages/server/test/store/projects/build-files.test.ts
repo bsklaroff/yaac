@@ -5,7 +5,7 @@ import os from 'node:os'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#store/projects'
 // Bounds the cases below sit either side of. Not under test here.
 import { MAX_TEXT_FILE_BYTES, MAX_UPLOAD_FILE_BYTES } from '#store/projects/build-files'
-import { BUILDER_CONTEXT_MAX_BYTES } from '#platform/build-context'
+import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 
 let root: string
 beforeEach(async () => {

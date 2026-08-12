@@ -7,7 +7,7 @@ provisioning execs stay on `kubectl`. Steady-state worktree streams (PTYs,
 status, port forwards, one-shot pod commands) ride the stream relay
 instead — see docs/stream-relay.md.
 
-## Informer layer (`packages/server/src/platform/k8s/`)
+## Informer layer (`packages/server/src/runtime/k8s/substrate/`)
 
 `client.ts` holds lazy `KubeConfig`/`CoreV1Api`/`BatchV1Api` singletons.
 `loadFromDefault()` resolves the same kubeconfig kubectl does (`KUBECONFIG`
@@ -97,7 +97,7 @@ matches for kind" race that client-node's cached discovery hits; deletes
 lean on kubectl-only ergonomics (multi-kind label-selector deletes,
 `--ignore-not-found`, cascade defaults). Exec/PTY/port-forward streams
 are not library calls at all. The transient-retry layer
-(`retryTransient`, `platform/k8s/kubectl.ts`) matches kubectl stderr
+(`retryTransient`, `runtime/k8s/substrate/kubectl.ts`) matches kubectl stderr
 strings and stays with those paths; one-shot reads that migrate to the
 typed client later need a typed-HTTP-error retry equivalent.
 

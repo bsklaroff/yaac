@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -12,8 +12,8 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-import { listWorktreePods } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import { listWorktreePods } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 // The listing is a join: the rows are the server's, and which of them still
 // have a runtime — plus every transcript read behind a prompt or a
 // last-activity stamp — is read off disk. Its real halves stand behind the

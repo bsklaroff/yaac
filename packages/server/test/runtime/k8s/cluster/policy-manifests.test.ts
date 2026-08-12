@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
 }))
 
 import { buildEgressWorldDenyNpManifest } from '#runtime/k8s/cluster'
-import { EGRESS_WORLD_DENY_NAME, LABEL_ROLE, PROXY_APP_NAME } from '#platform/k8s/proxy-constants'
-import { LABEL_WORKTREE_ID_LEGACY } from '#platform/k8s/pods'
+import { EGRESS_WORLD_DENY_NAME, LABEL_ROLE, PROXY_APP_NAME } from '#runtime/k8s/substrate/proxy-constants'
+import { LABEL_WORKTREE_ID_LEGACY } from '#runtime/k8s/substrate/pods'
 
 interface Spec {
   podSelector: Record<string, unknown>

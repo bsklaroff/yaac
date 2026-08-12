@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { passViewFixture } from '@yaac/test-utils/fake-runtime'
 
 const mockApply = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   kubectlApply: mockApply,
   k8sNamespace: () => 'test-ns',
 }))
-vi.mock('#platform/k8s/tick-snapshot', () => ({ createTickSnapshot: vi.fn() }))
+vi.mock('#runtime/k8s/substrate/tick-snapshot', () => ({ createTickSnapshot: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
@@ -17,12 +17,12 @@ import {
   _resetRedirectClaimsForTests,
 } from '#runtime/k8s/cluster/redirect-claim-reconcile'
 import { CLAIM_KEY } from '#runtime/k8s/cluster/redirect-claims'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import type { TickSnapshot } from '#runtime/k8s/substrate/tick-snapshot'
 import type {
   VclusterConfigMap,
   VclusterNamespaceInfo,
   VclusterPod,
-} from '#platform/k8s/vcluster-objects'
+} from '#runtime/k8s/substrate/vcluster-objects'
 
 const VC_NS = 'test-ns-vc-1'
 const VC_NAME = 'yvc-s1'

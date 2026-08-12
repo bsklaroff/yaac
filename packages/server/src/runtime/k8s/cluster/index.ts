@@ -24,17 +24,17 @@
 //
 //  - The datapath's *names and ports* are a zero-import constant vocabulary
 //    the stream relay, the pod spec, and the image builders read, so they
-//    live in `#platform/k8s`.
+//    live in `#runtime/k8s/substrate`.
 //  - The main registry's *client* — its cluster ref, the endpoint this
 //    process pushes and HEADs through, and the push itself — is what the
 //    image builders, the proxy client and server start use, and it needs
-//    none of this feature's machinery, so it lives in `#platform/container`
+//    none of this feature's machinery, so it lives in `#runtime/k8s/container`
 //    beside the container runtime. Only the registry WORKLOAD is here.
 //  - The vcluster *object layer* — the shapes a vcluster namespace
 //    publishes, their mappers, and the one-shot lists — is what the informer
 //    registry and the reconcile snapshot read, and it is the same job
 //    `pods.ts` does for worktree pods, so it lives in
-//    `#platform/k8s`. What stays here is the vcluster
+//    `#runtime/k8s/substrate`. What stays here is the vcluster
 //    *lifecycle*: provisioning, sleep/wake, status and teardown.
 
 export {

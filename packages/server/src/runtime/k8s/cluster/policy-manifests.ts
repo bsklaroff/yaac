@@ -26,7 +26,7 @@ import {
   VCLUSTER_EGRESS_FLOOR_NP_NAME,
   RELAY_PORT as RELAY,
   k8sNamespace,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 
 /**
  * Every yaac egress/ingress policy, as plain `networking.k8s.io/v1`

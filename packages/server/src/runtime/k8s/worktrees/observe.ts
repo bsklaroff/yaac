@@ -5,7 +5,7 @@ import {
   isPrewarmed,
   listWorktreePods,
   triggerDeferredClusterBoot,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import {
   classifyWorkspaces,

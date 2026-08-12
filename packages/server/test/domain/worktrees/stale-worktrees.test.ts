@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as podsModule from '#platform/k8s/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import type { RuntimeHandle, StrayUnit } from '#runtime/contract'
 import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import type { TmuxLiveness } from '#runtime/status/liveness'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return { ...actual }
 })

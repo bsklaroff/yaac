@@ -1,4 +1,4 @@
-import { createTickSnapshot, type TickSnapshot } from '#platform/k8s'
+import { createTickSnapshot, type TickSnapshot } from '#runtime/k8s/substrate'
 import { runtimeHandleFromPod } from './handle'
 import type { RuntimeHandle, RuntimeSnapshot, StrayUnit } from '#runtime/contract'
 

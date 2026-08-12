@@ -27,7 +27,7 @@ import {
   worktreeSessionStartsPath,
 } from '@yaac/shared/project-paths'
 import { deleteSessionStartsLog } from '#store/worktrees'
-import { shellQuote } from '#platform/shell'
+import { shellQuote } from '#lib/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
 import type { TeardownTarget } from '#runtime/contract'
 import { serverLog } from '#log'

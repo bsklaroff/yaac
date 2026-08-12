@@ -1,6 +1,6 @@
-import { relayTcpFactory } from '#platform/k8s'
-import { startPortForwarders } from '#platform/port'
-import type { ReservedPort } from '#platform/port'
+import { relayTcpFactory } from '#runtime/k8s/substrate'
+import { startPortForwarders } from '#lib/port'
+import type { ReservedPort } from '#lib/port'
 import { registerWorktreeForwarders } from './port-forwarders'
 
 /**

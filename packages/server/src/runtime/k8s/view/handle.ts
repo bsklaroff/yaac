@@ -1,4 +1,4 @@
-import { isPrewarmed, type PodInfo } from '#platform/k8s'
+import { isPrewarmed, type PodInfo } from '#runtime/k8s/substrate'
 import { normalizeTool } from '#runtime/agents'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#runtime/contract'

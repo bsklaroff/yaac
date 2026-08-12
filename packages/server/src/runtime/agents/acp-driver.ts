@@ -31,7 +31,7 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { dialCtrlStream, podExec, type StreamChild } from '#platform/k8s'
+import { dialCtrlStream, podExec, type StreamChild } from '#runtime/k8s/substrate'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { CONTAINER_TMUX_SOCK, containerAcpLog, containerAcpSock } from '@yaac/shared/paths'

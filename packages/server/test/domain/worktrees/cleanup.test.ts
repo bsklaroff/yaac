@@ -14,7 +14,7 @@ import type ChildProcessModule from 'node:child_process'
 // error classes stay real so classification is exercised for real. (Status
 // probing is runtime vocabulary this layer is allowed to reach, so it is
 // not part of what moved behind the driver.)
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => {
   const actual = await importOriginal<typeof relayModule>()
   return { ...actual, podExec: vi.fn() }
 })
@@ -35,8 +35,8 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { RelayExecError, podExec } from '#platform/k8s/stream-relay'
-import type * as relayModule from '#platform/k8s/stream-relay'
+import { RelayExecError, podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
 import {
   _resetOrphanModulesSweepForTests,
   cleanupWorktree,

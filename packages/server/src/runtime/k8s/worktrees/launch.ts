@@ -16,7 +16,7 @@ import {
   worktreeIdLabels,
   worktreeJobName,
   type PodMount,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import {
   ensureActivator,
   ensureProjectRegistry,

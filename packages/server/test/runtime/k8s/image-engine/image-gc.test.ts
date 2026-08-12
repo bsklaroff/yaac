@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as runtimeModule from '#platform/container/runtime'
+import type * as runtimeModule from '#runtime/k8s/container/runtime'
 
 const mockExecFileAsync = vi.hoisted(() => vi.fn())
-vi.mock('#platform/container/runtime', async (importOriginal) => ({
+vi.mock('#runtime/k8s/container/runtime', async (importOriginal) => ({
   ...(await importOriginal<typeof runtimeModule>()),
   execFileAsync: mockExecFileAsync,
 }))

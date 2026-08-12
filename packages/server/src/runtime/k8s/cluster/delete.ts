@@ -1,6 +1,6 @@
 import { confirmDefault, kindEnv } from './setup'
 import { ClusterDeleteError, assertNotNested } from './arg-guards'
-import { execFileAsync } from '#platform/k8s'
+import { execFileAsync } from '#runtime/k8s/substrate'
 import { env } from '@yaac/shared/env'
 
 /**

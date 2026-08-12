@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { isLayered } from '#platform/build-context'
+import { isLayered } from '#lib/build-context'
 import {
   PROJECT_DOCKERFILE,
   USER_DOCKERFILE,

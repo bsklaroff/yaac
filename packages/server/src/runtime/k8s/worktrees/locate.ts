@@ -7,7 +7,7 @@ import {
   listWorktreePods,
   triggerDeferredClusterBoot,
   type PodInfo,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle, TeardownTarget } from '#runtime/contract'

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as podsModule from '#platform/k8s/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 
 vi.mock('#runtime/k8s/egress/proxy-client', () => ({
   proxyClient: {
@@ -10,14 +10,14 @@ vi.mock('#runtime/k8s/egress/proxy-client', () => ({
 vi.mock('#store/projects/local-config', () => ({
   addAllowedHostToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorktreePods: vi.fn(() => Promise.resolve([])),
 }))
 
 import { proxyClient } from '#runtime/k8s/egress/proxy-client'
 import { addAllowedHostToProjectConfig } from '#store/projects/local-config'
-import { listWorktreePods, LABEL_PREWARMED, type PodInfo } from '#platform/k8s/pods'
+import { listWorktreePods, LABEL_PREWARMED, type PodInfo } from '#runtime/k8s/substrate/pods'
 import { allowWorktreeHost } from '#runtime/k8s/egress/allow-host'
 
 function pod(over: Partial<PodInfo>): PodInfo {

@@ -9,7 +9,7 @@ import {
   listWorktreeJobs,
   listWorktreePods,
   listVclusterNamespaces,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,

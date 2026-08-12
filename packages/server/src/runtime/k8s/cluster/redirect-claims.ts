@@ -1,4 +1,4 @@
-import { NETD_APP_NAME, type VclusterPod, k8sNamespace } from '#platform/k8s'
+import { NETD_APP_NAME, type VclusterPod, k8sNamespace } from '#runtime/k8s/substrate'
 
 /**
  * Redirect claims — the bridge that lets a nested yaac decide its own

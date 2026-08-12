@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorktreePods: vi.fn(),
 }))
@@ -19,8 +19,8 @@ vi.mock('#store/projects/local-config', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import type * as podsModule from '#platform/k8s/pods'
-import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { listWorktreePods, type PodInfo } from '#runtime/k8s/substrate/pods'
 import { addWorktreeForwarder } from '#runtime/k8s/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#runtime/k8s/forwarders/port-detector'
 import { addPortForwardToProjectConfig } from '#store/projects/local-config'

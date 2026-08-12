@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // kubectl is the process boundary. Everything inside features/cluster runs
 // for real behind it — including `runPodToCompletion`, which is what drives
 // the node-write pods the hosts.toml leg schedules.
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -21,7 +21,7 @@ vi.mock('#runtime/k8s/cluster/cluster-cidrs', () => ({
 
 // The registry CLIENT is the other boundary: its reachability probe is an
 // HTTP call over a kubectl port-forward, neither of which a unit run has.
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   REGISTRY_NAMESPACE: 'yaac',
   REGISTRY_SERVICE_NAME: 'yaac-registry',
   REGISTRY_SERVICE_PORT: 5000,
@@ -38,10 +38,10 @@ import {
   MAIN_REGISTRY_STORAGE_SIZE,
   mainRegistryPvcName,
 } from '#runtime/k8s/cluster/main-registry'
-import { ROLE_BUILDER } from '#platform/k8s/proxy-constants'
+import { ROLE_BUILDER } from '#runtime/k8s/substrate/proxy-constants'
 import { REGISTRY_UPSTREAM_IMAGE } from '#runtime/k8s/cluster/project-registry'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { invalidateRegistryEndpoint, registryReachable } from '#platform/container/registry'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#runtime/k8s/substrate/kubectl'
+import { invalidateRegistryEndpoint, registryReachable } from '#runtime/k8s/container/registry'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)

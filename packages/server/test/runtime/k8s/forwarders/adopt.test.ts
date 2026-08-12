@@ -7,18 +7,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // handoff lands in is a sibling module and stays REAL — it is in-memory,
 // so what a caller can read back out of it afterwards is the honest
 // assertion, and mocking it would only prove this file calls a function.
-vi.mock('#platform/k8s/stream-relay', () => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', () => ({
   relayTcpFactory: vi.fn(),
   podExec: vi.fn(),
 }))
-vi.mock('#platform/port', () => ({
+vi.mock('#lib/port', () => ({
   startPortForwarders: vi.fn(),
   reserveAvailablePort: vi.fn(),
 }))
 
-import { relayTcpFactory } from '#platform/k8s/stream-relay'
-import { startPortForwarders } from '#platform/port'
-import type { ReservedPort } from '#platform/port'
+import { relayTcpFactory } from '#runtime/k8s/substrate/stream-relay'
+import { startPortForwarders } from '#lib/port'
+import type { ReservedPort } from '#lib/port'
 import {
   getWorktreePorts,
   hasWorktreeForwarders,

@@ -27,7 +27,7 @@
  * inseparable step of the build itself — the product only ever exists in
  * the registry.
  */
-import { imageExists, registryHasTag, removeImage } from '#platform/container'
+import { imageExists, registryHasTag, removeImage } from '#runtime/k8s/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'

@@ -17,16 +17,16 @@ import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
 import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
-import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/platform/k8s/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'
-import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/platform/k8s/proxy-constants'
+import { runtimeClassSpec } from '@yaac/server/runtime/k8s/substrate/gvisor'
+import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/runtime/k8s/substrate/pod-spec'
+import { worktreeIdLabels } from '@yaac/server/runtime/k8s/substrate/pods'
+import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/runtime/k8s/substrate/proxy-constants'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/platform/k8s/kubectl'
+} from '@yaac/server/runtime/k8s/substrate/kubectl'
 
 /**
  * ssh-agent forwarding over the network, end to end: a session pod's

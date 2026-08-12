@@ -1,6 +1,6 @@
 import { proxyClient } from './proxy-client'
 import { createRuntimeSnapshot, k8sSnapshotOf } from '#runtime/k8s/view'
-import type { TickSnapshot } from '#platform/k8s'
+import type { TickSnapshot } from '#runtime/k8s/substrate'
 import type { RuntimeSnapshot } from '#runtime/contract'
 import { serverLog } from '#log'
 

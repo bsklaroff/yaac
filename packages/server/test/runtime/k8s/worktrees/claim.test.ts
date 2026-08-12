@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
 
 // kubectl is the process boundary; the label constants, the selector and the
 // patch this builds stay real, since they are what the test is about. Both
@@ -9,15 +9,15 @@ import type * as kubectlModule from '#platform/k8s/kubectl'
 // for real.
 const mockKubectl = vi.hoisted(() => vi.fn())
 const mockGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   kubectlWithRetry: mockKubectl,
   kubectlGetJson: mockGetJson,
 }))
 
 import { claimSpareWorkspace } from '#runtime/k8s/worktrees/claim'
-import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKTREE_ID_LEGACY } from '#platform/k8s/pods'
-import { dataDirHash } from '#platform/k8s/kubectl'
+import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKTREE_ID_LEGACY } from '#runtime/k8s/substrate/pods'
+import { dataDirHash } from '#runtime/k8s/substrate/kubectl'
 
 /** The argv of the lookup a claim does before its write. */
 function getArgv(): string[] {

@@ -260,7 +260,7 @@ and gives the `kubectl get sessions` debugging surface this plan wants). The
 yaac controller reconciles a `Session` into:
 
 1. a child **`Sandbox`** for the pod, built by porting
-   `platform/k8s/pod-spec.ts buildSessionJobManifest` into a `podTemplate`
+   `runtime/k8s/substrate/pod-spec.ts buildSessionJobManifest` into a `podTemplate`
    (the per-session mounts/env are too dynamic for a static
    `SandboxTemplate`, so construct the Sandbox inline rather than via
    template); and

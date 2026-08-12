@@ -24,7 +24,7 @@ import { toolSet } from '#commands/tool-set'
    import graphs static and readable, but this file is the one place where the
    graph IS the cost. See the note below for what each deferral buys. */
 
-// `#commands/cluster-*`, `@yaac/server/main/*` and the k8s platform layer are
+// `#commands/cluster-*`, `@yaac/server/main/*` and the k8s substrate are
 // deliberately absent from this import list: they are loaded inside the
 // actions that need them. Reaching any of them pulls
 // `@kubernetes/client-node` — 967 ESM files behind one barrel, ~2.2s to
@@ -38,7 +38,7 @@ import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
-import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
+import { ensureRootfulPodmanHost } from '@yaac/server/runtime/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
 import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/runtime/k8s/cluster/arg-guards'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'

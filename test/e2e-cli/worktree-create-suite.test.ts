@@ -8,7 +8,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -23,7 +23,7 @@ import {
   execInJob,
   cleanupWorktreeJobs,
 } from '@yaac/test-utils/setup'
-import { k8sNamespace, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
+import { k8sNamespace, kubectlWithRetry } from '@yaac/server/runtime/k8s/substrate/kubectl'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   startMockLLM,
@@ -981,7 +981,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         (l) => /kubectl\s+exec\b/.test(l) && l.includes('job/'),
       )
       expect(sessionPodExecs).toEqual([])
-      // Two forwards, one per purpose — #platform/k8s's port-forward keeps
+      // Two forwards, one per purpose — #runtime/k8s/substrate's port-forward keeps
       // exactly one child per key, single-flighted: the relay's into the
       // proxy, and the image registry's into its Deployment (the server's
       // only route to it, spawned on the first push of this run). Matching

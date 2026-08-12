@@ -11,14 +11,14 @@
  * double-registers a batch.
  */
 
-import { relayTcpFactory, podExec } from '#platform/k8s'
+import { relayTcpFactory, podExec } from '#runtime/k8s/substrate'
 import { buildStatusRight } from '#runtime/agents'
 import { notifyWorktreeListChanged } from '#notify'
-import { reserveAvailablePort, startPortForwarders } from '#platform/port'
-import type { ReservedPort } from '#platform/port'
+import { reserveAvailablePort, startPortForwarders } from '#lib/port'
+import type { ReservedPort } from '#lib/port'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { ServerError } from '@yaac/shared/errors'
-import { shellEscape } from '#platform/shell'
+import { shellEscape } from '#lib/shell'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
 interface WorktreeForwarders {

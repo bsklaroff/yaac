@@ -1,4 +1,4 @@
-import { isKubectlAbsentError, kubectlErrorSummary, kubectlGetJson } from '#platform/k8s'
+import { isKubectlAbsentError, kubectlErrorSummary, kubectlGetJson } from '#runtime/k8s/substrate'
 import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'
 

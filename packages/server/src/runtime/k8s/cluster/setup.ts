@@ -5,8 +5,8 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
-import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#platform/k8s'
-import { registryHost } from '#platform/container'
+import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#runtime/k8s/substrate'
+import { registryHost } from '#runtime/k8s/container'
 import { ensureMainRegistry } from './main-registry'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { ensureNetd } from './netd'
@@ -32,7 +32,7 @@ import {
   runClusterCheck,
 } from './check'
 import type { CheckResult } from '@yaac/shared/types'
-import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#platform/container'
+import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#runtime/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
@@ -227,7 +227,7 @@ function runStreamingDefault(
       stdio: [opts.input !== undefined ? 'pipe' : 'ignore', 'inherit', 'inherit'],
     })
     if (opts.input !== undefined) {
-      // Same reason as execFileWithInput in platform/k8s/kubectl.ts: an
+      // Same reason as execFileWithInput in runtime/k8s/substrate/kubectl.ts: an
       // unhandled stdin 'error' (EPIPE, when the child is gone before it
       // reads) is an uncaught exception, and the close/error handlers below
       // already reject with something a caller can act on.

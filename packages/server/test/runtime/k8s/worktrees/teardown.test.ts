@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
 
 // Mocked at the process boundary: kubectl is the only way this feature
 // reaches the cluster, so everything below it runs for real.
 const mockKubectl = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   kubectlWithRetry: mockKubectl,
 }))

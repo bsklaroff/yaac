@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -21,8 +21,8 @@ vi.mock('#runtime/k8s/forwarders/port-forwarders', () => ({
   provisionWorktreeForwarders: vi.fn(),
 }))
 
-import { listWorktreePods, type PodInfo } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 import { resolveProjectConfig } from '#store/projects/config'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'

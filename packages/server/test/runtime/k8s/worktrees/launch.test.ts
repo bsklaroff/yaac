@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
 
 // Mocked at the process boundary: kubectl is the only way a launch reaches
 // the cluster, so the manifest it applies is built for real and asserted on.
 const mockApply = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   kubectlApply: mockApply,
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
@@ -12,7 +12,7 @@ vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
 }))
 
 // The transport token is derived through the relay's own crypto path.
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
   podStreamToken: vi.fn().mockResolvedValue('stream-token'),
 }))
@@ -20,7 +20,7 @@ vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
 // The PriorityClass ensure is its own apply chain against the cluster; the
 // launch only has to run it BEFORE the Job, which the argv order proves.
 const mockEnsurePriorityClasses = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/priority-classes', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/priority-classes', async (importOriginal) => ({
   ...(await importOriginal<typeof priorityClassesModule>()),
   ensurePriorityClasses: mockEnsurePriorityClasses,
 }))
@@ -73,8 +73,8 @@ vi.mock('node:fs/promises', () => ({
   },
 }))
 
-import type * as priorityClassesModule from '#platform/k8s/priority-classes'
-import type * as streamRelayModule from '#platform/k8s/stream-relay'
+import type * as priorityClassesModule from '#runtime/k8s/substrate/priority-classes'
+import type * as streamRelayModule from '#runtime/k8s/substrate/stream-relay'
 import type * as clusterModule from '#runtime/k8s/cluster'
 import { launchWorkspace, prepareWorkspaceSubstrate } from '#runtime/k8s/worktrees/launch'
 import type { WorkspaceSpec, WorkspaceSubstrate } from '#runtime/contract'

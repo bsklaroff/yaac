@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   // The REAL predicate: these suites drive the absent-vs-unevaluable
   // split, which is the whole point of the adoption gate's reads.
   isKubectlAbsentError: (await importOriginal<
@@ -18,7 +18,7 @@ vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
   kubectlWithRetry: vi.fn(),
 }))
 
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   REGISTRY_NAMESPACE: 'yaac',
   registryReachable: vi.fn().mockResolvedValue(true),
   registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
@@ -31,16 +31,16 @@ vi.mock('#platform/container/registry', () => ({
 
 import { formatCheckResult, runClusterCheck } from '#runtime/k8s/cluster'
 import type { CheckResult } from '@yaac/shared/types'
-import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryReachable } from '#platform/container/registry'
+import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#runtime/k8s/substrate/kubectl'
+import { pushImageToRegistry, registryReachable } from '#runtime/k8s/container/registry'
 import { resetClusterCidrCache } from '#runtime/k8s/cluster/cluster-cidrs'
 import {
   armDeferredClusterBoot,
   _resetDeferredClusterBootForTests,
-} from '#platform/k8s/deferred-boot'
-import { podUid } from '#platform/k8s'
-import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#platform/k8s'
-import type { NodeTaint, PodToleration } from '#platform/k8s'
+} from '#runtime/k8s/substrate/deferred-boot'
+import { podUid } from '#runtime/k8s/substrate'
+import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#runtime/k8s/substrate'
+import type { NodeTaint, PodToleration } from '#runtime/k8s/substrate'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)

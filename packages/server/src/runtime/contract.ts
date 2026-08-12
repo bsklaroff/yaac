@@ -269,7 +269,7 @@ export interface WorkspaceResources {
  */
 export interface ReservedHostPort extends PortMapping {
   /** The bound listener holding the port. Structurally the same as
-   *  `#platform/port`'s `ReservedPort`, declared here rather than imported
+   *  `#lib/port`'s `ReservedPort`, declared here rather than imported
    *  so the contract keeps naming no module of its own. */
   server: net.Server
 }

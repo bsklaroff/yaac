@@ -16,7 +16,7 @@ import {
   type InitWindow,
 } from './agent-command'
 import { agentWindowName } from './agent-tools'
-import { shellEscape } from '#platform/shell'
+import { shellEscape } from '#lib/shell'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
 import { AGENT_TOOLS } from '@yaac/shared/types'

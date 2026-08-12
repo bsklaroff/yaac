@@ -2,19 +2,19 @@ import { EventEmitter } from 'node:events'
 import type net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('#platform/k8s/stream-relay', () => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', () => ({
   podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   relayTcpFactory: vi.fn(),
 }))
 
-vi.mock('#platform/port', () => ({
+vi.mock('#lib/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn(),
 }))
 
-import { relayTcpFactory, podExec } from '#platform/k8s/stream-relay'
-import { reserveAvailablePort, startPortForwarders } from '#platform/port'
-import type { ReservedPort } from '#platform/port'
+import { relayTcpFactory, podExec } from '#runtime/k8s/substrate/stream-relay'
+import { reserveAvailablePort, startPortForwarders } from '#lib/port'
+import type { ReservedPort } from '#lib/port'
 import {
   MAX_FORWARDS_PER_SESSION,
   addWorktreeForwarder,

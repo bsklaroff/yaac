@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { PodInfo } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import type { PodInfo } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 
 const mockSalvage = vi.hoisted(() => vi.fn())
 vi.mock('#runtime/k8s/images/image-promoter', () => ({
@@ -8,13 +8,13 @@ vi.mock('#runtime/k8s/images/image-promoter', () => ({
 }))
 
 const mockListPods = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorktreePods: mockListPods,
 }))
 
 const mockGetCache = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/cluster-cache', () => ({
+vi.mock('#runtime/k8s/substrate/cluster-cache', () => ({
   getActiveClusterCache: mockGetCache,
 }))
 

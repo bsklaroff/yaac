@@ -15,16 +15,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type * as execModule from '#platform/k8s/exec'
-import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as execModule from '#runtime/k8s/substrate/exec'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
 
 const mockContainerExec = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/exec', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/exec', async (importOriginal) => ({
   ...(await importOriginal<typeof execModule>()),
   containerExec: mockContainerExec,
 }))
 
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   k8sNamespace: () => 'test-ns',
   dataDirHash: () => 'ddh16chars000000',

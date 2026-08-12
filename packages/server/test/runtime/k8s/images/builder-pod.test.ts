@@ -9,16 +9,16 @@
  * build-coordinator.test.ts, where it is actually wired up.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as kubectlModule from '#platform/k8s/kubectl'
-import type * as registryModule from '#platform/container/registry'
-import type * as runtimeModule from '#platform/container/runtime'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
+import type * as registryModule from '#runtime/k8s/container/registry'
+import type * as runtimeModule from '#runtime/k8s/container/runtime'
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
 const mockKubectlApply = vi.hoisted(() => vi.fn())
 const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   k8sNamespace: () => 'test-ns',
   dataDirHash: () => 'ddh0000000000000',
@@ -39,13 +39,13 @@ const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#runtime/k8s/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 
 const mockImageExists = vi.hoisted(() => vi.fn())
-vi.mock('#platform/container/runtime', async (importOriginal) => ({
+vi.mock('#runtime/k8s/container/runtime', async (importOriginal) => ({
   ...(await importOriginal<typeof runtimeModule>()),
   imageExists: mockImageExists,
 }))
 
 const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-vi.mock('#platform/container/registry', async (importOriginal) => ({
+vi.mock('#runtime/k8s/container/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryHasTag: mockRegistryHasTag,
   registryRef: (tag: string) => `localhost:5001/${tag}`,

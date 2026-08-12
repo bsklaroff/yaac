@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -16,8 +16,8 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 // The join under test reads the recorded rows alongside the real
 // observation half, so the leaf mocks above drive it end to end — only the
 // substrate is stubbed.
-import { listWorktreePods, LABEL_PREWARMED } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import { listWorktreePods, LABEL_PREWARMED } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { closeDb } from '#records/client'
 import { recordWorktreeCreated } from '#records/worktree-store'
@@ -33,7 +33,7 @@ import {
   _resetDeferredClusterBootForTests,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
-} from '#platform/k8s/deferred-boot'
+} from '#runtime/k8s/substrate/deferred-boot'
 import { registerWorktreeForwarders, stopWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'

@@ -1,5 +1,5 @@
 import type net from 'node:net'
-import { type PodInfo, isPrewarmed, relayDial } from '#platform/k8s'
+import { type PodInfo, isPrewarmed, relayDial } from '#runtime/k8s/substrate'
 import { getWorktreePorts } from './port-forwarders'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'

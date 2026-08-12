@@ -70,7 +70,7 @@ export function setupStackingHarness(): StackingHarness {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.doUnmock('node:child_process')
-    vi.doUnmock('#platform/container/registry')
+    vi.doUnmock('#runtime/k8s/container/registry')
     vi.doUnmock('#runtime/k8s/images/builder-pod')
     await cleanupTempDir(state.dataDir)
   })
@@ -147,7 +147,7 @@ export function setupStackingHarness(): StackingHarness {
     // always on). Mock it to record the same `build <tag> [args]` rows the
     // spawn fake records for host builds; registry mocked so the
     // untrusted-layer exists-check (registryHasTag) never touches the network.
-    vi.doMock('#platform/container/registry', () => ({
+    vi.doMock('#runtime/k8s/container/registry', () => ({
       registryHasTag: vi.fn().mockResolvedValue(false),
       registryRef: (tag: string) => `localhost:5001/${tag}`,
       pushImageToRegistry: vi.fn().mockResolvedValue('pushed'),

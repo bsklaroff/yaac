@@ -99,7 +99,7 @@ Build flow, per layer tag `T` with parent tag `P`:
    (`reconcileBuilderPodGc`) reaps any leaked `yaac.role=builder` pods.
 
 Every build — in a pod or on the host engine — is bounded by a pair of
-timeouts, run by the shared `platform/streaming-proc.ts`:
+timeouts, run by the shared `runtime/k8s/container/streaming-proc.ts`:
 
 - An **idle** timeout per exec step, the primary signal: the clock resets
   on every byte the step writes, and while the context tar streams in, on
@@ -257,7 +257,7 @@ die with the server.
   step on the boot pass, so the leaked pod's memory reservation is
   released before anything tries to schedule a replacement.
 - **Host podman.** `podman build`/`podman push` children run through
-  `platform/container/host-procs.ts`, which SIGTERMs them from the
+  `runtime/k8s/container/host-procs.ts`, which SIGTERMs them from the
   shutdown handler and records each pid in `<data dir>/host-podman.json`
   first. A host pid carries no label to select on, so the file is what
   makes the crash path reapable: `reapOrphanedPodmanProcs` reads it once

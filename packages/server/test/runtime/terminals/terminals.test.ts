@@ -10,15 +10,15 @@
  * feed back rather than by tests of their own.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as relayModule from '#platform/k8s/stream-relay'
-import { podExec } from '#platform/k8s/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
+import { podExec } from '#runtime/k8s/substrate/stream-relay'
 import {
   registerWorktreeControlStream,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
   podExec: vi.fn(),
 }))

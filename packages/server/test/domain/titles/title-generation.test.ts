@@ -9,7 +9,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
 // runtime behind it run for real.
-vi.mock('#platform/shell', async (importOriginal) => ({
+vi.mock('#lib/shell', async (importOriginal) => ({
   ...(await importOriginal<typeof shellModule>()),
   execFileAsync: vi.fn(),
 }))
@@ -23,8 +23,8 @@ import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveWorktrees } from '#domain/worktrees/list'
 import { setWorktreeTitle } from '#records/worktree-store'
-import { execFileAsync } from '#platform/shell'
-import type * as shellModule from '#platform/shell'
+import { execFileAsync } from '#lib/shell'
+import type * as shellModule from '#lib/shell'
 import { serverLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { WorktreeListEntry } from '@yaac/shared/types'

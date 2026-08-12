@@ -1,4 +1,4 @@
-import { getActiveClusterCache, isPrewarmed, listWorktreePods } from '#platform/k8s'
+import { getActiveClusterCache, isPrewarmed, listWorktreePods } from '#runtime/k8s/substrate'
 import { isWorktreeTerminating } from '#runtime/status'
 import { salvageWorktreeImages } from '#runtime/k8s/images'
 

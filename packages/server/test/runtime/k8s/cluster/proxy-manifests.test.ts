@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -11,7 +11,7 @@ import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
 } from '#runtime/k8s/cluster'
-import { BUILDER_ROLE_GUARD_NAME } from '#platform/k8s/proxy-constants'
+import { BUILDER_ROLE_GUARD_NAME } from '#runtime/k8s/substrate/proxy-constants'
 
 // The builder-role admission guard is the only pair of manifests outside the
 // folder needs — the image feature installs it around its runsc builder pods.

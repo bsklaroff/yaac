@@ -6,7 +6,7 @@ import type {
   SecretProxyRule,
   SpawnResultWire,
 } from '@yaac/shared/types'
-import { imageExists } from '#platform/container'
+import { imageExists } from '#runtime/k8s/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#runtime/k8s/image-engine'
 import {
@@ -23,8 +23,8 @@ import {
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+} from '#runtime/k8s/substrate'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#runtime/k8s/container'
 import { listSshEntries } from '#store/projects'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'

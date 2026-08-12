@@ -16,7 +16,7 @@ vi.mock('#commands/git-identity', () => ({
 vi.mock('#commands/api', () => ({ api: { worktree: { restart: { $post: postSpy } } } }))
 vi.mock('@yaac/shared/ndjson', () => ({ consumeNdjsonStream: consumeSpy }))
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import * as pods from '@yaac/server/platform/k8s/pods'
+import * as pods from '@yaac/server/runtime/k8s/substrate/pods'
 import * as cleanup from '@yaac/server/domain/worktrees/cleanup'
 import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
@@ -26,7 +26,7 @@ import { closeDb } from '@yaac/server/records/client'
 import { worktreeRestart } from '#commands/worktree-restart'
 import { clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
 
-import type { PodInfo } from '@yaac/server/platform/k8s/pods'
+import type { PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution

@@ -152,7 +152,7 @@ the vcluster seconds after the create-time sleep: server boot ensures the
 namespace/registry, starts the informer caches, and runs the reconciler —
 all API touches. A NESTED server with no worktrees of its own therefore arms
 its cluster boot instead of running it (the deferred-boot latch in
-`#platform/k8s`), and
+`#runtime/k8s/substrate`), and
 the first real use fires it: worktree create awaits it explicitly (the
 namespace must exist before anything is applied into it), and any kubectl
 call kicks it as a fire-and-forget backstop. While the attach is pending the

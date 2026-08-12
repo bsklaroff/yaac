@@ -100,8 +100,8 @@ import {
   kubectlWithRetry,
   runPodToCompletion,
   type PodMount,
-} from '#platform/k8s'
-import { createKeyedMutex } from '#platform/keyed-mutex'
+} from '#runtime/k8s/substrate'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#runtime/k8s/cluster'
 import { ensureBuilderImage } from './builder-pod'
 import { imageStoreDir } from '@yaac/shared/project-paths'

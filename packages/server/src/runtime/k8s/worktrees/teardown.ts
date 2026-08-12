@@ -1,4 +1,4 @@
-import { k8sNamespace, kubectlWithRetry } from '#platform/k8s'
+import { k8sNamespace, kubectlWithRetry } from '#runtime/k8s/substrate'
 import { proxyClient } from '#runtime/k8s/egress'
 import { stopWorktreeForwarders } from '#runtime/k8s/forwarders'
 import { removeNodeImageStore, salvageWorktreeImages } from '#runtime/k8s/images'

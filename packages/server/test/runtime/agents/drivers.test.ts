@@ -13,9 +13,9 @@ import {
   acpConversation,
   acpConversationByHandle,
 } from '#runtime/agents/acp-registry'
-import { podExec } from '#platform/k8s/stream-relay'
-import type * as streamRelayModule from '#platform/k8s/stream-relay'
-import type { StreamChild } from '#platform/k8s'
+import { podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as streamRelayModule from '#runtime/k8s/substrate/stream-relay'
+import type { StreamChild } from '#runtime/k8s/substrate'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 
@@ -30,7 +30,7 @@ import type { AcpEventInit } from '@yaac/shared/acp'
  * them; none of them is mocked out.
  */
 
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   dialCtrlStream: vi.fn(),

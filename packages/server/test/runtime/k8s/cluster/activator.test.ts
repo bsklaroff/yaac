@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // every list it reads goes through here. Nothing inside features/cluster is
 // mocked, so cluster-cidrs resolves the node/apiserver ipBlocks for real off
 // the `get nodes` / `get endpoints` responses staged below.
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -22,8 +22,8 @@ import {
   vclusterSleepSliceName,
 } from '#runtime/k8s/cluster'
 import { resetClusterCidrCache } from '#runtime/k8s/cluster/cluster-cidrs'
-import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#runtime/k8s/substrate/pods'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#runtime/k8s/substrate/kubectl'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)

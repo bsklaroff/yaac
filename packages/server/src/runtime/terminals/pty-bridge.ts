@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { dialPtyStream, podExec, worktreeIdFromJobName } from '#platform/k8s'
+import { dialPtyStream, podExec, worktreeIdFromJobName } from '#runtime/k8s/substrate'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const DEFAULT_COLS = 80
