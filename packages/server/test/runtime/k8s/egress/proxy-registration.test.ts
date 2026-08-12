@@ -8,7 +8,7 @@ import {
   syncProxySecrets,
 } from '#runtime/k8s/egress/proxy-registration'
 import { proxyClient } from '#runtime/k8s/egress/proxy-client'
-import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#runtime/k8s/egress/default-allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
 import { proxySecretsCredentialsPath, setDataDir } from '@yaac/shared/project-paths'
 
 describe('buildWorktreeRegistration', () => {

@@ -12,6 +12,7 @@
  */
 
 import { relayTcpFactory, podExec } from '#platform/k8s'
+import { buildStatusRight } from '#runtime/agents'
 import { notifyWorktreeListChanged } from '#notify'
 import { reserveAvailablePort, startPortForwarders } from '#platform/port'
 import type { ReservedPort } from '#platform/port'
@@ -98,22 +99,6 @@ export function stopAllWorktreeForwarders(): void {
   for (const worktreeId of [...forwarders.keys()]) {
     stopWorktreeForwarders(worktreeId)
   }
-}
-
-/**
- * Render the tmux `status-right` value shown in a worktree's bottom bar.
- * Kept in a single helper so new worktrees and server restarts both
- * produce the same format.
- */
-export function buildStatusRight(
-  projectSlug: string,
-  worktreeId: string,
-  ports: ReadonlyArray<PortMapping>,
-): string {
-  const portInfo = ports.length > 0
-    ? ' ' + ports.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
-    : ''
-  return ` ${projectSlug} ${worktreeId.slice(0, 8)}${portInfo} `
 }
 
 /**

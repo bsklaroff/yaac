@@ -1,3 +1,4 @@
+import type net from 'node:net'
 import type {
   AgentMode,
   AgentTool,
@@ -218,6 +219,141 @@ export interface WorkspaceRegistration {
 }
 
 /**
+ * Where one mount's bytes come from. Declared per mount rather than left
+ * implicit, because the answer is what a second driver has to re-realize:
+ * a host-process driver reads a hostPath as a bind or a symlink, and a
+ * multi-node cluster reads the shared tier as a claim.
+ *
+ * The hostPath `type` says what must already be there ('' means "whatever
+ * exists"); absent means a directory. It mirrors the substrate's own
+ * spelling, and the driver's assignment of a mount into its manifest is
+ * what catches the two drifting apart.
+ */
+export type HostPathKind = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
+
+export type MountSource =
+  | { kind: 'hostPath'; path: string; type?: HostPathKind }
+  | { kind: 'pvc'; claimName: string; subPath?: string }
+  | { kind: 'emptyDir'; sizeLimit?: number }
+
+/** One path made visible inside a workspace, and where it comes from. */
+export interface WorkspaceMount {
+  source: MountSource
+  mountPath: string
+  readOnly?: boolean
+}
+
+/**
+ * What one workspace may consume. Policy, not mechanics: the numbers are
+ * chosen against ordinary developer hardware (how many workspaces should
+ * pack onto one machine, and how much one may burst to), so they are the
+ * caller's to set and the runtime's to enforce however it can.
+ */
+export interface WorkspaceResources {
+  memoryRequestBytes: number
+  memoryLimitBytes: number
+  cpuRequestMillis: number
+  cpuLimitMillis: number
+  ephemeralStorageRequestBytes: number
+  ephemeralStorageLimitBytes: number
+}
+
+/**
+ * A host port already bound by the caller, waiting to be relayed into a
+ * workspace.
+ *
+ * Reserved before the workspace exists, and deliberately so: binding early
+ * is what stops another process claiming the port between "we picked it"
+ * and "the forwarder listens". The caller holds the socket until it hands
+ * it over — or closes it, when the launch it was reserved for gave up.
+ */
+export interface ReservedHostPort extends PortMapping {
+  /** The bound listener holding the port. Structurally the same as
+   *  `#platform/port`'s `ReservedPort`, declared here rather than imported
+   *  so the contract keeps naming no module of its own. */
+  server: net.Server
+}
+
+/**
+ * What a workspace needs standing up around it before it can be launched:
+ * the egress registration, the image plumbing, and any nested cluster.
+ *
+ * Decisions only. Whether the workspace runs nested containers or a
+ * virtual cluster comes from its config, and which config, tool and remote
+ * apply comes from rows and disk — all the caller's. Everything about how
+ * those become registries, policies and clusters is the runtime's.
+ */
+export interface SubstrateIntent {
+  projectSlug: string
+  workspaceId: string
+  tool: AgentTool
+  config: YaacConfig
+  /** The project's `origin` remote, as the workspace will see it. */
+  remoteUrl: string
+  nestedContainers: boolean
+  virtualCluster: boolean
+  onProgress?: (message: string) => void
+}
+
+/**
+ * The runtime's receipt for one `prepareSubstrate` — everything it stood
+ * up for the workspace, in whatever shape it needs to finish the launch.
+ *
+ * Opaque above the runtime on purpose: what a k8s driver keeps here (a
+ * proxy ClusterIP, a stream token, the mounts a nested cluster implies) is
+ * exactly the substrate vocabulary the contract exists to hide. A caller
+ * holds it and hands it back, and holding ONE per create is what keeps a
+ * retried launch from re-running the preparation.
+ */
+export interface WorkspaceSubstrate {
+  readonly kind: 'workspace-substrate'
+}
+
+/**
+ * A workspace to run, described in decisions rather than in any
+ * substrate's spelling.
+ *
+ * The division inside it matters: `env` and `mounts` are what the CALLER
+ * decided the workspace should see, and the runtime adds its own to both
+ * (the agent transport's token, CA trust, whatever a nested cluster needs)
+ * rather than expecting the caller to have named them. Nothing here says
+ * how any of it is spelled — labels, namespaces, manifests and priority
+ * classes are the k8s driver's business, and a host-process driver would
+ * read the same spec as an environment and a set of binds.
+ */
+export interface WorkspaceSpec {
+  projectSlug: string
+  workspaceId: string
+  tool: AgentTool
+  mode: AgentMode
+  /** A warmed spare: hidden from user-facing views until it is claimed. */
+  prewarm: boolean
+  /** The image to run, as the runtime's registry will resolve it —
+   *  `prepareImage` produced it. */
+  image: string
+  /** Caller-decided `NAME=VALUE` entries; the runtime appends its own. */
+  env: string[]
+  /** Caller-decided mounts; the runtime appends its own. */
+  mounts: WorkspaceMount[]
+  resources: WorkspaceResources
+  /** Argv run inside the workspace once its filesystem is up and before it
+   *  is reported ready — the in-workspace setup the caller staged. */
+  postStartExec: string[]
+  /** The workspace runs its own container engine. */
+  nestedContainers: boolean
+  /**
+   * SSH remote: the host path of the project-scoped known_hosts the caller
+   * wrote. Its presence is what says "this workspace talks git over SSH";
+   * how the key material and the tunnel reach the workspace is the
+   * runtime's, since both are properties of its own egress path.
+   */
+  ssh?: { knownHostsFile: string }
+  /** The receipt from this workspace's `prepareSubstrate`. */
+  substrate: WorkspaceSubstrate
+  onProgress?: (message: string) => void
+}
+
+/**
  * A source that can dirty a reconcile pass.
  *
  * The ones the mediators know are named: the two substrate edges a
@@ -370,6 +506,68 @@ export interface WorktreeRuntime {
    */
   claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
 
+  /**
+   * The machinery a launch will need exists and is running — the image
+   * build engine, for a runtime that builds images.
+   *
+   * Called before the caller has recorded or provisioned anything, so a
+   * broken installation fails a create while it is still free to fail.
+   */
+  ensureBuildEngine(): Promise<void>
+  /**
+   * Make the workspace's image available to run, and answer with the ref
+   * that names it.
+   *
+   * WHICH image a workspace should run follows from its project's config,
+   * which is the caller's to resolve; building, caching and publishing it
+   * so the runtime can start from it is entirely the runtime's — including
+   * how much of that is a no-op because the image is already there.
+   */
+  prepareImage(opts: {
+    projectSlug: string
+    nestedContainers: boolean
+    onProgress?: (message: string) => void
+  }): Promise<string>
+  /**
+   * Stand up everything a workspace needs around it, and answer with the
+   * receipt `launch` completes it from.
+   *
+   * Separate from `launch`, and once per create rather than once per
+   * attempt, because it is the slow half and the independent one: a caller
+   * overlaps it with its own work (a checkout, an image build), and a
+   * relaunch after a failed attempt must not redo it — re-preparing would
+   * re-touch a nested cluster that is already running the workspace's
+   * state.
+   */
+  prepareSubstrate(intent: SubstrateIntent): Promise<WorkspaceSubstrate>
+  /**
+   * Start the workspace, and answer with the handle that addresses it.
+   *
+   * The handle is the caller's grip on what it just made: what an `exec`
+   * addresses, and what a `destroy` tears down when the launch turns out
+   * not to have worked. A caller may launch the same workspace again after
+   * a failed attempt, having torn the last one down first.
+   */
+  launch(spec: WorkspaceSpec): Promise<RuntimeHandle>
+  /**
+   * Wait until the workspace's filesystem and processes are up — far
+   * enough that the in-workspace setup has run, but saying nothing about
+   * the agent transport (`awaitAgentTransport` is that gate).
+   *
+   * Rejects when it does not get there, leaving the caller to decide
+   * whether that is worth another attempt.
+   */
+  awaitReady(handle: RuntimeHandle): Promise<void>
+  /**
+   * Hand pre-bound host ports to long-lived forwarders into the workspace,
+   * and hold them for its lifetime (`deregisterWorkspace` drops them).
+   *
+   * Takes the sockets rather than reserving its own: the caller bound them
+   * before the workspace existed, which is the only way to guarantee they
+   * are still free once it does.
+   */
+  startForwarders(workspaceId: string, ports: ReservedHostPort[]): void
+
   /** Tell the egress path what a workspace may reach. Idempotent — a
    *  retooled spare re-registers under its new tool. */
   registerWorkspace(reg: WorkspaceRegistration): Promise<void>
@@ -402,8 +600,25 @@ export interface WorktreeRuntime {
    *
    * `salvageImages` defaults on; pass `false` when the caller is about to
    * destroy the salvage destination too.
+   *
+   * `unitOnly` takes down what is RUNNING and leaves standing whatever the
+   * runtime prepared AROUND the workspace. What it protects is the
+   * caller's receipt: a `prepareSubstrate` runs once and is reused across
+   * launch attempts, so tearing its products down between them would
+   * invalidate the very thing the next attempt launches from. A create
+   * that gave up while KEEPING its files (a resume, a spare) passes it for
+   * the adjacent reason — its row still names the workspace, so the
+   * runtime's own sweeps are what collect the rest, on their schedule
+   * rather than under a caller that is still deciding.
+   *
+   * It is not a way to PRESERVE anything: a runtime is free to collect
+   * what nothing names any more. An ordinary stop never passes it — there
+   * the whole point is that nothing is left holding anything.
    */
-  destroy(target: TeardownTarget, opts?: { salvageImages?: boolean }): Promise<boolean>
+  destroy(
+    target: TeardownTarget,
+    opts?: { salvageImages?: boolean; unitOnly?: boolean },
+  ): Promise<boolean>
   /**
    * The same teardown as a shell command, for a caller that must not wait
    * for it — composed into a detached script the calling process outlives.

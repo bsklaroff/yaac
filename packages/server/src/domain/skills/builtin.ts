@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { type PodMount } from '#platform/k8s'
+import type { WorkspaceMount } from '#runtime/contract'
 
 /**
  * In-pod personal skills root for each agent tool. yaac's bundled skills are
@@ -85,8 +85,8 @@ export async function stageBuiltinSkills(srcDir: string, destDir: string): Promi
  *  is never written into the persisted per-project config dirs. The staging dir
  *  is SHARED (under `worktreeStateDir`) — server-written, pod-read — so it takes the
  *  shared tier's source. */
-export function builtinSkillMounts(stagingDir: string, names: string[]): PodMount[] {
-  const mounts: PodMount[] = []
+export function builtinSkillMounts(stagingDir: string, names: string[]): WorkspaceMount[] {
+  const mounts: WorkspaceMount[] = []
   for (const name of names) {
     for (const root of TOOL_SKILL_ROOTS) {
       mounts.push({

@@ -87,6 +87,9 @@ vi.mock('@yaac/server/runtime/k8s/egress/proxy-client', () => ({
   proxyClient: {
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerWorktree: vi.fn().mockResolvedValue(undefined),
+    // The rollback's full teardown deregisters through these two.
+    attachIfRunning: vi.fn().mockResolvedValue(true),
+    removeWorktree: vi.fn().mockResolvedValue(undefined),
     getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
     getCaCert: vi.fn().mockResolvedValue('cert'),
   },
@@ -97,7 +100,7 @@ vi.mock('@yaac/server/runtime/k8s/egress/proxy-client', () => ({
   // (a partial object value is not assignable to the full property type).
 }))
 
-vi.mock('@yaac/server/runtime/k8s/egress/default-allowed-hosts', async (importOriginal) => {
+vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
   const actual = await importOriginal<typeof allowedHostsModule>()
   return {
     ...actual,
@@ -224,10 +227,14 @@ vi.mock('@yaac/server/runtime/agents/opencode', () => ({
 } satisfies Partial<typeof opencodeAgentModule>))
 
 vi.mock('@yaac/server/runtime/k8s/forwarders/port-forwarders', () => ({
-  buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
   registerWorktreeForwarders: vi.fn(),
   stopWorktreeForwarders: vi.fn(),
 } satisfies Partial<typeof portForwardersModule>))
+
+vi.mock('@yaac/server/runtime/agents/setup-commands', async (importOriginal) => ({
+  ...await importOriginal<typeof setupCommandsModule>(),
+  buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
+}))
 
 // The session row is a real DB write; this file mocks everything around
 // createWorktree, so it mocks the store too. `recordWorktreeCreated` throwing
@@ -289,14 +296,20 @@ import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/store/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
-import { resolveAllowedHosts } from '@yaac/server/runtime/k8s/egress/default-allowed-hosts'
+import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/port'
 import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
 import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
-import { buildStatusRight, registerWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
+import { registerWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
+import { buildStatusRight } from '@yaac/server/runtime/agents/setup-commands'
+import type * as setupCommandsModule from '@yaac/server/runtime/agents/setup-commands'
 import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/runtime/k8s/worktrees/launch'
+import { destroyWorkspace } from '@yaac/server/runtime/k8s/worktrees/teardown'
+import { prepareWorkspaceImage } from '@yaac/server/runtime/k8s/images/workspace-image'
+import { adoptWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/adopt'
 import type { WorkspaceRegistration } from '@yaac/server/runtime/contract'
 
 const mockSpawn = vi.mocked(spawn)
@@ -411,6 +424,8 @@ describe('createWorktree', () => {
     /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
     vi.mocked(proxyClient.registerWorktree).mockResolvedValue(undefined)
+    vi.mocked(proxyClient.attachIfRunning).mockResolvedValue(true)
+    vi.mocked(proxyClient.removeWorktree).mockResolvedValue(undefined)
     vi.mocked(proxyClient.getCaTrustEnv).mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'])
     /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
@@ -431,6 +446,27 @@ describe('createWorktree', () => {
       hostPort: 3000,
       server: { close: vi.fn() },
     } as never)
+
+    // createWorktree drives the substrate through the registered runtime,
+    // so this file installs the REAL k8s half of it — the code under test
+    // here is exactly what turns a create into a Job. Only the verbs a
+    // launch actually uses are wired: everything else keeps the fake's
+    // default, which is what makes an accidental new dependency on the
+    // runtime show up as a test failure rather than a silent cluster call.
+    // The process boundary below it is mocked as it always was (kubectl,
+    // the proxy client, the relay, podman), so nothing here reaches a
+    // cluster.
+    installFakeWorktreeRuntime({
+      ensureBuildEngine: () => ensureContainerRuntime(),
+      prepareImage: (o) => prepareWorkspaceImage(o),
+      prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
+      launch: (spec) => launchWorkspace(spec),
+      awaitReady: (h) => waitForJobPodReady(h.jobName),
+      awaitAgentTransport: (j, o) => waitForStreamd(j, o),
+      exec: (j, c, o) => podExec(j, c, o),
+      startForwarders: (id, ports) => adoptWorktreeForwarders(id, ports),
+      destroy: (t, o) => destroyWorkspace(t, o),
+    })
   })
 
 
@@ -938,6 +974,27 @@ describe('createWorktree', () => {
     }
   })
 
+  it('drops a failed FRESH create\'s egress registration, but keeps a failed resume\'s', async () => {
+    // The mode a rollback tears down in follows the same predicate as the
+    // checkout removal: a fresh create owns everything it made and its row
+    // is about to go, so nothing may outlive it; a resume keeps its
+    // checkout and its row, so the workspace is still named and the
+    // runtime's own sweeps collect the rest.
+    /* eslint-disable @typescript-eslint/unbound-method */
+    const removeWorktree = vi.mocked(proxyClient.removeWorktree)
+    /* eslint-enable @typescript-eslint/unbound-method */
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+
+    await expect(createWorktree('demo', { worktreeId: 'fresh1' })).rejects.toThrow()
+    expect(removeWorktree).toHaveBeenCalledWith('fresh1')
+
+    removeWorktree.mockClear()
+    await expect(
+      createWorktree('demo', { worktreeId: 'prior1', resume: true }),
+    ).rejects.toThrow()
+    expect(removeWorktree).not.toHaveBeenCalled()
+  })
+
   it('seeds claude.json onboarding flags even for non-Claude sessions (spares are retoolable)', async () => {
     await createWorktree('demo', { tool: 'codex', worktreeId: 'abcd1234' })
     const claudeJsonWrite = mockWriteFile.mock.calls.find((c) => c[0] === '/tmp/demo/claude.json')
@@ -1020,8 +1077,10 @@ describe('createWorktree', () => {
       { name: 'YAAC_GIT_EMAIL', value: 'test@example.com' },
       { name: 'YAAC_STATUS_RIGHT', value: ' stub-status ' },
     ]))
-    // The gate on the pod's own streamd replaces the old exec chain.
-    expect(mockWaitForStreamd).toHaveBeenCalledWith('yaac-demo-abcd1234')
+    // The gate on the pod's own streamd replaces the old exec chain. The
+    // job name is the assertion; the deadline argument rides along
+    // unset, as it does through every driver delegation.
+    expect(mockWaitForStreamd.mock.calls[0]?.[0]).toBe('yaac-demo-abcd1234')
   })
 
   it('rejects an init window name that collides with any agent tool window', async () => {
@@ -1263,7 +1322,7 @@ describe('resolveInitWindows', () => {
   })
 })
 
-import type * as allowedHostsModule from '@yaac/server/runtime/k8s/egress/default-allowed-hosts'
+import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 import type * as codexAgentModule from '@yaac/server/runtime/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'

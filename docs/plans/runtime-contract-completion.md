@@ -1,15 +1,14 @@
 # Completing the runtime contract
 
-`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–4
-have delivered observation, the pass view, scheduling and every mutation
-except one (see "What has landed"); what remains is the LAUNCH.
-`create.ts` still builds a Job manifest, applies it, and execs into the pod
-five times, and `PodMount` fragments are still built in `domain/skills` and
-`domain/worktrees/spawn-script`.
+`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–5
+have delivered it for the WORKTREE lifecycle: observation, the pass view,
+scheduling, every mutation, and the launch. What remains is stage 6 — the
+api layer, which was never covered by stages 1–5 and needs its own pass
+over what belongs on the contract.
 
-This plan finishes the carve-out: domain and api speak only
-substrate-neutral runtime vocabulary, and every k8s verb, label, and type
-lives under `runtime/k8s`. It assumes the `platform/k8s` →
+This plan's goal was that domain and api speak only substrate-neutral
+runtime vocabulary, with every k8s verb, label, and type under
+`runtime/k8s`. Domain is there. It assumes the `platform/k8s` →
 `runtime/k8s/substrate` move (the file move, the `platform/container`
 inversion, the CLI/exports repointing) happens first or in parallel;
 nothing here depends on it beyond import specifiers, and this doc writes
@@ -74,9 +73,11 @@ interface WorktreeRuntime {
   pendingSpawns(); resolveSpawns(...)
   blockedHosts(...); virtualClusterStatus(...)
 
-  // Launch (stage 5)
+  // Launch (stage 5 — see "Stage 5 is in" for what shipped)
+  ensureBuildEngine(); prepareImage(...); prepareSubstrate(...)
   launch(spec: WorkspaceSpec): Promise<RuntimeHandle>
   awaitReady(handle: RuntimeHandle): Promise<void>
+  startForwarders(...)
 }
 ```
 
@@ -106,14 +107,13 @@ landed").
 
 ### Enforcement is a ratchet, not a flip
 
-Stage 1 adds the endgame eslint pattern to the domain and api zones —
-restricting `#platform/k8s` and `#runtime/k8s` — together with a holdout
-override: a later flat-config object whose `files` list names the
-not-yet-migrated domain files and re-declares the rule without that
-pattern. Each stage deletes its files from the holdout list; stage 6
-deletes the override. That makes "what's left" a fact in the lint config
-rather than a grep someone has to remember, and a new domain file is born
-restricted.
+Stage 1 added the endgame eslint pattern to the domain zone — restricting
+`#platform/k8s` and `#runtime/k8s` — together with a holdout override: a
+later flat-config object whose `files` list named the not-yet-migrated
+domain files and re-declared the rule without that pattern. Each stage
+deleted its files from the list; stage 5 emptied it and deleted the
+override, so the domain rule is enforced outright and a new domain file is
+born restricted. What is left for stage 6 is the api zone.
 
 ### The test fake
 
@@ -315,63 +315,114 @@ config host-side and never touched the substrate; its tests now mock
 
 ---
 
-## Stage 5 — launch
+### Stage 5 is in: the launch
 
-The largest stage; `create.ts` (~1500 lines) is the whole scope, and the
-cut line is policy above, substrate below. Domain keeps: checkout staging
-and its failure promise, config resolution, image *decisions*, allowed-host
-resolution, init-window content, records writes. The driver absorbs how
-any of it becomes cluster objects.
+`create.ts` no longer names a substrate. It went 1598 → 1349 lines, with
+the substrate half now `runtime/k8s/worktrees/launch.ts`, and keeps what
+it always should have:
+the checkout leg and its failure race, config resolution, image and env
+DECISIONS, allowed-host resolution, init windows, records writes, and the
+retry/rollback policy. `domain/skills/builtin.ts` and
+`domain/worktrees/spawn-script.ts` changed one type import each
+(`PodMount` → contract `WorkspaceMount`). The holdout list is gone.
 
-**Contract additions**: `WorkspaceSpec`, `WorkspaceMount` (renamed
-`PodMount` — hostPath source, mount path, readOnly; a host-process driver
-reads it as a bind or symlink), `launch(spec)` and `awaitReady(handle)`.
-`registerWorkspace` is already there, from stage 4.
+**Six verbs, not the two this plan sketched.** Each extra one keeps a
+behavior that folding it into `launch` would have changed:
 
-The spec carries decisions, not k8s spellings: identity (project,
-workspaceId, tool, mode, prewarm), image ref, env, mounts, resources,
-post-start script name, allowed hosts, forwarded-port config, and the
-nested/vcluster wants. Labels, namespace, `dataDirHash`, priority classes
-and the manifest are how the k8s driver spells it.
+- **`prepareSubstrate(intent) → WorkspaceSubstrate`** is the big one. The
+  cluster leg runs CONCURRENTLY with the image build and the checkout
+  (a vcluster cold start is deliberately overlapped), ONCE per create
+  rather than per attempt, and its failures surface before any unit
+  exists — outside the retry loop and its rollback. Folding it into
+  `launch` would have serialized it, re-run it per attempt, and routed
+  its failures through the rollback. So domain still orchestrates the
+  overlap (that is create-latency policy) and the receipt keeps the
+  leg's products — proxy ClusterIP, transport token, vcluster mounts and
+  env — opaque above the runtime.
+- **`ensureBuildEngine`** preserves the fail-before-any-row podman check.
+- **`prepareImage`** collapses `ensureImage` + `pushImageShared`, which
+  domain always called back to back. It lives in
+  `runtime/k8s/images/workspace-image.ts`, a SIBLING of build-coordinator
+  rather than more surface on it, so the CLI test's partial mock of that
+  module still intercepts (ESM intra-module calls bypass `vi.mock`).
+  `adoptWorktreeForwarders` sits in its own `forwarders/adopt.ts` for the
+  same reason.
+- **`startForwarders`** takes the pre-bound sockets. Reservation stays in
+  domain (`#platform/port` is not restricted), because binding early is
+  what stops another process taking the port, and a create that gives up
+  must CLOSE them rather than start relays.
 
-Destination of each of `create.ts`'s substrate touches:
+**Failed launches reuse `destroy`; no retract verb.** `destroy` gained
+`unitOnly`, which takes down what is running and leaves what a relaunch
+reuses — the egress registration (made once, in `prepareSubstrate`) and
+the vcluster whose kubeconfig is already written to disk. What it protects
+is receipt coherence, NOT nested-cluster state: every stop and restart
+takes the full path, and what a give-up leaves standing is collected by
+the vcluster orphan sweep once it ages out.
+Two callers want exactly that: a failed attempt that is about to be
+retried, and a create that gave up while KEEPING its checkout (a resume,
+a spare) and so stays restartable onto it.
+A fresh create that gave up owns everything it made, so it takes the full
+`destroy` — which also fixes a leak: that path used to erase the row and
+checkout while stranding the proxy registration and vcluster with nothing
+naming them. The verdict still gates the checkout removal, and the
+per-attempt kubectl call pattern is unchanged (one apply, one delete).
 
-| today | destination |
-|---|---|
-| `worktreeJobName` (named before staging) | gone — `TeardownTarget` and post-launch `handle.jobName` cover every use |
-| `buildPodJobManifest` + label constants + `worktreeIdLabels` + `dataDirHash` + `k8sNamespace` | inside `launch` |
-| `ensurePriorityClasses` → `kubectlApply` | inside `launch`, same order |
-| retry loop's foreground-cascade delete | inside `launch` — the "never match the previous attempt's terminating pod" invariant is the driver's own |
-| `awaitDeferredClusterBoot` | inside `launch`; domain stops knowing boots defer |
-| `waitForJobPodReady` / `waitForStreamd` | `awaitReady` / `awaitAgentTransport`; the race against the checkout-failure promise stays in domain, where the checkout lives |
-| `podStreamToken` → `YAAC_STREAM_TOKEN` | driver injects during `launch` |
-| `SSH_TUNNEL_SENTINEL`, `TUNNEL_INGRESS_PORT`, `SSH_AGENT_*` env/ProxyCommand assembly | a "git/ssh env for this workspace" builder in `runtime/k8s/egress`, surfaced through the spec |
-| five post-ready `podExec` calls | `exec`, strings unchanged from `#runtime/agents` |
-| `relayTcpFactory` → `registerWorktreeForwarders` | forwarders build their own factory from the worktree id; the registration rides the spec's port config |
-| vcluster family (`ensureWorktreeVcluster`, kubeconfig wait, `sleepVcluster`, activator, registry conf drop-in, mounts) | driver-internal, keyed off the spec's nested/vcluster fields |
-| `ensureImage` / `primeWorktreeImages` / `pushImageShared` | stay explicit pre-launch calls, but behind contract verbs (`prepareImage(...)` family) rather than `#runtime/k8s/images` imports — which image to build from what config is domain's; building is the driver's |
-| `buildWorktreeRegistration` / `syncProxySecrets` / `proxyClient` | `registerWorkspace`, called by `launch` |
+Domain never derives the unit name: `launchWithSetup` reports the handle
+through an `onLaunched` callback the moment `launch` returns, so the
+teardown target exists even when the failure lands several steps later.
 
-`domain/skills/builtin.ts` and `domain/worktrees/spawn-script.ts` change
-only their import: `PodMount` → contract `WorkspaceMount`, logic
-untouched.
+**Two relocations.** `default-allowed-hosts.ts` became
+`packages/server/src/lib/allowed-hosts.ts` (`#lib/allowed-hosts`) — every
+reader is inside the server package (the proxy learns each workspace's
+resolved hosts over the registration wire), so `@yaac/shared` would have
+been wrong. `src/lib/` is the new home for dependency-free vocabulary any
+layer may name, enforced by an eslint zone that lets it import nothing but
+`@yaac/shared` and node builtins. `buildStatusRight` moved to
+`#runtime/agents` beside the other tmux vocabulary.
 
-The extracted launch lands in `runtime/k8s/worktrees` (a `launch.ts`
-module; the barrel grows `launchWorkspace` with its one-`describe` test
-whose k8s boundary is mocked at kubectl/spawn per the folder rules).
-`create.ts` ends importing `#runtime/driver`, `#runtime/contract`,
-`#runtime/agents`, `#runtime/status` — and nothing k8s.
+**Testing.** `test/runtime/k8s/worktrees/launch.test.ts` covers both verbs
+at the kubectl boundary (labels including the acp/prewarm conditionals,
+driver-injected env, the SSH tunnel wiring, priority-classes-before-apply,
+the nested/vcluster branches, and that a vcluster found already running is
+never re-slept); `ssh-transport` and `workspace-image` have their own.
+`teardown.test.ts` gained a `unitOnly` describe. The CLI's
+`worktree-create.test.ts` — the real create coverage — keeps every
+assertion and changed only its seams: it installs the REAL k8s launch
+verbs through `installFakeWorktreeRuntime`, so what it exercises is
+exactly the code that turns a create into a Job. One assertion moved from
+`toHaveBeenCalledWith(jobName)` to reading the first argument, because a
+driver delegation passes its optional second argument through.
 
-## Stage 6 — enforcement flip and doc truth
+**What the test-time win actually was.** Nothing measurable for
+`create.test.ts` and `spare-pool.test.ts`, and the reason is worth
+recording: `#runtime/agents` binds the stream relay directly, so any
+mediator needing agent vocabulary still loads the cluster client
+transitively. The lint rule proves no mediator NAMES a substrate barrel,
+not that its module graph is cluster-free. Putting the dial on the
+contract is what would finish it, and that wants a second driver to
+justify it. The decoupling did show up in the module graph, though:
+`pnpm modularity` CCD 356 → 345, NCCD 2.16 → 2.02, propagation cost
+26.0% → 23.9%.
 
-- Delete the holdout override; the domain/api zones now restrict
-  `#platform/k8s` and `#runtime/k8s` outright. Add the mirror rule:
-  `#runtime/k8s/**` importable only from `packages/server/src/runtime/**`
-  and `packages/server/src/main/**`.
-- Update `docs/layered-server.md`: runtime's entry describes the
-  `WorktreeRuntime` contract and accessor as real; domain's entry says it
-  drives the runtime through the contract. Update the sealed-folder
-  guidance if `runtime/k8s/runtime.ts` and `driver.ts` deserve a mention.
+
+## Stage 6 — the api layer
+
+The domain half of the enforcement flip landed with stage 5 (the holdout
+override is deleted and `docs/layered-server.md` describes the contract,
+the accessor and the launch split as real). What is left:
+
+- Decide what the api layer's substrate use should become. It is a
+  different shape from domain's — the image-build rows the webapp renders
+  (`api/events`, `api/routes/images`), the proxy client behind the auth
+  and allow-host routes, the port-forward routes, and the project
+  rebuild/push routes. None of it is worktree lifecycle, so none was
+  covered by stages 4–5, and forcing it through the worktree verbs would
+  buy nothing. It wants its own surface (an image-build feed, a datapath
+  surface) before the zone flips.
+- Then put `NO_SUBSTRATE_ABOVE_RUNTIME` on the api zone, and add the
+  mirror rule: `#runtime/k8s/**` importable only from
+  `packages/server/src/runtime/**` and `packages/server/src/main/**`.
 - Optional, separable: fold `main/convergence`'s cluster wiring
   (`ClusterCache` construction, delta fan-out, priority classes, deferred
   boot arming, relay invalidation) behind `runtime.start()` /
@@ -395,12 +446,12 @@ is a possible later refinement, not part of this plan.
 
 - `pnpm lint` and `pnpm modularity --runtime-only` stay green; the holdout
   list shrinks in the same PR as each migration.
-- Domain test wall-clock drops at stage 1, again at stage 4, and again at
-  stage 5 (the k8s client import stops loading); migrated files' tests must
-  pass with no k8s stub registered.
+- Domain test wall-clock drops at stage 1 and again at stage 4; migrated
+  files' tests must pass with no k8s stub registered. Stage 5 measured no
+  further drop — see "Stage 5 is in" for why (`#runtime/agents` keeps the
+  cluster client in any mediator that needs agent vocabulary).
 - E2e is the behavioral backstop: worktree-create-suite, vcluster-suite,
   worktree-prewarm, worktree-spawn and the stop/cleanup paths exercise
   every moved verb against a real cluster, and none of their assertions
   should change — this refactor moves code across a boundary and must not
-  change what the substrate sees. Stage 5 is the remaining one to run
-  nested-vs-host both ways.
+  change what the substrate sees.

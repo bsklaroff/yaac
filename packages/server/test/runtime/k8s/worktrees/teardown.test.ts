@@ -176,6 +176,44 @@ describe('destroyWorkspace', () => {
   })
 })
 
+  // `unitOnly` is the failed-launch and kept-checkout shape: the workspace
+  // is coming back, either on the next attempt or on a restart, so the two
+  // things a relaunch reuses have to survive it.
+  describe('unitOnly', () => {
+    it('takes the unit down and leaves the egress registration standing', async () => {
+      // The registration is made ONCE for a whole create; dropping it
+      // between attempts would leave the next one reaching nothing.
+      await expect(
+        destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true }),
+      ).resolves.toBe(true)
+
+      expect(jobDelete()).toEqual(expect.arrayContaining(['--cascade=foreground']))
+      expect(mockRemoveWorktree).not.toHaveBeenCalled()
+      expect(mockStopForwarders).not.toHaveBeenCalled()
+    })
+
+    it('leaves the nested cluster standing for the next attempt', async () => {
+      // The caller prepared its substrate once and is about to launch
+      // again against the same receipt — including a kubeconfig already
+      // written to disk for this vcluster.
+      mockVclusterStatus.mockResolvedValue({ name: 'vc-s1', ready: true, phase: 'ready' })
+
+      await destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true })
+
+      expect(mockRemoveVcluster).not.toHaveBeenCalled()
+    })
+
+    it('still reports a unit it could not confirm gone', async () => {
+      // The verdict is what gates removing the checkout, so it means the
+      // same thing whichever shape the teardown took.
+      mockKubectl.mockRejectedValue(new Error('timed out'))
+
+      await expect(
+        destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true }),
+      ).resolves.toBe(false)
+    })
+  })
+
 describe('detachedTeardownCommand', () => {
   it('deletes the unit and sweeps the nested cluster', () => {
     const script = detachedTeardownCommand(TARGET)
