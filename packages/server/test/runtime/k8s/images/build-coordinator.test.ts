@@ -16,7 +16,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
-import type * as kubectlModule from '#platform/k8s/kubectl'
+import type * as kubectlModule from '#runtime/k8s/substrate/kubectl'
 import type * as imageBuilderModule from '#runtime/k8s/image-engine/image-builder'
 import type * as mainRegistryModule from '#runtime/k8s/cluster/main-registry'
 
@@ -117,12 +117,12 @@ vi.mock('#runtime/k8s/image-engine/image-builder', async (importOriginal) => ({
   resolveImageChain: vi.fn(),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
+vi.mock('#runtime/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
   removeImage: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   pushImageToRegistry: vi.fn(),
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
@@ -133,7 +133,7 @@ const mockKubectlApply = vi.hoisted(() => vi.fn())
 const mockKubectlWithRetry = vi.hoisted(() => vi.fn())
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
 const mockEnsureKubernetes = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   k8sNamespace: () => 'test-ns',
   dataDirHash: () => 'ddh0000000000000',
@@ -163,8 +163,8 @@ vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { ensureImage, pushImageShared, rebuildProjectImage } from '#runtime/k8s/images'
 import { _clearBuildCoordinatorForTests } from '#runtime/k8s/images/build-coordinator'
 import { buildImage, resolveImageChain, type ImageLayer } from '#runtime/k8s/image-engine/image-builder'
-import { imageExists, removeImage } from '#platform/container/runtime'
-import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
+import { imageExists, removeImage } from '#runtime/k8s/container/runtime'
+import { pushImageToRegistry, registryHasTag } from '#runtime/k8s/container/registry'
 import { clearAllImageBuildsForTests, listImageBuilds } from '#runtime/k8s/image-engine/image-builds'
 // Bounds and layout constants: expected values, not units under test.
 import {
@@ -178,7 +178,7 @@ import {
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#runtime/k8s/images/builder-pod'
-import { BUILDER_CONTEXT_MAX_BYTES } from '#platform/build-context'
+import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)

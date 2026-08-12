@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/platform/git'
-import { listWorktreePods, type PodInfo } from '@yaac/server/platform/k8s/pods'
+import { listWorktreePods, type PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,

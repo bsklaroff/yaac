@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: () => 'test-ns',
@@ -12,7 +12,7 @@ import {
   renderNamespaceClaims,
   validateVclusterClaims,
 } from '#runtime/k8s/cluster'
-import type { VclusterPod } from '#platform/k8s/vcluster-objects'
+import type { VclusterPod } from '#runtime/k8s/substrate/vcluster-objects'
 // Bounds and object names the claim bridge enforces — setup values for the
 // assertions below, not units under test.
 import {

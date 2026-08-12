@@ -6,7 +6,7 @@ const mockRegister = vi.hoisted(() => vi.fn())
 vi.mock('#runtime/k8s/egress/proxy-client', () => ({
   proxyClient: { attachIfRunning: mockAttach, registerVclusterAttribution: mockRegister },
 }))
-vi.mock('#platform/k8s/tick-snapshot', () => ({ createTickSnapshot: vi.fn() }))
+vi.mock('#runtime/k8s/substrate/tick-snapshot', () => ({ createTickSnapshot: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
@@ -14,8 +14,8 @@ import {
   reconcileVclusterAttribution,
   _resetVclusterAttributionForTests,
 } from '#runtime/k8s/egress/vcluster-attribution'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import type { VclusterNamespaceInfo, VclusterPod } from '#platform/k8s/vcluster-objects'
+import type { TickSnapshot } from '#runtime/k8s/substrate/tick-snapshot'
+import type { VclusterNamespaceInfo, VclusterPod } from '#runtime/k8s/substrate/vcluster-objects'
 import { serverLog } from '#log'
 
 const mockLog = vi.mocked(serverLog)

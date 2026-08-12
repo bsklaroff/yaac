@@ -3,12 +3,12 @@ import { passViewFixture } from '@yaac/test-utils/fake-runtime'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('#platform/k8s/pods', () => ({
+vi.mock('#runtime/k8s/substrate/pods', () => ({
   listWorktreePods: vi.fn().mockResolvedValue([]),
   listWorktreeJobs: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('#platform/k8s/vcluster-objects', () => ({
+vi.mock('#runtime/k8s/substrate/vcluster-objects', () => ({
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
 }))
 
@@ -34,7 +34,7 @@ vi.mock('#runtime/k8s/cluster/activator', () => ({
   ),
 }))
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -46,14 +46,14 @@ import {
   healVclusterSleepState,
   reconcileVclusters,
 } from '#runtime/k8s/cluster/vcluster-reconcile'
-import { listWorktreeJobs, listWorktreePods } from '#platform/k8s/pods'
+import { listWorktreeJobs, listWorktreePods } from '#runtime/k8s/substrate/pods'
 import { getActivatorPodIp } from '#runtime/k8s/cluster/activator'
 import {
   removeWorktreeVcluster,
   waitForVclusterKubeconfig,
 } from '#runtime/k8s/cluster/vcluster'
-import { listVclusterNamespaces } from '#platform/k8s/vcluster-objects'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import { listVclusterNamespaces } from '#runtime/k8s/substrate/vcluster-objects'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#runtime/k8s/substrate/kubectl'
 import { worktreeVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 

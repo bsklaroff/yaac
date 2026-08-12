@@ -36,8 +36,8 @@ import {
   registryHasTag,
   registryHost,
   registryRef,
-} from '#platform/container'
-import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#platform/build-context'
+} from '#runtime/k8s/container'
+import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import { testEnv } from '@yaac/shared/env'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -57,13 +57,13 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import {
   buildEgressWorldDenyNpManifest,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
 } from '#runtime/k8s/cluster'
-import { runStreamingProcess } from '#platform/streaming-proc'
+import { runStreamingProcess } from '#runtime/k8s/container'
 import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
 import { stringHash, type ImageLayer } from '#runtime/k8s/image-engine'

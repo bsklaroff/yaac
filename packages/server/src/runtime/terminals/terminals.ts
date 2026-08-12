@@ -1,4 +1,4 @@
-import { podExec } from '#platform/k8s'
+import { podExec } from '#runtime/k8s/substrate'
 import { worktreeControlStreamSend } from '#runtime/status'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { WorktreeTerminalEntry } from '@yaac/shared/types'

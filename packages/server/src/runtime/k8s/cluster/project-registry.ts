@@ -11,11 +11,11 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
   runPodToCompletion,
-} from '#platform/k8s'
-import { createKeyedMutex } from '#platform/keyed-mutex'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+} from '#runtime/k8s/substrate'
+import { createKeyedMutex } from '#lib/keyed-mutex'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#runtime/k8s/container'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { imageExists } from '#platform/container'
+import { imageExists } from '#runtime/k8s/container'
 import { projectDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'

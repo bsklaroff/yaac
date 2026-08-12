@@ -7,14 +7,14 @@ import {
   VCLUSTER_DELTA_SOURCES,
   setActiveClusterCache,
   type DeltaSource,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { MEDIATOR_TRIGGERS, type ReconcileTrigger } from '#runtime/contract'
 import {
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
 } from '#runtime/k8s/cluster'
-import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#platform/container'
+import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#runtime/k8s/container'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import {
   PortDetectorManager,

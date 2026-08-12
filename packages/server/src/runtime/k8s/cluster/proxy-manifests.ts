@@ -21,7 +21,7 @@ import {
   TRANSPARENT_TUNNEL_PORT,
   dataDirHash,
   k8sNamespace,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
 import { proxyDataHostDir } from '@yaac/shared/project-paths'

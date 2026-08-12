@@ -27,13 +27,13 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { dialCtrlStream, type StreamChild } from '#platform/k8s'
+import { dialCtrlStream, type StreamChild } from '#runtime/k8s/substrate'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
 import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
-import { podExec } from '#platform/k8s'
+import { podExec } from '#runtime/k8s/substrate'
 import type {
   AgentConnectDeps,
   AgentConnection,

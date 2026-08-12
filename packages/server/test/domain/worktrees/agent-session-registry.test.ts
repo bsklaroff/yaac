@@ -6,13 +6,13 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 // opencode's opening message is not on the host — it is probed inside the pod
 // — so the transport is stubbed to assert the sweep carries the job name down
 // to that read. Nothing else here execs.
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
   podExec: vi.fn(),
 }))
 
 // The pod-level entry point is driven only for the unreachable-cluster case.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listWorktreePods: vi.fn().mockResolvedValue([]),
 }))
@@ -35,10 +35,10 @@ import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#records/worktree-store'
 import { sessionStartsLogSize } from '#store/worktrees/session-starts'
 import { serverLog } from '#log'
-import { listWorktreePods } from '#platform/k8s/pods'
-import { podExec } from '#platform/k8s/stream-relay'
-import type * as relayModule from '#platform/k8s/stream-relay'
-import type * as podsModule from '#platform/k8s/pods'
+import { listWorktreePods } from '#runtime/k8s/substrate/pods'
+import { podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 import {
   setLiveAgents,
   _resetWorktreeStatusStoreForTests,

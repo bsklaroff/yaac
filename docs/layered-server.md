@@ -14,9 +14,13 @@ domain     the mediators: everything that reads rows and drives the
            layers below
   ↓      ↓       ↓
 records  store  runtime     records: rows; owns the database outright
-  ↓       ↓       ↓         store: worktrees/clones/transcripts/config on disk
-        platform            runtime: how agents run (k8s driver today)
+                            store: worktrees/clones/transcripts/config on disk
+                            runtime: how agents run (k8s driver today);
+                            its substrate is sealed inside it
 ```
+
+`lib/` sits below all of it — dependency-free vocabulary and host
+primitives that name nothing back.
 
 Arrows only point down. Two package-root modules are exempt from the
 arrows: `#log`, and `#notify` — the zero-dependency outbound "something
@@ -74,7 +78,7 @@ records layer can speak alone.
   (checkout seeding, and the in-pod hook's session-starts log),
   `transcripts/` (per-tool readers, the JSONL scanner, and the
   project-relative path convention). Pure disk mechanics: no rows, no
-  substrate, nothing above platform.
+  substrate, nothing above it.
 - **`runtime/`** — `contract.ts` (the `WorktreeRuntime` driver interface
   and its substrate-neutral vocabulary: `RuntimeReport`, `RuntimeHandle`,
   handle-keyed `AgentLiveness`, `RuntimeSnapshot`, the launch types —
@@ -86,10 +90,15 @@ records layer can speak alone.
   acpd's JSON-RPC client, per-tool launch commands), and `k8s/` — the
   driver's substance: `cluster`, `egress`, `forwarders`, `images`,
   `image-engine`, `worktrees` (launch, observe, locate, claim, teardown,
-  the pod-side changes diff, image salvage) and `view` (the one mapper
-  turning a pod into a `RuntimeHandle`, plus the pass snapshot). The
-  contract is the seam a second driver — a host-process runtime with no
-  cluster — implements.
+  the pod-side changes diff, image salvage), `view` (the one mapper
+  turning a pod into a `RuntimeHandle`, plus the pass snapshot), and the
+  two host-side primitives the rest of them are built on — `substrate`
+  (client, informers, exec, pod specs, the per-pass `TickSnapshot`, the
+  datapath's names and ports) and `container` (podman, the local
+  registry, the streaming child-process runner). `k8s/` holds sealed
+  folders only; nothing loose sits beside them. The contract is the seam
+  a second driver — a host-process runtime with no cluster —
+  implements.
 
   `contract.ts` and `driver.ts` import nothing but shared types, and that
   is load-bearing: a mediator reaching the runtime through them pulls no
@@ -108,15 +117,20 @@ records layer can speak alone.
   nothing else. That is what makes a retry cheap and safe — a failed
   attempt leaves only a unit, and `destroy`'s `unitOnly` takes exactly
   that down while leaving what the next attempt reuses.
-- **`lib/`** — the server's own dependency-free vocabulary: modules every
-  layer may name and that name nothing back (the egress allowlist's
-  defaults and matching, today). A sink in the module graph, so importing
-  one costs a layer nothing. Distinct from `@yaac/shared`, which is for
-  vocabulary other PACKAGES read; nothing outside this package reads these.
-- **`platform/`** — substrate primitives with no opinions about worktrees:
-  `k8s/` (client, informers, exec, pod specs, the per-pass
-  `TickSnapshot`), `container/` (podman, the local registry), git, shell,
-  process helpers.
+- **`lib/`** — the server's own dependency-free vocabulary AND host
+  primitives: modules every layer may name and that name nothing back —
+  the egress allowlist's defaults and matching, a POSIX quoter and one
+  promisified `execFile`, a promise-chain keyed mutex, TCP port
+  reservation and the relay engine that forwards through one, and the
+  build-context file walk. A sink in the module graph, so importing one
+  costs a layer nothing — its zone allows node builtins and `@yaac/shared`
+  and nothing else, third-party deps included, which is what keeps that
+  true. Distinct from `@yaac/shared`, which is for vocabulary other
+  PACKAGES read; nothing outside this package reads these.
+- **`platform/`** — `git.ts` alone, and only until the store dissolves:
+  it wraps the `simple-git` dep, has no runtime consumers, and is
+  domain's process boundary the way kubectl is the driver's. It moves to
+  `domain/git.ts` with `store/projects`, which deletes the directory.
 
 ## The event door
 

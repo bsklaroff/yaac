@@ -116,7 +116,7 @@ document.
 **`yaac.session-id` stamped alongside `yaac.worktree-id`.** A label selector
 cannot express "either key", so every selector still matches the legacy key,
 while code-level readers go through `labelWorktreeId`, which accepts either.
-Sites: `platform/k8s/pods.ts` (constant, `labelWorktreeId`, the stamp, both zod
+Sites: `runtime/k8s/substrate/pods.ts` (constant, `labelWorktreeId`, the stamp, both zod
 schemas, `worktreePodSelector`), `runtime/k8s/cluster/policy-manifests.ts`,
 `runtime/k8s/cluster/activator.ts`, `runtime/k8s/cluster/vcluster.ts`,
 `runtime/k8s/cluster/project-registry.ts`, `k8s/proxy/pod-watch.ts`,
@@ -201,14 +201,14 @@ is the part worth keeping.
 | `runtime/k8s/cluster/delete.ts` — why there is no host-container step | the host-registry era |
 | `runtime/k8s/cluster/main-registry.ts` module doc — the fresh-empty-claim upgrade, and where the old hostPath data sits | the hostPath-registry era |
 | `runtime/k8s/cluster/project-registry.ts`, `buildProjectRegistryPvcManifest` — the same trade per project | the same |
-| `platform/k8s/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
-| `platform/k8s/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
+| `runtime/k8s/substrate/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
+| `runtime/k8s/substrate/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
 | `k8s/proxy/state-files.ts` — why `readJsonEither` takes a legacy path | section 4 |
 | `records/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
 
 Two neighbours that are **not** cruft and should not be swept with them:
 
-- `LABEL_MODE`'s absence-reads-as-`tui` (`platform/k8s/pods.ts`,
+- `LABEL_MODE`'s absence-reads-as-`tui` (`runtime/k8s/substrate/pods.ts`,
   `runtime/status/status-watcher.ts`) is an encoding choice: the label is
   stamped only for `acp`, so a TUI pod created by this build lacks it too.
 - The local named `legacy` in `domain/worktrees/agent-session-registry.ts` is

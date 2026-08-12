@@ -15,9 +15,9 @@ import { projectBuildDir, userBuildDir } from '@yaac/server/store/projects/build
 import { writeBuildFile } from '@yaac/server/store/projects/build-files'
 import { ensureImage } from '@yaac/server/runtime/k8s/images/build-coordinator'
 import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/platform/k8s/proxy-constants'
+import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/runtime/k8s/substrate/proxy-constants'
 import { resolveImageChain } from '@yaac/server/runtime/k8s/image-engine/image-builder'
-import { imageExists } from '@yaac/server/platform/container/runtime'
+import { imageExists } from '@yaac/server/runtime/k8s/container/runtime'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -25,19 +25,19 @@ import {
   registryHost,
   registryReachable,
   registryRef,
-} from '@yaac/server/platform/container/registry'
+} from '@yaac/server/runtime/k8s/container/registry'
 import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
 } from '@yaac/server/runtime/k8s/cluster/main-registry'
-import { RUNTIME_CLASS_GVISOR } from '@yaac/server/platform/k8s/gvisor'
-import { runPodToCompletion } from '@yaac/server/platform/k8s/pods'
+import { RUNTIME_CLASS_GVISOR } from '@yaac/server/runtime/k8s/substrate/gvisor'
+import { runPodToCompletion } from '@yaac/server/runtime/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/platform/k8s/kubectl'
+} from '@yaac/server/runtime/k8s/substrate/kubectl'
 import { getImageBuildLog, listImageBuilds } from '@yaac/server/runtime/k8s/image-engine/image-builds'
 
 /**

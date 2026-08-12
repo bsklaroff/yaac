@@ -4,20 +4,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // function under test runs for real against it, which is the point — this is
 // where the server's vocabulary meets Kubernetes', and a translation that
 // drifts is invisible to any test that stubs the lookup itself.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listWorktreePods: vi.fn(),
 }))
-vi.mock('#platform/k8s/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
+vi.mock('#runtime/k8s/substrate/cluster-cache', () => ({ getActiveClusterCache: vi.fn(() => null) }))
 
-import { LABEL_PREWARMED, listWorktreePods, type PodInfo } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
-import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
+import { LABEL_PREWARMED, listWorktreePods, type PodInfo } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { getActiveClusterCache } from '#runtime/k8s/substrate/cluster-cache'
 import {
   _resetDeferredClusterBootForTests,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
-} from '#platform/k8s/deferred-boot'
+} from '#runtime/k8s/substrate/deferred-boot'
 import {
   countProjectWorkspaces,
   countWorkspaces,

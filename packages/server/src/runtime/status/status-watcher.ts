@@ -1,4 +1,4 @@
-import { type PodInfo, bootStreamd, isPrewarmed } from '#platform/k8s'
+import { type PodInfo, bootStreamd, isPrewarmed } from '#runtime/k8s/substrate'
 import {
   agentDriver,
   normalizeTool,

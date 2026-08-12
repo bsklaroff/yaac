@@ -1,4 +1,4 @@
-import { execFileAsync } from '#platform/container'
+import { execFileAsync } from '#runtime/k8s/container'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 

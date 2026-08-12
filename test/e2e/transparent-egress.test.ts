@@ -21,16 +21,16 @@ import {
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
-} from '@yaac/server/platform/k8s/proxy-constants'
-import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/platform/k8s/pods'
+} from '@yaac/server/runtime/k8s/substrate/proxy-constants'
+import { runtimeClassSpec } from '@yaac/server/runtime/k8s/substrate/gvisor'
+import { CA_CONFIGMAP_NAME } from '@yaac/server/runtime/k8s/substrate/pod-spec'
+import { worktreeIdLabels } from '@yaac/server/runtime/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/platform/k8s/kubectl'
+} from '@yaac/server/runtime/k8s/substrate/kubectl'
 
 const execFileAsync = promisify(execFile)
 

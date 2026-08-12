@@ -3,13 +3,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
   podExec: vi.fn(),
 }))
 
-import { podExec } from '#platform/k8s/stream-relay'
-import type * as relayModule from '#platform/k8s/stream-relay'
+import { podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
 import {
   pickOpencodeSession,
   OPENCODE_BUSY_MARKERS,

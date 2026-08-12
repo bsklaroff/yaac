@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileAsync } from '#platform/shell'
+import { execFileAsync } from '#lib/shell'
 import { serverLog } from '#log'
 import { serverLocalPath } from '@yaac/shared/paths'
 

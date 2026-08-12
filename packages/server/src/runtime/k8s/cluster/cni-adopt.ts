@@ -5,9 +5,9 @@ import {
   k8sNamespace,
   kubectlErrorSummary,
   untoleratedTaints,
-} from '#platform/k8s'
-import type { NodeTaint, PodToleration } from '#platform/k8s'
-import type { execFileAsync } from '#platform/k8s'
+} from '#runtime/k8s/substrate'
+import type { NodeTaint, PodToleration } from '#runtime/k8s/substrate'
+import type { execFileAsync } from '#runtime/k8s/substrate'
 import { env } from '@yaac/shared/env'
 import { podCidrSources } from './cluster-cidrs'
 

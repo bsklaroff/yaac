@@ -1,4 +1,4 @@
-import { listWorktreePods } from '#platform/k8s'
+import { listWorktreePods } from '#runtime/k8s/substrate'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { resolveProjectConfig } from '#store/projects'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from './port-forwarders'

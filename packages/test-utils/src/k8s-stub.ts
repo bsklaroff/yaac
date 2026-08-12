@@ -2,7 +2,7 @@
  * Stand-in for `@kubernetes/client-node` in unit runs.
  *
  * The real package is 967 ESM files behind one barrel and costs ~2.8s to
- * evaluate. `#platform/k8s` reaches it through three modules (the API
+ * evaluate. `#runtime/k8s/substrate` reaches it through three modules (the API
  * handles, the informer registry, the readiness watch), and its barrel
  * re-exports those, so *every* test file that imports any server feature
  * pays that 2.8s before its first assertion — roughly half of the
@@ -48,7 +48,7 @@ class WatchStub {
 
 /**
  * The module shape `vi.mock` installs. Types are erased at runtime, so only
- * the values `#platform/k8s` imports need to exist here: the two API
+ * the values `#runtime/k8s/substrate` imports need to exist here: the two API
  * classes, KubeConfig, Watch, and makeInformer.
  */
 export function k8sClientStub(): Record<string, unknown> {

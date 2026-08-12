@@ -1,4 +1,4 @@
-import { isPrewarmed, listWorktreePods } from '#platform/k8s'
+import { isPrewarmed, listWorktreePods } from '#runtime/k8s/substrate'
 import { addWorktreeForwarder } from './port-forwarders'
 import { getUnforwardedPorts } from './port-detector'
 import { addPortForwardToProjectConfig } from '#store/projects'

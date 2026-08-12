@@ -27,7 +27,7 @@ const UNTIERED_DATA_DIR = [
 }))
 
 // Sealed folders expose an index.ts barrel (mapped to the folder's own
-// specifier — `#features/<name>`, `#http`, `#platform/db` — in the package's
+// specifier — `#domain/<name>`, `#http`, `#runtime/k8s/images` — in the package's
 // imports field); everything else in the directory is internal.
 // src must enter through the barrel — add a folder to the alternation below
 // once it has one. Tests are deliberately unrestricted: they still reach
@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|egress|forwarders|image-engine|images|view|worktrees))|store/(projects|transcripts|worktrees)|http|platform/(container|k8s))/.',
+  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|store/(projects|transcripts|worktrees)|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
@@ -78,7 +78,7 @@ const NO_DATABASE_DIRECT = {
 // would justify putting the dial on the contract — so the test-time win
 // lands only for mediators that need no agent vocabulary.
 const NO_SUBSTRATE_ABOVE_RUNTIME = {
-  regex: '^(#platform/k8s|#runtime/k8s|#platform/container)(/|$)',
+  regex: '^#runtime/k8s(/|$)',
   message: 'Reach the runtime through #runtime/driver and #runtime/contract, never a substrate barrel (docs/layered-server.md).',
 }
 
@@ -148,8 +148,7 @@ export default tseslint.config(
 
   // server and auth-daemon: only @yaac/shared (+ self via #). They must never
   // import each other — anything they share lives in @yaac/shared. The
-  // database is records' alone (the zone below re-opens it for records and
-  // the db platform itself).
+  // database is records' alone (the zone below re-opens it for records).
   {
     files: ['packages/server/src/**/*.ts', 'packages/auth-daemon/src/**/*.ts'],
     rules: {
@@ -225,6 +224,18 @@ export default tseslint.config(
             {
               regex: '^#',
               message: 'src/lib must stay dependency-free: no other module of this package (docs/layered-server.md).',
+            },
+            // "Dependency-free" means third-party too, not just this package's
+            // own modules. Without this, the zone above would happily let a lib
+            // module import @kubernetes/client-node — and lib is imported by
+            // every layer, so that one edge would put the cluster client back
+            // into the module graph of mediators the contract just got it out
+            // of. It is also what keeps the stage-7 answer for `platform/git.ts`
+            // honest: git wraps the `simple-git` dep, so lib is not a legal
+            // home for it and the rule says so rather than the plan alone.
+            {
+              regex: '^(?!node:|@yaac/shared)[@a-zA-Z]',
+              message: 'src/lib takes no third-party dependency: node builtins and @yaac/shared only (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -433,7 +444,7 @@ export default tseslint.config(
 
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
   // @yaac/shared, and the four sanctioned host-side modules — exec
-  // (platform/k8s/exec, attaches/streams via `kubectl exec -it`) and cluster
+  // (runtime/k8s/substrate/exec, attaches/streams via `kubectl exec -it`) and cluster
   // check/setup/delete (runtime/k8s/cluster/*, run before any server
   // exists). The negation chain re-includes each parent dir (gitignore
   // semantics: a leaf can't be un-ignored while its parent is).
@@ -451,17 +462,16 @@ export default tseslint.config(
                 '@yaac/*',
                 '!@yaac/shared', '!@yaac/shared/*',
                 '!@yaac/server', '@yaac/server/*',
-                '!@yaac/server/platform', '@yaac/server/platform/*',
-                '!@yaac/server/platform/k8s', '@yaac/server/platform/k8s/*',
-                '!@yaac/server/platform/k8s/exec',
                 '!@yaac/server/runtime', '@yaac/server/runtime/*',
                 '!@yaac/server/runtime/k8s', '@yaac/server/runtime/k8s/*',
+                '!@yaac/server/runtime/k8s/substrate', '@yaac/server/runtime/k8s/substrate/*',
+                '!@yaac/server/runtime/k8s/substrate/exec',
                 '!@yaac/server/runtime/k8s/cluster', '@yaac/server/runtime/k8s/cluster/*',
                 '!@yaac/server/runtime/k8s/cluster/check',
                 '!@yaac/server/runtime/k8s/cluster/setup',
                 '!@yaac/server/runtime/k8s/cluster/delete',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/{platform/k8s/exec,runtime/k8s/cluster/{check,setup,delete}}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/runtime/k8s/{substrate/exec,cluster/{check,setup,delete}}.',
             },
           ],
         },

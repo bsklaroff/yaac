@@ -13,8 +13,8 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
   type KubectlExecOptions,
-} from '@yaac/server/platform/k8s/kubectl'
-import { registryHasTag, registryRef } from '@yaac/server/platform/container/registry'
+} from '@yaac/server/runtime/k8s/substrate/kubectl'
+import { registryHasTag, registryRef } from '@yaac/server/runtime/k8s/container/registry'
 import { e2eMkdtemp } from '#tmp'
 
 const execFileAsync = promisify(execFile)

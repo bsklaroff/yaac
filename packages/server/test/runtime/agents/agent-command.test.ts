@@ -9,13 +9,13 @@ import {
   verifyAgentWindowAlive,
   initWindowCommand,
 } from '#runtime/agents/agent-command'
-import { RelayExecError, podExec } from '#platform/k8s/stream-relay'
-import type * as streamRelayModule from '#platform/k8s/stream-relay'
+import { RelayExecError, podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as streamRelayModule from '#runtime/k8s/substrate/stream-relay'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
-vi.mock('#platform/k8s/exec', () => ({
+vi.mock('#runtime/k8s/substrate/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   execTarget: (jobName: string) => `job/${jobName}`,
 }))
@@ -23,7 +23,7 @@ vi.mock('#platform/k8s/exec', () => ({
 // Keep the real error classes — verifyAgentWindowAlive branches on
 // RelayExecError to tell "the probe ran and the window is gone" apart from
 // "the pod was never reached".
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))

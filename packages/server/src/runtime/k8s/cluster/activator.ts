@@ -26,8 +26,8 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s'
-import { registryRef } from '#platform/container'
+} from '#runtime/k8s/substrate'
+import { registryRef } from '#runtime/k8s/container'
 import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
 
 export const ACTIVATOR_APP_NAME = 'yaac-vc-activator'

@@ -7,9 +7,9 @@ import {
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
-} from '#platform/k8s'
-import type { PodToleration } from '#platform/k8s'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
+} from '#runtime/k8s/substrate'
+import type { PodToleration } from '#runtime/k8s/substrate'
+import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#runtime/k8s/container'
 import { testEnv } from '@yaac/shared/env'
 import { assertMirrorArch } from './netd'
 
@@ -24,7 +24,7 @@ import { assertMirrorArch } from './netd'
  * restarts containerd, and labels the node — after which the RuntimeClasses'
  * `scheduling.nodeSelector` lets sandboxed pods land there. The script it
  * runs, the node paths it writes and the label it stamps all live in
- * `#platform/k8s` (gvisor.ts); this module owns the Kubernetes objects.
+ * `#runtime/k8s/substrate` (gvisor.ts); this module owns the Kubernetes objects.
  *
  * Two properties fall out of it being a DaemonSet rather than a loop over
  * `podman exec <node>`:

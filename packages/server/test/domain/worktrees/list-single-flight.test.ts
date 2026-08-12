@@ -8,7 +8,7 @@ import path from 'node:path'
 // (pod listing, fs-backed helpers) so the single-flight wrapper can be
 // exercised without a cluster or server.
 
-vi.mock('#platform/k8s/pods', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -35,8 +35,8 @@ vi.mock('#runtime/agents/agent-tools', async (importOriginal) => ({
 // The join under test reads the recorded rows alongside the real
 // observation half, so the leaf mocks above drive it end to end — only the
 // substrate is stubbed.
-import { listWorktreePods } from '#platform/k8s/pods'
-import type * as podsModule from '#platform/k8s/pods'
+import { listWorktreePods } from '#runtime/k8s/substrate/pods'
+import type * as podsModule from '#runtime/k8s/substrate/pods'
 import type * as agentToolsModule from '#runtime/agents/agent-tools'
 import {
   listActiveWorktrees,

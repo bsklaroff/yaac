@@ -51,7 +51,7 @@ exactly one chokepoint, and domain verbs already are it.
 - Observed facts enter records through one door (`applyWorktreeEvent`), and
   the substrate has no users in it. So principals annotate **intent**, never
   observation — the event union, the runtime contract, and everything under
-  `src/runtime`/`src/store`/`src/platform` stay user-free.
+  `src/runtime`/`src/store`/`src/lib` stay user-free.
 - There is no transcript-serving endpoint today: history reaches a client
   only over `/acp/attach` (running worktrees only); TUI history is tmux
   scrollback in the pod. The durable records exist on disk
@@ -342,7 +342,7 @@ A sweep of the HTTP/WS surface and the pod/runtime layer turned up specific
 flaws. Two structural facts frame all of them:
 
 - **Every worktree pod runs as the same host uid, with passwordless sudo,
-  on shared hostPaths** (`platform/k8s/pod-spec.ts` `podUid()`; gVisor has
+  on shared hostPaths** (`runtime/k8s/substrate/pod-spec.ts` `podUid()`; gVisor has
   no userns/idmap, so hostPath uids pass through raw). There is therefore
   **no filesystem-level isolation between worktrees** — owner separation
   can only come from *which paths get mounted*, never from permissions on a
@@ -359,7 +359,7 @@ cannot be enforced on top of them.
 
 - **Empty/prefix worktree-id resolution → a shell in an arbitrary pod.**
   `findWorktreePod` matches `worktreeId.startsWith(idOrName)`
-  (`platform/k8s/pods.ts`), and the PTY route defaults a missing id to `''`
+  (`runtime/k8s/substrate/pods.ts`), and the PTY route defaults a missing id to `''`
   (`main/server-run.ts`), so `GET /pty/attach?id=&target=shell` resolves to
   *the first running pod in the cluster*. Every `/worktree/:id/*` route
   inherits the ambiguity through `domain/worktrees/resolve.ts`. **Fix

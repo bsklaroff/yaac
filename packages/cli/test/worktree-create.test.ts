@@ -43,7 +43,7 @@ vi.mock('simple-git', () => ({
   })),
 }))
 
-vi.mock('@yaac/server/platform/container/runtime', () => ({
+vi.mock('@yaac/server/runtime/k8s/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof runtimeModule>))
 
@@ -57,7 +57,7 @@ vi.mock('@yaac/server/runtime/k8s/images/build-coordinator', () => ({
   pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
 } satisfies Partial<typeof buildCoordinatorModule>))
 
-vi.mock('@yaac/server/platform/k8s/kubectl', () => ({
+vi.mock('@yaac/server/runtime/k8s/substrate/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'yaac'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -73,7 +73,7 @@ vi.mock('@yaac/server/runtime/k8s/cluster/proxy-apply', async (importOriginal) =
   proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
 }))
 
-vi.mock('@yaac/server/platform/k8s/exec', () => ({
+vi.mock('@yaac/server/runtime/k8s/substrate/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 } satisfies Partial<typeof execModule>))
 
@@ -110,7 +110,7 @@ vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/platform/port', () => ({
+vi.mock('@yaac/server/lib/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
 } satisfies Partial<typeof portModule>))
@@ -119,7 +119,7 @@ vi.mock('@yaac/server/platform/port', () => ({
 // verifyAgentWindowAlive branches on `instanceof RelayExecError`, and a
 // stand-in class would silently send the first test that exercises a relay
 // failure down the wrong branch.
-vi.mock('@yaac/server/platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('@yaac/server/runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   bootStreamd: vi.fn().mockResolvedValue(undefined),
   relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
@@ -128,7 +128,7 @@ vi.mock('@yaac/server/platform/k8s/stream-relay', async (importOriginal) => ({
   waitForStreamd: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/platform/k8s/pod-wait', () => ({
+vi.mock('@yaac/server/runtime/k8s/substrate/pod-wait', () => ({
   waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -285,10 +285,10 @@ import { recordAgentSessions } from '@yaac/server/records/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
 import { retoolSpare } from '@yaac/server/domain/worktrees/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
-import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
+import { ensureContainerRuntime } from '@yaac/server/runtime/k8s/container/runtime'
 import { ensureImage, pushImageShared } from '@yaac/server/runtime/k8s/images/build-coordinator'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
-import { containerExec } from '@yaac/server/platform/k8s/exec'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/runtime/k8s/substrate/kubectl'
+import { containerExec } from '@yaac/server/runtime/k8s/substrate/exec'
 import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { proxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/store/projects/config'
@@ -298,10 +298,10 @@ import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
-import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/port'
-import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
-import type * as streamRelayModule from '@yaac/server/platform/k8s/stream-relay'
-import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
+import { reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/port'
+import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/runtime/k8s/substrate/stream-relay'
+import type * as streamRelayModule from '@yaac/server/runtime/k8s/substrate/stream-relay'
+import { waitForJobPodReady } from '@yaac/server/runtime/k8s/substrate/pod-wait'
 import { registerWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
 import { buildStatusRight } from '@yaac/server/runtime/agents/setup-commands'
 import type * as setupCommandsModule from '@yaac/server/runtime/agents/setup-commands'
@@ -1326,12 +1326,12 @@ import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 import type * as codexAgentModule from '@yaac/server/runtime/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'
-import type * as runtimeModule from '@yaac/server/platform/container/runtime'
+import type * as runtimeModule from '@yaac/server/runtime/k8s/container/runtime'
 import type * as imageBuilderModule from '@yaac/server/runtime/k8s/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/runtime/k8s/images/build-coordinator'
-import type * as kubectlModule from '@yaac/server/platform/k8s/kubectl'
-import type * as execModule from '@yaac/server/platform/k8s/exec'
-import type * as portModule from '@yaac/server/platform/port'
+import type * as kubectlModule from '@yaac/server/runtime/k8s/substrate/kubectl'
+import type * as execModule from '@yaac/server/runtime/k8s/substrate/exec'
+import type * as portModule from '@yaac/server/lib/port'
 import type * as projectConfigModule from '@yaac/server/store/projects/config'
 import type * as credentialsModule from '@yaac/server/store/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'

@@ -3,7 +3,7 @@ import { worktreeRuntime } from '#runtime/driver'
 import { repoDir } from '@yaac/shared/project-paths'
 import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#store/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
-import { shellEscape } from '#platform/shell'
+import { shellEscape } from '#lib/shell'
 import {
   resolveInitWindows,
   buildAgentCmd,

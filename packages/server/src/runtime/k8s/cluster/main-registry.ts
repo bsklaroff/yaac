@@ -41,7 +41,7 @@
  * written up in docs/trust-split-builds.md.
  *
  * The server reaches it through a `kubectl port-forward`, not by any host
- * networking assumption — see `#platform/container`'s registry module for
+ * networking assumption — see `#runtime/k8s/container`'s registry module for
  * the cluster-ref vs process-endpoint split.
  *
  * Storage is an RWO PVC, exactly as the per-project registries store
@@ -85,7 +85,7 @@ import {
   PRIVILEGED_PSS_LABELS,
   ROLE_BUILDER,
   runPodToCompletion,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { nodeIpBlocks } from './cluster-cidrs'
 import {
   REGISTRY_NAMESPACE,
@@ -94,7 +94,7 @@ import {
   invalidateRegistryEndpoint,
   registryHost,
   registryReachable,
-} from '#platform/container'
+} from '#runtime/k8s/container'
 import { LABEL_REGISTRY_DATA_DIR_HASH, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
 import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'

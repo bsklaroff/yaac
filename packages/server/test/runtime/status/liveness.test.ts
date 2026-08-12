@@ -5,13 +5,13 @@ import path from 'node:path'
 
 // Mocked at the process boundary: every probe in here is one relay exec into
 // the session pod, so the relay is the only thing that needs standing in.
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => {
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => {
   const actual = await importOriginal<typeof relayModule>()
   return { ...actual, podExec: vi.fn() }
 })
 
-import { RelayDialError, RelayExecError, podExec } from '#platform/k8s/stream-relay'
-import type * as relayModule from '#platform/k8s/stream-relay'
+import { RelayDialError, RelayExecError, podExec } from '#runtime/k8s/substrate/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
 import {
   _clearAgentStartedCacheForTests,
   _clearTmuxAliveCacheForTests,

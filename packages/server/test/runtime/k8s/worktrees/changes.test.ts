@@ -4,10 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-vi.mock('#platform/k8s/stream-relay', () => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', () => ({
   podExec: vi.fn(),
 }))
-import { podExec } from '#platform/k8s/stream-relay'
+import { podExec } from '#runtime/k8s/substrate/stream-relay'
 import {
   statusFromCode,
   resolveRenamePath,

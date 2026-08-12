@@ -24,8 +24,8 @@ import {
   podUid,
   untoleratedTaints,
   worktreeIdLabels,
-} from '#platform/k8s'
-import type { NodeTaint, PodToleration } from '#platform/k8s'
+} from '#runtime/k8s/substrate'
+import type { NodeTaint, PodToleration } from '#runtime/k8s/substrate'
 import {
   buildProxyIngressNpManifest,
   buildWorktreeEgressNpManifest,
@@ -41,7 +41,7 @@ import {
   pushImageToRegistry,
   registryHost,
   registryReachable,
-} from '#platform/container'
+} from '#runtime/k8s/container'
 import { sharedRoot } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
@@ -175,7 +175,7 @@ export async function runClusterCheck(
   // A nested server whose deferred cluster attach hasn't fired yet fronts an
   // intentionally-asleep (scale-to-zero) vcluster and has no worktrees by
   // construction (worktree create awaits the attach — see
-  // deferred-boot in #platform/k8s). Probing it here would either WAKE it — the
+  // deferred-boot in #runtime/k8s/substrate). Probing it here would either WAKE it — the
   // very thing the deferral exists to prevent — or time out and surface as a
   // spurious "API server unreachable", which flips the web app's cluster gate
   // to the setup screen and blanks the workspace. Report ready without

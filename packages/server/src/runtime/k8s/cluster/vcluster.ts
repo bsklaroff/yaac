@@ -27,7 +27,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   VCLUSTER_API_PORT,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import {
   ACTIVATOR_APP_NAME,
   buildActivatorVclusterRoleBindingManifest,
@@ -35,7 +35,7 @@ import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
 } from './activator'
-import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#platform/container'
+import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#runtime/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import type { VirtualClusterStatus } from '#runtime/contract'

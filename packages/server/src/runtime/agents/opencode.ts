@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podExec } from '#platform/k8s'
+import { podExec } from '#runtime/k8s/substrate'
 
 /**
  * Status markers + first-message lookup for opencode sessions.

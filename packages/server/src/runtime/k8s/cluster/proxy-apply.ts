@@ -14,7 +14,7 @@ import {
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   ROLE_BUILDER,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { credentialsDir, proxyDataHostDir } from '@yaac/shared/project-paths'
 import {
   buildBuilderRoleGuardBindingManifest,

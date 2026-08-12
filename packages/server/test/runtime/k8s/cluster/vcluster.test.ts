@@ -8,7 +8,7 @@ interface K8sObj {
 const parseDocs = (s: string): K8sObj[] =>
   s.split(/^---$/m).map((d) => YAML.parse(d) as K8sObj)
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -19,14 +19,14 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   registryHost: vi.fn(() => 'localhost:5001'),
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
+vi.mock('#runtime/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
 }))
 
@@ -49,17 +49,17 @@ import {
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
   LABEL_VCLUSTER_SESSION_ID,
-} from '#platform/k8s/vcluster-objects'
+} from '#runtime/k8s/substrate/vcluster-objects'
 import { resetClusterCidrCache } from '#runtime/k8s/cluster/cluster-cidrs'
-import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
+import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#runtime/k8s/substrate/pods'
 import {
   execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
-import { imageExists } from '#platform/container/runtime'
+} from '#runtime/k8s/substrate/kubectl'
+import { pushImageToRegistry, registryHasTag } from '#runtime/k8s/container/registry'
+import { imageExists } from '#runtime/k8s/container/runtime'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)

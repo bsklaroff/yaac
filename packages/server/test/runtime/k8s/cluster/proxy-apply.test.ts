@@ -9,7 +9,7 @@ import fs from 'node:fs/promises'
 // and the real netd (which is internal to the folder and covered only here
 // and through cluster setup).
 const mockVapAvailable = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
@@ -33,13 +33,13 @@ vi.mock('node:child_process', () => ({
   }),
 }))
 
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
+vi.mock('#runtime/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(true),
 }))
 
@@ -87,13 +87,13 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
-} from '#platform/k8s/proxy-constants'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '#platform/k8s/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { imageExists } from '#platform/container/runtime'
-import { registryHasTag } from '#platform/container/registry'
+} from '#runtime/k8s/substrate/proxy-constants'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '#runtime/k8s/substrate/pods'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#runtime/k8s/substrate/kubectl'
+import { imageExists } from '#runtime/k8s/container/runtime'
+import { registryHasTag } from '#runtime/k8s/container/registry'
 import { buildImage, failImageBuild, registerImageBuild } from '#runtime/k8s/image-engine'
-import { CA_CERT_PATH } from '#platform/k8s/pod-spec'
+import { CA_CERT_PATH } from '#runtime/k8s/substrate/pod-spec'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'

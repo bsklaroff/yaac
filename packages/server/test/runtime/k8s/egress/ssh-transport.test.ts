@@ -5,7 +5,7 @@ import {
   SSH_AGENT_SOCKET_PATH,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 
 const KNOWN_HOSTS = '/data/projects/demo/known_hosts'
 

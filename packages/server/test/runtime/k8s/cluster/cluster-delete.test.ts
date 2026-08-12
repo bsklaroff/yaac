@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // The two boundaries a delete crosses: the kind/podman subprocess and the
 // TTY prompt. Nothing inside features/cluster is mocked — the confirmation
 // gate runs for real behind the readline fake.
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   execFileAsync: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('node:readline/promises', () => ({
 }))
 
 import { ClusterDeleteError, runClusterDelete } from '#runtime/k8s/cluster'
-import { execFileAsync } from '#platform/k8s/kubectl'
+import { execFileAsync } from '#runtime/k8s/substrate/kubectl'
 
 const mockRun = vi.mocked(execFileAsync)
 const logs: string[] = []

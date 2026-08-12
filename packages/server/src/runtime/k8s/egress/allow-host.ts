@@ -1,4 +1,4 @@
-import { isPrewarmed, listWorktreePods } from '#platform/k8s'
+import { isPrewarmed, listWorktreePods } from '#runtime/k8s/substrate'
 import { proxyClient } from './proxy-client'
 import { addAllowedHostToProjectConfig } from '#store/projects'
 import { notifyWorktreeListChanged } from '#notify'

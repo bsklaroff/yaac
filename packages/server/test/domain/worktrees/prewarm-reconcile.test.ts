@@ -21,7 +21,7 @@ import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 // `claiming` and `inFlight` are the module's shared state, read here to set
 // up a mid-claim / mid-spawn cluster and asserted on afterwards.
 import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/worktrees/prewarm'
-import { LABEL_PREWARMED, type PodInfo } from '#platform/k8s/pods'
+import { LABEL_PREWARMED, type PodInfo } from '#runtime/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#runtime/k8s/view'
 import type { RuntimeHandle } from '#runtime/contract'
 import {

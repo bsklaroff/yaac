@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { createKeyedMutex } from '#platform/keyed-mutex'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 

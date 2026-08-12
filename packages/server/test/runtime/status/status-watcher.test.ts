@@ -6,7 +6,7 @@ import {
   podAgentMode,
   type WatchedWorktree,
 } from '#runtime/status/status-watcher'
-import type { StreamChild } from '#platform/k8s'
+import type { StreamChild } from '#runtime/k8s/substrate'
 import {
   readWorktreeStatus,
   isWorktreeStreamHealthy,
@@ -17,7 +17,7 @@ import {
   worktreeControlStreamSend,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
-import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_TOOL, type PodInfo, worktreeIdLabels } from '#platform/k8s/pods'
+import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_TOOL, type PodInfo, worktreeIdLabels } from '#runtime/k8s/substrate/pods'
 
 class FakeAttachChild implements StreamChild {
   writes: string[] = []

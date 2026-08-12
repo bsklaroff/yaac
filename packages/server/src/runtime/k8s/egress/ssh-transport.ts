@@ -3,7 +3,7 @@ import {
   SSH_AGENT_SOCKET_PATH,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import { formatSshCommand } from '@yaac/shared/git'
 import type { WorkspaceMount } from '#runtime/contract'
 

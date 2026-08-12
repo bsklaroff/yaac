@@ -10,12 +10,12 @@
  * own.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as relayModule from '#platform/k8s/stream-relay'
-import { dialPtyStream, podExec } from '#platform/k8s/stream-relay'
+import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
+import { dialPtyStream, podExec } from '#runtime/k8s/substrate/stream-relay'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { DETACH_GRACE_MS } from '#runtime/terminals/pty-bridge'
 
-vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof relayModule>(),
   podExec: vi.fn(),
   dialPtyStream: vi.fn(),

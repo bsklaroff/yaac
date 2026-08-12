@@ -22,8 +22,8 @@ not.
 
 A sealed folder is always its own module: its barrel is the interface the repo
 has already committed to, so it is the boundary regardless of what surrounds it
-— `platform/` holds both loose files and sealed subfolders, and comes out as
-four modules. Everything else falls back to the shallowest directory under
+— `runtime/` holds both loose files (the contract and the driver accessor) and
+sealed subfolders, and comes out as thirteen modules. Everything else falls back to the shallowest directory under
 `src/` that holds source files directly, which makes pure namespace directories
 transparent: `features/` is not a module, `features/worktrees` is.
 

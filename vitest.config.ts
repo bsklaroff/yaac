@@ -18,8 +18,8 @@ import { defineConfig } from 'vitest/config'
 const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
 const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 // Stubs @kubernetes/client-node, which costs ~2.8s to evaluate in every
-// isolated test file that reaches #platform/k8s — the largest single cost in
-// a unit run. Withheld from the projects whose subject is a k8s client
+// isolated test file that reaches #runtime/k8s/substrate — the largest
+// single cost in a unit run. Withheld from the projects whose subject is a k8s client
 // (k8s/proxy, k8s/netd build real KubeConfigs and informers); api/e2e talk to
 // a real cluster and never load it either.
 const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'

@@ -21,8 +21,8 @@
  *    error rather than as "No changes".
  */
 
-import { podExec } from '#platform/k8s'
-import { createKeyedMutex } from '#platform/keyed-mutex'
+import { podExec } from '#runtime/k8s/substrate'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import type { ChangeStatus, WorktreeChange, WorktreeChanges } from '@yaac/shared/types'
 
 /** Cap the returned diff body so a huge changeset can't blow up the response;

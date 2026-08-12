@@ -29,7 +29,7 @@ import { acpDriver } from './acp-driver'
 import { tuiDriver } from './tui-driver'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
-import type { StreamChild } from '#platform/k8s'
+import type { StreamChild } from '#runtime/k8s/substrate'
 import type { AgentPaneStatus } from './agent-tools'
 
 /** The session a driver is connected to. */

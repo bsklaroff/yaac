@@ -1,7 +1,7 @@
 import net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('#platform/k8s/stream-relay', () => ({
+vi.mock('#runtime/k8s/substrate/stream-relay', () => ({
   relayDial: vi.fn(),
 }))
 
@@ -20,7 +20,7 @@ import {
   isForwardablePort,
 } from '#runtime/k8s/forwarders/port-detector'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
-import type { PodInfo } from '#platform/k8s/pods'
+import type { PodInfo } from '#runtime/k8s/substrate/pods'
 
 const mockGetSessionPorts = vi.mocked(getWorktreePorts)
 

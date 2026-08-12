@@ -7,7 +7,7 @@ import {
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s'
+} from '#runtime/k8s/substrate'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**

@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 /** Real `sh -n` syntax check (the kubectl execFileAsync here is a mock). */
 const runSh = promisify(execFile)
 
-vi.mock('#platform/k8s/kubectl', () => ({
+vi.mock('#runtime/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -18,13 +18,13 @@ vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('#platform/container/registry', () => ({
+vi.mock('#runtime/k8s/container/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('#platform/container/runtime', () => ({
+vi.mock('#runtime/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
 }))
 
@@ -60,9 +60,9 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '#platform/container/registry'
-import { imageExists } from '#platform/container/runtime'
+} from '#runtime/k8s/substrate/kubectl'
+import { pushImageToRegistry, registryHasTag } from '#runtime/k8s/container/registry'
+import { imageExists } from '#runtime/k8s/container/runtime'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const mockApply = vi.mocked(kubectlApply)

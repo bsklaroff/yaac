@@ -1,4 +1,4 @@
-import { RelayExecError, podExec } from '#platform/k8s'
+import { RelayExecError, podExec } from '#runtime/k8s/substrate'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
@@ -6,7 +6,7 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 import type { AgentTool, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
-import { shellEscape } from '#platform/shell'
+import { shellEscape } from '#lib/shell'
 
 // Every in-container `tmux` invocation routes through this prefix so they
 // all reach the same server socket, on the pod's own emptyDir. Nothing
