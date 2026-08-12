@@ -23,7 +23,9 @@
 // The join paths that read these rows alongside a runtime observation
 // (`listActiveWorktrees`, restart, the stopped listing) deliberately live
 // in `#domain/worktrees` next to the verbs they orchestrate, and reach
-// in through this barrel like anything else.
+// in through this barrel like anything else. So does the wire projection
+// they share (`toAgentSessionEntry`): the entry it builds is half row and
+// half live observation, and what this layer speaks is rows.
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/records/.
@@ -37,7 +39,6 @@ export {
   listWorktreeAgentSessions,
   recordedConversationHandles,
   setAgentSessionCapture,
-  toAgentSessionEntry,
   type AgentSessionLinkRow,
   type DiscoveredAgentSession,
 } from './agent-session-store'

@@ -9,6 +9,7 @@ import {
   listWorktreeAgentSessions,
   setAgentSessionCapture,
 } from '#records'
+import { absoluteTranscriptPath } from './agent-session-paths'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from '#store/worktrees'
 import path from 'node:path'
@@ -211,7 +212,7 @@ export async function reconcileWorktreeAgentSessions(
   await Promise.all(links.map(async (l) => {
     if (l.firstPrompt !== undefined) return
     const firstPrompt = await captureFirstPrompt(
-      projectSlug, l.tool, l.agentSessionId, l.transcriptPath, jobName,
+      projectSlug, l.tool, l.agentSessionId, absoluteTranscriptPath(l), jobName,
     )
     if (firstPrompt === undefined) return
     await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, { firstPrompt })

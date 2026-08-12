@@ -176,6 +176,13 @@ export default tseslint.config(
   // schema outright. Later than the base zone on purpose — flat-config rule
   // options replace rather than merge, so this re-states every pattern minus
   // the database ban.
+  //
+  // Rows are the vocabulary here, and nothing else supplies it: a runtime
+  // observation becomes a row only by arriving as a `WorktreeEvent`, how a
+  // row combines with one is a mediator's call, and a column that names a
+  // place on disk holds the store's own portable form (project-relative) —
+  // resolving it takes layout knowledge this layer has no business holding.
+  // So records reaches nothing sideways and nothing above.
   {
     files: ['packages/server/src/records/**/*.ts'],
     rules: {
@@ -186,6 +193,11 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
+            NO_API_OR_MAIN,
+            {
+              regex: '^(#domain|#runtime|#store)(/|$)',
+              message: 'The records layer must not import the store, the runtime, or the mediators above it (docs/layered-server.md).',
+            },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

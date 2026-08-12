@@ -2,10 +2,10 @@ import {
   getProjectAgentSessions,
   getProjectRow,
   getProjectWorktreeRows,
-  toAgentSessionEntry,
   type AgentSessionLinkRow,
   type WorktreeRow,
 } from '#records'
+import { toAgentSessionEntry } from './agent-session-entry'
 import { worktreeRuntime } from '#runtime/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'

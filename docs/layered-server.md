@@ -24,13 +24,18 @@ changed" channel. Anything may emit on `#notify`; only the api layer's
 snapshot hub listens, so a change notification is not a dependency on the
 hub that consumes it.
 
-Two sideways edges are sanctioned and one-way. A runtime driver may read
-the store — it mounts what the store staged, launches with the config and
-credentials the store keeps, and the per-tool transcript readers are store
-code its agents module shares — and the DAG holds because the store never
-reads back. And `records` resolves recorded transcript paths through
-`#store/transcripts`, the one place the project-relative column form is
-turned back into bytes on disk.
+One sideways edge is sanctioned, and it is one-way. A runtime driver may
+read the store — it mounts what the store staged, launches with the config
+and credentials the store keeps, and the per-tool transcript readers are
+store code its agents module shares — and the DAG holds because the store
+never reads back.
+
+`records` reaches nothing sideways at all. A column that names a place on
+disk holds the store's portable form (a transcript path is
+project-relative, so it stays true wherever the data dir sits); resolving
+one against the project directory takes layout knowledge, so it happens a
+layer up, in `absoluteTranscriptPath`. That keeps rows a vocabulary the
+records layer can speak alone.
 
 ## What lives where
 

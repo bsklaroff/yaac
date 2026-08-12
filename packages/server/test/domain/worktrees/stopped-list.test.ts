@@ -24,7 +24,7 @@ import {
   setWorktreeBackground,
   setWorktreeTitle,
 } from '#records/worktree-store'
-import { recordAgentSessions } from '#records/agent-session-store'
+import { listWorktreeAgentSessions, recordAgentSessions } from '#records/agent-session-store'
 import { closeDb } from '#records/client'
 import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { listStoppedWorktrees } from '#domain/worktrees/stopped-list'
@@ -207,9 +207,18 @@ describe('listStoppedWorktrees', () => {
     await fs.utimes(transcript, new Date('2026-01-02'), new Date('2026-01-02'))
     await seedWorktree('demo', 'withlog', { deleted: true })
     // Last-activity now comes from the worktree's conversations, so the
-    // transcript is attached to one rather than to the row.
+    // transcript is attached to one rather than to the row. Recorded in the
+    // column's form, as discovery reports it: an absolute here would be
+    // refused on the way back out, and the listing would still pass by
+    // falling back to the conventional path for the same file — reporting
+    // nothing about whether the recorded path works.
     await recordAgentSessions('demo', 'withlog', [
-      { tool: 'claude', agentSessionId: 'withlog', transcriptPath: transcript, firstPrompt: 'hi' },
+      {
+        tool: 'claude',
+        agentSessionId: 'withlog',
+        transcriptPath: path.join('claude', 'projects', '-workspace', 'withlog.jsonl'),
+        firstPrompt: 'hi',
+      },
     ])
     await seedWorktree('demo', 'nolog', { tool: 'opencode', deleted: true })
 
@@ -227,6 +236,12 @@ describe('listStoppedWorktrees', () => {
     await seedWorktree('demo', 'a', { deleted: true })
 
     expect((await listStoppedWorktrees('demo'))[0]?.prompt).toBe('hello there')
+    // The write door this parse goes out through: the path it read is the
+    // absolute conventional one, and what lands in the column is the portable
+    // form. Nothing else here would notice an absolute — the prompt is
+    // persisted too, so the assertion below answers from the row either way.
+    const [link] = await listWorktreeAgentSessions('demo', 'a')
+    expect(link?.transcriptPath).toBe(path.join('claude', 'projects', '-workspace', 'a.jsonl'))
     // Persisted, so the second listing answers from the row: removing the
     // transcript can't take the prompt away.
     await fs.rm(path.join(worktreesDir, 'a.jsonl'))

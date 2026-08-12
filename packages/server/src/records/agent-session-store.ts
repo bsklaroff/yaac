@@ -2,9 +2,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { agentSessions, worktreeAgentSessions } from './schema'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
-import { resolveProjectPath, toProjectRelative } from '#store/transcripts'
-import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
  * The conversation side of the model: `agent_sessions` (one row per
@@ -20,31 +18,6 @@ import type { AgentMode, AgentSessionEntry, AgentTool } from '@yaac/shared/types
  * restart.
  */
 
-/**
- * One linked conversation as the wire shows it. The single mapper for every
- * surface that serializes a link — the list, the stopped listing, and the
- * agent-sessions route — so `lastActiveAt` can't drift into a second format
- * (tsc cannot catch that: both are `string`).
- */
-export function toAgentSessionEntry(
-  l: AgentSessionLinkRow,
-  live?: { status: 'running' | 'waiting'; waitingSinceMs?: number },
-): AgentSessionEntry {
-  return {
-    agentSessionId: l.agentSessionId,
-    tool: l.tool,
-    mode: l.mode,
-    ordinal: l.ordinal,
-    active: l.active,
-    ...(live !== undefined ? { status: live.status } : {}),
-    ...(live?.waitingSinceMs !== undefined ? { waitingSinceMs: live.waitingSinceMs } : {}),
-    ...(l.firstPrompt !== undefined ? { prompt: l.firstPrompt } : {}),
-    ...(l.lastActiveAt !== undefined
-      ? { lastActiveAt: formatUtcTimestamp(l.lastActiveAt.getTime()) }
-      : {}),
-  }
-}
-
 /** One conversation, as the display paths consume it. */
 export interface AgentSessionRow {
   projectSlug: string
@@ -53,8 +26,10 @@ export interface AgentSessionRow {
   /** Which protocol drives it — see the `mode` column. */
   mode: AgentMode
   createdAt: Date
-  /** Absolute — the column stores it project-relative, and this layer is
-   *  where the two forms meet (see `resolveProjectPath`). */
+  /** Project-relative, exactly as the column holds it. A reader that wants
+   *  bytes on disk resolves it against the project directory, which takes
+   *  the store's layout knowledge and so happens a layer up
+   *  (`absoluteTranscriptPath` in `#domain/worktrees`). */
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
@@ -283,11 +258,6 @@ type LinkedSelect = {
 }
 
 function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
-  // The column is project-relative; every consumer wants an absolute path,
-  // and this is the one projection they all come through.
-  const transcriptPath = r.transcriptPath !== null
-    ? resolveProjectPath(r.projectSlug, r.transcriptPath)
-    : undefined
   return {
     projectSlug: r.projectSlug,
     worktreeId: r.worktreeId,
@@ -300,7 +270,7 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
     firstSeenAt: r.firstSeenAt,
     lastSeenAt: r.lastSeenAt,
     ...(r.paneId !== null ? { paneId: r.paneId } : {}),
-    ...(transcriptPath !== undefined ? { transcriptPath } : {}),
+    ...(r.transcriptPath !== null ? { transcriptPath: r.transcriptPath } : {}),
     ...(r.firstPrompt !== null ? { firstPrompt: r.firstPrompt } : {}),
     ...(r.lastActiveAt !== null ? { lastActiveAt: r.lastActiveAt } : {}),
   }
@@ -425,30 +395,32 @@ export async function getAgentSessionsFor(
 }
 
 
-/** Persist a conversation's captured first message and transcript path. */
+/**
+ * Persist a conversation's captured first message and transcript path.
+ *
+ * `transcriptPath` is project-relative, as in `recordAgentSessions` and as
+ * the column holds it — a caller holding an absolute one converts before it
+ * gets here, which is what keeps "absolute appears nowhere" true for rows
+ * captured on demand. A stray absolute would surface only as a listing with
+ * no prompt and no last-activity, so the read side logs one rather than
+ * resolving it.
+ *
+ * As in `recordAgentSessions`: an unexpressible path is simply absent, and
+ * leaves the column alone rather than clearing what an earlier pass recorded.
+ */
 export async function setAgentSessionCapture(
   projectSlug: string,
   tool: AgentTool,
   agentSessionId: string,
   capture: { firstPrompt?: string; transcriptPath?: string },
 ): Promise<void> {
-  // The last write before the column, and the one place a caller still hands
-  // in an absolute path: the stopped listing resolves a transcript to read it,
-  // then reports what it read. Converting here is what keeps "absolute appears
-  // nowhere" true for rows captured on demand — otherwise every founding-ask
-  // capture would write an absolute back into a column nothing else puts one
-  // in, and only a moved data dir would ever reveal it.
-  //
-  // As in recordAgentSessions: an unexpressible path leaves the column alone
-  // rather than clearing what an earlier pass managed to record.
-  const stored = capture.transcriptPath !== undefined
-    ? toProjectRelative(projectSlug, capture.transcriptPath)
-    : null
   const values = {
     ...(capture.firstPrompt !== undefined
       ? { firstPrompt: capture.firstPrompt.slice(0, MAX_PROMPT_LENGTH) }
       : {}),
-    ...(stored !== null ? { transcriptPath: stored } : {}),
+    ...(capture.transcriptPath !== undefined
+      ? { transcriptPath: capture.transcriptPath }
+      : {}),
   }
   if (Object.keys(values).length === 0) return
   try {

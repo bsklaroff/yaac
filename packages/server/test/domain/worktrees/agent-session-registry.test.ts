@@ -30,6 +30,7 @@ import {
   listWorktreeAgentSessions,
   recordAgentSessions,
 } from '#records/agent-session-store'
+import { absoluteTranscriptPath } from '#domain/worktrees/agent-session-paths'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#records/worktree-store'
 import { sessionStartsLogSize } from '#store/worktrees/session-starts'
@@ -289,7 +290,10 @@ describe('reconcileWorktreeAgentSessions', () => {
     // The handle is the acpd window, not a pane id — that is what the status
     // store keys this conversation's busy/idle by.
     expect(link.paneId).toBe('claude')
-    expect(link.transcriptPath).toBe(path.join(transcripts, 'acp-1.jsonl'))
+    // Recorded in the column's portable form, and resolvable back to the file
+    // the adapter actually wrote — the round trip every reader depends on.
+    expect(link.transcriptPath).toBe(path.join('claude', 'projects', '-workspace', 'acp-1.jsonl'))
+    expect(absoluteTranscriptPath(link)).toBe(path.join(transcripts, 'acp-1.jsonl'))
     expect(link.lastActiveAt).toBeInstanceOf(Date)
   })
 
