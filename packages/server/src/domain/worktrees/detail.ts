@@ -1,5 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import { firstAgentSession } from '#records'
+import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { readGitAuthFailures } from '#store/projects'

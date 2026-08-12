@@ -10,8 +10,8 @@ import {
   MAX_WEB_SESSIONS,
   type TokenEntry,
 } from '#api/http/token-store'
-import { getDb, closeDb } from '#records/client'
-import { tokens as tokensTable } from '#records/schema'
+import { getDb, closeDb } from '#db/client'
+import { tokens as tokensTable } from '#db/schema'
 import { ServerError } from '@yaac/shared/errors'
 
 describe('createTokenStore', () => {

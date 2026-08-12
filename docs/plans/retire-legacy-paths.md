@@ -75,7 +75,7 @@ and their tests — but **not** `worktreeMetaDir`, which the log sweep in
 `domain/worktrees/cleanup.ts` still enumerates, and **not** the log itself,
 which is the live pod→host channel and no part of this.
 
-`adoptProjectDirs` (`records/project-store.ts`) turns a `project.json`
+`adoptProjectDirs` (`db/project-store.ts`) turns a `project.json`
 with no row into a row on every `listProjectRows`. **Not on this list to be
 deleted** — it is deliberately not one-shot, because a project directory can
 appear after any given read (a second yaac on the same data dir, a restored
@@ -204,7 +204,7 @@ is the part worth keeping.
 | `runtime/k8s/substrate/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
 | `runtime/k8s/substrate/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
 | `k8s/proxy/state-files.ts` — why `readJsonEither` takes a legacy path | section 4 |
-| `records/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
+| `db/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
 
 Two neighbours that are **not** cruft and should not be swept with them:
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { getDefaultTool, setDefaultToolChecked } from '#records'
+import { getDefaultTool, setDefaultToolChecked } from '#db'
 
 export const toolApp = new Hono()
   .get('/get', async (c) => c.json({ tool: (await getDefaultTool()) ?? null }))

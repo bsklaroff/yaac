@@ -1,7 +1,7 @@
 # Worktree storage
 
 A yaac worktree is recorded in the `worktrees` table of the server's PGlite
-DB (`packages/server/src/records/schema.ts`), one row per
+DB (`packages/server/src/db/schema.ts`), one row per
 `(projectSlug, worktreeId)`. The cluster stays authoritative for whether a
 worktree is *running*; the row is authoritative for everything else — which
 worktrees have ever existed, their title, base branch, background pin, and
@@ -35,8 +35,8 @@ the id the tool chose — and `worktree_agent_sessions` links the two, so a
 worktree can accumulate conversations over its life and one conversation can be
 resumed into a second worktree. See "Agent worktrees" below.
 
-`records/worktree-store.ts` owns the `worktrees` table and
-`records/agent-session-store.ts` the other two: every read and write
+`db/worktree-store.ts` owns the `worktrees` table and
+`db/agent-session-store.ts` the other two: every read and write
 goes through them, and they are the only writers.
 
 ## Write discipline

@@ -65,7 +65,7 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#runtime/agents'
-import { applyWorktreeEvent } from '#records'
+import { applyWorktreeEvent } from '#db'
 import {
   ensureSessionStartsLog,
   prepareEphemeralMounts,
@@ -445,7 +445,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
  * backwards deletes work that exists in no other copy.
  *
  * - A *resume* keeps it. That checkout predates this create — it is the work
- *   the user came back for — which is also why records puts a failed resume's
+ *   the user came back for — which is also why db puts a failed resume's
  *   row back as the restart found it instead of deleting it.
  * - A *prewarm* keeps it too, for the opposite reason: its row survives
  *   flagged `spare`, and that flag is exactly what the startup sweep collects
@@ -460,7 +460,7 @@ export function failedCreateCollectsCheckout(
 /**
  * Report that a create gave up, so the server can undo what the matching
  * `worktree-created` started. What "undo" means differs by `resume` and is
- * records' to decide (see `apply-worktree-event.ts`); this half knows only
+ * db's to decide (see `apply-worktree-event.ts`); this half knows only
  * that provisioning failed.
  */
 async function reportCreateFailed(

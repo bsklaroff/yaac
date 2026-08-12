@@ -7,11 +7,11 @@ import {
   removeProvisioning,
   updateProvisioningMessage,
 } from './provisioning'
-import { clearWorktreeStopped, findWorktreeRow } from '#records'
+import { clearWorktreeStopped, findWorktreeRow } from '#db'
 import {
   firstAgentSession,
   listActiveAgentSessions,
-} from '#records'
+} from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeCreateResult } from './create'
 import type { AgentTool } from '@yaac/shared/types'

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as recordsModule from '#records'
+import type * as dbModule from '#db'
 
-vi.mock('#records', async (importOriginal) => ({
-  ...(await importOriginal<typeof recordsModule>()),
+vi.mock('#db', async (importOriginal) => ({
+  ...(await importOriginal<typeof dbModule>()),
   applyWorktreeEvent: vi.fn(),
   claimSpareWorktree: vi.fn(),
   restoreSpareWorktree: vi.fn(),
@@ -50,8 +50,8 @@ import { rebranchSpare, retoolSpare } from '#domain/worktrees/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#store/projects/config'
 import { ServerError } from '@yaac/shared/errors'
-import type { WorktreeEvent } from '#records'
-import { applyWorktreeEvent, claimSpareWorktree, restoreSpareWorktree } from '#records'
+import type { WorktreeEvent } from '#db'
+import { applyWorktreeEvent, claimSpareWorktree, restoreSpareWorktree } from '#db'
 import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import type { RuntimeHandle } from '#runtime/contract'
 import type { AgentTool } from '@yaac/shared/types'

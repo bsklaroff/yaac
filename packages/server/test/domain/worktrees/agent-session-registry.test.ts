@@ -20,7 +20,7 @@ vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
 // The shrunk-log tripwire below is a log line and nothing else, so the log
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
-import { closeDb } from '#records/client'
+import { closeDb } from '#db/client'
 import { claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   reconcileAgentSessions,
@@ -29,10 +29,10 @@ import {
 import {
   listWorktreeAgentSessions,
   recordAgentSessions,
-} from '#records/agent-session-store'
+} from '#db/agent-session-store'
 import { absoluteTranscriptPath } from '#domain/worktrees/agent-session-paths'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
-import { recordWorktreeCreated, recordWorktreeLife } from '#records/worktree-store'
+import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { sessionStartsLogSize } from '#store/worktrees/session-starts'
 import { serverLog } from '#log'
 import { listWorktreePods } from '#runtime/k8s/substrate/pods'

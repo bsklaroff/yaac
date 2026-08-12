@@ -1,4 +1,4 @@
-import { getWorktreeRow } from '#records'
+import { getWorktreeRow } from '#db'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 

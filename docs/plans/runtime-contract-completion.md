@@ -4,13 +4,13 @@
 have delivered it for the WORKTREE lifecycle: observation, the pass view,
 scheduling, every mutation, the launch, and the substrate's own home. What
 remains is stages 7–8: dissolve `store` between domain and runtime (7), and
-flip the api zone to domain-and-records-only (8).
+flip the api zone to domain-and-db-only (8).
 
 This plan's goal was that domain and api speak only substrate-neutral
 runtime vocabulary, with every k8s verb, label, and type under
 `runtime/k8s`. Domain is there, and so is every k8s primitive. The endgame
 of stages 7–8 is one mediating layer: everything below domain is either
-rows (`records`) or a contract-fronted driver (`runtime`), over the
+rows (`db`) or a contract-fronted driver (`runtime`), over the
 dependency-free `src/lib`, with no sanctioned sideways edges left in the
 layer diagram and `platform` and `store` gone as layer names.
 
@@ -37,7 +37,7 @@ Three rules, enforced by eslint zones once the stages land:
    and `#runtime/driver` (the accessor). Its imports of `#runtime/status`
    and `#runtime/agents` are unaffected — those are runtime vocabulary,
    not k8s vocabulary. Api is held to a stricter rule than this one:
-   stage 8 bans every value import below domain and records, driver
+   stage 8 bans every value import below domain and db, driver
    included; only type imports of `#runtime/contract` remain legal there.
 3. No type exported from `#runtime/k8s/**` appears in a domain or api
    signature. `PodInfo`, `PodMount`, `TickSnapshot` and `DeltaSource`
@@ -325,7 +325,7 @@ config host-side and never touched the substrate; its tests now mock
 the substrate half now `runtime/k8s/worktrees/launch.ts`, and keeps what
 it always should have:
 the checkout leg and its failure race, config resolution, image and env
-DECISIONS, allowed-host resolution, init windows, records writes, and the
+DECISIONS, allowed-host resolution, init windows, db writes, and the
 retry/rollback policy. `domain/skills/builtin.ts` and
 `domain/worktrees/spawn-script.ts` changed one type import each
 (`PodMount` → contract `WorkspaceMount`). The holdout list is gone.
@@ -485,8 +485,8 @@ file behind — and the miss surfaces as a tsc error, not a lint one.
 
 `store` exists as a sibling layer so that both domain (above) and the
 driver (beside) can read disk, which is why the layer diagram carries a
-sanctioned sideways edge (runtime → store; the records → store edge is
-already gone — records speaks rows alone, and domain resolves the
+sanctioned sideways edge (runtime → store; the db → store edge is
+already gone — db speaks rows alone, and domain resolves the
 project-relative transcript column via `absoluteTranscriptPath`). With the
 contract real, each piece has exactly one natural owner, and dissolving
 the layer deletes the last sideways edge from the diagram. Three moves,
@@ -537,10 +537,10 @@ in increasing order of substance:
   `platform`'s last file because `store/projects` imported it — which
   deletes the `platform` directory outright.
 
-## Stage 8 — flip api to domain and records only
+## Stage 8 — flip api to domain and db only
 
 Stage 4 deferred the api decision; this stage makes it, and makes it
-STRICT: an api file may value-import only `#domain/*`, `#records`, its own
+STRICT: an api file may value-import only `#domain/*`, `#db`, its own
 `#http`/`#routes` internals, `#lib`, and `@yaac/shared` — not
 `#runtime/driver`, not `#runtime/agents` or `#runtime/terminals`
 (`#platform` and `#store` no longer exist by this stage). Type imports of
@@ -599,10 +599,10 @@ wiring starts duplicating for a second driver.
 
 ```
 main       api
-   ↓        ↓   (api: domain and records only)
+   ↓        ↓   (api: domain and db only)
       domain
    ↓        ↓
-records   runtime    records: rows alone
+db        runtime    db: rows alone
                      runtime: the contract, its drivers; k8s sealed inside
 ```
 

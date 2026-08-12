@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { registerProvisioning, runProvisioned } from './provisioning'
 import { createWorktree } from './create'
-import { getDefaultTool } from '#records'
+import { getDefaultTool } from '#db'
 import { AGENT_TOOLS, MODEL_RE, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#log'
 

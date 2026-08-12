@@ -1,5 +1,5 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentSessionLinkRow } from '#records'
+import type { AgentSessionLinkRow } from '#db'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
 /**
@@ -8,9 +8,9 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  * agent-sessions route — so `lastActiveAt` can't drift into a second format
  * (tsc cannot catch that: both are `string`).
  *
- * A mediator rather than a records function, because the entry it builds is
+ * A mediator rather than a db function, because the entry it builds is
  * a join: the row half is recorded, and `live` is what a runtime observed
- * just now. Records speaks rows, and deciding how the two halves combine is
+ * just now. The db layer speaks rows, and deciding how the two halves combine is
  * this layer's job (docs/layered-server.md) — the same reason the join paths
  * that call this one live here.
  */

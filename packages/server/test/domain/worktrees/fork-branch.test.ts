@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-import { closeDb } from '#records/client'
-import { recordWorktreeCreated } from '#records/worktree-store'
+import { closeDb } from '#db/client'
+import { recordWorktreeCreated } from '#db/worktree-store'
 import { worktreeForkBranch } from '#domain/worktrees/fork-branch'
 import { repoDir } from '@yaac/shared/project-paths'
 

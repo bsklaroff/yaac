@@ -2,7 +2,7 @@ import {
   applyWorktreeEvent,
   getWorktreeRow,
   listProjectRows,
-} from '#records'
+} from '#db'
 import {
   deleteLegacyMetaFiles,
   readLegacyMetaDocuments,

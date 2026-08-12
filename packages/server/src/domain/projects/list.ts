@@ -1,4 +1,4 @@
-import { listProjectRows } from '#records'
+import { listProjectRows } from '#db'
 import { worktreeRuntime } from '#runtime/driver'
 
 export interface ProjectListEntry {

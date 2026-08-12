@@ -3,7 +3,7 @@ import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
 import type * as cleanupModule from '#domain/worktrees/cleanup'
 import type * as createModule from '#domain/worktrees/create'
 
-vi.mock('#records/worktree-store', () => ({
+vi.mock('#db/worktree-store', () => ({
   clearWorktreeStopped: vi.fn().mockResolvedValue(undefined),
   findWorktreeRow: vi.fn().mockResolvedValue(undefined),
 }))
@@ -21,7 +21,7 @@ vi.mock('#domain/worktrees/create', async (importOriginal) => ({
 }))
 
 import { restartWorktree } from '#domain/worktrees/restart'
-import { clearWorktreeStopped } from '#records/worktree-store'
+import { clearWorktreeStopped } from '#db/worktree-store'
 import { teardownForRestart } from '#domain/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#domain/worktrees/create'
 import {

@@ -1,5 +1,5 @@
 import { worktreeRuntime } from '#runtime/driver'
-import { findWorktreeRow } from '#records'
+import { findWorktreeRow } from '#db'
 import type { RuntimeHandle } from '#runtime/contract'
 import { ServerError } from '@yaac/shared/errors'
 

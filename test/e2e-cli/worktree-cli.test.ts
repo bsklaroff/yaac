@@ -17,13 +17,13 @@ import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
-} from '@yaac/server/records/worktree-store'
+} from '@yaac/server/db/worktree-store'
 import {
   recordAgentSessions,
   setActiveAgentSessions,
-} from '@yaac/server/records/agent-session-store'
+} from '@yaac/server/db/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
-import { closeDb } from '@yaac/server/records/client'
+import { closeDb } from '@yaac/server/db/client'
 import { firstSnapshot } from '@yaac/test-utils/events-ws'
 
 /**
@@ -492,7 +492,7 @@ describe('with seeded projects', () => {
       await addTestProject(repo)
 
       // The DB has exactly one writer — the running server holds it, and
-      // `.server.lock` is the guard (records/client.ts). Opening it from
+      // `.server.lock` is the guard (db/client.ts). Opening it from
       // this process alongside the server loses every write to the server's
       // own checkpoint, so the server is stopped FIRST, the rows written
       // while nothing else holds the file, our handle closed, and only then

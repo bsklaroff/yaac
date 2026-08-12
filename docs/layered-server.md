@@ -12,8 +12,8 @@ api        routes/, http/, events (the /events snapshot hub)
   ↓
 domain     the mediators: everything that reads rows and drives the
            layers below
-  ↓      ↓       ↓
-records  store  runtime     records: rows; owns the database outright
+ ↓       ↓       ↓
+db       store  runtime     db: rows; owns the database outright
                             store: worktrees/clones/transcripts/config on disk
                             runtime: how agents run (k8s driver today);
                             its substrate is sealed inside it
@@ -34,16 +34,16 @@ and credentials the store keeps, and the per-tool transcript readers are
 store code its agents module shares — and the DAG holds because the store
 never reads back.
 
-`records` reaches nothing sideways at all. A column that names a place on
+`db` reaches nothing sideways at all. A column that names a place on
 disk holds the store's portable form (a transcript path is
 project-relative, so it stays true wherever the data dir sits); resolving
 one against the project directory takes layout knowledge, so it happens a
 layer up, in `absoluteTranscriptPath`. That keeps rows a vocabulary the
-records layer can speak alone.
+db layer can speak alone.
 
 ## What lives where
 
-- **`main/`** — `server-run` (lock, DB open through records' lifecycle,
+- **`main/`** — `server-run` (lock, DB open through `openDb`,
   bind, attach — and the one place the process's runtime is registered),
   `runtime-k8s` + `runtime-k8s-steps` (the k8s `WorktreeRuntime`, assembled
   from the sealed folders; here rather than under `runtime/k8s` because
@@ -64,13 +64,13 @@ records layer can speak alone.
   registry, and the stale reaper), `projects/` (add · detail · list,
   row-backed), `titles/`, `auth/`, `skills/`, and `reconcile.ts` — the
   ordered step list one pass runs.
-- **`records/`** — the worktree, agent-session and project stores,
+- **`db/`** — the worktree, agent-session and project stores,
   preferences, token persistence, `desired-worktrees` (what the reaper
-  judges absence against), records' open/close lifecycle, and the event
+  judges absence against), the database's open/close pair, and the event
   machinery below. The database is its own: `client.ts` (the PGlite
   handle) and `schema.ts` (the drizzle tables) are internal modules here,
   off the barrel, so no other layer can name a table or build a query.
-  What the rest of the server gets is `openRecords`/`closeRecords` and
+  What the rest of the server gets is `openDb`/`closeDb` and
   the row functions; the driver packages are eslint-banned everywhere
   else.
 - **`store/`** — `projects/` (the clone's branches, the two config layers,
@@ -134,17 +134,17 @@ records layer can speak alone.
 
 ## The event door
 
-> Observed facts enter `#records` through exactly one door:
+> Observed facts enter `#db` through exactly one door:
 > `applyWorktreeEvent`. Code that watches the substrate or reads a
 > worktree's disk emits a `WorktreeEvent` — discrete and past-tense — and
 > the handler alone decides which rows it lands in. Intent (a title, a
-> pin, a preference) is written through ordinary records functions; reads
+> pin, a preference) is written through ordinary db functions; reads
 > are free to domain and above.
 
-The per-event row mutators are internal to records, off the barrel, so a
+The per-event row mutators are internal to db, off the barrel, so a
 caller cannot write an observed fact except by saying what happened. The
 disciplines that make re-reporting safe live with the event types
-(`records/events.ts`):
+(`db/events.ts`):
 
 - **Whole sets, never deltas.** `sessions-discovered` carries a worktree's
   full known history; `sessions-active` carries the complete live set, and
@@ -216,7 +216,7 @@ needed the answer, while an unset preference falls back to claude. The
 project list is handed down the same way, so a runtime step never reads a
 row itself.
 
-The reaper reads `desiredWorktrees()` from records at the top of its own
+The reaper reads `desiredWorktrees()` from db at the top of its own
 step, so absence is only ever judged against a set from the same pass, by
 construction. A failed read stands every sweep down — reaping on a guess
 destroys uncommitted work — and the in-flight exemption comes straight

@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#records/client'
+import { closeDb } from '#db/client'
 import {
   _resetPriorStopsForTests,
   applyWorktreeEvent,
-} from '#records/apply-worktree-event'
+} from '#db/apply-worktree-event'
 import {
   getProjectWorktreeRows,
   recordWorktreeCreated,
-} from '#records/worktree-store'
-import { listWorktreeAgentSessions } from '#records/agent-session-store'
+} from '#db/worktree-store'
+import { listWorktreeAgentSessions } from '#db/agent-session-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('applyWorktreeEvent', () => {

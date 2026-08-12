@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as recordsModule from '#records'
+import type * as dbModule from '#db'
 
-vi.mock('#records', async (importOriginal) => ({
-  ...(await importOriginal<typeof recordsModule>()),
+vi.mock('#db', async (importOriginal) => ({
+  ...(await importOriginal<typeof dbModule>()),
   applyWorktreeEvent: vi.fn(),
 }))
 import fs from 'node:fs/promises'
@@ -51,8 +51,8 @@ import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status
 import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
 import { setDataDir, worktreeStateRoots } from '@yaac/shared/project-paths'
-import type { WorktreeEvent } from '#records'
-import { applyWorktreeEvent } from '#records'
+import type { WorktreeEvent } from '#db'
+import { applyWorktreeEvent } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
 import {
   handleFixture,

@@ -1,5 +1,5 @@
 import { resolveProjectPath } from '#store/transcripts'
-import type { AgentSessionLinkRow } from '#records'
+import type { AgentSessionLinkRow } from '#db'
 
 /** What resolving takes: the project the path is recorded against, and the
  *  stored value. Every conversation row satisfies it. */
@@ -13,7 +13,7 @@ type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'transcriptP
  * true wherever the data dir sits — and every reader that opens or stats a
  * transcript wants an absolute path. Turning one into the other needs the
  * disk layout, which is the store's to know and not something a row can
- * answer, so the two forms meet here rather than inside `#records`.
+ * answer, so the two forms meet here rather than inside `#db`.
  *
  * The single door, so a caller cannot forget the project slug or quietly
  * stat a relative path: `resolveProjectPath` refuses (and logs) a stored

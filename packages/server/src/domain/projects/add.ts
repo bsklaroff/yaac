@@ -3,7 +3,7 @@ import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo, isGitAuthError } from '#platform/git'
 import { parseGitRemote, resolveCredentialForUrl } from '#store/projects'
-import { getProjectRow, recordProject } from '#records'
+import { getProjectRow, recordProject } from '#db'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,

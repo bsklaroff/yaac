@@ -1,12 +1,12 @@
 import { worktreeRuntime } from '#runtime/driver'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
-import { listWorktreeRows, type WorktreeRow } from '#records'
+import { listWorktreeRows, type WorktreeRow } from '#db'
 import {
   getAgentSessionsFor,
   setAgentSessionCapture,
   type AgentSessionLinkRow,
-} from '#records'
+} from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { ensureProjectExists } from './list'

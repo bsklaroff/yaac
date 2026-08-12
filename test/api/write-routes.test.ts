@@ -11,8 +11,8 @@ import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getDefaultTool } from '@yaac/server/records/preferences'
-import { closeDb } from '@yaac/server/records/client'
+import { getDefaultTool } from '@yaac/server/db/preferences'
+import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/worktrees/stop'

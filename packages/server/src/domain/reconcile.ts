@@ -48,7 +48,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'legacy-meta-import', triggers: [], run: () => importLegacyMeta() },
     // The stale reaper — first, so counts reflect just-reaped worktrees by
     // the time the prewarm pool runs. It reads what should exist from
-    // records at the top of its pass; the sources here are the ones on
+    // db at the top of its pass; the sources here are the ones on
     // which a worktree may have appeared or gone, plus `status-streams`
     // because in-pod tmux death is not a substrate event — losing a
     // driver connection is the edge after which liveness can no longer be

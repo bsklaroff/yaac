@@ -71,7 +71,7 @@ async function applyEvent(event: WorktreeEvent): Promise<void> {
 /**
  * The stop a resumed worktree's row carried before its create cleared it,
  * keyed by worktree. Read here rather than reported, because it is
- * records' own memory of a death and no observer ever sees it.
+ * db's own memory of a death and no observer ever sees it.
  *
  * There is no third outcome to clear an entry on — a create either fails or
  * does not — so a successful resume leaves one behind until that worktree is
@@ -97,7 +97,7 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     // rather than looking like a worktree that simply had no stop.
     const row = await getWorktreeRow(projectSlug, worktreeId).catch((err: unknown) => {
       serverLog(
-        `[records] ${projectSlug}/${worktreeId}: could not read the prior stop `
+        `[db] ${projectSlug}/${worktreeId}: could not read the prior stop `
         + `(${String(err)}); a failed resume will record a plain stop`,
       )
       return undefined

@@ -5,7 +5,7 @@ import type {
 } from '@yaac/shared/types'
 
 /**
- * What substrate- and disk-observing code tells records it found — the ONE
+ * What substrate- and disk-observing code tells db it found — the ONE
  * door through which observed facts become rows (`applyWorktreeEvent`).
  *
  * Code that watches the substrate or reads a worktree's disk never writes a

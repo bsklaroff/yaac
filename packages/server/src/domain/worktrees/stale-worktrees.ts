@@ -8,7 +8,7 @@ import {
 } from '#runtime/status'
 import { cleanupWorktreeDetached } from './cleanup'
 import { inFlightWorktreeIds } from './provisioning'
-import { applyWorktreeEvent, desiredWorktrees } from '#records'
+import { applyWorktreeEvent, desiredWorktrees } from '#db'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleWorktreeInfo } from '@yaac/shared/types'

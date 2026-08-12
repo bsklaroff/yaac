@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 vi.mock('#domain/worktrees/list', () => ({ listActiveWorktrees: vi.fn() }))
-vi.mock('#records/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
+vi.mock('#db/worktree-store', () => ({ setWorktreeTitle: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 // The one boundary this feature has: every download and every inference is a
 // subprocess. Faking it here lets the summarizer and the pinned llama.cpp
@@ -22,7 +22,7 @@ import { _resetTitleSummarizerForTests } from '#domain/titles/title-summarizer'
 import { LLAMA_CPP_TAG } from '#domain/titles/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { listActiveWorktrees } from '#domain/worktrees/list'
-import { setWorktreeTitle } from '#records/worktree-store'
+import { setWorktreeTitle } from '#db/worktree-store'
 import { execFileAsync } from '#lib/shell'
 import type * as shellModule from '#lib/shell'
 import { serverLog } from '#log'

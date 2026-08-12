@@ -23,10 +23,10 @@ vi.mock('#domain/worktrees/cleanup', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-// The reaper reads the desired set from records at the top of its pass and
+// The reaper reads the desired set from db at the top of its pass and
 // reports a death as an event rather than writing the row — both stubbed,
 // so these tests never open a DB.
-vi.mock('#records', () => ({
+vi.mock('#db', () => ({
   applyWorktreeEvent: vi.fn(),
   desiredWorktrees: vi.fn(),
 }))
@@ -39,9 +39,9 @@ import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#log'
-import { applyWorktreeEvent, desiredWorktrees } from '#records'
+import { applyWorktreeEvent, desiredWorktrees } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
-import type { WorktreeEvent } from '#records'
+import type { WorktreeEvent } from '#db'
 import {
   reconcileStaleWorktrees,
   _clearMissingPodTimersForTests,
@@ -55,14 +55,14 @@ const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
-// The reaper reads what should exist from records and reports a death as
+// The reaper reads what should exist from db and reports a death as
 // an event rather than writing the row — both stubbed above, so what a
 // pass decided is asserted directly.
 const appliedEvents: WorktreeEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'worktree-stopped')
   .map((e) => [e.projectSlug, e.worktreeId, e.cause])
-/** What the reaper's records read answers, plus which creates are in
+/** What the reaper's db read answers, plus which creates are in
  *  flight (registered in the real provisioning registry). */
 interface DesiredSetup {
   live: Array<{ projectSlug: string; worktreeId: string; ran: boolean }>

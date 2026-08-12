@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#records/client'
-import { desiredWorktrees } from '#records/desired-worktrees'
+import { closeDb } from '#db/client'
+import { desiredWorktrees } from '#db/desired-worktrees'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
-} from '#records/worktree-store'
-import { recordAgentSessions } from '#records/agent-session-store'
+} from '#db/worktree-store'
+import { recordAgentSessions } from '#db/agent-session-store'
 
 describe('desiredWorktrees', () => {
   let tmpDir: string

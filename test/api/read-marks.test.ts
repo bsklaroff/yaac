@@ -2,12 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
-import { closeDb } from '@yaac/server/records/client'
+import { closeDb } from '@yaac/server/db/client'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
   listWorktreeRows,
-} from '@yaac/server/records/worktree-store'
+} from '@yaac/server/db/worktree-store'
 
 /**
  * One data dir for the file, not one per test: a fresh dir costs a PGlite
