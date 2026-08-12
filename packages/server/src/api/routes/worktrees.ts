@@ -13,6 +13,7 @@ import {
   resolveWorktreeContainer,
   resolveWorktreeRecord,
   restartWorktree,
+  toAgentSessionEntry,
   worktreeForkBranch,
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
@@ -28,7 +29,6 @@ import {
   recordDeathSeen,
   setWorktreeBackground,
   setWorktreeTitle,
-  toAgentSessionEntry,
 } from '#records'
 import { getDefaultTool } from '#records'
 import { streamProvisioned } from '#routes/provisioned-stream'

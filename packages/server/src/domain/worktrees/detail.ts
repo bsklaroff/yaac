@@ -1,5 +1,6 @@
 import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#records'
+import { absoluteTranscriptPath } from './agent-session-paths'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { readGitAuthFailures } from '#store/projects'
 import { worktreeRuntime } from '#runtime/driver'
@@ -73,5 +74,7 @@ export async function getWorktreePrompt(idOrName: string): Promise<string | unde
   // Fall back to the transcript the conversation recorded, not to a path
   // derived from the worktree id — codex's rollout name is underivable, and
   // the recorded path is the only handle on it.
-  return getAgentSessionFirstMessage(first?.tool ?? match.tool, first?.transcriptPath, match.jobName)
+  return getAgentSessionFirstMessage(
+    first?.tool ?? match.tool, absoluteTranscriptPath(first), match.jobName,
+  )
 }

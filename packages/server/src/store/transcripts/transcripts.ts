@@ -70,11 +70,15 @@ export function toProjectRelative(slug: string, absolute: string): string | null
  * install cannot resolve.
  *
  * The only place the relative form is turned back into bytes on a disk, which
- * is why its callers are worth naming. Two: `toLinkRow` in the record store,
- * which is the single projection every server-side reader comes through (the
- * stopped listing's last-activity stat and the detail route's founding-ask
- * parse both arrive that way), and the discovery sweep, which legitimately
- * works in absolute paths while it stats what it found.
+ * is why its one caller is worth naming: `absoluteTranscriptPath` in
+ * `#domain/worktrees`, the door every reader of a *recorded* path comes
+ * through (the stopped listing's last-activity stat and the detail route's
+ * founding-ask parse both arrive that way).
+ *
+ * Absolute paths exist legitimately elsewhere without coming through here at
+ * all — the discovery sweep builds its own with `sessionTranscriptPath` and
+ * stats what it found, encoding with `toProjectRelative` on the way to a
+ * column. Decoding is what has exactly one door.
  *
  * An absolute stored value is refused outright rather than joined onto the
  * project directory, which would fabricate a path that resolves nowhere. The
