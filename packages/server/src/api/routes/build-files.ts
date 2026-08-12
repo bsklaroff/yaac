@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#store/projects'
+import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
 
 /**
  * Routes over one build dir's support files, mounted twice: under

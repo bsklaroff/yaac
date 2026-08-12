@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
+  allowWorktreeHost,
+  forwardWorktreePort,
   getWorktreeBlockedHosts,
   getWorktreeDetail,
   getWorktreePrompt,
@@ -21,8 +23,7 @@ import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#domain/worktre
 import { worktreeRuntime } from '#runtime/driver'
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
-import { allowWorktreeHost } from '#runtime/k8s/egress'
-import { dismissWorktreePort, forwardWorktreePort } from '#runtime/k8s/forwarders'
+import { dismissWorktreePort } from '#runtime/k8s/forwarders'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
@@ -289,7 +290,7 @@ export const worktreeApp = new Hono()
   .get('/:id/blocked-hosts', async (c) => c.json(await getWorktreeBlockedHosts(c.req.param('id'))))
   // Allow a previously-blocked host (webapp click-to-allow). The proxy prunes
   // the host from its recorded blocked set, so the snapshot we push clears the
-  // badge. Persist/fan-out policy lives in allowWorktreeHost.
+  // badge. Persist/fan-out policy lives in the domain verb.
   .post(
     '/:id/allow-host',
     zv('json', z.object({
@@ -300,19 +301,14 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { host, persist } = c.req.valid('json')
-      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-      await allowWorktreeHost(
-        { worktreeId: target.worktreeId, projectSlug: target.projectSlug },
-        host,
-        { persist: persist ?? false },
-      )
+      await allowWorktreeHost(c.req.param('id'), host, { persist: persist ?? false })
       return c.body(null, 204)
     },
   )
   // Forward a detected-but-unforwarded port (webapp click-to-forward). The
-  // port must be in the worktree's surfaced unforwarded set — forwardWorktreePort
+  // port must be in the worktree's surfaced unforwarded set — the runtime
   // rejects anything else, so the route can't be driven to open an arbitrary
-  // port. Persist/fan-out policy lives in forwardWorktreePort.
+  // port. Persist/fan-out policy lives in the domain verb.
   .post(
     '/:id/forward-port',
     zv('json', z.object({
@@ -321,11 +317,8 @@ export const worktreeApp = new Hono()
     })),
     async (c) => {
       const { containerPort, persist } = c.req.valid('json')
-      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
       const mapping = await forwardWorktreePort(
-        { worktreeId: target.worktreeId, projectSlug: target.projectSlug, jobName: target.jobName },
-        containerPort,
-        { persist: persist ?? false },
+        c.req.param('id'), containerPort, { persist: persist ?? false },
       )
       return c.json(mapping)
     },

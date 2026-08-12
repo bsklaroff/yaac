@@ -1,12 +1,16 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { ProxyClient } from '#runtime/k8s/egress/proxy-client'
 
-const mockListSshEntries = vi.hoisted(() => vi.fn())
-vi.mock('#store/projects/credentials', () => ({
-  listSshEntries: mockListSshEntries,
-}))
-
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
+
+import {
+  configureProxyCredentials,
+  resetProxyCredentials,
+} from '#runtime/k8s/egress/credential-providers'
+
+// The composition root's job in production; installed here directly, which
+// is the same seam rather than a stand-in for it.
+const mockListSshEntries = vi.fn()
 
 /** A ProxyClient with its private `running` flag forced for the test. */
 function client(running: boolean): ProxyClient {
@@ -24,6 +28,11 @@ const sshEntry = {
 describe('ProxyClient.reconcileSshKeys', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    configureProxyCredentials({ listSshEntries: mockListSshEntries })
+  })
+
+  afterEach(() => {
+    resetProxyCredentials()
   })
 
   it('no-ops before the client has attached to a proxy', async () => {
@@ -60,5 +69,58 @@ describe('ProxyClient.reconcileSshKeys', () => {
     const sync = vi.spyOn(c, 'syncSshKeysFromCredentials').mockResolvedValueOnce(undefined)
     await c.reconcileSshKeys()
     expect(sync).toHaveBeenCalledOnce()
+  })
+})
+
+describe('ProxyClient.syncSshKeysFromCredentials', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    configureProxyCredentials({ listSshEntries: mockListSshEntries })
+  })
+
+  afterEach(() => {
+    resetProxyCredentials()
+  })
+
+  it('clears then reloads what the source reports', async () => {
+    const c = client(true)
+    mockListSshEntries.mockResolvedValueOnce([sshEntry])
+    const clear = vi.spyOn(c, 'clearSshKeys').mockResolvedValue(undefined)
+    const upload = vi.spyOn(c, 'uploadSshKey').mockResolvedValue(undefined)
+
+    await c.syncSshKeysFromCredentials()
+
+    expect(clear).toHaveBeenCalledOnce()
+    expect(upload).toHaveBeenCalledExactlyOnceWith(
+      'github.com', '/keys/id_ed25519', 'github.com ssh-ed25519 AAAA',
+    )
+  })
+
+  it('clears when the source reports no remotes — that is an answer', async () => {
+    const c = client(true)
+    mockListSshEntries.mockResolvedValueOnce([])
+    const clear = vi.spyOn(c, 'clearSshKeys').mockResolvedValue(undefined)
+    const upload = vi.spyOn(c, 'uploadSshKey').mockResolvedValue(undefined)
+
+    await c.syncSshKeysFromCredentials()
+
+    expect(clear).toHaveBeenCalledOnce()
+    expect(upload).not.toHaveBeenCalled()
+  })
+
+  it('touches NOTHING when no source is registered', async () => {
+    // The unwired path must be degraded, not destructive: an entrypoint that
+    // composed a runtime without wiring the reader has no opinion about the
+    // agent, and clearing on its behalf wipes identities a live proxy is
+    // using. Reachable since the wiring moved to the composition root.
+    resetProxyCredentials()
+    const c = client(true)
+    const clear = vi.spyOn(c, 'clearSshKeys').mockResolvedValue(undefined)
+    const upload = vi.spyOn(c, 'uploadSshKey').mockResolvedValue(undefined)
+
+    await c.syncSshKeysFromCredentials()
+
+    expect(clear).not.toHaveBeenCalled()
+    expect(upload).not.toHaveBeenCalled()
   })
 })

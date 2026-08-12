@@ -16,10 +16,10 @@
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
-import { resolveProjectConfig } from '#store/projects'
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
+import type { YaacConfig } from '@yaac/shared/types'
 import {
   forgetImageBuild,
   getImageBuild,
@@ -49,9 +49,21 @@ let lastSweepMs = 0
 
 /** Ensure one project's chain is built and its final tag pushed. No-op when
  *  everything is warm (a handful of `podman image inspect`s + one registry
- *  HEAD), so an externally pruned image self-heals within a tick. */
-export async function prewarmProjectImage(projectSlug: string): Promise<void> {
-  const config = await resolveProjectConfig(projectSlug) ?? {}
+ *  HEAD), so an externally pruned image self-heals within a tick.
+ *
+ *  WHICH chain a project should keep warm follows from its config, which is
+ *  the caller's to resolve — the pass hands it down (`ctx.projectConfig`),
+ *  as it does the project list.
+ *
+ *  `config` is required, with no default, deliberately: an omitted one would
+ *  build the all-defaults chain and SUCCEED at it, which for a
+ *  nestedContainers project means a chain missing its nestable layer. A
+ *  caller writing `{}` is making that call; a caller who forgot should not
+ *  compile. */
+export async function prewarmProjectImage(
+  projectSlug: string,
+  config: YaacConfig,
+): Promise<void> {
   const nestedContainers = config.nestedContainers === true || config.virtualCluster === true
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
@@ -71,6 +83,7 @@ export async function prewarmProjectImage(projectSlug: string): Promise<void> {
  */
 export function reconcileImagePrewarm(
   projectSlugs: string[],
+  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
   nowMs: number = Date.now(),
 ): void {
   if (!env.imagePrewarm) return
@@ -81,7 +94,8 @@ export function reconcileImagePrewarm(
   for (const slug of projectSlugs) {
     if (prewarming.has(slug)) continue
     prewarming.add(slug)
-    void prewarmProjectImage(slug)
+    void projectConfig(slug)
+      .then((config) => prewarmProjectImage(slug, config ?? {}))
       .catch((err: unknown) => {
         serverLog(`[image-prewarm] ${slug}: ${String(err)}`)
       })
@@ -122,7 +136,10 @@ export interface ImageRetry {
   infra: boolean
 }
 
-export function retryImageBuild(id: string): ImageRetry {
+export function retryImageBuild(
+  id: string,
+  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+): ImageRetry {
   const entry = getImageBuild(id)
   if (!entry || entry.status === 'running') return { retried: false, infra: false }
   forgetImageBuild(id)
@@ -130,8 +147,9 @@ export function retryImageBuild(id: string): ImageRetry {
   if (entry.projectSlugs.length === 0) return { retried: true, infra: true }
 
   for (const slug of entry.projectSlugs) {
-    void prewarmProjectImage(slug).catch((err: unknown) =>
-      serverLog(`[image-retry] ${slug}: ${String(err)}`))
+    void projectConfig(slug)
+      .then((config) => prewarmProjectImage(slug, config ?? {}))
+      .catch((err: unknown) => serverLog(`[image-retry] ${slug}: ${String(err)}`))
   }
   return { retried: true, infra: false }
 }

@@ -32,8 +32,14 @@ import { rebranchSpare, retoolSpare } from './spare-pool'
 import { claimSpareWorktree, restoreSpareWorktree } from '#db'
 import type { WorktreeCreateResult } from './create'
 import { isTmuxSessionAlive } from '#runtime/status'
-import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
-import { resolveCredentialForUrl, resolveProjectConfig } from '#store/projects'
+import {
+  fetchOrigin,
+  getDefaultBranch,
+  originRemoteUrl,
+  remoteBranchExists,
+  worktreeUpstreamBranch,
+} from '#domain/git'
+import { resolveCredentialForUrl, resolveProjectConfig } from '#domain/projects'
 import { shellEscape } from '#lib/shell'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -300,7 +306,7 @@ export async function tryClaimPrewarmed(
       // the target ref exists and is current. Same e2e fixture escape hatch
       // as the cold path (pre-populated bare repos, no reachable remote).
       if (!testEnv.e2eSkipFetch) {
-        const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim() ?? ''
+        const remoteUrl = await originRemoteUrl(repo)
         await fetchOrigin(repo, await resolveCredentialForUrl(remoteUrl))
       }
       if (!(await remoteBranchExists(repo, rebranchTo))) {

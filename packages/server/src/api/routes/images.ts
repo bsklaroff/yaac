@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
 import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#runtime/k8s/image-engine'
 import { retryImageBuild } from '#runtime/k8s/images'
+import { resolveProjectConfig } from '#domain/projects'
 import { proxyClient } from '#runtime/k8s/egress'
 import { serverLog } from '#log'
 
@@ -30,7 +31,10 @@ export const imageApp = new Hono()
   // the proxy sidecar for an infra build with no project. The route only
   // decides that an unknown id is a 404.
   .post('/builds/:id/retry', (c) => {
-    const { retried, infra } = retryImageBuild(c.req.param('id'))
+    const { retried, infra } = retryImageBuild(
+      c.req.param('id'),
+      (slug) => resolveProjectConfig(slug).then((cfg) => cfg ?? undefined),
+    )
     if (!retried) {
       throw new ServerError('NOT_FOUND', 'no such build to retry')
     }

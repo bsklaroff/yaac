@@ -1,4 +1,4 @@
-import { resolveProjectPath } from '#store/transcripts'
+import { resolveProjectPath } from '#runtime/agents'
 import type { AgentSessionLinkRow } from '#db'
 
 /** What resolving takes: the project the path is recorded against, and the

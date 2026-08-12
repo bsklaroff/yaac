@@ -24,8 +24,9 @@ import type { RuntimeReconcileSteps } from '#runtime/contract'
  * GROUPS sit relative to their own steps, which is the only ordering they
  * have a stake in (see `defaultReconcileSteps`).
  *
- * Nothing here reads a row: which projects exist is a db question, so
- * the pass hands the answer down through `ctx.projectSlugs()`.
+ * Nothing here reads a row or a config file: which projects exist and what
+ * each one's config says are questions the layers above own, so the pass
+ * hands the answers down (`ctx.projectSlugs()`, `ctx.projectConfig`).
  */
 export function k8sReconcileSteps(): RuntimeReconcileSteps {
   return {
@@ -39,7 +40,7 @@ export function k8sReconcileSteps(): RuntimeReconcileSteps {
       // Before the prewarm pool: a spare's create then joins the
       // already-running builds. Throttled internally.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
-        reconcileImagePrewarm(await ctx.projectSlugs())
+        reconcileImagePrewarm(await ctx.projectSlugs(), ctx.projectConfig)
       } },
     ],
     maintenance: [

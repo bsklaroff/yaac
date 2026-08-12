@@ -1,18 +1,19 @@
 # Completing the runtime contract
 
-`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–6
+`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–7
 have delivered it for the WORKTREE lifecycle: observation, the pass view,
-scheduling, every mutation, the launch, and the substrate's own home. What
-remains is stages 7–8: dissolve `store` between domain and runtime (7), and
-flip the api zone to domain-and-db-only (8).
+scheduling, every mutation, the launch, the substrate's own home, and the
+dissolution of `store`. What remains is stage 8: flip the api zone to
+domain-and-db-only.
 
 This plan's goal was that domain and api speak only substrate-neutral
 runtime vocabulary, with every k8s verb, label, and type under
-`runtime/k8s`. Domain is there, and so is every k8s primitive. The endgame
-of stages 7–8 is one mediating layer: everything below domain is either
-rows (`db`) or a contract-fronted driver (`runtime`), over the
-dependency-free `src/lib`, with no sanctioned sideways edges left in the
-layer diagram and `platform` and `store` gone as layer names.
+`runtime/k8s`. Domain is there, and so is every k8s primitive, and the
+layer diagram is down to three strata with no sanctioned sideways edges:
+everything below domain is either rows (`db`) or a contract-fronted driver
+(`runtime`), over the dependency-free `src/lib`. `platform` and `store` are
+gone as layer names. What stage 8 adds is that api reaches only the top of
+that.
 
 Two payoffs justify the work even if a second driver never ships:
 
@@ -315,7 +316,7 @@ worktree verbs. Stage 8 makes that decision and flips the zone.
 **Also moved:** `worktreeForkFallback` left `runtime/k8s/worktrees/changes`
 for `domain/worktrees/fork-branch.ts`. It reads the checkout's own git
 config host-side and never touched the substrate; its tests now mock
-`#platform/git`, the real process boundary.
+`#domain/git`, the real process boundary.
 
 ---
 
@@ -474,76 +475,158 @@ used to be invisible: `git.ts` imports `createKeyedMutex`, and both files
 used to sit in the same `platform` module, so the dependency was
 intra-module. With keyed-mutex in lib and git alone in platform, it is a
 real `platform → lib` edge and the six modules that transitively reach git
-each picked up +1. Stage 7 deletes it along with the directory.
+each picked up +1. Stage 7 deleted it along with the directory.
 
 One trap worth recording: `runtime/k8s/worktrees/changes.ts` contains a NUL
 byte in a string literal, so `grep` treats it as binary and silently skips
 it. A repo-wide specifier sweep has to use `grep -a` or it will leave that
 file behind — and the miss surfaces as a tsc error, not a lint one.
 
-## Stage 7 — dissolve store between domain and runtime
+### Stage 7 is in: store is dissolved
 
-`store` exists as a sibling layer so that both domain (above) and the
-driver (beside) can read disk, which is why the layer diagram carries a
-sanctioned sideways edge (runtime → store; the db → store edge is
-already gone — db speaks rows alone, and domain resolves the
-project-relative transcript column via `absoluteTranscriptPath`). With the
-contract real, each piece has exactly one natural owner, and dissolving
-the layer deletes the last sideways edge from the diagram. Three moves,
-in increasing order of substance:
+`src/store` and `src/platform` are gone. Each subfolder had exactly one
+natural owner once the contract was real, and the layer's whole reason to
+exist — that domain and the driver both needed to read disk — stopped being
+true when the driver stopped reading it.
 
-- **`store/worktrees` → `domain/worktrees`.** Only domain consumes it, and
-  stage 5 already declared checkout staging domain policy. `seed`,
-  `meta-import` and `session-starts` become internals of the sealed
-  folder whose callers (create, cleanup, the agent-session registry) are
-  already there. Purely a move.
-- **`store/transcripts` → `runtime/agents`.** The per-tool readers pair
-  one-to-one with the claude/codex/pi drivers, which already import them;
-  the JSONL scanner and the project-relative path convention go along.
-  Domain's readers (`agent-session-registry`, `stopped-list`) switch to
-  `#runtime/agents` — runtime vocabulary, permitted by rule 2. Purely a
-  move as well.
-- **`store/projects` → the disk half of `domain/projects`**, and this one
-  is design work, because eight runtime files still read it. Their
-  dispositions, by kind:
-  - `git-auth-failures.ts` is proxy data-plane state — a write-through
-    file the egress proxy owns and a replaced proxy re-reads — so it moves
-    INTO `runtime/k8s/egress` beside `blocked-hosts`. Its two readers
-    split the way that pair already did: `observe.ts` stays
-    runtime-internal, and `domain/worktrees/detail` gets a contract read
-    beside `blockedHosts`, which crossed this exact bridge in stage 4.
-  - Config WRITES issued from the driver (`addAllowedHostToProjectConfig`
-    in `egress/allow-host`, `addPortForwardToProjectConfig` in
-    `forwarders/forward-port`) move up: persistence is policy. Both flows
-    are api-triggered and become domain verbs in stage 8 anyway — the
-    mediator persists the config, then calls the runtime verb that
-    effects it (push the allow-list, start the relay). The driver stops
-    writing project config entirely.
-  - Config and credential READS in driver code stop being reads and
-    become arguments, the pattern stage 5 set with `WorkspaceSpec`:
-    the registration payload carries the credential material
-    (`listSshEntries` / `writeProxySecrets` callers), `prepareImage`
-    takes the resolved build-dir/dockerfile paths
-    (`image-engine/image-builder`), and the boot-time forwarder restore
-    and the prewarm sweep (`forwarders/restore`, `images/image-prewarm`)
-    take a domain-provided config accessor through `PassContext`, exactly
-    as `projectSlugs()` and the default tool are handed down today.
+Where the three went:
 
-  Do the first two subfolders first; they are unblocked now. The
-  `store/projects` half should land as its own PR (or several — the
-  argument-threading can go verb by verb), and the `./store/*` `exports`
-  entries repoint with it (only tests and test-utils import them). This
-  is also the PR that moves `git.ts` to `domain/git` — stage 6 left it as
-  `platform`'s last file because `store/projects` imported it — which
-  deletes the `platform` directory outright.
+- **`store/worktrees` → `domain/worktrees`**, as internals. Only domain
+  ever consumed it. The incoming meta reader is `meta-files.ts`, because
+  `meta-import.ts` — its only caller — already had the name.
+- **`store/transcripts` → `runtime/agents`**, as internals. The per-tool
+  readers pair one-to-one with the claude/codex/pi drivers, and the JSONL
+  scanner exists only for those readers. Four names went on the agents
+  barrel for the mediators that record or resolve a path; `scanJsonlForward`
+  and `piSessionLogs` had no caller outside the folder.
+- **`store/projects` → `domain/projects`**, merged with the row half, so a
+  project has one owner: which exist is a row question, what is in one is a
+  disk question, and both are answered in the same sealed folder.
+  `platform/git.ts` became the sealed folder `domain/git/` in the same move
+  — it was `platform`'s last file only because `store/projects` imported it.
+
+**Why git is a folder and not a loose `domain/git.ts`.** As one loose file
+it lands in the same module bucket as `domain/reconcile.ts`, and those two
+sit at opposite ends of the graph: reconcile imports the domain subfolders,
+while the subfolders import git. `pnpm modularity` reported the result
+immediately — a five-module cycle across the whole of domain, NCCD 2.05 →
+2.13 — which is the same trap stage 6 recorded for the driver assembly, and
+the same fix: give the leaf its own module. Sealing it also made the split
+worth having, into `transport.ts` (a credential becomes a runnable git
+invocation) and `repo.ts` (the operations on a clone). `#lib` is not an
+option for it and the lint rule now says so: git wraps `simple-git`.
+
+**The eight driver-side reads, and what each became.** This is the part
+that was design work rather than moving:
+
+- `git-auth-failures.ts` moved INTO `runtime/k8s/egress`, beside
+  `blocked-hosts`: it is proxy data-plane state, a write-through file the
+  proxy owns and a replaced proxy re-reads. Its readers split the way that
+  pair already did — `observe.ts` stays runtime-internal, and
+  `domain/worktrees/detail` takes a `gitAuthFailures` contract read next to
+  `blockedHosts`.
+- The two config WRITES (`allow-host`, `forward-port`) moved up into domain
+  verbs, and the contract carries the live half as `allowHost` / `forwardPort`
+  taking **`fanOutToProject`, not `persist`**. That is the shape worth
+  keeping: the mediator is where "the user asked for this everywhere" turns
+  into "so widen the siblings they already have running", and the runtime
+  should not have to know a config file was involved to be asked for the
+  sweep. Both routes became pure translation in the same change, since the
+  mediator resolves the worktree too.
+- `build-dirs.ts` went to **`#lib/build-dirs`, not through `prepareImage`**
+  as the plan sketched. Its `resolve*` pair carries a
+  migrate-on-first-touch of the pre-build-dir layout with no startup hook,
+  and the prewarm sweep and rebuild route are not on `prepareImage`'s path,
+  so threading would have dropped the migration on some of them. It reads
+  node builtins and `@yaac/shared` only, which is exactly lib's charter,
+  and `#lib/build-context` — the walk that reads one of these dirs — was
+  already the precedent.
+- Proxy secrets are **threaded, and the values ride `SubstrateIntent`**
+  rather than the registration. `resolveProxySecrets` in domain answers what
+  a project's `envSecretProxy` is worth — from the environment today, from
+  rows once they move there — and `WorkspaceRegistration` gains only their
+  NAMES, because the proxy persists the registration to /data and it is
+  safe to persist exactly because it carries secretRefs.
+  `writeProxySecrets` moved into egress as a materializer: putting a
+  resolved map where the proxy looks is delivery, the same file-shaped
+  channel as blocked-hosts running the other way.
+  This was done as threading rather than as a straight move because proxy
+  secrets are moving into the DATABASE, after which the runtime cannot
+  fetch them at all — its zone bans `#db`. Doing it now means that
+  migration changes one domain function and nothing under `src/runtime`.
+- `listSshEntries` became a **composition-time provider**, not an argument
+  and not a `PassContext` accessor, because all three of its readers fire
+  on the proxy's own schedule rather than a caller's — the re-sync inside
+  `attachIfRunning` has no caller to pass anything in, agent identities
+  being memory-only by design. `configureProxyCredentials` is wired at the
+  composition root, beside `setWorktreeRuntime` in `server-run` — NOT inside
+  `k8sWorktreeRuntime()`, which was tried first and is worth recording as a
+  dead end: a factory that reached for the reader made every importer of the
+  driver assembly pull the whole projects barrel in eagerly, and the api test
+  project (which builds the Hono app in-process) then instantiated
+  `domain/projects/add` before a route test's `vi.mock` of it could rebind
+  what the barrel re-exports.
+
+  So only this process wires it, and an entrypoint that composes a runtime
+  without wiring it — the api project does — reaches no proxy and needs
+  none. Unwired therefore answers `undefined` rather than an empty list, and
+  the distinction is load-bearing: `[]` means "this install has no SSH
+  remotes", so an agent holding stale identities should be cleared, while
+  `undefined` means "nobody is here to say", and a caller must change nothing
+  at all. Collapsing the two made the unwired path DESTRUCTIVE rather than
+  degraded — `syncSshKeysFromCredentials` clears before it reloads, so an
+  unwired process reaching a live proxy wiped the identities it was using.
+- The remaining config reads became handed-down accessors, split by what
+  triggers them. `PassContext.projectConfig` (memoized per project per
+  pass, beside `defaultTool` and `projectSlugs`) serves the prewarm sweep;
+  the boot-time forwarder restore and `retryImageBuild` take the same
+  reader as a plain parameter, since neither runs inside a pass. Threading
+  `retryImageBuild` was not optional: it fires a prewarm, so a defaulted
+  config would have silently rebuilt a nested project without its nestable
+  layer.
+
+**The mechanism rule this settled**, since stage 8 will want it: a runtime
+need that is only ever reconcile-step-shaped takes a `PassContext`
+accessor; a need with even one runtime-internal trigger takes a
+composition-time provider. Neither is a license for the runtime to read
+rows or project config itself.
+
+**Enforcement.** The store eslint zone is deleted, `SEALED_FOLDERS` lost
+its store branch and gained `git`, and the db zone no longer has a store to
+refuse. The mirror rule (`#runtime/k8s/**` importable only from
+`runtime/**` and `main/**`) waits for stage 8, which is what empties api's
+use of those barrels.
+
+**Metrics**, with the scope each was measured in — `scripts/modularity.ts`
+answers differently per scope and per edge filter, so a figure quoted
+without both is not checkable:
+
+| scope | metric | before | after |
+|---|---|---|---|
+| `packages/server/src` | modules | 29 | 26 |
+| | CCD | 237 | 196 |
+| | NCCD | 1.99 | 1.88 |
+| whole repo, `--runtime-only` | modules | 38 | 35 |
+| | CCD | 350 | 297 |
+| | NCCD | 2.05 | 1.94 |
+
+No new cycle in either: server scope is a DAG before and after, and the
+whole-repo run keeps exactly the cycles it had (the frontend's, and — off
+`--runtime-only` — the pre-existing server↔shared one). The CCD drop is what
+dissolving a layer should look like: every module that reached domain through
+the store now reaches one fewer module to get the same answer.
+
+Server-scope propagation cost went 28.2% → 29.0%, which is the one number
+that did not improve and is worth not hiding: PC is normalized by module
+count, so removing three modules from the scope raises it slightly even as
+the absolute reach falls. The `--runtime-only` run holds flat at 24.2%.
 
 ## Stage 8 — flip api to domain and db only
 
 Stage 4 deferred the api decision; this stage makes it, and makes it
 STRICT: an api file may value-import only `#domain/*`, `#db`, its own
 `#http`/`#routes` internals, `#lib`, and `@yaac/shared` — not
-`#runtime/driver`, not `#runtime/agents` or `#runtime/terminals`
-(`#platform` and `#store` no longer exist by this stage). Type imports of
+`#runtime/driver`, not `#runtime/agents` or `#runtime/terminals`. Type imports of
 `#runtime/contract` stay legal (it is import-free vocabulary, and domain
 signatures already speak it).
 
@@ -560,17 +643,16 @@ The migrations, enumerated from today's imports:
 
 - `routes/worktrees.ts`: its `worktreeRuntime()` calls, `typeInitialPrompt`,
   the PTY verbs (`createShellWindow`, `killWindowTerminal`,
-  `listWorktreeTerminals`), `allowWorktreeHost` and the port-forward pair
-  become `domain/worktrees` verbs. The terminal and prompt façades are
-  thin by design; allow-host and forward-port are the stage-7 verbs that
-  persist config and then effect it.
+  `listWorktreeTerminals`) and `dismissWorktreePort` become
+  `domain/worktrees` verbs. The terminal and prompt façades are thin by
+  design; allow-host and forward-port already crossed in stage 7.
 - `routes/auth.ts`: the proxy client and the credentials store move behind
   `domain/auth`, which already fronts half of this surface.
-- `routes/projects.ts`, `routes/config.ts`, `routes/build-files.ts`: the
-  `#store/projects` reads/writes become `domain/projects` calls (stage 7
-  moves the code; this stage moves the callers), `remoteBranchExists` is
-  already legal once stage 7 lands git at `#domain/git`, and rebuild/push
-  land as domain verbs over the stage-5 image verbs.
+- `routes/projects.ts`, `routes/config.ts`, `routes/build-files.ts`: these
+  already call `#domain/projects` and `#domain/git` after stage 7 — what is
+  left is turning the config reads/writes they issue directly into real
+  domain verbs, and landing rebuild/push as domain verbs over the stage-5
+  image verbs.
 - `routes/images.ts` and `events.ts`: the image-build feed
   (`listImageBuilds`, `getImageBuildLog`, `dismissImageBuild`,
   `retryImageBuild`) is the one genuinely new surface. It goes ON the
@@ -595,7 +677,7 @@ classes, deferred boot arming, relay invalidation) behind
 so leaving convergence k8s-aware breaks no rule; do this only if the
 wiring starts duplicating for a second driver.
 
-## The layer diagram, after stages 7–8
+## The layer diagram, after stage 8
 
 ```
 main       api
@@ -606,11 +688,12 @@ db        runtime    db: rows alone
                      runtime: the contract, its drivers; k8s sealed inside
 ```
 
-Three strata, no sanctioned sideways edges, with `#lib` (dependency-free
-vocabulary and host primitives) below everything and `#log`/`#notify` as
-the arrow-exempt outbound channels. `platform` and `store` are gone as
-layer names; `docs/layered-server.md` is rewritten at each stage so it
-keeps describing the present tense.
+Three strata with no sanctioned sideways edges, `#lib` (dependency-free
+vocabulary and host primitives) below everything, and `#log`/`#notify` as
+the arrow-exempt outbound channels. Stage 7 got the strata; what stage 8
+adds is the arrow from api landing only on the top one.
+`docs/layered-server.md` is rewritten at each stage so it keeps describing
+the present tense.
 
 ## Deliberately out of scope
 

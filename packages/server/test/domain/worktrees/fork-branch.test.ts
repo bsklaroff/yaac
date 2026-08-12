@@ -10,8 +10,8 @@ import { repoDir } from '@yaac/shared/project-paths'
 // git read is what lets these tests assert the ORDER of the two, which is
 // the whole point of the module — and it is the process boundary, so the
 // fallback itself runs for real.
-vi.mock('#platform/git', () => ({ worktreeUpstreamBranch: vi.fn() }))
-import { worktreeUpstreamBranch } from '#platform/git'
+vi.mock('#domain/git', () => ({ worktreeUpstreamBranch: vi.fn() }))
+import { worktreeUpstreamBranch } from '#domain/git'
 const fallback = vi.mocked(worktreeUpstreamBranch)
 
 describe('worktreeForkBranch', () => {

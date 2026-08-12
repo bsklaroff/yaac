@@ -33,7 +33,7 @@ import {
   proxyClient,
   registerWorkspace,
   resolveProxyImageTag,
-  syncProxySecrets,
+  writeProxySecrets,
   workspaceSshTransport,
 } from '#runtime/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#runtime/k8s/images'
@@ -211,16 +211,17 @@ export async function prepareWorkspaceSubstrate(
   // URL) with the proxy. GitHub / Claude / Codex auth is handled
   // dynamically by the proxy from the mounted credentials dir — no
   // per-workspace rule is needed for those. envSecretProxy rules reference
-  // their values by name; the values land in the proxy-secrets credentials
-  // file FIRST so the registration's secretRefs resolve from the proxy's
-  // first request onward.
-  await syncProxySecrets(config)
+  // their values by name; the values (resolved by the caller, which owns
+  // where they come from) land in the proxy-secrets file FIRST so the
+  // registration's secretRefs resolve from the proxy's first request onward.
+  await writeProxySecrets(intent.proxySecrets)
   await registerWorkspace({
     workspaceId,
     projectSlug,
     tool: intent.tool,
     config,
     remoteUrl: intent.remoteUrl,
+    proxySecretNames: Object.keys(intent.proxySecrets),
   })
 
   // vcluster kubeconfig: wait for the syncer to publish it (the cold start

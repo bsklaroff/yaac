@@ -25,7 +25,7 @@ import {
   kubectlWithRetry,
 } from '#runtime/k8s/substrate'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#runtime/k8s/container'
-import { listSshEntries } from '#store/projects'
+import { proxySshEntries } from './credential-providers'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 
@@ -69,20 +69,26 @@ export interface UpstreamRedirect {
  * Each entry maps an env var name to a SecretProxyRule that describes how to
  * inject the secret (as a header or body parameter).
  *
- * Rules carry the env var name as a `secretRef`, never the value — the
- * proxy resolves it per request from the proxy-secrets credentials file
- * (see `collectProxySecrets`), so registrations stay secret-free and a
- * value updated on disk applies to live worktrees immediately.
+ * Rules carry the env var name as a `secretRef`, never the value — the proxy
+ * resolves it per request from the proxy-secrets file, so registrations stay
+ * secret-free and a value updated on disk applies to live worktrees
+ * immediately.
+ *
+ * `availableNames` is the subset that has a value behind it, resolved by the
+ * caller (see `WorkspaceRegistration.proxySecretNames`). A rule for a name
+ * with nothing behind it would inject an empty header, so those are skipped
+ * and said out loud.
  */
 export function buildRulesFromConfig(
   envSecretProxy: Record<string, SecretProxyRule>,
-  env: Record<string, string | undefined>,
+  availableNames: readonly string[],
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
+  const available = new Set(availableNames)
 
   for (const [envVar, rule] of Object.entries(envSecretProxy)) {
-    if (!env[envVar]) {
-      console.warn(`Warning: ${envVar} is not set in the environment, skipping proxy rule`)
+    if (!available.has(envVar)) {
+      console.warn(`Warning: ${envVar} has no value available, skipping proxy rule`)
       continue
     }
 
@@ -108,24 +114,6 @@ export function buildRulesFromConfig(
   }
 
   return rules
-}
-
-/**
- * Collect the envSecretProxy values that are present in `env`, keyed by
- * env var name — the entries `buildRulesFromConfig`'s secretRefs resolve
- * against. Written to the proxy-secrets credentials file before each
- * registration.
- */
-export function collectProxySecrets(
-  envSecretProxy: Record<string, SecretProxyRule>,
-  env: Record<string, string | undefined>,
-): Record<string, string> {
-  const secrets: Record<string, string> = {}
-  for (const envVar of Object.keys(envSecretProxy)) {
-    const value = env[envVar]
-    if (value) secrets[envVar] = value
-  }
-  return secrets
 }
 
 /**
@@ -531,7 +519,12 @@ export class ProxyClient {
    */
   async syncSshKeysFromCredentials(): Promise<void> {
     if (!this.running) return
-    const entries = await listSshEntries()
+    const entries = await proxySshEntries()
+    // No source registered: change NOTHING. Clearing first and reloading from
+    // an empty answer would wipe the identities a live proxy is using, which
+    // is destructive rather than degraded — and an unwired entrypoint is
+    // saying it has no opinion, not that there are no keys.
+    if (entries === undefined) return
     await this.clearSshKeys()
     for (const entry of entries) {
       try {
@@ -557,8 +550,8 @@ export class ProxyClient {
    */
   async reconcileSshKeys(): Promise<void> {
     if (!this.running) return
-    const entries = await listSshEntries()
-    if (entries.length === 0) return
+    const entries = await proxySshEntries()
+    if (!entries?.length) return
     if ((await this.listAgentKeys()).length > 0) return
     await this.syncSshKeysFromCredentials()
   }

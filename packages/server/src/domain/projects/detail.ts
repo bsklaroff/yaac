@@ -1,7 +1,7 @@
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow } from '#db'
 import { worktreeRuntime } from '#runtime/driver'
-import { loadProjectConfig } from '#store/projects'
+import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 

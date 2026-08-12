@@ -7,7 +7,7 @@ import http from 'node:http'
 import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/platform/git'
+import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorktreePods, type PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
 import {
   createYaacTestEnv,

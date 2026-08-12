@@ -1,7 +1,8 @@
-import simpleGit from 'simple-git'
+import { originRemoteUrl } from '#domain/git'
 import { worktreeRuntime } from '#runtime/driver'
 import { repoDir } from '@yaac/shared/project-paths'
-import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#store/projects'
+import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
+import { resolveProxySecrets } from './proxy-secrets'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#lib/shell'
 import {
@@ -40,7 +41,7 @@ export async function retoolSpare(
   model?: string,
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
+  const remoteUrl = await originRemoteUrl(repoDir(spare.projectSlug))
   // pi's launch command embeds its provider's default model, so a retool to pi
   // needs the stored provider (from the single pi.json credential).
   const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
@@ -51,6 +52,7 @@ export async function retoolSpare(
     tool,
     config,
     remoteUrl,
+    proxySecretNames: Object.keys(resolveProxySecrets(config)),
   })
   // Written to tolerate having already run, so the dial retries stay on:
   // by the time a claim gets here any throw reaps the spare, and a blip on

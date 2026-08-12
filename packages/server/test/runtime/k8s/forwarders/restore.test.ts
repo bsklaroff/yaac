@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { YaacConfig } from '@yaac/shared/types'
 
 vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
@@ -7,10 +8,6 @@ vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
     listWorktreePods: vi.fn(),
   }
 })
-
-vi.mock('#store/projects/config', () => ({
-  resolveProjectConfig: vi.fn(),
-}))
 
 vi.mock('#runtime/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn(),
@@ -23,13 +20,13 @@ vi.mock('#runtime/k8s/forwarders/port-forwarders', () => ({
 
 import { listWorktreePods, type PodInfo } from '#runtime/k8s/substrate/pods'
 import type * as podsModule from '#runtime/k8s/substrate/pods'
-import { resolveProjectConfig } from '#store/projects/config'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { hasWorktreeForwarders, provisionWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'
 import { restoreAllWorktreeForwarders } from '#runtime/k8s/forwarders/restore'
 
 const mockListPods = vi.mocked(listWorktreePods)
-const mockResolveConfig = vi.mocked(resolveProjectConfig)
+// The reader the caller supplies — main, once, as the server attaches.
+const mockResolveConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
 const mockHasForwarders = vi.mocked(hasWorktreeForwarders)
 const mockProvision = vi.mocked(provisionWorktreeForwarders)
@@ -67,7 +64,7 @@ describe('restoreAllWorktreeForwarders', () => {
       pod({ jobName: 'yaac-proj-sess2', worktreeId: 'sess2' }),
     ])
 
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders(mockResolveConfig)
 
     expect(mockProvision).toHaveBeenCalledTimes(2)
     expect(mockProvision).toHaveBeenCalledWith(
@@ -82,7 +79,7 @@ describe('restoreAllWorktreeForwarders', () => {
     mockListPods.mockResolvedValue([
       pod({ running: false, phase: 'Failed' }),
     ])
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders(mockResolveConfig)
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
@@ -92,27 +89,27 @@ describe('restoreAllWorktreeForwarders', () => {
       pod({ projectSlug: '' }),
       pod({ jobName: '' }),
     ])
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders(mockResolveConfig)
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('skips pods with a dead tmux session', async () => {
     mockTmuxAlive.mockResolvedValue(false)
     mockListPods.mockResolvedValue([pod()])
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders(mockResolveConfig)
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('skips pods whose forwarders are already registered', async () => {
     mockHasForwarders.mockReturnValue(true)
     mockListPods.mockResolvedValue([pod()])
-    await restoreAllWorktreeForwarders()
+    await restoreAllWorktreeForwarders(mockResolveConfig)
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
   it('continues when listWorktreePods throws', async () => {
     mockListPods.mockRejectedValue(new Error('cluster offline'))
-    await expect(restoreAllWorktreeForwarders()).resolves.toBeUndefined()
+    await expect(restoreAllWorktreeForwarders(mockResolveConfig)).resolves.toBeUndefined()
     expect(mockProvision).not.toHaveBeenCalled()
   })
 
@@ -125,7 +122,7 @@ describe('restoreAllWorktreeForwarders', () => {
       .mockRejectedValueOnce(new Error('first failed'))
       .mockResolvedValueOnce([])
 
-    await expect(restoreAllWorktreeForwarders()).resolves.toBeUndefined()
+    await expect(restoreAllWorktreeForwarders(mockResolveConfig)).resolves.toBeUndefined()
     expect(mockProvision).toHaveBeenCalledTimes(2)
   })
 })

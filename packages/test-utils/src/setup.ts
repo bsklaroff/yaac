@@ -8,7 +8,7 @@ import simpleGit from 'simple-git'
 // install root. Not a storage path — tests that write pick a tier helper.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
-import { cloneRepo } from '@yaac/server/platform/git'
+import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/runtime/k8s/container/runtime'
 import {
   dataDirHash,

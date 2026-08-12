@@ -1,8 +1,12 @@
 import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeSnapshot } from '#runtime/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
-import { readAcpFirstPrompt } from '#runtime/agents'
-import { sessionTranscriptPath, toProjectRelative, transcriptLastActiveMs } from '#store/transcripts'
+import {
+  readAcpFirstPrompt,
+  sessionTranscriptPath,
+  toProjectRelative,
+  transcriptLastActiveMs,
+} from '#runtime/agents'
 import {
   applyWorktreeEvent,
   getWorktreeRow,
@@ -11,7 +15,7 @@ import {
 } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { captureFirstPrompt } from './prompt-capture'
-import { readSessionStarts, type SessionStartSighting } from '#store/worktrees'
+import { readSessionStarts, type SessionStartSighting } from './session-starts'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
@@ -32,7 +36,7 @@ import type { AgentMode, AgentTool } from '@yaac/shared/types'
  * is currently alive.
  *
  * For `tui`, history comes from the in-pod hook's session-starts log
- * (`#store/worktrees`), folded into the worktree's rows and read back from
+ * (`./session-starts`), folded into the worktree's rows and read back from
  * them; neither source can answer alone: a recorded handle outlives the pane
  * that wrote it (a `/clear` leaves the previous session's handle in place
  * only until the pane is rewritten, and a pane that simply exited leaves a

@@ -2,7 +2,6 @@ import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
-import { readGitAuthFailures } from '#store/projects'
 import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeHandle, VirtualClusterStatus } from '#runtime/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
@@ -37,7 +36,7 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
     ? await runtime.blockedHosts(match.workspaceId)
     : []
   const gitAuthFailures = match.projectSlug
-    ? await readGitAuthFailures(match.projectSlug)
+    ? await runtime.gitAuthFailures(match.projectSlug)
     : []
   // Best-effort: detail must render even when the lookup hiccups (it is one
   // extra runtime read; null for a worktree with no nested cluster).

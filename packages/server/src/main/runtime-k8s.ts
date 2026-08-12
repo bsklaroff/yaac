@@ -16,14 +16,20 @@ import {
   salvageWorkspaceImages,
 } from '#runtime/k8s/worktrees'
 import {
+  allowWorktreeHost,
   drainPendingSpawns,
   proxyClient,
   readBlockedHosts,
+  readGitAuthFailures,
   registerWorkspace,
 } from '#runtime/k8s/egress'
 import { getVclusterStatus } from '#runtime/k8s/cluster'
 import { prepareWorkspaceImage } from '#runtime/k8s/images'
-import { adoptWorktreeForwarders } from '#runtime/k8s/forwarders'
+import {
+  adoptWorktreeForwarders,
+  forwardWorktreePort,
+  getUnforwardedPorts,
+} from '#runtime/k8s/forwarders'
 import { createRuntimeSnapshot } from '#runtime/k8s/view'
 import { podExec, waitForJobPodReady, waitForStreamd } from '#runtime/k8s/substrate'
 import { ensureContainerRuntime } from '#runtime/k8s/container'
@@ -56,7 +62,11 @@ export function k8sWorktreeRuntime(): WorktreeRuntime {
     reconcileSteps: () => k8sReconcileSteps(),
 
     blockedHosts: (workspaceId) => readBlockedHosts(workspaceId),
+    gitAuthFailures: (projectSlug) => readGitAuthFailures(projectSlug),
+    unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
     virtualClusterStatus: (workspaceId) => getVclusterStatus(workspaceId),
+    allowHost: (target, host, opts) => allowWorktreeHost(target, host, opts),
+    forwardPort: (target, port, opts) => forwardWorktreePort(target, port, opts),
 
     exec: (jobName, cmd, opts) => podExec(jobName, cmd, opts),
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),

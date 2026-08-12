@@ -8,7 +8,7 @@ import {
   readLegacyMetaDocuments,
   setAsideUnreadableMeta,
   type LegacyWorktreeMeta,
-} from '#store/worktrees'
+} from './meta-files'
 import { serverLog } from '#log'
 
 /**

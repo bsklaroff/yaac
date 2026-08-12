@@ -5,15 +5,22 @@ import { z } from 'zod'
 import {
   addProject,
   assertProjectExists,
+  getProjectBranches,
   getProjectDetail,
   listProjects,
+  readProjectConfigRaw,
+  readProjectDockerfile,
+  removeProjectConfig,
   resolveProjectConfigWithSource,
+  setProjectReferenceBranch,
+  writeProjectConfig,
+  writeProjectDockerfile,
 } from '#domain/projects'
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
-import { getProjectBranches, readProjectConfigRaw, readProjectDockerfile, removeProjectConfig, resolveProjectBuildDir, setProjectReferenceBranch, writeProjectConfig, writeProjectDockerfile } from '#store/projects'
+import { resolveProjectBuildDir } from '#lib/build-dirs'
 import { pushImageShared, rebuildProjectImage } from '#runtime/k8s/images'
-import { remoteBranchExists } from '#platform/git'
+import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'

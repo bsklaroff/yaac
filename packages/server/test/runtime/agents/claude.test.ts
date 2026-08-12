@@ -9,7 +9,7 @@ import {
   ensureClaudeHooks,
   getFirstUserMessage,
 } from '#runtime/agents/claude'
-import { seedClaudeSettings } from '#store/worktrees/seed'
+import { seedClaudeSettings } from '#domain/worktrees/seed'
 
 // Title fixtures below reproduce states observed against a live Claude
 // Code session inside a session pod: a running turn animates a Braille

@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import simpleGit from 'simple-git'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { reserveAvailablePort } from '#lib/port'
 import type { ReservedPort } from '#lib/port'
@@ -36,9 +35,8 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#store/projects'
+import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
-import { writeKnownHostsFile } from '#platform/git'
 import { getGitUserConfig } from '@yaac/shared/git'
 import {
   loadToolAuthEntry,
@@ -49,7 +47,15 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
+import {
+  addWorktree,
+  fetchOrigin,
+  getDefaultBranch,
+  isGitAuthError,
+  originRemoteUrl,
+  remoteBranchExists,
+  writeKnownHostsFile,
+} from '#domain/git'
 import { serverLog } from '#log'
 import {
   acpAdapterFor,
@@ -66,13 +72,9 @@ import {
   type InitWindow,
 } from '#runtime/agents'
 import { applyWorktreeEvent } from '#db'
-import {
-  ensureSessionStartsLog,
-  prepareEphemeralMounts,
-  seedClaudeJson,
-  seedClaudeSettings,
-  sessionStartsLogSize,
-} from '#store/worktrees'
+import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
+import { resolveProxySecrets } from './proxy-secrets'
+import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#domain/skills'
 import { deleteWorktreeState } from './cleanup'
 import {
@@ -524,7 +526,7 @@ export async function createWorktree(
 
   // Resolve the git credential (HTTPS token or SSH key) for this project's
   // remote URL and parse the remote so we know the scheme and host.
-  const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim()
+  const remoteUrl = await originRemoteUrl(repo)
   if (!remoteUrl) {
     throw new ServerError('VALIDATION', 'could not determine remote URL for this project.')
   }
@@ -779,6 +781,7 @@ export async function createWorktree(
     remoteUrl,
     nestedContainers,
     virtualCluster,
+    proxySecrets: resolveProxySecrets(config),
     onProgress: (m) => emit(m, options),
   })
   substrateTask.catch(() => { /* awaited at the join */ })
@@ -986,14 +989,10 @@ export async function createWorktree(
     }
   }
 
-  // Add placeholder values for proxied secrets so tools detect them
-  if (config.envSecretProxy) {
-    for (const name of Object.keys(config.envSecretProxy)) {
-      // eslint-disable-next-line no-process-env -- user-configured secret proxy; name comes from project config, not a fixed yaac var
-      if (process.env[name]) {
-        env.push(`${name}=placeholder`)
-      }
-    }
+  // Add placeholder values for proxied secrets so tools detect them. Same
+  // question the egress path is handed the answer to, so it is asked once.
+  for (const name of Object.keys(resolveProxySecrets(config))) {
+    env.push(`${name}=placeholder`)
   }
 
   // Add placeholder env vars so no tool prompts for login inside the

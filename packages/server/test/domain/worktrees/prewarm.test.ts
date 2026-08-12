@@ -22,14 +22,17 @@ vi.mock('#domain/worktrees/cleanup', () => ({
 vi.mock('#runtime/status/liveness', () => ({
   isTmuxSessionAlive: vi.fn(),
 }))
-vi.mock('#platform/git', () => ({
+vi.mock('#domain/git', () => ({
   fetchOrigin: vi.fn(),
   getDefaultBranch: vi.fn(),
+  // The value simple-git's mock used to answer for this, now that the
+  // `get-url origin` read has a verb of its own.
+  originRemoteUrl: vi.fn().mockResolvedValue('https://example.com/p.git'),
   remoteBranchExists: vi.fn(),
   worktreeUpstreamBranch: vi.fn(),
 }))
-vi.mock('#store/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
-vi.mock('#store/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
+vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
+vi.mock('#domain/projects/credentials', () => ({ resolveCredentialForUrl: vi.fn() }))
 vi.mock('simple-git', () => ({
   default: vi.fn(() => ({
     remote: vi.fn().mockResolvedValue('https://example.com/p.git\n'),
@@ -47,8 +50,8 @@ import {
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { rebranchSpare, retoolSpare } from '#domain/worktrees/spare-pool'
-import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
-import { resolveProjectConfig } from '#store/projects/config'
+import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#domain/git'
+import { resolveProjectConfig } from '#domain/projects/config'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#db'
 import { applyWorktreeEvent, claimSpareWorktree, restoreSpareWorktree } from '#db'

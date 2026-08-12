@@ -285,6 +285,7 @@ async function runPass(
     snapshot: () => snapshotFixture(),
     defaultTool: () => Promise.resolve(opts.defaultTool),
     projectSlugs: () => Promise.resolve(opts.projectSlugs ?? []),
+    projectConfig: () => Promise.resolve(undefined),
   }
   for (const step of defaultReconcileSteps()) {
     if (!resync && !step.triggers.some((t) => ctx.triggers.has(t))) continue
@@ -462,6 +463,7 @@ describe('defaultReconcileSteps', () => {
       snapshot: () => snapshotFixture(),
       defaultTool: () => Promise.reject(new Error('db is gone')),
       projectSlugs: () => Promise.resolve([]),
+      projectConfig: () => Promise.resolve(undefined),
     }
     await expect(pool.run(ctx)).rejects.toThrow('db is gone')
     expect(reconcilePrewarmPool).not.toHaveBeenCalled()

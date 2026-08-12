@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRulesFromConfig, collectProxySecrets } from '#runtime/k8s/egress/proxy-client'
+import { buildRulesFromConfig } from '#runtime/k8s/egress/proxy-client'
 
 describe('buildRulesFromConfig', () => {
   it('defaults to an authorization header with Bearer prefix when no header/prefix specified', () => {
@@ -9,7 +9,7 @@ describe('buildRulesFromConfig', () => {
           hosts: ['api.github.com'],
         },
       },
-      { GITHUB_TOKEN: 'ghp_test' },
+      ['GITHUB_TOKEN'],
     )
     expect(rules).toHaveLength(1)
     expect(rules[0]).toEqual({
@@ -24,7 +24,7 @@ describe('buildRulesFromConfig', () => {
   it('never embeds the secret value in the rule', () => {
     const rules = buildRulesFromConfig(
       { MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' } },
-      { MY_KEY: 'super-secret' },
+      ['MY_KEY'],
     )
     expect(JSON.stringify(rules)).not.toContain('super-secret')
   })
@@ -37,7 +37,7 @@ describe('buildRulesFromConfig', () => {
           header: 'x-api-key',
         },
       },
-      { ANTHROPIC_API_KEY: 'sk-ant-test' },
+      ['ANTHROPIC_API_KEY'],
     )
     expect(rules).toHaveLength(1)
     expect(rules[0]).toEqual({
@@ -56,7 +56,7 @@ describe('buildRulesFromConfig', () => {
           prefix: 'Token ',
         },
       },
-      { MY_TOKEN: 'abc' },
+      ['MY_TOKEN'],
     )
     expect(rules[0].injections[0].prefix).toBe('Token ')
     expect(rules[0].injections[0].secretRef).toBe('MY_TOKEN')
@@ -71,7 +71,7 @@ describe('buildRulesFromConfig', () => {
           bodyParam: 'client_id',
         },
       },
-      { GITHUB_CLIENT_ID: 'my-client-id' },
+      ['GITHUB_CLIENT_ID'],
     )
     expect(rules).toHaveLength(1)
     expect(rules[0]).toEqual({
@@ -89,14 +89,14 @@ describe('buildRulesFromConfig', () => {
           prefix: 'Basic ',
         },
       },
-      { MY_TOKEN: 'secret123' },
+      ['MY_TOKEN'],
     )
     expect(rules[0].injections).toEqual([
       { action: 'set_header', name: 'authorization', secretRef: 'MY_TOKEN', prefix: 'Basic ' },
     ])
   })
 
-  it('skips env vars that are not set', () => {
+  it('skips a configured name the caller resolved no value for', () => {
     const warns: string[] = []
     const origWarn = console.warn
     console.warn = (msg: string) => warns.push(msg)
@@ -108,12 +108,12 @@ describe('buildRulesFromConfig', () => {
           header: 'authorization',
         },
       },
-      {},
+      [],
     )
 
     console.warn = origWarn
     expect(rules).toHaveLength(0)
-    expect(warns[0]).toContain('MISSING_TOKEN is not set')
+    expect(warns[0]).toContain('MISSING_TOKEN has no value available')
   })
 
   it('handles multiple env vars and hosts', () => {
@@ -127,10 +127,7 @@ describe('buildRulesFromConfig', () => {
           header: 'x-api-key',
         },
       },
-      {
-        GITHUB_TOKEN: 'ghp_test',
-        ANTHROPIC_API_KEY: 'sk-ant-test',
-      },
+      ['GITHUB_TOKEN', 'ANTHROPIC_API_KEY'],
     )
     expect(rules).toHaveLength(3) // 2 for github + 1 for anthropic
   })
@@ -144,7 +141,7 @@ describe('buildRulesFromConfig', () => {
           bodyParam: 'client_secret',
         },
       },
-      { GOOGLE_CLIENT_SECRET: 'secret' },
+      ['GOOGLE_CLIENT_SECRET'],
     )
     expect(rules[0].pathPattern).toBe('/token')
   })
@@ -157,7 +154,7 @@ describe('buildRulesFromConfig', () => {
           header: 'x-api-key',
         },
       },
-      { MY_KEY: 'val' },
+      ['MY_KEY'],
     )
     expect(rules[0].pathPattern).toBe('/*')
   })
@@ -176,10 +173,7 @@ describe('buildRulesFromConfig', () => {
           bodyParam: 'client_secret',
         },
       },
-      {
-        GITHUB_CLIENT_ID: 'my-id',
-        GITHUB_CLIENT_SECRET: 'my-secret',
-      },
+      ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'],
     )
     expect(rules).toHaveLength(2)
     expect(rules[0].injections[0]).toEqual({
@@ -188,22 +182,5 @@ describe('buildRulesFromConfig', () => {
     expect(rules[1].injections[0]).toEqual({
       action: 'replace_body_param', name: 'client_secret', secretRef: 'GITHUB_CLIENT_SECRET',
     })
-  })
-})
-
-describe('collectProxySecrets', () => {
-  it('returns the values for env vars that are set', () => {
-    const secrets = collectProxySecrets(
-      {
-        GITHUB_TOKEN: { hosts: ['api.github.com'] },
-        MISSING_TOKEN: { hosts: ['api.example.com'] },
-      },
-      { GITHUB_TOKEN: 'ghp_test', UNRELATED: 'nope' },
-    )
-    expect(secrets).toEqual({ GITHUB_TOKEN: 'ghp_test' })
-  })
-
-  it('returns an empty object when nothing resolves', () => {
-    expect(collectProxySecrets({ A: { hosts: ['x.com'] } }, {})).toEqual({})
   })
 })

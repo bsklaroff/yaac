@@ -1,4 +1,4 @@
-import { saveCredentials } from '#store/projects'
+import { saveCredentials } from '#domain/projects'
 import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,

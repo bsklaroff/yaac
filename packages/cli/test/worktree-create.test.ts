@@ -36,6 +36,8 @@ vi.mock('node:fs/promises', () => ({
   },
 }))
 
+// Kept for the `addConfig` calls on the checkout; the `get-url origin` read
+// this used to answer now goes through `originRemoteUrl` on #domain/git.
 vi.mock('simple-git', () => ({
   default: vi.fn(() => ({
     remote: vi.fn().mockResolvedValue('https://github.com/example/repo.git'),
@@ -170,13 +172,13 @@ vi.mock('@yaac/shared/project-paths', () => ({
   PACKAGE_ROOT: '/tmp/yaac-package',
 }))
 
-vi.mock('@yaac/server/store/projects/config', () => ({
+vi.mock('@yaac/server/domain/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
   resolveEphemeralModulesPaths: () => [],
   ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 } satisfies Partial<typeof projectConfigModule>))
 
-vi.mock('@yaac/server/store/projects/credentials', () => ({
+vi.mock('@yaac/server/domain/projects/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
@@ -189,8 +191,13 @@ vi.mock('@yaac/server/store/projects/credentials', () => ({
     return { scheme: 'ssh', host: m[1], path }
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
-  writeProxySecrets: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof credentialsModule>))
+
+// The proxy-secrets write-through, at the process boundary: the create runs
+// for real, and what the proxy would read is not this test's subject.
+vi.mock('@yaac/server/runtime/k8s/egress/proxy-secrets', () => ({
+  writeProxySecrets: vi.fn().mockResolvedValue(undefined),
+}))
 
 vi.mock('@yaac/shared/tool-auth', () => ({
   loadToolAuthEntry: vi.fn().mockResolvedValue(null),
@@ -202,10 +209,13 @@ vi.mock('@yaac/shared/tool-auth', () => ({
   PLACEHOLDER_GH_TOKEN: 'test-placeholder-gh-token',
 }))
 
-vi.mock('@yaac/server/platform/git', () => ({
+vi.mock('@yaac/server/domain/git', () => ({
   addWorktree: vi.fn().mockResolvedValue(undefined),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
+  // The value simple-git's mock above used to answer for this, now that the
+  // `get-url origin` read has a verb of its own.
+  originRemoteUrl: vi.fn().mockResolvedValue('https://github.com/example/repo.git'),
   remoteBranchExists: vi.fn().mockResolvedValue(true),
   writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof gitModule>))
@@ -291,13 +301,12 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/run
 import { containerExec } from '@yaac/server/runtime/k8s/substrate/exec'
 import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
 import { proxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
-import { resolveProjectConfig } from '@yaac/server/store/projects/config'
-import simpleGit from 'simple-git'
-import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/store/projects/credentials'
+import { resolveProjectConfig } from '@yaac/server/domain/projects/config'
+import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/domain/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
-import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
+import { addWorktree, getDefaultBranch, fetchOrigin, originRemoteUrl, remoteBranchExists } from '@yaac/server/domain/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/port'
 import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/runtime/k8s/substrate/stream-relay'
 import type * as streamRelayModule from '@yaac/server/runtime/k8s/substrate/stream-relay'
@@ -417,6 +426,7 @@ describe('createWorktree', () => {
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
+    vi.mocked(originRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
     vi.mocked(remoteBranchExists).mockResolvedValue(true)
     vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     mockLoadToolAuth.mockResolvedValue(null)
@@ -839,10 +849,7 @@ describe('createWorktree', () => {
     // SSH-scheme remote: ncat CONNECTs to the sentinel address that netd
     // redirects to the proxy tunnel listener, carrying no proxy-auth — so
     // identity is the source pod IP (not a leakable bearer credential).
-    vi.mocked(simpleGit).mockReturnValue({
-      remote: vi.fn().mockResolvedValue('git@github.com:example/repo.git'),
-      addConfig: vi.fn().mockResolvedValue(undefined),
-    } as never)
+    vi.mocked(originRemoteUrl).mockResolvedValue('git@github.com:example/repo.git')
     vi.mocked(loadKnownHostsEntryForHost).mockResolvedValue('github.com ssh-ed25519 AAAAC3')
 
     await createWorktree('demo', { tool: 'claude', worktreeId: 'abcd1234' })
@@ -879,9 +886,7 @@ describe('createWorktree', () => {
   })
 
   it('does not seed GH_TOKEN for a non-GitHub HTTPS remote', async () => {
-    vi.mocked(simpleGit).mockReturnValue({
-      remote: vi.fn().mockResolvedValue('https://gitlab.com/example/repo.git'),
-    } as never)
+    vi.mocked(originRemoteUrl).mockResolvedValue('https://gitlab.com/example/repo.git')
 
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
@@ -1228,6 +1233,7 @@ describe('retoolSpare', () => {
     vi.resetAllMocks()
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
+    vi.mocked(originRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
     installRuntime()
   })
 
@@ -1332,9 +1338,9 @@ import type * as buildCoordinatorModule from '@yaac/server/runtime/k8s/images/bu
 import type * as kubectlModule from '@yaac/server/runtime/k8s/substrate/kubectl'
 import type * as execModule from '@yaac/server/runtime/k8s/substrate/exec'
 import type * as portModule from '@yaac/server/lib/port'
-import type * as projectConfigModule from '@yaac/server/store/projects/config'
-import type * as credentialsModule from '@yaac/server/store/projects/credentials'
-import type * as gitModule from '@yaac/server/platform/git'
+import type * as projectConfigModule from '@yaac/server/domain/projects/config'
+import type * as credentialsModule from '@yaac/server/domain/projects/credentials'
+import type * as gitModule from '@yaac/server/domain/git'
 import type * as portForwardersModule from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/db/worktree-store'
 import type * as agentStoreModule from '@yaac/server/db/agent-session-store'

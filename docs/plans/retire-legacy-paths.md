@@ -24,7 +24,7 @@ anyone whose on-disk file is still in the old shape.
 
 | site | what it does |
 |---|---|
-| `normalizeLegacyPattern` — `store/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
+| `normalizeLegacyPattern` — `domain/projects/credentials.ts`, mirrored in `k8s/proxy/proxy.ts` | rewrites pre-host-axis git credential patterns (`*` → `github.com/*`, `owner/repo` → `github.com/owner/repo`). Deleting it makes a still-bare entry fail `validatePattern` and get dropped, so git auth stops for that repo with no error |
 | `removeLegacyCodexHook` — `runtime/agents/codex.ts`, called from `createWorktree` | strips the pre-managed-hook SessionStart entry from a project's mounted `~/.codex/hooks.json`. Left there, it re-triggers Codex's `/hooks` trust prompt every session |
 
 Both become ordinary one-shots the moment something rewrites what they read:
@@ -35,7 +35,7 @@ either is deleted rather than converted — otherwise the failure is silent.
 
 ## 2. On-disk migrations
 
-`migrateLegacyDockerfile` (`store/projects/build-dirs.ts`) renames
+`migrateLegacyDockerfile` (`lib/build-dirs.ts`) renames
 `config/Dockerfile.yaac` into the project build dir on first touch, through
 `resolveProjectBuildDir` / `resolveUserBuildDir`. Self-healing, but only for a
 project whose build dir has actually been resolved — a project that has never
@@ -44,7 +44,7 @@ this silently ignores it.
 
 `importLegacyMeta` (`domain/worktrees/meta-import.ts`, run as the
 `legacy-meta-import` reconcile step, reading through
-`store/worktrees/meta-import.ts`) folds the per-worktree metadata documents an
+`domain/worktrees/meta-files.ts`) folds the per-worktree metadata documents an
 older yaac kept at `projects/<slug>/meta/<worktreeId>.json` into rows, then
 deletes them. One-shot per server life, and idempotent because everything it
 writes goes through `applyWorktreeEvent` — so a run that dies half way is
@@ -173,7 +173,7 @@ once nobody is upgrading across that gap.
 | site | what it does |
 |---|---|
 | `warnAboutUnimportedLegacyData` — `main/legacy-data-check.ts` | stats the four retired JSON stores at startup and warns, naming each unread file |
-| the refused-absolute `serverLog` in `resolveProjectPath` — `store/transcripts/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
+| the refused-absolute `serverLog` in `resolveProjectPath` — `runtime/agents/transcripts.ts` | logs a stored path this build will not resolve. Also catches a writer that bypassed the encoder, which is a bug in any version — so this one is worth keeping past the rest |
 
 ## 6. Prose that outlives what it describes
 

@@ -51,7 +51,7 @@ exactly one chokepoint, and domain verbs already are it.
 - Observed facts enter db through one door (`applyWorktreeEvent`), and
   the substrate has no users in it. So principals annotate **intent**, never
   observation — the event union, the runtime contract, and everything under
-  `src/runtime`/`src/store`/`src/lib` stay user-free.
+  `src/runtime`/`src/lib` stay user-free.
 - There is no transcript-serving endpoint today: history reaches a client
   only over `/acp/attach` (running worktrees only); TUI history is tmux
   scrollback in the pod. The durable records exist on disk
@@ -159,7 +159,7 @@ Two moves, not one:
   owner-keyed) make a pod mount only its owner's agent state, and put each
   transcript under its owner by construction — which is also what keeps
   "whose log is this" a path fact for the sharing feature. The
-  `#store/transcripts` locators and the project-relative path convention
+  `#runtime/agents` transcript locators and the project-relative path convention
   gain the segment; the phase-3 migration backfills existing dirs to the
   built-in owner.
 
@@ -206,7 +206,7 @@ worktree uses; under ownership it writes back only to its owner's bundle.
   `GET /worktree/:id/agent-session/:sid/transcript` serving recorded
   conversations for running *or stopped* worktrees — ACP sessions via
   `readAcpLog` (route + barrel export; render-ready `AcpEvent[]`), tui-mode
-  sessions via per-tool readers in `#store/transcripts` (claude JSONL
+  sessions via per-tool readers in `#runtime/agents` (claude JSONL
   first; codex/pi later; opencode leaves no host record — v1 shows its
   first-prompt metadata only).
 - Write routes call `authorize` via their domain verbs; the PTY/ACP attach
@@ -382,7 +382,7 @@ cannot be enforced on top of them.
   worktree's own `modules/<id>` slot; then owner-key the store root.
 - **`cacheVolumes` keys are unvalidated → host path traversal.** The key is
   taken from project config and only the *value* is checked for
-  absoluteness (`store/projects/config.ts`); a key of `../../../.credentials`
+  absoluteness (`domain/projects/config.ts`); a key of `../../../.credentials`
   flows into `path.join` and is `mkdir`'d and mounted RW into the pod.
   Validate the key (`/^[A-Za-z0-9._-]{1,64}$/`) now; owner-key the dirs
   under tenancy.

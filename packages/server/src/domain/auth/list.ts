@@ -1,4 +1,4 @@
-import { listEntries } from '#store/projects'
+import { listEntries } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import type {
   AgentTool,

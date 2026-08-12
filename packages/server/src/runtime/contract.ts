@@ -216,6 +216,30 @@ export interface WorkspaceRegistration {
   config: YaacConfig
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
+  /**
+   * Which of the config's proxied env-var secrets actually have a value —
+   * NAMES only, never values.
+   *
+   * The runtime cannot answer this itself: where a secret's value comes
+   * from is the caller's (the process environment today, rows once they
+   * move there), and a rule for a name with nothing behind it would inject
+   * an empty header. Values reach the egress path by their own route
+   * (`SubstrateIntent.proxySecrets`), which is what keeps a registration
+   * safe to persist.
+   */
+  proxySecretNames: string[]
+}
+
+/**
+ * One SSH remote the egress path can act as. The private key stays a PATH:
+ * key bytes are read at upload time and never held, which is also why an
+ * agent identity does not survive a proxy replacement.
+ */
+export interface SshCredentialEntry {
+  pattern: string
+  host: string
+  privateKeyPath: string
+  knownHostsEntry: string
 }
 
 /**
@@ -292,6 +316,21 @@ export interface SubstrateIntent {
   remoteUrl: string
   nestedContainers: boolean
   virtualCluster: boolean
+  /**
+   * The config's proxied env-var secrets, resolved to values, for the
+   * runtime to put where its egress path resolves them from.
+   *
+   * Values, unlike everything else here, so it is worth saying why they are
+   * on the intent rather than on `WorkspaceRegistration`: the registration
+   * is persisted by the egress path and reloaded after a replacement, and
+   * stays safe to persist only because it carries `secretRef` NAMES. An
+   * intent is in-process and lives exactly as long as the create.
+   *
+   * The caller resolves them because the caller owns where they come from —
+   * the server's own environment today, and a row once they move into the
+   * database. Empty for a project that proxies none.
+   */
+  proxySecrets: Record<string, string>
   onProgress?: (message: string) => void
 }
 
@@ -410,6 +449,19 @@ export interface PassContext {
    *  the same reason: it is a row question, so a runtime step is handed the
    *  answer instead of reading db itself. */
   projectSlugs: () => Promise<string[]>
+  /**
+   * One project's resolved config, memoized per project for the pass.
+   *
+   * Handed down for the same reason as the two above: which config applies
+   * to a project is answered from disk by the layers that own it, and a
+   * runtime step that read it itself would be reaching sideways. Steps use
+   * it to decide what a project's upkeep should look like — which image
+   * chain to keep warm, which ports a restored forwarder should carry.
+   *
+   * `undefined` means the project has no config, which is the ordinary case
+   * and reads as "all defaults" — never as a failure.
+   */
+  projectConfig: (projectSlug: string) => Promise<YaacConfig | undefined>
 }
 
 /**
@@ -466,8 +518,50 @@ export interface WorktreeRuntime {
   /** Which hosts this workspace has been denied. Empty for a workspace the
    *  runtime mediates no egress for. */
   blockedHosts(workspaceId: string): Promise<string[]>
+  /** Git credentials the egress path saw an upstream reject for this
+   *  project — expired or revoked, and project-wide because the credential
+   *  is. Empty for a runtime that injects none. */
+  gitAuthFailures(projectSlug: string): Promise<GitAuthFailure[]>
+  /** Ports this workspace is listening on that nothing reaches yet — the
+   *  set `forwardPort` will accept, so a caller can refuse an ineligible
+   *  one before doing anything durable about it. `forwardPort` re-checks
+   *  regardless: this answers a question, it does not reserve anything. */
+  unforwardedPorts(workspaceId: string): Promise<number[]>
   /** The workspace's nested cluster, or `null` when it runs none. */
   virtualClusterStatus(workspaceId: string): Promise<VirtualClusterStatus | null>
+
+  /**
+   * Widen one running workspace's egress to reach `host`, live.
+   *
+   * Live only: nothing here outlives the workspace, so a caller that wants
+   * every FUTURE workspace to reach the host persists that itself first
+   * (persistence is policy) and asks for the fan-out, which widens the
+   * project's other running workspaces to match. A workspace the runtime
+   * has no egress registration for rejects when it is the named target and
+   * is skipped when it is only a sibling — the fan-out is best-effort by
+   * construction.
+   */
+  allowHost(
+    target: { workspaceId: string; projectSlug: string },
+    host: string,
+    opts: { fanOutToProject: boolean },
+  ): Promise<void>
+  /**
+   * Forward one running workspace's container port, live, and answer with
+   * the mapping that reaches it.
+   *
+   * Only a port the runtime currently reports as an unforwarded listener
+   * may be named — a caller cannot drive this to open an arbitrary one.
+   * `fanOutToProject` carries the same meaning as on `allowHost`, and a
+   * sibling that fails is logged rather than raised: it may have nothing
+   * listening there yet, which is indistinguishable from a config-declared
+   * forward waiting for its server to boot.
+   */
+  forwardPort(
+    target: { workspaceId: string; projectSlug: string; jobName: string },
+    containerPort: number,
+    opts: { fanOutToProject: boolean },
+  ): Promise<PortMapping>
 
   /**
    * Run a shell command inside a workspace and collect its output.

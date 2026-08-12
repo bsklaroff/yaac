@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/platform/git'
+import { cloneRepo } from '@yaac/server/domain/git'
 import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,

@@ -12,14 +12,21 @@
 // Every path in here is fail-closed by design — an unregistered worktree
 // reaches nothing — so the interface is deliberately narrow: callers
 // register a worktree, widen it, or read what it was denied. The rule
-// builder, the secret collector and the redirect parser stay internal so a
-// caller cannot assemble a half-registration of its own.
+// builder and the redirect parser stay internal so a caller cannot assemble
+// a half-registration of its own.
+//
+// Secrets travel in one direction only: a registration names them, and the
+// values arrive already resolved (`writeProxySecrets`) because where a
+// secret comes from is never the runtime's question. SSH identities are the
+// same question read the other way round, which is why the reader for those
+// is composed in (`configureProxyCredentials`) rather than imported.
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/egress/.
 
 export { allowWorktreeHost } from './allow-host'
 export { readBlockedHosts } from './blocked-hosts'
+export { readAllGitAuthFailures, readGitAuthFailures } from './git-auth-failures'
 export {
   ProxyClient,
   drainPendingSpawns,
@@ -30,9 +37,10 @@ export {
 export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export { reconcileProxySshKeys } from './proxy-reconcile'
 export { workspaceSshTransport } from './ssh-transport'
+export { buildWorktreeRegistration, registerWorkspace } from './proxy-registration'
+export { writeProxySecrets } from './proxy-secrets'
 export {
-  buildWorktreeRegistration,
-  registerWorkspace,
-  syncProxySecrets,
-} from './proxy-registration'
+  configureProxyCredentials,
+  type ProxyCredentialSources,
+} from './credential-providers'
 export { reconcileVclusterAttribution } from './vcluster-attribution'

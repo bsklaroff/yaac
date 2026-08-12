@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|db|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|store/(projects|transcripts|worktrees)|http)/.',
+  regex: '^#(domain/(auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
@@ -178,8 +178,8 @@ export default tseslint.config(
   // Rows are the vocabulary here, and nothing else supplies it: a runtime
   // observation becomes a row only by arriving as a `WorktreeEvent`, how a
   // row combines with one is a mediator's call, and a column that names a
-  // place on disk holds the store's own portable form (project-relative) —
-  // resolving it takes layout knowledge this layer has no business holding.
+  // place on disk holds a portable form (project-relative) — resolving it
+  // takes layout knowledge this layer has no business holding.
   // So db reaches nothing sideways and nothing above.
   {
     files: ['packages/server/src/db/**/*.ts'],
@@ -193,8 +193,8 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_API_OR_MAIN,
             {
-              regex: '^(#domain|#runtime|#store)(/|$)',
-              message: 'The db layer must not import the store, the runtime, or the mediators above it (docs/layered-server.md).',
+              regex: '^(#domain|#runtime)(/|$)',
+              message: 'The db layer must not import the runtime or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -247,35 +247,6 @@ export default tseslint.config(
     },
   },
 
-  // The store layer: worktrees, clones, transcripts and config on disk
-  // (docs/layered-server.md). Pure disk mechanics — it never reads
-  // rows, never touches the substrate, and never imports the mediators or
-  // the runtime above it.
-  {
-    files: ['packages/server/src/store/**/*.ts'],
-    rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          paths: UNTIERED_DATA_DIR,
-          patterns: [
-            RELATIVE_PARENT,
-            SEALED_FOLDERS,
-            NO_DATABASE_DIRECT,
-            NO_API_OR_MAIN,
-            {
-              regex: '^(#db|#domain|#runtime)(/|$)',
-              message: 'The store layer must not import db, the runtime, or the mediators above it (docs/layered-server.md).',
-            },
-            {
-              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
-            },
-          ],
-        },
-      ],
-    },
-  },
 
   // The runtime layer: how agents run (docs/layered-server.md). It
   // never reads rows — an observed fact leaves as a `WorktreeEvent` from a
@@ -306,9 +277,10 @@ export default tseslint.config(
     },
   },
 
-  // The domain layer: the mediators. They read db, drive the store
-  // and the runtime, and apply what those report — but never reach up into
-  // the api surface or the composition root.
+  // The domain layer: the mediators. They read db, drive the runtime, own
+  // what a project and a worktree keep on disk, and apply what the runtime
+  // reports — but never reach up into the api surface or the composition
+  // root.
   {
     files: ['packages/server/src/domain/**/*.ts'],
     rules: {
