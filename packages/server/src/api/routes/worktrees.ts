@@ -29,8 +29,8 @@ import {
   recordDeathSeen,
   setWorktreeBackground,
   setWorktreeTitle,
-} from '#records'
-import { getDefaultTool } from '#records'
+} from '#db'
+import { getDefaultTool } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
 import { MODEL_RE } from '@yaac/shared/types'

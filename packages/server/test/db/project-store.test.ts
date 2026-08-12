@@ -3,13 +3,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
-import { closeDb } from '#records/client'
+import { closeDb } from '#db/client'
 import {
   deleteProjectRow,
   getProjectRow,
   listProjectRows,
   recordProject,
-} from '#records/project-store'
+} from '#db/project-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
 describe('recordProject', () => {

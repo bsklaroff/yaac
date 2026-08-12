@@ -5,7 +5,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
 import { authAgentHub, refreshPlanUsage } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeRecords, openRecords } from '#records'
+import { closeDb, openDb } from '#db'
 import { EventHub } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
 import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
@@ -361,7 +361,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // in-memory set. A failure here means tokens would silently not persist,
   // so fail the start rather than run half-alive.
   try {
-    await openRecords()
+    await openDb()
     tokens.restoreTokens(await loadTokens())
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
@@ -438,7 +438,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Bounded like server.close(): a wedged close must not block lock
     // removal (WAL replay bounds any damage).
     await Promise.race([
-      closeRecords().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
+      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopServer's 3s

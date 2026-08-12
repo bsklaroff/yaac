@@ -1,5 +1,5 @@
-// The public interface of the records feature. Everything outside this
-// directory imports `#records`; the SEALED_FOLDERS lint rule stops
+// The public interface of the db feature. Everything outside this
+// directory imports `#db`; the SEALED_FOLDERS lint rule stops
 // src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
@@ -10,9 +10,11 @@
 // how it died.
 //
 // It owns the database outright — the handle (`client.ts`) and the schema
-// (`schema.ts`) are internal modules here, and neither is on this barrel: a
-// layer that could reach `getDb` or a table could build its own queries, and
-// that is the one thing the discipline exists to prevent. Observed facts
+// (`schema.ts`) are internal modules here. `getDb` and the tables stay off
+// this barrel: a layer that could reach either could build its own queries,
+// and that is the one thing the discipline exists to prevent. All that
+// crosses from the handle is the void-returning `openDb`/`closeDb` pair the
+// composition root drives. Observed facts
 // enter through
 // exactly one door: code that watches the substrate or reads a worktree's
 // disk emits a `WorktreeEvent`, and `applyWorktreeEvent` alone decides
@@ -28,7 +30,7 @@
 // half live observation, and what this layer speaks is rows.
 //
 // Adding a name here widens the interface and obliges a unit test in
-// packages/server/test/records/.
+// packages/server/test/db/.
 
 export {
   deleteProjectAgentSessions,
@@ -51,7 +53,7 @@ export {
   type WorktreeEvent,
 } from './events'
 export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-worktrees'
-export { closeRecords, openRecords } from './lifecycle'
+export { closeDb, openDb } from './client'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {
   DEFAULT_TOOL_KEY,

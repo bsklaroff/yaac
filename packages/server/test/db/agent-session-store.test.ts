@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { closeDb } from '#records/client'
-import { getDb } from '#records/client'
-import { agentSessions } from '#records/schema'
+import { closeDb } from '#db/client'
+import { getDb } from '#db/client'
+import { agentSessions } from '#db/schema'
 import {
   recordedConversationHandles,
   deleteWorktreeAgentSessions,
   listWorktreeAgentSessions,
   recordAgentSessions,
-} from '#records/agent-session-store'
-import { recordWorktreeCreated } from '#records/worktree-store'
+} from '#db/agent-session-store'
+import { recordWorktreeCreated } from '#db/worktree-store'
 
 /**
  * The store's writes are covered through the reconciler and the listings that

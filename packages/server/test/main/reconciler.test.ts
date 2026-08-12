@@ -449,7 +449,7 @@ describe('defaultReconcileSteps', () => {
   })
 
   // A FAILED preference read is not an unset preference: falling back to
-  // claude on a transient records failure would retool a spare toward the
+  // claude on a transient db failure would retool a spare toward the
   // wrong tool and churn it back next pass. The accessor rejects, the step
   // fails (error-isolated by the engine), and the pool stands down for the
   // pass instead.

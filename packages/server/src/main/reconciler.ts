@@ -1,7 +1,7 @@
 import { worktreeRuntime } from '#runtime/driver'
 import type { RuntimeSnapshot } from '#runtime/contract'
 import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
-import { getDefaultTool, listProjectRows } from '#records'
+import { getDefaultTool, listProjectRows } from '#db'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
 import type { AgentTool } from '@yaac/shared/types'
@@ -114,7 +114,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         defaultTool: () => (defaultTool ??= getDefaultTool()),
         // Same arrangement, and for the same reason: which projects exist
         // is a row question, so it is resolved once here and handed down —
-        // a runtime step never reads records itself. An unreadable list
+        // a runtime step never reads db itself. An unreadable list
         // degrades to none rather than failing the pass, because every
         // consumer of it is upkeep that the next pass retries.
         projectSlugs: () => (projectSlugs ??= listProjectRows()

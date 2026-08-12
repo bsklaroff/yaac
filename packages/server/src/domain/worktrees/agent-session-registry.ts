@@ -8,7 +8,7 @@ import {
   getWorktreeRow,
   listWorktreeAgentSessions,
   setAgentSessionCapture,
-} from '#records'
+} from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from '#store/worktrees'
@@ -16,7 +16,7 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
-import type { DiscoveredSession } from '#records'
+import type { DiscoveredSession } from '#db'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -149,7 +149,7 @@ export async function reconcileWorktreeAgentSessions(
     })
   }
 
-  // The worktree's whole history, as records now holds it — the hook's
+  // The worktree's whole history, as db now holds it — the hook's
   // sightings plus whatever create recorded for a conversation no hook ever
   // fires for.
   const links = await listWorktreeAgentSessions(projectSlug, worktreeId)

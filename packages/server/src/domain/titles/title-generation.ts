@@ -11,7 +11,7 @@
  * don't-regenerate after a user deliberately clears a generated title.
  */
 import { listActiveWorktrees } from '#domain/worktrees'
-import { setWorktreeTitle } from '#records'
+import { setWorktreeTitle } from '#db'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

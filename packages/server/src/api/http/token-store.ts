@@ -2,10 +2,10 @@ import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
 import { timingSafeStrEqual } from './web-auth'
 import { maskToken } from '@yaac/shared/mask'
-import type { TokenEntry, TokenKind } from '#records'
+import type { TokenEntry, TokenKind } from '#db'
 
-export { loadTokens, saveTokens } from '#records'
-export type { TokenEntry, TokenKind } from '#records'
+export { loadTokens, saveTokens } from '#db'
+export type { TokenEntry, TokenKind } from '#db'
 
 /**
  * All client credentials the server hands out, in one store. Three kinds:

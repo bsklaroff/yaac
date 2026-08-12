@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { toAgentSessionEntry } from '#domain/worktrees/agent-session-entry'
-import type { AgentSessionLinkRow } from '#records'
+import type { AgentSessionLinkRow } from '#db'
 
 function link(over: Partial<AgentSessionLinkRow> = {}): AgentSessionLinkRow {
   return {

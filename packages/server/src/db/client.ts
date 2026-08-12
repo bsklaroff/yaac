@@ -9,10 +9,10 @@ import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 /**
  * The server's on-disk PGlite database (embedded Postgres, WAL-backed).
  *
- * An internal module of `records/`, deliberately off its barrel: rows are
- * records' alone, and a layer that could reach `getDb` could build its own
- * queries against the tables. What the rest of the server gets is
- * `openRecords`/`closeRecords` (lifecycle.ts) and the row functions.
+ * Rows are db's alone, and a layer that could reach `getDb` could build its
+ * own queries against the tables, so the handle itself stays off the barrel:
+ * what the rest of the server gets from this module is the void-returning
+ * `openDb`/`closeDb` pair, and otherwise only the row functions.
  *
  * Server-only invariant: PGlite is single-process, so this handle must only
  * ever be opened by the server process — the proxy pod, auth-daemon, and CLI
@@ -41,7 +41,7 @@ let cached: { dir: string; promise: Promise<Db> } | null = null
  * in-memory PGlite serves every data dir the process visits; switching dirs
  * truncates instead of opening a second instance, which is what a fresh dir
  * gives a test anyway. Kept behind the flag because the on-disk handle is the
- * real contract — its own tests (test/records/client.test.ts) opt out and
+ * real contract — its own tests (test/db/client.test.ts) opt out and
  * exercise the instance-per-dir path.
  */
 let sharedDb: Promise<Db> | null = null
@@ -96,7 +96,7 @@ function dbDir(): string {
   return serverLocalPath('db')
 }
 
-async function openDb(dir: string, prev: Promise<Db> | null): Promise<Db> {
+async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
   // A dangling previous handle (setDataDir moved the data dir mid-process,
   // which only unit tests do) would leak a postgres instance — close it.
   if (prev) await prev.then((db) => db.$client.close()).catch(() => undefined)
@@ -111,7 +111,18 @@ async function openDb(dir: string, prev: Promise<Db> | null): Promise<Db> {
 }
 
 /**
- * Lazy singleton handle, keyed by the current data dir. Single-flighted:
+ * Open the database, running any pending migrations. The composition root
+ * calls this once the single-writer lock is held; every db read and write
+ * after it shares the connection it opened. Void-returning on purpose — the
+ * handle is this module's, and callers get rows through the row functions.
+ */
+export async function openDb(): Promise<void> {
+  await getDb()
+}
+
+/**
+ * Lazy singleton handle, keyed by the current data dir. Internal: only the
+ * row functions in this folder may name it. Single-flighted:
  * concurrent callers during open share one promise; a failed open clears
  * the cache so the next caller retries instead of inheriting the rejection.
  */
@@ -119,7 +130,7 @@ export function getDb(): Promise<Db> {
   const dir = dbDir()
   if (testEnv.sharedTestDb) return getSharedDb(dir)
   if (cached?.dir !== dir) {
-    const promise = openDb(dir, cached?.promise ?? null)
+    const promise = openHandle(dir, cached?.promise ?? null)
     cached = { dir, promise }
     promise.catch(() => {
       if (cached?.promise === promise) cached = null

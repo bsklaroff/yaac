@@ -18,7 +18,7 @@ import type {
  * nothing that survives it (docs/layered-server.md).
  *
  * The durable half of a listing (a title, a pin, the recorded creation
- * time, the sessions and their opening messages) lives in `#records`;
+ * time, the sessions and their opening messages) lives in `#db`;
  * joining the two is how a worktree list is produced. Keeping the split in
  * the types is what keeps the join honest: nothing here can carry a fact a
  * restart of the substrate would lose track of.
@@ -73,7 +73,7 @@ export interface WorktreeRuntimeReport {
 
 /**
  * A worktree as the substrate can see it — everything a resolver needs and
- * nothing records keeps. The durable half (a title, a pin, the recorded
+ * nothing db keeps. The durable half (a title, a pin, the recorded
  * creation time, the conversations) never appears here.
  *
  * Distinct from `WorktreeRuntimeReport`, which is what a whole report
@@ -408,7 +408,7 @@ export interface PassContext {
   defaultTool: () => Promise<AgentTool | undefined>
   /** Which projects exist — the same arrangement as `defaultTool`, and for
    *  the same reason: it is a row question, so a runtime step is handed the
-   *  answer instead of reading records itself. */
+   *  answer instead of reading db itself. */
   projectSlugs: () => Promise<string[]>
 }
 

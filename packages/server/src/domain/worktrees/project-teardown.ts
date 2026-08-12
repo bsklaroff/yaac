@@ -4,7 +4,7 @@ import {
   deleteProjectRow,
   deleteProjectWorktrees,
   getProjectRow,
-} from '#records'
+} from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
 /**

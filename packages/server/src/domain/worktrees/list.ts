@@ -4,7 +4,7 @@ import {
   getProjectWorktreeRows,
   type AgentSessionLinkRow,
   type WorktreeRow,
-} from '#records'
+} from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
 import { worktreeRuntime } from '#runtime/driver'
 import { ServerError } from '@yaac/shared/errors'

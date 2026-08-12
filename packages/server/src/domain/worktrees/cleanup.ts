@@ -8,7 +8,7 @@ import {
   deleteSpareWorktreeRow,
   getWorktreeRow,
   listSpareWorktreeIds,
-} from '#records'
+} from '#db'
 import {
   clearWorktreeTerminating,
   evictWorktreeStatus,

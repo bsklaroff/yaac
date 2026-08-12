@@ -39,21 +39,21 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|records|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|store/(projects|transcripts|worktrees)|http)/.',
+  regex: '^#(domain/(auth|projects|skills|titles|worktrees)|db|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|store/(projects|transcripts|worktrees)|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
 }
 
-// The database drivers themselves, banned everywhere but records. The handle
-// and the schema are records' own internal modules (`records/client.ts`,
-// `records/schema.ts`) rather than a specifier any layer could name, so this
-// is all that is left to ban: rows live behind the records barrel, and
+// The database drivers themselves, banned everywhere but db. The handle
+// and the schema are db's own internal modules (`db/client.ts`,
+// `db/schema.ts`) rather than a specifier any layer could name, so this
+// is all that is left to ban: rows live behind the db barrel, and
 // observed facts enter through `applyWorktreeEvent` rather than through a
 // caller-side write (docs/layered-server.md). Reaching the tables from
-// outside would take a deep `#records/schema` import, which SEALED_FOLDERS
+// outside would take a deep `#db/schema` import, which SEALED_FOLDERS
 // already refuses in src.
 const NO_DATABASE_DIRECT = {
   regex: '^(@electric-sql/pglite|drizzle-orm)(/|$)',
-  message: 'Only #records opens the database (docs/layered-server.md): read or write rows through its barrel.',
+  message: 'Only #db opens the database (docs/layered-server.md): read or write rows through its barrel.',
 }
 
 // Lower layers know nothing about the ones above them — not the HTTP
@@ -84,7 +84,7 @@ const NO_SUBSTRATE_ABOVE_RUNTIME = {
 
 const NO_API_OR_MAIN = {
   regex: '^(#main|#routes|#http|#api)(/|$)',
-  message: 'Layers below api/main must not import them (docs/layered-server.md): report through #records events or #notify instead.',
+  message: 'Layers below api/main must not import them (docs/layered-server.md): report through #db events or #notify instead.',
 }
 
 export default tseslint.config(
@@ -148,7 +148,7 @@ export default tseslint.config(
 
   // server and auth-daemon: only @yaac/shared (+ self via #). They must never
   // import each other — anything they share lives in @yaac/shared. The
-  // database is records' alone (the zone below re-opens it for records).
+  // database is db's alone (the zone below re-opens it for db).
   {
     files: ['packages/server/src/**/*.ts', 'packages/auth-daemon/src/**/*.ts'],
     rules: {
@@ -180,9 +180,9 @@ export default tseslint.config(
   // row combines with one is a mediator's call, and a column that names a
   // place on disk holds the store's own portable form (project-relative) —
   // resolving it takes layout knowledge this layer has no business holding.
-  // So records reaches nothing sideways and nothing above.
+  // So db reaches nothing sideways and nothing above.
   {
-    files: ['packages/server/src/records/**/*.ts'],
+    files: ['packages/server/src/db/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -194,7 +194,7 @@ export default tseslint.config(
             NO_API_OR_MAIN,
             {
               regex: '^(#domain|#runtime|#store)(/|$)',
-              message: 'The records layer must not import the store, the runtime, or the mediators above it (docs/layered-server.md).',
+              message: 'The db layer must not import the store, the runtime, or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -264,8 +264,8 @@ export default tseslint.config(
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
             {
-              regex: '^(#records|#domain|#runtime)(/|$)',
-              message: 'The store layer must not import records, the runtime, or the mediators above it (docs/layered-server.md).',
+              regex: '^(#db|#domain|#runtime)(/|$)',
+              message: 'The store layer must not import db, the runtime, or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -293,8 +293,8 @@ export default tseslint.config(
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
             {
-              regex: '^(#records|#domain)(/|$)',
-              message: 'The runtime layer must not import records or the mediators above it (docs/layered-server.md).',
+              regex: '^(#db|#domain)(/|$)',
+              message: 'The runtime layer must not import db or the mediators above it (docs/layered-server.md).',
             },
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -306,7 +306,7 @@ export default tseslint.config(
     },
   },
 
-  // The domain layer: the mediators. They read records, drive the store
+  // The domain layer: the mediators. They read db, drive the store
   // and the runtime, and apply what those report — but never reach up into
   // the api surface or the composition root.
   {

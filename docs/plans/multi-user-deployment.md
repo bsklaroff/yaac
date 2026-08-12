@@ -25,7 +25,7 @@ facade at every call site, a link module for the back-channel, discovery and
 lookup *inversions* (rows became reports, reads became pushed inputs), and
 hand-maintained lint lists to hold the line. When the per-user-process
 endgame was dropped, all of it was indirection with no payoff, and the
-dissolution kept what was genuinely good — the layers, the one records door
+dissolution kept what was genuinely good — the layers, the one db door
 for observed facts, the runtime driver contract.
 
 So this plan takes the second way: **one server, and `Principal` as a value
@@ -48,7 +48,7 @@ exactly one chokepoint, and domain verbs already are it.
   and drops everything (`packages/server/src/api/http/web-auth.ts`); nothing
   user-shaped exists in the schema. That absence is an asset — there is no
   wrong model to migrate off.
-- Observed facts enter records through one door (`applyWorktreeEvent`), and
+- Observed facts enter db through one door (`applyWorktreeEvent`), and
   the substrate has no users in it. So principals annotate **intent**, never
   observation — the event union, the runtime contract, and everything under
   `src/runtime`/`src/store`/`src/lib` stay user-free.
@@ -129,7 +129,7 @@ So `authorize` takes an **action verb** (`read` / `act` / `write` /
 `read` grant across owners — deliberately narrow, because the audit shows
 how much of the surface is *not* a safe read.
 
-### Records: owners on rows, and nothing below changes
+### Db: owners on rows, and nothing below changes
 
 - A `users` table (login, display name, first/last seen) and an `owner`
   column on `projects` and `worktrees` (Drizzle migrations; existing rows
@@ -525,7 +525,7 @@ processes, no new arrows:
   attached principals feeds the snapshot.
 - **Handoff** — a domain verb mutating attachment/ownership under
   `authorize`; the PTY bridge already tees multiple clients.
-- **Comments** — a records table with an author column and read policy.
+- **Comments** — a db table with an author column and read policy.
 - **Team projects** — `owner` generalizes from a user to a team; policy
   gains roles. The schema move is designed for by making `owner` a
   principal reference, not a string login.

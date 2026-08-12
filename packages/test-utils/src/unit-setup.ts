@@ -29,7 +29,7 @@ for (const key of ['YAAC_NESTED', 'YAAC_DATA_DIR', 'YAAC_K8S_REGISTRY'] as const
 // the whole unit run. Hand them all one in-memory instance instead, wiped
 // whenever the data dir changes; the isolation a fresh dir buys is preserved,
 // the boot is paid once per worker. The handle's own tests
-// (test/records/client.test.ts) opt back out — the on-disk handle is what
+// (test/db/client.test.ts) opt back out — the on-disk handle is what
 // they're for. api/e2e never load this file.
 process.env.YAAC_TEST_SHARED_DB = '1'
 

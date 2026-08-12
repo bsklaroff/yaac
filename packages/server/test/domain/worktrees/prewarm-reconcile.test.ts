@@ -14,7 +14,7 @@ vi.mock('#domain/worktrees/cleanup', () => ({
   deleteWorktreeState: vi.fn().mockResolvedValue(true),
   isTmuxSessionAlive: vi.fn(),
 }))
-vi.mock('#records/preferences', () => ({ getDefaultTool: vi.fn() }))
+vi.mock('#db/preferences', () => ({ getDefaultTool: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
@@ -30,7 +30,7 @@ import {
 } from '@yaac/test-utils/fake-runtime'
 import { createWorktree } from '#domain/worktrees/create'
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
-import { getDefaultTool } from '#records/preferences'
+import { getDefaultTool } from '#db/preferences'
 
 /** What the registered runtime reports for the pass. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()

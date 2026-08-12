@@ -15,7 +15,7 @@ import {
   computePrewarmPlan,
   inFlight,
 } from './prewarm'
-import { deleteSpareWorktreeRow } from '#records'
+import { deleteSpareWorktreeRow } from '#db'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'

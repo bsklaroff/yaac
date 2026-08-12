@@ -24,7 +24,7 @@ import type { RuntimeReconcileSteps } from '#runtime/contract'
  * GROUPS sit relative to their own steps, which is the only ordering they
  * have a stake in (see `defaultReconcileSteps`).
  *
- * Nothing here reads a row: which projects exist is a records question, so
+ * Nothing here reads a row: which projects exist is a db question, so
  * the pass hands the answer down through `ctx.projectSlugs()`.
  */
 export function k8sReconcileSteps(): RuntimeReconcileSteps {
