@@ -192,7 +192,7 @@ export async function listRemoteBranches(repoPath: string): Promise<string[]> {
  * (`branch.<name>.merge` = `refs/heads/<branch>`), or null when no
  * upstream is recorded. For worktree branches (`agent/<worktreeId>`) this is
  * the durable record of the reference branch the worktree was created from:
- * `startJobWithSetup` writes it before the tmux session exists, and the
+ * `launchWithSetup` writes it before the tmux session exists, and the
  * claim-time re-branch prep rewrites it.
  */
 export async function worktreeUpstreamBranch(repoPath: string, branchName: string): Promise<string | null> {
@@ -279,7 +279,7 @@ async function bestEffort(op: () => Promise<unknown>): Promise<void> {
  * pods read `/repo/.git` through — until the stale dentry expires (a few
  * seconds), every git command in a pod dies with "fatal: unknown error
  * occurred while reading the configuration files". The upstream is
- * configured from inside the pod instead (see `startJobWithSetup`), where
+ * configured from inside the pod instead (see `launchWithSetup`), where
  * the write stays cache-coherent for all pods and the host alike. With no
  * config write left here, concurrent adds no longer race git's config.lock
  * and need no serialization.

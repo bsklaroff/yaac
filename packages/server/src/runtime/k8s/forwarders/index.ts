@@ -15,6 +15,7 @@
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/forwarders/.
 
+export { adoptWorktreeForwarders } from './adopt'
 export { forwardWorktreePort } from './forward-port'
 export { restoreAllWorktreeForwarders } from './restore'
 export {
@@ -23,7 +24,6 @@ export {
   getUnforwardedPorts,
 } from './port-detector'
 export {
-  buildStatusRight,
   getWorktreePorts,
   hasWorktreeForwarders,
   provisionWorktreeForwarders,

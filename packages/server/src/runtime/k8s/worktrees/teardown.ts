@@ -103,12 +103,28 @@ const UNIT_DELETE_TIMEOUT = '30s'
  * timeout, or a delete that failed outright. That verdict is what a caller
  * about to remove the workspace's files gates on; the leftover Job is swept
  * by the stale reaper, which resumes the (idempotent) teardown.
+ *
+ * `unitOnly` keeps steps 1 and 4, and what it protects is RECEIPT
+ * COHERENCE for a caller that is about to launch again. A create prepares
+ * its substrate once and reuses that receipt across attempts, so the
+ * registration and the vcluster it names have to outlive any one attempt:
+ * deregistering would leave the next attempt reaching nothing, and removing
+ * the vcluster would invalidate the kubeconfig already written to disk for
+ * it. Step 3 is the whole of it, and step 3 is exactly what a failed
+ * attempt left behind.
+ *
+ * It is NOT a way to preserve a workspace's nested-cluster state. Nothing
+ * here does: every stop and restart takes the full path, and what a
+ * `unitOnly` give-up leaves standing is collected by the vcluster orphan
+ * sweep once it ages past its grace window, since no pod or Job names it
+ * any more. A resumed workspace gets a freshly prepared substrate. Do not
+ * "improve" a stop path to keep state that the sweep will collect anyway.
  */
 export async function destroyWorkspace(
   target: TeardownTarget,
-  opts: { salvageImages?: boolean } = {},
+  opts: { salvageImages?: boolean; unitOnly?: boolean } = {},
 ): Promise<boolean> {
-  await deregisterWorkspace(target.workspaceId)
+  if (!opts.unitOnly) await deregisterWorkspace(target.workspaceId)
 
   if (opts.salvageImages !== false) await salvageWorkspaceImages(target)
 
@@ -122,6 +138,8 @@ export async function destroyWorkspace(
   } catch {
     unitGone = false
   }
+
+  if (opts.unitOnly) return unitGone
 
   try {
     if (await getVclusterStatus(target.workspaceId)) {

@@ -294,7 +294,7 @@ export const worktreeApp = new Hono()
     '/:id/allow-host',
     zv('json', z.object({
       // A bare hostname or wildcard pattern — the grammar hostMatchesPattern
-      // (default-allowed-hosts.ts) matches against; no scheme/path/port.
+      // (#lib/allowed-hosts) matches against; no scheme/path/port.
       host: z.string().regex(/^[A-Za-z0-9*._-]+$/, 'host must be a bare hostname or *.wildcard pattern'),
       persist: z.boolean().optional(),
     })),

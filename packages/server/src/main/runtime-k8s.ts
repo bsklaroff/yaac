@@ -9,8 +9,10 @@ import {
   findWorkspace,
   findWorkspaceForTeardown,
   getWorktreeChanges,
+  launchWorkspace,
   listWorkspaces,
   observeWorkspaces,
+  prepareWorkspaceSubstrate,
   salvageWorkspaceImages,
 } from '#runtime/k8s/worktrees'
 import {
@@ -20,8 +22,11 @@ import {
   registerWorkspace,
 } from '#runtime/k8s/egress'
 import { getVclusterStatus } from '#runtime/k8s/cluster'
+import { prepareWorkspaceImage } from '#runtime/k8s/images'
+import { adoptWorktreeForwarders } from '#runtime/k8s/forwarders'
 import { createRuntimeSnapshot } from '#runtime/k8s/view'
-import { podExec, waitForStreamd } from '#platform/k8s'
+import { podExec, waitForJobPodReady, waitForStreamd } from '#platform/k8s'
+import { ensureContainerRuntime } from '#platform/container'
 import { k8sReconcileSteps } from '#main/runtime-k8s-steps'
 import type { WorktreeRuntime } from '#runtime/contract'
 
@@ -57,6 +62,13 @@ export function k8sWorktreeRuntime(): WorktreeRuntime {
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
 
     claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
+
+    ensureBuildEngine: () => ensureContainerRuntime(),
+    prepareImage: (opts) => prepareWorkspaceImage(opts),
+    prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
+    launch: (spec) => launchWorkspace(spec),
+    awaitReady: (handle) => waitForJobPodReady(handle.jobName),
+    startForwarders: (workspaceId, ports) => adoptWorktreeForwarders(workspaceId, ports),
 
     registerWorkspace: (reg) => registerWorkspace(reg),
     deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),

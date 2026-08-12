@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import { type PodMount } from '#platform/k8s'
+import type { WorkspaceMount } from '#runtime/contract'
 
 /**
  * The one worktree-bin script worktree pods cannot function without: the
@@ -71,7 +71,7 @@ export async function stageWorktreeBin(srcDir: string, destDir: string): Promise
 /** Read-only File mounts placing each staged script at `/usr/local/bin/<name>`.
  *  The staging dir is SHARED (under `worktreeStateDir`) — the server writes it and
  *  the pod reads it — so it takes the shared tier's source. */
-export function worktreeBinMounts(stagingDir: string, names: string[]): PodMount[] {
+export function worktreeBinMounts(stagingDir: string, names: string[]): WorkspaceMount[] {
   return names.map((name) => ({
     source: { kind: 'hostPath', path: path.join(stagingDir, name), type: 'File' },
     mountPath: `/usr/local/bin/${name}`,

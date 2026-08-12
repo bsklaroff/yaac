@@ -20,7 +20,6 @@
 
 export { allowWorktreeHost } from './allow-host'
 export { readBlockedHosts } from './blocked-hosts'
-export { hostMatchesPattern, resolveAllowedHosts } from './default-allowed-hosts'
 export {
   ProxyClient,
   drainPendingSpawns,
@@ -30,6 +29,7 @@ export {
 } from './proxy-client'
 export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'
 export { reconcileProxySshKeys } from './proxy-reconcile'
+export { workspaceSshTransport } from './ssh-transport'
 export {
   buildWorktreeRegistration,
   registerWorkspace,

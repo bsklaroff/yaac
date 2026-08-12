@@ -77,13 +77,15 @@ records layer can speak alone.
   substrate, nothing above platform.
 - **`runtime/`** — `contract.ts` (the `WorktreeRuntime` driver interface
   and its substrate-neutral vocabulary: `RuntimeReport`, `RuntimeHandle`,
-  handle-keyed `AgentLiveness`, `RuntimeSnapshot`, and the pass
-  scheduling types), `driver.ts` (the registered instance, behind
-  `setWorktreeRuntime` / `worktreeRuntime`), `status/` (control-mode
-  watchers feeding the status store), `terminals/` (PTY bridge),
-  `agents/` (the tui/acp drivers, acpd's JSON-RPC client, per-tool launch
-  commands), and `k8s/` — the driver's substance: `cluster`, `egress`,
-  `forwarders`, `images`, `image-engine`, `worktrees` (observe, locate,
+  handle-keyed `AgentLiveness`, `RuntimeSnapshot`, the launch types —
+  `WorkspaceSpec`, `WorkspaceMount`, `SubstrateIntent` and the opaque
+  `WorkspaceSubstrate` receipt — and the pass scheduling types),
+  `driver.ts` (the registered instance, behind `setWorktreeRuntime` /
+  `worktreeRuntime`), `status/` (control-mode watchers feeding the status
+  store), `terminals/` (PTY bridge), `agents/` (the tui/acp drivers,
+  acpd's JSON-RPC client, per-tool launch commands), and `k8s/` — the
+  driver's substance: `cluster`, `egress`, `forwarders`, `images`,
+  `image-engine`, `worktrees` (launch, observe, locate, claim, teardown,
   the pod-side changes diff, image salvage) and `view` (the one mapper
   turning a pod into a `RuntimeHandle`, plus the pass snapshot). The
   contract is the seam a second driver — a host-process runtime with no
@@ -91,12 +93,26 @@ records layer can speak alone.
 
   `contract.ts` and `driver.ts` import nothing but shared types, and that
   is load-bearing: a mediator reaching the runtime through them pulls no
-  cluster client into its module graph, which is what keeps domain unit
-  tests off the seconds-per-file cost of importing one. The carve-out is
-  partial — the mutating paths (create, cleanup, prewarm's claim, the
-  spare pool) still name substrate barrels, and
-  `docs/plans/runtime-contract-completion.md` is the remaining work, with
-  the holdout list in `eslint.config.js` as its ledger.
+  cluster client into its module graph. Every mediator now does — no
+  domain file names a substrate barrel, enforced outright. The remaining
+  transitive edge is `#runtime/agents`, which binds the stream relay
+  directly (`podExec`, `dialCtrlStream`), so a mediator needing agent
+  vocabulary still loads the cluster client; putting the dial on the
+  contract is what a second driver would justify.
+
+  The launch is the shape to read first, because it is the one verb whose
+  split is not obvious. `prepareSubstrate` runs ONCE per create and
+  stands up what belongs to the WORKSPACE (its egress registration, the
+  project registry, a virtual cluster with its own state), answering with
+  an opaque receipt; `launch` runs per ATTEMPT and applies a unit and
+  nothing else. That is what makes a retry cheap and safe — a failed
+  attempt leaves only a unit, and `destroy`'s `unitOnly` takes exactly
+  that down while leaving what the next attempt reuses.
+- **`lib/`** — the server's own dependency-free vocabulary: modules every
+  layer may name and that name nothing back (the egress allowlist's
+  defaults and matching, today). A sink in the module graph, so importing
+  one costs a layer nothing. Distinct from `@yaac/shared`, which is for
+  vocabulary other PACKAGES read; nothing outside this package reads these.
 - **`platform/`** — substrate primitives with no opinions about worktrees:
   `k8s/` (client, informers, exec, pod specs, the per-pass
   `TickSnapshot`), `container/` (podman, the local registry), git, shell,

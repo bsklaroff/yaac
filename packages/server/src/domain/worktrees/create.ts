@@ -2,78 +2,32 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import {
-  ensureImage,
-  ensureNodeImageStore,
-  nodeImageStoreMount,
-  pushImageShared,
-} from '#runtime/k8s/images'
-import {
-  buildWorktreeRegistration,
-  hostMatchesPattern,
-  proxyClient,
-  resolveAllowedHosts,
-  resolveProxyImageTag,
-  syncProxySecrets,
-} from '#runtime/k8s/egress'
-import { ensureContainerRuntime } from '#platform/container'
-import { reserveAvailablePort, startPortForwarders } from '#platform/port'
-import {
-  LABEL_DATA_DIR_HASH,
-  LABEL_MODE,
-  LABEL_PREWARMED,
-  LABEL_PROJECT,
-  LABEL_TOOL,
-  SSH_AGENT_PORT,
-  SSH_AGENT_SOCKET_PATH,
-  SSH_TUNNEL_SENTINEL,
-  TUNNEL_INGRESS_PORT,
-  type PodMount,
-  awaitDeferredClusterBoot,
-  buildPodJobManifest,
-  ensurePriorityClasses,
-  dataDirHash,
-  k8sNamespace,
-  kubectlApply,
-  kubectlWithRetry,
-  relayTcpFactory,
-  podExec,
-  worktreeJobName,
-  podStreamToken,
-  waitForJobPodReady,
-  waitForStreamd,
-  worktreeIdLabels,
-} from '#platform/k8s'
+import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
+import { reserveAvailablePort } from '#platform/port'
 import type { ReservedPort } from '#platform/port'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { env as yaacEnv, testEnv } from '@yaac/shared/env'
-import {
-  ensureActivator,
-  ensureProjectRegistry,
-  ensureWorktreeVcluster,
-  ensureVclusterImages,
-  projectRegistryConfDropIn,
-  projectRegistryHost,
-  proxyServiceClusterIp,
-  sleepVcluster,
-  vclusterName,
-  waitForVclusterKubeconfig,
-} from '#runtime/k8s/cluster'
+import { worktreeRuntime } from '#runtime/driver'
+import type {
+  RuntimeHandle,
+  TeardownTarget,
+  WorkspaceMount,
+  WorkspaceResources,
+  WorkspaceSpec,
+} from '#runtime/contract'
 import {
   repoDir,
   acpLogDir,
   claudeDir,
   claudeJsonFile,
   codexDir,
-  nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
   piDir,
   cachedPackagesDir,
   cacheVolumeDir,
   worktreeStateDir,
-  worktreeVclusterDir,
   worktreeDir,
   projectDir,
 } from '@yaac/shared/project-paths'
@@ -85,7 +39,7 @@ import {
 import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#store/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { writeKnownHostsFile } from '#platform/git'
-import { formatSshCommand, getGitUserConfig } from '@yaac/shared/git'
+import { getGitUserConfig } from '@yaac/shared/git'
 import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
@@ -101,6 +55,7 @@ import {
   acpAdapterFor,
   agentDriver,
   agentWindowName,
+  buildStatusRight,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
@@ -127,10 +82,6 @@ import {
   stageWorktreeBin,
 } from './spawn-script'
 import { ServerError } from '@yaac/shared/errors'
-import {
-  buildStatusRight,
-  registerWorktreeForwarders,
-} from '#runtime/k8s/forwarders'
 import type { AgentMode, AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
   opencodeProviderInfo,
@@ -223,18 +174,46 @@ export interface WorktreeCreateResult {
   mode: AgentMode
 }
 
+/**
+ * What one worktree's pod costs and may burst to.
+ *
+ * Policy, and the reason it is stated here rather than inside the runtime:
+ * every number is chosen against ordinary developer hardware — how many
+ * worktrees should pack onto one machine, and how much one may take before
+ * it is taking the machine.
+ */
+const WORKTREE_RESOURCES: WorkspaceResources = {
+  memoryRequestBytes: 1 * 1024 ** 3,
+  memoryLimitBytes: 8 * 1024 ** 3,
+  // 250m per worktree pairs with the 1Gi memory request at 4 GB/core, so
+  // the cpu-imposed ceiling on concurrent worktrees lands beside the
+  // memory-imposed one on ordinary developer hardware (8 cores/32 GB:
+  // 32 worktrees by cpu, 32 by memory) — honest for bin-packing without
+  // becoming the reason a worktree stops scheduling. Real usage is far
+  // below it: an agent session is idle between turns.
+  cpuRequestMillis: 250,
+  // 32x the request: high enough that interactive work never reaches it,
+  // low enough that one worktree's parallel burst leaves the node usable.
+  // The number that matters is the fraction of a node this is — half of a
+  // 16-core box — because it caps both the burst and (under gVisor) the
+  // sandbox's stub count. Worktrees doing heavy parallel work (e2e: image
+  // builds, container starts) keep most of their headroom; what they lose
+  // is the ability to take the whole node.
+  cpuLimitMillis: 8000,
+  // Worktrees keep their repo, worktrees and caches on mounts, which are
+  // not ephemeral storage — what lands here is the writable layer, logs,
+  // and the pod-local scratch (the tmux socket dir, the ssh-agent socket
+  // dir, and nested-only the graphroot). 2Gi covers the steady state; the
+  // 16Gi ceiling is a blast-radius bound on a worktree filling the node's
+  // disk, not a budget anyone should hit.
+  ephemeralStorageRequestBytes: 2 * 1024 ** 3,
+  ephemeralStorageLimitBytes: 16 * 1024 ** 3,
+}
+
 interface WorktreeSetupParams {
-  imageRef: string
-  jobName: string
+  spec: WorkspaceSpec
   projectSlug: string
   worktreeId: string
-  env: string[]
-  mounts: PodMount[]
-  /** Live proxy Service ClusterIP — the pod's resolver + egress redirect target. */
-  proxyHost: string
-  nested?: boolean
-  /** Inner (nested) yaac — don't stamp a RuntimeClass (see PodJobParams). */
-  innerYaac?: boolean
   tool: AgentTool
   /** Which driver launches and observes the agents. */
   mode: AgentMode
@@ -246,6 +225,13 @@ interface WorktreeSetupParams {
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
   piProvider?: PiProvider
+  /**
+   * Called the moment the runtime has something running, before any of the
+   * setup that can still fail. What it hands back is the only thing that
+   * can address the new unit for a teardown — so the caller learns of a
+   * half-started workspace even when the failure comes several steps later.
+   */
+  onLaunched: (handle: RuntimeHandle) => void
   options: WorktreeCreateOptions
   /**
    * The concurrent host-side worktree provisioning (fetch → branch checks
@@ -288,67 +274,22 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
   await upstreamConfigMutex(projectSlug, task)
 }
 
-async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
+/**
+ * Launch the worktree's runtime and drive the in-pod setup on top of it.
+ *
+ * One attempt: the caller's retry loop runs it again (having torn the last
+ * one down) when what failed was the pod rather than the create's inputs.
+ * Everything here is either a wait the runtime answers or a command run
+ * inside the worktree — how a workspace becomes a running thing is the
+ * runtime's, and nothing below names a substrate object.
+ */
+async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHandle> {
   const {
-    imageRef, jobName, projectSlug, worktreeId, env, mounts,
-    proxyHost, nested, innerYaac, tool, mode, launching, initWindows, piProvider,
-    options, worktree,
+    spec, projectSlug, worktreeId, tool, mode, launching, initWindows, piProvider,
+    onLaunched, options, worktree,
   } = params
+  const runtime = worktreeRuntime()
 
-  const manifest = buildPodJobManifest({
-    jobName,
-    namespace: k8sNamespace(),
-    labels: {
-      [LABEL_PROJECT]: projectSlug,
-      ...worktreeIdLabels(worktreeId),
-      [LABEL_DATA_DIR_HASH]: dataDirHash(),
-      [LABEL_TOOL]: tool,
-      // Stamped only for acp: the status watcher picks its driver from this,
-      // and every pod without it (every TUI pod, and every pod predating
-      // modes) reads as tui.
-      ...(mode === 'acp' ? { [LABEL_MODE]: mode } : {}),
-      // Prewarmed spares carry this until claimed; claiming removes it
-      // (kubectl label pod yaac.prewarmed-), flipping the pod to a normal
-      // worktree that lists in the user-facing views.
-      ...(options.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
-    },
-    image: imageRef,
-    env,
-    mounts,
-    memoryRequestBytes: 1 * 1024 ** 3,
-    memoryLimitBytes: 8 * 1024 ** 3,
-    // 250m per worktree pairs with the 1Gi memory request at 4 GB/core, so
-    // the cpu-imposed ceiling on concurrent worktrees lands beside the
-    // memory-imposed one on ordinary developer hardware (8 cores/32 GB:
-    // 32 worktrees by cpu, 32 by memory) — honest for bin-packing without
-    // becoming the reason a worktree stops scheduling. Real usage is far
-    // below it: an agent session is idle between turns.
-    cpuRequestMillis: 250,
-    // 32x the request: high enough that interactive work never reaches it,
-    // low enough that one worktree's parallel burst leaves the node usable.
-    // The number that matters is the fraction of a node this is — half of a
-    // 16-core box — because it caps both the burst and (via
-    // -cpu-num-from-quota) the sandbox's systrap stub count. Worktrees doing
-    // heavy parallel work (e2e: image builds, container starts) keep most of
-    // their headroom; what they lose is the ability to take the whole node.
-    cpuLimitMillis: 8000,
-    // Worktrees keep their repo, worktrees and caches on hostPath (later
-    // PVC) mounts, which are not ephemeral storage — what lands here is the
-    // writable layer, logs, and the pod-local emptyDirs (the tmux socket
-    // dir, the ssh-agent socket dir, and nested-only the graphroot). 2Gi
-    // covers the steady state; the 16Gi ceiling is a blast-radius bound on
-    // a worktree filling the node's disk, not a budget anyone should hit.
-    ephemeralStorageRequestBytes: 2 * 1024 ** 3,
-    ephemeralStorageLimitBytes: 16 * 1024 ** 3,
-    proxyHost,
-    nested,
-    innerYaac,
-    // In-pod setup (git identity, tmux server + options, streamd, the
-    // nested engine) runs as the container's postStart hook, so the
-    // kubelet holds Ready until it's done and no per-command exec round
-    // trips are paid. Prewarmed spares take this same path.
-    postStartExec: [`/usr/local/bin/${WORKTREE_INIT_SCRIPT}`],
-  })
   // Reject-only view of the worktree leg, raced against the boot waits
   // below: its failures — unknown branch, referenceBranch typo, git auth —
   // are the most common user-facing create errors, and before the legs ran
@@ -366,27 +307,23 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
   // as an unhandled rejection; the join below still reads the real outcome.
   worktreeFailure.catch(() => { /* observed via race/join */ })
 
-  // The pod names a PriorityClass, and the apiserver rejects a pod whose
-  // class is missing — the Job applies and no pod ever appears. The boot
-  // bootstrap ensures the classes, but best-effort (one logged catch), so an
-  // upgraded install whose one boot found the cluster unreachable would fail
-  // every create until a restart. Idempotent and cheap next to a pod create.
-  await ensurePriorityClasses()
-  await kubectlApply(manifest)
+  const handle = await runtime.launch(spec)
+  onLaunched(handle)
+  const jobName = handle.jobName
   // Each race can abandon a still-pending wait when the worktree leg
   // rejects first — pre-mark the waits handled so a later rejection from
-  // an abandoned one (e.g. a timeout against the Job the retry loop is
-  // already deleting) can't surface as an unhandled rejection.
-  const podReady = waitForJobPodReady(jobName)
+  // an abandoned one (e.g. a timeout against the runtime the retry loop is
+  // already tearing down) can't surface as an unhandled rejection.
+  const podReady = runtime.awaitReady(handle)
   podReady.catch(() => { /* observed via race */ })
   await Promise.race([podReady, worktreeFailure])
 
-  // First relay contact doubles as the streamd readiness gate; every setup
-  // command below rides the relay (single-digit ms per command) instead of
-  // a ~300ms kubectl exec through the apiserver.
-  const streamdReady = waitForStreamd(jobName)
-  streamdReady.catch(() => { /* observed via race */ })
-  await Promise.race([streamdReady, worktreeFailure])
+  // First relay contact doubles as the transport readiness gate; every
+  // setup command below rides the relay (single-digit ms per command)
+  // instead of a ~300ms exec through the apiserver.
+  const transportReady = runtime.awaitAgentTransport(jobName)
+  transportReady.catch(() => { /* observed via race */ })
+  await Promise.race([transportReady, worktreeFailure])
 
   // No ownership fixup is needed for server-created hostPath mounts: the
   // image's yaac user is built with the server's uid (YAAC_UID build arg,
@@ -407,7 +344,7 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
 
   // Re-point the worktree's git plumbing at in-container paths and lock it
   // against `git worktree prune` — one exec (see buildWorktreeLinkExec).
-  await podExec(jobName, buildWorktreeLinkExec(worktreeId))
+  await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId))
 
   // Fresh worktree: set the worktree branch's upstream from inside the pod
   // (virtiofs cache coherence — see buildUpstreamExec), serialized against
@@ -415,7 +352,7 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
   if (upstreamStartPoint) {
     const upstream = upstreamStartPoint
     await withUpstreamConfigLock(projectSlug, async () => {
-      await podExec(jobName, buildUpstreamExec(upstream))
+      await runtime.exec(jobName, buildUpstreamExec(upstream))
     })
   }
 
@@ -425,12 +362,12 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
   // Gate on `docker version` here so a broken engine fails the create with
   // a clear error instead of a confusing "cannot connect to docker" the
   // first time the agent runs.
-  if (nested) {
+  if (spec.nestedContainers) {
     emit('Waiting for the in-pod container engine...', options)
     const deadline = Date.now() + 60_000
     for (;;) {
       try {
-        await podExec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
+        await runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
         break
       } catch (err) {
         if (Date.now() > deadline) {
@@ -481,7 +418,7 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
     tool === 'pi' ? 'Pi' :
     'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
-  await podExec(jobName, buildWindowsExec(initWindows, tool, agentCmds))
+  await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds))
 
   if (options.initialPrompt !== undefined) {
     emit('Sending initial prompt...', options)
@@ -496,6 +433,8 @@ async function startJobWithSetup(params: WorktreeSetupParams): Promise<void> {
       serverLog(`[server] create ${worktreeId}: initial prompt failed: ${String(err)}`)
     })
   }
+
+  return handle
 }
 
 /**
@@ -563,8 +502,9 @@ export async function createWorktree(
   }
 
   const tool: AgentTool = options.tool ?? 'claude'
+  const runtime = worktreeRuntime()
 
-  await ensureContainerRuntime()
+  await runtime.ensureBuildEngine()
 
   // Git identity is resolved by the CLI before the call; fall back to the
   // global git config for non-interactive callers (stream picker).
@@ -621,10 +561,6 @@ export async function createWorktree(
   // (and rejects an explicit `nestedContainers: false` alongside it).
   const virtualCluster = config.virtualCluster === true
   const nestedContainers = config.nestedContainers === true || virtualCluster
-  // The per-project registry backs both the vcluster image flow and the
-  // nested engine's image cache — but an inner yaac cannot host one (see
-  // the ensure below).
-  const projectRegistry = nestedContainers && !yaacEnv.nested
 
   // Recursion cap: an inner yaac (running inside a vcluster worktree)
   // must not stand up vcluster-in-vcluster — the depth buys nothing
@@ -663,7 +599,6 @@ export async function createWorktree(
       ? options.resumeAgentSessions
       : [{ agentSessionId: worktreeId, tool }]
   const wtDir = worktreeDir(projectSlug, worktreeId)
-  const jobName = worktreeJobName(projectSlug, worktreeId)
 
   // Pre-create the worktree dir so the Job's /workspace hostPath (type
   // Directory) mounts on first attempt: the Job is applied while the
@@ -760,25 +695,17 @@ export async function createWorktree(
   // ensure+push (podman + registry), fetch + worktree checkout (network +
   // disk), cluster-side ensures (proxy, vcluster, proxy registration), and
   // host-side fs prep. The worktree leg deliberately outlives the join
-  // below — startJobWithSetup joins it after pod-Ready, so the checkout
+  // below — launchWithSetup joins it after pod-Ready, so the checkout
   // also overlaps the pod's image pull and gVisor boot.
 
-  const imageTask = (async () => {
-    emit('Ensuring container images are built...', options)
-    const imageName = await ensureImage(
-      projectSlug,
-      testEnv.imagePrefix,
-      testEnv.requirePrebuiltImages,
-      nestedContainers,
-      {
-        reason: 'session',
-        onLayerStart: (i, total, layer) =>
-          emit(`Building image layer ${i}/${total} (${layer})...`, options),
-      },
-    )
-    emit('Pushing session image to the local registry...', options)
-    return pushImageShared(imageName, { projectSlug, reason: 'session' })
-  })()
+  const imageTask = runtime.prepareImage({
+    projectSlug,
+    nestedContainers,
+    onProgress: (m) => emit(m, options),
+  })
+  // The join below is what reads it; this marker only keeps a failure in
+  // another leg from turning it into an unhandled rejection.
+  imageTask.catch(() => { /* awaited at the join */ })
 
   const worktreeTask = (async (): Promise<{ upstreamStartPoint?: string }> => {
     // Test-only: e2e fixtures pre-populate the bare repo, so skip the
@@ -828,172 +755,33 @@ export async function createWorktree(
     const refBranch = requested ?? await getDefaultBranch(repo)
     emit(`Creating worktree from ${refBranch}...`, options)
     // addWorktree checks out into the pre-created dir whether or not it is
-    // empty; nothing pod-side reads /workspace before startJobWithSetup
+    // empty; nothing pod-side reads /workspace before launchWithSetup
     // joins this task.
     await addWorktree(repo, wtDir, `agent/${worktreeId}`, `origin/${refBranch}`)
     return { upstreamStartPoint: `origin/${refBranch}` }
   })()
-  // Joined inside startJobWithSetup (or surfaced by the retry loop); this
+  // Joined inside launchWithSetup (or surfaced by the retry loop); this
   // marker only keeps a failure in another leg from turning a still-running
   // worktree leg into an unhandled rejection.
   worktreeTask.catch(() => { /* awaited later */ })
 
-  const clusterTask = (async () => {
-    // A nested server defers its boot-time cluster attach so it doesn't
-    // wake its own born-at-zero vcluster; the first worktree create is the
-    // "cluster is really needed now" signal. Awaited so the namespace
-    // ensure inside it lands before anything below applies into it.
-    // Immediate no-op on the outer server (nothing is ever armed).
-    await awaitDeferredClusterBoot()
-
-    // Proxy is always required — it reads the host-mounted credentials dir
-    // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS
-    // requests. Credential updates via `yaac auth update` propagate to every
-    // running worktree without needing to restart pods.
-    emit('Ensuring proxy deployment...', options)
-    await proxyClient.ensureRunning()
-
-    // Every nested worktree gets the per-project push registry: it is the
-    // image source for vcluster synced pods and yaac-in-yaac, AND the bus
-    // the in-pod engine's cross-worktree image cache rides (salvage pushes,
-    // the next worktree pulls — see image-promoter.ts). The pod reaches it
-    // on its in-cluster ClusterIP, resolved through the proxy's
-    // split-horizon DNS (`*.svc` → cluster CoreDNS), so no pinned VIP or
-    // hostAliases is needed; the per-project NetworkPolicies this ensure
-    // applies admit the flow, scoped to the worktree's own registry.
-    // Never inside an INNER yaac: the ensure's node-write pods hostPath-mount
-    // the node's containerd `certs.d` to publish the registry's hosts.toml,
-    // and its vcluster's pod guard denies any hostPath outside the worktree's
-    // own data dir — so the ensure could not finish. Those worktrees run
-    // without a cross-worktree image cache (image-promoter self-gates too).
-    const storeMounts: PodMount[] = []
-    if (projectRegistry) {
-      emit('Ensuring project registry...', options)
-      await ensureProjectRegistry(projectSlug)
-
-      // The node-local image store: the read-only containers/storage lower
-      // this pod mounts at /var/lib/shared-images, so the project's warm
-      // layers are visible to its engine at first touch with no pull and no
-      // graphroot spend (store-writer.ts).
-      //
-      // The generation is PINNED here, at pod create, and never changes for
-      // this pod's life — which is what lets the builder's GC tell a store
-      // in use from a stale one. A cold node has none yet and simply mounts
-      // nothing. The refresh is fired DETACHED because a build is a pod run
-      // of minutes whose product this pod could not adopt anyway (its mount
-      // is already chosen); what it buys is the generation the NEXT worktree
-      // of the project mounts.
-      const storeMount = await nodeImageStoreMount(projectSlug)
-      if (storeMount) storeMounts.push(storeMount)
-      void ensureNodeImageStore(projectSlug)
-    }
-
-    // virtualCluster worktrees additionally get their own virtual cluster,
-    // created here so its cold start overlaps the image, worktree, and
-    // fs-prep legs; the kubeconfig is awaited at the end of this leg, just
-    // before the mounts are assembled.
-    let vclusterFreshlyCreated = false
-    if (virtualCluster) {
-      // The wake activator that serves this (and every) vcluster's
-      // scale-to-zero — before the vcluster so its pod IP is available to
-      // the sleep step below. Runs the proxy image the ensureRunning()
-      // above just built and pushed.
-      emit('Ensuring vcluster activator...', options)
-      await ensureActivator(await resolveProxyImageTag(testEnv.proxyImage))
-
-      emit('Creating virtual cluster...', options)
-      await ensureVclusterImages()
-      const { freshlyCreated } = await ensureWorktreeVcluster({
-        worktreeId,
-        allowedHostPathPrefix: nestedYaacDataDir(projectSlug, worktreeId),
-        onProgress: (m) => emit(m, options),
-      })
-      vclusterFreshlyCreated = freshlyCreated
-    }
-
-    // Egress: the worktree pod's outbound 443/80 is redirected to the proxy at
-    // the node level by netd's per-pod DNAT rules (k8s/netd)
-    // — no per-pod sidecar. The pod also points its resolver at the proxy
-    // (DNS stub) and dials the SSH tunnel sentinel; both are admitted by the
-    // same worktree NetworkPolicy. The proxy identifies the worktree by the source pod IP
-    // it watches, so nothing per-worktree needs injecting here.
-    //
-    // The proxy Service ClusterIP is allocator-assigned (no longer pinned) — for
-    // both the outer and the vcluster-allocated inner proxy — so read it live.
-    // Stable for the cluster's lifetime: the Service is never deleted/recreated.
-    const proxyHost = await proxyServiceClusterIp()
-
-    // streamd auth: the per-worktree token its handshake requires, derived
-    // from the install's proxy secret (no new storage — survives server
-    // restarts). Leaking it grants nothing: the ingress lock means only the
-    // proxy reaches streamd, and the token only opens the pod's OWN daemon.
-    const streamToken = await podStreamToken(worktreeId)
-
-    // Register this worktree's state (envSecretProxy rules, allowlist, repo
-    // URL) with the proxy. GitHub / Claude / Codex auth is handled
-    // dynamically by the proxy from the mounted credentials dir — no per-
-    // worktree rule is needed for those. envSecretProxy rules reference
-    // their values by name; the values land in the proxy-secrets
-    // credentials file first so the registration's secretRefs resolve from
-    // the proxy's first request onward. The same builder backs the
-    // reconciler's resync backstop.
-    await syncProxySecrets(config)
-    await proxyClient.registerWorktree(
-      worktreeId,
-      buildWorktreeRegistration({ config, remoteUrl, tool, projectSlug }),
-    )
-
-    // vcluster kubeconfig: wait for the syncer to publish it (the cold
-    // start has been running since the ensure above), write it under the
-    // worktree dir, and dir-mount it at ~/.kube. Speaks to the pinned
-    // VIP:8443 (IP SAN) — no DNS involved.
-    const vclusterMounts: PodMount[] = []
-    const vclusterEnv: string[] = []
-    if (virtualCluster) {
-      emit('Waiting for the virtual cluster API...', options)
-      const kubeconfig = await waitForVclusterKubeconfig(vclusterName(worktreeId))
-      const vcDir = worktreeVclusterDir(projectSlug, worktreeId)
-      await fs.mkdir(vcDir, { recursive: true })
-      await fs.writeFile(path.join(vcDir, 'config'), kubeconfig, { mode: 0o600 })
-      // SHARED: the server writes (and heals) the kubeconfig, the pod reads it.
-      vclusterMounts.push({ source: { kind: 'hostPath', path: vcDir }, mountPath: '/home/yaac/.kube' })
-      vclusterEnv.push('KUBECONFIG=/home/yaac/.kube/config')
-
-      // Born-at-zero: with the kubeconfig captured, the freshly-booted
-      // (never used) control plane is scaled to 0 — the activator wakes it
-      // on the worktree's first API touch. Only a vcluster THIS create
-      // booted may be slept: re-sleeping an existing one would discard its
-      // state.db. Best-effort — a failed sleep just leaves the vcluster
-      // running (the pre-scale-to-zero behavior).
-      if (vclusterFreshlyCreated) {
-        emit('Scaling idle virtual cluster to zero...', options)
-        try {
-          await sleepVcluster(vclusterName(worktreeId), worktreeId)
-        } catch (err) {
-          console.warn(`vcluster sleep (${worktreeId}): ${(err as Error).message}`)
-        }
-      }
-
-      // yaac-in-yaac preset: the nested data dir is mounted at the
-      // IDENTICAL absolute path in the pod, because inner synced-pod
-      // hostPaths resolve on the NODE (which sees the host path via the
-      // kind $HOME extraMount). It is also the VAP guard's only allowed
-      // hostPath prefix for this worktree's synced pods. The registry env
-      // points the inner server's pushes at the project's registry
-      // (resolvable in-pod via the proxy's split-horizon DNS, on the node via
-      // hosts.toml) — no repo-path prefix, that registry is already scoped.
-      const nestedDataDir = nestedYaacDataDir(projectSlug, worktreeId)
-      await fs.mkdir(nestedDataDir, { recursive: true })
-      // SHARED, and a hostPath the NODE must resolve too: the inner yaac's
-      // synced pods carry hostPaths under this dir (see nestedYaacDataDir).
-      vclusterMounts.push({ source: { kind: 'hostPath', path: nestedDataDir }, mountPath: nestedDataDir })
-      vclusterEnv.push(`YAAC_DATA_DIR=${nestedDataDir}`)
-      vclusterEnv.push('YAAC_NESTED=1')
-      vclusterEnv.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
-    }
-
-    return { proxyHost, streamToken, vclusterMounts, vclusterEnv, storeMounts }
-  })()
+  // The substrate half: the egress registration, the image plumbing the
+  // in-pod engine pulls through, and — for a virtualCluster project — the
+  // worktree's own nested cluster. Started here so its cold start overlaps
+  // the image build, the checkout and the fs prep; what it stands up
+  // belongs to the WORKTREE, so the retry loop below reuses it rather than
+  // preparing again per attempt.
+  const substrateTask = runtime.prepareSubstrate({
+    projectSlug,
+    workspaceId: worktreeId,
+    tool,
+    config,
+    remoteUrl,
+    nestedContainers,
+    virtualCluster,
+    onProgress: (m) => emit(m, options),
+  })
+  substrateTask.catch(() => { /* awaited at the join */ })
 
   const prepTask = (async () => {
     // Load every tool's stored credential, not just the active tool's: pods
@@ -1042,20 +830,14 @@ export async function createWorktree(
     // whole life.
     const sessionStarts = await ensureSessionStartsLog(projectSlug, worktreeId)
 
-    // SSH provisioning: when the project's remote is SSH, forward the proxy's
-    // ssh-agent into the pod (no private key inside the container) and
-    // configure git's SSH transport to (a) use the agent for identity, (b)
-    // verify with our project-scoped known_hosts, (c) tunnel through the MITM
-    // proxy via HTTP CONNECT so the allowlist still applies.
-    //
-    // The agent rendezvous is a TCP hop to the proxy's SSH_AGENT_PORT, not a
-    // shared host directory: yaac-worktree-init re-exposes it as the UNIX
-    // socket SSH_AUTH_SOCK names, so a pod scheduled on another node than the
-    // proxy still gets an agent (a hostPath socket only meets on one node).
-    // The upstream env is appended below, where the cluster leg's proxy
-    // ClusterIP is in scope.
-    const sshMounts: PodMount[] = []
-    const sshEnv: string[] = []
+    // SSH remotes: the worktree talks git over SSH with no private key
+    // inside the container, which needs a host key to verify against. That
+    // half is here — the credential must exist, and the project-scoped
+    // known_hosts is written host-side from it. How that file, the
+    // forwarded agent and the tunnel reach the pod is the runtime's (all
+    // three are properties of its own egress path), so only the path
+    // travels on the spec.
+    let sshKnownHostsFile: string | undefined
     if (parsedRemote.scheme === 'ssh') {
       const knownHostsEntry = await loadKnownHostsEntryForHost(parsedRemote.host)
       if (!knownHostsEntry) {
@@ -1064,31 +846,9 @@ export async function createWorktree(
           `No SSH known_hosts entry for ${parsedRemote.host}. Run "yaac auth update" to register one.`,
         )
       }
-      const knownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
-      await writeKnownHostsFile([knownHostsEntry], knownHostsFile)
-      const containerKnownHosts = '/home/yaac/.ssh/yaac/known_hosts'
       // SHARED: written under the project dir by the server, read in-pod.
-      sshMounts.push({
-        source: { kind: 'hostPath', path: knownHostsFile, type: 'File' },
-        mountPath: containerKnownHosts,
-        readOnly: true,
-      })
-      // ncat speaks CONNECT to a sentinel address that netd redirects
-      // through the node Envoy to the proxy's tunnel listener — the same path
-      // as HTTP(S). CONNECT carries the real host:port (so the allowlist sees
-      // the hostname; a raw port-22 redirect would lose it), and Envoy stamps
-      // the source pod IP, so identity is uniform (no x:<worktreeId> in env).
-      const proxyCommand = `ncat --proxy ${SSH_TUNNEL_SENTINEL}:${TUNNEL_INGRESS_PORT}`
-        + ' --proxy-type http %h %p'
-      const gitSshCmd = formatSshCommand([
-        'ssh', '-F', '/dev/null',
-        '-o', `UserKnownHostsFile=${containerKnownHosts}`,
-        '-o', 'StrictHostKeyChecking=yes',
-        '-o', 'IdentitiesOnly=no',
-        '-o', `ProxyCommand=${proxyCommand}`,
-      ])
-      sshEnv.push(`SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`)
-      sshEnv.push(`GIT_SSH_COMMAND=${gitSshCmd}`)
+      sshKnownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
+      await writeKnownHostsFile([knownHostsEntry], sshKnownHostsFile)
     }
 
     // Refresh the per-project placeholder credential files from the current
@@ -1183,16 +943,16 @@ export async function createWorktree(
     }
 
     return {
-      toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
+      toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
       claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
       cachedPackages, acpLogs, sessionStarts,
     }
   })()
 
-  const [imageRef, cluster, prep] = await Promise.all([imageTask, clusterTask, prepTask])
+  const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
   const {
-    toolAuthByTool, sshMounts, sshEnv, cacheVolumeEntries,
+    toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
     claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
     cachedPackages, acpLogs, sessionStarts,
@@ -1224,23 +984,6 @@ export async function createWorktree(
     for (const [name, val] of Object.entries(config.env)) {
       env.push(`${name}=${val}`)
     }
-  }
-
-  // CA-trust env only — no HTTP(S)_PROXY routing vars. Interception is
-  // transparent at the network layer (see redirectInit above), so the
-  // container needs nothing but trust in the MITM CA.
-  env.push(...proxyClient.getCaTrustEnv())
-
-  // streamd auth token (derived in the cluster leg).
-  env.push(`YAAC_STREAM_TOKEN=${cluster.streamToken}`)
-
-  // SSH transport env (agent socket + GIT_SSH_COMMAND), prepared alongside
-  // the ssh mounts in the fs-prep leg. Non-empty only for an SSH remote,
-  // which is also exactly when the in-pod agent forwarder is wanted — its
-  // upstream is the proxy ClusterIP resolved in the cluster leg.
-  env.push(...sshEnv)
-  if (sshEnv.length > 0) {
-    env.push(`YAAC_SSH_AGENT_UPSTREAM=${cluster.proxyHost}:${SSH_AGENT_PORT}`)
   }
 
   // Add placeholder values for proxied secrets so tools detect them
@@ -1359,28 +1102,7 @@ export async function createWorktree(
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
   env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(projectSlug, worktreeId, forwardedPorts)}`)
-  if (nestedContainers) {
-    env.push('YAAC_NESTED_ENGINE=1')
-    if (projectRegistry) {
-      // The per-project registries.conf drop-in, written by the script
-      // (sudo) before the engine starts. Base64 keeps the TOML free of
-      // env-value quoting concerns. Every nested worktree needs it: the
-      // registry is plain HTTP, and the image cache pushes/pulls through
-      // it even when there is no vcluster.
-      const conf = Buffer.from(projectRegistryConfDropIn(projectSlug), 'utf8').toString('base64')
-      env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
-    }
-  }
-
-  // vcluster wiring (KUBECONFIG, nested data dir, registry host) resolved
-  // in the cluster leg.
-  env.push(...cluster.vclusterEnv)
-
-  // Inside a nested (inner) yaac no runtimeClassName is stamped — the
-  // vcluster has no RuntimeClass objects, and the syncer sets the synced
-  // pod's host runtime. Host pods get gvisor (pod-spec maps nested to the
-  // gvisor-nested handler).
-  const innerYaac = yaacEnv.nested
+  if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
   // Every mount declares its SOURCE, not just a host path — the seam the
   // stock-k8s backend needs (docs/plans/stock-k8s-multi-node.md §2). What
@@ -1396,7 +1118,7 @@ export async function createWorktree(
   //                tmux socket dir qualifies today.
   // User bindMounts are outside every tier: they name paths on the user's
   // own machine, so they are hostPath by definition.
-  const mounts: PodMount[] = [
+  const mounts: WorkspaceMount[] = [
     // SHARED.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
     { source: { kind: 'hostPath', path: `${repo}/.git` }, mountPath: '/repo/.git' },
@@ -1442,73 +1164,119 @@ export async function createWorktree(
     { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
     // SHARED: the point of a cache volume is that the NEXT worktree gets the
     // warm cache, wherever it is scheduled.
-    ...cacheVolumeEntries.map(([key, containerPath]): PodMount => ({
+    ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
       source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
       mountPath: containerPath,
     })),
     // User bindMounts may point at files or directories — omit `type` so
     // the kubelet mounts whatever exists.
-    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): PodMount => ({
+    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): WorkspaceMount => ({
       source: { kind: 'hostPath', path: hostPath, type: '' },
       mountPath: containerPath,
       readOnly: mode === 'ro',
     })),
     // NODE-LOCAL: the ephemeral module dirs live under the pnpm store.
-    ...ephemeralMounts.map((m): PodMount => ({
+    ...ephemeralMounts.map((m): WorkspaceMount => ({
       source: { kind: 'hostPath', path: m.hostBacking },
       mountPath: m.containerPath,
     })),
-    // SHARED: server-staged trees (skills, worktree bin) and the per-worktree
-    // vcluster / ssh files, all written host-side and read in-pod.
+    // SHARED: server-staged trees (skills, worktree bin), written
+    // host-side and read in-pod.
     ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
     ...worktreeBinMounts(worktreeBinStaging, worktreeBinNames),
-    ...cluster.vclusterMounts,
-    // NODE-LOCAL, read-only: this node's image store generation.
-    ...cluster.storeMounts,
-    ...sshMounts,
   ]
 
-  // Retry the entire Job create + setup so that if the pod dies
-  // immediately after creation we start fresh instead of futilely retrying
-  // individual exec calls against a dead pod.
+  const spec: WorkspaceSpec = {
+    projectSlug,
+    workspaceId: worktreeId,
+    tool,
+    mode,
+    prewarm: options.prewarm === true,
+    image: imageRef,
+    env,
+    mounts,
+    resources: WORKTREE_RESOURCES,
+    // In-worktree setup (git identity, tmux server + options, the agent
+    // transport, the nested engine) runs from here, so the runtime can hold
+    // "ready" until it is done and no per-command round trips are paid.
+    // Prewarmed spares take this same path.
+    postStartExec: [`/usr/local/bin/${WORKTREE_INIT_SCRIPT}`],
+    nestedContainers,
+    ...(sshKnownHostsFile !== undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
+    substrate,
+    onProgress: (m) => emit(m, options),
+  }
+
+  // Retry the whole launch + setup so that if the runtime dies immediately
+  // after it starts we begin fresh, instead of futilely retrying individual
+  // commands against a dead workspace.
   const maxStartAttempts = 3
+  // Set by the first attempt that got as far as a started unit — what a
+  // teardown has to address, and the runtime is the only thing that can
+  // name it.
+  let target: TeardownTarget | undefined
+  let handle: RuntimeHandle | undefined
+
   const setupParams: WorktreeSetupParams = {
-    imageRef, jobName, projectSlug, worktreeId, env, mounts, launching,
-    proxyHost: cluster.proxyHost, nested: nestedContainers, innerYaac, tool, mode, initWindows,
+    spec, projectSlug, worktreeId, tool, mode, launching, initWindows,
     piProvider: toolAuthByTool.pi?.piProvider,
+    onLaunched: (h) => {
+      target = { projectSlug, workspaceId: worktreeId, unitName: h.jobName }
+    },
     options, worktree: worktreeTask,
   }
 
-  emit(`Creating session job ${jobName}...`, options)
-
   for (let attempt = 1; attempt <= maxStartAttempts; attempt++) {
     try {
-      await startJobWithSetup(setupParams)
+      handle = await launchWithSetup(setupParams)
       break
     } catch (err) {
-      // Always remove the half-created Job. Otherwise a pod left running
-      // (e.g. tmux up but a later exec failed) gets picked up by
-      // listActiveWorktrees as a bogus waiting worktree. Foreground cascade
-      // so the dead pod is fully gone before a retry re-applies the Job —
-      // waitForJobPodReady matches pods by the job-name label and must not
-      // see the previous attempt's terminating pod.
-      let podGone = true
+      // A worktree-provisioning failure (bad branch, fetch error) is not
+      // the workspace's fault — relaunching would just re-await the same
+      // rejected promise, so fail fast with the original error.
+      const lastAttempt = err instanceof SetupInputError || attempt >= maxStartAttempts
+
+      // Always take the half-started unit down. Otherwise a workspace left
+      // running (tmux up, but a later command failed) is picked up by the
+      // listing as a bogus waiting worktree, and a relaunch would collide
+      // with the attempt that just failed.
+      //
+      // `unitOnly` for everything that is coming back. A further attempt
+      // launches from the substrate this create already prepared, so
+      // tearing that down between attempts would break the next one. A
+      // create that gave up while KEEPING its checkout (a resume, a spare)
+      // passes it too, for the adjacent reason: its row survives, so the
+      // workspace is still named and the runtime's own sweeps collect the
+      // rest on their schedule. A fresh create that gave up owns
+      // everything it made and its row is about to go, so it takes the
+      // whole teardown — otherwise the registration and the nested cluster
+      // outlive the only thing that named them.
+      const unitOnly = !lastAttempt || !failedCreateCollectsCheckout(options)
+
+      // `launch` reports what it started through `onLaunched`, so a
+      // rejection that lands AFTER the apply did — the API server took the
+      // Job, the response was lost, and the retries then failed against a
+      // network that stayed down — leaves nothing here naming the unit.
+      // Ask the runtime rather than assume there is none: it is the
+      // authority on what exists, and the checkout removal below gates on
+      // nothing running over /workspace. Assuming nothing is would rm it
+      // out from under a pod that is coming up.
+      //
+      // The verdict is what that gate reads. `false` covers a unit still in
+      // its grace period AND a runtime that could not be reached at all —
+      // the same condition that hides a unit hides its absence, so an
+      // unreachable runtime is never read as "nothing is there".
+      let podGone: boolean
       try {
-        await kubectlWithRetry([
-          'delete', 'job', jobName, '-n', k8sNamespace(),
-          '--ignore-not-found', '--cascade=foreground',
-          '--wait=true', '--timeout=30s',
-        ])
+        target ??= await worktreeRuntime().findForTeardown(worktreeId)
+        podGone = target === undefined
+          ? true
+          : await worktreeRuntime().destroy(target, { salvageImages: false, unitOnly })
       } catch {
-        // Already gone, or the delete timed out with the pod still
-        // terminating. Only the rollback below cares which: it removes the
-        // checkout, and a pod in its grace period is still writing to it.
         podGone = false
       }
-      // A worktree-provisioning failure (bad branch, fetch error) is not
-      // the pod's fault — recreating the Job would just re-await the same
-      // rejected promise, so fail fast with the original error.
-      if (!(err instanceof SetupInputError) && attempt < maxStartAttempts) {
+
+      if (!lastAttempt) {
         emit(`Session startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
         continue
       }
@@ -1563,13 +1331,16 @@ export async function createWorktree(
     }
   }
 
-  // Pod is up — hand the reserved sockets off to long-lived forwarders
-  // owned by the server. These stay alive across user attaches/detaches
-  // and are torn down only by delete or the reaper.
-  if (forwardedPorts.length > 0) {
-    const stop = startPortForwarders(relayTcpFactory(worktreeId), forwardedPorts)
-    registerWorktreeForwarders(worktreeId, stop, forwardedPorts)
+  if (handle === undefined) {
+    // Unreachable: the loop leaves only by `break` with a handle, or by
+    // throwing on its last attempt.
+    throw new ServerError('INTERNAL', 'worktree launch reported no handle')
   }
+
+  // The workspace is up — hand the reserved sockets off to long-lived
+  // forwarders owned by the runtime. These stay alive across user
+  // attaches/detaches and come down only with a delete or the reaper.
+  worktreeRuntime().startForwarders(worktreeId, forwardedPorts)
 
   // The branch the worktree forked from, now that the (concurrent) checkout
   // has resolved it. A separate report from the one above so recording the
@@ -1590,7 +1361,8 @@ export async function createWorktree(
 
   return {
     worktreeId,
-    jobName,
+    // The runtime's own name for what it started — never derived here.
+    jobName: handle.jobName,
     forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
     tool,
     mode,

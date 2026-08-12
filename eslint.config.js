@@ -66,18 +66,17 @@ const NO_DATABASE_DIRECT = {
 // vocabulary). `#runtime/{agents,status,terminals}` stay open: those are
 // runtime vocabulary, not substrate verbs. The api layer is NOT on this
 // rule yet — its substrate use is a different shape (image-build rows, the
-// proxy client, port forwards) and is staged separately in the plan.
+// proxy client, port forwards) and wants its own pass over what belongs on
+// the contract.
 //
-// Two things this rule does not yet prove, both of which resolve when the
-// holdout list below empties. It is per-file, so a restricted file still
-// reaches the substrate TRANSITIVELY through a holdout sibling
-// (`stop.ts` → `./cleanup` → `#platform/k8s`) — a green rule is not yet
-// the claim that a mediator's module graph is cluster-free, and so not yet
-// the unit-test-speed guarantee either.
-//
-// docs/plans/runtime-contract-completion.md is the migration; the holdout
-// override below lists what has not moved yet, and the rule is enforced
-// outright once that list is empty.
+// Every domain file is on it now — no mediator NAMES a substrate barrel,
+// and none can be born naming one. What that does not yet give is a
+// cluster-free module graph for every mediator: `#runtime/agents` binds
+// the stream relay directly (podExec, dialCtrlStream), so a mediator that
+// imports it still loads the cluster client transitively. That edge is
+// deliberate — those are runtime vocabulary, and a second driver is what
+// would justify putting the dial on the contract — so the test-time win
+// lands only for mediators that need no agent vocabulary.
 const NO_SUBSTRATE_ABOVE_RUNTIME = {
   regex: '^(#platform/k8s|#runtime/k8s|#platform/container)(/|$)',
   message: 'Reach the runtime through #runtime/driver and #runtime/contract, never a substrate barrel (docs/layered-server.md).',
@@ -208,6 +207,35 @@ export default tseslint.config(
     },
   },
 
+  // src/lib: the server's own dependency-free vocabulary — modules every
+  // layer may name and that name nothing back (docs/layered-server.md). A
+  // sink in the module graph, which is what lets domain, runtime and api
+  // all import one without any of them acquiring the others' weight. Kept
+  // out of @yaac/shared deliberately: nothing outside this package reads
+  // these, and shared is for cross-PACKAGE vocabulary.
+  {
+    files: ['packages/server/src/lib/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            {
+              regex: '^#',
+              message: 'src/lib must stay dependency-free: no other module of this package (docs/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // The store layer: worktrees, clones, transcripts and config on disk
   // (docs/layered-server.md). Pure disk mechanics — it never reads
   // rows, never touches the substrate, and never imports the mediators or
@@ -283,41 +311,6 @@ export default tseslint.config(
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
             NO_SUBSTRATE_ABOVE_RUNTIME,
-            {
-              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // The not-yet-migrated half of the runtime carve-out
-  // (docs/plans/runtime-contract-completion.md). Each of these still names a
-  // substrate barrel; the plan's stages empty the list, and the override
-  // below is deleted with the last entry. A new domain file is born
-  // restricted, because it is not on it.
-  //
-  // Everything except the rule under migration still applies here — this
-  // re-declares the domain zone minus NO_SUBSTRATE_ABOVE_RUNTIME.
-  {
-    files: [
-      // stage 5 — launch
-      'packages/server/src/domain/worktrees/create.ts',
-      'packages/server/src/domain/worktrees/spawn-script.ts',
-      'packages/server/src/domain/skills/builtin.ts',
-    ],
-    rules: {
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          paths: UNTIERED_DATA_DIR,
-          patterns: [
-            RELATIVE_PARENT,
-            SEALED_FOLDERS,
-            NO_DATABASE_DIRECT,
-            NO_API_OR_MAIN,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

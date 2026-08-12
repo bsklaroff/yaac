@@ -4,7 +4,7 @@ import {
   NESTED_PULL_HOSTS,
   hostMatchesPattern,
   resolveAllowedHosts,
-} from '#runtime/k8s/egress/default-allowed-hosts'
+} from '#lib/allowed-hosts'
 import type { YaacConfig } from '@yaac/shared/types'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {

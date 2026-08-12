@@ -5,6 +5,7 @@ import type {
   RuntimeReport,
   RuntimeSnapshot,
   StrayUnit,
+  WorkspaceSubstrate,
   WorktreeRuntime,
 } from '@yaac/server/runtime/contract'
 
@@ -40,6 +41,15 @@ export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHa
     deathCause: { reason: 'pod-stopped' },
     ...overrides,
   }
+}
+
+/**
+ * A stand-in for whatever a runtime prepared around a workspace. Opaque by
+ * contract, so a fake's is empty — a mediator can only pass it along, which
+ * is exactly what a test of one should be able to assert.
+ */
+export function substrateFixture(): WorkspaceSubstrate {
+  return { kind: 'workspace-substrate' }
 }
 
 /** An empty `RuntimeReport`, for the observation path. */
@@ -108,6 +118,12 @@ export function installFakeWorktreeRuntime(
     exec: (j, c, o) => current.exec(j, c, o),
     awaitAgentTransport: (j, o) => current.awaitAgentTransport(j, o),
     claimSpare: (w, t) => current.claimSpare(w, t),
+    ensureBuildEngine: () => current.ensureBuildEngine(),
+    prepareImage: (o) => current.prepareImage(o),
+    prepareSubstrate: (i) => current.prepareSubstrate(i),
+    launch: (s) => current.launch(s),
+    awaitReady: (h) => current.awaitReady(h),
+    startForwarders: (w, p) => current.startForwarders(w, p),
     registerWorkspace: (r) => current.registerWorkspace(r),
     deregisterWorkspace: (w) => current.deregisterWorkspace(w),
     salvageImages: (t) => current.salvageImages(t),
@@ -145,6 +161,25 @@ function defaultRuntime(): WorktreeRuntime {
     exec: () => Promise.resolve({ stdout: '', stderr: '' }),
     awaitAgentTransport: () => Promise.resolve(),
     claimSpare: () => Promise.resolve(),
+    ensureBuildEngine: () => Promise.resolve(),
+    prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
+    prepareSubstrate: () => Promise.resolve(substrateFixture()),
+    // Echoes the spec back as a handle, the way a real launch does: a
+    // mediator that goes on to exec into what it just launched addresses
+    // the workspace it asked for rather than the fixture's default one.
+    launch: (spec) => Promise.resolve(handleFixture({
+      workspaceId: spec.workspaceId,
+      projectSlug: spec.projectSlug,
+      jobName: `unit-${spec.projectSlug}-${spec.workspaceId}`,
+      tool: spec.tool,
+      declaredTool: spec.tool,
+      mode: spec.mode,
+      prewarmed: spec.prewarm,
+      running: false,
+      state: 'pending',
+    })),
+    awaitReady: () => Promise.resolve(),
+    startForwarders: () => {},
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
     salvageImages: () => Promise.resolve(),

@@ -3,15 +3,16 @@
 // stops src from reaching past this file. Modules in here import each
 // other by relative path, which is why they are unaffected by that rule.
 //
-// This feature owns a worktree's *life*: creating one (worktree, pod,
-// vcluster, agent windows), restarting it, stopping it, reaping it when it
-// dies, and the rows that record all of that. It is the one place allowed
-// to compose the other feature verticals — it registers a worktree with
-// `#runtime/k8s/egress`, stands its forwards up through `#runtime/k8s/forwarders`,
-// builds its agent windows with `#runtime/agents`, and evicts its
-// observations from `#runtime/status` on teardown. Those four never import
-// back, which is what keeps the graph acyclic and each of them testable
-// without a worktree.
+// This feature owns a worktree's *life*: deciding what one should be,
+// starting it, restarting it, stopping it, reaping it when it dies, and
+// the rows that record all of that. What it never owns is how any of that
+// becomes a running thing — it drives the registered runtime through
+// `#runtime/driver` and speaks only `#runtime/contract` vocabulary, so
+// nothing here names a Job, a label or a namespace. It composes the two
+// runtime verticals that are agent rather than substrate knowledge:
+// `#runtime/agents` builds its windows, and `#runtime/status` holds the
+// observations it evicts on teardown. Neither imports back, which is what
+// keeps the graph acyclic and both testable without a worktree.
 //
 // The reconcile entry points at the bottom are the background loop's half
 // of the same job: every one is idempotent and self-gating, because the
