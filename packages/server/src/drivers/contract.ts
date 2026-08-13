@@ -723,10 +723,17 @@ export interface WorktreeDriver {
    * Answers the ref that names the finished image, and narrates through
    * `onLog` — a rebuild is minutes long, so its output is the response as
    * far as a caller is concerned.
+   *
+   * `nestedContainers` is handed in for the same reason as `prepareImage`'s:
+   * it selects which CHAIN the project runs, that follows from the
+   * project's config, and a runtime may not read config. Required rather
+   * than defaulted because defaulting it does not fail — a nested project
+   * would rebuild the chain without its nestable layer, publish a tag no
+   * worktree runs, and report success.
    */
   rebuildImage(
     projectSlug: string,
-    opts?: { imagePrefix?: string; onLog?: (line: string) => void },
+    opts: { nestedContainers: boolean; onLog?: (line: string) => void },
   ): Promise<string>
 
   /**

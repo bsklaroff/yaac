@@ -906,7 +906,7 @@ describe('rebuildProjectImage', () => {
     mockBuildImage.mockResolvedValue(undefined)
     mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:2`)
 
-    expect(await rebuildProjectImage('p')).toBe('yaac-user-p:3')
+    expect(await rebuildProjectImage('p', { nestedContainers: false })).toBe('yaac-user-p:3')
 
     // Base untouched; tools removed and rebuilt no-cache on the host.
     expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:2'])
@@ -928,7 +928,7 @@ describe('rebuildProjectImage', () => {
     mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-tools:t1`)
     mockBuildImage.mockResolvedValue(undefined)
 
-    await rebuildProjectImage('proj')
+    await rebuildProjectImage('proj', { nestedContainers: false })
 
     // A rebuild changes bytes under an unchanged content-hash tag, so a
     // plain push would HEAD-skip and hand the pod stale bytes.
@@ -945,7 +945,7 @@ describe('rebuildProjectImage', () => {
     const inflight = ensureImage('p')
     await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(1) })
 
-    const rebuild = rebuildProjectImage('p')
+    const rebuild = rebuildProjectImage('p', { nestedContainers: false })
     await flush()
     // Still waiting on the in-flight build — no removal yet.
     expect(mockRemoveImage).not.toHaveBeenCalled()
@@ -962,7 +962,7 @@ describe('rebuildProjectImage', () => {
   it('lets a concurrent ensure join the no-cache rebuild instead of racing the removal', async () => {
     chain([layer('yaac-tools:1', 'tools')])
     const builds = deferBuilds()
-    const rebuild = rebuildProjectImage('a')
+    const rebuild = rebuildProjectImage('a', { nestedContainers: false })
     await vi.waitFor(() => { expect(mockRemoveImage).toHaveBeenCalledTimes(1) })
 
     const join = ensureImage('b')
@@ -976,8 +976,39 @@ describe('rebuildProjectImage', () => {
 
   it('rejects a standalone Dockerfile.yaac chain (no tools layer)', async () => {
     chain([layer('yaac-base:custom', 'project')])
-    await expect(rebuildProjectImage('p')).rejects.toThrow(/standalone Dockerfile\.yaac/)
+    await expect(rebuildProjectImage('p', { nestedContainers: false }))
+      .rejects.toThrow(/standalone Dockerfile\.yaac/)
     expect(mockRemoveImage).not.toHaveBeenCalled()
+  })
+
+  // The chain a nested project RUNS carries the nestable layer, so a
+  // rebuild that resolved the chain without the flag would rebuild and
+  // publish `base → tools → user` — minutes of work, a success report, and
+  // a tag none of that project's worktrees ever pull.
+  it('rebuilds the nestable chain for a nested project', async () => {
+    const user = await podLayer({
+      tag: 'yaac-user-p:n3',
+      name: 'user',
+      buildArgs: { BASE_IMAGE: 'yaac-nestable:n2' },
+    })
+    chain([
+      layer('yaac-base:1'),
+      layer('yaac-tools:2', 'tools'),
+      layer('yaac-nestable:n2', 'nestable'),
+      user,
+    ])
+    mockBuildImage.mockResolvedValue(undefined)
+    mockPush.mockResolvedValue(`${CLUSTER_HOST}/yaac-nestable:n2`)
+
+    expect(await rebuildProjectImage('p', { nestedContainers: true })).toBe('yaac-user-p:n3')
+
+    expect(mockResolveChain).toHaveBeenCalledWith('p', 'yaac', true)
+    // Tools is the --no-cache hinge; nestable sits downstream of it and is
+    // rebuilt on the new tools digest, which is the whole point.
+    expect(mockRemoveImage.mock.calls.map((c) => c[0]))
+      .toEqual(['yaac-tools:2', 'yaac-nestable:n2'])
+    expect(mockBuildImage.mock.calls.map((c) => [c[0], (c[4] as { noCache?: boolean }).noCache]))
+      .toEqual([['yaac-tools:2', true], ['yaac-nestable:n2', false]])
   })
 
   it('invalidates the verified push cache for a rebuilt tag', async () => {
@@ -985,7 +1016,7 @@ describe('rebuildProjectImage', () => {
     await pushImageShared('yaac-tools:1', { projectSlug: 'a', reason: 'session' })
     chain([layer('yaac-tools:1', 'tools')])
     mockBuildImage.mockResolvedValue(undefined)
-    await rebuildProjectImage('a')
+    await rebuildProjectImage('a', { nestedContainers: false })
     mockHasTag.mockClear()
 
     await pushImageShared('yaac-tools:1', { projectSlug: 'a', reason: 'session' })

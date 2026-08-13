@@ -4,7 +4,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // registry push. What this module owns is that BOTH run, in that order, and
 // that the push is forced.
 const mockRebuildProjectImage = vi.hoisted(() => vi.fn<
-  (slug: string, opts?: { imagePrefix?: string; onLog?: (line: string) => void }) => Promise<string>
+  (
+    slug: string,
+    opts: { nestedContainers: boolean; imagePrefix?: string; onLog?: (line: string) => void },
+  ) => Promise<string>
 >())
 const mockPushImageShared = vi.hoisted(() => vi.fn<
   (tag: string, ctx: unknown, opts?: unknown) => Promise<string>
@@ -28,13 +31,24 @@ describe('rebuildAndPushProjectImage', () => {
   // already in the registry and publishes nothing — the rebuild reports
   // success and every new worktree keeps running the old bytes.
   it('forces the push, since the tag did not change', async () => {
-    await rebuildAndPushProjectImage('demo')
+    await rebuildAndPushProjectImage('demo', { nestedContainers: false })
 
     expect(mockPushImageShared).toHaveBeenCalledExactlyOnceWith(
       'yaac-user-demo:abc123',
       { projectSlug: 'demo', reason: 'rebuild' },
       { force: true },
     )
+  })
+
+  // The flag selects the CHAIN. Dropping it here rebuilds and publishes
+  // `base → tools → user` for a nested project, while every one of its
+  // worktrees runs the nestable chain's tag — a rebuild that succeeds and
+  // reaches nothing.
+  it('rebuilds the chain the project’s worktrees actually run', async () => {
+    await rebuildAndPushProjectImage('demo', { nestedContainers: true })
+
+    expect(mockRebuildProjectImage.mock.calls[0][1])
+      .toMatchObject({ nestedContainers: true })
   })
 
   it('pushes only after the rebuild finished', async () => {
@@ -48,7 +62,7 @@ describe('rebuildAndPushProjectImage', () => {
       return Promise.resolve('localhost:5000/yaac-user-demo:abc123')
     })
 
-    await rebuildAndPushProjectImage('demo')
+    await rebuildAndPushProjectImage('demo', { nestedContainers: false })
 
     expect(order).toEqual(['rebuild', 'push'])
   })
@@ -60,22 +74,21 @@ describe('rebuildAndPushProjectImage', () => {
     const lines: string[] = []
 
     const tag = await rebuildAndPushProjectImage('demo', {
-      imagePrefix: 'yaac-test',
+      nestedContainers: false,
       onLog: (line) => lines.push(line),
     })
 
     expect(tag).toBe('yaac-user-demo:abc123')
     const [slug, opts] = mockRebuildProjectImage.mock.calls[0]
     expect(slug).toBe('demo')
-    expect(opts?.imagePrefix).toBe('yaac-test')
-    expect(typeof opts?.onLog).toBe('function')
+    expect(typeof opts.onLog).toBe('function')
     expect(lines).toEqual(['Pushing rebuilt image to the local registry...'])
   })
 
   it('publishes nothing when the rebuild failed', async () => {
     mockRebuildProjectImage.mockRejectedValue(new Error('standalone Dockerfile.yaac'))
 
-    await expect(rebuildAndPushProjectImage('demo')).rejects.toThrow(/standalone/)
+    await expect(rebuildAndPushProjectImage('demo', { nestedContainers: false })).rejects.toThrow(/standalone/)
     expect(mockPushImageShared).not.toHaveBeenCalled()
   })
 
@@ -84,6 +97,6 @@ describe('rebuildAndPushProjectImage', () => {
   it('surfaces a push that failed', async () => {
     mockPushImageShared.mockRejectedValue(new Error('registry refused'))
 
-    await expect(rebuildAndPushProjectImage('demo')).rejects.toThrow(/registry refused/)
+    await expect(rebuildAndPushProjectImage('demo', { nestedContainers: false })).rejects.toThrow(/registry refused/)
   })
 })

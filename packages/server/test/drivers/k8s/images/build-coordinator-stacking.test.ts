@@ -166,7 +166,7 @@ describe('rebuildProjectImage', () => {
     await fs.mkdir(repoPath, { recursive: true })
 
     const { rebuildProjectImage } = await h.load()
-    const result = await rebuildProjectImage('myproject')
+    const result = await rebuildProjectImage('myproject', { nestedContainers: false })
 
     // System base (yaac-base) is NOT rebuilt; only the tools layer runs,
     // and it runs with --no-cache so upstream installers re-execute.
@@ -181,12 +181,34 @@ describe('rebuildProjectImage', () => {
     await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { rebuildProjectImage } = await h.load()
-    const result = await rebuildProjectImage('myproject')
+    const result = await rebuildProjectImage('myproject', { nestedContainers: false })
 
     // tools (--no-cache) → user. The system base is untouched.
     expect(h.operations).toHaveLength(2)
     expect(h.operations[0]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\] --no-cache$`))
     expect(h.operations[1]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
+    expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
+  })
+
+  // A nested project's worktrees run the NESTABLE chain's tag. Resolving
+  // the rebuild's chain without the flag rebuilds base → tools → user
+  // instead: the nestable layer is never rebuilt, its content-hash tag
+  // therefore never changes, and the freshly installed agent CLIs reach
+  // nothing the user will ever execute.
+  it('rebuilds through nestable for a nested project', async () => {
+    const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+
+    const { rebuildProjectImage } = await h.load()
+    const result = await rebuildProjectImage('myproject', { nestedContainers: true })
+
+    // tools (--no-cache) → nestable → user, and the answer is the tag a
+    // nested worktree actually pulls.
+    expect(h.operations).toHaveLength(3)
+    expect(h.operations[0]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\] --no-cache$`))
+    expect(h.operations[1]).toMatch(new RegExp(`^build yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE},YAAC_UID=\\d+\\]$`))
+    expect(h.operations[2]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
   })
 
@@ -198,7 +220,8 @@ describe('rebuildProjectImage', () => {
     await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { rebuildProjectImage } = await h.load()
-    await expect(rebuildProjectImage('myproject')).rejects.toThrow(/standalone Dockerfile\.yaac/)
+    await expect(rebuildProjectImage('myproject', { nestedContainers: false }))
+      .rejects.toThrow(/standalone Dockerfile\.yaac/)
     expect(h.operations).toEqual([])
   })
 
@@ -208,7 +231,10 @@ describe('rebuildProjectImage', () => {
 
     const { rebuildProjectImage } = await h.load()
     const messages: string[] = []
-    await rebuildProjectImage('myproject', { onLog: (line) => messages.push(line) })
+    await rebuildProjectImage('myproject', {
+      nestedContainers: false,
+      onLog: (line) => messages.push(line),
+    })
 
     expect(messages.some((m) => m.startsWith('removing existing image yaac-tools:'))).toBe(true)
     expect(messages.some((m) => m.startsWith('building yaac-tools:') && m.endsWith('(no cache)'))).toBe(true)

@@ -18,14 +18,13 @@ import {
 } from '#domain/projects'
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
+import { rebuildProjectImage } from '#domain/images'
 import { resolveProjectBuildDir } from '#lib/build-dirs'
-import { worktreeDriver } from '#drivers/driver'
 import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { toErrorBody } from '#http'
-import { testEnv } from '@yaac/shared/env'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -169,8 +168,7 @@ export const projectApp = new Hono()
       try {
         // Resolve project first (throws NOT_FOUND if missing).
         await getProjectDetail(slug)
-        const finalTag = await worktreeDriver().rebuildImage(slug, {
-          imagePrefix: testEnv.imagePrefix,
+        const finalTag = await rebuildProjectImage(slug, {
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
         await write({ type: 'result', result: { projectSlug: slug, finalTag } })

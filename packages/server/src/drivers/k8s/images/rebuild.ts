@@ -1,4 +1,5 @@
 import { pushImageShared, rebuildProjectImage } from './build-coordinator'
+import { testEnv } from '@yaac/shared/env'
 
 /**
  * A project rebuild, all the way to runnable: force the chain's stale
@@ -14,6 +15,12 @@ import { pushImageShared, rebuildProjectImage } from './build-coordinator'
  * there, and publish nothing. Getting that wrong is silent — the rebuild
  * reports success and the cluster keeps running the old bytes.
  *
+ * The caller decides only which project and whether its worktrees run
+ * nested containers — the second because it selects the image CHAIN, the
+ * same reason `prepareWorkspaceImage` takes it. Which prefix the test
+ * fixtures pinned is substrate and read here, so no caller above the
+ * runtime has to know it exists.
+ *
  * A sibling of build-coordinator rather than another export on it, for the
  * reason `workspace-image` is: ESM intra-module calls bypass `vi.mock`, so
  * a caller's partial mock of the coordinator stops intercepting the moment
@@ -21,9 +28,13 @@ import { pushImageShared, rebuildProjectImage } from './build-coordinator'
  */
 export async function rebuildAndPushProjectImage(
   projectSlug: string,
-  opts: { imagePrefix?: string; onLog?: (line: string) => void } = {},
+  opts: { nestedContainers: boolean; onLog?: (line: string) => void },
 ): Promise<string> {
-  const finalTag = await rebuildProjectImage(projectSlug, opts)
+  const finalTag = await rebuildProjectImage(projectSlug, {
+    nestedContainers: opts.nestedContainers,
+    imagePrefix: testEnv.imagePrefix,
+    onLog: opts.onLog,
+  })
   opts.onLog?.('Pushing rebuilt image to the local registry...')
   await pushImageShared(finalTag, { projectSlug, reason: 'rebuild' }, { force: true })
   return finalTag

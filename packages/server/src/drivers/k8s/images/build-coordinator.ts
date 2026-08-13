@@ -384,18 +384,26 @@ export async function ensureImage(
  *
  * Returns the final image tag (same as `ensureImage`).
  *
+ * `nestedContainers` is required, with no default, for the same reason
+ * `prewarmProjectImage`'s config is: it selects the CHAIN, and defaulting it
+ * to false would rebuild `base → tools → user` for a nested project and
+ * SUCCEED at it, while every one of that project's worktrees runs the
+ * nestable chain's tag — minutes of work, a success report, and nothing the
+ * user will ever execute. A caller that forgot should not compile.
+ *
  * @throws when the project uses a standalone Dockerfile.yaac (no tools layer
  *   in the chain) — there's nothing for this command to invalidate.
  */
 export async function rebuildProjectImage(
   projectSlug: string,
   opts: {
+    nestedContainers: boolean
     imagePrefix?: string
     onLog?: (line: string) => void
-  } = {},
+  },
 ): Promise<string> {
   const prefix = opts.imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
+  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, opts.nestedContainers)
 
   const toolsIdx = layers.findIndex((l) => l.tag.startsWith(`${prefix}-tools:`))
   if (toolsIdx < 0) {
