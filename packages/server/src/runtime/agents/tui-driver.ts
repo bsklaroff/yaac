@@ -27,13 +27,13 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { dialCtrlStream, type StreamChild } from '#runtime/k8s/substrate'
+import { type StreamChild } from '#drivers/contract'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
 import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
 import { buildAgentCmd, buildPromptPasteBgCmd } from './agent-command'
-import { podExec } from '#runtime/k8s/substrate'
+import { worktreeDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
   AgentConnection,
@@ -117,7 +117,7 @@ class TuiConnection implements AgentConnection {
 
     let child: StreamChild
     try {
-      child = (deps.dial ?? ((s, argv) => dialCtrlStream(s.worktreeId, argv)))(session, attachArgv())
+      child = (deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv)))(session, attachArgv())
     } catch (err) {
       this.down(`spawn failed: ${String(err)}`)
       return
@@ -315,7 +315,7 @@ export const tuiDriver: AgentDriver = {
   async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
     // The handle is a pane id, which is exactly what tmux's paste target
     // wants — no window-name indirection needed.
-    await podExec(session.jobName, buildPromptPasteBgCmd(handle, text), {
+    await worktreeDriver().exec(session.jobName, buildPromptPasteBgCmd(handle, text), {
       maxAttempts: 1,
       timeout: 15_000,
     })

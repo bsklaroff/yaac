@@ -146,6 +146,30 @@ describe('exec streams', () => {
     const result = JSON.parse((await readAll(socket)).toString('utf8')) as Record<string, unknown>
     expect(result).toMatchObject({ exitCode: 7, stderr: 'nope\n' })
   })
+
+  it('marks a command it could not spawn, so 127 cannot read as not-installed', async () => {
+    // The server treats a nonzero exit as a verdict about the pod, and acts
+    // on it — a probe that "exited 127" reaps a worktree or reports a tool
+    // missing from the image. A command that never ran says nothing about
+    // either, and 127 alone cannot tell the two apart.
+    const port = await startDaemon()
+    const { socket } = await handshake(port, {
+      token: TOKEN, kind: 'exec', cmd: ['/nonexistent/binary'],
+    })
+    const result = JSON.parse((await readAll(socket)).toString('utf8')) as Record<string, unknown>
+    expect(result).toMatchObject({ exitCode: 127, spawnFailed: true })
+  })
+
+  it('reports the signal when the command is killed rather than exiting', async () => {
+    // Without it the server sees `code ?? 1` and reads a killed probe as a
+    // conclusive failure of what it was probing for.
+    const port = await startDaemon()
+    const { socket } = await handshake(port, {
+      token: TOKEN, kind: 'exec', cmd: ['sh', '-c', 'kill -KILL $$'],
+    })
+    const result = JSON.parse((await readAll(socket)).toString('utf8')) as Record<string, unknown>
+    expect(result).toMatchObject({ signal: 'SIGKILL' })
+  })
 })
 
 describe('ctrl streams', () => {

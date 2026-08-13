@@ -38,9 +38,9 @@ import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
-import { ensureRootfulPodmanHost } from '@yaac/server/runtime/k8s/container/runtime'
+import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
-import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/runtime/k8s/cluster/arg-guards'
+import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/drivers/k8s/cluster/arg-guards'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
 
 /**

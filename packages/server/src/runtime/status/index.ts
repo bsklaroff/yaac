@@ -28,6 +28,11 @@
 // packages/server/test/features/status/.
 
 export { classifyWorkspaces, watcherDisplayLiveness } from './classify'
+export {
+  observeWorkspaces,
+  type RuntimeReport,
+  type WorktreeRuntimeReport,
+} from './observe'
 export { worktreeControlStreamSend, type ControlStreamSend } from './control-stream-registry'
 export {
   forgetLiveness,
@@ -35,6 +40,7 @@ export {
   probeAgentPaneState,
   probeTmuxLiveness,
   type AgentPaneState,
+  type ProbeTarget,
   type TmuxLiveness,
 } from './liveness'
 export {
@@ -48,7 +54,6 @@ export {
 } from './status-store'
 export {
   StatusWatcherManager,
-  podAgentMode,
   type StatusWatcherDeps,
   type WatchedWorktree,
 } from './status-watcher'

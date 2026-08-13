@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { resolveWorktreeContainer } from '#domain/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 
 /**
  * The substrate lookup is the boundary here: which workspace an id names,
@@ -35,7 +35,7 @@ describe('resolveWorktreeContainer', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installFakeWorktreeRuntime({ find })
+    installFakeWorktreeDriver({ find })
     tmpDir = await createTempDataDir()
     find.mockReset().mockResolvedValue(undefined)
   })

@@ -8,7 +8,7 @@
  * stale spawn requests after a proxy restart would be worse than dropping
  * them (the in-worktree curl fails loudly and the agent can retry).
  *
- * Wire shapes are mirrored in packages/server/src/runtime/k8s/egress/proxy-client.ts
+ * Wire shapes are mirrored in packages/server/src/drivers/k8s/egress/proxy-client.ts
  * (PendingSpawn / SpawnResultWire) — the proxy bundles independently and
  * cannot import server code; keep them in sync.
  */

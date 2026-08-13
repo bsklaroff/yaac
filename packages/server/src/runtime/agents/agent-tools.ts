@@ -21,14 +21,6 @@ import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
 /** What an agent pane is doing, as every display path reads it. */
 export type AgentPaneStatus = 'running' | 'waiting'
 
-/** Normalize a raw `yaac.tool` label value into an AgentTool. */
-export function normalizeTool(raw: string | undefined): AgentTool {
-  if (raw === 'codex') return 'codex'
-  if (raw === 'opencode') return 'opencode'
-  if (raw === 'pi') return 'pi'
-  return 'claude'
-}
-
 /**
  * One agent session's first user message, read from the transcript recorded
  * for it. There is deliberately no by-id variant: a conversation started by

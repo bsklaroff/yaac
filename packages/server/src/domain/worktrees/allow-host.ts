@@ -1,4 +1,4 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { addAllowedHostToProjectConfig } from '#domain/projects'
 import { resolveWorktreeContainer } from './resolve'
 
@@ -28,7 +28,7 @@ export async function allowWorktreeHost(
 ): Promise<void> {
   const target = await resolveWorktreeContainer(idOrName, { requireRunning: true })
   if (opts.persist) await addAllowedHostToProjectConfig(target.projectSlug, host)
-  await worktreeRuntime().allowHost(
+  await worktreeDriver().allowHost(
     { workspaceId: target.worktreeId, projectSlug: target.projectSlug },
     host,
     { fanOutToProject: opts.persist },

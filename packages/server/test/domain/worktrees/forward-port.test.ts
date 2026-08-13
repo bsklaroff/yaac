@@ -4,7 +4,7 @@ vi.mock('#domain/projects/local-config', () => ({
   addPortForwardToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
 
-import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
 import { forwardWorktreePort } from '#domain/worktrees/forward-port'
 import { ServerError } from '@yaac/shared/errors'
@@ -29,7 +29,7 @@ beforeEach(() => {
   mockPersist.mockResolvedValue({})
   mockUnforwarded.mockResolvedValue([8090])
   mockForwardPort.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
-  installFakeWorktreeRuntime({
+  installFakeWorktreeDriver({
     find: () => Promise.resolve(HANDLE),
     unforwardedPorts: mockUnforwarded,
     forwardPort: mockForwardPort,

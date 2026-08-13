@@ -18,7 +18,6 @@ import {
 import { agentWindowName } from './agent-tools'
 import { shellEscape } from '#lib/shell'
 import { ServerError } from '@yaac/shared/errors'
-import type { PortMapping } from '@yaac/shared/types'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
@@ -124,23 +123,4 @@ export function buildWindowsExec(
     cmds.push(`${TMUX} new-window -d -t yaac -n ${agentWindowName(spec.tool, i + 1)} '${spec.cmd}'`)
   })
   return cmds.join(' && ')
-}
-
-/**
- * Render the tmux `status-right` value shown in a worktree's bottom bar.
- * Kept in a single helper so new worktrees and server restarts both
- * produce the same format — it reaches the pod two ways (the launch
- * stamps YAAC_STATUS_RIGHT for the postStart hook; a restart sets the
- * option on the running server), and the bar must not change shape
- * between them.
- */
-export function buildStatusRight(
-  projectSlug: string,
-  worktreeId: string,
-  ports: ReadonlyArray<PortMapping>,
-): string {
-  const portInfo = ports.length > 0
-    ? ' ' + ports.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
-    : ''
-  return ` ${projectSlug} ${worktreeId.slice(0, 8)}${portInfo} `
 }

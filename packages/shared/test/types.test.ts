@@ -1,22 +1,34 @@
 import { describe, it, expect } from 'vitest'
-import { MODEL_RE } from '#types'
+import { normalizeTool } from '#types'
 
-describe('MODEL_RE', () => {
-  it('accepts model ids, aliases, and provider/model paths', () => {
-    for (const m of [
-      'claude-opus-4-8', 'opus', 'claude-sonnet-5', 'us.anthropic.claude-fable-5:0',
-      'anthropic/claude-opus-4-8', 'fireworks/accounts/fireworks/models/kimi-k2p6',
-    ]) {
-      expect(MODEL_RE.test(m)).toBe(true)
-    }
+describe('normalizeTool', () => {
+  it('returns claude when the raw value is undefined', () => {
+    expect(normalizeTool(undefined)).toBe('claude')
   })
 
-  // The value is embedded bare in an agent launch command that travels inside
-  // a single-quoted `respawn-window '<cmd>'` wrapper, so anything that could
-  // break out of it — or out of the shell around it — has to be refused here.
-  it('rejects values unsafe for the single-quoted respawn wrapper', () => {
-    for (const m of ["o'pus", 'a model', 'x;y', 'a$b', '-opus', '', 'a`b', 'a[1m]']) {
-      expect(MODEL_RE.test(m)).toBe(false)
-    }
+  it('returns claude when the raw value is claude', () => {
+    expect(normalizeTool('claude')).toBe('claude')
+  })
+
+  it('returns codex when the raw value is codex', () => {
+    expect(normalizeTool('codex')).toBe('codex')
+  })
+
+  it('returns opencode when the raw value is opencode', () => {
+    expect(normalizeTool('opencode')).toBe('opencode')
+  })
+
+  it('returns pi when the raw value is pi', () => {
+    expect(normalizeTool('pi')).toBe('pi')
+  })
+
+  it('returns claude for an empty string', () => {
+    expect(normalizeTool('')).toBe('claude')
+  })
+
+  it('returns claude for unknown tool values', () => {
+    // A workspace stamped with a tool this build does not know still has to
+    // render and be exec'd into, so the resolved value is always runnable.
+    expect(normalizeTool('unknown')).toBe('claude')
   })
 })

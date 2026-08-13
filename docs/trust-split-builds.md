@@ -99,7 +99,7 @@ Build flow, per layer tag `T` with parent tag `P`:
    (`reconcileBuilderPodGc`) reaps any leaked `yaac.role=builder` pods.
 
 Every build — in a pod or on the host engine — is bounded by a pair of
-timeouts, run by the shared `runtime/k8s/container/streaming-proc.ts`:
+timeouts, run by the shared `drivers/k8s/container/streaming-proc.ts`:
 
 - An **idle** timeout per exec step, the primary signal: the clock resets
   on every byte the step writes, and while the context tar streams in, on
@@ -257,7 +257,7 @@ die with the server.
   step on the boot pass, so the leaked pod's memory reservation is
   released before anything tries to schedule a replacement.
 - **Host podman.** `podman build`/`podman push` children run through
-  `runtime/k8s/container/host-procs.ts`, which SIGTERMs them from the
+  `drivers/k8s/container/host-procs.ts`, which SIGTERMs them from the
   shutdown handler and records each pid in `<data dir>/host-podman.json`
   first. A host pid carries no label to select on, so the file is what
   makes the crash path reapable: `reapOrphanedPodmanProcs` reads it once
@@ -272,10 +272,10 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 
 ## Server wiring
 
-- A `BuildEngine` seam (`runtime/k8s/images/build-engine.ts`,
+- A `BuildEngine` seam (`drivers/k8s/images/build-engine.ts`,
   `engineForLayer` keyed on `ImageLayer.name`): `host-podman` wraps the
   existing build/imageExists/remove; `cluster-pod`
-  (`runtime/k8s/images/builder-pod.ts`) drives the builder pod. Push is
+  (`drivers/k8s/images/builder-pod.ts`) drives the builder pod. Push is
   deliberately not routed per layer — a cluster-pod build's delta push is
   an inseparable build step, and the shared push path treats a forced push
   of a registry-only tag as already satisfied. The coordinator,

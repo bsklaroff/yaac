@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 
 // The CLI shim's own collaborators. Only the `worktreeRestart` describe below
 // uses these; the pipeline describes drive the server modules directly.
@@ -16,7 +16,7 @@ vi.mock('#commands/git-identity', () => ({
 vi.mock('#commands/api', () => ({ api: { worktree: { restart: { $post: postSpy } } } }))
 vi.mock('@yaac/shared/ndjson', () => ({ consumeNdjsonStream: consumeSpy }))
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import * as pods from '@yaac/server/runtime/k8s/substrate/pods'
+import * as pods from '@yaac/server/drivers/k8s/substrate/pods'
 import * as cleanup from '@yaac/server/domain/worktrees/cleanup'
 import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
@@ -26,7 +26,7 @@ import { closeDb } from '@yaac/server/db/client'
 import { worktreeRestart } from '#commands/worktree-restart'
 import { clearAllProvisioningForTests } from '@yaac/server/domain/worktrees/provisioning'
 
-import type { PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
+import type { PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution
@@ -58,7 +58,7 @@ describe('resolveRestartTarget', () => {
   beforeEach(async () => {
     // The real driver, with only its pod listing mocked: this file is about
     // the resolve-then-restart pipeline, so nothing in it may be faked.
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()
     vi.spyOn(pods, 'listWorktreePods').mockImplementation(
@@ -162,7 +162,7 @@ describe('restartWorktree', () => {
   let createSpy: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     clearAllProvisioningForTests()
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()

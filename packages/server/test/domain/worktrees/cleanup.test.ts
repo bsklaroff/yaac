@@ -10,15 +10,6 @@ import os from 'node:os'
 import path from 'node:path'
 import type ChildProcessModule from 'node:child_process'
 
-// The tmux probes ride the stream relay — stub only the transport; the
-// error classes stay real so classification is exercised for real. (Status
-// probing is runtime vocabulary this layer is allowed to reach, so it is
-// not part of what moved behind the driver.)
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => {
-  const actual = await importOriginal<typeof relayModule>()
-  return { ...actual, podExec: vi.fn() }
-})
-
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
@@ -35,8 +26,6 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { RelayExecError, podExec } from '#runtime/k8s/substrate/stream-relay'
-import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
 import {
   _resetOrphanModulesSweepForTests,
   cleanupWorktree,
@@ -56,12 +45,17 @@ import { applyWorktreeEvent } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
 import {
   handleFixture,
-  installFakeWorktreeRuntime,
+  installFakeWorktreeDriver,
   snapshotFixture,
-} from '@yaac/test-utils/fake-runtime'
-import type { RuntimeHandle, StrayUnit, TeardownTarget } from '#runtime/contract'
+} from '@yaac/test-utils/fake-driver'
+import {
+  WorkspaceExecError,
+  type RuntimeHandle,
+  type StrayUnit,
+  type TeardownTarget,
+  type WorktreeDriver,
+} from '#drivers/contract'
 
-const podExecMock = vi.mocked(podExec)
 const mockServerLog = vi.mocked(serverLog)
 
 // Cleanup reports the stop as an event rather than writing the row itself,
@@ -81,7 +75,7 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
  * What the mediator asked the runtime to do, in the order it asked.
  *
  * The runtime's own sequencing (deregister, salvage, delete, vcluster) is
- * asserted in `test/runtime/k8s/worktrees/teardown.test.ts`, where it lives.
+ * asserted in `test/drivers/k8s/worktrees/teardown.test.ts`, where it lives.
  * What these tests own is the half above it: what the mediator records and
  * evicts before handing over, what it composes around the runtime's shell
  * command, and how it treats the verdict it gets back.
@@ -106,7 +100,7 @@ function installRuntime(opts: {
   }
   let release = (): void => { /* set per call */ }
   calls.releaseSalvage = () => { release() }
-  installFakeWorktreeRuntime({
+  installFakeWorktreeDriver({
     destroy: (target) => {
       calls.destroyed.push(target)
       return opts.destroy ? opts.destroy(target) : Promise.resolve(true)
@@ -166,18 +160,21 @@ describe('cleanupWorktree', () => {
     _clearTmuxAliveCacheForTests()
     _resetWorktreeStatusStoreForTests()
 
-    podExecMock.mockReset()
-    podExecMock.mockResolvedValue({ stdout: '', stderr: '' })
-    await expect(probeTmuxLiveness('p', 's-stale')).resolves.toBe('alive')
-    expect(podExecMock).toHaveBeenCalledTimes(1)
+    const target = { projectSlug: 'p', workspaceId: 's-stale', jobName: 'yaac-p-s-stale' }
+    const exec = vi.fn<WorktreeDriver['exec']>()
+      .mockResolvedValue({ stdout: '', stderr: '' })
+    installFakeWorktreeDriver({ exec })
+
+    await expect(probeTmuxLiveness(target)).resolves.toBe('alive')
+    expect(exec).toHaveBeenCalledTimes(1)
 
     // Within the TTL a second probe would be served from cache — teardown is
     // what has to invalidate it.
     await cleanupWorktree({ jobName: 'yaac-p-s-stale', projectSlug: 'p', worktreeId: 's-stale' })
 
-    podExecMock.mockRejectedValue(new RelayExecError('exit 1', 1, '', "can't find session: yaac"))
-    await expect(probeTmuxLiveness('p', 's-stale')).resolves.toBe('dead')
-    expect(podExecMock).toHaveBeenCalledTimes(2)
+    exec.mockRejectedValue(new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"))
+    await expect(probeTmuxLiveness(target)).resolves.toBe('dead')
+    expect(exec).toHaveBeenCalledTimes(2)
   })
 
   it('reports the death cause with the stop', async () => {
@@ -352,7 +349,7 @@ describe('cleanupWorktreeDetached', () => {
   })
 
   it('spawns the teardown even when the salvage fails', async () => {
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       salvageImages: () => Promise.reject(new Error('registry down')),
       detachedTeardownCommand: () => TEARDOWN_SENTINEL,
     })
@@ -459,14 +456,14 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
   /** Install a runtime reporting these workspaces and stray units. */
   function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void {
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       snapshot: () => { views++; return snapshotFixture(workspaces, strays) },
     })
   }
 
   /** Install a runtime whose view cannot be read — the sweep must stand down. */
   function seeNothing(): void {
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       snapshot: () => {
         views++
         return {

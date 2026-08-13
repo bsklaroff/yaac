@@ -5,16 +5,17 @@ import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { reserveAvailablePort } from '#lib/port'
 import type { ReservedPort } from '#lib/port'
 import { createKeyedMutex } from '#lib/keyed-mutex'
+import { buildStatusRight } from '#lib/status-right'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { env as yaacEnv, testEnv } from '@yaac/shared/env'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import type {
   RuntimeHandle,
   TeardownTarget,
   WorkspaceMount,
   WorkspaceResources,
   WorkspaceSpec,
-} from '#runtime/contract'
+} from '#drivers/contract'
 import {
   repoDir,
   acpLogDir,
@@ -61,7 +62,6 @@ import {
   acpAdapterFor,
   agentDriver,
   agentWindowName,
-  buildStatusRight,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
@@ -290,7 +290,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
     spec, projectSlug, worktreeId, tool, mode, launching, initWindows, piProvider,
     onLaunched, options, worktree,
   } = params
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
 
   // Reject-only view of the worktree leg, raced against the boot waits
   // below: its failures — unknown branch, referenceBranch typo, git auth —
@@ -504,7 +504,7 @@ export async function createWorktree(
   }
 
   const tool: AgentTool = options.tool ?? 'claude'
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
 
   await runtime.ensureBuildEngine()
 
@@ -1267,10 +1267,10 @@ export async function createWorktree(
       // unreachable runtime is never read as "nothing is there".
       let podGone: boolean
       try {
-        target ??= await worktreeRuntime().findForTeardown(worktreeId)
+        target ??= await worktreeDriver().findForTeardown(worktreeId)
         podGone = target === undefined
           ? true
-          : await worktreeRuntime().destroy(target, { salvageImages: false, unitOnly })
+          : await worktreeDriver().destroy(target, { salvageImages: false, unitOnly })
       } catch {
         podGone = false
       }
@@ -1339,7 +1339,7 @@ export async function createWorktree(
   // The workspace is up — hand the reserved sockets off to long-lived
   // forwarders owned by the runtime. These stay alive across user
   // attaches/detaches and come down only with a delete or the reaper.
-  worktreeRuntime().startForwarders(worktreeId, forwardedPorts)
+  worktreeDriver().startForwarders(worktreeId, forwardedPorts)
 
   // The branch the worktree forked from, now that the (concurrent) checkout
   // has resolved it. A separate report from the one above so recording the

@@ -4,7 +4,7 @@ vi.mock('#domain/projects/local-config', () => ({
   addAllowedHostToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
 
-import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { addAllowedHostToProjectConfig } from '#domain/projects/local-config'
 import { allowWorktreeHost } from '#domain/worktrees/allow-host'
 import { ServerError } from '@yaac/shared/errors'
@@ -22,7 +22,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockPersist.mockResolvedValue({})
   mockAllowHost.mockResolvedValue()
-  installFakeWorktreeRuntime({
+  installFakeWorktreeDriver({
     find: () => Promise.resolve(HANDLE),
     allowHost: mockAllowHost,
   })
@@ -68,7 +68,7 @@ describe('allowWorktreeHost', () => {
   })
 
   it('refuses a worktree that is not running, before touching config', async () => {
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       find: () => Promise.resolve(handleFixture({ workspaceId: 'sid-1', state: 'stopped' })),
       allowHost: mockAllowHost,
     })

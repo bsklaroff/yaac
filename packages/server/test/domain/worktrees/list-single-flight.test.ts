@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,7 +8,7 @@ import path from 'node:path'
 // (pod listing, fs-backed helpers) so the single-flight wrapper can be
 // exercised without a cluster or server.
 
-vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
+vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -22,7 +22,7 @@ vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn().mockResolvedValue('alive'),
 }))
 
-vi.mock('#runtime/k8s/egress/blocked-hosts', () => ({
+vi.mock('#drivers/k8s/egress/blocked-hosts', () => ({
   readBlockedHosts: vi.fn().mockResolvedValue([]),
 }))
 
@@ -35,8 +35,8 @@ vi.mock('#runtime/agents/agent-tools', async (importOriginal) => ({
 // The join under test reads the recorded rows alongside the real
 // observation half, so the leaf mocks above drive it end to end — only the
 // substrate is stubbed.
-import { listWorktreePods } from '#runtime/k8s/substrate/pods'
-import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { listWorktreePods } from '#drivers/k8s/substrate/pods'
+import type * as podsModule from '#drivers/k8s/substrate/pods'
 import type * as agentToolsModule from '#runtime/agents/agent-tools'
 import {
   listActiveWorktrees,
@@ -50,7 +50,7 @@ describe('listActiveWorktrees single-flight', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-single-flight-list-'))
     setDataDir(tmpDir)
     _clearListActiveInflightForTests()

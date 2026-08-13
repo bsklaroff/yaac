@@ -49,7 +49,6 @@ export {
   agentWindowTool,
   classifyAgentObservation,
   getAgentSessionFirstMessage,
-  normalizeTool,
   type AgentPaneStatus,
 } from './agent-tools'
 export {
@@ -76,7 +75,6 @@ export { ensureClaudeHooks } from './claude'
 export { removeLegacyCodexHook } from './codex'
 export { ensureOpencodeConfigJson } from './opencode'
 export {
-  buildStatusRight,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,

@@ -146,7 +146,14 @@ function handleExec(socket, params) {
   child.stdout.on('data', (chunk) => { stdout = collect(stdout, chunk) })
   child.stderr.on('data', (chunk) => { stderr = collect(stderr, chunk) })
   child.on('error', (err) => {
-    socket.end(JSON.stringify({ exitCode: 127, stdout: '', stderr: String(err.message) }) + '\n')
+    // The command never ran — spawn itself failed (ENOMEM, EMFILE). Said as
+    // its own field rather than an exit code alone, because 127 is exactly
+    // what a genuine command-not-found exits with, and the server has to
+    // tell "this tool is not in the image" (a verdict about the workspace)
+    // from "this pod could not fork" (a verdict about nothing).
+    socket.end(JSON.stringify({
+      exitCode: 127, spawnFailed: true, stdout: '', stderr: String(err.message),
+    }) + '\n')
   })
   child.on('close', (code, signal) => {
     const exitCode = code ?? 1

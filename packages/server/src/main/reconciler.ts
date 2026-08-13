@@ -1,8 +1,9 @@
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeSnapshot } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeSnapshot } from '#drivers/contract'
 import { defaultReconcileSteps, type PassContext, type ReconcileStep, type ReconcileTrigger } from '#domain/reconcile'
 import { getDefaultTool, listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { isWorktreeTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
 import { serverLog } from '#log'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
@@ -106,7 +107,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         triggers,
         resync,
         signal,
-        snapshot: () => (snapshot ??= worktreeRuntime().snapshot(resync)),
+        snapshot: () => (snapshot ??= worktreeDriver().snapshot(resync)),
         // No catch: a failed preference read rejects the accessor, which
         // fails (and stands down) exactly the steps that needed the answer
         // — churning a spare toward a fallback tool on a transient read
@@ -145,6 +146,10 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
           }
           return pending
         },
+        // A plain read rather than a memoized one: the marks are in-memory
+        // and a pass that starts before a stop lands must see the mark the
+        // moment it appears, not a value frozen at pass start.
+        terminating: (workspaceId) => isWorktreeTerminating(workspaceId),
       }
       for (const step of steps) {
         // Stop starting steps as soon as shutdown signals — an in-flight

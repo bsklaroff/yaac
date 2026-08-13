@@ -15,18 +15,18 @@ import {
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
-import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { runtimeClassSpec } from '@yaac/server/runtime/k8s/substrate/gvisor'
-import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/runtime/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/runtime/k8s/substrate/pods'
-import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/runtime/k8s/substrate/proxy-constants'
+import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
+import { PROXY_APP_NAME, SSH_AGENT_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
  * ssh-agent forwarding over the network, end to end: a session pod's

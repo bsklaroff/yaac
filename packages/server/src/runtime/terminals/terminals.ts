@@ -1,4 +1,4 @@
-import { podExec } from '#runtime/k8s/substrate'
+import { worktreeDriver } from '#drivers/driver'
 import { worktreeControlStreamSend } from '#runtime/status'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { WorktreeTerminalEntry } from '@yaac/shared/types'
@@ -73,7 +73,7 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
     }
   }
   try {
-    const { stdout } = await podExec(
+    const { stdout } = await worktreeDriver().exec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
       { maxAttempts: 1 },
@@ -94,7 +94,7 @@ export async function listWorktreeTerminals(jobName: string): Promise<WorktreeTe
  *  (and open a pane) without waiting for the next terminals poll. */
 export async function createShellWindow(jobName: string): Promise<WorktreeTerminalEntry> {
   const name = nextShellName(await listWorktreeTerminals(jobName))
-  const { stdout } = await podExec(
+  const { stdout } = await worktreeDriver().exec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} new-window -d -P -F '#{window_id}' -t yaac -n ${name} -c /workspace`,
     { maxAttempts: 1 },
@@ -116,7 +116,7 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
   if (rows.find((r) => r.index === agentIndex)?.id === id) {
     throw new Error('refusing to kill the agent window')
   }
-  await podExec(
+  await worktreeDriver().exec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} kill-window -t ${id}`,
     { maxAttempts: 1 },

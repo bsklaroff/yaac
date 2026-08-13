@@ -1,7 +1,7 @@
-import { type PodInfo, bootStreamd, isPrewarmed } from '#runtime/k8s/substrate'
+import type { RuntimeHandle } from '#drivers/contract'
+import { worktreeDriver } from '#drivers/driver'
 import {
   agentDriver,
-  normalizeTool,
   type AgentConnectDeps,
   type AgentObservation,
   type DrivenWorktree,
@@ -51,8 +51,8 @@ export interface StatusWatcherDeps {
    */
   recordedSessions?: (session: WatchedWorktree) => Promise<Array<{ handle: string; agentSessionId: string }>>
   /**
-   * Injected for tests — the streamd self-heal (see scheduleRespawn).
-   * Default: `bootStreamd`, the one steady-state kubectl exec kept.
+   * Injected for tests — the stream-daemon self-heal (see scheduleRespawn).
+   * Default: the driver's own `reviveStatusStream`.
    */
   reviveStreamd?: (jobName: string) => Promise<void>
   /** Heartbeat cadence over the open connection. Default 20s. */
@@ -86,7 +86,7 @@ export class WorktreeStatusWatcher {
   private readonly log: (msg: string) => void
 
   constructor(readonly session: WatchedWorktree, private readonly deps: StatusWatcherDeps = {}) {
-    this.reviveStreamd = deps.reviveStreamd ?? bootStreamd
+    this.reviveStreamd = deps.reviveStreamd ?? ((jobName) => worktreeDriver().reviveStatusStream(jobName))
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
     this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
     this.respawnDelayMs = deps.respawnDelayMs ?? 1_000
@@ -205,14 +205,8 @@ export class WorktreeStatusWatcher {
   }
 }
 
-/** The pod's mode label, defaulted. Every pod that predates modes — and every
- *  TUI pod, which never stamps one — reads as `tui`. */
-export function podAgentMode(pod: PodInfo): AgentMode {
-  return pod.mode === 'acp' ? 'acp' : 'tui'
-}
-
 /**
- * Keeps one `WorktreeStatusWatcher` per running, non-prewarmed worktree pod.
+ * Keeps one `WorktreeStatusWatcher` per running, non-prewarmed workspace.
  * `sync` is driven by informer pod deltas: a pod that appears (or a claimed
  * spare that loses its prewarm label) gets a watcher; a pod that disappears
  * has its watcher stopped and its store entry evicted, so a restart reusing
@@ -227,11 +221,11 @@ export class StatusWatcherManager {
     return this.watchers.size
   }
 
-  sync(pods: PodInfo[]): void {
-    const wanted = new Map<string, PodInfo>()
-    for (const p of pods) {
-      if (!p.running || !p.worktreeId || !p.projectSlug || isPrewarmed(p)) continue
-      wanted.set(p.worktreeId, p)
+  sync(workspaces: RuntimeHandle[]): void {
+    const wanted = new Map<string, RuntimeHandle>()
+    for (const p of workspaces) {
+      if (!p.running || !p.workspaceId || !p.projectSlug || p.prewarmed) continue
+      wanted.set(p.workspaceId, p)
     }
     for (const [worktreeId, watcher] of this.watchers) {
       if (wanted.has(worktreeId)) continue
@@ -239,14 +233,14 @@ export class StatusWatcherManager {
       this.watchers.delete(worktreeId)
       evictWorktreeStatus(watcher.session.slug, worktreeId)
     }
-    for (const [worktreeId, pod] of wanted) {
+    for (const [worktreeId, workspace] of wanted) {
       if (this.watchers.has(worktreeId)) continue
       const watcher = new WorktreeStatusWatcher({
-        slug: pod.projectSlug,
+        slug: workspace.projectSlug,
         worktreeId,
-        jobName: pod.jobName,
-        tool: normalizeTool(pod.tool),
-        mode: podAgentMode(pod),
+        jobName: workspace.jobName,
+        tool: workspace.tool,
+        mode: workspace.mode,
       }, this.deps)
       watcher.start()
       this.watchers.set(worktreeId, watcher)

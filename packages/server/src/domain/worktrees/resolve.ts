@@ -1,6 +1,6 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { findWorktreeRow } from '#db'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ResolvedWorktree {
@@ -25,7 +25,7 @@ export async function resolveWorktreeContainer(
   opts: { requireRunning?: boolean } = {},
 ): Promise<ResolvedWorktree> {
   const match: RuntimeHandle | undefined =
-    await worktreeRuntime().find(idOrName, { preferCache: true })
+    await worktreeDriver().find(idOrName, { preferCache: true })
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
 
   if (opts.requireRunning && match.state !== 'running') {
@@ -54,7 +54,7 @@ export async function resolveWorktreeRecord(
   idOrName: string,
 ): Promise<{ projectSlug: string; worktreeId: string }> {
   try {
-    const match = await worktreeRuntime().find(idOrName)
+    const match = await worktreeDriver().find(idOrName)
     if (match) return { projectSlug: match.projectSlug, worktreeId: match.workspaceId }
   } catch {
     // Substrate unreachable — the row still answers.

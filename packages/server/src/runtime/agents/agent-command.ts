@@ -1,4 +1,5 @@
-import { RelayExecError, podExec } from '#runtime/k8s/substrate'
+import { WorkspaceExecError } from '#drivers/contract'
+import { worktreeDriver } from '#drivers/driver'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
@@ -232,7 +233,7 @@ export async function typeInitialPrompt(
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  await podExec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
+  await worktreeDriver().exec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
     maxAttempts: 1,
     timeout: 15_000,
   })
@@ -256,9 +257,9 @@ export function buildAgentWindowCheck(tool: AgentTool): string {
 
 /**
  * Runs on the claim path, after `waitForStreamd`, so it rides the relay.
- * Only a `RelayExecError` is a verdict about the window: the probe reached
- * the pod and `grep` found no such window. A transport failure proves
- * nothing about the agent, so it propagates as itself rather than
+ * Only a `WorkspaceExecError` is a verdict about the window: the probe
+ * reached the workspace and `grep` found no such window. A transport failure
+ * proves nothing about the agent, so it propagates as itself rather than
  * masquerading as a missing tool.
  *
  * The probe is `list-windows | grep`, so a dead tmux server exits nonzero
@@ -268,9 +269,9 @@ export function buildAgentWindowCheck(tool: AgentTool): string {
  */
 export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
   try {
-    await podExec(jobName, buildAgentWindowCheck(tool))
+    await worktreeDriver().exec(jobName, buildAgentWindowCheck(tool))
   } catch (err) {
-    if (!(err instanceof RelayExecError)) throw err
+    if (!(err instanceof WorkspaceExecError)) throw err
     const detail = err.stderr.trim()
     throw new Error(
       `agent "${tool}" exited right after its respawn in ${jobName} — `

@@ -1,5 +1,5 @@
 import { originRemoteUrl } from '#domain/git'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { repoDir } from '@yaac/shared/project-paths'
 import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
 import { resolveProxySecrets } from './proxy-secrets'
@@ -45,7 +45,7 @@ export async function retoolSpare(
   // pi's launch command embeds its provider's default model, so a retool to pi
   // needs the stored provider (from the single pi.json credential).
   const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   await runtime.registerWorkspace({
     workspaceId: spare.workspaceId,
     projectSlug: spare.projectSlug,
@@ -192,7 +192,7 @@ export async function rebranchSpare(
   // transport caps its own dial separately — and a read timeout past that
   // is not retried, so a still-running git can't be raced by a second one
   // over the same index.lock.
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   await runtime.exec(spare.jobName, prep.resetExec, { timeout: 120_000 })
   await withUpstreamConfigLock(spare.projectSlug, async () => {
     await runtime.exec(spare.jobName, prep.upstreamExec)

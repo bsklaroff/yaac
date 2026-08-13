@@ -8,42 +8,11 @@ import {
   agentWindowTool,
   classifyAgentObservation,
   getAgentSessionFirstMessage,
-  normalizeTool,
 } from '#runtime/agents/agent-tools'
 // The marker lists are the tool modules' business — imported here as setup
 // values so the format assertions survive a wording change to either.
 import { OPENCODE_BUSY_MARKERS } from '#runtime/agents/opencode'
 import { PI_BUSY_MARKERS } from '#runtime/agents/pi'
-
-describe('normalizeTool', () => {
-  it('returns claude when the raw label is undefined', () => {
-    expect(normalizeTool(undefined)).toBe('claude')
-  })
-
-  it('returns claude when the raw label is claude', () => {
-    expect(normalizeTool('claude')).toBe('claude')
-  })
-
-  it('returns codex when the raw label is codex', () => {
-    expect(normalizeTool('codex')).toBe('codex')
-  })
-
-  it('returns opencode when the raw label is opencode', () => {
-    expect(normalizeTool('opencode')).toBe('opencode')
-  })
-
-  it('returns pi when the raw label is pi', () => {
-    expect(normalizeTool('pi')).toBe('pi')
-  })
-
-  it('returns claude for an empty string', () => {
-    expect(normalizeTool('')).toBe('claude')
-  })
-
-  it('returns claude for unknown tool values', () => {
-    expect(normalizeTool('unknown')).toBe('claude')
-  })
-})
 
 describe('agentStatusFormat', () => {
   it('subscribes title tools to the pane title, classified server-side', () => {

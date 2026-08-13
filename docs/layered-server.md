@@ -14,8 +14,11 @@ domain     the mediators: everything that reads rows, owns what a project
            and a worktree keep on disk, and drives the runtime
  ↓             ↓
 db           runtime       db: rows; owns the database outright
-                           runtime: how agents run (k8s driver today);
-                           its substrate is sealed inside it
+               ↓           runtime: the driver-neutral machinery — how
+             drivers                 agent sessions are conducted,
+                                     observed and attached to
+                           drivers: contract.ts + driver.ts, and one
+                                    sealed folder per substrate (k8s)
 ```
 
 `lib/` sits below all of it — dependency-free vocabulary and host
@@ -28,7 +31,34 @@ zero-dependency outbound "something changed" channel. Anything may emit on
 notification is not a dependency on the hub that consumes it.
 
 Everything below domain is one of two things, which is the property worth
-protecting: rows, or a contract-fronted driver. Neither reads the other.
+protecting: rows, or the runtime, fronted by a contract. Neither reads the
+other.
+
+The runtime is itself split, and the split is the seam a second driver
+implements. `runtime/` is what is the same over any substrate — the
+tui/acp conduction, the status watchers and liveness policy, the PTY
+bridge, the report assembly and the forwarder restore. `drivers/` is what
+is not: `contract.ts` (the `WorktreeDriver` interface and its vocabulary),
+`driver.ts` (the registered instance), and one folder per substrate.
+
+The arrows there run downward, which reads backwards until you see what
+holds it up: `runtime/` imports the contract, and so does every driver,
+and only `main` imports a driver at all. The call-time flow — a mediator
+asks the machinery, which asks the driver — travels through the registry
+in `driver.ts`, the same inversion `#notify` uses. So a driver folder is
+reachable from exactly one place, and nothing that runs over it can name
+it.
+
+A driver has ONE door: `#drivers/k8s`, the assembly. Its nine sealed
+folders are internal, and the eslint rule says so — `#drivers/k8s/*` is
+importable only from inside `drivers/`, with `main` naming the assembly
+alone. (Two exceptions: the api layer keeps a handful of deep imports
+until its own flip — display surfaces that want their own pass over what
+belongs on the contract — and the CLI's cluster-admin commands import the
+cluster barrel through the package's `exports` map. Administering a
+cluster is k8s-specific by nature, a host-process driver would ship its
+own doctor, so that door stays open and is governed by the pnpm boundary
+rather than a zone.)
 
 That shape is what decides where a disk read goes, and the answer is never
 "the runtime looks it up". A driver is HANDED what it needs — a launch
@@ -49,13 +79,13 @@ speak alone.
 ## What lives where
 
 - **`main/`** — `server-run` (lock, DB open through `openDb`,
-  bind, attach — and the one place the process's runtime is registered),
-  `runtime-k8s` + `runtime-k8s-steps` (the k8s `WorktreeRuntime`, assembled
-  from the sealed folders; here rather than under `runtime/k8s` because
-  assembling it means importing all of them, and they import the contract),
-  `convergence` (informer caches, per-worktree status watchers, the port
-  detector — everything push-fed; it also translates substrate deltas into
-  the pass's trigger vocabulary), `reconciler` (the pass engine; its step
+  bind, attach — and the one place the process's driver is registered),
+  `convergence` (what is push-fed and is NOT the driver's: the
+  per-worktree status watchers, which are machinery needing a row lookup,
+  and the two in-workspace trigger sources no watch of any substrate can
+  see — a conversation appearing, a driver connection dropping. The
+  driver's own attach lives behind `start`/`stop`/`release`, and reports
+  back through `DriverSinks`), `reconciler` (the pass engine; its step
   list comes from domain, which splices in the runtime's own), `server`,
   `webapp`, `lifecycle`.
 - **`api/`** — `routes/` (translation only; policy lives below), `http/`
@@ -87,47 +117,76 @@ speak alone.
   What the rest of the server gets is `openDb`/`closeDb` and
   the row functions; the driver packages are eslint-banned everywhere
   else.
-- **`runtime/`** — `contract.ts` (the `WorktreeRuntime` driver interface
-  and its substrate-neutral vocabulary: `RuntimeReport`, `RuntimeHandle`,
-  handle-keyed `AgentLiveness`, `RuntimeSnapshot`, the launch types —
+- **`runtime/`** — the driver-neutral machinery, four sealed folders:
+  `agents/` (the tui/acp drivers, acpd's JSON-RPC client, per-tool launch
+  commands, and where each tool keeps its transcript — the per-tool
+  readers pair one-to-one with the drivers, so the file layout and the
+  path convention live with the grammars), `status/` (the control-mode
+  watchers feeding the status store, the liveness probes and their
+  caches, workspace classification, the terminating marks, and
+  `observeWorkspaces` — the report assembly that joins the driver's raw
+  facts with what the watchers saw), `terminals/` (the PTY bridge), and
+  `ports/` (the forwarder restore a server restart needs, over the
+  contract's `startForwarders`).
+
+  All of it runs over whichever driver is registered, which is the point:
+  a second driver inherits conduction, observation, attachment, report
+  assembly and restore without reimplementing any of it. tmux is the
+  supervisor either way (docs/agent-modes.md) — only the transport under
+  it differs, and that is on the contract.
+- **`drivers/`** — `contract.ts` (the `WorktreeDriver` interface and its
+  substrate-neutral vocabulary: `RuntimeHandle`, handle-keyed
+  `AgentLiveness`, `RuntimeSnapshot`, the stream types `StreamChild` and
+  `StreamPty`, the `WorkspaceExecError` verdict, the launch types —
   `WorkspaceSpec`, `WorkspaceMount`, `SubstrateIntent` and the opaque
   `WorkspaceSubstrate` receipt — and the pass scheduling types),
-  `driver.ts` (the registered instance, behind `setWorktreeRuntime` /
-  `worktreeRuntime`), `status/` (control-mode watchers feeding the status
-  store), `terminals/` (PTY bridge), `agents/` (the tui/acp drivers,
-  acpd's JSON-RPC client, per-tool launch commands, and where each tool
-  keeps its transcript — the per-tool readers pair one-to-one with the
-  drivers, so the file layout and the path convention live with the
-  grammars), and `k8s/` — the
-  driver's substance: `cluster`, `egress`, `forwarders`, `images`,
-  `image-engine`, `worktrees` (launch, observe, locate, claim, teardown,
-  the pod-side changes diff, image salvage), `view` (the one mapper
-  turning a pod into a `RuntimeHandle`, plus the pass snapshot), and the
-  two host-side primitives the rest of them are built on — `substrate`
-  (client, informers, exec, pod specs, the per-pass `TickSnapshot`, the
-  datapath's names and ports) and `container` (podman, the local
-  registry, the streaming child-process runner). `k8s/` holds sealed
-  folders only; nothing loose sits beside them. The contract is the seam
-  a second driver — a host-process runtime with no cluster —
-  implements.
+  `driver.ts` (the registered instance, behind `setWorktreeDriver` /
+  `worktreeDriver`), and `k8s/` — the first driver, whose barrel IS its
+  assembly (`createK8sDriver`) over nine sealed folders: `cluster`,
+  `egress`, `forwarders`, `images`, `image-engine`, `worktrees` (launch,
+  locate, claim, teardown, the pod-side changes diff, image salvage),
+  `view` (the one mapper turning a pod into a `RuntimeHandle`, plus the
+  pass snapshot), and the two host-side primitives the rest are built on —
+  `substrate` (client, informers, exec, pod specs, the per-pass
+  `TickSnapshot`, the datapath's names and ports) and `container` (podman,
+  the local registry, the streaming child-process runner). Nothing loose
+  sits beside them.
 
-  `contract.ts` and `driver.ts` import nothing but shared types, and that
-  is load-bearing: a mediator reaching the runtime through them pulls no
-  cluster client into its module graph. Every mediator now does — no
-  domain file names a substrate barrel, enforced outright. The remaining
-  transitive edge is `#runtime/agents`, which binds the stream relay
-  directly (`podExec`, `dialCtrlStream`), so a mediator needing agent
-  vocabulary still loads the cluster client; putting the dial on the
-  contract is what a second driver would justify.
+  The assembly can be the barrel — above the nine folders that import the
+  contract — precisely because the contract is its own bucket below them:
+  the graph runs assembly → folders → contract → nothing.
 
-  The launch is the shape to read first, because it is the one verb whose
-  split is not obvious. `prepareSubstrate` runs ONCE per create and
-  stands up what belongs to the WORKSPACE (its egress registration, the
-  project registry, a virtual cluster with its own state), answering with
-  an opaque receipt; `launch` runs per ATTEMPT and applies a unit and
-  nothing else. That is what makes a retry cheap and safe — a failed
-  attempt leaves only a unit, and `destroy`'s `unitOnly` takes exactly
-  that down while leaving what the next attempt reuses.
+  `contract.ts` and `driver.ts` import nothing but shared types, and an
+  eslint zone on those two files alone is what keeps it true. That is
+  load-bearing twice over: a mediator or a machinery module reaching the
+  runtime through them pulls no cluster client into its module graph, and
+  a contract that can import nothing cannot quietly grow a dependency on
+  the substrate it exists to hide.
+
+  The lifecycle is the driver's own: `start(sinks, deps)` attaches and
+  begins watching, `stop()` takes everything push-fed down before the
+  reconcile drain, `release()` lets go of what was borrowed from the host
+  after it. Resolving `start` does not mean attached — the k8s driver
+  defers the whole thing until first use inside a nested yaac, so a
+  born-at-zero virtual cluster is not woken by the server living in it;
+  `sinks.attached` is the edge that means it, and the reconcile loop
+  starts from there. `sinks.recover` fires earlier still, while the
+  substrate is usable and nothing is watching, which is when the forwarder
+  restore runs. The two directions are separate types on purpose:
+  `DriverSinks` is where a driver reports, `DriverDeps` is what it is
+  handed (the SSH identity reader it re-reads on its own schedule).
+
+  Two verbs are worth reading for their split. The launch: `prepareSubstrate`
+  runs ONCE per create and stands up what belongs to the WORKSPACE (its
+  egress registration, the project registry, a virtual cluster with its own
+  state), answering with an opaque receipt; `launch` runs per ATTEMPT and
+  applies a unit and nothing else. That is what makes a retry cheap and
+  safe — a failed attempt leaves only a unit, and `destroy`'s `unitOnly`
+  takes exactly that down while leaving what the next attempt reuses. And
+  `list`: `preferCache` asks for the driver's push-fed view, which the
+  display path takes on every snapshot rather than making the apiserver
+  list what a watch is already streaming; a caller needing the substrate's
+  own word leaves it off.
 - **`lib/`** — the server's own dependency-free vocabulary AND host
   primitives: modules every layer may name and that name nothing back —
   the egress allowlist's defaults and matching, a POSIX quoter and one
@@ -245,7 +304,7 @@ The proxy cannot dial the server — it is an in-cluster pod, the server is
 a host process with no in-cluster address, and nested the server sits
 inside a pod of the *outer* cluster. So the signal rides the connection
 the server already holds: one long-lived `GET /events` over the control
-tunnel, NDJSON, consumed by `ProxyEventStream` in `#runtime/k8s/egress`.
+tunnel, NDJSON, consumed by `ProxyEventStream` in `#drivers/k8s/egress`.
 
 The events carry no state. `/data/blocked-hosts.json` and
 `/data/git-auth-failures.json` stay the data plane — they are also how a
@@ -259,7 +318,14 @@ vcluster-attribution re-push hang off.
 ## Naming
 
 Per docs/naming.md: a **worktree** is the sandbox unit; a **session** is
-an agent conversation; **workspace** survives only in the runtime
+an agent conversation; **workspace** survives only in the driver
 contract's substrate-neutral vocabulary. The event union and its apply
-function say "worktree" (`WorktreeEvent`, `applyWorktreeEvent`); the
-observation types say "runtime" (`RuntimeReport`, `RuntimeHandle`).
+function say "worktree" (`WorktreeEvent`, `applyWorktreeEvent`).
+
+The **driver** is the thing a substrate implements — `WorktreeDriver`,
+`drivers/k8s`, `worktreeDriver()`. The observation nouns keep saying
+"runtime" (`RuntimeHandle`, `RuntimeReport`, `RuntimeSnapshot`) and that
+is deliberate: there "runtime" means *observed right now*, as opposed to
+the durable facts `db` keeps — the split the contract is built on.
+`DriverReport` would read as a report about the driver, which is not what
+it is.

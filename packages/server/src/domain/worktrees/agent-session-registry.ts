@@ -1,5 +1,5 @@
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeSnapshot } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
   readAcpFirstPrompt,
@@ -57,7 +57,7 @@ import type { AgentMode, AgentTool } from '@yaac/shared/types'
 export async function reconcileAgentSessions(snapshot?: RuntimeSnapshot): Promise<void> {
   let pods
   try {
-    pods = await (snapshot ?? worktreeRuntime().snapshot()).workspaces()
+    pods = await (snapshot ?? worktreeDriver().snapshot()).workspaces()
   } catch {
     return
   }

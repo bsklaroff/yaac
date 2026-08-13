@@ -3,29 +3,25 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...await importOriginal<typeof relayModule>(),
-  podExec: vi.fn(),
-}))
-
-import { podExec } from '#runtime/k8s/substrate/stream-relay'
-import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
 import {
   pickOpencodeSession,
   OPENCODE_BUSY_MARKERS,
   getSessionOpencodeFirstUserMessage,
   ensureOpencodeConfigJson,
 } from '#runtime/agents/opencode'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import type { WorktreeDriver } from '#drivers/contract'
 
-const mockedExec = vi.mocked(podExec)
+const mockedExec = vi.fn<WorktreeDriver['exec']>()
 
 /**
- * The HTTP probe (`curl /session`) goes through `containerExec`; the
+ * The HTTP probe (`curl /session`) goes through the driver's `exec`; the
  * helper installs a dispatching implementation so tests control it.
  * (Busy/idle classification runs inside tmux now — the markers are pinned
  * here and validated end-to-end by verify-tmux-status-format.js.)
  */
 function mockProbeResult(result: { stdout: string; stderr: string } | Error): void {
+  installFakeWorktreeDriver({ exec: mockedExec })
   mockedExec.mockImplementation((_jobName: string, cmd: string) => {
     if (cmd.includes('curl')) {
       return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)

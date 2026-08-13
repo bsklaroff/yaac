@@ -20,10 +20,10 @@ import {
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
 import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#domain/worktrees'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
-import { dismissWorktreePort } from '#runtime/k8s/forwarders'
+import { dismissWorktreePort } from '#drivers/k8s/forwarders'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
@@ -261,7 +261,7 @@ export const worktreeApp = new Hono()
       // collapse the merge-base to HEAD. Cached, because this endpoint is
       // polled.
       const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
-      return c.json(await worktreeRuntime().changes(
+      return c.json(await worktreeDriver().changes(
         jobName, c.req.valid('query').base, forkBranch ?? undefined,
       ))
     },

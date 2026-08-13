@@ -6,6 +6,21 @@ export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
+ * Coerce a raw tool name into an `AgentTool`, defaulting to claude.
+ *
+ * Where raw strings enter: a driver reading back what it stamped on a
+ * workspace, and config or wire input naming a tool this build may not
+ * know. Defaulting rather than rejecting is the point — a workspace
+ * stamped with something unrecognized still has to render and be exec'd
+ * into, so `tool` always resolves to something runnable. (What a workspace
+ * DECLARES is a separate question, and `RuntimeHandle.declaredTool` is
+ * where a caller asks it.)
+ */
+export function normalizeTool(raw: string | undefined): AgentTool {
+  return AGENT_TOOLS.includes(raw as AgentTool) ? raw as AgentTool : 'claude'
+}
+
+/**
  * Allowed shape for a `--model` override. Deliberately strict: the value is
  * embedded bare in agent launch commands that travel inside single-quoted
  * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,

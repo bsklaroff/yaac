@@ -4,26 +4,21 @@
  *
  * Nothing under features/terminals is mocked here: the window-listing parse,
  * the agent-window convention and the scratch-shell naming all run for real,
- * and the fakes start at the pod boundary — `podExec` for the one-shot
- * relay exec and the control-stream registry for the watcher's persistent
- * read-only channel. The internals are covered by the listings these tests
+ * and the fakes start at the contract boundary — the driver's `exec` for the
+ * one-shot command and the control-stream registry for the watcher's
+ * persistent read-only channel. The internals are covered by the listings these tests
  * feed back rather than by tests of their own.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
-import { podExec } from '#runtime/k8s/substrate/stream-relay'
 import {
   registerWorktreeControlStream,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import type { WorktreeDriver } from '#drivers/contract'
 
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...await importOriginal<typeof relayModule>(),
-  podExec: vi.fn(),
-}))
-
-const exec = vi.mocked(podExec)
+const exec = vi.fn<WorktreeDriver['exec']>()
 const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
   Promise.resolve({ stdout, stderr: '' })
 
@@ -31,6 +26,7 @@ const LIST_FORMAT = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{win
 
 beforeEach(() => {
   exec.mockReset()
+  installFakeWorktreeDriver({ exec })
   _clearControlStreamRegistryForTests()
 })
 

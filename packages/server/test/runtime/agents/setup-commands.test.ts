@@ -2,14 +2,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
-  buildStatusRight,
   buildUpstreamExec,
   buildWindowsExec,
   buildWorktreeLinkExec,
   validateInitWindows,
 } from '#runtime/agents/setup-commands'
 import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/spawn-script'
-import { PROXY_CA_BUNDLE_PATH } from '#runtime/k8s/egress/proxy-client'
+import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 
@@ -128,23 +127,5 @@ describe('yaac-worktree-init script', () => {
     expect(body.indexOf('git config --global')).toBeLessThan(streamdAt)
     expect(body.indexOf('new-session')).toBeLessThan(streamdAt)
     expect(body.indexOf('podman system service')).toBeLessThan(streamdAt)
-  })
-})
-
-describe('buildStatusRight', () => {
-  it('omits port info when no ports forwarded', () => {
-    expect(buildStatusRight('myproj', 'abcdef0123456789', [])).toBe(' myproj abcdef01 ')
-  })
-
-  it('includes host->container mappings for each port', () => {
-    const result = buildStatusRight('myproj', 'abcdef0123456789', [
-      { hostPort: 3000, containerPort: 3000 },
-      { hostPort: 5432, containerPort: 5432 },
-    ])
-    expect(result).toBe(' myproj abcdef01 :3000->3000 :5432->5432 ')
-  })
-
-  it('truncates the session id to 8 characters', () => {
-    expect(buildStatusRight('p', 'xxxxxxxxyyyyyyyy', [])).toBe(' p xxxxxxxx ')
   })
 })

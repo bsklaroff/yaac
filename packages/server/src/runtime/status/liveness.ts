@@ -10,13 +10,21 @@
  * as death would reap a healthy worktree — Job, vcluster and all — with no
  * recovery. That is why both return a tri-state with an explicit `unknown`.
  */
-import {
-  RelayExecError,
-  podExec,
-  worktreeJobName,
-} from '#runtime/k8s/substrate'
+import { WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
+import { worktreeDriver } from '#drivers/driver'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { isWorktreeStreamHealthy } from './status-store'
+
+/**
+ * What a probe addresses: the workspace's identity — which keys the cache
+ * and the stream-health short-circuit — plus the driver's own name for it,
+ * which is what the exec addresses.
+ *
+ * Taken as a whole rather than derived from the identity: constructing a
+ * unit name is encoding the driver's naming scheme, which the contract
+ * reserves to the driver. Every caller already holds a `RuntimeHandle`.
+ */
+export type ProbeTarget = Pick<RuntimeHandle, 'projectSlug' | 'workspaceId' | 'jobName'>
 
 /**
  * Outcome of a tmux liveness probe.
@@ -46,11 +54,12 @@ export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
  * `dead` grows by at most the TTL, well inside the reaper's grace).
  */
 const TMUX_ALIVE_TTL_MS = 15_000
-/** How long the reaper is willing to wait on a probe. `podExec` floors
- *  it at MIN_EXEC_TIMEOUT_MS, since the dial deadline derives from this and
- *  a probe's impatience is not a verdict on the relay every worktree shares
- *  — so the real ceiling is that floor, and an `unknown` verdict (which
- *  never reaps) is all that is at stake in the difference. */
+/** How long the reaper is willing to wait on a probe. A driver may floor
+ *  it (the k8s one does, at MIN_EXEC_TIMEOUT_MS): its dial deadline derives
+ *  from this, and one probe's impatience is not a verdict on the transport
+ *  every workspace shares — so the real ceiling is that floor, and an
+ *  `unknown` verdict (which never reaps) is all that is at stake in the
+ *  difference. */
 const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =
@@ -77,16 +86,17 @@ export function _clearTmuxAliveCacheForTests(): void {
  * Classify a failed in-pod `tmux has-session` probe into `dead`
  * (conclusively no worktree) vs `unknown` (inconclusive — don't reap).
  *
- * A `RelayExecError` means the probe REACHED the pod: streamd ran tmux
- * and it exited nonzero — the worktree/server is absent. That is the only
- * conclusive "dead" signal. Everything else — a relay dial failure (proxy
- * down, streamd dead, pod gone mid-race), a timeout, a malformed result —
- * proves nothing about the worktree and must be kept, not reaped.
+ * A `WorkspaceExecError` means the probe REACHED the workspace: tmux ran
+ * inside it and exited nonzero — the worktree/server is absent. That is the
+ * only conclusive "dead" signal. Everything else — a transport failure
+ * (proxy down, stream daemon dead, workspace gone mid-race), a timeout, a
+ * malformed result — proves nothing about the worktree and must be kept,
+ * not reaped.
  *
  * Exported for unit testing the dead/unknown split.
  */
 export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
-  return err instanceof RelayExecError ? 'dead' : 'unknown'
+  return err instanceof WorkspaceExecError ? 'dead' : 'unknown'
 }
 
 /**
@@ -100,11 +110,10 @@ export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
  * `classifyTmuxProbeError` so a transient transport failure never
  * masquerades as a dead worktree.
  */
-async function probeTmuxLivenessUncached(slug: string, worktreeId: string): Promise<TmuxLiveness> {
-  const jobName = worktreeJobName(slug, worktreeId)
+async function probeTmuxLivenessUncached(target: ProbeTarget): Promise<TmuxLiveness> {
   try {
-    await podExec(
-      jobName,
+    await worktreeDriver().exec(
+      target.jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} has-session -t yaac`,
       { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
@@ -130,16 +139,17 @@ async function probeTmuxLivenessUncached(slug: string, worktreeId: string): Prom
  * The short-circuit only ever strengthens that guarantee — stream health
  * can produce `alive`, never `dead`.
  */
-export async function probeTmuxLiveness(slug: string, worktreeId: string): Promise<TmuxLiveness> {
-  if (isWorktreeStreamHealthy(slug, worktreeId)) return 'alive'
-  const key = tmuxAliveKey(slug, worktreeId)
+export async function probeTmuxLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
+  const { projectSlug, workspaceId } = target
+  if (isWorktreeStreamHealthy(projectSlug, workspaceId)) return 'alive'
+  const key = tmuxAliveKey(projectSlug, workspaceId)
   const now = Date.now()
   const cached = tmuxAliveCache.get(key)
   if (cached) {
     if (cached.kind === 'inflight') return cached.promise
     if (cached.expiresAt > now) return cached.value
   }
-  const promise = probeTmuxLivenessUncached(slug, worktreeId).then((value) => {
+  const promise = probeTmuxLivenessUncached(target).then((value) => {
     tmuxAliveCache.set(key, {
       kind: 'settled',
       value,
@@ -157,8 +167,8 @@ export async function probeTmuxLiveness(slug: string, worktreeId: string): Promi
  * to false (skip / no-op), which is safe here — only the reaper needs to
  * tell them apart, and it uses `probeTmuxLiveness` directly.
  */
-export async function isTmuxSessionAlive(slug: string, worktreeId: string): Promise<boolean> {
-  return (await probeTmuxLiveness(slug, worktreeId)) === 'alive'
+export async function isTmuxSessionAlive(target: ProbeTarget): Promise<boolean> {
+  return (await probeTmuxLiveness(target)) === 'alive'
 }
 
 /**
@@ -188,13 +198,12 @@ const agentStartedCache = new Set<string>()
  * placeholder is `sleep` (verified against the exact `new-session`
  * invocation worktree create uses).
  */
-export async function probeAgentPaneState(slug: string, worktreeId: string): Promise<AgentPaneState> {
-  const key = tmuxAliveKey(slug, worktreeId)
+export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPaneState> {
+  const key = tmuxAliveKey(target.projectSlug, target.workspaceId)
   if (agentStartedCache.has(key)) return 'started'
-  const jobName = worktreeJobName(slug, worktreeId)
   try {
-    const { stdout } = await podExec(
-      jobName,
+    const { stdout } = await worktreeDriver().exec(
+      target.jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} display-message -p -t 'yaac:^' '#{pane_current_command}'`,
       { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )

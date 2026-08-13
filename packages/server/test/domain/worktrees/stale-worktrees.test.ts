@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as podsModule from '#runtime/k8s/substrate/pods'
-import { runtimeHandleFromPod } from '#runtime/k8s/view'
-import type { RuntimeHandle, StrayUnit } from '#runtime/contract'
-import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import type * as podsModule from '#drivers/k8s/substrate/pods'
+import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import type { RuntimeHandle, StrayUnit } from '#drivers/contract'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import type { TmuxLiveness } from '#runtime/status/liveness'
 
-vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
+vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return { ...actual }
 })
@@ -112,7 +112,7 @@ describe('reconcileStaleWorktrees', () => {
   beforeEach(() => {
     mockWorkspaces.mockReset().mockResolvedValue([])
     mockStrays.mockReset().mockResolvedValue([])
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: mockStrays }),
     })
     mockProbe.mockReset()

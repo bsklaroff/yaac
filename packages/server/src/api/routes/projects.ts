@@ -19,7 +19,7 @@ import {
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { resolveProjectBuildDir } from '#lib/build-dirs'
-import { pushImageShared, rebuildProjectImage } from '#runtime/k8s/images'
+import { pushImageShared, rebuildProjectImage } from '#drivers/k8s/images'
 import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'

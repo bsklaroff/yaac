@@ -55,8 +55,8 @@ import { resolveProjectConfig } from '#domain/projects/config'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeEvent } from '#db'
 import { applyWorktreeEvent, claimSpareWorktree, restoreSpareWorktree } from '#db'
-import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
-import type { RuntimeHandle } from '#runtime/contract'
+import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import type { RuntimeHandle } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
 
 // The runtime verbs the claim drives, as mocks — the fake runtime installed
@@ -117,7 +117,7 @@ describe('tryClaimPrewarmed', () => {
     mockClaimSpare.mockResolvedValue(undefined)
     mockExec.mockResolvedValue({ stdout: '', stderr: '' })
     mockAwaitTransport.mockResolvedValue(undefined)
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       list: mockList,
       claimSpare: mockClaimSpare,
       exec: mockExec,

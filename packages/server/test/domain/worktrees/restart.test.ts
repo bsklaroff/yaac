@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import type * as cleanupModule from '#domain/worktrees/cleanup'
 import type * as createModule from '#domain/worktrees/create'
 
@@ -30,7 +30,7 @@ import {
   listProvisioning,
   registerProvisioning,
 } from '#domain/worktrees/provisioning'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 
 const mockFind = vi.fn()
 const mockTeardown = vi.mocked(teardownForRestart)
@@ -79,7 +79,7 @@ function duringTeardown(): () => ReturnType<typeof listProvisioning> {
 describe('restartWorktree', () => {
   beforeEach(() => {
     mockFind.mockReset().mockResolvedValue(handle('sid-1'))
-    installFakeWorktreeRuntime({ find: mockFind })
+    installFakeWorktreeDriver({ find: mockFind })
     mockTeardown.mockReset().mockResolvedValue(undefined)
     mockCreate.mockReset().mockResolvedValue(CREATED)
     mockClearDeleted.mockClear()

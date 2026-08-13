@@ -9,16 +9,16 @@ import simpleGit from 'simple-git'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { ensureRootfulPodmanHost } from '@yaac/server/runtime/k8s/container/runtime'
+import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import {
   dataDirHash,
   k8sNamespace,
   kubectlWithRetry,
   type KubectlExecOptions,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '@yaac/server/runtime/k8s/substrate/pods'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '@yaac/server/drivers/k8s/substrate/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
-import type { ProxyClientConfig } from '@yaac/server/runtime/k8s/egress/proxy-client'
+import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
 const execFileAsync = promisify(execFile)

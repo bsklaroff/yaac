@@ -4,8 +4,8 @@ import { promisify } from 'node:util'
 /**
  * Run a program on THIS machine and await its output.
  *
- * The host-side counterpart to the exec helpers in `#runtime/k8s/substrate` and
- * `#runtime/k8s/container`, which address a pod and a container runtime
+ * The host-side counterpart to the exec helpers in `#drivers/k8s/substrate` and
+ * `#drivers/k8s/container`, which address a pod and a container runtime
  * respectively. A module that runs a plain local binary — a pinned
  * llama.cpp, a git subcommand — belongs here, and reaching for one of those
  * instead would tie it to a substrate it does not use.

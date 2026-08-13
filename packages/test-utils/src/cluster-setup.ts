@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
-import { installRealWorktreeRuntime } from './real-runtime'
+import { installRealWorktreeDriver } from './real-driver'
 
 const execFileAsync = promisify(execFile)
 
@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile)
  * this project's stand-in for that root, and it installs the REAL runtime
  * because these tests talk to a real cluster.
  */
-installRealWorktreeRuntime()
+installRealWorktreeDriver()
 
 /**
  * Cluster hygiene for the api/e2e projects — NOT loaded by `unit:*`,

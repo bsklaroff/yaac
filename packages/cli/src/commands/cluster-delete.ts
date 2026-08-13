@@ -1,4 +1,4 @@
-import { ClusterDeleteError, runClusterDelete } from '@yaac/server/runtime/k8s/cluster/delete'
+import { ClusterDeleteError, runClusterDelete } from '@yaac/server/drivers/k8s/cluster/delete'
 
 export interface ClusterDeleteCliOptions {
   yes?: boolean

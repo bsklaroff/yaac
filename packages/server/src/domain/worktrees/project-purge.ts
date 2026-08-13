@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeHandle } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeHandle } from '#drivers/contract'
 import { projectRoots } from '@yaac/shared/project-paths'
 import { cleanupWorktreeDetached } from './cleanup'
 
@@ -18,7 +18,7 @@ import { cleanupWorktreeDetached } from './cleanup'
 export async function purgeProjectBytes(slug: string): Promise<void> {
   let pods: RuntimeHandle[] = []
   try {
-    pods = await worktreeRuntime().list(slug)
+    pods = await worktreeDriver().list(slug)
   } catch {
     // cluster unavailable — skip worktree cleanup, still nuke the dirs.
   }
@@ -45,7 +45,7 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
   // GCs sweep whatever a failure leaves, and an unreachable runtime must
   // not stop the directories from going away.
   try {
-    await worktreeRuntime().destroyProjectSubstrate(slug)
+    await worktreeDriver().destroyProjectSubstrate(slug)
   } catch {
     // runtime unavailable — the orphan GCs will catch it
   }

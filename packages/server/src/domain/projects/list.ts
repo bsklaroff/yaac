@@ -1,5 +1,5 @@
 import { listProjectRows } from '#db'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 
 export interface ProjectListEntry {
   slug: string
@@ -20,7 +20,7 @@ export interface ProjectListEntry {
 export async function listProjects(): Promise<ProjectListEntry[]> {
   const [rows, worktreeCounts] = await Promise.all([
     listProjectRows(),
-    worktreeRuntime().count(),
+    worktreeDriver().count(),
   ])
   return rows.map((meta) => ({
     slug: meta.slug,

@@ -1,4 +1,4 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { teardownForRestart } from './cleanup'
 import { createWorktree } from './create'
 import {
@@ -31,7 +31,7 @@ export interface RestartResolution {
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
-    const match = await worktreeRuntime().find(idOrName)
+    const match = await worktreeDriver().find(idOrName)
     if (match) {
       return {
         projectSlug: match.projectSlug,

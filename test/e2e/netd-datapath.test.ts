@@ -10,19 +10,19 @@ import {
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
-import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { NETD_APP_NAME } from '@yaac/server/runtime/k8s/substrate/proxy-constants'
-import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/runtime/k8s/cluster/redirect-claims'
-import { runtimeClassSpec } from '@yaac/server/runtime/k8s/substrate/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/runtime/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/runtime/k8s/substrate/pods'
+import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
+import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/drivers/k8s/cluster/redirect-claims'
+import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 /**
  * Datapath-level gates for the netd redirect — the properties that make

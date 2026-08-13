@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
 // Session teardown spawns a detached script, so it is faked at the feature
 // boundary; everything the RUNTIME holds is faked at the contract, and the
@@ -12,7 +12,7 @@ vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }
 import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { purgeProjectBytes } from '#domain/worktrees'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 
 const mockCleanup = vi.mocked(cleanupWorktreeDetached)
 const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
@@ -25,7 +25,7 @@ beforeEach(async () => {
   mockCleanup.mockReset().mockResolvedValue(undefined)
   mockList.mockReset().mockResolvedValue([])
   mockDestroySubstrate.mockReset().mockResolvedValue(undefined)
-  installFakeWorktreeRuntime({
+  installFakeWorktreeDriver({
     list: mockList,
     destroyProjectSubstrate: mockDestroySubstrate,
   })
@@ -57,7 +57,9 @@ describe('purgeProjectBytes', () => {
 
     await purgeProjectBytes('demo')
 
-    expect(mockList).toHaveBeenCalledWith('demo')
+    // First argument only: the fake's delegation passes its optional opts
+    // through, so the recorded call carries a trailing undefined.
+    expect(mockList.mock.calls.map(([slug]) => slug)).toEqual(['demo'])
     expect(mockCleanup.mock.calls.map(([c]) => c)).toEqual([
       { jobName: 'yaac-demo-a', projectSlug: 'demo', worktreeId: 'a' },
       { jobName: 'yaac-demo-b', projectSlug: 'demo', worktreeId: 'b' },

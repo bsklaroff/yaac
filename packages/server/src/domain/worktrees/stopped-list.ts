@@ -1,4 +1,4 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import {
   getAgentSessionFirstMessage,
   sessionTranscriptPath,
@@ -35,7 +35,7 @@ export async function listStoppedWorktrees(
 
   const runningIds = new Set<string>()
   try {
-    for (const w of await worktreeRuntime().list()) {
+    for (const w of await worktreeDriver().list()) {
       if (w.workspaceId) runningIds.add(w.workspaceId)
     }
   } catch {

@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import type { WorkspaceMount } from '#runtime/contract'
+import type { WorkspaceMount } from '#drivers/contract'
 
 /**
  * In-pod personal skills root for each agent tool. yaac's bundled skills are

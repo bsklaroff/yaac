@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { classifyWorkspaces } from '#runtime/status/classify'
 import { markWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
-import type { TmuxLiveness } from '#runtime/status/liveness'
-import { runtimeHandleFromPod } from '#runtime/k8s/view'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { ProbeTarget, TmuxLiveness } from '#runtime/status/liveness'
+import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import type { RuntimeHandle } from '#drivers/contract'
 
 /** Grace window passed explicitly — production callers use testEnv.startingGraceMs. */
 const GRACE_MS = 60_000
@@ -109,7 +109,7 @@ describe('classifyWorkspaces', () => {
     // Simulates session-create attempt N with the pod up but tmux
     // not yet started. Reaping this would clobber the proxy session.
     const p = pod({ jobName: 'yaac-proj-new', ageMs: GRACE_MS - 1_000 })
-    const probeFn = vi.fn<(slug: string, worktreeId: string) => Promise<TmuxLiveness>>().mockResolvedValue('dead')
+    const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('dead')
     const result = await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
@@ -161,11 +161,13 @@ describe('classifyWorkspaces', () => {
     ])
   })
 
-  it('passes (slug, worktreeId) from pod labels to the prober', async () => {
+  it('hands the prober the whole workspace, unit name included', async () => {
     const p = pod({ jobName: 'yaac-proj-s1', project: 'proj', worktreeId: 's1' })
-    const probeFn = vi.fn<(slug: string, worktreeId: string) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
+    const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
     await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
-    expect(probeFn).toHaveBeenCalledWith('proj', 's1')
+    expect(probeFn).toHaveBeenCalledWith(expect.objectContaining({
+      projectSlug: 'proj', workspaceId: 's1', jobName: 'yaac-proj-s1',
+    }))
   })
 
   it('honors the graceMs argument', async () => {
@@ -189,7 +191,7 @@ describe('classifyWorkspaces', () => {
   it('routes a registry-marked session to terminating without probing it', async () => {
     markWorktreeTerminating('s1')
     const p = pod({ worktreeId: 's1' })
-    const probeFn = vi.fn<(slug: string, worktreeId: string) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
+    const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
     const result = await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
     expect(result.terminating).toEqual([p])
     expect(result.running).toEqual([])

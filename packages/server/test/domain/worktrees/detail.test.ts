@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { handleFixture, installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getWorktreeBlockedHosts, getWorktreeDetail, getWorktreePrompt } from '#domain/worktrees/detail'
 import { ServerError } from '@yaac/shared/errors'
-import type { VirtualClusterStatus } from '#runtime/contract'
+import type { VirtualClusterStatus } from '#drivers/contract'
 
 // Every helper here resolves the workspace through the runtime first.
 const mockFind = vi.fn()
@@ -18,7 +18,7 @@ describe('session detail helpers', () => {
     mockFind.mockReset().mockResolvedValue(undefined)
     mockBlockedHosts.mockReset().mockResolvedValue([])
     mockVcluster.mockReset().mockResolvedValue(null)
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       find: mockFind,
       blockedHosts: mockBlockedHosts,
       virtualClusterStatus: mockVcluster,

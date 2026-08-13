@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { dialPtyStream, podExec, worktreeIdFromJobName } from '#runtime/k8s/substrate'
+import { worktreeDriver } from '#drivers/driver'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const DEFAULT_COLS = 80
@@ -173,7 +173,7 @@ function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
       inFlight = false
       pump()
     }
-    podExec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
+    worktreeDriver().exec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
       .then(done, done)
   }
   return {
@@ -219,7 +219,7 @@ function killViewsCmd(views: string[]): string {
 async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Promise<void> {
   let listed: { stdout: string }
   try {
-    listed = await podExec(jobName, listTmuxSessionsCmd(), { maxAttempts: 1 })
+    listed = await worktreeDriver().exec(jobName, listTmuxSessionsCmd(), { maxAttempts: 1 })
   } catch {
     return // pod gone or tmux not up yet — nothing to sweep
   }
@@ -227,7 +227,7 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
   const ghosts = ghostViews(names, live)
   if (ghosts.length === 0) return
   try {
-    await podExec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
+    await worktreeDriver().exec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
   } catch {
     // raced away (view self-destroyed, pod terminating) — fine
   }
@@ -244,7 +244,7 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
  */
 async function killViewSession(jobName: string, viewName: string): Promise<void> {
   try {
-    await podExec(
+    await worktreeDriver().exec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${viewName}`,
       { maxAttempts: 1 },
@@ -420,12 +420,11 @@ export function attachPty(
 ): void {
   const target = parsePtyTarget(query.target)
   const size = parsePtySize(query.cols, query.rows)
-  const worktreeId = worktreeIdFromJobName(jobName)
 
   // 'shell' is a raw zsh exec — no tmux, so there is no view session to
   // register, sweep, resize or kill; exiting the shell ends the connection.
   if (target === 'shell') {
-    bridge(dialPtyStream(worktreeId, ['zsh'], size), socket, {})
+    bridge(worktreeDriver().dialPty(jobName, ['zsh'], size), socket, {})
     return
   }
 
@@ -437,7 +436,7 @@ export function attachPty(
   liveViews.set(jobName, views)
   void sweepGhostViews(jobName, views)
 
-  const ptyProc = dialPtyStream(worktreeId, attachArgs(target, viewName, size), size)
+  const ptyProc = worktreeDriver().dialPty(jobName, attachArgs(target, viewName, size), size)
   // Webapp views (agent / window:@) pin their tmux window to this client via
   // `window-size manual` + resize-window (see attachArgs), so their resizes
   // must drive resize-window; the resizer serializes those execs. 'native'

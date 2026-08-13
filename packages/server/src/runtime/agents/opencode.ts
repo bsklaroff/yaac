@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podExec } from '#runtime/k8s/substrate'
+import { worktreeDriver } from '#drivers/driver'
 
 /**
  * Status markers + first-message lookup for opencode sessions.
@@ -47,7 +47,7 @@ async function probeOpencode(jobName: string): Promise<OpencodeProbe | null> {
   // below and return null.
   let stdout: string
   try {
-    const result = await podExec(
+    const result = await worktreeDriver().exec(
       jobName,
       'curl -sf http://127.0.0.1:4096/session',
       { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },

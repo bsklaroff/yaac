@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-import type { WorkspaceMount } from '#runtime/contract'
+import type { WorkspaceMount } from '#drivers/contract'
 
 /**
  * The one worktree-bin script worktree pods cannot function without: the
