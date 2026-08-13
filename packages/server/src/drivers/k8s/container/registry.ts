@@ -69,12 +69,25 @@ export const REGISTRY_NAMESPACE = 'yaac'
 /** Key for this process's registry port-forward child. */
 const REGISTRY_FORWARD_KEY = 'main-registry'
 
-/** Manifest media types the registry must answer a HEAD with. Sent on every
- *  manifest probe so a registry storing an OCI index (what a multi-arch or
- *  zstd-compressed push produces) answers with it rather than a 404. */
+/**
+ * Manifest media types the registry must answer a HEAD with. Sent on every
+ * manifest probe so a registry storing an OCI index (what a multi-arch or
+ * zstd-compressed push produces) answers with it rather than a 404.
+ *
+ * BOTH list types are here on purpose, and the docker one is the subtle
+ * half. Distribution does not 404 a manifest list whose type a client did
+ * not accept — it substitutes the linux/amd64 PLATFORM manifest and stamps
+ * that digest in `Docker-Content-Digest`. A 200 with the wrong digest is
+ * exactly the silent staleness `registryDigestRef` exists to kill: the pin
+ * would name a manifest the node's own puller (whose Accept set does
+ * include lists) never resolves for that tag. No current producer pushes a
+ * docker schema2 list here, so this is future-proofing — it costs one
+ * string and the failure mode it forecloses is invisible.
+ */
 const MANIFEST_ACCEPT = 'application/vnd.oci.image.manifest.v1+json'
   + ', application/vnd.oci.image.index.v1+json'
   + ', application/vnd.docker.distribution.manifest.v2+json'
+  + ', application/vnd.docker.distribution.manifest.list.v2+json'
 
 /**
  * The host's loopback as seen from inside the podman machine VM, published by
@@ -260,7 +273,7 @@ export async function registryDigestRef(tag: string): Promise<string> {
     throw new Error(`cannot pin ${tag}: registry answered ${res.status} for its manifest`)
   }
 
-  const digest = res.headers?.get('docker-content-digest')
+  const digest = res.headers.get('docker-content-digest')
   if (!digest) {
     throw new Error(`cannot pin ${tag}: registry returned no Docker-Content-Digest`)
   }

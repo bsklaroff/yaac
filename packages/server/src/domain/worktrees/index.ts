@@ -48,7 +48,7 @@ export { ensureProjectExists, listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'
 export { tryClaimPrewarmed } from './prewarm'
-export { reconcilePrewarmPool } from './prewarm-reconcile'
+export { reapProjectSpares, reconcilePrewarmPool } from './prewarm-reconcile'
 export {
   inFlightWorktreeIds,
   listProvisioning,

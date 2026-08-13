@@ -17,7 +17,7 @@ vi.mock('#domain/worktrees/cleanup', () => ({
 vi.mock('#db/preferences', () => ({ getDefaultTool: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
+import { reapProjectSpares, reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 // `claiming` and `inFlight` are the module's shared state, read here to set
 // up a mid-claim / mid-spawn cluster and asserted on afterwards.
 import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/worktrees/prewarm'
@@ -285,5 +285,91 @@ describe('reconcilePrewarmPool', () => {
     mockCleanup.mockRejectedValue(new Error('pod gone'))
     await expect(reconcilePrewarmPool('claude')).resolves.toBeUndefined()
     await flush()
+  })
+})
+
+/**
+ * The pool's spares go stale all at once when a project's image is rebuilt:
+ * a spare's image was resolved when it was warmed, and nothing else in the
+ * pool notices. This is what `yaac project rebuild` calls so the first
+ * create after it does not hand back the very CLIs the rebuild replaced.
+ */
+describe('reapProjectSpares', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    clearPrewarmStateForTests()
+    mockWorkspaces.mockResolvedValue([])
+    installFakeWorktreeDriver({
+      snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: () => Promise.resolve([]) }),
+    })
+    mockCleanup.mockResolvedValue(true)
+    mockDeleteState.mockResolvedValue(true)
+  })
+
+  it('takes every spare the project holds, and nothing else', async () => {
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', worktreeId: 'r1' }),
+      pod({ jobName: 'yaac-p-s1', worktreeId: 's1', prewarmed: true }),
+      pod({ jobName: 'yaac-p-s2', worktreeId: 's2', prewarmed: true }),
+      pod({ jobName: 'yaac-other-s', worktreeId: 'o1', projectSlug: 'other', prewarmed: true }),
+    ])
+
+    await expect(reapProjectSpares('p')).resolves.toBe(2)
+
+    // The user's real worktree keeps running (it is on the node's extracted
+    // snapshot, which is intended), and another project's pool is not this
+    // rebuild's business.
+    expect(mockCleanup.mock.calls.map((c) => c[0].jobName).sort()).toEqual(['yaac-p-s1', 'yaac-p-s2'])
+  })
+
+  // Unlike the tick's own reaping, this one is AWAITED: the caller is about
+  // to tell a user the rebuild is done, and a spare still standing when the
+  // next create runs is exactly the failure it prevents.
+  it('does not answer until the spares are really gone', async () => {
+    const order: string[] = []
+    let releaseTeardown = (): void => { /* replaced below */ }
+    mockCleanup.mockImplementation(async () => {
+      order.push('teardown-started')
+      await new Promise<void>((r) => { releaseTeardown = r })
+      return true
+    })
+    mockDeleteState.mockImplementation(() => { order.push('state-deleted'); return Promise.resolve(true) })
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-s1', worktreeId: 's1', prewarmed: true })])
+
+    let settled = false
+    const reap = reapProjectSpares('p').then((n) => { settled = true; return n })
+    await flush()
+    expect(settled).toBe(false)
+
+    releaseTeardown()
+    await expect(reap).resolves.toBe(1)
+    expect(order).toEqual(['teardown-started', 'state-deleted'])
+  })
+
+  it('leaves a spare that is mid-claim to the create that owns it', async () => {
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-s1', worktreeId: 's1', prewarmed: true })])
+    claiming.add('yaac-p-s1')
+
+    await expect(reapProjectSpares('p')).resolves.toBe(0)
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  // The caller's own work already succeeded — the image IS rebuilt and
+  // published — so a spare that will not tear down is logged, not raised.
+  it('reports only the spares it actually took', async () => {
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-s1', worktreeId: 's1', prewarmed: true }),
+      pod({ jobName: 'yaac-p-s2', worktreeId: 's2', prewarmed: true }),
+    ])
+    mockCleanup.mockRejectedValueOnce(new Error('pod stuck')).mockResolvedValue(true)
+
+    await expect(reapProjectSpares('p')).resolves.toBe(1)
+  })
+
+  it('answers zero when the cluster cannot be listed', async () => {
+    mockWorkspaces.mockRejectedValue(new Error('cluster down'))
+
+    await expect(reapProjectSpares('p')).resolves.toBe(0)
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 })

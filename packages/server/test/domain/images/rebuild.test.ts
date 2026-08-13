@@ -6,12 +6,20 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 vi.mock('#domain/projects/config', () => ({
   resolveProjectConfig: vi.fn(),
 }))
+// The pool is the other thing a rebuild invalidates. Mocked at the verb
+// that owns it: what this module decides is only THAT the spares must go,
+// and when relative to the rebuild.
+vi.mock('#domain/worktrees/prewarm-reconcile', () => ({
+  reapProjectSpares: vi.fn(),
+}))
 
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { resolveProjectConfig } from '#domain/projects/config'
+import { reapProjectSpares } from '#domain/worktrees/prewarm-reconcile'
 import { rebuildProjectImage } from '#domain/images/rebuild'
 
 const mockResolveConfig = vi.mocked(resolveProjectConfig)
+const mockReapSpares = vi.mocked(reapProjectSpares)
 type RebuildVerb = (
   slug: string,
   opts: { nestedContainers: boolean; onLog?: (line: string) => void },
@@ -26,6 +34,7 @@ function fakeRebuild(): ReturnType<typeof vi.fn<RebuildVerb>> {
 beforeEach(() => {
   vi.clearAllMocks()
   mockResolveConfig.mockResolvedValue(null)
+  mockReapSpares.mockResolvedValue(0)
 })
 
 describe('rebuildProjectImage', () => {
@@ -83,11 +92,46 @@ describe('rebuildProjectImage', () => {
     expect(lines).toEqual(['building yaac-tools:abc (no cache)'])
   })
 
-  it('surfaces a rebuild that failed', async () => {
+  // A spare is a fully-provisioned worktree whose image was resolved when it
+  // was warmed, and nothing in the pool notices it has gone stale — so the
+  // first create after a successful rebuild would claim a pre-rebuild spare
+  // and hand back exactly the CLIs the rebuild replaced.
+  it('drops the project’s prewarmed spares once the rebuild lands', async () => {
+    const mockRebuild = fakeRebuild()
+
+    await rebuildProjectImage('demo')
+
+    expect(mockReapSpares).toHaveBeenCalledExactlyOnceWith('demo')
+    // After, never before: the pool refills on the reconciler's next tick,
+    // and a spare warmed while the rebuild was still running would carry the
+    // old image just the same.
+    expect(mockRebuild.mock.invocationCallOrder[0])
+      .toBeLessThan(mockReapSpares.mock.invocationCallOrder[0])
+  })
+
+  it('says so when spares were dropped, and stays quiet when there were none', async () => {
+    fakeRebuild()
+    mockReapSpares.mockResolvedValue(1)
+    const lines: string[] = []
+    await rebuildProjectImage('demo', { onLog: (line) => lines.push(line) })
+    expect(lines.join('\n')).toMatch(/Dropped 1 prewarmed session\b/)
+
+    mockReapSpares.mockResolvedValue(0)
+    const quiet: string[] = []
+    await rebuildProjectImage('demo', { onLog: (line) => quiet.push(line) })
+    expect(quiet).toEqual([])
+  })
+
+  // A failed rebuild changed nothing, so the spares it warmed are still
+  // correct — reaping them would cost the user a pool for no reason.
+  it('keeps the spares when the rebuild failed', async () => {
     installFakeWorktreeDriver({
       rebuildImage: () => Promise.reject(new Error('standalone Dockerfile.yaac')),
     })
 
+    // The failure reaches the caller either way — a rebuild that built
+    // nothing must not read as success.
     await expect(rebuildProjectImage('demo')).rejects.toThrow(/standalone/)
+    expect(mockReapSpares).not.toHaveBeenCalled()
   })
 })
