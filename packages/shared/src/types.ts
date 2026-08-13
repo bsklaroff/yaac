@@ -549,11 +549,35 @@ export interface WorktreeListEntry {
    *  from the worktree branch's recorded upstream. Unset when the upstream
    *  record is missing or unreadable. */
   baseBranch?: string
-  /** Pinned to the sidebar's "Background" section. Orthogonal to `status`
-   *  and `stopping`: a background worktree stays in that section whatever
-   *  state it's in (and, via `StoppedWorktreeEntry.background`, even after
-   *  it stops). Server-persisted so the pin survives restarts. */
-  background?: boolean
+  /** The sidebar group this worktree is filed under (see
+   *  `WorktreeGroupSummary`); absent means the default list. Server-persisted
+   *  and orthogonal to `status` and `stopping` — a worktree keeps its group
+   *  through stopping and restarting (and, via `StoppedWorktreeEntry.groupId`,
+   *  keeps a ghost row in it while stopped). */
+  groupId?: string
+}
+
+/**
+ * A named sidebar group — how the user has chosen to file a project's
+ * worktrees. The sidebar lists ungrouped worktrees first and then one
+ * collapsible section per group, both in `createdAt` order; membership is
+ * `WorktreeListEntry.groupId`.
+ *
+ * A group is shown when it is `pinned` or holds at least one live worktree,
+ * and every shown group lists ALL its members — live ones as ordinary rows,
+ * stopped ones as ghost rows with a restart action. So an unpinned group
+ * whose worktrees have all stopped just disappears (its row persists, and
+ * restarting a member brings it back), while pinning keeps it on screen as a
+ * place to restart into.
+ */
+export interface WorktreeGroupSummary {
+  groupId: string
+  projectSlug: string
+  name: string
+  /** Keep the group listed even with no live worktree in it. */
+  pinned: boolean
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
+  createdAt: string
 }
 
 /** How a file changed, mapped from git's name-status letters. */
@@ -716,10 +740,10 @@ export interface StoppedWorktreeEntry {
    *  worktree row) so the acknowledgement is durable and shared across
    *  clients; only meaningful when `deathReason` is set. */
   seen: boolean
-  /** Pinned to the sidebar's "Background" section — the pin survives
-   *  stopping (worktree ids are stable across restarts), so a stopped
-   *  background worktree keeps a sidebar row with a restart action. */
-  background?: boolean
+  /** The sidebar group the worktree is filed under — membership survives
+   *  stopping (worktree ids are stable across restarts), so a stopped member
+   *  keeps a ghost row in its group with a restart action. */
+  groupId?: string
 }
 
 /** A webapp-attachable terminal inside a worktree's container (beyond the
@@ -823,6 +847,10 @@ export interface CheckResult {
  */
 export interface ServerSnapshot {
   worktrees: WorktreeListEntry[]
+  /** Every project's sidebar groups (clients filter by slug, as they do
+   *  `worktrees`). Carries hidden groups too — whether a group shows is a
+   *  question about its members, which the client already has. */
+  worktreeGroups: WorktreeGroupSummary[]
   stale: StaleWorktreeInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningWorktreeEntry[]

@@ -222,8 +222,8 @@ speak alone.
 > `applyWorktreeEvent`. Code that watches the substrate or reads a
 > worktree's disk emits a `WorktreeEvent` — discrete and past-tense — and
 > the handler alone decides which rows it lands in. Intent (a title, a
-> pin, a preference) is written through ordinary db functions; reads
-> are free to domain and above.
+> sidebar group, a preference) is written through ordinary db functions;
+> reads are free to domain and above.
 
 The per-event row mutators are internal to db, off the barrel, so a
 caller cannot write an observed fact except by saying what happened. The
@@ -258,7 +258,7 @@ and return, and the reconciler knows nothing about snapshots.
 One rule, so a new writer never has to ask how its change reaches a
 browser: **if you mutate something `buildSnapshot` reads, notify there.**
 `applyWorktreeEvent` covers every observed fact at the event door;
-intent writers (a title, a pin) notify individually.
+intent writers (a title, a group) notify individually.
 
 The consequence worth keeping: an idle server rebuilds nothing at all.
 The only clock left on this path is the plan-usage refresh, which is

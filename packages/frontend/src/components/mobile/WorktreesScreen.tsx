@@ -7,7 +7,12 @@ import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { WorktreeList } from '#components/WorktreeList'
-import type { GitAuthFailure, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
+import type {
+  GitAuthFailure,
+  ProvisioningWorktreeEntry,
+  WorktreeGroupSummary,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
 /**
  * The middle mobile screen: the active project's worktrees, full-bleed.
@@ -20,6 +25,7 @@ export function WorktreesScreen({
   projectSlug,
   projectRemoteUrl,
   worktrees,
+  groups,
   provisioning,
   connected,
   gitAuthFailures,
@@ -30,6 +36,8 @@ export function WorktreesScreen({
    *  remove-project dialog's type-to-confirm text. */
   projectRemoteUrl: string
   worktrees: WorktreeListEntry[]
+  /** The active project's sidebar groups. */
+  groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
@@ -67,7 +75,12 @@ export function WorktreesScreen({
         )}
       </div>
 
-      <WorktreeList projectSlug={projectSlug} worktrees={worktrees} provisioning={provisioning} />
+      <WorktreeList
+        projectSlug={projectSlug}
+        worktrees={worktrees}
+        groups={groups}
+        provisioning={provisioning}
+      />
     </>
   )
 }

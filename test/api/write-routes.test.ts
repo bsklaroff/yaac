@@ -12,6 +12,8 @@ import {
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
 import { getDefaultTool } from '@yaac/server/db/preferences'
+import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
+import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
 import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
@@ -743,6 +745,99 @@ describe('write routes', () => {
       const res = await client.worktree.stop.$post({ json: { worktreeId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
+    })
+  })
+
+  // The sidebar's groups, end to end through the routes: what the webapp
+  // creates, drags between and deletes has to come back on the snapshot the
+  // same way, and a stale group id has to fail rather than file a worktree
+  // where nothing lists it.
+  describe('worktree group routes', () => {
+    const client = (): ReturnType<typeof makeTestApiClient> =>
+      makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+
+    const seed = async (...worktreeIds: string[]): Promise<void> => {
+      for (const worktreeId of worktreeIds) {
+        await recordWorktreeCreated({ projectSlug: 'demo', worktreeId })
+      }
+    }
+
+    /** Create a group around `worktreeId` and hand back its new id. */
+    const createGroup = async (worktreeId: string, name = 'Release'): Promise<string> => {
+      const res = await client().worktree.group.create.$post({
+        json: { projectSlug: 'demo', worktreeId, name },
+      })
+      expect(res.status).toBe(200)
+      return (await res.json()).groupId
+    }
+
+    it('creates a group around a worktree and surfaces it for the snapshot', async () => {
+      await seed('sess-a')
+      const groupId = await createGroup('sess-a')
+
+      expect(await listWorktreeGroups('demo')).toEqual([expect.objectContaining({
+        groupId, projectSlug: 'demo', name: 'Release', pinned: false,
+      })])
+      expect((await getProjectWorktreeRows('demo')).get('sess-a')?.groupId).toBe(groupId)
+    })
+
+    it('renames, pins and deletes it, releasing its worktrees', async () => {
+      await seed('sess-a')
+      const groupId = await createGroup('sess-a')
+
+      await client().worktree.group.rename.$post({ json: { projectSlug: 'demo', groupId, name: 'Shipping' } })
+      await client().worktree.group['set-pinned'].$post({ json: { projectSlug: 'demo', groupId, pinned: true } })
+      expect(await listWorktreeGroups('demo')).toEqual([expect.objectContaining({
+        name: 'Shipping', pinned: true,
+      })])
+
+      await client().worktree.group.delete.$post({ json: { projectSlug: 'demo', groupId } })
+      expect(await listWorktreeGroups('demo')).toEqual([])
+      expect((await getProjectWorktreeRows('demo')).get('sess-a')?.groupId).toBeUndefined()
+    })
+
+    it('moves a worktree in and out of a group, and 404s an unknown one', async () => {
+      await seed('sess-a', 'sess-b')
+      const groupId = await createGroup('sess-a')
+
+      await client().worktree['set-group'].$post({
+        json: { projectSlug: 'demo', worktreeId: 'sess-b', groupId },
+      })
+      expect((await getProjectWorktreeRows('demo')).get('sess-b')?.groupId).toBe(groupId)
+
+      await client().worktree['set-group'].$post({
+        json: { projectSlug: 'demo', worktreeId: 'sess-b', groupId: null },
+      })
+      expect((await getProjectWorktreeRows('demo')).get('sess-b')?.groupId).toBeUndefined()
+
+      // A drop onto a group another client has already deleted.
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/worktree/set-group', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-b', groupId: 'gone' }),
+      }))
+      expect(res.status).toBe(404)
+    })
+
+    it('404s a group created around a worktree that is not there', async () => {
+      // Otherwise the group row lands with no member — invisible in the
+      // sidebar, and so undeletable from it.
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/worktree/group/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'nope', name: 'Release' }),
+      }))
+      expect(res.status).toBe(404)
+      expect(await listWorktreeGroups('demo')).toEqual([])
+    })
+
+    it('rejects a blank group name', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/worktree/group/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'sess-a', name: '' }),
+      }))
+      expect(res.status).toBe(400)
     })
   })
 

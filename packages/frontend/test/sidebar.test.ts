@@ -1,150 +1,177 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
-import { sidebarRowIds, sidebarSections } from '#components/Sidebar'
-import type { StoppedWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
+import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
+import type {
+  StoppedWorktreeEntry,
+  WorktreeGroupSummary,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
-const session = (
-  worktreeId: string,
-  status: 'waiting' | 'running',
-  extra: Partial<WorktreeListEntry> = {},
-): Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'stopping' | 'background'> =>
-  ({ worktreeId, status, ...extra })
-
-/** A full WorktreeListEntry — sidebarSections keeps the whole row, not just id. */
+/** A worktree entry. `at` is the seconds field of its creation time, which is
+ *  what the list orders on. */
 const entry = (
   worktreeId: string,
-  status: 'waiting' | 'running',
+  at: number,
   extra: Partial<WorktreeListEntry> = {},
 ): WorktreeListEntry => ({
-  worktreeId, projectSlug: 'p', tool: 'claude', status, createdAt: '2026-01-01 00:00:00',
-  agentSessions: [], blockedHosts: [], forwardedPorts: [], unforwardedPorts: [], ...extra,
+  worktreeId,
+  projectSlug: 'p',
+  tool: 'claude',
+  status: 'running',
+  createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
+  agentSessions: [],
+  blockedHosts: [],
+  forwardedPorts: [],
+  unforwardedPorts: [],
+  ...extra,
 })
 
-const deletedEntry = (worktreeId: string): StoppedWorktreeEntry => ({
-  worktreeId, projectSlug: 'p', tool: 'claude', createdAt: '2026-01-01 00:00:00',
+const group = (
+  groupId: string,
+  at: number,
+  extra: Partial<WorktreeGroupSummary> = {},
+): WorktreeGroupSummary => ({
+  groupId,
+  projectSlug: 'p',
+  name: groupId,
+  pinned: false,
+  createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
+  ...extra,
+})
+
+const stopped = (
+  worktreeId: string,
+  at: number,
+  groupId?: string,
+): StoppedWorktreeEntry => ({
+  worktreeId,
+  projectSlug: 'p',
+  tool: 'claude',
+  createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
   seen: false,
-  agentSessions: [], background: true,
+  agentSessions: [],
+  ...(groupId !== undefined ? { groupId } : {}),
 })
 
-const labels = (
-  sessions: WorktreeListEntry[],
-  pending: string[] = [],
-  deleted: StoppedWorktreeEntry[] = [],
-): Record<string, string[]> =>
-  Object.fromEntries(sidebarSections(sessions, pending, deleted).map((s) => [s.label, s.worktrees.map((x) => x.worktreeId)]))
+/** { default: [ids], <group name>: [member ids + ghost ids] } */
+const shape = (
+  worktrees: WorktreeListEntry[],
+  groups: WorktreeGroupSummary[],
+  stoppedRows: StoppedWorktreeEntry[] = [],
+): Record<string, string[]> => {
+  const layout = sidebarLayout(worktrees, groups, stoppedRows)
+  return {
+    default: layout.defaultList.map((w) => w.worktreeId),
+    ...Object.fromEntries(layout.groups.map((s) => [
+      s.group.name,
+      [...s.members.map((w) => w.worktreeId), ...s.ghosts.map((d) => d.worktreeId)],
+    ])),
+  }
+}
+
+describe('sidebarLayout', () => {
+  it('lists ungrouped worktrees oldest-first, whatever their status', () => {
+    expect(shape([
+      entry('c', 3),
+      entry('a', 1, { status: 'waiting' }),
+      entry('b', 2),
+    ], [])).toEqual({ default: ['a', 'b', 'c'] })
+  })
+
+  it('keeps a stopping worktree in place rather than bucketing it', () => {
+    // Both the server-marked kind and (via sidebarRowIds) a mid-flight
+    // optimistic delete: the row greys out where it sits.
+    expect(shape([
+      entry('a', 1),
+      entry('b', 2, { stopping: true }),
+      entry('c', 3),
+    ], [])).toEqual({ default: ['a', 'b', 'c'] })
+  })
+
+  it('files members into their group and orders the groups by creation', () => {
+    const late = group('late', 20)
+    const early = group('early', 10)
+    const layout = sidebarLayout([
+      entry('in-late', 1, { groupId: 'late' }),
+      entry('loose', 2),
+      entry('in-early-new', 4, { groupId: 'early' }),
+      entry('in-early-old', 3, { groupId: 'early' }),
+    ], [late, early])
+
+    expect(layout.defaultList.map((w) => w.worktreeId)).toEqual(['loose'])
+    expect(layout.groups.map((s) => s.group.groupId)).toEqual(['early', 'late'])
+    expect(layout.groups[0]?.members.map((w) => w.worktreeId))
+      .toEqual(['in-early-old', 'in-early-new'])
+  })
+
+  it('hides an unpinned group with no live member, and keeps a pinned one', () => {
+    const loose = group('loose-group', 10)
+    const pinned = group('pinned-group', 20, { pinned: true })
+
+    // Nothing live in either: only the pinned one is drawn.
+    expect(shape([], [loose, pinned])).toEqual({ default: [], 'pinned-group': [] })
+
+    // One live member is enough to bring the unpinned one back.
+    expect(shape([entry('a', 1, { groupId: 'loose-group' })], [loose, pinned]))
+      .toEqual({ default: [], 'loose-group': ['a'], 'pinned-group': [] })
+  })
+
+  it('counts a waiting or stopping member as live for visibility', () => {
+    const g = group('g', 10)
+    expect(shape([entry('w', 1, { status: 'waiting', groupId: 'g' })], [g]))
+      .toEqual({ default: [], g: ['w'] })
+    expect(shape([entry('t', 1, { stopping: true, groupId: 'g' })], [g]))
+      .toEqual({ default: [], g: ['t'] })
+  })
+
+  it('ghosts every shown group\'s stopped members, pinned or not', () => {
+    const g = group('g', 10)
+    // An unpinned group with one live worktree still shows its dead ones.
+    expect(shape(
+      [entry('live', 2, { groupId: 'g' })],
+      [g],
+      [stopped('gone', 1, 'g'), stopped('elsewhere', 1), stopped('other-group', 1, 'nope')],
+    )).toEqual({ default: [], g: ['live', 'gone'] })
+
+    // Ungrouped stopped worktrees are never drawn — they live in the stopped
+    // overlay — and neither are a hidden group's.
+    expect(shape([], [g], [stopped('gone', 1, 'g')])).toEqual({ default: [] })
+    expect(shape([], [{ ...g, pinned: true }], [stopped('gone', 1, 'g')]))
+      .toEqual({ default: [], g: ['gone'] })
+  })
+
+  it('falls back to the default list for a group that no longer exists', () => {
+    // What a snapshot arriving mid-delete looks like.
+    expect(shape([entry('orphan', 1, { groupId: 'gone' })], [])).toEqual({ default: ['orphan'] })
+    expect(sidebarLayout([], [], [stopped('a', 1, 'gone')]).groups).toEqual([])
+  })
+})
 
 describe('sidebarRowIds', () => {
-  it('orders rows provisioning-first, then waiting, then running', () => {
+  it('runs provisioning, then the default list, then each shown group', () => {
     const rows = sidebarRowIds(
       [{ worktreeId: 'prov-1' }],
-      [session('run-1', 'running'), session('wait-1', 'waiting'), session('run-2', 'running')],
-      [],
-    )
-    expect(rows).toEqual(['prov-1', 'wait-1', 'run-1', 'run-2'])
-  })
-
-  it('excludes optimistically-deleting sessions (pendingDeleteIds)', () => {
-    const rows = sidebarRowIds(
-      [],
-      [session('a', 'waiting'), session('b', 'running')],
-      ['a'],
-    )
-    expect(rows).toEqual(['b'])
-  })
-
-  it('excludes server-marked stopping rows (they render but are not selectable)', () => {
-    const rows = sidebarRowIds(
-      [],
-      [session('a', 'running', { stopping: true }), session('b', 'running')],
-      [],
-    )
-    expect(rows).toEqual(['b'])
-  })
-
-  it('places background rows after the status groups, whatever their status', () => {
-    const rows = sidebarRowIds(
-      [],
       [
-        session('bg-wait', 'waiting', { background: true }),
-        session('run-1', 'running'),
-        session('wait-1', 'waiting'),
-        session('bg-run', 'running', { background: true }),
+        entry('grouped', 4, { groupId: 'g' }),
+        entry('loose-new', 3),
+        entry('loose-old', 2),
       ],
+      [group('g', 10)],
       [],
     )
-    expect(rows).toEqual(['wait-1', 'run-1', 'bg-wait', 'bg-run'])
+    expect(rows).toEqual(['prov-1', 'loose-old', 'loose-new', 'grouped'])
   })
 
-  it('excludes stopping background rows like any other stopping row', () => {
-    const rows = sidebarRowIds(
-      [],
-      [session('a', 'running', { background: true, stopping: true }), session('b', 'running', { background: true })],
-      [],
-    )
-    expect(rows).toEqual(['b'])
+  it('skips stopping rows — server-marked or optimistically deleting', () => {
+    expect(sidebarRowIds([], [entry('a', 1, { stopping: true }), entry('b', 2)], [], []))
+      .toEqual(['b'])
+    expect(sidebarRowIds([], [entry('a', 1), entry('b', 2)], [], ['a']))
+      .toEqual(['b'])
   })
 
-  it('returns an empty list with nothing to show', () => {
-    expect(sidebarRowIds([], [], [])).toEqual([])
-  })
-})
-
-describe('sidebarSections', () => {
-  it('groups live sessions by status, in Waiting/Running/Background/Terminating order', () => {
-    const secs = sidebarSections(
-      [entry('run-1', 'running'), entry('wait-1', 'waiting')],
-      [],
-    )
-    expect(secs.map((s) => s.label)).toEqual(['Waiting', 'Running', 'Background', 'Terminating'])
-    expect(labels([entry('run-1', 'running'), entry('wait-1', 'waiting')])).toEqual({
-      Waiting: ['wait-1'], Running: ['run-1'], Background: [], Terminating: [],
-    })
-  })
-
-  it('routes server-marked stopping sessions into the Terminating section', () => {
-    // Terminating carries status:'running' on the wire, yet must not appear
-    // under Running.
-    expect(labels([entry('a', 'running', { stopping: true }), entry('b', 'running')])).toEqual({
-      Waiting: [], Running: ['b'], Background: [], Terminating: ['a'],
-    })
-  })
-
-  it('routes optimistically-deleting sessions (pendingDeleteIds) into Terminating', () => {
-    // A waiting session mid-delete leaves Waiting for Terminating.
-    expect(labels([entry('a', 'waiting'), entry('b', 'running')], ['a'])).toEqual({
-      Waiting: [], Running: ['b'], Background: [], Terminating: ['a'],
-    })
-  })
-
-  it('routes background sessions into Background whatever their status', () => {
-    expect(labels([
-      entry('bg-wait', 'waiting', { background: true }),
-      entry('bg-run', 'running', { background: true }),
-      entry('wait-1', 'waiting'),
-    ])).toEqual({
-      Waiting: ['wait-1'], Running: [], Background: ['bg-wait', 'bg-run'], Terminating: [],
-    })
-  })
-
-  it('keeps a stopping background session in Background, not Terminating', () => {
-    expect(labels([
-      entry('bg-term', 'running', { background: true, stopping: true }),
-      entry('term', 'running', { stopping: true }),
-    ])).toEqual({
-      Waiting: [], Running: [], Background: ['bg-term'], Terminating: ['term'],
-    })
-  })
-
-  it('carries deleted background rows on the Background section', () => {
-    const secs = sidebarSections(
-      [entry('bg-run', 'running', { background: true })],
-      [],
-      [deletedEntry('bg-gone')],
-    )
-    const background = secs.find((s) => s.label === 'Background')
-    expect(background?.worktrees.map((s) => s.worktreeId)).toEqual(['bg-run'])
-    expect(background?.deleted?.map((d) => d.worktreeId)).toEqual(['bg-gone'])
-    // The other sections carry no deleted rows.
-    expect(secs.filter((s) => s.label !== 'Background').every((s) => !s.deleted?.length)).toBe(true)
+  it('skips a hidden group\'s rows and returns nothing when there is nothing', () => {
+    // A pinned-but-empty group contributes no selectable row.
+    expect(sidebarRowIds([], [], [group('g', 10, { pinned: true })], [])).toEqual([])
+    expect(sidebarRowIds([], [], [], [])).toEqual([])
   })
 })

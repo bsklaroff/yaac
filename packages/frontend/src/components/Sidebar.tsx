@@ -8,13 +8,23 @@ import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { WorktreeList } from '#components/WorktreeList'
 import { useUiStore } from '#store'
-import type { GitAuthFailure, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
+import type {
+  GitAuthFailure,
+  ProvisioningWorktreeEntry,
+  WorktreeGroupSummary,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
-// The list body, its sections and its row ordering live in WorktreeList — the
+// The list body, its groups and its row ordering live in WorktreeList — the
 // mobile worktrees screen shows the same body without this card's chrome.
 // Re-exported here because these are what the workspace's Alt+K/J cycle and
 // the existing tests reach for.
-export { sidebarRowIds, sidebarSections, type SidebarSection } from '#components/WorktreeList'
+export {
+  sidebarLayout,
+  sidebarRowIds,
+  type SidebarGroupSection,
+  type SidebarLayout,
+} from '#components/WorktreeList'
 
 /**
  * The desktop worktree list: a fixed-width card between the project rail and
@@ -25,6 +35,7 @@ export function Sidebar({
   projectSlug,
   projectRemoteUrl,
   worktrees,
+  groups,
   provisioning,
   connected,
   gitAuthFailures,
@@ -34,6 +45,8 @@ export function Sidebar({
    *  remove-project dialog's type-to-confirm text. */
   projectRemoteUrl: string
   worktrees: WorktreeListEntry[]
+  /** The active project's sidebar groups. */
+  groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
   connected: boolean
   /** The active project's rejected git credentials (project-wide flag). */
@@ -84,7 +97,12 @@ export function Sidebar({
         </div>
       </div>
 
-      <WorktreeList projectSlug={projectSlug} worktrees={worktrees} provisioning={provisioning} />
+      <WorktreeList
+        projectSlug={projectSlug}
+        worktrees={worktrees}
+        groups={groups}
+        provisioning={provisioning}
+      />
     </aside>
   )
 }

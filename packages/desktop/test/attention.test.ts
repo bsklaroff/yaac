@@ -11,6 +11,7 @@ import {
 import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
 const snap = (entries: Array<Partial<WorktreeListEntry>>): ServerSnapshot => ({
+  worktreeGroups: [],
   worktrees: entries.map((s, i): WorktreeListEntry => ({
     worktreeId: s.worktreeId ?? `s${i}`,
     projectSlug: s.projectSlug ?? 'proj',

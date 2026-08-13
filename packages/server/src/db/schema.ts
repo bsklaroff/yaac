@@ -87,8 +87,10 @@ export const worktrees = snakeCase.table('worktrees', {
   title: text(),
   /** Branch the worktree forked from (no `origin/` prefix). */
   baseBranch: text(),
-  /** Pinned to the sidebar's "Background" section. */
-  background: boolean().notNull().default(false),
+  /** The sidebar group this worktree is filed under; null is the default
+   *  list. Belongs to the worktree, not to one of its lives, so it survives
+   *  a stop and a restart. */
+  groupId: text(),
   stoppedAt: timestamp({ withTimezone: true }),
   deathReason: text(),
   deathDetail: text(),
@@ -128,6 +130,33 @@ export const worktrees = snakeCase.table('worktrees', {
    */
   lifeLogBytes: integer().notNull().default(0),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
+
+/**
+ * A named sidebar group, one row per (project, group id). Purely how a user
+ * has chosen to file their worktrees: the sidebar lists ungrouped worktrees
+ * first and then one section per group, both in `createdAt` order, and
+ * `worktrees.groupId` is the membership.
+ *
+ * A group is shown when it is pinned or holds at least one live worktree, so
+ * the row outlives its members: an unpinned group whose worktrees have all
+ * stopped is hidden, not deleted, and restarting one of them brings it back
+ * exactly as it was. `pinned` is what keeps a fully-stopped group on screen —
+ * a place to restart into rather than a section that vanishes with its last
+ * worktree.
+ *
+ * No foreign key to `projects` or from `worktrees.groupId`, matching every
+ * other table here; the group store owns the integrity (a move validates the
+ * target group, a delete releases its members, project teardown removes the
+ * rows).
+ */
+export const worktreeGroups = snakeCase.table('worktree_groups', {
+  projectSlug: text().notNull(),
+  groupId: text().notNull(),
+  name: text().notNull(),
+  /** Keep the group listed even with no live worktree in it. */
+  pinned: boolean().notNull().default(false),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.projectSlug, t.groupId] })])
 
 /**
  * One row per agent conversation — a claude/codex/pi/opencode session, keyed

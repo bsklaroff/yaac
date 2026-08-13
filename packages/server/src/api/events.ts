@@ -1,4 +1,4 @@
-import { listActiveWorktrees, listProvisioning } from '#domain/worktrees'
+import { listActiveWorktrees, listProvisioning, listWorktreeGroups } from '#domain/worktrees'
 import { listProjects } from '#domain/projects'
 import { worktreeDriver } from '#drivers/driver'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#domain/auth'
@@ -17,8 +17,9 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  const [active, projects, planUsage, codexPlanUsage] = await Promise.all([
+  const [active, worktreeGroups, projects, planUsage, codexPlanUsage] = await Promise.all([
     listActiveWorktrees(),
+    listWorktreeGroups(),
     listProjects(),
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
@@ -36,6 +37,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
   return {
     worktrees: active.worktrees.filter((w) => !provisioningIds.has(w.worktreeId)),
+    worktreeGroups,
     stale: active.stale,
     // `worktreeCount` is what ProjectSummary still calls it on the wire.
     projects: projects.map(({ worktreeCount, ...p }) => ({ ...p, worktreeCount: worktreeCount })),

@@ -620,7 +620,7 @@ export async function createWorktree(
 
   // Record the worktree BEFORE anything is provisioned, so no pod can ever
   // exist without a row — a rowless pod is invisible to every path that
-  // reads recorded state (titles, background, the deleted listing, restart)
+  // reads recorded state (titles, groups, the deleted listing, restart)
   // and there is no safe way to tell one from an unclaimed spare later.
   // A failure to record therefore fails the create before it has built
   // anything, and a create that fails later reports that too (see

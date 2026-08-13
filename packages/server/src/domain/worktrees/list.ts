@@ -108,7 +108,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
       // worktree has none of its own.
       prompt: links[0]?.firstPrompt,
       title: row?.title,
-      background: row?.background || undefined,
+      groupId: row?.groupId,
     }
     if (w.phase === 'terminating') {
       // A distinct, non-interactive placeholder: no agents, no ports, and a

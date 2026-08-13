@@ -127,10 +127,12 @@ which is what makes the mobile list order and the Alt+K/J cycle order provably
 the same — under a mobile header with the project menu, skills and new-worktree.
 No sidebar toggle: `sidebarOpen` is a desktop concept.
 
-Touch has no hover, so below `md` each row's pin and delete stop being
-`opacity-0 group-hover:opacity-100`, grow to finger size, and the title's
-hover-marquee is disabled (a long title stays truncated; the pane header shows
-it in full).
+Touch has no hover, so below `md` each row's rename, group and delete actions
+stop being `opacity-0 group-hover:opacity-100`, grow to finger size, and the
+title's hover-marquee is disabled (a long title stays truncated; the pane
+header shows it in full). Dragging a row between groups is mouse-only for the
+same reason a pointerdown that preventDefaults would fight the scroll; the
+group dialog's "move it to" list is the touch path to the same thing.
 
 **Pane** is `WorktreeView` with a back chevron in place of the sidebar toggle.
 Three things change:

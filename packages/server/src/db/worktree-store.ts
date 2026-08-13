@@ -48,7 +48,8 @@ export interface WorktreeRow {
   createdAt: Date
   title?: string
   baseBranch?: string
-  background: boolean
+  /** The sidebar group it is filed under; absent is the default list. */
+  groupId?: string
   stoppedAt?: Date
   deathReason?: WorktreeDeathReason
   deathDetail?: string
@@ -90,7 +91,7 @@ function toRow(r: Row): WorktreeRow {
     createdAt: r.createdAt,
     ...(r.title !== null ? { title: r.title } : {}),
     ...(r.baseBranch !== null ? { baseBranch: r.baseBranch } : {}),
-    background: r.background,
+    ...(r.groupId !== null ? { groupId: r.groupId } : {}),
     ...(r.stoppedAt !== null ? { stoppedAt: r.stoppedAt } : {}),
     ...(r.deathReason !== null ? { deathReason: r.deathReason as WorktreeDeathReason } : {}),
     ...(r.deathDetail !== null ? { deathDetail: r.deathDetail } : {}),
@@ -113,8 +114,9 @@ const key = (projectSlug: string, worktreeId: string) =>
  * Record a worktree as created. Also the restart path: the id is reused, so
  * this re-stamps the live fields and clears the previous life's stop — a
  * restarted worktree must not keep showing as stopped (or as having died).
- * Title and background pin are deliberately left alone; they belong to the
- * worktree, not to one of its lives.
+ * The title and the sidebar group are deliberately left alone; they belong to
+ * the worktree, not to one of its lives — which is what puts a restarted
+ * worktree back in the group its ghost row was sitting in.
  *
  * Throws on a failed write, and callers must treat that as a failed create:
  * a pod with no row is invisible to everything that reads recorded state
@@ -398,17 +400,6 @@ export async function setWorktreeTitle(
   await db.update(worktrees)
     .set({ title: normalized === '' ? null : normalized })
     .where(key(projectSlug, worktreeId))
-  notifyWorktreeListChanged()
-}
-
-/** Pin (or unpin) a worktree to the sidebar's Background section. */
-export async function setWorktreeBackground(
-  projectSlug: string,
-  worktreeId: string,
-  background: boolean,
-): Promise<void> {
-  const db = await getDb()
-  await db.update(worktrees).set({ background }).where(key(projectSlug, worktreeId))
   notifyWorktreeListChanged()
 }
 

@@ -2,6 +2,7 @@ import { purgeProjectBytes } from './project-purge'
 import {
   deleteProjectAgentSessions,
   deleteProjectRow,
+  deleteProjectWorktreeGroups,
   deleteProjectWorktrees,
   getProjectRow,
 } from '#db'
@@ -35,6 +36,9 @@ export async function removeProject(slug: string): Promise<void> {
   // project that no longer exists.
   await deleteProjectWorktrees(slug)
   await deleteProjectAgentSessions(slug)
+  // The sidebar groups those worktrees were filed under have nothing left to
+  // file.
+  await deleteProjectWorktreeGroups(slug)
   // The project's own record goes last: while it exists the project exists,
   // so dropping it first would make a teardown that then failed leave a
   // clone nothing can list, remove, or re-add.

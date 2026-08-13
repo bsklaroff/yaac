@@ -19,6 +19,8 @@ export {
   Ellipsis as MoreIcon,
   Gauge as UsageIcon,
   Pin as PinIcon,
+  FolderPlus as GroupAddIcon,
+  FolderMinus as GroupRemoveIcon,
   RotateCw as RestartIcon,
   Trash2 as DeleteIcon,
   Ban as BlockedIcon,
