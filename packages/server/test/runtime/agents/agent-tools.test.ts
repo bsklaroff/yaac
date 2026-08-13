@@ -46,8 +46,11 @@ describe('agentStatusFormat', () => {
 })
 
 describe('classifyAgentObservation', () => {
-  it('classifies claude/codex titles by the Braille-spinner prefix', () => {
+  it('classifies claude/codex titles by their spinner prefix', () => {
+    // claude's spinner glyphs are release-dependent (Braille through
+    // 2.1.226, the circle phases from 2.1.228) — both route to running.
     expect(classifyAgentObservation('claude', '⠋ Fixing the bug')).toBe('running')
+    expect(classifyAgentObservation('claude', '◐ Fixing the bug')).toBe('running')
     expect(classifyAgentObservation('claude', '✳ idle prompt')).toBe('waiting')
     expect(classifyAgentObservation('codex', '⠙ project')).toBe('running')
     expect(classifyAgentObservation('codex', '[ ! ] Action Required project')).toBe('waiting')

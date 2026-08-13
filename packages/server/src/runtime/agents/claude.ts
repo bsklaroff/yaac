@@ -6,13 +6,29 @@ import { scanJsonlForward } from './jsonl'
  * terminal title. Claude Code mirrors its spinner into the title: while
  * a turn is in flight (API call, tool running, streaming response) the
  * title reads "<spinner> <task summary>" with the leading glyph cycling
- * through the Braille block (U+2800–U+28FF, the ⠋⠙⠹… animation). The
- * moment control returns to the user — idle prompt, permission dialog,
- * ExitPlanMode approval, or AskUserQuestion selector — the prefix flips
- * to "✳" (U+2733). Each of those states was verified against a live
- * session, permission dialog included; that one matters because the
- * JSONL transcript can't see UI-blocked turns (Claude Code does not
- * persist the blocking assistant tool_use until the user answers).
+ * through an animation. The moment control returns to the user — idle
+ * prompt, permission dialog, ExitPlanMode approval, or AskUserQuestion
+ * selector — the prefix flips to "✳" (U+2733). Each of those states was
+ * verified against a live session, permission dialog included; that one
+ * matters because the JSONL transcript can't see UI-blocked turns (Claude
+ * Code does not persist the blocking assistant tool_use until the user
+ * answers).
+ *
+ * The spinner's glyphs are NOT stable across Claude Code releases, so the
+ * prefix accepts every set we have seen a release animate a title with:
+ *
+ *   - the Braille block (U+2800–U+28FF) — the ⠂⠐ / ⠋⠙⠹… animations
+ *   - the circle phases (U+25D0–U+25D3) — the ◐◑ animation
+ *
+ * Both are matched as whole ranges rather than as the exact two-frame array
+ * a given release ships, because the frame count has already varied within
+ * a set. The idle "✳" is the invariant — it has survived every spinner
+ * change — but this deliberately stays an allowlist of busy glyphs rather
+ * than "idle iff ✳": an unset title is the pod hostname, and only an
+ * allowlist reads that as waiting (see below) instead of running. A future
+ * release that animates a third glyph set therefore fails safe — it pins a
+ * working agent to `waiting` rather than a finished one to `running` — but
+ * it does need a range added here.
  *
  * Titles are pushed at the server by the session's status watcher
  * (`#runtime/status`), which holds a tmux control-mode subscription on the
@@ -21,10 +37,10 @@ import { scanJsonlForward } from './jsonl'
  * default (the pod hostname), which classifies as 'waiting' — the right
  * answer for a session still booting.
  */
-const BRAILLE_SPINNER_PREFIX = /^[\u2800-\u28FF]/
+const SPINNER_PREFIX = /^[\u2800-\u28FF\u25D0-\u25D3]/
 
 export function classifyClaudeTitle(title: string): 'running' | 'waiting' {
-  return BRAILLE_SPINNER_PREFIX.test(title) ? 'running' : 'waiting'
+  return SPINNER_PREFIX.test(title) ? 'running' : 'waiting'
 }
 
 /**

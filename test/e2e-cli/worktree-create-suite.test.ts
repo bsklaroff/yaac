@@ -1107,10 +1107,17 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await setTitle('✳ marker-idle')
       await waitForListStatus('waiting', 20_000)
 
-      // A Braille-spinner title must flip the list to running with no
-      // probe in the path: title → tmux ~1s subscription check → watcher →
-      // status store → list read.
+      // A spinner title must flip the list to running with no probe in the
+      // path: title → tmux ~1s subscription check → watcher → status store
+      // → list read. Both glyph sets claude has shipped run the full path:
+      // Braille through 2.1.226, the circle phases from 2.1.228.
       await setTitle('⠋ marker-busy')
+      await waitForListStatus('running', 20_000)
+
+      await setTitle('✳ marker-idle-again')
+      await waitForListStatus('waiting', 20_000)
+
+      await setTitle('◐ marker-busy-circle')
       await waitForListStatus('running', 20_000)
 
       // Kill the watcher's stream at its IN-POD end (the tmux control-mode

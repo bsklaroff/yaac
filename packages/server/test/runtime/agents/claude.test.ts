@@ -12,9 +12,12 @@ import {
 import { seedClaudeSettings } from '#domain/worktrees/seed'
 
 // Title fixtures below reproduce states observed against a live Claude
-// Code session inside a session pod: a running turn animates a Braille
-// spinner prefix; every user-blocked state (idle prompt, permission
-// dialog, plan approval, AskUserQuestion) flips the prefix to ✳.
+// Code session inside a session pod: a running turn animates a spinner
+// prefix; every user-blocked state (idle prompt, permission dialog, plan
+// approval, AskUserQuestion) flips the prefix to ✳. Which glyphs the
+// spinner animates is release-dependent — 2.1.226 animated the Braille
+// ⠂⠐, 2.1.228 changed it to the circle phases ◐◑ — so both sets are
+// fixtures here and a release on either must read as running.
 describe('classifyClaudeTitle', () => {
   it('returns running for a Braille-spinner title (turn in flight)', () => {
     expect(classifyClaudeTitle('⠐ Create temporary marker file')).toBe('running')
@@ -28,8 +31,25 @@ describe('classifyClaudeTitle', () => {
     expect(classifyClaudeTitle('⣿ edge of block')).toBe('running')
   })
 
+  it('returns running for a circle-phase spinner title (turn in flight)', () => {
+    // Observed live on 2.1.229: the title cycles ◐/◑ for the whole turn
+    // and never shows a Braille frame. Classifying these as waiting is
+    // what pinned a busy agent to "waiting" for its entire run.
+    expect(classifyClaudeTitle('◐ Review PR #115: retire legacy-compat paths')).toBe('running')
+    expect(classifyClaudeTitle('◑ Review PR #115: retire legacy-compat paths')).toBe('running')
+  })
+
+  it('returns running across the whole circle-phase range', () => {
+    // The shipped array is two frames (◐◑) but the four phases are one
+    // contiguous run (U+25D0–U+25D3) and a release has already changed
+    // frame count within a set — accept all four, endpoints included.
+    expect(classifyClaudeTitle('◒ edge of range')).toBe('running')
+    expect(classifyClaudeTitle('◓ edge of range')).toBe('running')
+  })
+
   it('returns running for a bare spinner with trailing newline (display-message output)', () => {
     expect(classifyClaudeTitle('⠹ Summarize findings\n')).toBe('running')
+    expect(classifyClaudeTitle('◐ Summarize findings\n')).toBe('running')
   })
 
   it('returns waiting for the idle ✳ title', () => {
@@ -59,11 +79,24 @@ describe('classifyClaudeTitle', () => {
     expect(classifyClaudeTitle('')).toBe('waiting')
   })
 
+  it('does not match the geometric glyphs bordering the circle phases', () => {
+    // U+25D0–U+25D3 is bounded deliberately: Claude Code uses ● (U+25CF)
+    // and ○ (U+25CB) just below it as transcript bullets, and ◆/◇
+    // (U+25C6/U+25C7) elsewhere. Widening the range to the block would
+    // make a title starting with any of them read as a live turn.
+    expect(classifyClaudeTitle('● Ran a command')).toBe('waiting')
+    expect(classifyClaudeTitle('○ Pending step')).toBe('waiting')
+    expect(classifyClaudeTitle('◆ Marker')).toBe('waiting')
+    expect(classifyClaudeTitle('◔ Just past the phases')).toBe('waiting')
+  })
+
   it('only matches the spinner at the first character', () => {
-    // A task summary that itself contains a Braille glyph must not
+    // A task summary that itself contains a spinner glyph must not
     // false-positive when the leading ✳ marks the session as idle.
     expect(classifyClaudeTitle('✳ Fix ⠋ spinner rendering')).toBe('waiting')
+    expect(classifyClaudeTitle('✳ Fix ◐ spinner rendering')).toBe('waiting')
     expect(classifyClaudeTitle(' ⠋ leading space')).toBe('waiting')
+    expect(classifyClaudeTitle(' ◐ leading space')).toBe('waiting')
   })
 })
 

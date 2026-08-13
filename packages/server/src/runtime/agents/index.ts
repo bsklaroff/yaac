@@ -8,7 +8,7 @@
 // transcript, how its busy/idle state is read, and how it announces the
 // conversations it starts. Nothing here knows a session exists — no pod
 // lifecycle, no database, no status store. That is the whole point of the
-// seal: the per-tool grammars (claude's Braille spinner titles, opencode's
+// seal: the per-tool grammars (claude's spinner titles, opencode's
 // busy markers, codex's rollout filenames) and the per-protocol wire
 // details (ACP's `session/update` variants) are the most volatile
 // knowledge in the server, and they change without any caller changing.

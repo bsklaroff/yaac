@@ -75,7 +75,7 @@ export function agentStatusFormat(tool: AgentTool): string {
 
 /**
  * Classify a pushed subscription value for a tool. claude/codex push the pane
- * title (classified by the Braille-spinner prefix); opencode/pi push an
+ * title (classified by its spinner prefix); opencode/pi push an
  * already-resolved verdict from their `agentStatusFormat`.
  */
 export function classifyAgentObservation(tool: AgentTool, observed: string): AgentPaneStatus {
