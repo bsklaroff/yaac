@@ -37,13 +37,13 @@ export {
 } from './create'
 export {
   getWorktreeBlockedHosts,
+  getWorktreeChanges,
   getWorktreeDetail,
   getWorktreePrompt,
   type WorktreeDetail,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
-export { forwardWorktreePort } from './forward-port'
-export { worktreeForkBranch } from './fork-branch'
+export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { ensureProjectExists, listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
 export { removeProject } from './project-teardown'

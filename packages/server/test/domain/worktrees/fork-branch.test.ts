@@ -6,6 +6,13 @@ import { recordWorktreeCreated } from '#db/worktree-store'
 import { worktreeForkBranch } from '#domain/worktrees/fork-branch'
 import { repoDir } from '@yaac/shared/project-paths'
 
+// `worktreeForkBranch` is folder-internal (its only caller is
+// `getWorktreeChanges`, in this same folder), so this file is a deliberate
+// exception to "one describe per barrel function": the coverage rule wins.
+// What it guards is a source ORDER — row before checkout — and the barrel
+// verb that drives it only ever sees the winner, so a case pinning the
+// order cannot be written from above.
+//
 // The row is one source; the checkout is the other. Stubbing the host-side
 // git read is what lets these tests assert the ORDER of the two, which is
 // the whole point of the module — and it is the process boundary, so the

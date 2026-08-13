@@ -4,8 +4,10 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   allowWorktreeHost,
+  dismissWorktreePort,
   forwardWorktreePort,
   getWorktreeBlockedHosts,
+  getWorktreeChanges,
   getWorktreeDetail,
   getWorktreePrompt,
   listActiveWorktrees,
@@ -16,14 +18,11 @@ import {
   resolveWorktreeRecord,
   restartWorktree,
   toAgentSessionEntry,
-  worktreeForkBranch,
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
 import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#domain/worktrees'
-import { worktreeDriver } from '#drivers/driver'
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
-import { dismissWorktreePort } from '#drivers/k8s/forwarders'
 import {
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
@@ -250,21 +249,7 @@ export const worktreeApp = new Hono()
   .get(
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
-    async (c) => {
-      const { jobName, worktreeId, projectSlug } = await resolveWorktreeContainer(
-        c.req.param('id'), { requireRunning: true },
-      )
-      // The branch the worktree forked from (its recorded base, e.g. main) —
-      // the same source as the sidebar base label. Passed as the DEFAULT diff
-      // base so committed work stays visible even after the agent renames and
-      // pushes its branch, which makes the current branch's own @{upstream}
-      // collapse the merge-base to HEAD. Cached, because this endpoint is
-      // polled.
-      const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
-      return c.json(await worktreeDriver().changes(
-        jobName, c.req.valid('query').base, forkBranch ?? undefined,
-      ))
-    },
+    async (c) => c.json(await getWorktreeChanges(c.req.param('id'), c.req.valid('query').base)),
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
@@ -330,14 +315,7 @@ export const worktreeApp = new Hono()
     '/:id/dismiss-port',
     zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
     async (c) => {
-      const { containerPort } = c.req.valid('json')
-      const target = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })
-      if (!dismissWorktreePort(target.worktreeId, containerPort)) {
-        throw new ServerError(
-          'CONFLICT',
-          `port ${containerPort} is not an unforwarded listener in session ${target.worktreeId.slice(0, 8)}`,
-        )
-      }
+      await dismissWorktreePort(c.req.param('id'), c.req.valid('json').containerPort)
       return c.body(null, 204)
     },
   )

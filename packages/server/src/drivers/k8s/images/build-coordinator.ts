@@ -175,12 +175,38 @@ export async function rebuildLayerExclusive(
 }
 
 /**
+ * Wait until no push of `tag` is in flight.
+ *
+ * A loop rather than one await because a third caller may start one while
+ * we wait; each turn awaits a distinct promise, and the map entry is gone
+ * by the time ours resolves (the stored promise includes the `finally`
+ * that deletes it), so this settles as soon as the traffic does. The
+ * identity check is a backstop against spinning if that ever stops
+ * holding.
+ *
+ * A failed push resolves the wait rather than raising: it owns its own
+ * feed row and error path, and the caller waiting behind it is about to
+ * push the same tag anyway.
+ */
+async function settleInflightPush(tag: string): Promise<void> {
+  let existing = inflightPushes.get(tag)
+  while (existing) {
+    await existing.catch(() => undefined)
+    const next = inflightPushes.get(tag)
+    if (next === existing) break
+    existing = next
+  }
+}
+
+/**
  * Push a built tag to the local registry, coalescing concurrent pushes of
  * the same tag. Skips both the push and the registry entry when the tag is
  * already present (content-hash tags are immutable) — the background sweep
  * calls this every tick and must not mint a "succeeded push" row each time.
  * `force` pushes even when the tag is present, for `yaac project rebuild`,
- * which changes image bytes under an unchanged content-hash tag.
+ * which changes image bytes under an unchanged content-hash tag; such a
+ * call is the LAST word on the tag, so it waits out any push in flight
+ * rather than joining it.
  * Returns the in-cluster ref, like `pushImageToRegistry`.
  */
 export async function pushImageShared(
@@ -188,8 +214,17 @@ export async function pushImageShared(
   ctx: { projectSlug: string; reason: ImageBuildReason },
   opts: { force?: boolean; compressionFormat?: 'zstd' | 'gzip' } = {},
 ): Promise<string> {
-  const existing = inflightPushes.get(tag)
-  if (existing) return existing
+  // A forced push must be the LAST word on the tag, so it never JOINS one
+  // in flight. That push was started against the bytes the tag named
+  // before the rebuild replaced them, so joining it would return its ref
+  // and report a rebuild that published nothing — the exact silent
+  // staleness `force` exists to prevent. Waiting for it, rather than
+  // pushing alongside, keeps the one-push-per-tag guarantee intact.
+  if (opts.force) await settleInflightPush(tag)
+  else {
+    const existing = inflightPushes.get(tag)
+    if (existing) return existing
+  }
 
   if (!opts.force && pushedTags.has(tag)) return registryRef(tag)
   if (!opts.force && await registryHasTag(tag)) {
@@ -206,8 +241,13 @@ export async function pushImageShared(
   }
 
   // Re-check after the await: another caller may have started the push.
+  // A forced call waits it out for the same reason as above rather than
+  // taking its answer.
   const raced = inflightPushes.get(tag)
-  if (raced) return raced
+  if (raced) {
+    if (!opts.force) return raced
+    await settleInflightPush(tag)
+  }
 
   const id = registerImageBuild({
     tag,

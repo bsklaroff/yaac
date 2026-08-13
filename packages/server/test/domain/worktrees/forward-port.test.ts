@@ -6,7 +6,7 @@ vi.mock('#domain/projects/local-config', () => ({
 
 import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
-import { forwardWorktreePort } from '#domain/worktrees/forward-port'
+import { dismissWorktreePort, forwardWorktreePort } from '#domain/worktrees/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
 
@@ -105,5 +105,51 @@ describe('forwardWorktreePort', () => {
 
     await expect(forwardWorktreePort('sid-1', 8090, { persist: false }))
       .rejects.toThrow(/not an unforwarded listener/)
+  })
+})
+
+describe('dismissWorktreePort', () => {
+  const mockDismiss = vi.fn<(workspaceId: string, port: number) => boolean>()
+
+  beforeEach(() => {
+    mockDismiss.mockReset().mockReturnValue(true)
+    installFakeWorktreeDriver({
+      find: () => Promise.resolve(HANDLE),
+      dismissPort: mockDismiss,
+    })
+  })
+
+  it('dismisses the resolved worktree’s port', async () => {
+    await dismissWorktreePort('sid-1', 8090)
+
+    expect(mockDismiss).toHaveBeenCalledExactlyOnceWith('sid-1', 8090)
+  })
+
+  // Same refusal as the forward action, worded the same way: the two sit on
+  // one row in the webapp, and a caller racing the surfaced list should not
+  // be able to tell which of them it lost.
+  it('refuses a port the runtime is not offering', async () => {
+    mockDismiss.mockReturnValue(false)
+
+    await expect(dismissWorktreePort('sid-1', 8090))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(dismissWorktreePort('sid-1', 8090))
+      .rejects.toThrow(/not an unforwarded listener/)
+  })
+
+  it('never reaches the runtime for a worktree that is not running', async () => {
+    installFakeWorktreeDriver({
+      find: () => Promise.resolve(undefined),
+      dismissPort: mockDismiss,
+    })
+
+    await expect(dismissWorktreePort('gone', 8090)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(mockDismiss).not.toHaveBeenCalled()
+  })
+
+  it('writes no project config — dismissal is in-memory only', async () => {
+    await dismissWorktreePort('sid-1', 8090)
+
+    expect(mockPersist).not.toHaveBeenCalled()
   })
 })

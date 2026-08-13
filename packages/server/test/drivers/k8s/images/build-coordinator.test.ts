@@ -2,6 +2,16 @@
  * The image build coordinator — `ensureImage`, `rebuildProjectImage`,
  * `pushImageShared`.
  *
+ * A DELIBERATE exception to "one describe per barrel function": only
+ * `ensureImage` is on the images barrel now, and the other two are
+ * folder-internal, reached from `rebuild.ts` and `workspace-image.ts`.
+ * Their describes stay because the coverage rule outranks the layout rule
+ * here — both of those callers mock this module wholesale (they must: ESM
+ * intra-module calls bypass `vi.mock`, which is why they are siblings at
+ * all), so the push short-circuits, the force-vs-in-flight ordering and the
+ * rebuild's chain walk are exercised nowhere else. Fold them upward only
+ * if a barrel-level test ever drives those paths for real.
+ *
  * Nothing under features/images is mocked here: the trust-split routing in
  * build-engine and the whole builder-pod flow (manifests, in-pod scripts,
  * build argv, context tar) run for real, and the fakes start at kubectl,
@@ -160,7 +170,7 @@ vi.mock('#drivers/k8s/cluster/main-registry', async (importOriginal) => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 
-import { ensureImage, pushImageShared, rebuildProjectImage } from '#drivers/k8s/images'
+import { ensureImage, pushImageShared, rebuildProjectImage } from '#drivers/k8s/images/build-coordinator'
 import { _clearBuildCoordinatorForTests } from '#drivers/k8s/images/build-coordinator'
 import { buildImage, resolveImageChain, type ImageLayer } from '#drivers/k8s/image-engine/image-builder'
 import { imageExists, removeImage } from '#drivers/k8s/container/runtime'
@@ -837,6 +847,55 @@ describe('pushImageShared', () => {
     await expect(pushImageShared('t:1', { projectSlug: 'a', reason: 'session' }))
       .rejects.toThrow('registry down')
     expect(listImageBuilds()[0]).toMatchObject({ action: 'push', status: 'failed' })
+  })
+
+  // A forced push must never JOIN one in flight. That push was started
+  // against the bytes the tag named BEFORE a rebuild replaced them, so
+  // taking its answer would report a rebuild that published nothing —
+  // silently leaving the registry on pre-rebuild content, which is the
+  // whole failure `force` exists to prevent.
+  it('waits out an in-flight unforced push rather than joining it', async () => {
+    const d = deferred()
+    mockPush.mockReset()
+    mockPush.mockImplementationOnce(() => d.promise.then(() => `${CLUSTER_HOST}/t:1`))
+    mockPush.mockImplementation(() => Promise.resolve(`${CLUSTER_HOST}/t:1`))
+    const first = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    await flush()
+
+    mockHasTag.mockResolvedValue(false)
+    const forced = pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+    await flush()
+    // Still just the one: the forced call is waiting, not pushing alongside.
+    expect(mockPush).toHaveBeenCalledTimes(1)
+
+    d.resolve()
+    await first
+    await forced
+
+    // ...and it really pushed once the first settled, rather than
+    // returning the first push's ref.
+    expect(mockPush).toHaveBeenCalledTimes(2)
+    expect(mockPush.mock.calls[1][1]).toMatchObject({ force: true })
+  })
+
+  // The waiter must not inherit the other push's failure: that push owns
+  // its own feed row and error, and the forced caller is about to push the
+  // same tag regardless.
+  it('still pushes when the in-flight push it waited for failed', async () => {
+    const d = deferred()
+    mockPush.mockReset()
+    mockPush.mockImplementationOnce(() => d.promise.then(() => { throw new Error('registry down') }))
+    mockPush.mockImplementation(() => Promise.resolve(`${CLUSTER_HOST}/t:1`))
+    const first = pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+    await flush()
+
+    mockHasTag.mockResolvedValue(false)
+    const forced = pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+    d.resolve()
+    await expect(first).rejects.toThrow('registry down')
+
+    await expect(forced).resolves.toBe(`${CLUSTER_HOST}/t:1`)
+    expect(mockPush).toHaveBeenCalledTimes(2)
   })
 })
 

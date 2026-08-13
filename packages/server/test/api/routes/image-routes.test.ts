@@ -1,33 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type * as imagePrewarmModule from '#drivers/k8s/images/image-prewarm'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Hono } from 'hono'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
-// These routes are pure translation: HTTP in, one feature call out, and a
-// 404 for an id they do not know. The real registry stands behind the read
-// routes (so a case asserts on entries it registered); the retry outcome is
-// dictated, and the proxy kick an infra retry fires is asserted here because
-// the route owns that composition.
-vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
-  ...(await importOriginal<typeof imagePrewarmModule>()),
-  retryImageBuild: vi.fn(),
-}))
-const { ensureRunning } = vi.hoisted(() => ({
-  ensureRunning: vi.fn().mockResolvedValue(undefined),
-}))
-vi.mock('#drivers/k8s/egress/proxy-client', () => ({ proxyClient: { ensureRunning } }))
-
+// These routes are pure translation: HTTP in, one mediator call out, and a
+// 404 for an id it does not know. What a build IS, and what retrying one
+// means, is the runtime's — so the feed stands behind a fake here and the
+// assertions are about status codes and what reached the seam.
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
-import { retryImageBuild } from '#drivers/k8s/images/image-prewarm'
-import {
-  clearAllImageBuildsForTests,
-  failImageBuild,
-  ingestImageBuildLine,
-  registerImageBuild,
-} from '#drivers/k8s/image-engine/image-builds'
-import type { ImageBuildEntry } from '@yaac/shared/types'
-
-const mockRetry = vi.mocked(retryImageBuild)
+import type { ImageBuildEntry, YaacConfig } from '@yaac/shared/types'
 
 // The log route throws NOT_FOUND; only the root app's onError serializes it,
 // so exercise the routes through a wrapper that installs the same handler.
@@ -38,34 +19,47 @@ const app = new Hono()
   })
   .route('/', imageApp)
 
-function register(): string {
-  return registerImageBuild({
-    tag: 'yaac-base:abc', layer: 'base', action: 'build', projectSlug: 'p', reason: 'session',
-  })
+function buildEntry(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
+  return {
+    id: 'b1',
+    tag: 'yaac-base:abc',
+    layer: 'base',
+    action: 'build',
+    projectSlugs: ['p'],
+    reason: 'session',
+    status: 'running',
+    startedAt: '2026-01-01 00:00:00',
+    ...overrides,
+  }
 }
+
+const mockDismiss = vi.fn<(id: string) => boolean>()
+const mockRetry = vi.fn<
+  (id: string, cfg: (slug: string) => Promise<YaacConfig | undefined>) => boolean
+>()
 
 describe('image routes', () => {
   beforeEach(() => {
-    clearAllImageBuildsForTests()
-    mockRetry.mockReset()
-    ensureRunning.mockClear()
-  })
-  afterEach(() => {
-    clearAllImageBuildsForTests()
+    vi.clearAllMocks()
+    mockDismiss.mockReturnValue(true)
+    mockRetry.mockReturnValue(true)
+    installFakeWorktreeDriver({
+      listImageBuilds: () => [buildEntry()],
+      imageBuildLog: (id) => (id === 'b1' ? 'STEP 1/2: FROM ubuntu\n' : undefined),
+      dismissImageBuild: mockDismiss,
+      retryImageBuild: mockRetry,
+    })
   })
 
-  it('GET /builds lists registry entries', async () => {
-    const id = register()
+  it('GET /builds lists what the runtime reports', async () => {
     const res = await app.request('/builds')
     expect(res.status).toBe(200)
     const body = await res.json() as ImageBuildEntry[]
-    expect(body.map((b) => b.id)).toEqual([id])
+    expect(body.map((b) => b.id)).toEqual(['b1'])
   })
 
   it('GET /builds/:id/log returns the accumulated tail', async () => {
-    const id = register()
-    ingestImageBuildLine(id, 'STEP 1/2: FROM ubuntu')
-    const res = await app.request(`/builds/${id}/log`)
+    const res = await app.request('/builds/b1/log')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ log: 'STEP 1/2: FROM ubuntu\n' })
   })
@@ -75,47 +69,32 @@ describe('image routes', () => {
     expect(res.status).toBe(404)
   })
 
-  it('DELETE /builds/:id dismisses a finished entry', async () => {
-    const id = register()
-    failImageBuild(id, 'boom')
-    const res = await app.request(`/builds/${id}`, { method: 'DELETE' })
+  // Dismissal is advisory: the route reports 204 either way rather than
+  // making the webapp handle a row that stopped existing between the render
+  // and the click.
+  it('DELETE /builds/:id dismisses through the mediator', async () => {
+    const res = await app.request('/builds/b1', { method: 'DELETE' })
     expect(res.status).toBe(204)
-    const list = await (await app.request('/builds')).json() as ImageBuildEntry[]
-    expect(list).toEqual([])
+    expect(mockDismiss).toHaveBeenCalledExactlyOnceWith('b1')
   })
 
-  it('DELETE /builds/:id leaves a running entry in place', async () => {
-    const id = register()
-    const res = await app.request(`/builds/${id}`, { method: 'DELETE' })
+  it('DELETE /builds/:id still answers 204 when there was nothing to dismiss', async () => {
+    mockDismiss.mockReturnValue(false)
+    const res = await app.request('/builds/nope', { method: 'DELETE' })
     expect(res.status).toBe(204)
-    const list = await (await app.request('/builds')).json() as ImageBuildEntry[]
-    expect(list.map((b) => b.id)).toEqual([id])
   })
 
   it('POST /builds/:id/retry relays the retry and returns 202', async () => {
-    mockRetry.mockReturnValue({ retried: true, infra: false })
-    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
+    const res = await app.request('/builds/b1/retry', { method: 'POST' })
     expect(res.status).toBe(202)
-    expect(mockRetry).toHaveBeenCalledWith('build-1', expect.any(Function))
-    // A project build rebuilds through its own chain — no proxy kick.
-    expect(ensureRunning).not.toHaveBeenCalled()
-  })
-
-  // An infra build has no owning project to rebuild through, so the route
-  // drives the sidecar rebuild itself — detached, since the caller gets its
-  // 202 either way.
-  it('POST /builds/:id/retry rebuilds the proxy sidecar for an infra build', async () => {
-    mockRetry.mockReturnValue({ retried: true, infra: true })
-    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
-    expect(res.status).toBe(202)
-    await Promise.resolve()
-    expect(ensureRunning).toHaveBeenCalledTimes(1)
+    // The config reader the mediator injects — what the runtime rebuilds
+    // with — travels with the id.
+    expect(mockRetry).toHaveBeenCalledWith('b1', expect.any(Function))
   })
 
   it('POST /builds/:id/retry 404s when there is nothing to retry', async () => {
-    mockRetry.mockReturnValue({ retried: false, infra: false })
+    mockRetry.mockReturnValue(false)
     const res = await app.request('/builds/nope/retry', { method: 'POST' })
     expect(res.status).toBe(404)
-    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })
