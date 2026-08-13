@@ -14,7 +14,9 @@ import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import {
   containerlessJobName,
   containerlessWorkspacePaths,
+  workspaceHome,
 } from '@yaac/server/drivers/containerless/paths'
+import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 
 const execFileAsync = promisify(execFile)
 
@@ -258,6 +260,39 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // Nothing was recorded: no running row, and no stopped one either.
     expect(await listWorktrees()).toHaveLength(before)
   }, 60_000)
+
+  it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
+    // The delivery a pod does with a read-only mount over each tool home. No
+    // mount namespace here, so the skills are linked into the project's
+    // shared roots — and what proves it is reading them the way the agent
+    // does: through the workspace HOME the launch built, whose `.claude` is
+    // itself a link into that shared dir.
+    const entries = await fs.readdir(builtinSkillsDir(), { withFileTypes: true })
+    const names: string[] = []
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const hasSkill = await fs.access(path.join(builtinSkillsDir(), e.name, 'SKILL.md'))
+        .then(() => true, () => false)
+      if (hasSkill) names.push(e.name)
+    }
+    expect(names.length).toBeGreaterThan(0)
+
+    const home = workspaceHome(SLUG, worktreeId)
+    for (const name of names) {
+      const viaHome = path.join(home, '.claude', 'skills', name, 'SKILL.md')
+      expect(await fs.readFile(viaHome, 'utf8')).toContain('---')
+    }
+    // Linked, not copied, in every tool's root: an upgrade of the install
+    // moves every worktree of the project at once, whichever tool it runs,
+    // with nothing staged that could go stale. The target is the SERVER's
+    // own install — this suite drives a built CLI, whose package root is not
+    // the one this test process resolves — so the shape is what is asserted.
+    for (const root of sharedSkillRoots(SLUG)) {
+      const target = await fs.readlink(path.join(root, names[0]))
+      expect(target.endsWith(path.join('builtin-skills', names[0]))).toBe(true)
+      await expect(fs.access(path.join(target, 'SKILL.md'))).resolves.toBeUndefined()
+    }
+  })
 
   // Destroys its subject — keep last.
   it('stops the worktree by taking its tmux server down', async () => {

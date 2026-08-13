@@ -10,6 +10,8 @@
 // feature — nothing outside it reads frontmatter — so it stays behind here
 // and is covered through the entry points that use it.
 
-export { builtinSkillMounts, builtinSkillsDir, stageBuiltinSkills } from './builtin'
+export {
+  builtinSkillMounts, builtinSkillsDir, sharedSkillRoots, stageBuiltinSkills, syncSharedBuiltinSkills,
+} from './builtin'
 export { refreshClaudeBundledSkills } from './claude-bundled'
 export { getProjectSkills, getSkillDetail } from './discover'

@@ -4,17 +4,21 @@ Skills yaac ships in its own package and injects into **every** session, for
 every agent tool (Claude Code, Codex, OpenCode, pi).
 
 Each skill is a `<name>/SKILL.md` directory here (same format as any personal
-skill). At session create they are staged fresh from the install and mounted
-read-only into each tool's personal skills root — never written into the
-per-project config dirs, so they track the installed yaac version and never go
-stale. Discovery surfaces them as the `system` / `yaac` tier.
+skill). At session create they are delivered the way the substrate allows: a
+pod gets a fresh staging from the install, mounted read-only into each tool's
+personal skills root; a containerless worktree, which has no mount namespace
+to layer that with, gets them linked into the project's shared skills roots.
+Either way they track the installed yaac version rather than going stale in a
+config dir, and discovery surfaces them as the `system` / `yaac` tier.
 
-See `packages/server/src/features/skills/builtin.ts` (staging + mounts) and
-`packages/server/src/features/skills/discover.ts` (discovery).
+See `packages/server/src/domain/skills/builtin.ts` (staging, mounts, and the
+shared-root sync) and `packages/server/src/domain/skills/discover.ts`
+(discovery).
 
 Add a skill by dropping a `<name>/SKILL.md` dir in here. Keep names distinct
 from what users are likely to name their own personal skills (the two share a
-directory in-pod).
+directory in-pod, and a real directory on a containerless host — where a
+user's own skill of that name keeps it, and the builtin is not delivered).
 
 Shipped skills:
 

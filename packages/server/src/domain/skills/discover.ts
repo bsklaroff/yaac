@@ -46,7 +46,7 @@ import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, remoteBranchExists } from '#domain/git'
 import { getClaudeBundledSkills } from './claude-bundled'
-import { builtinSkillsDir } from './builtin'
+import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
 
 /**
@@ -114,6 +114,26 @@ function fsReader(dir: string, source: SkillSource, sourceLabel?: string): Skill
     sourceLabel,
     list: () => subdirs(dir),
     read: (name) => fs.readFile(path.join(dir, name, 'SKILL.md'), 'utf8').catch(() => null),
+  }
+}
+
+/**
+ * A personal-tier reader over one tool's own skills root, minus yaac's own
+ * builtin links. Under the containerless driver those roots are where the
+ * builtins physically land (builtin.ts), and the `system`/`yaac` reader
+ * appended in `discover` already lists every one of them from the install —
+ * so without this filter each builtin would be offered twice, the second time
+ * under a tier the user never put it in.
+ */
+function personalReader(dir: string): SkillReader {
+  const base = fsReader(dir, 'personal')
+  return {
+    ...base,
+    list: async () => {
+      const names = await base.list()
+      const ours = await Promise.all(names.map((n) => isBuiltinSkillLink(path.join(dir, n))))
+      return names.filter((_, i) => !ours[i])
+    },
   }
 }
 
@@ -261,7 +281,7 @@ async function codexPluginReaders(pluginsDir: string, enabledNames: Set<string>)
 async function claudeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const claude = claudeDir(slug)
   return [
-    fsReader(path.join(claude, 'skills'), 'personal'),
+    personalReader(path.join(claude, 'skills')),
     ...(await claudePluginReaders(path.join(claude, 'plugins'), await claudeEnabledPluginIds(slug, ref))),
     repoReader(repoDir(slug), ref, '.claude/skills', 'project'),
   ]
@@ -276,7 +296,7 @@ async function codexReaders(slug: string, ref: string | null): Promise<SkillRead
   // immediate skill-dir names, not the reader's root. config.toml is the host
   // install registry, not a repo check, so its read stays on-disk.
   return [
-    fsReader(path.join(codex, 'skills'), 'personal'),
+    personalReader(path.join(codex, 'skills')),
     fsReader(path.join(codex, 'skills', '.system'), 'system'),
     ...(await codexPluginReaders(
       path.join(codex, '.tmp', 'plugins', 'plugins'),
@@ -294,9 +314,9 @@ function opencodeReaders(slug: string, ref: string | null): SkillReader[] {
   // Claude- and agents-compatible locations. Ordered by precedence so the
   // dedupe below keeps the winning copy of a same-named skill.
   return [
-    fsReader(path.join(cfg, 'skill'), 'personal'),
-    fsReader(path.join(cfg, 'skills'), 'personal'),
-    fsReader(path.join(claudeDir(slug), 'skills'), 'personal'),
+    personalReader(path.join(cfg, 'skill')),
+    personalReader(path.join(cfg, 'skills')),
+    personalReader(path.join(claudeDir(slug), 'skills')),
     repoReader(repo, ref, '.opencode/skill', 'project'),
     repoReader(repo, ref, '.opencode/skills', 'project'),
     repoReader(repo, ref, '.claude/skills', 'project'),
@@ -311,7 +331,7 @@ function piReaders(slug: string, ref: string | null): SkillReader[] {
   // not mounted, so it isn't reachable. Project skills come from the repo.
   // `skills` plural only; no plugin tier.
   return [
-    fsReader(path.join(piDir(slug), 'agent', 'skills'), 'personal'),
+    personalReader(path.join(piDir(slug), 'agent', 'skills')),
     repoReader(repo, ref, '.pi/skills', 'project'),
     repoReader(repo, ref, '.agents/skills', 'project'),
   ]
