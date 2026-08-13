@@ -76,7 +76,9 @@ import { applyWorktreeEvent } from '#db'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
 import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
-import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#domain/skills'
+import {
+  builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, sharedSkillRoots, syncSharedBuiltinSkills,
+} from '#domain/skills'
 import { deleteWorktreeState } from './cleanup'
 import {
   WORKTREE_INIT_SCRIPT,
@@ -544,6 +546,10 @@ export async function createWorktree(
   // one; otherwise the driver's default — on where the workspace is
   // sandboxed, off where the agent's reach is the whole machine.
   const autoApprove = options.autoApprove ?? runtime.kind !== 'containerless'
+  // Whether yaac's own skills reach the workspace as host state rather than
+  // as mounts — a runtime with no mount namespace cannot layer a per-worktree
+  // staging over the tool homes it links in (see #domain/skills).
+  const hostSkills = runtime.kind === 'containerless'
 
   await runtime.ensureBuildEngine()
 
@@ -978,13 +984,17 @@ export async function createWorktree(
       await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
     }
 
-    // yaac's own bundled skills: stage a fresh copy under the worktree dir and
-    // mount them read-only into every tool's personal skills root below. Copied
-    // per worktree so they track the installed yaac version, and never written
-    // into the persisted per-project config dirs (no staleness). Removed with the
-    // worktree dir on cleanup.
+    // yaac's own bundled skills, delivered the way this substrate can. A pod
+    // gets a fresh per-worktree copy staged under the worktree dir and mounted
+    // read-only over every tool's personal skills root below — never written
+    // into the persisted per-project config dirs, so nothing goes stale there.
+    // A containerless workspace has no mount namespace to layer that over its
+    // tool homes (which are links into those very dirs), so the skills are
+    // linked into the project's shared skills roots once instead.
     const builtinSkillsStaging = path.join(worktreeStateDir(projectSlug, worktreeId), 'builtin-skills')
-    const builtinSkillNames = await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+    const builtinSkillNames = hostSkills
+      ? await syncSharedBuiltinSkills(builtinSkillsDir(), projectSlug)
+      : await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
 
     // In-session helper commands (yaac-spawn, and the yaac-worktree-init
     // postStart hook): staged like the builtin skills and File-mounted
@@ -1000,7 +1010,7 @@ export async function createWorktree(
         `worktree-bin staging is missing ${WORKTREE_INIT_SCRIPT} — broken yaac install?`,
       )
     }
-    if (builtinSkillNames.length > 0) {
+    if (!hostSkills && builtinSkillNames.length > 0) {
       // Pre-create each tool's personal skills root (server-owned) before the
       // pod mounts a skill at `<root>/<name>`. Otherwise the kubelet creates the
       // intervening `skills/` dir as root:root to host the nested mount, which
@@ -1009,12 +1019,9 @@ export async function createWorktree(
       // skipped by discovery, so no stale skill ever surfaces). Best-effort: a
       // skills-dir permission hiccup must never fail worktree creation — the skill
       // still mounts; at worst the agent can't add same-root personal skills.
-      await Promise.allSettled([
-        fs.mkdir(path.join(claude, 'skills'), { recursive: true }),
-        fs.mkdir(path.join(codex, 'skills'), { recursive: true }),
-        fs.mkdir(path.join(opencodeConfig, 'skills'), { recursive: true }),
-        fs.mkdir(path.join(pi, 'agent', 'skills'), { recursive: true }),
-      ])
+      // The containerless sync makes the same roots itself, as real dirs it
+      // then links into — nothing mounts, so there is no kubelet to race.
+      await Promise.allSettled(sharedSkillRoots(projectSlug).map((d) => fs.mkdir(d, { recursive: true })))
     }
 
     return {
@@ -1259,8 +1266,9 @@ export async function createWorktree(
       mountPath: m.containerPath,
     })),
     // SHARED: server-staged trees (skills, worktree bin), written
-    // host-side and read in-pod.
-    ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
+    // host-side and read in-pod. The skills are mounted only where a mount
+    // is what delivers them; `hostSkills` already put them on disk.
+    ...(hostSkills ? [] : builtinSkillMounts(builtinSkillsStaging, builtinSkillNames)),
     ...worktreeBinMounts(worktreeBinStaging, worktreeBinNames),
   ]
 

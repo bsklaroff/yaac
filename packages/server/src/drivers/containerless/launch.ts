@@ -86,6 +86,11 @@ function workspaceBinDir(home: string): string {
  * so writing the second would reach THROUGH it and leave one worktree's
  * staging in a directory every other worktree of the project reads. Those
  * are skipped and reported rather than written (see `MountOutcome`).
+ *
+ * A caller that wants a nested path delivered anyway states it as host
+ * state instead of as a mount, which is what the shared skills roots are
+ * (`syncSharedBuiltinSkills`): per project, because that is what the dir it
+ * lands in already is.
  */
 type MountOutcome = 'realized' | 'nothing-to-do' | 'nested' | 'in-workspace'
 
@@ -240,11 +245,12 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     )
   }
   if (nested > 0) {
-    // Today this is the builtin skills, which a pod layers over its tool
-    // homes. A worktree without them simply has fewer skills offered.
+    // Nothing routinely lands here: the one caller that layered over a tool
+    // home (yaac's builtin skills) now writes the host's shared skills roots
+    // directly. A count here means a new caller expects mounts to compose.
     serverLog(
       `[server] containerless ${spec.workspaceId}: skipped ${String(nested)} mount(s) `
-      + 'that would nest inside another (builtin skills are not staged yet)',
+      + 'that would nest inside another, writing through it into shared state',
     )
   }
 

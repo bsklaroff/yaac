@@ -93,10 +93,57 @@ The other thing symlinks cannot do that mounts can is nest. A pod mounts the
 project's claude dir at `/home/yaac/.claude` and then a builtin skill at
 `/home/yaac/.claude/skills/<name>` on top of it. Here the first is a link
 into shared project state, so writing the second would reach through it and
-leave one worktree's staging in a directory every other worktree reads.
-Those are skipped and logged — builtin skills are not staged into
-containerless worktrees yet. Anything else with no host equivalent fails the
-create rather than being silently dropped.
+leave one worktree's staging in a directory every other worktree reads. Such
+a mount is skipped and logged; nothing routinely asks for one, because the
+one caller that did now writes host state instead (see below). Anything with
+no host equivalent at all fails the create rather than being silently
+dropped.
+
+## Builtin skills, shared per project
+
+yaac's own skills reach a pod as a per-worktree staging mounted read-only
+over each tool's personal skills root. There is no mount to layer here, so
+worktree create links them into the project's shared skills roots instead —
+`<data>/projects/<slug>/{claude,codex,…}/skills/<name>` pointing at the
+install's `builtin-skills/<name>` — which is exactly where the tool homes a
+workspace gets are links to. All four tools' roots are written, as under a
+pod, so the skills are there whichever tool a worktree runs.
+
+Per project rather than per worktree is the same bargain the credentials
+are: the dirs they land in are already shared, and there is no boundary here
+that could make the scope narrower. Linking rather than copying is what
+keeps them in lockstep with the running yaac version — an upgrade moves
+every worktree at once, with nothing staged that could go stale.
+
+Only yaac's own links are ever written or removed there. A name the user
+owns — a real skill directory, or a link of their own aimed outside a
+`builtin-skills` dir — is left alone, so a personal skill wins its name. A
+link into a dir of that name is the ownership record: one pointing at an
+install that moved is re-aimed on the next create, and one whose skill is no
+longer shipped is removed there, which is the only place a retired skill
+would ever be cleaned up. Ownership is per machine rather than per install,
+because a versioned global install moves on every upgrade and its links are
+recognizable by nothing else. Two live installs sharing a data dir therefore
+reconcile the same roots, and will differ over any skill only one of them
+ships.
+
+The pod's mount is read-only and a symlink is not, so writing what looks like
+a personal skill at `~/.claude/skills/<name>/SKILL.md` writes through into the
+install — an npm install loses it on upgrade, a dev checkout gets its working
+tree edited for every project on the machine. It is consistent with the rest
+of this substrate (an agent here can reach the install either way), but the
+mount made it impossible by accident and this does not.
+
+The link cannot simply be made read-only. A symlink carries no permissions of
+its own, so a `chmod` follows it onto the install's real files — where taking
+write away breaks the two things that must be able to replace them: an
+upgrade, and a checkout of the repo that ships them in a dev install. Getting
+the mount's read-only property back would mean linking at a frozen copy
+instead, which costs the lockstep above. Switching a project
+back to the k8s driver also stops the pruning, since it only runs on a
+containerless create: shipped names are shadowed by the pod's own mounts, and
+a skill retired while the project is on k8s leaves a link that dangles in-pod
+until the next containerless create removes it.
 
 ## Credentials, and why they are real
 
@@ -190,7 +237,6 @@ answer under both drivers on one line.
   host, which does not exist here, so an agent cannot spawn sibling
   worktrees yet.
 - **Per-worktree module caching.** See the mount note above.
-- **Builtin skills**, for the nesting reason above.
 
 ## Host requirements
 

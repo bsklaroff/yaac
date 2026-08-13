@@ -348,6 +348,32 @@ describe('getProjectSkills', () => {
     ])
   })
 
+  it('lists a builtin linked into a personal root once, as system rather than personal', async () => {
+    // What the containerless driver leaves on disk: the shared skills roots
+    // ARE where yaac's builtins physically land, since there is no mount to
+    // layer them with. Listing each one again under `personal` would offer it
+    // twice, the second time under a tier the user never put it in.
+    await seedBuiltin()
+    const builtin = path.join(tmp, 'builtin-skills', 'yaac-welcome')
+    for (const root of [path.join(claudeDir(slug), 'skills'), path.join(piDir(slug), 'agent', 'skills')]) {
+      await fs.mkdir(root, { recursive: true })
+      await fs.symlink(builtin, path.join(root, 'yaac-welcome'), 'dir')
+    }
+    // A link of the user's own in the same root stays personal — the filter
+    // is "ours", not "a symlink".
+    await writeSkill(path.join(tmp, 'external', 'theirs'), '---\nname: theirs\ndescription: t\n---\nb')
+    await fs.symlink(path.join(tmp, 'external', 'theirs'),
+      path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
+
+    for (const tool of ['claude', 'pi'] as const) {
+      const { skills } = await getProjectSkills(tool, slug)
+      expect(skills.filter((s) => s.name === 'yaac-welcome').map((s) => `${s.source}:${s.sourceLabel ?? ''}`))
+        .toEqual(['system:yaac'])
+    }
+    expect((await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'theirs'))
+      .toMatchObject({ source: 'personal' })
+  })
+
   it('reads codex personal + plugin + project dirs plus the built-in .system tier', async () => {
     await writeSkill(path.join(codexDir(slug), 'skills', 'push-branch'),
       '---\nname: push-branch\ndescription: cx personal\n---\nb')
