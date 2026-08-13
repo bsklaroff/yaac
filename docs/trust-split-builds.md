@@ -285,10 +285,9 @@ reattach to, and the next prewarm sweep re-derives what is missing.
   (authoritative — the host store never sees these tags); trusted layers
   keep the host inspect path. The host image GC never sees untrusted tags,
   so untrusted generations accumulate only in the registry.
-- Untrusted-layer builds require a healthy cluster; `yaac project rebuild`
-  touching `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to
-  `yaac cluster check` when it isn't. Trusted-layer builds (including the
-  tools `--no-cache` refresh) stay host-only.
+- Untrusted-layer builds require a healthy cluster: a chain reaching
+  `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to `yaac cluster
+  check` when there isn't one. Trusted-layer builds stay host-only.
 
 ## Open risk: builder-origin writes to the shared registry
 

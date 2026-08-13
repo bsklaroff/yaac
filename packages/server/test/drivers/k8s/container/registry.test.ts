@@ -337,15 +337,6 @@ describe('pushImageToRegistry', () => {
     ])
   })
 
-  it('force-pushes even when the tag is already present (rebuild path)', async () => {
-    fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
-    const ref = await pushImageToRegistry('yaac-tools:abc', { force: true })
-    expect(ref).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
-    expect(podmanPushes()).toHaveLength(1)
-    // The has-tag check is skipped entirely, not just overridden.
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
   it('threads onLog into the output piping', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const onLog = vi.fn()

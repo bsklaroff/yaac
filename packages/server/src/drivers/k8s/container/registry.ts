@@ -214,9 +214,9 @@ export async function registryHasTag(tag: string): Promise<boolean> {
 /**
  * Push a locally built image to the registry and return its in-cluster
  * ref. No-ops (returning the ref) when the content-hash tag is already
- * present — except with `force`, for the one flow that changes bytes under
- * an unchanged tag (`yaac project rebuild`'s --no-cache tools refresh).
- * `--tls-verify=false` because the registry serves plain HTTP.
+ * present: tags are content-addressed, so a tag the registry holds already
+ * names these exact bytes. `--tls-verify=false` because the registry serves
+ * plain HTTP.
  *
  * The push TARGET is the ENGINE-facing endpoint while the RETURNED ref is
  * the cluster one: the registry stores by repository path, so the bytes a
@@ -236,12 +236,11 @@ export async function pushImageToRegistry(
   localTag: string,
   opts: {
     onLog?: (line: string) => void
-    force?: boolean
     compressionFormat?: 'zstd' | 'gzip'
   } = {},
 ): Promise<string> {
   const ref = registryRef(localTag)
-  if (!opts.force && await registryHasTag(localTag)) return ref
+  if (await registryHasTag(localTag)) return ref
 
   const target = `${await podmanRegistryEndpoint()}/${localTag}`
   const compressionArgs = opts.compressionFormat

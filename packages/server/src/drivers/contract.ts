@@ -732,25 +732,6 @@ export interface WorktreeDriver {
     projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
   ): boolean
   /**
-   * Rebuild a project's image from further up its chain than a content-hash
-   * tag would invalidate, and publish it where a workspace can run it.
-   *
-   * The verb exists because "the tag says nothing changed, but the world
-   * did" is a runtime judgement: the agent CLIs a project's image installs
-   * tick independently of the files that name them. What a caller decides
-   * is only that a project should be rebuilt; where the rebuild starts,
-   * what it re-runs, and how the result is published are the runtime's.
-   *
-   * Answers the ref that names the finished image, and narrates through
-   * `onLog` — a rebuild is minutes long, so its output is the response as
-   * far as a caller is concerned.
-   */
-  rebuildImage(
-    projectSlug: string,
-    opts?: { imagePrefix?: string; onLog?: (line: string) => void },
-  ): Promise<string>
-
-  /**
    * Widen one running workspace's egress to reach `host`, live.
    *
    * Live only: nothing here outlives the workspace, so a caller that wants

@@ -5,7 +5,6 @@ import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
-import { projectRebuild } from '#commands/project-rebuild'
 import { worktreeCreate } from '#commands/worktree-create'
 import { worktreeList } from '#commands/worktree-list'
 import { worktreeStop } from '#commands/worktree-stop'
@@ -217,12 +216,6 @@ project
   .description('Add a project from a git remote')
   .argument('<remote-url>', 'Git remote URL')
   .action(projectAdd)
-
-project
-  .command('rebuild')
-  .description("Rebuild the project's tools layer (claude/codex/opencode/pi) with --no-cache")
-  .argument('<project>', 'Project slug')
-  .action(projectRebuild)
 
 const worktree = program
   .command('worktree')

@@ -26,7 +26,6 @@ import {
 import { getVclusterStatus } from '#drivers/k8s/cluster'
 import {
   prepareWorkspaceImage,
-  rebuildAndPushProjectImage,
   retryImageBuild,
 } from '#drivers/k8s/images'
 import {
@@ -131,7 +130,6 @@ export function createK8sDriver(): WorktreeDriver {
     imageBuildLog: (id) => getImageBuildLog(id),
     dismissImageBuild: (id) => dismissImageBuild(id),
     retryImageBuild: (id, projectConfig) => retryImageBuild(id, projectConfig),
-    rebuildImage: (projectSlug, opts) => rebuildAndPushProjectImage(projectSlug, opts),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),

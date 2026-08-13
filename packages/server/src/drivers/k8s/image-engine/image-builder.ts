@@ -88,7 +88,6 @@ export async function contextHash(dir: string): Promise<string> {
 //      layers — so even back-to-back dockerode builds rebuild from scratch.
 // Staying on the CLI keeps one shared OCI cache chain across all builders.
 export interface BuildOptions {
-  noCache?: boolean
   onLog?: (line: string) => void
 }
 
@@ -123,7 +122,6 @@ export async function buildImage(
     '-t', imageName,
     '-f', dockerfile,
   ]
-  if (opts.noCache) args.push('--no-cache')
 
   for (const [key, value] of Object.entries(buildArgs ?? {})) {
     args.push('--build-arg', `${key}=${value}`)
@@ -228,10 +226,10 @@ export async function resolveImageChain(
   }
 
   // Layer 1a: <prefix>-tools (Dockerfile.tools) — agent CLIs (claude, codex,
-  // opencode, chrome-devtools-mcp). Split out so `yaac project rebuild` can
-  // re-fetch upstream versions with `podman build --no-cache` without
-  // re-running the slow apt/Node base build. Skipped for a standalone
-  // Dockerfile.yaac, which owns its own toolchain.
+  // opencode, chrome-devtools-mcp). Split out so editing the agent toolchain
+  // re-runs only this layer and its downstream, not the slow apt/Node base
+  // build. Skipped for a standalone Dockerfile.yaac, which owns its own
+  // toolchain.
   let toolsTag: string | null = null
   let toolsHash: string | null = null
   if (useDefaultBase) {

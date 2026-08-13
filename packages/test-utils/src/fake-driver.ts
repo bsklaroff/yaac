@@ -124,7 +124,6 @@ export function installFakeWorktreeDriver(
     imageBuildLog: (id) => current.imageBuildLog(id),
     dismissImageBuild: (id) => current.dismissImageBuild(id),
     retryImageBuild: (id, cfg) => current.retryImageBuild(id, cfg),
-    rebuildImage: (s, o) => current.rebuildImage(s, o),
     exec: (j, c, o) => current.exec(j, c, o),
     awaitAgentTransport: (j, o) => current.awaitAgentTransport(j, o),
     dialCtrl: (j, a) => current.dialCtrl(j, a),
@@ -213,7 +212,6 @@ function defaultRuntime(): WorktreeDriver {
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,
     retryImageBuild: () => false,
-    rebuildImage: (projectSlug) => Promise.resolve(`registry.test/${projectSlug}:rebuilt`),
     exec: () => Promise.resolve({ stdout: '', stderr: '' }),
     awaitAgentTransport: () => Promise.resolve(),
     // A stream that never connects and never dies: enough for a mediator

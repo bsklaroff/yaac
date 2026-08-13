@@ -1,13 +1,27 @@
 /*
  * Verifies the image-build UX end-to-end against the real stack: a live
- * `project rebuild` flows through the server's build registry
- * (packages/server/src/image-builds.ts) and the snapshot WebSocket into the
- * sidebar-header pill (ImageBuildIndicator) and the fullscreen overlay
- * (ImageBuildsOverlay).
+ * image build flows through the server's build registry and the snapshot
+ * WebSocket into the sidebar-header pill (ImageBuildIndicator) and the
+ * fullscreen overlay (ImageBuildsOverlay).
+ *
+ * The build is started the way every build starts now that tags are
+ * immutable — by moving a layer's content hash. The script PUTs a
+ * Dockerfile.yaac carrying a unique RUN line, which gives the project layer
+ * a tag nothing has built, and the prewarm sweep (every 60s) picks it up.
+ *
+ * IT THEREFORE MUTATES THE NAMED PROJECT'S Dockerfile.yaac, and restores it
+ * on the way out (including on SIGINT — the script sits in waits of up to
+ * 150s, so it invites a Ctrl-C). A run that dies without restoring leaves
+ * the project layer repriced, and every worktree created afterwards builds
+ * and runs the junk `RUN echo ibux-…` image until someone puts the original
+ * back. The script says so loudly if its own restore fails; if it is killed
+ * outright (SIGKILL), restore by hand with `yaac config edit-dockerfile
+ * <project>`. Default target is the `hello-world` scratch project — a real
+ * project has to be named explicitly with --project.
  *
  * Exercises, against a running server + cluster:
  *   1. auth via a one-time token (POST /tokens), lands in the webapp
- *   2. kicks off `POST /project/<slug>/rebuild`, waits for the "building"
+ *   2. PUTs a cache-busting Dockerfile.yaac, waits for the "building"
  *      pill (scoped to the active project) — screenshot
  *   3. opens the overlay on the running build (layer + step N/M) — screenshot
  *   4. waits for the build to finish and asserts the finished rows PERSIST
@@ -72,6 +86,43 @@ async function mintToken(lock) {
   return (await res.json()).token
 }
 
+async function readDockerfile(base, auth) {
+  const res = await fetch(`${base}/project/${PROJECT}/dockerfile`, { headers: auth })
+  if (!res.ok) throw new Error(`dockerfile GET failed: HTTP ${res.status}`)
+  return (await res.json()).content
+}
+
+async function writeDockerfile(base, auth, content) {
+  return fetch(`${base}/project/${PROJECT}/dockerfile`, {
+    method: 'PUT',
+    headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+}
+
+function warnManualRestore() {
+  console.error(`\n!! ${PROJECT}'s Dockerfile.yaac is STILL the cache-busting stub.`)
+  console.error('!! Its project layer is repriced, so every worktree created from now on')
+  console.error(`!! builds and runs the junk image. Restore it: yaac config edit-dockerfile ${PROJECT}`)
+}
+
+/**
+ * Put the project's Dockerfile.yaac back. A failed restore is the one
+ * failure the operator MUST hear about — swallowing it exits clean while
+ * leaving the project mutated — so it counts into `failures` and says how
+ * to fix it by hand.
+ */
+async function restoreDockerfile(base, auth, original) {
+  try {
+    const res = await writeDockerfile(base, auth, original)
+    check('Dockerfile.yaac restored', res.ok, `HTTP ${res.status}`)
+    if (!res.ok) warnManualRestore()
+  } catch (err) {
+    check('Dockerfile.yaac restored', false, err.message)
+    warnManualRestore()
+  }
+}
+
 async function shot(page, name) {
   fs.mkdirSync(SHOT_DIR, { recursive: true })
   await page.screenshot({ path: path.join(SHOT_DIR, name) })
@@ -92,6 +143,16 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, bypassCSP: true })
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 
+  const originalDockerfile = await readDockerfile(base, auth)
+
+  // Node's default SIGINT disposition terminates without unwinding, so the
+  // `finally` restore below never runs on a Ctrl-C — and this script sits in
+  // waits of up to 150s, which is exactly when someone reaches for one.
+  process.once('SIGINT', () => {
+    console.error('\ninterrupted — restoring Dockerfile.yaac...')
+    void restoreDockerfile(base, auth, originalDockerfile).finally(() => process.exit(130))
+  })
+
   try {
     const token = await mintToken(lock)
     await page.goto(`${base}/?token=${token}`)
@@ -100,14 +161,16 @@ async function main() {
     await page.waitForSelector('[title="New session"]', { timeout: 20_000 })
     check('workspace loaded, project auto-selected', true)
 
-    // Kick off a real rebuild (NDJSON stream); the server keeps building even
-    // if we don't read the body, so just start it and watch the UI react.
-    const rebuild = await fetch(`${base}/project/${PROJECT}/rebuild`, { method: 'POST', headers: auth })
-    check('rebuild request accepted', rebuild.ok, `HTTP ${rebuild.status}`)
-    rebuild.body?.cancel().catch(() => {})
+    // Move the project layer's content hash so a build becomes necessary.
+    // The unique RUN line is the whole point: an identical Dockerfile would
+    // resolve to a tag the registry already holds and build nothing.
+    const bust = `ARG BASE_IMAGE\nFROM \${BASE_IMAGE}\nRUN echo ibux-${process.pid}-${Date.now()}\n`
+    const put = await writeDockerfile(base, auth, bust)
+    check('cache-busting Dockerfile.yaac accepted', put.ok, `HTTP ${put.status}`)
 
-    // 1. Building pill, scoped to the active project.
-    await page.waitForSelector(BUILDING, { timeout: 90_000 })
+    // 1. Building pill, scoped to the active project. The prewarm sweep runs
+    // on a 60s tick, so this waits out a full interval plus the build's start.
+    await page.waitForSelector(BUILDING, { timeout: 150_000 })
     check('scoped "building" pill appears', await page.locator(BUILDING).count() === 1)
     await shot(page, 'ibux-1-building-pill.png')
 
@@ -133,6 +196,9 @@ async function main() {
     check('pill stays as a muted history entry point after close', hasHistory)
     await shot(page, 'ibux-4-history-pill.png')
   } finally {
+    // Put the project back where it was; the busted layer's tag is left in
+    // the registry for the build-cache GC to age out.
+    await restoreDockerfile(base, auth, originalDockerfile)
     await browser.close()
   }
 

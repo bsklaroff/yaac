@@ -56,6 +56,5 @@ export {
   ensureRootfulPodmanHost,
   execFileAsync,
   imageExists,
-  removeImage,
   ROOTFUL_PODMAN_SOCKET,
 } from './runtime'

@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { stream } from 'hono/streaming'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
@@ -19,13 +18,10 @@ import {
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
-import { worktreeDriver } from '#drivers/driver'
 import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
-import { toErrorBody } from '#http'
-import { testEnv } from '@yaac/shared/env'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -157,26 +153,3 @@ export const projectApp = new Hono()
       return c.json({ content })
     },
   )
-  .post('/:slug/rebuild', (c) => {
-    // Stream the rebuild logs as NDJSON {progress|result|error} events so
-    // `yaac project rebuild` can mirror `podman build --no-cache` output
-    // live (it can take minutes when the upstream Claude/codex installers
-    // download fresh tarballs).
-    const slug = c.req.param('slug')
-    c.header('Content-Type', 'application/x-ndjson')
-    return stream(c, async (s) => {
-      const write = (event: unknown) => s.writeln(JSON.stringify(event))
-      try {
-        // Resolve project first (throws NOT_FOUND if missing).
-        await getProjectDetail(slug)
-        const finalTag = await worktreeDriver().rebuildImage(slug, {
-          imagePrefix: testEnv.imagePrefix,
-          onLog: (line) => { void write({ type: 'progress', message: line }) },
-        })
-        await write({ type: 'result', result: { projectSlug: slug, finalTag } })
-      } catch (err) {
-        const { body: errBody } = toErrorBody(err)
-        await write({ type: 'error', error: errBody.error })
-      }
-    })
-  })

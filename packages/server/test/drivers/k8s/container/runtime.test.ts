@@ -38,7 +38,6 @@ import {
   ensureRootfulPodmanHost,
   execFileAsync,
   imageExists,
-  removeImage,
   ROOTFUL_PODMAN_SOCKET,
 } from '#drivers/k8s/container'
 // A state-reset hook, not a unit under test: the runtime check is verified
@@ -221,20 +220,5 @@ describe('imageExists', () => {
   it('returns false when inspect fails (image absent)', async () => {
     execFileMock.mockRejectedValue(new Error('no such image'))
     expect(await imageExists('missing:tag')).toBe(false)
-  })
-})
-
-describe('removeImage', () => {
-  beforeEach(() => { execFileMock.mockReset() })
-
-  it('calls podman rmi -f with the tag', async () => {
-    execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
-    await removeImage('yaac-tools:abc')
-    expect(execFileMock).toHaveBeenCalledWith('podman', ['rmi', '-f', 'yaac-tools:abc'])
-  })
-
-  it('swallows errors so missing/in-use images do not abort cleanup', async () => {
-    execFileMock.mockRejectedValue(new Error('image is in use'))
-    await expect(removeImage('busy:tag')).resolves.toBeUndefined()
   })
 })

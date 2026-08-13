@@ -21,7 +21,6 @@ export { ensureImage } from './build-coordinator'
 export { ensureBuilderImage, reconcileBuilderPodGc } from './builder-pod'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
 export { salvageWorktreeImages } from './image-promoter'
-export { rebuildAndPushProjectImage } from './rebuild'
 export { prepareWorkspaceImage } from './workspace-image'
 export {
   ensureNodeImageStore,

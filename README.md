@@ -229,7 +229,6 @@ yaac cluster <command>
 yaac project <command>
   list              List all projects
   add <remote-url>  Add a project (HTTPS URL or SSH URL like git@host:path)
-  rebuild <project> Rebuild the agent-CLI image layer with --no-cache
 
 yaac worktree <command>
   create [options] <project>  Create a new worktree for a project
@@ -513,7 +512,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
   # Rest of Dockerfile...
   ```
 
-Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project rebuild`) → Dockerfile.nestable (only when `nestedContainers` is on) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools (+ nestable) layers entirely.
+Layer order: default → Dockerfile.tools (agent CLIs) → Dockerfile.nestable (only when `nestedContainers` is on) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools (+ nestable) layers entirely.
 
 ## Nested containers and virtual clusters
 
