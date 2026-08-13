@@ -25,10 +25,9 @@ import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { setWorktreeRuntime } from '#runtime/driver'
-import { configureProxyCredentials } from '#runtime/k8s/egress'
+import { setWorktreeDriver } from '#drivers/driver'
 import { listSshEntries } from '#domain/projects'
-import { k8sWorktreeRuntime } from '#main/runtime-k8s'
+import { createK8sDriver } from '#drivers/k8s'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -127,20 +126,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // make, and it is made before anything can ask for one: every mediator
   // reaches the substrate through the registered driver, so an unregistered
   // one is a startup-order bug rather than a null branch downstream.
-  setWorktreeRuntime(k8sWorktreeRuntime())
-
-  // And where its egress path reads credential material from. SSH identities
-  // live in the credentials store above the runtime, but are re-read on the
-  // PROXY's schedule — an attach to a replaced pod, a reconnect heal — so no
-  // caller can hand them in.
-  //
-  // Here rather than inside `k8sWorktreeRuntime` deliberately: a factory that
-  // reached for this would make every importer of the driver assembly pull
-  // the whole projects barrel in eagerly, which is a real cost to anything
-  // that composes a runtime without being this process (the api tests build
-  // the Hono app in-process). Leaving it unwired degrades to "no ssh
-  // injection", which is what those want.
-  configureProxyCredentials({ listSshEntries })
+  setWorktreeDriver(createK8sDriver())
 
   await preflightHostTor()
   await ensureDataDir()
@@ -423,7 +409,17 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Stop the push-fed state layer first, before the loop drain below:
     // its watches hold open substrate connections and a long-lived
     // process per worktree, which would otherwise outlive the server.
-    stopConvergence()
+    //
+    // Caught rather than awaited bare: everything below this line — the
+    // drain, the release of the host's ports and tunnels, and the lock
+    // removal the CLI watches to decide whether a restart is safe — has to
+    // happen even if a driver's own stop throws. A shutdown that skipped
+    // them would strand exactly the resources shutdown exists to free.
+    try {
+      stopConvergence()
+    } catch (err) {
+      serverLog(`[server] stop convergence failed: ${String(err)}`)
+    }
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -438,7 +434,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Then let go of what was borrowed from the host — port forwarders,
     // the proxy control tunnel, the relay's port-forward child. After the
     // drain, because a reap tick still tears its worktree's forwards down.
-    releaseConvergence()
+    try {
+      releaseConvergence()
+    } catch (err) {
+      serverLog(`[server] release convergence failed: ${String(err)}`)
+    }
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -482,5 +482,14 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // server serves the reconcile path right away.
       loopDone = startReconciler({ signal: abortCtrl.signal })
     },
+    // Where a driver's egress path reads credential material from. SSH
+    // identities live in the credentials store above the runtime but are
+    // re-read on the DRIVER's schedule — an attach to a replaced proxy pod,
+    // a reconnect heal — so no caller can hand the answer in, only the
+    // reader. Handed down rather than reached for: a driver imports nothing
+    // above its contract, and an entrypoint that composes one without being
+    // this process (the api tests build the Hono app in-process) supplies
+    // none and gets "no ssh injection", which is what they want.
+    sshIdentities: listSshEntries,
   })
 }

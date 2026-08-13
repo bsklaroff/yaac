@@ -6,8 +6,8 @@
  * `cleanupWorktreeDetached`. The decision is the pure `computePrewarmPlan`;
  * this wrapper just lists pods and drives the side effects.
  */
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeSnapshot } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeSnapshot } from '#drivers/contract'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { createWorktree } from './create'
 import {
@@ -49,7 +49,7 @@ export async function reconcilePrewarmPool(
 
   let pods
   try {
-    pods = await (snapshot ?? worktreeRuntime().snapshot()).workspaces()
+    pods = await (snapshot ?? worktreeDriver().snapshot()).workspaces()
   } catch {
     return
   }

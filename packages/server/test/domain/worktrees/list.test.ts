@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
+vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -16,8 +16,8 @@ vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
 // The join under test reads the recorded rows alongside the real
 // observation half, so the leaf mocks above drive it end to end — only the
 // substrate is stubbed.
-import { listWorktreePods, LABEL_PREWARMED } from '#runtime/k8s/substrate/pods'
-import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { listWorktreePods, LABEL_PREWARMED } from '#drivers/k8s/substrate/pods'
+import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { markWorktreeTerminating, isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { closeDb } from '#db/client'
 import { recordWorktreeCreated } from '#db/worktree-store'
@@ -33,8 +33,8 @@ import {
   _resetDeferredClusterBootForTests,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
-} from '#runtime/k8s/substrate/deferred-boot'
-import { registerWorktreeForwarders, stopWorktreeForwarders } from '#runtime/k8s/forwarders/port-forwarders'
+} from '#drivers/k8s/substrate/deferred-boot'
+import { registerWorktreeForwarders, stopWorktreeForwarders } from '#drivers/k8s/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 
@@ -55,7 +55,7 @@ describe('listActiveWorktrees', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     _clearTerminatingForTests()
@@ -235,7 +235,7 @@ describe('listActiveWorktrees project filter', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     mockListPods.mockReset()

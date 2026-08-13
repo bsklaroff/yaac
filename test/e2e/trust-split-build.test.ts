@@ -13,11 +13,11 @@ import {
 } from '@yaac/test-utils/setup'
 import { projectBuildDir, userBuildDir } from '@yaac/server/lib/build-dirs'
 import { writeBuildFile } from '@yaac/server/domain/projects/build-files'
-import { ensureImage } from '@yaac/server/runtime/k8s/images/build-coordinator'
-import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/runtime/k8s/substrate/proxy-constants'
-import { resolveImageChain } from '@yaac/server/runtime/k8s/image-engine/image-builder'
-import { imageExists } from '@yaac/server/runtime/k8s/container/runtime'
+import { ensureImage } from '@yaac/server/drivers/k8s/images/build-coordinator'
+import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
+import { resolveImageChain } from '@yaac/server/drivers/k8s/image-engine/image-builder'
+import { imageExists } from '@yaac/server/drivers/k8s/container/runtime'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -25,20 +25,20 @@ import {
   registryHost,
   registryReachable,
   registryRef,
-} from '@yaac/server/runtime/k8s/container/registry'
+} from '@yaac/server/drivers/k8s/container/registry'
 import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
-} from '@yaac/server/runtime/k8s/cluster/main-registry'
-import { RUNTIME_CLASS_GVISOR } from '@yaac/server/runtime/k8s/substrate/gvisor'
-import { runPodToCompletion } from '@yaac/server/runtime/k8s/substrate/pods'
+} from '@yaac/server/drivers/k8s/cluster/main-registry'
+import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
-import { getImageBuildLog, listImageBuilds } from '@yaac/server/runtime/k8s/image-engine/image-builds'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/image-engine/image-builds'
 
 /**
  * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):

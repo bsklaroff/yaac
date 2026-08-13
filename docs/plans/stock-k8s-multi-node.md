@@ -141,7 +141,7 @@ and is also what makes NFS usable. No managed engine lets us install a
 runtime the clean way, so a privileged DaemonSet does it.
 
 **The mechanism has shipped** on the current backend — `yaac-gvisor-install`
-(runtime/k8s/cluster/gvisor-installer.ts), the current-state reference is
+(drivers/k8s/cluster/gvisor-installer.ts), the current-state reference is
 docs/cluster-setup.md §4:
 
 - The **installer DaemonSet** (the GPU-driver pattern) drops the pinned

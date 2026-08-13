@@ -4,8 +4,8 @@ import type { SpawnDecision, SpawnRequest } from '#domain/worktrees/spawn-policy
 vi.mock('#domain/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
 import { decideSpawn } from '#domain/worktrees/spawn-policy'
 import type { PendingSpawn, SpawnResultWire } from '@yaac/shared/types'
-import type { RuntimeHandle } from '#runtime/contract'
-import { handleFixture, snapshotFixture } from '@yaac/test-utils/fake-runtime'
+import type { RuntimeHandle } from '#drivers/contract'
+import { handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
 
 function makeCaller(over: Partial<RuntimeHandle> = {}): RuntimeHandle {

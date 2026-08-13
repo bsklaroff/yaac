@@ -9,18 +9,18 @@ import {
   VCLUSTER_API_PORT,
   listWorktreePods,
   type PodInfo,
-} from '@yaac/server/runtime/k8s/substrate/pods'
+} from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
 import {
   removeWorktreeVcluster,
   vclusterName,
   vclusterNamespace,
-} from '@yaac/server/runtime/k8s/cluster/vcluster'
+} from '@yaac/server/drivers/k8s/cluster/vcluster'
 import {
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
@@ -28,8 +28,8 @@ import {
   projectRegistryHostname,
   projectRegistryName,
   removeProjectRegistry,
-} from '@yaac/server/runtime/k8s/cluster/project-registry'
-import { registryRef } from '@yaac/server/runtime/k8s/container/registry'
+} from '@yaac/server/drivers/k8s/cluster/project-registry'
+import { registryRef } from '@yaac/server/drivers/k8s/container/registry'
 import {
   createYaacTestEnv,
   spawnYaacServer,

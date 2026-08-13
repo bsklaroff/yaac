@@ -12,8 +12,8 @@ getting it wrong is how a rename turns into a second rename.
 |---|---|---|
 | **session** | one conversation with an agent | the tool's own id, transcripts, first prompts, `mode`, the webapp's auth cookie, tmux's own |
 | **worktree** | the durable thing: a checkout, its history, its record | storage, the CLI, the database, the webapp, anything a user names |
-| **workspace** | the same thing seen by the runtime layer, substrate-neutrally | the runtime observation vocabulary (`#runtime/contract`) — deliberately free of git and Kubernetes nouns (docs/layered-server.md) |
-| **pod** | the Kubernetes object a worktree currently runs in | `#runtime/k8s/substrate` and nothing above it |
+| **workspace** | the same thing seen by the runtime layer, substrate-neutrally | the driver contract vocabulary (`#drivers/contract`) — deliberately free of git and Kubernetes nouns (docs/layered-server.md) |
+| **pod** | the Kubernetes object a worktree currently runs in | `#drivers/k8s/substrate` and nothing above it |
 
 The pod tier is the one that reads as a distinction without a difference until
 it bites. `PodInfo`, `PodMount`, `podExec` and `podUid` describe the pod, not

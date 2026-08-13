@@ -1,4 +1,4 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { addPortForwardToProjectConfig } from '#domain/projects'
 import { resolveWorktreeContainer } from './resolve'
 import { ServerError } from '@yaac/shared/errors'
@@ -28,7 +28,7 @@ export async function forwardWorktreePort(
   containerPort: number,
   opts: { persist: boolean },
 ): Promise<PortMapping> {
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   const target = await resolveWorktreeContainer(idOrName, { requireRunning: true })
   if (!(await runtime.unforwardedPorts(target.worktreeId)).includes(containerPort)) {
     throw new ServerError(

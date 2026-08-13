@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -26,7 +26,7 @@ describe('listProjects', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installFakeWorktreeRuntime({ count: counts })
+    installFakeWorktreeDriver({ count: counts })
     tmpDir = await createTempDataDir()
     counts.mockReset().mockResolvedValue({})
   })

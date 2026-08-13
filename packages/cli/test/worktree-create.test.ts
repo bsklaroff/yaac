@@ -45,21 +45,21 @@ vi.mock('simple-git', () => ({
   })),
 }))
 
-vi.mock('@yaac/server/runtime/k8s/container/runtime', () => ({
+vi.mock('@yaac/server/drivers/k8s/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof runtimeModule>))
 
 // Stubbed to keep podman off the import path; nothing on the create path
 // calls into it (podUid, the one name it used to supply, is in pod-spec).
-vi.mock('@yaac/server/runtime/k8s/image-engine/image-builder', () => ({
+vi.mock('@yaac/server/drivers/k8s/image-engine/image-builder', () => ({
 } satisfies Partial<typeof imageBuilderModule>))
 
-vi.mock('@yaac/server/runtime/k8s/images/build-coordinator', () => ({
+vi.mock('@yaac/server/drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
   pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
 } satisfies Partial<typeof buildCoordinatorModule>))
 
-vi.mock('@yaac/server/runtime/k8s/substrate/kubectl', () => ({
+vi.mock('@yaac/server/drivers/k8s/substrate/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'yaac'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -70,12 +70,12 @@ vi.mock('@yaac/server/runtime/k8s/substrate/kubectl', () => ({
 // Keep bootstrap real except proxyServiceClusterIp, which would otherwise hit
 // the (pod-shaped) kubectlGetJson mock and throw — the pod's DNS nameserver is
 // the live proxy ClusterIP read here.
-vi.mock('@yaac/server/runtime/k8s/cluster/proxy-apply', async (importOriginal) => ({
+vi.mock('@yaac/server/drivers/k8s/cluster/proxy-apply', async (importOriginal) => ({
   ...(await importOriginal()),
   proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
 }))
 
-vi.mock('@yaac/server/runtime/k8s/substrate/exec', () => ({
+vi.mock('@yaac/server/drivers/k8s/substrate/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 } satisfies Partial<typeof execModule>))
 
@@ -85,7 +85,7 @@ vi.mock('#commands/ws-terminal', () => ({
   attachWorktreePty: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/runtime/k8s/egress/proxy-client', () => ({
+vi.mock('@yaac/server/drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerWorktree: vi.fn().mockResolvedValue(undefined),
@@ -121,7 +121,7 @@ vi.mock('@yaac/server/lib/port', () => ({
 // verifyAgentWindowAlive branches on `instanceof RelayExecError`, and a
 // stand-in class would silently send the first test that exercises a relay
 // failure down the wrong branch.
-vi.mock('@yaac/server/runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
+vi.mock('@yaac/server/drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   bootStreamd: vi.fn().mockResolvedValue(undefined),
   relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
@@ -130,7 +130,7 @@ vi.mock('@yaac/server/runtime/k8s/substrate/stream-relay', async (importOriginal
   waitForStreamd: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/runtime/k8s/substrate/pod-wait', () => ({
+vi.mock('@yaac/server/drivers/k8s/substrate/pod-wait', () => ({
   waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -141,7 +141,7 @@ vi.mock('@yaac/server/runtime/k8s/substrate/pod-wait', () => ({
 vi.mock('@yaac/shared/project-paths', () => ({
   // A constant, not a per-project path: sealing features/cluster put its
   // setup module in this graph — session create reaches it through the
-  // #runtime/k8s/cluster barrel (→ delete.ts → setup.ts) — and it reads
+  // #drivers/k8s/cluster barrel (→ delete.ts → setup.ts) — and it reads
   // CALICO_DIR at module scope, so an undefined value throws before any test
   // runs. Independent of how stream-relay is mocked.
   CALICO_DIR: '/tmp/yaac-package/k8s/calico',
@@ -195,7 +195,7 @@ vi.mock('@yaac/server/domain/projects/credentials', () => ({
 
 // The proxy-secrets write-through, at the process boundary: the create runs
 // for real, and what the proxy would read is not this test's subject.
-vi.mock('@yaac/server/runtime/k8s/egress/proxy-secrets', () => ({
+vi.mock('@yaac/server/drivers/k8s/egress/proxy-secrets', () => ({
   writeProxySecrets: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -236,13 +236,13 @@ vi.mock('@yaac/server/runtime/agents/opencode', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof opencodeAgentModule>))
 
-vi.mock('@yaac/server/runtime/k8s/forwarders/port-forwarders', () => ({
+vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', () => ({
   registerWorktreeForwarders: vi.fn(),
   stopWorktreeForwarders: vi.fn(),
 } satisfies Partial<typeof portForwardersModule>))
 
-vi.mock('@yaac/server/runtime/agents/setup-commands', async (importOriginal) => ({
-  ...await importOriginal<typeof setupCommandsModule>(),
+vi.mock('@yaac/server/lib/status-right', async (importOriginal) => ({
+  ...await importOriginal<typeof statusRightModule>(),
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
 }))
 
@@ -295,12 +295,12 @@ import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
 import { retoolSpare } from '@yaac/server/domain/worktrees/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
-import { ensureContainerRuntime } from '@yaac/server/runtime/k8s/container/runtime'
-import { ensureImage, pushImageShared } from '@yaac/server/runtime/k8s/images/build-coordinator'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/runtime/k8s/substrate/kubectl'
-import { containerExec } from '@yaac/server/runtime/k8s/substrate/exec'
-import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
-import { proxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
+import { ensureContainerRuntime } from '@yaac/server/drivers/k8s/container/runtime'
+import { ensureImage, pushImageShared } from '@yaac/server/drivers/k8s/images/build-coordinator'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { containerExec } from '@yaac/server/drivers/k8s/substrate/exec'
+import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { proxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/domain/projects/config'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/domain/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
@@ -308,18 +308,18 @@ import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, originRemoteUrl, remoteBranchExists } from '@yaac/server/domain/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/port'
-import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/runtime/k8s/substrate/stream-relay'
-import type * as streamRelayModule from '@yaac/server/runtime/k8s/substrate/stream-relay'
-import { waitForJobPodReady } from '@yaac/server/runtime/k8s/substrate/pod-wait'
-import { registerWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
-import { buildStatusRight } from '@yaac/server/runtime/agents/setup-commands'
-import type * as setupCommandsModule from '@yaac/server/runtime/agents/setup-commands'
-import { installFakeWorktreeRuntime } from '@yaac/test-utils/fake-runtime'
-import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/runtime/k8s/worktrees/launch'
-import { destroyWorkspace } from '@yaac/server/runtime/k8s/worktrees/teardown'
-import { prepareWorkspaceImage } from '@yaac/server/runtime/k8s/images/workspace-image'
-import { adoptWorktreeForwarders } from '@yaac/server/runtime/k8s/forwarders/adopt'
-import type { WorkspaceRegistration } from '@yaac/server/runtime/contract'
+import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
+import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
+import { waitForJobPodReady } from '@yaac/server/drivers/k8s/substrate/pod-wait'
+import { registerWorktreeForwarders } from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
+import { buildStatusRight } from '@yaac/server/lib/status-right'
+import type * as statusRightModule from '@yaac/server/lib/status-right'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/worktrees/launch'
+import { destroyWorkspace } from '@yaac/server/drivers/k8s/worktrees/teardown'
+import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
+import { adoptWorktreeForwarders } from '@yaac/server/drivers/k8s/forwarders/adopt'
+import type { WorkspaceRegistration } from '@yaac/server/drivers/contract'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -466,7 +466,7 @@ describe('createWorktree', () => {
     // The process boundary below it is mocked as it always was (kubectl,
     // the proxy client, the relay, podman), so nothing here reaches a
     // cluster.
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       ensureBuildEngine: () => ensureContainerRuntime(),
       prepareImage: (o) => prepareWorkspaceImage(o),
       prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
@@ -1217,7 +1217,7 @@ describe('retoolSpare', () => {
   function installRuntime(registerWorkspace?: () => Promise<void>): void {
     execs = []
     registrations = []
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       exec: (jobName, cmd, opts) => {
         execs.push([jobName, cmd, opts])
         return Promise.resolve({ stdout: '', stderr: '' })
@@ -1332,16 +1332,16 @@ import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 import type * as codexAgentModule from '@yaac/server/runtime/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'
-import type * as runtimeModule from '@yaac/server/runtime/k8s/container/runtime'
-import type * as imageBuilderModule from '@yaac/server/runtime/k8s/image-engine/image-builder'
-import type * as buildCoordinatorModule from '@yaac/server/runtime/k8s/images/build-coordinator'
-import type * as kubectlModule from '@yaac/server/runtime/k8s/substrate/kubectl'
-import type * as execModule from '@yaac/server/runtime/k8s/substrate/exec'
+import type * as runtimeModule from '@yaac/server/drivers/k8s/container/runtime'
+import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'
+import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
+import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'
+import type * as execModule from '@yaac/server/drivers/k8s/substrate/exec'
 import type * as portModule from '@yaac/server/lib/port'
 import type * as projectConfigModule from '@yaac/server/domain/projects/config'
 import type * as credentialsModule from '@yaac/server/domain/projects/credentials'
 import type * as gitModule from '@yaac/server/domain/git'
-import type * as portForwardersModule from '@yaac/server/runtime/k8s/forwarders/port-forwarders'
+import type * as portForwardersModule from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/db/worktree-store'
 import type * as agentStoreModule from '@yaac/server/db/agent-session-store'
 import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'

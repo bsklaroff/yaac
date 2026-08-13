@@ -2,8 +2,8 @@ import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeHandle, VirtualClusterStatus } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeHandle, VirtualClusterStatus } from '#drivers/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
@@ -24,13 +24,13 @@ export interface WorktreeDetail {
 }
 
 async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
-  const match = await worktreeRuntime().find(idOrName)
+  const match = await worktreeDriver().find(idOrName)
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
   return match
 }
 
 export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetail> {
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   const match = await findWorktree(idOrName)
   const blocked = match.workspaceId
     ? await runtime.blockedHosts(match.workspaceId)
@@ -58,7 +58,7 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
 export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {
   const match = await findWorktree(idOrName)
   if (!match.workspaceId) return []
-  return worktreeRuntime().blockedHosts(match.workspaceId)
+  return worktreeDriver().blockedHosts(match.workspaceId)
 }
 
 export async function getWorktreePrompt(idOrName: string): Promise<string | undefined> {

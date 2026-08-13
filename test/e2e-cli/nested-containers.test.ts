@@ -6,9 +6,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { listWorktreePods, type PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
-import { k8sNamespace, kubectlGetJson } from '@yaac/server/runtime/k8s/substrate/kubectl'
-import { DONE_MARKER } from '@yaac/server/runtime/k8s/images/store-writer'
+import { listWorktreePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
+import { k8sNamespace, kubectlGetJson } from '@yaac/server/drivers/k8s/substrate/kubectl'
+import { DONE_MARKER } from '@yaac/server/drivers/k8s/images/store-writer'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import {
   createYaacTestEnv,

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 
-vi.mock('@yaac/server/runtime/k8s/substrate/pods', async (importOriginal) => {
+vi.mock('@yaac/server/drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -20,8 +20,8 @@ vi.mock('@yaac/server/domain/worktrees/cleanup', async (importOriginal) => {
 
 import { worktreeStop } from '#commands/worktree-stop'
 import { stopWorktree } from '@yaac/server/domain/worktrees/stop'
-import { listWorktreePods, listWorktreeJobs, type PodInfo } from '@yaac/server/runtime/k8s/substrate/pods'
-import type * as podsModule from '@yaac/server/runtime/k8s/substrate/pods'
+import { listWorktreePods, listWorktreeJobs, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
+import type * as podsModule from '@yaac/server/drivers/k8s/substrate/pods'
 import { cleanupWorktreeDetached } from '@yaac/server/domain/worktrees/cleanup'
 import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
 import { setDataDir } from '@yaac/shared/project-paths'
@@ -51,7 +51,7 @@ describe('stopWorktree', () => {
     // The real k8s driver, with only `listWorktreePods`/`listWorktreeJobs`
     // mocked below: what this file exercises is the resolve-then-teardown
     // pipeline, so the driver has to be the real one.
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     setDataDir('/tmp/unit-session-delete')
     mockListPods.mockReset()
     mockListJobs.mockReset()

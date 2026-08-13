@@ -19,7 +19,7 @@ import { EventHub, buildSnapshot, serializeEvent } from '#api/events'
 import type { WsLike } from '#api/events'
 import { listActiveWorktrees } from '#domain/worktrees/list'
 import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
-import { registerImageBuild, clearAllImageBuildsForTests } from '#runtime/k8s/image-engine/image-builds'
+import { registerImageBuild, clearAllImageBuildsForTests } from '#drivers/k8s/image-engine/image-builds'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {

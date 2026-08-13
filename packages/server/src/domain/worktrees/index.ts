@@ -7,7 +7,7 @@
 // starting it, restarting it, stopping it, reaping it when it dies, and
 // the rows that record all of that. What it never owns is how any of that
 // becomes a running thing — it drives the registered runtime through
-// `#runtime/driver` and speaks only `#runtime/contract` vocabulary, so
+// `#drivers/driver` and speaks only `#drivers/contract` vocabulary, so
 // nothing here names a Job, a label or a namespace. It composes the two
 // runtime verticals that are agent rather than substrate knowledge:
 // `#runtime/agents` builds its windows, and `#runtime/status` holds the

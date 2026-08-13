@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { snapshotFixture } from '@yaac/test-utils/fake-runtime'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
-import { RAISABLE_TRIGGERS } from '#main/convergence'
+import { snapshotFixture } from '@yaac/test-utils/fake-driver'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
+import { K8S_TRIGGERS } from '#drivers/k8s/lifecycle'
 import type * as cleanupModule from '#domain/worktrees/cleanup'
-import type * as imagePrewarmModule from '#runtime/k8s/images/image-prewarm'
-import type * as projectRegistryModule from '#runtime/k8s/cluster/project-registry'
+import type * as imagePrewarmModule from '#drivers/k8s/images/image-prewarm'
+import type * as projectRegistryModule from '#drivers/k8s/cluster/project-registry'
 import type * as titleGenerationModule from '#domain/titles/title-generation'
 
 // One reconcile step per module, faked so a pass can be driven without a
@@ -13,29 +13,29 @@ import type * as titleGenerationModule from '#domain/titles/title-generation'
 vi.mock('#domain/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
 vi.mock('#domain/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
 vi.mock('#domain/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#runtime/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
+vi.mock('#drivers/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#domain/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
 vi.mock('#domain/worktrees/meta-import', () => ({ importLegacyMeta: vi.fn() }))
 vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
 }))
-vi.mock('#runtime/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
-vi.mock('#runtime/k8s/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
-vi.mock('#runtime/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
-vi.mock('#runtime/k8s/images/image-prewarm', async (importOriginal) => ({
+vi.mock('#drivers/k8s/images/builder-pod', () => ({ reconcileBuilderPodGc: vi.fn() }))
+vi.mock('#drivers/k8s/images/build-cache-gc', () => ({ reconcileBuildCacheGc: vi.fn() }))
+vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
+vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   reconcileImagePrewarm: vi.fn(),
 }))
-vi.mock('#runtime/k8s/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
-vi.mock('#runtime/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
-vi.mock('#runtime/k8s/egress/vcluster-attribution', () => ({ reconcileVclusterAttribution: vi.fn() }))
-vi.mock('#runtime/k8s/cluster/vcluster-reconcile', () => ({ reconcileVclusters: vi.fn() }))
-vi.mock('#runtime/k8s/cluster/project-registry', async (importOriginal) => ({
+vi.mock('#drivers/k8s/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
+vi.mock('#drivers/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
+vi.mock('#drivers/k8s/egress/vcluster-attribution', () => ({ reconcileVclusterAttribution: vi.fn() }))
+vi.mock('#drivers/k8s/cluster/vcluster-reconcile', () => ({ reconcileVclusters: vi.fn() }))
+vi.mock('#drivers/k8s/cluster/project-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof projectRegistryModule>()),
   reconcileProjectRegistryGc: vi.fn(),
 }))
-vi.mock('#runtime/k8s/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
+vi.mock('#drivers/k8s/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
 vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
   ...(await importOriginal<typeof titleGenerationModule>()),
   reconcileGeneratedTitles: vi.fn(),
@@ -52,20 +52,20 @@ import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
 import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
 import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
-import { reconcileImageSalvage } from '#runtime/k8s/worktrees/salvage-reconcile'
+import { reconcileImageSalvage } from '#drivers/k8s/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
 import { importLegacyMeta } from '#domain/worktrees/meta-import'
-import { reconcileBuilderPodGc } from '#runtime/k8s/images/builder-pod'
-import { reconcileBuildCacheGc } from '#runtime/k8s/images/build-cache-gc'
-import { reconcileNodeImageStores } from '#runtime/k8s/images/store-writer'
-import { reconcileImagePrewarm } from '#runtime/k8s/images/image-prewarm'
-import { reconcileHostImageGc } from '#runtime/k8s/image-engine/image-gc'
-import { reconcileProxySshKeys } from '#runtime/k8s/egress/proxy-reconcile'
-import { reconcileVclusterAttribution } from '#runtime/k8s/egress/vcluster-attribution'
-import { reconcileVclusters } from '#runtime/k8s/cluster/vcluster-reconcile'
-import { reconcileProjectRegistryGc } from '#runtime/k8s/cluster/project-registry'
-import { reconcileRedirectClaims } from '#runtime/k8s/cluster/redirect-claim-reconcile'
+import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
+import { reconcileBuildCacheGc } from '#drivers/k8s/images/build-cache-gc'
+import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
+import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
+import { reconcileHostImageGc } from '#drivers/k8s/image-engine/image-gc'
+import { reconcileProxySshKeys } from '#drivers/k8s/egress/proxy-reconcile'
+import { reconcileVclusterAttribution } from '#drivers/k8s/egress/vcluster-attribution'
+import { reconcileVclusters } from '#drivers/k8s/cluster/vcluster-reconcile'
+import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registry'
+import { reconcileRedirectClaims } from '#drivers/k8s/cluster/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
@@ -286,6 +286,7 @@ async function runPass(
     defaultTool: () => Promise.resolve(opts.defaultTool),
     projectSlugs: () => Promise.resolve(opts.projectSlugs ?? []),
     projectConfig: () => Promise.resolve(undefined),
+        terminating: () => false,
   }
   for (const step of defaultReconcileSteps()) {
     if (!resync && !step.triggers.some((t) => ctx.triggers.has(t))) continue
@@ -297,7 +298,7 @@ describe('defaultReconcileSteps', () => {
   beforeEach(() => {
     // The real driver, so its own contributed steps are the ones spliced
     // in — the modules behind them are mocked at the top of this file.
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
@@ -411,10 +412,10 @@ describe('defaultReconcileSteps', () => {
   // nothing — it just never runs on its edge and waits out the 60s resync,
   // which is latency, not an error. That is the whole exposure of an
   // open-ended `ReconcileTrigger`, and this is what closes it: the raise
-  // sites in convergence are typed against RAISABLE_TRIGGERS, and every
-  // trigger the assembled list declares has to be a member of it.
+  // sites in the driver are typed against K8S_TRIGGERS, and every trigger
+  // the assembled list declares has to be a member of it.
   it('declares only triggers something can actually raise', () => {
-    const raisable = new Set<string>(RAISABLE_TRIGGERS)
+    const raisable = new Set<string>(K8S_TRIGGERS)
     const declared = new Set(defaultReconcileSteps().flatMap((s) => s.triggers))
     expect([...declared].filter((t) => !raisable.has(t))).toEqual([])
     // What makes the check cover the whole vocabulary rather than the
@@ -464,6 +465,7 @@ describe('defaultReconcileSteps', () => {
       defaultTool: () => Promise.reject(new Error('db is gone')),
       projectSlugs: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
+        terminating: () => false,
     }
     await expect(pool.run(ctx)).rejects.toThrow('db is gone')
     expect(reconcilePrewarmPool).not.toHaveBeenCalled()

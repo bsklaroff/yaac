@@ -3,10 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   WorktreeStatusWatcher,
   StatusWatcherManager,
-  podAgentMode,
   type WatchedWorktree,
 } from '#runtime/status/status-watcher'
-import type { StreamChild } from '#runtime/k8s/substrate'
+import type { RuntimeHandle, StreamChild } from '#drivers/contract'
+import { handleFixture } from '@yaac/test-utils/fake-driver'
+import type { AgentTool } from '@yaac/shared/types'
 import {
   readWorktreeStatus,
   isWorktreeStreamHealthy,
@@ -17,7 +18,6 @@ import {
   worktreeControlStreamSend,
   _clearControlStreamRegistryForTests,
 } from '#runtime/status/control-stream-registry'
-import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_TOOL, type PodInfo, worktreeIdLabels } from '#runtime/k8s/substrate/pods'
 
 class FakeAttachChild implements StreamChild {
   writes: string[] = []
@@ -115,33 +115,6 @@ beforeEach(() => {
 afterEach(() => {
   for (const w of watchers) w.stop()
   watchers = []
-})
-
-describe('podAgentMode', () => {
-  const pod = (labels: Record<string, string>): PodInfo => ({
-    jobName: 'yaac-demo-s1',
-    podName: 'yaac-demo-s1-abc',
-    worktreeId: 's1',
-    projectSlug: 'demo',
-    tool: 'claude',
-    ...(labels['yaac.mode'] !== undefined ? { mode: labels['yaac.mode'] } : {}),
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 0,
-    labels,
-  })
-
-  it('reads acp off the pod label', () => {
-    expect(podAgentMode(pod({ 'yaac.mode': 'acp' }))).toBe('acp')
-  })
-
-  it('defaults to tui, so every TUI pod and every pod predating modes still works', () => {
-    // The label is stamped only for acp — an unlabeled pod is not ambiguous,
-    // it is the mode yaac has always run.
-    expect(podAgentMode(pod({}))).toBe('tui')
-    expect(podAgentMode(pod({ 'yaac.mode': 'something-else' }))).toBe('tui')
-  })
 })
 
 describe('WorktreeStatusWatcher (title tools)', () => {
@@ -352,32 +325,23 @@ describe('WorktreeStatusWatcher (pane tools)', () => {
   })
 })
 
-function pod(opts: {
+function workspace(opts: {
   worktreeId: string
   slug?: string
   running?: boolean
   prewarmed?: boolean
-  tool?: string
-}): PodInfo {
+  tool?: AgentTool
+}): RuntimeHandle {
   const slug = opts.slug ?? 'demo'
-  return {
-    jobName: `yaac-${slug}-${opts.worktreeId}`,
-    podName: `yaac-${slug}-${opts.worktreeId}-abcde`,
-    worktreeId: opts.worktreeId,
+  return handleFixture({
+    workspaceId: opts.worktreeId,
     projectSlug: slug,
+    jobName: `yaac-${slug}-${opts.worktreeId}`,
     tool: opts.tool ?? 'claude',
-    phase: opts.running === false ? 'Pending' : 'Running',
     running: opts.running !== false,
-    terminating: false,
-    createdAtMs: 0,
-    labels: {
-      [JOB_NAME_LABEL]: `yaac-${slug}-${opts.worktreeId}`,
-      ...worktreeIdLabels(opts.worktreeId),
-      [LABEL_PROJECT]: slug,
-      [LABEL_TOOL]: opts.tool ?? 'claude',
-      ...(opts.prewarmed ? { [LABEL_PREWARMED]: 'true' } : {}),
-    },
-  }
+    state: opts.running === false ? 'pending' : 'running',
+    prewarmed: opts.prewarmed ?? false,
+  })
 }
 
 describe('StatusWatcherManager', () => {
@@ -399,9 +363,9 @@ describe('StatusWatcherManager', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
-        pod({ worktreeId: 's1' }),
-        pod({ worktreeId: 's2', running: false }),
-        pod({ worktreeId: 's3', prewarmed: true }),
+        workspace({ worktreeId: 's1' }),
+        workspace({ worktreeId: 's2', running: false }),
+        workspace({ worktreeId: 's3', prewarmed: true }),
       ])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
@@ -413,8 +377,8 @@ describe('StatusWatcherManager', () => {
   it('is idempotent for an unchanged pod set', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([pod({ worktreeId: 's1' })])
-      manager.sync([pod({ worktreeId: 's1' })])
+      manager.sync([workspace({ worktreeId: 's1' })])
+      manager.sync([workspace({ worktreeId: 's1' })])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(1)
     } finally {
@@ -425,7 +389,7 @@ describe('StatusWatcherManager', () => {
   it('stops the watcher and evicts the store entry when the pod goes away', () => {
     const { manager, children } = makeManager()
     try {
-      manager.sync([pod({ worktreeId: 's1' })])
+      manager.sync([workspace({ worktreeId: 's1' })])
       setAgentStatus('demo', 's1', '%0', 'running')
       manager.sync([])
       expect(manager.size).toBe(0)
@@ -439,9 +403,9 @@ describe('StatusWatcherManager', () => {
   it('starts a watcher when a claimed spare loses its prewarm label', () => {
     const { manager } = makeManager()
     try {
-      manager.sync([pod({ worktreeId: 's1', prewarmed: true })])
+      manager.sync([workspace({ worktreeId: 's1', prewarmed: true })])
       expect(manager.size).toBe(0)
-      manager.sync([pod({ worktreeId: 's1' })])
+      manager.sync([workspace({ worktreeId: 's1' })])
       expect(manager.size).toBe(1)
     } finally {
       manager.stopAll()
@@ -450,7 +414,7 @@ describe('StatusWatcherManager', () => {
 
   it('stopAll kills every watcher', () => {
     const { manager, children } = makeManager()
-    manager.sync([pod({ worktreeId: 's1' }), pod({ worktreeId: 's2' })])
+    manager.sync([workspace({ worktreeId: 's1' }), workspace({ worktreeId: 's2' })])
     expect(manager.size).toBe(2)
     manager.stopAll()
     expect(manager.size).toBe(0)

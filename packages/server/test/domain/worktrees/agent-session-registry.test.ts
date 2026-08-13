@@ -3,16 +3,11 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-// opencode's opening message is not on the host — it is probed inside the pod
-// — so the transport is stubbed to assert the sweep carries the job name down
-// to that read. Nothing else here execs.
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...await importOriginal<typeof relayModule>(),
-  podExec: vi.fn(),
-}))
-
+// opencode's opening message is not on the host — it is probed inside the
+// workspace — so the driver's `exec` is stubbed to assert the sweep carries
+// the job name down to that read. Nothing else here execs.
 // The pod-level entry point is driven only for the unreachable-cluster case.
-vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => ({
+vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listWorktreePods: vi.fn().mockResolvedValue([]),
 }))
@@ -35,10 +30,10 @@ import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
 import { serverLog } from '#log'
-import { listWorktreePods } from '#runtime/k8s/substrate/pods'
-import { podExec } from '#runtime/k8s/substrate/stream-relay'
-import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
-import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import type { WorktreeDriver } from '#drivers/contract'
+import { listWorktreePods } from '#drivers/k8s/substrate/pods'
+import type * as podsModule from '#drivers/k8s/substrate/pods'
 import {
   setLiveAgents,
   _resetWorktreeStatusStoreForTests,
@@ -61,9 +56,12 @@ import {
  */
 describe('reconcileWorktreeAgentSessions', () => {
   let tmpDir: string
+  const podExec = vi.fn<WorktreeDriver['exec']>()
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    podExec.mockReset()
+    installFakeWorktreeDriver({ exec: podExec })
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
@@ -385,7 +383,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     // No hook line and no transcript will ever exist for it, so the sweep has
     // only the pin create made — and that exemption is what keeps an opencode
     // worktree from going permanently unlabelled.
-    vi.mocked(podExec).mockResolvedValue({
+    podExec.mockResolvedValue({
       stdout: JSON.stringify([{ id: 'ses_1', title: 'build a thing', time: { updated: 1 } }]),
       stderr: '',
     })
@@ -396,7 +394,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     expect(await foundingAsk()).toBe('build a thing')
     expect((await listWorktreeAgentSessions('demo', 'wt-1'))
       .map((l) => l.agentSessionId)).toEqual(['wt-1'])
-    expect(vi.mocked(podExec).mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
+    expect(podExec.mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
   })
 
   // The exemption's whole safety rests on there being exactly one
@@ -404,7 +402,7 @@ describe('reconcileWorktreeAgentSessions', () => {
   // live set — see the comment on the emit. If a second one ever becomes
   // reachable here, this fails rather than silently deactivating it.
   it('reports only the pinned conversation for a tool with no discovery source', async () => {
-    vi.mocked(podExec).mockResolvedValue({ stdout: '[]', stderr: '' })
+    podExec.mockResolvedValue({ stdout: '[]', stderr: '' })
     setLiveAgents('demo', 'wt-1', [
       { handle: '%0', tool: 'opencode' },
       { handle: '%1', tool: 'opencode' },

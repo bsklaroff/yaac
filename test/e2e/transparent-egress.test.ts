@@ -15,22 +15,22 @@ import {
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/runtime/k8s/egress/proxy-client'
-import { proxyServiceClusterIp } from '@yaac/server/runtime/k8s/cluster/proxy-apply'
+import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
-} from '@yaac/server/runtime/k8s/substrate/proxy-constants'
-import { runtimeClassSpec } from '@yaac/server/runtime/k8s/substrate/gvisor'
-import { CA_CONFIGMAP_NAME } from '@yaac/server/runtime/k8s/substrate/pod-spec'
-import { worktreeIdLabels } from '@yaac/server/runtime/k8s/substrate/pods'
+} from '@yaac/server/drivers/k8s/substrate/proxy-constants'
+import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/runtime/k8s/substrate/kubectl'
+} from '@yaac/server/drivers/k8s/substrate/kubectl'
 
 const execFileAsync = promisify(execFile)
 

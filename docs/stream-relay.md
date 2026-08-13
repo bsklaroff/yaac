@@ -104,7 +104,7 @@ both sockets while the server learns nothing; a deadline over the whole
 pre-splice phase — auth line, IP resolve, pod dial — makes that an
 ordinary refusal instead.
 
-### Server transport (`runtime/k8s/substrate/stream-relay.ts`)
+### Server transport (`drivers/k8s/substrate/stream-relay.ts`)
 
 `relayDial` opens the TCP connection and pipelines both handshake lines.
 Address resolution, cached per run and re-resolved on transport failure:

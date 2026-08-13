@@ -1,6 +1,6 @@
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow } from '#db'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
@@ -45,7 +45,7 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
 export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
   const meta = await loadProjectMeta(slug)
   const [worktreeCount, configResult] = await Promise.all([
-    worktreeRuntime().countForProject(slug),
+    worktreeDriver().countForProject(slug),
     resolveProjectConfigWithSource(slug),
   ])
   return {

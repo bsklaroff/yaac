@@ -1,4 +1,4 @@
-import { formatCheckResult, runClusterCheck } from '@yaac/server/runtime/k8s/cluster/check'
+import { formatCheckResult, runClusterCheck } from '@yaac/server/drivers/k8s/cluster/check'
 
 /**
  * `yaac cluster check` — verify the kubernetes backend's prerequisites

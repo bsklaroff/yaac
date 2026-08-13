@@ -94,8 +94,8 @@ docs/naming.md records.
 
 | site | object |
 |---|---|
-| `ensureProxyResources` — `runtime/k8s/cluster/proxy-apply.ts` | `yaac-session-egress`, `yaac-session-ingress-lock`, install namespace |
-| `ensureWorktreeVcluster` — `runtime/k8s/cluster/vcluster.ts` | `yaac-inner-session-ingress-lock`, per vcluster namespace |
+| `ensureProxyResources` — `drivers/k8s/cluster/proxy-apply.ts` | `yaac-session-egress`, `yaac-session-ingress-lock`, install namespace |
+| `ensureWorktreeVcluster` — `drivers/k8s/cluster/vcluster.ts` | `yaac-inner-session-ingress-lock`, per vcluster namespace |
 
 They run at proxy and vcluster ensure — the first worktree create, not server
 boot.
@@ -116,10 +116,10 @@ document.
 **`yaac.session-id` stamped alongside `yaac.worktree-id`.** A label selector
 cannot express "either key", so every selector still matches the legacy key,
 while code-level readers go through `labelWorktreeId`, which accepts either.
-Sites: `runtime/k8s/substrate/pods.ts` (constant, `labelWorktreeId`, the stamp, both zod
-schemas, `worktreePodSelector`), `runtime/k8s/cluster/policy-manifests.ts`,
-`runtime/k8s/cluster/activator.ts`, `runtime/k8s/cluster/vcluster.ts`,
-`runtime/k8s/cluster/project-registry.ts`, `k8s/proxy/pod-watch.ts`,
+Sites: `drivers/k8s/substrate/pods.ts` (constant, `labelWorktreeId`, the stamp, both zod
+schemas, `worktreePodSelector`), `drivers/k8s/cluster/policy-manifests.ts`,
+`drivers/k8s/cluster/activator.ts`, `drivers/k8s/cluster/vcluster.ts`,
+`drivers/k8s/cluster/project-registry.ts`, `k8s/proxy/pod-watch.ts`,
 `k8s/netd/targets.ts`, `packages/test-utils/src/setup.ts`.
 
 > **Move every selector to the new key before dropping the legacy stamp.** The
@@ -142,7 +142,7 @@ still read when only it exists.
 
 **The proxy event stream's 404 lane** — the `res.status === 404` branch of
 `ProxyEventStream.connectOnce` and `UNSUPPORTED_RETRY_MS`
-(`runtime/k8s/egress/proxy-events.ts`). It keys off exactly one thing: a
+(`drivers/k8s/egress/proxy-events.ts`). It keys off exactly one thing: a
 deployed proxy answering 404 to `GET /events`, i.e. one built before that
 route existed. In that state the server has no edges at all, so the retry
 tick stands in for them — it re-fires the spawn drain and rebuilds the
@@ -198,17 +198,17 @@ is the part worth keeping.
 
 | comment | goes with |
 |---|---|
-| `runtime/k8s/cluster/delete.ts` — why there is no host-container step | the host-registry era |
-| `runtime/k8s/cluster/main-registry.ts` module doc — the fresh-empty-claim upgrade, and where the old hostPath data sits | the hostPath-registry era |
-| `runtime/k8s/cluster/project-registry.ts`, `buildProjectRegistryPvcManifest` — the same trade per project | the same |
-| `runtime/k8s/substrate/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
-| `runtime/k8s/substrate/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
+| `drivers/k8s/cluster/delete.ts` — why there is no host-container step | the host-registry era |
+| `drivers/k8s/cluster/main-registry.ts` module doc — the fresh-empty-claim upgrade, and where the old hostPath data sits | the hostPath-registry era |
+| `drivers/k8s/cluster/project-registry.ts`, `buildProjectRegistryPvcManifest` — the same trade per project | the same |
+| `drivers/k8s/substrate/priority-classes.ts` — why `yaac-session` is deliberately not deleted | when no install old enough to stamp that class can still run; later than section 3 |
+| `drivers/k8s/substrate/pods.ts` `LABEL_WORKTREE_ID_LEGACY` block, and the same constant's comments in `k8s/proxy/pod-watch.ts` and `k8s/netd/targets.ts` | section 4 |
 | `k8s/proxy/state-files.ts` — why `readJsonEither` takes a legacy path | section 4 |
 | `db/agent-session-store.ts` (`firstAgentSession`) and `domain/worktrees/stopped-list.ts` — "a row without one predates that", the claude default | when no row can predate create-time recording |
 
 Two neighbours that are **not** cruft and should not be swept with them:
 
-- `LABEL_MODE`'s absence-reads-as-`tui` (`runtime/k8s/substrate/pods.ts`,
+- `LABEL_MODE`'s absence-reads-as-`tui` (`drivers/k8s/substrate/pods.ts`,
   `runtime/status/status-watcher.ts`) is an encoding choice: the label is
   stamped only for `acp`, so a TUI pod created by this build lacks it too.
 - The local named `legacy` in `domain/worktrees/agent-session-registry.ts` is

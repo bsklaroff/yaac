@@ -1,7 +1,7 @@
 import { isWorktreeStreamHealthy } from './status-store'
 import { isWorktreeTerminating } from './terminating'
-import type { TmuxLiveness } from './liveness'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { ProbeTarget, TmuxLiveness } from './liveness'
+import type { RuntimeHandle } from '#drivers/contract'
 import type { StaleWorktreeInfo } from '@yaac/shared/types'
 
 /**
@@ -13,7 +13,7 @@ import type { StaleWorktreeInfo } from '@yaac/shared/types'
 export async function classifyWorkspaces(
   workspaces: RuntimeHandle[],
   nowMs: number,
-  probeLiveness: (slug: string, workspaceId: string) => Promise<TmuxLiveness>,
+  probeLiveness: (target: ProbeTarget) => Promise<TmuxLiveness>,
   graceMs: number,
 ): Promise<{
   running: RuntimeHandle[]
@@ -35,7 +35,7 @@ export async function classifyWorkspaces(
       continue
     }
     if (p.running && p.projectSlug && p.workspaceId) {
-      const liveness = await probeLiveness(p.projectSlug, p.workspaceId)
+      const liveness = await probeLiveness(p)
       if (liveness === 'alive') {
         running.push(p)
         continue
@@ -80,6 +80,8 @@ export async function classifyWorkspaces(
  * when the stale reaper — which keeps its own conclusive probes —
  * tears them down.
  */
-export function watcherDisplayLiveness(slug: string, worktreeId: string): Promise<TmuxLiveness> {
-  return Promise.resolve(isWorktreeStreamHealthy(slug, worktreeId) ? 'alive' : 'unknown')
+export function watcherDisplayLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
+  return Promise.resolve(
+    isWorktreeStreamHealthy(target.projectSlug, target.workspaceId) ? 'alive' : 'unknown',
+  )
 }

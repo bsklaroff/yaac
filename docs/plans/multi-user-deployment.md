@@ -342,7 +342,7 @@ A sweep of the HTTP/WS surface and the pod/runtime layer turned up specific
 flaws. Two structural facts frame all of them:
 
 - **Every worktree pod runs as the same host uid, with passwordless sudo,
-  on shared hostPaths** (`runtime/k8s/substrate/pod-spec.ts` `podUid()`; gVisor has
+  on shared hostPaths** (`drivers/k8s/substrate/pod-spec.ts` `podUid()`; gVisor has
   no userns/idmap, so hostPath uids pass through raw). There is therefore
   **no filesystem-level isolation between worktrees** — owner separation
   can only come from *which paths get mounted*, never from permissions on a
@@ -359,7 +359,7 @@ cannot be enforced on top of them.
 
 - **Empty/prefix worktree-id resolution → a shell in an arbitrary pod.**
   `findWorktreePod` matches `worktreeId.startsWith(idOrName)`
-  (`runtime/k8s/substrate/pods.ts`), and the PTY route defaults a missing id to `''`
+  (`drivers/k8s/substrate/pods.ts`), and the PTY route defaults a missing id to `''`
   (`main/server-run.ts`), so `GET /pty/attach?id=&target=shell` resolves to
   *the first running pod in the cluster*. Every `/worktree/:id/*` route
   inherits the ambiguity through `domain/worktrees/resolve.ts`. **Fix

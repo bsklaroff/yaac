@@ -6,10 +6,10 @@ import {
   type WorktreeRow,
 } from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
-import { worktreeRuntime } from '#runtime/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentLiveness, WorktreeRuntimeReport } from '#runtime/contract'
+import { observeWorkspaces, type WorktreeRuntimeReport } from '#runtime/status'
+import type { AgentLiveness } from '#drivers/contract'
 import type { ActiveWorktreesResult, WorktreeListEntry } from '@yaac/shared/types'
 
 export async function ensureProjectExists(slug: string): Promise<void> {
@@ -65,7 +65,7 @@ async function listActiveWorktreesImpl(projectFilter?: string): Promise<ActiveWo
   // here rather than derived from the runtime, which only knows what it is running.
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  const report = await worktreeRuntime().observe(projectFilter)
+  const report = await observeWorkspaces(projectFilter)
 
   // Recorded state — prompt, title, base branch, pin — one query per project
   // for both live and terminating workspaces (the latter keep their title and

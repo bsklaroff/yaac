@@ -21,13 +21,13 @@ import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 // `claiming` and `inFlight` are the module's shared state, read here to set
 // up a mid-claim / mid-spawn cluster and asserted on afterwards.
 import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/worktrees/prewarm'
-import { LABEL_PREWARMED, type PodInfo } from '#runtime/k8s/substrate/pods'
-import { runtimeHandleFromPod } from '#runtime/k8s/view'
-import type { RuntimeHandle } from '#runtime/contract'
+import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
+import { runtimeHandleFromPod } from '#drivers/k8s/view'
+import type { RuntimeHandle } from '#drivers/contract'
 import {
-  installFakeWorktreeRuntime,
+  installFakeWorktreeDriver,
   snapshotFixture,
-} from '@yaac/test-utils/fake-runtime'
+} from '@yaac/test-utils/fake-driver'
 import { createWorktree } from '#domain/worktrees/create'
 import { cleanupWorktree, deleteWorktreeState } from '#domain/worktrees/cleanup'
 import { getDefaultTool } from '#db/preferences'
@@ -63,7 +63,7 @@ describe('reconcilePrewarmPool', () => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
     mockWorkspaces.mockResolvedValue([])
-    installFakeWorktreeRuntime({
+    installFakeWorktreeDriver({
       snapshot: () => ({ resync: true, workspaces: mockWorkspaces, strayUnits: () => Promise.resolve([]) }),
     })
     mockDefaultTool.mockResolvedValue('claude')

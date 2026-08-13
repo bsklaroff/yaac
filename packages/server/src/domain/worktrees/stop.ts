@@ -1,4 +1,4 @@
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktreeDetached } from './cleanup'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -17,7 +17,7 @@ export interface StoppedWorktreeInfo {
  * can't be reached.
  */
 export async function stopWorktree(idOrName: string): Promise<StoppedWorktreeInfo> {
-  const target = await worktreeRuntime().findForTeardown(idOrName)
+  const target = await worktreeDriver().findForTeardown(idOrName)
   if (!target) {
     throw new ServerError(
       'NOT_FOUND',

@@ -14,8 +14,8 @@
  * whole contribution is the queue and attributing each request to its
  * caller (docs/layered-server.md).
  */
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeHandle, RuntimeSnapshot } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeHandle, RuntimeSnapshot } from '#drivers/contract'
 import { decideSpawn } from './spawn-policy'
 import { serverLog } from '#log'
 import { pendingSpawnWorktreeId } from '@yaac/shared/types'
@@ -36,17 +36,17 @@ export async function reconcileSpawnRequests(
   snapshot?: RuntimeSnapshot,
 ): Promise<void> {
   try {
-    const pending = await (deps.fetchPendingFn ?? (() => worktreeRuntime().pendingSpawns()))()
+    const pending = await (deps.fetchPendingFn ?? (() => worktreeDriver().pendingSpawns()))()
     if (pending.length === 0) return
     // One workspace listing per drain, shared by every request in the batch.
     // A burst at the queue cap must not fan out into a listing per request.
     const listPods = deps.listWorkspacesFn
-      ?? (() => (snapshot ?? worktreeRuntime().snapshot()).workspaces())
+      ?? (() => (snapshot ?? worktreeDriver().snapshot()).workspaces())
     let pods: Promise<RuntimeHandle[]> | undefined
     const drainDeps: SpawnReconcileDeps = { ...deps, listWorkspacesFn: () => (pods ??= listPods()) }
     const results = await Promise.all(pending.map((req) => reportSpawnRequest(req, drainDeps)))
     await (deps.postResultsFn
-      ?? ((r: SpawnResultWire[]) => worktreeRuntime().resolveSpawns(r)))(results)
+      ?? ((r: SpawnResultWire[]) => worktreeDriver().resolveSpawns(r)))(results)
   } catch (err) {
     serverLog(`[spawn] reconcile failed: ${String(err)}`)
   }
@@ -75,7 +75,7 @@ async function reportSpawnRequest(
   let caller: RuntimeHandle | undefined
   try {
     const pods = await (deps.listWorkspacesFn
-      ?? (() => worktreeRuntime().snapshot().workspaces()))()
+      ?? (() => worktreeDriver().snapshot().workspaces()))()
     caller = pods.find((p) => p.workspaceId === callerId)
   } catch (err) {
     return fail(`cannot resolve calling worktree: ${String(err)}`)

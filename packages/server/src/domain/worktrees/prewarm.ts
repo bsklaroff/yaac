@@ -25,7 +25,7 @@
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
 import simpleGit from 'simple-git'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
 import { rebranchSpare, retoolSpare } from './spare-pool'
@@ -45,7 +45,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
-import type { RuntimeHandle } from '#runtime/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 
 /**
  * Runtime handles of spares currently being claimed. A claim reserves its
@@ -203,7 +203,7 @@ export async function tryClaimPrewarmed(
    *  already matches). */
   model?: string,
 ): Promise<WorktreeCreateResult | undefined> {
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   let reserved: string | undefined
   let chosen: RuntimeHandle | undefined
   let mutated = false
@@ -227,7 +227,7 @@ export async function tryClaimPrewarmed(
       // concurrent claim can't pick the same spare.
       claiming.add(c.jobName)
       reserved = c.jobName
-      if (await isTmuxSessionAlive(c.projectSlug, c.workspaceId)) {
+      if (await isTmuxSessionAlive(c)) {
         chosen = c
         break
       }

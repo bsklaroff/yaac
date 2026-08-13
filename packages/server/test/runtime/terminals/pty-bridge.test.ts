@@ -4,22 +4,19 @@
  * Nothing under features/terminals is mocked here: the query validation, the
  * tmux attach argv, the per-client view lifecycle (register, ghost sweep,
  * window resize, kill-session) and the wire protocol all run for real, and
- * the fakes start at the relay — `dialPtyStream` for the in-pod PTY and
- * `podExec` for every tmux command. The internals are covered by the
+ * the fakes start at the contract boundary — the driver's `dialPty` for the
+ * in-workspace PTY and its `exec` for every tmux command. The internals are covered by the
  * targets, sizes and frames these tests drive rather than by tests of their
  * own.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as relayModule from '#runtime/k8s/substrate/stream-relay'
-import { dialPtyStream, podExec } from '#runtime/k8s/substrate/stream-relay'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { DETACH_GRACE_MS } from '#runtime/terminals/pty-bridge'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import type { StreamPty, WorktreeDriver } from '#drivers/contract'
 
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...await importOriginal<typeof relayModule>(),
-  podExec: vi.fn(),
-  dialPtyStream: vi.fn(),
-}))
+const execMock = vi.fn<WorktreeDriver['exec']>()
+const dialPtyMock = vi.fn<WorktreeDriver['dialPty']>()
 
 const TMUX = 'tmux -S /tmp/yaac-tmux/server'
 const LIST_SESSIONS = `${TMUX} list-sessions -F '#{session_name}'`
@@ -42,7 +39,7 @@ const VIEW_CREATE = (view: string, cols: number, rows: number): string =>
   + ` \\; set-option -t ${view} prefix None`
   + ` \\; set-option -t ${view} window-size manual`
 
-class FakePty implements relayModule.StreamPty {
+class FakePty implements StreamPty {
   written: string[] = []
   resized: Array<[number, number]> = []
   killed: Array<string | undefined> = []
@@ -85,11 +82,12 @@ let execImpl: (cmd: string) => Promise<{ stdout: string; stderr: string }>
 beforeEach(() => {
   execCalls.length = 0
   execImpl = () => Promise.resolve({ stdout: '', stderr: '' })
-  vi.mocked(podExec).mockImplementation((_job, cmd) => {
+  execMock.mockImplementation((_job, cmd) => {
     execCalls.push(cmd)
     return execImpl(cmd)
   })
-  vi.mocked(dialPtyStream).mockImplementation(() => new FakePty())
+  dialPtyMock.mockImplementation(() => new FakePty())
+  installFakeWorktreeDriver({ exec: execMock, dialPty: dialPtyMock })
 })
 
 /** Drain the fire-and-forget ghost sweep (microtasks only, so this works
@@ -101,7 +99,8 @@ const flush = async (): Promise<void> => {
 interface Attached {
   pty: FakePty
   sock: FakeSock
-  worktreeId: string
+  /** What the bridge addressed the stream by — the driver's unit name. */
+  jobName: string
   argv: string[]
   size: { cols?: number; rows?: number }
   /** The in-pod command line, for non-'shell' targets. */
@@ -116,11 +115,13 @@ function attach(
 ): Attached {
   const sock = new FakeSock()
   attachPty(jobName, sock, query)
-  const dial = vi.mocked(dialPtyStream)
-  const [worktreeId, argv, size] = dial.mock.calls[dial.mock.calls.length - 1]
-  const pty = dial.mock.results[dial.mock.results.length - 1].value as unknown as FakePty
+  const [dialedJob, argv, size] = dialPtyMock.mock.calls[dialPtyMock.mock.calls.length - 1]
+  const pty = dialPtyMock.mock.results[dialPtyMock.mock.results.length - 1].value as unknown as FakePty
   const cmd = argv[2] ?? ''
-  return { pty, sock, worktreeId, argv, size, cmd, view: /-s (view-[0-9a-f]{8}) /.exec(cmd)?.[1] ?? '' }
+  return {
+    pty, sock, jobName: dialedJob, argv, size, cmd,
+    view: /-s (view-[0-9a-f]{8}) /.exec(cmd)?.[1] ?? '',
+  }
 }
 
 describe('attachPty', () => {
@@ -128,9 +129,11 @@ describe('attachPty', () => {
     const a = attach(job(1), { target: 'agent', cols: '150', rows: '40' })
     await flush()
 
-    // The relay dials the pod by the session id in the Job name, and the PTY
-    // is spawned at the browser's grid so no cold-start reflow is needed.
-    expect(a.worktreeId).toBe(sid(1))
+    // The bridge addresses the stream by the unit name it was handed and
+    // decodes nothing out of it — resolving that to a workspace is the
+    // driver's own naming scheme. The PTY is spawned at the browser's grid
+    // so no cold-start reflow is needed.
+    expect(a.jobName).toBe(job(1))
     expect(a.size).toEqual({ cols: 150, rows: 40 })
     expect(a.argv.slice(0, 2)).toEqual(['sh', '-c'])
     expect(a.view).toMatch(/^view-[0-9a-f]{8}$/)

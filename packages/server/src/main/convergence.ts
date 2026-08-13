@@ -1,169 +1,51 @@
-import {
-  ClusterCache,
-  anyWorktreeDirsExist,
-  armDeferredClusterBoot,
-  ensurePriorityClasses,
-  invalidateRelayAddr,
-  VCLUSTER_DELTA_SOURCES,
-  setActiveClusterCache,
-  type DeltaSource,
-} from '#runtime/k8s/substrate'
-import { MEDIATOR_TRIGGERS, type ReconcileTrigger } from '#runtime/contract'
-import {
-  ensureMainRegistry,
-  ensureNamespace,
-  gcOrphanProjectRegistries,
-} from '#runtime/k8s/cluster'
-import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#runtime/k8s/container'
+import { worktreeDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
-import {
-  PortDetectorManager,
-  restoreAllWorktreeForwarders,
-  stopAllWorktreeForwarders,
-} from '#runtime/k8s/forwarders'
-import { PROXY_CHANGE_SOURCES, ProxyEventStream, proxyClient } from '#runtime/k8s/egress'
+import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
-import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
-import { env } from '@yaac/shared/env'
+import type { DriverDeps, ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
- * A change one of the convergence watches saw — the sources that dirty a
- * reconcile pass. Mostly substrate-flavored because the informer is; the
- * three that are not cache deltas are the ones no informer can see:
+ * Convergence: everything push-fed, and the wiring between the driver that
+ * observes and the machinery that interprets.
  *
- * - `live-agents`: a worktree's set of running conversations changed, which
- *   only an in-pod event (an ACP handshake answering with a session id) can
- *   produce.
- * - `status-streams`: a worktree's driver connection went unhealthy, so the
- *   display path can no longer infer that its in-pod tmux is alive.
- * - `spawn-requests` / `proxy-reconnect`: reported by the egress proxy over
- *   its event stream — a queued in-worktree spawn, and the reattach that
- *   says the proxy pod may have been replaced.
+ * What is left here after the driver took its own attach is the part that
+ * is genuinely the composition root's — the two things a driver may not
+ * reach for itself. The status watchers are driver-neutral machinery
+ * (`#runtime/status`), and they need a worktree's recorded conversations,
+ * which is a row; so main constructs them, feeds them the workspace set the
+ * driver reports, and passes the db lookup down. Same for the forwarder
+ * restore: machinery, over a project-config reader that is domain's.
+ *
+ * Two of the pass's trigger sources are raised here rather than by the
+ * driver, and that is the point of them — a conversation appearing and a
+ * driver connection dropping are in-workspace facts no watch of any
+ * substrate can see.
  */
+
 export type ChangeSource = ReconcileTrigger
 
-/**
- * Every trigger this module can actually raise — assembled from the three
- * places the names are defined rather than restated here, so the list
- * cannot drift from them.
- *
- * It exists because `ReconcileTrigger` is deliberately open-ended: a
- * runtime declares sources the layers above have no word for, which also
- * means a step can declare a trigger nothing raises and still compile. The
- * cost of that is silent — the step simply never runs on its edge and waits
- * out the 60s resync — so the raise sites below are typed against this
- * list, and `reconciler.test.ts` asserts every trigger the assembled step
- * list declares is a member of it.
- */
-export const RAISABLE_TRIGGERS = [
-  // What the mediators name: the two translated substrate edges plus the
-  // two in-pod ones no watch of the substrate can see.
-  ...MEDIATOR_TRIGGERS,
-  // The runtime's own, travelling upward unchanged.
-  ...VCLUSTER_DELTA_SOURCES,
-  ...PROXY_CHANGE_SOURCES,
-] as const
-
-export type RaisableTrigger = typeof RAISABLE_TRIGGERS[number]
-
-/**
- * The substrate's own delta sources, said in the vocabulary a pass
- * schedules on. Only the two the mediators' steps name are translated: a
- * pod is a workspace and a Job is the unit holding one. The vcluster
- * sources pass through unchanged — they are the runtime's own, declared by
- * its own steps, and no layer above has a word for them.
- *
- * The return type is what makes the translation checkable: rename a
- * mediator trigger in the contract and these two literals stop compiling,
- * rather than producing an edge no step answers.
- */
-export function triggerFor(source: DeltaSource): RaisableTrigger {
-  if (source === 'worktree-pods') return 'workspaces'
-  if (source === 'worktree-jobs') return 'units'
-  return source
-}
-
-/**
- * Attaching the server to its substrate, and letting go of it again.
- *
- * Everything convergence-owning starts here — the informer caches, the
- * per-worktree status watchers, the port detector, the proxy event stream —
- * and stops here, in two stages: `stopConvergence` kills everything
- * push-fed before the reconcile loop drains (the watches hold apiserver
- * connections and a long-lived exec per worktree, and the event stream
- * holds a request open), and `releaseConvergence` lets go of what was
- * borrowed from
- * the host (port forwarders, the proxy control tunnel) after the drain,
- * because a reap tick still tears its worktree's forwards down.
- */
-let clusterCache: ClusterCache | null = null
 let statusWatchers: StatusWatcherManager | null = null
-let portDetector: PortDetectorManager | null = null
-let proxyEvents: ProxyEventStream | null = null
 const changeListeners: ((source: ChangeSource) => void)[] = []
 
-function fireChange(source: RaisableTrigger): void {
+function fireChange(source: ReconcileTrigger): void {
   for (const fn of changeListeners) fn(source)
 }
 
-async function attachNow(): Promise<void> {
-  // Kill any podman build/push a previous server left running before the
-  // first thing that could duplicate it (the registry bootstrap's own
-  // podman calls, then the reconciler's prewarm sweep). The graceful path
-  // already SIGTERMs them, so this only fires after a crash, a SIGKILL,
-  // or a host reboot — the cases builder-pod GC covers on the cluster
-  // side via SERVER_START_MS.
-  try {
-    await reapOrphanedPodmanProcs()
-  } catch (err) {
-    serverLog(`[server] orphan podman reap failed: ${String(err)}`)
-  }
-
-  // Best-effort cluster bootstrap: the yaac namespace and the in-cluster
-  // registry are cheap to ensure and needed by the first worktree.
-  // Failures are logged, not fatal — the server can serve project/auth
-  // RPCs without a cluster, and worktree creation surfaces its own
-  // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
-  // (unlike the fire-and-forget GCs) so a deferred boot's trigger —
-  // the first worktree create — sees the namespace exist before it
-  // applies anything into it.
-  await (async () => {
-    await ensureNamespace()
-    // Cluster-scoped and idempotent, like the RuntimeClasses `cluster
-    // setup` installs — re-ensured here because every pod yaac creates
-    // names one, and a cluster set up by an older yaac has neither.
-    //
-    // STRICTLY before the registry: its Deployment's pod names the infra
-    // class, and a pod naming a class the apiserver does not have is
-    // rejected — so on the very cluster this re-ensure exists for, the
-    // rollout would wait out its full timeout, throw, and abort this
-    // chain before ever installing the classes. `cluster setup` orders
-    // these the same way.
-    await ensurePriorityClasses()
-    // The registry stands itself up only when it isn't already answering,
-    // so a healthy install pays one HTTP ping here.
-    await ensureMainRegistry()
-  })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
-
-  // A server restart loses the in-memory forwarder registry while
-  // running containers keep their tmux `status-right` advertising
-  // ports that aren't actually forwarded anymore. Rebuild forwarders
-  // for every live worktree container before we process RPCs so the
-  // displayed port mapping matches reality.
-  try {
-    await restoreAllWorktreeForwarders((slug) => resolveProjectConfig(slug).then((c) => c ?? undefined))
-  } catch (err) {
-    serverLog(`[server] restore forwarders failed: ${String(err)}`)
-  }
-
-  // Push-fed worktree state: the informer caches keep the display path's
-  // pod cache current, drive the per-worktree status watchers (tmux
-  // control-mode streams feeding the status store), and feed the
-  // reconciler's delta triggers. Pod deltas fire a change notification, so
-  // snapshots push the moment state changes.
-  const cache = new ClusterCache()
+/**
+ * Attach: start the driver, and wire what it reports into the machinery.
+ *
+ * `onAttached` fires once really attached, which is not necessarily before
+ * this resolves — a driver may defer attaching until first use (the k8s one
+ * does, inside a nested yaac, so a born-at-zero vcluster stays asleep). The
+ * reconcile loop starts from that callback rather than from the return, so
+ * a sleeping substrate is not woken by the loop's first pass.
+ */
+export async function attachConvergence(opts: {
+  onAttached: () => void
+  sshIdentities?: DriverDeps['sshIdentities']
+}): Promise<void> {
   // The ACP driver needs a worktree's already-recorded conversations to
   // re-address a live agent (and to `session/load` after a restart), and
   // which conversation sits on a handle is a row.
@@ -171,129 +53,65 @@ async function attachNow(): Promise<void> {
     recordedSessions: (session) =>
       recordedConversationHandles(session.slug, session.worktreeId),
   })
-  // Detected-listener streams (streamd `ports` pushes) feeding the
-  // snapshot's unforwardedPorts; a set change pushes a fresh snapshot.
-  const detector = new PortDetectorManager(() => notifyWorktreeListChanged())
-  clusterCache = cache
   statusWatchers = manager
-  portDetector = detector
-  cache.onDelta((source) => {
-    if (source === 'worktree-pods') {
-      manager.sync(cache.worktreePods())
-      detector.sync(cache.worktreePods())
-      // The cache is itself a snapshot input (pod phase reaches clients
-      // without any row write), so its delta handler is its mutation site.
-      notifyWorktreeListChanged()
-    }
-    fireChange(triggerFor(source))
-  })
+
   // A conversation appearing, going, or learning its id is a change the
-  // reconcile steps owe work on, and no watch above can see it: for `acp`
-  // the id comes from the in-pod handshake, well after the pod deltas
-  // that created the window have gone quiet. Without this the worktree's
-  // conversation rows — and so the webapp's chat pane — wait for the 60s
-  // resync.
+  // reconcile steps owe work on, and no watch below can see it: for `acp`
+  // the id comes from the in-pod handshake, well after the substrate
+  // deltas that created the window have gone quiet. Without this the
+  // worktree's conversation rows — and so the webapp's chat pane — wait
+  // for the 60s resync.
   onLiveAgentsChanged(() => fireChange('live-agents'))
   // Losing a driver connection retires the "stream healthy ⇒ tmux alive"
   // shortcut for that worktree, which is precisely when the stale reaper's
-  // own probes are worth running. In-pod tmux death is not a substrate
-  // event, so without this the reaper would have nothing to wake it.
+  // own probes are worth running. In-workspace tmux death is not a
+  // substrate event, so without this the reaper would have nothing to
+  // wake it.
   onStreamHealthLost(() => fireChange('status-streams'))
-  // The proxy's change stream: blocked hosts and git-auth failures (snapshot
-  // inputs it notifies for itself) plus the spawn queue and the reattach
-  // edge, which dirty a pass.
-  const events = new ProxyEventStream(fireChange)
-  proxyEvents = events
-  cache.start()
-  events.start()
-  setActiveClusterCache(cache)
 
-  // Remove per-project push registries whose project dir is gone —
-  // catches `project remove` runs that raced an unavailable cluster.
-  void gcOrphanProjectRegistries()
-    .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
+  await worktreeDriver().start({
+    trigger: fireChange,
+    workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
+    // A server restart loses the in-memory forwarder registry while
+    // running workspaces keep their tmux `status-right` advertising ports
+    // that aren't actually forwarded anymore. Rebuild them before anything
+    // watches, so the displayed port mapping matches reality.
+    recover: async () => {
+      try {
+        await restoreAllWorkspaceForwarders(
+          (slug: string) => resolveProjectConfig(slug).then((c) => c ?? undefined),
+        )
+      } catch (err) {
+        serverLog(`[server] restore forwarders failed: ${String(err)}`)
+      }
+    },
+    attached: opts.onAttached,
+  }, {
+    ...(opts.sshIdentities !== undefined ? { sshIdentities: opts.sshIdentities } : {}),
+  })
 }
 
 /**
- * Attach to the substrate: informer caches, per-worktree status watchers,
- * the port detector, the proxy event stream, the cluster bootstrap, and
- * the startup GCs.
- *
- * `onAttached` fires once really attached, which is not necessarily before
- * this resolves — a nested server defers every cluster touch until first
- * use so its born-at-zero vcluster stays asleep. The reconcile loop starts
- * from that callback rather than from the return, so a sleeping vcluster
- * is not woken by the loop's first pass.
- */
-export async function attachConvergence(opts: { onAttached: () => void }): Promise<void> {
-  // A NESTED server's cluster is its worktree's born-at-zero vcluster
-  // (docs/vcluster-scale-to-zero.md) — attaching at boot is exactly what
-  // would wake it seconds after the create-time sleep, since `yaac
-  // server start` runs from the worktree's initCommands. With no
-  // worktrees of its own yet, defer every cluster touch until the first
-  // real use (worktree create awaits it; any kubectl call kicks it). A
-  // RESTARTING nested server with live worktrees attaches eagerly: those
-  // worktrees need the caches and reconciler, and their vcluster — this
-  // vcluster — is already awake.
-  //
-  // `onAttached` fires with the attach, not with this call: the
-  // reconcile loop is convergence too, and starting it against a
-  // sleeping vcluster is the same mistake as starting the caches.
-  if (env.nested && !(await anyWorktreeDirsExist())) {
-    armDeferredClusterBoot(async () => {
-      serverLog('[server] nested: first cluster use — attaching (caches, reconciler)')
-      await attachNow()
-      opts.onAttached()
-    })
-    serverLog('[server] nested: cluster attach deferred until first use (vcluster stays asleep)')
-    return
-  }
-  await attachNow()
-  opts.onAttached()
-}
-
-/**
- * Stop everything push-fed, synchronously: informer watches, status
- * watchers, the port detector, the proxy event stream, and any host image
- * build in flight.
+ * Stop everything push-fed, synchronously: the driver's watches and
+ * streams, and the per-worktree status watchers over them.
  *
  * Separate from `releaseConvergence` because the reconcile loop drains
  * between the two — the watches must be down before the drain, and the
  * forwarders must survive it (a reap tick still tears its worktree down).
  */
 export function stopConvergence(): void {
-  // The informer watches hold open apiserver connections, and every
-  // per-worktree control-mode exec is a long-lived kubectl process that
-  // would otherwise outlive the server (orphaned to PID 1).
-  setActiveClusterCache(null)
-  clusterCache?.stop()
+  // Before the driver's own stop: each watcher holds a long-lived stream
+  // that the driver's transport is underneath.
   statusWatchers?.stopAll()
-  portDetector?.stopAll()
-  // The held-open /events request keeps its exec relay (and the kubectl
-  // child behind it) alive, exactly like the watches above.
-  proxyEvents?.stop()
-  proxyEvents = null
-  // Abort in-flight host builds/pushes. Podman commits an image tag only
-  // when the build finishes, so an orphaned `podman build` is invisible
-  // to the next server's exists check — it would start a second build of
-  // the same tag and the two would fight over the layer cache.
-  killTrackedPodmanProcs()
+  statusWatchers = null
+  worktreeDriver().stop()
 }
 
-/** Release what was borrowed from the host: port forwarders, the proxy
- *  control tunnel, the relay's port-forward child. */
+/** Release what was borrowed from the host — the driver's forwarders and
+ *  control tunnel. After the reconcile drain, because a reap tick in that
+ *  drain still tears its worktree's forwards down. */
 export function releaseConvergence(): void {
-  // Every active port-forwarder owns a listener server and a set of live
-  // relay streams; without this the listeners survive the server
-  // (orphaned to PID 1) and the next server stacks new ones on top via
-  // restoreAllWorktreeForwarders. After the reconcile drain, because a
-  // reap tick still tears its worktree's forwards down.
-  stopAllWorktreeForwarders()
-  // Same for the proxy control tunnel and the stream relay's
-  // `kubectl port-forward` child — the deployed proxy itself stays up
-  // for the next server to adopt.
-  proxyClient.disconnect()
-  invalidateRelayAddr()
+  worktreeDriver().release()
 }
 
 /** Subscribe to change notifications from the convergence watches. */

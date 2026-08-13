@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/domain/git'
-import { listWorktreePods, isPrewarmed } from '@yaac/server/runtime/k8s/substrate/pods'
+import { listWorktreePods, isPrewarmed } from '@yaac/server/drivers/k8s/substrate/pods'
 import { listActiveWorktrees } from '@yaac/server/domain/worktrees/list'
 import { listProjects } from '@yaac/server/domain/projects/list'
 import { isTmuxSessionAlive } from '@yaac/server/runtime/status/liveness'
@@ -139,7 +139,9 @@ describe('yaac prewarmed sessions', () => {
     const spare = await waitFor(async () => {
       const pods = await listWorktreePods('repo-demo')
       const s = pods.find((p) => isPrewarmed(p) && p.running)
-      if (s && await isTmuxSessionAlive('repo-demo', s.worktreeId)) return s
+      if (s && await isTmuxSessionAlive({
+        projectSlug: 'repo-demo', workspaceId: s.worktreeId, jobName: s.jobName,
+      })) return s
       return undefined
     }, 150_000)
     const spareJob = spare.jobName

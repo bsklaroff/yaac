@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installRealWorktreeRuntime } from '@yaac/test-utils/real-runtime'
+import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
+vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -12,8 +12,8 @@ vi.mock('#runtime/k8s/substrate/pods', async (importOriginal) => {
   }
 })
 
-import { listWorktreePods } from '#runtime/k8s/substrate/pods'
-import type * as podsModule from '#runtime/k8s/substrate/pods'
+import { listWorktreePods } from '#drivers/k8s/substrate/pods'
+import type * as podsModule from '#drivers/k8s/substrate/pods'
 // The listing is a join: the rows are the server's, and which of them still
 // have a runtime — plus every transcript read behind a prompt or a
 // last-activity stamp — is read off disk. Its real halves stand behind the
@@ -79,7 +79,7 @@ describe('listStoppedWorktrees', () => {
   let tmpDir: string
 
   beforeEach(async () => {
-    installRealWorktreeRuntime()
+    installRealWorktreeDriver()
     tmpDir = await createTempDataDir()
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])

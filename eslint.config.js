@@ -27,7 +27,7 @@ const UNTIERED_DATA_DIR = [
 }))
 
 // Sealed folders expose an index.ts barrel (mapped to the folder's own
-// specifier — `#domain/<name>`, `#http`, `#runtime/k8s/images` — in the package's
+// specifier — `#domain/<name>`, `#http`, `#drivers/k8s/images` — in the package's
 // imports field); everything else in the directory is internal.
 // src must enter through the barrel — add a folder to the alternation below
 // once it has one. Tests are deliberately unrestricted: they still reach
@@ -39,8 +39,8 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|status|terminals|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|http)/.',
-  message: 'This folder is sealed; import its barrel (e.g. #runtime/k8s/images).',
+  regex: '^#(domain/(auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees)|http)/.',
+  message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
 // The database drivers themselves, banned everywhere but db. The handle
@@ -61,25 +61,33 @@ const NO_DATABASE_DIRECT = {
 // importable from every layer: both are zero-dependency outbound channels,
 // and a change notification is not a dependency on the hub that consumes
 // it.
-// The mediators name no substrate: they reach the runtime through
-// `#runtime/driver` (the registered driver) and `#runtime/contract` (its
-// vocabulary). `#runtime/{agents,status,terminals}` stay open: those are
-// runtime vocabulary, not substrate verbs. The api layer is NOT on this
-// rule yet — its substrate use is a different shape (image-build rows, the
-// proxy client, port forwards) and wants its own pass over what belongs on
-// the contract.
+// The mediators name no driver: they reach the runtime through
+// `#drivers/driver` (the registered instance) and `#drivers/contract` (its
+// vocabulary). `#runtime/*` stays open to them: that is driver-neutral
+// machinery, not substrate verbs. The api layer is
+// NOT on this rule yet — its substrate use is a different shape
+// (image-build rows, the proxy client, port forwards) and wants its own
+// pass over what belongs on the contract.
 //
-// Every domain file is on it now — no mediator NAMES a substrate barrel,
-// and none can be born naming one. What that does not yet give is a
-// cluster-free module graph for every mediator: `#runtime/agents` binds
-// the stream relay directly (podExec, dialCtrlStream), so a mediator that
-// imports it still loads the cluster client transitively. That edge is
-// deliberate — those are runtime vocabulary, and a second driver is what
-// would justify putting the dial on the contract — so the test-time win
-// lands only for mediators that need no agent vocabulary.
-const NO_SUBSTRATE_ABOVE_RUNTIME = {
-  regex: '^#runtime/k8s(/|$)',
-  message: 'Reach the runtime through #runtime/driver and #runtime/contract, never a substrate barrel (docs/layered-server.md).',
+// The machinery is on it too, which is what makes the mediators' module
+// graph genuinely cluster-free: `#runtime/agents` used to bind the stream
+// relay directly (podExec, dialCtrlStream), so any mediator importing it
+// still loaded the cluster client transitively. The transport is on the
+// contract now (exec, dialCtrl, dialPty, reviveStatusStream), so nothing
+// above a driver folder reaches one.
+const NO_DRIVER_ABOVE_CONTRACT = {
+  regex: '^#drivers/k8s(/|$)',
+  message: 'Reach the runtime through #drivers/driver and #drivers/contract, never a concrete driver (docs/layered-server.md).',
+}
+
+// The driver's ONE door. `#drivers/k8s` is the assembly barrel and only the
+// composition root names it; everything past it — substrate, cluster,
+// egress, images — is internal to the folder and importable only from
+// inside `drivers/`. Distinct from SEALED_FOLDERS, which stops a caller
+// reaching past ONE of those barrels: this stops it naming them at all.
+const NO_DRIVER_INTERNALS = {
+  regex: '^#drivers/k8s/.',
+  message: 'A driver has one door: #drivers/k8s. Its folders are internal (docs/layered-server.md).',
 }
 
 const NO_API_OR_MAIN = {
@@ -248,9 +256,15 @@ export default tseslint.config(
   },
 
 
-  // The runtime layer: how agents run (docs/layered-server.md). It
-  // never reads rows — an observed fact leaves as a `WorktreeEvent` from a
-  // mediator above it — and never imports the mediators themselves.
+  // The runtime layer: the driver-neutral machinery — how agent sessions
+  // are conducted, observed and attached to, over WHICHEVER driver is
+  // registered (docs/layered-server.md). It reaches the substrate the same
+  // way a mediator does, through `#drivers/contract` (its vocabulary,
+  // including the stream types and the exec verdict) and `#drivers/driver`
+  // (the registered instance); that is what lets a second driver inherit
+  // the whole of it. It never reads rows — an observed fact leaves as a
+  // `WorktreeEvent` from a mediator above it — and never imports the
+  // mediators themselves.
   {
     files: ['packages/server/src/runtime/**/*.ts'],
     rules: {
@@ -263,10 +277,111 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
+            NO_DRIVER_ABOVE_CONTRACT,
+            NO_DRIVER_INTERNALS,
             {
               regex: '^(#db|#domain)(/|$)',
               message: 'The runtime layer must not import db or the mediators above it (docs/layered-server.md).',
             },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The drivers: one folder per substrate, each implementing the contract.
+  // Everything a driver may name is BELOW it — its own contract, the
+  // dependency-free lib, and the two arrow-exempt outbound channels. The
+  // machinery that runs over it (`#runtime/*`) is deliberately out of
+  // reach: state a driver step needs from it is handed down through
+  // `PassContext`, never imported up, which is what keeps the arrow one-way
+  // and lets a second driver be written without reading the first.
+  {
+    files: ['packages/server/src/drivers/k8s/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_API_OR_MAIN,
+            {
+              regex: '^(#db|#domain|#runtime)(/|$)',
+              message: 'A driver names nothing above its contract: no db, no mediators, no machinery (docs/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The seam itself: the contract and the registry that holds one
+  // implementation of it. These two files import NOTHING but shared types
+  // — that is what makes the seam a seam wherever it sits, and what a
+  // reader can rely on: a contract that can import nothing cannot quietly
+  // grow a dependency on the substrate it exists to hide, and a mediator
+  // reaching the runtime through it pulls no cluster code into its module
+  // graph.
+  {
+    files: [
+      'packages/server/src/drivers/contract.ts',
+      'packages/server/src/drivers/driver.ts',
+    ],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            {
+              regex: '^(#|@yaac/(?!shared))',
+              message: 'The driver seam imports nothing but @yaac/shared and node builtins (docs/layered-server.md).',
+            },
+            // Third-party too, and this is the one that matters most: the
+            // whole guarantee is that the contract cannot grow a dependency
+            // on the substrate it exists to hide, and `@kubernetes/client-node`
+            // is a bare specifier the pattern above does not see. Same shape
+            // as the lib zone's.
+            {
+              regex: '^(?!node:|@yaac/shared)[@a-zA-Z]',
+              message: 'The driver seam imports nothing but @yaac/shared and node builtins (docs/layered-server.md).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // The composition root. It is the ONE place that knows which driver this
+  // process runs — but it names the assembly and nothing under it: a
+  // driver's folders are its own. (The api layer is not on this rule yet;
+  // its remaining deep imports are display surfaces — the image-build feed,
+  // the proxy client, port dismissal — which want their own pass over what
+  // belongs on the contract. See docs/plans/runtime-contract-completion.md.)
+  {
+    files: ['packages/server/src/main/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_DRIVER_INTERNALS,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
@@ -293,7 +408,7 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
-            NO_SUBSTRATE_ABOVE_RUNTIME,
+            NO_DRIVER_ABOVE_CONTRACT,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
@@ -416,8 +531,8 @@ export default tseslint.config(
 
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
   // @yaac/shared, and the four sanctioned host-side modules — exec
-  // (runtime/k8s/substrate/exec, attaches/streams via `kubectl exec -it`) and cluster
-  // check/setup/delete (runtime/k8s/cluster/*, run before any server
+  // (drivers/k8s/substrate/exec, attaches/streams via `kubectl exec -it`) and cluster
+  // check/setup/delete (drivers/k8s/cluster/*, run before any server
   // exists). The negation chain re-includes each parent dir (gitignore
   // semantics: a leaf can't be un-ignored while its parent is).
   {
@@ -434,16 +549,16 @@ export default tseslint.config(
                 '@yaac/*',
                 '!@yaac/shared', '!@yaac/shared/*',
                 '!@yaac/server', '@yaac/server/*',
-                '!@yaac/server/runtime', '@yaac/server/runtime/*',
-                '!@yaac/server/runtime/k8s', '@yaac/server/runtime/k8s/*',
-                '!@yaac/server/runtime/k8s/substrate', '@yaac/server/runtime/k8s/substrate/*',
-                '!@yaac/server/runtime/k8s/substrate/exec',
-                '!@yaac/server/runtime/k8s/cluster', '@yaac/server/runtime/k8s/cluster/*',
-                '!@yaac/server/runtime/k8s/cluster/check',
-                '!@yaac/server/runtime/k8s/cluster/setup',
-                '!@yaac/server/runtime/k8s/cluster/delete',
+                '!@yaac/server/drivers', '@yaac/server/drivers/*',
+                '!@yaac/server/drivers/k8s', '@yaac/server/drivers/k8s/*',
+                '!@yaac/server/drivers/k8s/substrate', '@yaac/server/drivers/k8s/substrate/*',
+                '!@yaac/server/drivers/k8s/substrate/exec',
+                '!@yaac/server/drivers/k8s/cluster', '@yaac/server/drivers/k8s/cluster/*',
+                '!@yaac/server/drivers/k8s/cluster/check',
+                '!@yaac/server/drivers/k8s/cluster/setup',
+                '!@yaac/server/drivers/k8s/cluster/delete',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/runtime/k8s/{substrate/exec,cluster/{check,setup,delete}}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/k8s/{substrate/exec,cluster/{check,setup,delete}}.',
             },
           ],
         },

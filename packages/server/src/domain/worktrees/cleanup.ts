@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { worktreeRuntime } from '#runtime/driver'
+import { worktreeDriver } from '#drivers/driver'
 import { inFlightWorktreeIds } from './provisioning'
 import {
   applyWorktreeEvent,
@@ -29,7 +29,7 @@ import {
 import { deleteSessionStartsLog } from './session-starts'
 import { shellQuote } from '#lib/shell'
 import type { WorktreeDeathCause } from '@yaac/shared/types'
-import type { TeardownTarget } from '#runtime/contract'
+import type { TeardownTarget } from '#drivers/contract'
 import { serverLog } from '#log'
 
 /**
@@ -164,7 +164,7 @@ export async function cleanupWorktree(params: {
   forgetLiveness(projectSlug, worktreeId)
   evictWorktreeStatus(projectSlug, worktreeId)
 
-  const runtimeGone = await worktreeRuntime().destroy(teardownTarget(params))
+  const runtimeGone = await worktreeDriver().destroy(teardownTarget(params))
 
   // Every removal below is gated on the verdict, for the same reason the
   // CHECKOUT removal callers chain off it is: these are mount sources — the
@@ -250,7 +250,7 @@ export async function cleanupWorktreeDetached(params: {
   forgetLiveness(projectSlug, worktreeId)
   evictWorktreeStatus(projectSlug, worktreeId)
 
-  const runtime = worktreeRuntime()
+  const runtime = worktreeDriver()
   const target = teardownTarget(params)
 
   // The half of a teardown that must happen in-process: host port forwards
@@ -420,7 +420,7 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     // stray, and must not have its dirs swept. Both reads reject rather
     // than resolving empty, so "I could not see" never reads as "nothing is
     // there" — which is what the catch below is for.
-    const view = worktreeRuntime().snapshot()
+    const view = worktreeDriver().snapshot()
     const [workspaces, strays] = await Promise.all([view.workspaces(), view.strayUnits()])
     liveWorktreeIds = new Set(
       [...workspaces.map((w) => w.workspaceId), ...strays.map((s) => s.workspaceId)]

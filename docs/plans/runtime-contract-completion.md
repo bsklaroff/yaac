@@ -1,6 +1,6 @@
 # Completing the runtime contract
 
-`runtime/contract.ts` used to promise a seam it did not deliver. Stages 1–7
+`drivers/contract.ts` used to promise a seam it did not deliver. Stages 1–7
 have delivered it for the WORKTREE lifecycle: observation, the pass view,
 scheduling, every mutation, the launch, the substrate's own home, and the
 dissolution of `store`. What remains is stage 8: flip the api zone to
@@ -8,7 +8,7 @@ domain-and-db-only.
 
 This plan's goal was that domain and api speak only substrate-neutral
 runtime vocabulary, with every k8s verb, label, and type under
-`runtime/k8s`. Domain is there, and so is every k8s primitive, and the
+`drivers/k8s`. Domain is there, and so is every k8s primitive, and the
 layer diagram is down to three strata with no sanctioned sideways edges:
 everything below domain is either rows (`db`) or a contract-fronted driver
 (`runtime`), over the dependency-free `src/lib`. `platform` and `store` are
@@ -19,7 +19,7 @@ Two payoffs justify the work even if a second driver never ships:
 
 - **Domain unit tests stop paying for the cluster.** Importing
   `@kubernetes/client-node` costs ~2.8s per test file; every domain test
-  pays it today because domain imports `#runtime/k8s/substrate`. Once domain
+  pays it today because domain imports `#drivers/k8s/substrate`. Once domain
   reaches the substrate only through a registered driver, its tests run
   against a fake and never load the client or its stub.
 - **Policy and mechanics separate cleanly.** Domain keeps the decisions
@@ -32,15 +32,15 @@ Two payoffs justify the work even if a second driver never ships:
 
 Three rules, enforced by eslint zones once the stages land:
 
-1. `#runtime/k8s/**` is importable only from `runtime/**` and `main/**`
+1. `#drivers/k8s/**` is importable only from `runtime/**` and `main/**`
    (main is the composition root and may know which driver it composes).
-2. Domain reaches the substrate only through `#runtime/contract` (types)
-   and `#runtime/driver` (the accessor). Its imports of `#runtime/status`
+2. Domain reaches the substrate only through `#drivers/contract` (types)
+   and `#drivers/driver` (the accessor). Its imports of `#runtime/status`
    and `#runtime/agents` are unaffected — those are runtime vocabulary,
    not k8s vocabulary. Api is held to a stricter rule than this one:
    stage 8 bans every value import below domain and db, driver
-   included; only type imports of `#runtime/contract` remain legal there.
-3. No type exported from `#runtime/k8s/**` appears in a domain or api
+   included; only type imports of `#drivers/contract` remain legal there.
+3. No type exported from `#drivers/k8s/**` appears in a domain or api
    signature. `PodInfo`, `PodMount`, `TickSnapshot` and `DeltaSource`
    disappear above the runtime boundary.
 
@@ -50,7 +50,7 @@ Accumulated across the stages, `contract.ts` ends with (signatures settled
 per stage; this is the shape):
 
 ```ts
-interface WorktreeRuntime {
+interface WorktreeDriver {
   // Observation (stage 1)
   observe(projectFilter?: string): Promise<RuntimeReport>
   find(idOrName: string, opts?: { preferCache?: boolean }):
@@ -90,28 +90,28 @@ there.
 
 ### The accessor
 
-`packages/server/src/runtime/driver.ts` (`#runtime/driver`, resolved by the
+`packages/server/src/drivers/driver.ts` (`#drivers/driver`, resolved by the
 existing `#*` catch-all in the imports map — no map change needed) holds the
-registered driver behind `setWorktreeRuntime()` / `worktreeRuntime()`, the
+registered driver behind `setWorktreeDriver()` / `worktreeDriver()`, the
 same module-singleton pattern as `setActiveClusterCache`. It imports only
 `./contract`, so a domain file that imports it pulls no k8s code.
 `main/server-run` registers the k8s driver at boot; unit tests register a
 fake. This, not the interface, is what buys the test-time win: with direct
-`#runtime/k8s/worktrees` imports, domain tests would still transitively
+`#drivers/k8s/worktrees` imports, domain tests would still transitively
 load the k8s client.
 
 The k8s driver object assembles the interface from the sealed folders'
-barrels (`worktrees` for observation, claim and teardown, `#runtime/k8s/substrate`
+barrels (`worktrees` for observation, claim and teardown, `#drivers/k8s/substrate`
 for exec/waits, `cluster`/`egress`/`images` for the rest). It is
 deliberately thin: every method is a one-line delegation, so it needs no
 unit tests of its own — the functions it wraps keep theirs, and e2e covers
-the wiring. It lives in `main/`, not `runtime/k8s/` (see "What has
+the wiring. It lives in `main/`, not `drivers/k8s/` (see "What has
 landed").
 
 ### Enforcement is a ratchet, not a flip
 
 Stage 1 added the endgame eslint pattern to the domain zone — restricting
-`#runtime/k8s/substrate` and `#runtime/k8s` — together with a holdout override: a
+`#drivers/k8s/substrate` and `#drivers/k8s` — together with a holdout override: a
 later flat-config object whose `files` list named the not-yet-migrated
 domain files and re-declared the rule without that pattern. Each stage
 deleted its files from the list; stage 5 emptied it and deleted the
@@ -120,13 +120,13 @@ born restricted. What is left for stage 8 is the api zone.
 
 ### The test fake
 
-`packages/test-utils` gains `fake-runtime.ts`: a `WorktreeRuntime` built
+`packages/test-utils` gains `fake-driver.ts`: a `WorktreeDriver` built
 from overridable defaults (empty lists, resolved voids, a fake
-`RuntimeSnapshot`), installed via `setWorktreeRuntime` and torn down by an
+`RuntimeSnapshot`), installed via `setWorktreeDriver` and torn down by an
 `afterEach` the module arms on import — so a file that installs one cannot
 leak it by forgetting a hook. Domain tests that used to `vi.mock` substrate
 modules or lean on the k8s stub switch to
-`installFakeWorktreeRuntime({ list: async () => [handleFixture(...)] })`.
+`installFakeWorktreeDriver({ list: async () => [handleFixture(...)] })`.
 `test/domain/worktrees/resolve.test.ts` and `restart.test.ts` already build
 `RuntimeHandle` fixtures — those fixtures become the shared
 `handleFixture()` helper.
@@ -138,29 +138,29 @@ modules or lean on the k8s stub switch to
 Stages 1–6 are in. The contract, the accessor, the boundary mapper, the
 pass view, every mutation verb and the launch are real; the mediators'
 observation, snapshot, scheduling, teardown, claim and spawn-drain paths all
-go through them, and every k8s primitive now lives under `runtime/k8s`.
+go through them, and every k8s primitive now lives under `drivers/k8s`.
 Lint, `pnpm modularity --runtime-only` and the `unit:server` suite are
 green. The sections below record each stage's shape where it differs from
 the sketch above — the reasons are the part worth keeping.
 
-**The pieces, and where they live.** `runtime/contract.ts` holds the
-`WorktreeRuntime` interface and its vocabulary; `runtime/driver.ts`
-(`#runtime/driver`) holds the registered instance behind
-`setWorktreeRuntime` / `worktreeRuntime`. Both import only shared types, so
+**The pieces, and where they live.** `drivers/contract.ts` holds the
+`WorktreeDriver` interface and its vocabulary; `runtime/driver.ts`
+(`#drivers/driver`) holds the registered instance behind
+`setWorktreeDriver` / `worktreeDriver`. Both import only shared types, so
 they are a sink in the module graph and a mediator that reaches the runtime
 through them pulls no cluster code in.
 
 Two placements differ from what this plan first proposed, both forced by
 the module graph:
 
-- **The driver assembly is `main/runtime-k8s.ts`, not
-  `runtime/k8s/runtime.ts`.** Assembling it means importing every sealed
-  k8s folder, and those folders import `#runtime/contract` — so putting the
+- **The driver assembly is `drivers/k8s/index.ts`, not
+  `drivers/k8s/runtime.ts`.** Assembling it means importing every sealed
+  k8s folder, and those folders import `#drivers/contract` — so putting the
   assembly in the same module bucket as the contract closes a cycle
   (`pnpm modularity` catches it). `main` is the composition root, imports
   nothing back, and is where the choice of runtime belongs anyway. Its
-  contributed step list is `main/runtime-k8s-steps.ts` beside it.
-- **`runtime/k8s/view` is a new sealed folder** holding
+  contributed step list is `drivers/k8s/steps.ts` beside it.
+- **`drivers/k8s/view` is a new sealed folder** holding
   `runtimeHandleFromPod` (the one place a pod becomes a `RuntimeHandle`,
   death-cause derivation included) and the pass snapshot. It is separate
   from `worktrees` because `cluster` and `egress` need the pass view too,
@@ -193,9 +193,9 @@ the module graph:
   own sources (the vcluster informers) riding an open tail that only its
   own steps name. `main/convergence` translates at the fan-out.
 
-**Testing.** `@yaac/test-utils/fake-runtime` gives `installFakeWorktreeRuntime`,
+**Testing.** `@yaac/test-utils/fake-driver` gives `installFakeWorktreeDriver`,
 `handleFixture`, `snapshotFixture` and `passViewFixture`;
-`@yaac/test-utils/real-runtime` gives `installRealWorktreeRuntime` for tests
+`@yaac/test-utils/real-runtime` gives `installRealWorktreeDriver` for tests
 that mean to exercise a mediator and the driver together with only the
 process boundary mocked. Importing `fake-runtime` arms an `afterEach` that
 forgets whatever was installed, so no test file has to remember one. They are separate modules on purpose — importing
@@ -228,7 +228,7 @@ list. Where the shapes differ from the sketch above, the reason:
   internally, so the ordering has one home either way.
 - **`resolveSpawns` takes the batch**, matching the single POST the proxy's
   answer endpoint accepts.
-- **`blockedHosts` and `virtualClusterStatus` are on `WorktreeRuntime`**,
+- **`blockedHosts` and `virtualClusterStatus` are on `WorktreeDriver`**,
   not a second display seam. The contract already carries `blockedHosts`
   per workspace in its report and `changes()` is already a pure display
   read, so a second accessor and a second fake would have bought nothing
@@ -241,14 +241,14 @@ proxy's wire shapes, and the runtime that drains the queue and the mediator
 that answers each request both name them. `VclusterStatus` is
 `VirtualClusterStatus` in the contract: the config key is `virtualCluster`
 and the shape says nothing about how a driver realizes one, so
-`WorktreeDetail` no longer names a `#runtime/k8s` type (rule 3). Both are
+`WorktreeDetail` no longer names a `#drivers/k8s` type (rule 3). Both are
 type-level moves; no wire changed.
 
-**Where the driver half lives.** `runtime/k8s/worktrees/teardown.ts`
+**Where the driver half lives.** `drivers/k8s/worktrees/teardown.ts`
 (destroy, deregister, salvage, the detached command, the project sweep) and
-`runtime/k8s/worktrees/claim.ts`, both inside the already-sealed folder —
+`drivers/k8s/worktrees/claim.ts`, both inside the already-sealed folder —
 no new barrel, no `imports` entry. Teardown adds one folder edge,
-`worktrees → cluster`; it is safe because nothing inside `runtime/k8s`
+`worktrees → cluster`; it is safe because nothing inside `drivers/k8s`
 imports `worktrees` (only `main` does), so an outbound edge from it cannot
 close a cycle. `pnpm modularity --runtime-only` confirms it: the metrics are
 byte-identical to before the change. `registerWorkspace` and
@@ -290,11 +290,11 @@ project and tool, and `runProvisioned` still owns dropping it. Safety is now
 a property of restarting rather than of which caller registered first.
 
 **Testing.** The driver half is tested where it lives —
-`test/runtime/k8s/worktrees/{teardown,claim}.test.ts` and the egress
+`test/drivers/k8s/worktrees/{teardown,claim}.test.ts` and the egress
 files — mocked at kubectl, the proxy client and the forwarder registry, and
 carrying the kubectl-argv assertions that used to sit in `cleanup.test.ts`.
-The migrated domain tests dropped their `#runtime/k8s/substrate` mocks for
-`installFakeWorktreeRuntime` and keep asserting the domain sequencing:
+The migrated domain tests dropped their `#drivers/k8s/substrate` mocks for
+`installFakeWorktreeDriver` and keep asserting the domain sequencing:
 mark-before-evict, the verdict gates, the composed script, and that the
 detached spawn waits for the salvage. `prewarm.test.ts` runs in ~50ms now
 that it loads no cluster client.
@@ -313,7 +313,7 @@ stages 4–5; it wants its own pass over what belongs on the contract (an
 image-build feed, a datapath surface) rather than being forced through the
 worktree verbs. Stage 8 makes that decision and flips the zone.
 
-**Also moved:** `worktreeForkFallback` left `runtime/k8s/worktrees/changes`
+**Also moved:** `worktreeForkFallback` left `drivers/k8s/worktrees/changes`
 for `domain/worktrees/fork-branch.ts`. It reads the checkout's own git
 config host-side and never touched the substrate; its tests now mock
 `#domain/git`, the real process boundary.
@@ -323,7 +323,7 @@ config host-side and never touched the substrate; its tests now mock
 ### Stage 5 is in: the launch
 
 `create.ts` no longer names a substrate. It went 1598 → 1349 lines, with
-the substrate half now `runtime/k8s/worktrees/launch.ts`, and keeps what
+the substrate half now `drivers/k8s/worktrees/launch.ts`, and keeps what
 it always should have:
 the checkout leg and its failure race, config resolution, image and env
 DECISIONS, allowed-host resolution, init windows, db writes, and the
@@ -347,7 +347,7 @@ behavior that folding it into `launch` would have changed:
 - **`ensureBuildEngine`** preserves the fail-before-any-row podman check.
 - **`prepareImage`** collapses `ensureImage` + `pushImageShared`, which
   domain always called back to back. It lives in
-  `runtime/k8s/images/workspace-image.ts`, a SIBLING of build-coordinator
+  `drivers/k8s/images/workspace-image.ts`, a SIBLING of build-coordinator
   rather than more surface on it, so the CLI test's partial mock of that
   module still intercepts (ESM intra-module calls bypass `vi.mock`).
   `adoptWorktreeForwarders` sits in its own `forwarders/adopt.ts` for the
@@ -386,7 +386,7 @@ layer may name, enforced by an eslint zone that lets it import nothing but
 `@yaac/shared` and node builtins. `buildStatusRight` moved to
 `#runtime/agents` beside the other tmux vocabulary.
 
-**Testing.** `test/runtime/k8s/worktrees/launch.test.ts` covers both verbs
+**Testing.** `test/drivers/k8s/worktrees/launch.test.ts` covers both verbs
 at the kubectl boundary (labels including the acp/prewarm conditionals,
 driver-injected env, the SSH tunnel wiring, priority-classes-before-apply,
 the nested/vcluster branches, and that a vcluster found already running is
@@ -394,7 +394,7 @@ never re-slept); `ssh-transport` and `workspace-image` have their own.
 `teardown.test.ts` gained a `unitOnly` describe. The CLI's
 `worktree-create.test.ts` — the real create coverage — keeps every
 assertion and changed only its seams: it installs the REAL k8s launch
-verbs through `installFakeWorktreeRuntime`, so what it exercises is
+verbs through `installFakeWorktreeDriver`, so what it exercises is
 exactly the code that turns a create into a Job. One assertion moved from
 `toHaveBeenCalledWith(jobName)` to reading the first argument, because a
 driver delegation passes its optional second argument through.
@@ -413,9 +413,9 @@ justify it. The decoupling did show up in the module graph, though:
 
 ### Stage 6 is in: platform is dissolved
 
-`platform/k8s` is `runtime/k8s/substrate` and `platform/container` is
-`runtime/k8s/container`, both sealed folders like their siblings, and
-`runtime/k8s` holds sealed folders and nothing else. The six non-k8s files
+`platform/k8s` is `drivers/k8s/substrate` and `platform/container` is
+`drivers/k8s/container`, both sealed folders like their siblings, and
+`drivers/k8s` holds sealed folders and nothing else. The six non-k8s files
 went three ways, and the consumer graph picked each home:
 
 - **Four to `src/lib`** — `shell.ts`, `keyed-mutex.ts`, `build-context.ts`
@@ -424,8 +424,8 @@ went three ways, and the consumer graph picked each home:
   "name-only vocabulary" to "dependency-free vocabulary and host
   primitives"; the eslint zone that enforces it is unchanged, and that
   zone is the substance.
-- **`streaming-proc.ts` into `runtime/k8s/container`**, as an INTERNAL of
-  that sealed folder rather than a loose `runtime/k8s` module.
+- **`streaming-proc.ts` into `drivers/k8s/container`**, as an INTERNAL of
+  that sealed folder rather than a loose `drivers/k8s` module.
   `runStreamingProcess` is on the container barrel because images runs its
   builder-pod `kubectl exec` on it; `killGroup` stays internal to
   host-procs, its only caller.
@@ -446,8 +446,8 @@ went three ways, and the consumer graph picked each home:
   relay engine in lib has the same standing as `shellQuote`. If that ever
   gets reached for, an `importNames`-scoped ban on the domain zone is a
   one-liner — not worth the rule surface today.
-- **`streaming-proc` is not its own `runtime/k8s` module.** The plan's own
-  rule that `runtime/k8s` holds only sealed folders outranks the
+- **`streaming-proc` is not its own `drivers/k8s` module.** The plan's own
+  rule that `drivers/k8s` holds only sealed folders outranks the
   file-per-consumer reasoning: a loose module there would have shown up in
   `pnpm modularity` as a peer of the nine folders while being none of them.
 
@@ -461,7 +461,7 @@ a legal home for it, and now the rule says so rather than this plan alone.
 
 **Enforcement got simpler, not just renamed.**
 `NO_SUBSTRATE_ABOVE_RUNTIME` collapsed from three alternatives to
-`^#runtime/k8s(/|$)` — the rename made `#platform/k8s` and
+`^#drivers/k8s(/|$)` — the rename made `#platform/k8s` and
 `#platform/container` unspellable, so the domain ratchet tightened for
 free. `SEALED_FOLDERS` lost its `platform/` branch entirely. The commands
 zone keeps its one sanctioned host-side exec, respelled through the new
@@ -477,7 +477,7 @@ intra-module. With keyed-mutex in lib and git alone in platform, it is a
 real `platform → lib` edge and the six modules that transitively reach git
 each picked up +1. Stage 7 deleted it along with the directory.
 
-One trap worth recording: `runtime/k8s/worktrees/changes.ts` contains a NUL
+One trap worth recording: `drivers/k8s/worktrees/changes.ts` contains a NUL
 byte in a string literal, so `grep` treats it as binary and silently skips
 it. A repo-wide specifier sweep has to use `grep -a` or it will leave that
 file behind — and the miss surfaces as a tsc error, not a lint one.
@@ -519,7 +519,7 @@ option for it and the lint rule now says so: git wraps `simple-git`.
 **The eight driver-side reads, and what each became.** This is the part
 that was design work rather than moving:
 
-- `git-auth-failures.ts` moved INTO `runtime/k8s/egress`, beside
+- `git-auth-failures.ts` moved INTO `drivers/k8s/egress`, beside
   `blocked-hosts`: it is proxy data-plane state, a write-through file the
   proxy owns and a replaced proxy re-reads. Its readers split the way that
   pair already did — `observe.ts` stays runtime-internal, and
@@ -559,8 +559,8 @@ that was design work rather than moving:
   on the proxy's own schedule rather than a caller's — the re-sync inside
   `attachIfRunning` has no caller to pass anything in, agent identities
   being memory-only by design. `configureProxyCredentials` is wired at the
-  composition root, beside `setWorktreeRuntime` in `server-run` — NOT inside
-  `k8sWorktreeRuntime()`, which was tried first and is worth recording as a
+  composition root, beside `setWorktreeDriver` in `server-run` — NOT inside
+  `k8sWorktreeDriver()`, which was tried first and is worth recording as a
   dead end: a factory that reached for the reader made every importer of the
   driver assembly pull the whole projects barrel in eagerly, and the api test
   project (which builds the Hono app in-process) then instantiated
@@ -593,7 +593,7 @@ rows or project config itself.
 
 **Enforcement.** The store eslint zone is deleted, `SEALED_FOLDERS` lost
 its store branch and gained `git`, and the db zone no longer has a store to
-refuse. The mirror rule (`#runtime/k8s/**` importable only from
+refuse. The mirror rule (`#drivers/k8s/**` importable only from
 `runtime/**` and `main/**`) waits for stage 8, which is what empties api's
 use of those barrels.
 
@@ -621,31 +621,38 @@ that did not improve and is worth not hiding: PC is normalized by module
 count, so removing three modules from the scope raises it slightly even as
 the absolute reach falls. The `--runtime-only` run holds flat at 24.2%.
 
-## Stage 8 — flip api to domain and db only
+## Stage 8 — get api off the driver
 
-Stage 4 deferred the api decision; this stage makes it, and makes it
-STRICT: an api file may value-import only `#domain/*`, `#db`, its own
-`#http`/`#routes` internals, `#lib`, and `@yaac/shared` — not
-`#runtime/driver`, not `#runtime/agents` or `#runtime/terminals`. Type imports of
-`#runtime/contract` stay legal (it is import-free vocabulary, and domain
-signatures already speak it).
+Stage 4 deferred the api decision; this stage makes it. It is narrower
+than this plan first proposed, because the driver-layer split changed what
+the strictness would have bought.
 
-Why strict rather than "api may use the driver like domain does": the
-contract's verbs are lifecycle-shaped, while api's residual needs are
-display-shaped, and letting routes call the driver directly is standing
-pressure to grow display verbs on the contract one at a time. Fronting
-them in domain keeps that pressure in the mediators, makes domain the
-complete use-case API of the server (routes become translation over one
-surface, testable against `installFakeWorktreeRuntime` plus rows), and
-means no route can quietly accumulate policy again.
+An api file may value-import `#domain/*`, `#db`, `#runtime/*`, its own
+`#http`/`#routes` internals, `#lib`, and `@yaac/shared`. What stays banned
+is `#drivers/*` — the concrete driver outright, and `#drivers/driver` as a
+value.
+
+The original rule banned every `#runtime` value import, for two reasons.
+Substrate leakage — k8s verbs and types reaching route signatures — is now
+impossible by construction: `#runtime/*` is driver-agnostic machinery, and
+`#drivers/k8s/*` is unspellable outside `drivers/`. The other reason,
+policy pressure, gets a mechanical backstop instead of a zone: the
+machinery is a sibling of `db` and cannot read rows or config, so nothing
+join-shaped or policy-shaped can be expressed as an api→runtime call at
+all. Only pure runtime verbs survive that door — exactly the set whose
+domain façades this plan already admitted were "thin by design".
+
+The pressure argument still holds for the DRIVER, and that is where the
+ban stays: the contract's verbs are lifecycle-shaped while api's residual
+needs are display-shaped, and letting routes call the driver directly is
+standing pressure to grow display verbs on it one at a time.
 
 The migrations, enumerated from today's imports:
 
-- `routes/worktrees.ts`: its `worktreeRuntime()` calls, `typeInitialPrompt`,
-  the PTY verbs (`createShellWindow`, `killWindowTerminal`,
-  `listWorktreeTerminals`) and `dismissWorktreePort` become
-  `domain/worktrees` verbs. The terminal and prompt façades are thin by
-  design; allow-host and forward-port already crossed in stage 7.
+- `routes/worktrees.ts`: `dismissWorktreePort` becomes a domain verb over
+  a contract one. Its `typeInitialPrompt` and PTY imports (`#runtime/*`)
+  stay as they are — those are machinery, and the façades this plan once
+  planned for them would be pure indirection.
 - `routes/auth.ts`: the proxy client and the credentials store move behind
   `domain/auth`, which already fronts half of this surface.
 - `routes/projects.ts`, `routes/config.ts`, `routes/build-files.ts`: these
@@ -663,50 +670,45 @@ The migrations, enumerated from today's imports:
   seam, and the stage-4 note stands. The snapshot hub keeps its shape;
   `buildSnapshot` just gathers the feed through the façade.
 
-Enforcement, same ratchet as stage 1: put the api variant of
-`NO_SUBSTRATE_ABOVE_RUNTIME` (widened to ban `#runtime` value imports
-outright) on the api zone with a holdout override naming
-today's files, shrink it per PR, delete it at the end. Then the mirror
-rule lands: `#runtime/k8s/**` importable only from
-`packages/server/src/runtime/**` and `packages/server/src/main/**`.
+Enforcement, same ratchet as stage 1: put `NO_DRIVER_ABOVE_CONTRACT` and
+`NO_DRIVER_INTERNALS` on the api zone (plus a value-import ban on
+`#drivers/driver`) with a holdout override naming
+today's files, shrink it per PR, delete it at the end. Api is then the
+last holder of a deep `#drivers/k8s/*` import, and the one-door rule is
+complete.
 
-Optional, separable, unchanged from before: fold `main/convergence`'s
-cluster wiring (`ClusterCache` construction, delta fan-out, priority
-classes, deferred boot arming, relay invalidation) behind
-`runtime.start()` / `runtime.stop()`. Main composes the concrete driver,
-so leaving convergence k8s-aware breaks no rule; do this only if the
-wiring starts duplicating for a second driver.
+The convergence fold this plan left optional is done, and everything
+below the mediators was renamed and re-split with it: the machinery is
+`#runtime/*`, the drivers are `#drivers/*`, and `WorktreeRuntime` is
+`WorktreeDriver`. This stage is written against those names —
+`docs/layered-server.md` describes them.
 
 ## The layer diagram, after stage 8
 
 ```
 main       api
-   ↓        ↓   (api: domain and db only)
+   ↓        ↓   (api: domain, db and the machinery — never a driver)
       domain
    ↓        ↓
 db        runtime    db: rows alone
-                     runtime: the contract, its drivers; k8s sealed inside
+             ↓       runtime: the driver-neutral machinery
+          drivers    drivers: the contract, and one folder per substrate
 ```
 
-Three strata with no sanctioned sideways edges, `#lib` (dependency-free
-vocabulary and host primitives) below everything, and `#log`/`#notify` as
-the arrow-exempt outbound channels. Stage 7 got the strata; what stage 8
-adds is the arrow from api landing only on the top one.
-`docs/layered-server.md` is rewritten at each stage so it keeps describing
-the present tense.
+No sanctioned sideways edges, `#lib` (dependency-free vocabulary and host
+primitives) below everything, and `#log`/`#notify` as the arrow-exempt
+outbound channels. Stage 7 got the strata; what stage 8 adds is api
+reaching no driver. `docs/layered-server.md` is rewritten at each stage so
+it keeps describing the present tense.
 
 ## Deliberately out of scope
 
-`runtime/agents`, `runtime/status`, and `runtime/terminals` keep their
-direct bindings to the stream relay (`podExec`, `dialCtrlStream`,
-`dialPtyStream`) — they are runtime-internal, the tui/acp drivers already
-take an injectable `dial`, and rule 1 permits it. A true second driver
-would need the dial transport on the contract too; that extension has an
-obvious seat beside `exec` but no payoff until such a driver exists.
-(Stage 8 moves api's PTY routes behind a domain façade, but the façade
-calls `#runtime/terminals` — the relay bindings themselves stay where
-they are.) Sinking spare-pool's retool/rebranch sequences into
-`runtime/agents` is a possible later refinement, not part of this plan.
+Sinking spare-pool's retool/rebranch sequences into `#runtime/agents` is a
+possible later refinement, not part of this plan.
+
+The dial transport this plan left out of scope is in: the contract carries
+`dialCtrl`, `dialPty` and `reviveStatusStream` beside `exec`, and the
+machinery binds no relay at all (docs/layered-server.md).
 
 ## Verification per stage
 

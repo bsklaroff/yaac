@@ -1,5 +1,5 @@
-import { worktreeRuntime } from '#runtime/driver'
-import type { RuntimeSnapshot } from '#runtime/contract'
+import { worktreeDriver } from '#drivers/driver'
+import type { RuntimeSnapshot } from '#drivers/contract'
 import {
   classifyWorkspaces,
   isWorktreeTerminating,
@@ -39,7 +39,7 @@ export function _clearMissingPodTimersForTests(): void {
  * the server reconciler.
  */
 export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promise<void> {
-  const view = snapshot ?? worktreeRuntime().snapshot()
+  const view = snapshot ?? worktreeDriver().snapshot()
   // What the server records as existing, read at the top of THIS pass —
   // so absence is only ever judged against a set from the same pass, by
   // construction. A failed read stands every sweep down (reap nothing, say
@@ -103,7 +103,7 @@ export async function reconcileStaleWorktrees(snapshot?: RuntimeSnapshot): Promi
     if (provisioningIds.has(p.workspaceId)) return
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) return
-    if (await probeAgentPaneState(p.projectSlug, p.workspaceId) !== 'placeholder') return
+    if (await probeAgentPaneState(p) !== 'placeholder') return
     placeholderStale.push({
       jobName: p.jobName, projectSlug: p.projectSlug, worktreeId: p.workspaceId, zombie: true,
     })

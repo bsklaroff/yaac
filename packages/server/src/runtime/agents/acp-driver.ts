@@ -31,7 +31,8 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { dialCtrlStream, podExec, type StreamChild } from '#runtime/k8s/substrate'
+import { type StreamChild } from '#drivers/contract'
+import { worktreeDriver } from '#drivers/driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { CONTAINER_TMUX_SOCK, containerAcpLog, containerAcpSock } from '@yaac/shared/paths'
@@ -189,7 +190,7 @@ class AcpConnection implements AgentConnection {
     this.sweepMs = deps.heartbeatIntervalMs ?? DEFAULT_SWEEP_MS
     this.commandTimeoutMs = deps.commandTimeoutMs ?? DEFAULT_COMMAND_MS
     this.log = deps.log ?? serverLog
-    this.dial = deps.dial ?? ((s, argv) => dialCtrlStream(s.worktreeId, argv))
+    this.dial = deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv))
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     void this.sweep().then(() => this.rearm())
   }
@@ -293,7 +294,7 @@ class AcpConnection implements AgentConnection {
   }
 
   private async listAcpWindows(): Promise<Array<{ handle: string; tool: AgentTool }>> {
-    const { stdout } = await podExec(
+    const { stdout } = await worktreeDriver().exec(
       this.session.jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} list-windows -t yaac -F '#{window_name}'`,
       { maxAttempts: 1, timeout: this.commandTimeoutMs },

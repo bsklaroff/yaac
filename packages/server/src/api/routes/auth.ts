@@ -3,7 +3,7 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { authAgentHub, clearAuth, listAuth, requestPlanUsageRefresh } from '#domain/auth'
 import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#domain/projects'
-import { proxyClient } from '#runtime/k8s/egress'
+import { proxyClient } from '#drivers/k8s/egress'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 

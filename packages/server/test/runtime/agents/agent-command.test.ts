@@ -9,24 +9,19 @@ import {
   verifyAgentWindowAlive,
   initWindowCommand,
 } from '#runtime/agents/agent-command'
-import { RelayExecError, podExec } from '#runtime/k8s/substrate/stream-relay'
-import type * as streamRelayModule from '#runtime/k8s/substrate/stream-relay'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
-vi.mock('#runtime/k8s/substrate/exec', () => ({
-  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  execTarget: (jobName: string) => `job/${jobName}`,
-}))
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
 
-// Keep the real error classes — verifyAgentWindowAlive branches on
-// RelayExecError to tell "the probe ran and the window is gone" apart from
-// "the pod was never reached".
-vi.mock('#runtime/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...await importOriginal<typeof streamRelayModule>(),
-  podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+// Mocked at the contract boundary. `verifyAgentWindowAlive` branches on
+// WorkspaceExecError to tell "the probe ran and the window is gone" apart
+// from "the workspace was never reached", so the real class is used.
+const podExec = vi.fn<WorktreeDriver['exec']>()
+  .mockResolvedValue({ stdout: '', stderr: '' })
+beforeEach(() => { installFakeWorktreeDriver({ exec: podExec }) })
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
 
@@ -220,7 +215,7 @@ describe('buildPromptPasteBgCmd', () => {
 })
 
 describe('typeInitialPrompt', () => {
-  beforeEach(() => vi.mocked(podExec).mockClear())
+  beforeEach(() => podExec.mockClear())
 
   it('relay-execs the detached paste command single-attempt (a retry could double-paste)', async () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
@@ -246,14 +241,18 @@ describe('verifyAgentWindowAlive', () => {
   // error, failing the test even though the assertion passes. Each case sets
   // its own implementation instead, which is all these need.
   it('relay-execs the window probe and passes when it exits 0', async () => {
-    vi.mocked(podExec).mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
+    podExec.mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
     await expect(verifyAgentWindowAlive('yaac-job-1', 'codex')).resolves.toBeUndefined()
-    expect(podExec).toHaveBeenCalledWith('yaac-job-1', buildAgentWindowCheck('codex'))
+    // Read the arguments rather than matching the whole call: a driver
+    // delegation passes its optional opts through, so the recorded call
+    // carries a trailing undefined the caller never wrote.
+    expect(podExec.mock.calls.at(-1)?.slice(0, 2))
+      .toEqual(['yaac-job-1', buildAgentWindowCheck('codex')])
   })
 
   it('reports a missing window as a dead agent when the probe ran in the pod', async () => {
-    vi.mocked(podExec).mockImplementation(
-      () => Promise.reject(new RelayExecError('command exited 1', 1, '', 'no server running on /tmp/yaac.sock')),
+    podExec.mockImplementation(
+      () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'no server running on /tmp/yaac.sock')),
     )
     // The probe is `list-windows | grep`, so a dead tmux server exits
     // nonzero too — its stderr is what tells the two apart.
@@ -264,7 +263,7 @@ describe('verifyAgentWindowAlive', () => {
   it('propagates a transport failure instead of blaming the agent', async () => {
     // The probe never reached the pod, so it says nothing about the window —
     // calling that a missing tool would send the user hunting the wrong bug.
-    vi.mocked(podExec).mockImplementation(
+    podExec.mockImplementation(
       () => Promise.reject(new Error('stream relay dial: timeout')),
     )
     await expect(verifyAgentWindowAlive('yaac-job-1', 'codex'))
