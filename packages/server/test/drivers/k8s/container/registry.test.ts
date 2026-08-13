@@ -74,6 +74,7 @@ import {
   invalidateRegistryEndpoint,
   pushImageToRegistry,
   registryEndpoint,
+  registryDigestRef,
   registryHasTag,
   registryHost,
   registryReachable,
@@ -87,6 +88,8 @@ const fetchMock = vi.fn<typeof fetch>()
 
 /** The install's registry ref prefix with no YAAC_K8S_REGISTRY override. */
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
+/** A manifest digest, as the registry reports it on a HEAD. */
+const DIGEST = 'sha256:051010101af7bd4a3f2c9e8d7b6a5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7'
 /** Where this process reaches it: the fake port-forward's local end. */
 const ENDPOINT = `127.0.0.1:${FORWARD_PORT}`
 /**
@@ -134,8 +137,12 @@ afterEach(() => {
   stubPlatform(realPlatform)
 })
 
-function fetchResponse(init: { ok: boolean; status?: number }): Response {
-  return { ok: init.ok, status: init.status ?? (init.ok ? 200 : 500) } as Response
+function fetchResponse(init: { ok: boolean; status?: number; digest?: string }): Response {
+  return {
+    ok: init.ok,
+    status: init.status ?? (init.ok ? 200 : 500),
+    headers: new Headers(init.digest ? { 'docker-content-digest': init.digest } : {}),
+  } as Response
 }
 
 describe('registryHost', () => {
@@ -260,6 +267,52 @@ describe('registryHasTag', () => {
     forwardFails = true
     invalidateRegistryEndpoint()
     await expect(registryHasTag('yaac-tools:abc')).resolves.toBe(false)
+  })
+})
+
+describe('registryDigestRef', () => {
+  // WHY a pod runs a digest and not the tag that was pushed: `yaac project
+  // rebuild` republishes new bytes under an UNCHANGED content-hash tag, and
+  // a node whose containerd already holds that tag never consults the
+  // registry again — so a worktree created after a rebuild would start from
+  // the pre-rebuild image. A digest a node lacks is always fetched.
+  it('pins the tag to the digest the registry reports', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ ok: true, digest: DIGEST }))
+
+    await expect(registryDigestRef('yaac-user-demo:abc123'))
+      .resolves.toBe(`${CLUSTER_HOST}/yaac-user-demo@${DIGEST}`)
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://${ENDPOINT}/v2/yaac-user-demo/manifests/abc123`,
+      expect.objectContaining({ method: 'HEAD' }),
+    )
+  })
+
+  it('pins through the YAAC_K8S_REGISTRY override (a nested install)', async () => {
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
+    fetchMock.mockResolvedValue(fetchResponse({ ok: true, digest: DIGEST }))
+
+    // Both halves follow the override: the HEAD is dialed at it, and the
+    // ref a pod runs names it.
+    await expect(registryDigestRef('yaac-user-demo:abc'))
+      .resolves.toBe(`yaac-reg-proj.yaac.svc.cluster.local:5000/yaac-user-demo@${DIGEST}`)
+  })
+
+  // The opposite call from registryHasTag's fail-to-false, for the opposite
+  // reason: there "unknown" must mean "push it again", while here a launch
+  // that cannot say WHICH bytes it will run must not proceed at all — a
+  // silent fallback to the tag is exactly the staleness this prevents.
+  it('refuses to answer when it cannot name the bytes', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
+    await expect(registryDigestRef('yaac-tools:abc'))
+      .rejects.toThrow(/no Docker-Content-Digest/)
+
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    await expect(registryDigestRef('yaac-tools:abc')).rejects.toThrow(/answered 404/)
+
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'))
+    await expect(registryDigestRef('yaac-tools:abc')).rejects.toThrow(/registry unreachable/)
+
+    await expect(registryDigestRef('no-tag-here')).rejects.toThrow(/not a repo:tag/)
   })
 })
 

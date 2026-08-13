@@ -150,6 +150,16 @@ existing `registryHasTag()` HEAD, over the same forward, stays the
 server-side skip check, so the common path (tag already present) never
 creates a pod.
 
+A worktree pod's ref is pinned to a **digest**, resolved from the pushed
+tag's manifest as the last step of preparing a workspace image. Pods pull
+`IfNotPresent`, and a content-hash tag is immutable in every flow but
+`yaac project rebuild` — which exists to publish new bytes under an
+unchanged tag, since the agent CLIs the tools layer installs tick
+independently of the Dockerfile naming them. A node whose containerd
+already holds that tag would never consult the registry again, so the
+pin is what makes `IfNotPresent` exact: a digest a node holds is the
+right bytes by construction, and one it lacks is always fetched.
+
 The registry holds two things per untrusted build:
 
 - **Final images** — pushed delta-only via cross-repo blob mounts.

@@ -31,8 +31,11 @@ import { usesRootfulPodman } from './runtime'
  *
  * Blob storage is addressed by repository path alone, so pushing through
  * the forwarded port and pulling by the cluster ref name the same bytes.
- * Content-hash tags stay immutable, `registryHasTag()` stays the server-side
- * push skip, and pods keep `imagePullPolicy: IfNotPresent`.
+ * `registryHasTag()` is the server-side push skip, and pods keep
+ * `imagePullPolicy: IfNotPresent` — exact because what a pod runs is a
+ * DIGEST (`registryDigestRef()`), not a tag. `yaac project rebuild` is the
+ * one flow that republishes a content-hash tag over new bytes, and a node
+ * that already holds the tag would never re-pull it.
  *
  * The split matters because the two endpoints fail differently: a wrong
  * `registryEndpoint()` fails the server's own HEAD, while a wrong
@@ -65,6 +68,13 @@ export const REGISTRY_NAMESPACE = 'yaac'
 
 /** Key for this process's registry port-forward child. */
 const REGISTRY_FORWARD_KEY = 'main-registry'
+
+/** Manifest media types the registry must answer a HEAD with. Sent on every
+ *  manifest probe so a registry storing an OCI index (what a multi-arch or
+ *  zstd-compressed push produces) answers with it rather than a 404. */
+const MANIFEST_ACCEPT = 'application/vnd.oci.image.manifest.v1+json'
+  + ', application/vnd.oci.image.index.v1+json'
+  + ', application/vnd.docker.distribution.manifest.v2+json'
 
 /**
  * The host's loopback as seen from inside the podman machine VM, published by
@@ -197,11 +207,7 @@ export async function registryHasTag(tag: string): Promise<boolean> {
   try {
     const res = await fetch(`http://${endpoint}/v2/${repo}/manifests/${ref}`, {
       method: 'HEAD',
-      headers: {
-        Accept: 'application/vnd.oci.image.manifest.v1+json'
-          + ', application/vnd.oci.image.index.v1+json'
-          + ', application/vnd.docker.distribution.manifest.v2+json',
-      },
+      headers: { Accept: MANIFEST_ACCEPT },
       signal: AbortSignal.timeout(5000),
     })
     return res.ok
@@ -209,6 +215,56 @@ export async function registryHasTag(tag: string): Promise<boolean> {
     invalidateRegistryEndpoint()
     return false
   }
+}
+
+/**
+ * The in-cluster ref for `repo:tag`, PINNED to the bytes the tag names
+ * right now — `<registry>/<repo>@sha256:…`, resolved from the manifest's
+ * `Docker-Content-Digest`.
+ *
+ * This is what makes `imagePullPolicy: IfNotPresent` exact. Content-hash
+ * tags are immutable in every flow but one: `yaac project rebuild` exists
+ * precisely to publish new bytes under an unchanged tag (upstream agent
+ * CLIs tick independently of the Dockerfile that installs them). A node
+ * whose containerd already holds that tag never consults the registry
+ * again, so a worktree created after a rebuild would start from the
+ * pre-rebuild image — on a warm node only, which is what made it easy to
+ * miss. A digest a node does not hold is always fetched, and a digest it
+ * does hold is by construction the right bytes.
+ *
+ * Throws rather than falling back to the tag: a launch that cannot say
+ * WHICH bytes it will run is the failure this exists to prevent, and the
+ * pod's own pull would fail on the next line anyway. `registryHasTag`'s
+ * fail-to-false is the opposite call for the opposite reason — there,
+ * "unknown" must read as "push it again".
+ */
+export async function registryDigestRef(tag: string): Promise<string> {
+  const idx = tag.lastIndexOf(':')
+  if (idx < 0) throw new Error(`cannot pin "${tag}": not a repo:tag ref`)
+  const repo = tag.slice(0, idx)
+  const ref = tag.slice(idx + 1)
+
+  const endpoint = await registryEndpoint()
+  let res: Response
+  try {
+    res = await fetch(`http://${endpoint}/v2/${repo}/manifests/${ref}`, {
+      method: 'HEAD',
+      headers: { Accept: MANIFEST_ACCEPT },
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (err) {
+    invalidateRegistryEndpoint()
+    throw new Error(`cannot pin ${tag}: registry unreachable (${String(err)})`)
+  }
+  if (!res.ok) {
+    throw new Error(`cannot pin ${tag}: registry answered ${res.status} for its manifest`)
+  }
+
+  const digest = res.headers?.get('docker-content-digest')
+  if (!digest) {
+    throw new Error(`cannot pin ${tag}: registry returned no Docker-Content-Digest`)
+  }
+  return `${registryHost()}/${repo}@${digest}`
 }
 
 /**

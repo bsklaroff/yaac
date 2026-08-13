@@ -42,6 +42,7 @@ export { runStreamingProcess } from './streaming-proc'
 export {
   invalidateRegistryEndpoint,
   pushImageToRegistry,
+  registryDigestRef,
   registryEndpoint,
   registryHasTag,
   registryHost,
