@@ -70,12 +70,12 @@ const shape = (
 }
 
 describe('sidebarLayout', () => {
-  it('lists ungrouped worktrees oldest-first, whatever their status', () => {
+  it('lists ungrouped worktrees newest-first, whatever their status', () => {
     expect(shape([
       entry('c', 3),
       entry('a', 1, { status: 'waiting' }),
       entry('b', 2),
-    ], [])).toEqual({ default: ['a', 'b', 'c'] })
+    ], [])).toEqual({ default: ['c', 'b', 'a'] })
   })
 
   it('keeps a stopping worktree in place rather than bucketing it', () => {
@@ -85,10 +85,10 @@ describe('sidebarLayout', () => {
       entry('a', 1),
       entry('b', 2, { stopping: true }),
       entry('c', 3),
-    ], [])).toEqual({ default: ['a', 'b', 'c'] })
+    ], [])).toEqual({ default: ['c', 'b', 'a'] })
   })
 
-  it('files members into their group and orders the groups by creation', () => {
+  it('files members into their group and orders the groups newest-first', () => {
     const late = group('late', 20)
     const early = group('early', 10)
     const layout = sidebarLayout([
@@ -99,9 +99,9 @@ describe('sidebarLayout', () => {
     ], [late, early])
 
     expect(layout.defaultList.map((w) => w.worktreeId)).toEqual(['loose'])
-    expect(layout.groups.map((s) => s.group.groupId)).toEqual(['early', 'late'])
-    expect(layout.groups[0]?.members.map((w) => w.worktreeId))
-      .toEqual(['in-early-old', 'in-early-new'])
+    expect(layout.groups.map((s) => s.group.groupId)).toEqual(['late', 'early'])
+    expect(layout.groups[1]?.members.map((w) => w.worktreeId))
+      .toEqual(['in-early-new', 'in-early-old'])
   })
 
   it('hides an unpinned group with no live member, and keeps a pinned one', () => {
@@ -159,7 +159,7 @@ describe('sidebarRowIds', () => {
       [group('g', 10)],
       [],
     )
-    expect(rows).toEqual(['prov-1', 'loose-old', 'loose-new', 'grouped'])
+    expect(rows).toEqual(['prov-1', 'loose-new', 'loose-old', 'grouped'])
   })
 
   it('skips stopping rows — server-marked or optimistically deleting', () => {

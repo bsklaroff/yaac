@@ -61,35 +61,36 @@ function isTerminating(
   return Boolean(worktree.stopping) || pendingDeleteIds.includes(worktree.worktreeId)
 }
 
-/** Oldest first, by the UTC 'YYYY-MM-DD HH:MM:SS' stamp — which compares
+/** Newest first, by the UTC 'YYYY-MM-DD HH:MM:SS' stamp — which compares
  *  lexicographically — with the id as a stable tiebreak for worktrees created
  *  inside the same second. */
 function byCreatedAt<T extends { createdAt: string; worktreeId: string }>(a: T, b: T): number {
-  return a.createdAt.localeCompare(b.createdAt) || a.worktreeId.localeCompare(b.worktreeId)
+  return b.createdAt.localeCompare(a.createdAt) || b.worktreeId.localeCompare(a.worktreeId)
 }
 
 /** One group's section of the list. */
 export interface SidebarGroupSection {
   group: WorktreeGroupSummary
-  /** Live (and terminating) members, oldest first. */
+  /** Live (and terminating) members, newest first. */
   members: WorktreeListEntry[]
-  /** Stopped members, oldest first — ghost rows rendered after the live ones. */
+  /** Stopped members, newest first — ghost rows rendered after the live ones. */
   ghosts: StoppedWorktreeEntry[]
 }
 
 export interface SidebarLayout {
-  /** Ungrouped worktrees, oldest first. Terminating rows sit in place. */
+  /** Ungrouped worktrees, newest first. Terminating rows sit in place. */
   defaultList: WorktreeListEntry[]
-  /** The groups that are shown, oldest group first. */
+  /** The groups that are shown, newest group first. */
   groups: SidebarGroupSection[]
 }
 
 /**
- * The sidebar's shape: every ungrouped worktree in creation order, then one
- * section per shown group, also in creation order. Nothing is bucketed by
- * status — a worktree's own markers (the running spinner, the unread dot, the
- * stopping placeholder) say what state it is in, and its position says where
- * the user filed it.
+ * The sidebar's shape: every ungrouped worktree newest first, then one section
+ * per shown group, also newest first — so the worktree or group just created is
+ * at the top of whatever it belongs to, and the ungrouped list stays above the
+ * sections. Nothing is bucketed by status — a worktree's own markers (the
+ * running spinner, the unread dot, the stopping placeholder) say what state it
+ * is in, and its position says where the user filed it.
  *
  * A group is shown when it is pinned or holds at least one live worktree, and
  * a shown group lists ALL its members: live ones as ordinary rows, stopped
@@ -115,7 +116,7 @@ export function sidebarLayout(
   const live = [...worktrees].sort(byCreatedAt)
   const ghosts = [...stopped].sort(byCreatedAt)
   const sections = [...groups]
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.groupId.localeCompare(b.groupId))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.groupId.localeCompare(a.groupId))
     .map((group) => ({
       group,
       members: live.filter((w) => filedIn(w) === group.groupId),
