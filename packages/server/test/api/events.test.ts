@@ -19,7 +19,7 @@ import { EventHub, buildSnapshot, serializeEvent } from '#api/events'
 import type { WsLike } from '#api/events'
 import { listActiveWorktrees } from '#domain/worktrees/list'
 import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
-import { registerImageBuild, clearAllImageBuildsForTests } from '#drivers/k8s/image-engine/image-builds'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
@@ -183,11 +183,13 @@ describe('EventHub', () => {
   })
 })
 
-// The build registry is the runtime's, so the snapshot asks for it across the
-// boundary; the real listing stands behind the stub so the entries a case
-// registers are the ones it asserts on.
+// The build registry is the runtime's, so the snapshot asks for it across
+// the boundary — which is also why every case below installs a fake one:
+// a snapshot build with no runtime registered is a wiring bug, and says so.
 
 describe('buildSnapshot', () => {
+  beforeEach(() => { installFakeWorktreeDriver() })
+
   it('returns all state slices', async () => {
     const snap = await buildSnapshot()
     expect(Array.isArray(snap.worktrees)).toBe(true)
@@ -202,12 +204,18 @@ describe('buildSnapshot', () => {
 })
 
 describe('buildSnapshot image builds', () => {
-  beforeEach(() => { clearAllImageBuildsForTests() })
-  afterEach(() => { clearAllImageBuildsForTests() })
-
-  it('includes tracked image builds', async () => {
-    registerImageBuild({
-      tag: 'yaac-base:abc', layer: 'base', action: 'build', projectSlug: 'p', reason: 'prewarm',
+  it('includes the builds the runtime reports', async () => {
+    installFakeWorktreeDriver({
+      listImageBuilds: () => [{
+        id: 'b1',
+        tag: 'yaac-base:abc',
+        layer: 'base',
+        action: 'build',
+        reason: 'prewarm',
+        projectSlugs: ['p'],
+        status: 'running',
+        startedAt: '2026-01-01 00:00:00',
+      }],
     })
     const snap = await buildSnapshot()
     expect(snap.imageBuilds.map((b) => b.tag)).toEqual(['yaac-base:abc'])
@@ -215,6 +223,7 @@ describe('buildSnapshot image builds', () => {
 })
 
 describe('buildSnapshot provisioning', () => {
+  beforeEach(() => { installFakeWorktreeDriver() })
   beforeEach(() => { clearAllProvisioningForTests() })
   afterEach(() => { clearAllProvisioningForTests() })
 

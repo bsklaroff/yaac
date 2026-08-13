@@ -1,10 +1,12 @@
 import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
+import { worktreeForkBranch } from './fork-branch'
+import { resolveWorktreeContainer } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeHandle, VirtualClusterStatus } from '#drivers/contract'
-import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
+import type { AgentTool, GitAuthFailure, WorktreeChanges } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
   worktreeId: string
@@ -53,6 +55,31 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
     createdAt: new Date(match.createdAtMs).toISOString(),
     ...(vcluster ? { virtualCluster: vcluster } : {}),
   }
+}
+
+/**
+ * The working-tree diff of a running worktree.
+ *
+ * The default base is the branch the worktree forked from — its recorded
+ * base, the same source as the sidebar's base label — and choosing it here
+ * is the substance rather than a detail. Left to the runtime's own default,
+ * the diff collapses to nothing once the agent renames and pushes its
+ * branch: the current branch's `@{upstream}` then resolves to itself, and
+ * the merge-base with it is HEAD. Passing the fork point keeps committed
+ * work visible for exactly as long as it is unmerged.
+ *
+ * An explicit `base` from the caller wins; the fork branch is looked up
+ * only as the fallback, and is cached because this is polled.
+ */
+export async function getWorktreeChanges(
+  idOrName: string,
+  base?: string,
+): Promise<WorktreeChanges> {
+  const { jobName, worktreeId, projectSlug } = await resolveWorktreeContainer(
+    idOrName, { requireRunning: true },
+  )
+  const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
+  return worktreeDriver().changes(jobName, base, forkBranch ?? undefined)
 }
 
 export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {

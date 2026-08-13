@@ -52,13 +52,29 @@ it.
 A driver has ONE door: `#drivers/k8s`, the assembly. Its nine sealed
 folders are internal, and the eslint rule says so — `#drivers/k8s/*` is
 importable only from inside `drivers/`, with `main` naming the assembly
-alone. (Two exceptions: the api layer keeps a handful of deep imports
-until its own flip — display surfaces that want their own pass over what
-belongs on the contract — and the CLI's cluster-admin commands import the
-cluster barrel through the package's `exports` map. Administering a
-cluster is k8s-specific by nature, a host-process driver would ship its
-own doctor, so that door stays open and is governed by the pnpm boundary
-rather than a zone.)
+alone. (One exception: the CLI's cluster-admin commands import the cluster
+barrel through the package's `exports` map. Administering a cluster is
+k8s-specific by nature, a host-process driver would ship its own doctor,
+so that door stays open and is governed by the pnpm boundary rather than a
+zone.)
+
+Api reaches the runtime on the same terms as the mediators and the
+machinery: `#drivers/driver` and `#drivers/contract`, never a concrete
+driver. Three layers hold the accessor, and the rule that matters is the
+one they share — nothing above a driver names a substrate.
+
+What separates them is composition, not permission. A read that resolves a
+worktree, decides something from what it finds and then acts is a
+mediator's, and lives in `#domain` — `dismissWorktreePort` refuses a port
+the runtime is not offering, `getWorktreeChanges` picks the fork branch as
+the diff's default base. A display value the runtime already holds, asked
+for once and rendered, is not: the image-build feed and the ssh-identity
+push are api calling the contract directly, because a mediator that only
+forwarded the call would hide the seam rather than mediate it. The line is
+invisible to lint on purpose. A wrapper whose body is `return
+worktreeDriver().x(...)` is worse than the call it hides, and the one
+verb in `#domain/images` is there because it cannot be one: a retry has to
+hand the runtime a config reader, and the runtime may not read config.
 
 That shape is what decides where a disk read goes, and the answer is never
 "the runtime looks it up". A driver is HANDED what it needs — a launch
@@ -100,9 +116,11 @@ speak alone.
   seeding and the in-pod hook's session-starts log), `projects/` (a project
   whole — which exist, from rows, and what each one holds on disk: the
   clone's branches, the two config layers, git credentials, dockerfiles and
-  build files), `git.ts` (the `simple-git` process boundary, domain's the
-  way kubectl is the driver's), `titles/`, `auth/`, `skills/`, and
-  `reconcile.ts` — the ordered step list one pass runs.
+  build files), `git/` (the `simple-git` process boundary, domain's the
+  way kubectl is the driver's), `images/` (one verb: a build retry, which
+  hands the runtime the project-config reader it may not fetch),
+  `titles/`, `auth/`, `skills/`, and `reconcile.ts` — the ordered step list
+  one pass runs.
 
   Config and credentials sit here rather than a layer down because writing
   them is policy: a persisted allowed-host or port forward is inherited by
@@ -284,6 +302,12 @@ runtime step never reads a row or a config file itself. A step that runs
 outside a pass — the boot-time forwarder restore, the webapp's build
 retry — takes the same reader as a plain parameter, since there is no
 context to draw one from.
+
+Which of the three a new need takes follows from what triggers it: only
+ever reconcile-step-shaped → a `PassContext` accessor; caller-triggered →
+a plain parameter; fired on the DRIVER's own schedule, with no caller to
+pass anything in → a provider composed at the root (`DriverDeps`). None of
+them is a license for the runtime to read rows or config itself.
 
 The reaper reads `desiredWorktrees()` from db at the top of its own
 step, so absence is only ever judged against a set from the same pass, by

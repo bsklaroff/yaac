@@ -3,7 +3,7 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { authAgentHub, clearAuth, listAuth, requestPlanUsageRefresh } from '#domain/auth'
 import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#domain/projects'
-import { proxyClient } from '#drivers/k8s/egress'
+import { worktreeDriver } from '#drivers/driver'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
@@ -25,13 +25,13 @@ const credentialSchema = z.discriminatedUnion('kind', [
   sshCredentialSchema,
 ])
 
-/** Reload the proxy ssh-agent's identity set, swallowing a failure: the next
- *  `ensureRunning()` reconciles it. */
+/** Reload the ssh-agent's identity set, swallowing a failure: the runtime
+ *  reconciles it on its own schedule. */
 async function syncSshKeysQuietly(): Promise<void> {
   try {
-    await proxyClient.syncSshKeysFromCredentials()
+    await worktreeDriver().syncSshIdentities()
   } catch {
-    // non-fatal — the server retries on next ensureRunning()
+    // non-fatal — the runtime retries on its own schedule
   }
 }
 
@@ -71,15 +71,15 @@ export const authApp = new Hono()
     '/git/credentials',
     zv('json', credentialSchema),
     async (c) => {
-      // Credentials are files on disk, and re-syncing the proxy's ssh-agent
-      // rides along — a key the agent has not been told about is one no
-      // clone can use. Only for ssh: an https token is read straight off
-      // disk. The sync is loud but non-fatal; ensureRunning() retries it.
+      // Credentials are files on disk, and re-syncing the ssh-agent rides
+      // along — a key the agent has not been told about is one no clone can
+      // use. Only for ssh: an https token is read straight off disk. The
+      // sync is loud but non-fatal; the runtime retries it.
       const entry = c.req.valid('json')
       await addEntry(entry)
       if (entry.kind === 'ssh') {
         try {
-          await proxyClient.syncSshKeysFromCredentials()
+          await worktreeDriver().syncSshIdentities()
         } catch (err) {
           console.warn(
             '[auth] Saved SSH credential but failed to push to proxy ssh-agent: '

@@ -119,6 +119,12 @@ export function installFakeWorktreeDriver(
     virtualClusterStatus: (w) => current.virtualClusterStatus(w),
     allowHost: (t, h, o) => current.allowHost(t, h, o),
     forwardPort: (t, p, o) => current.forwardPort(t, p, o),
+    dismissPort: (w, p) => current.dismissPort(w, p),
+    listImageBuilds: () => current.listImageBuilds(),
+    imageBuildLog: (id) => current.imageBuildLog(id),
+    dismissImageBuild: (id) => current.dismissImageBuild(id),
+    retryImageBuild: (id, cfg) => current.retryImageBuild(id, cfg),
+    rebuildImage: (s, o) => current.rebuildImage(s, o),
     exec: (j, c, o) => current.exec(j, c, o),
     awaitAgentTransport: (j, o) => current.awaitAgentTransport(j, o),
     dialCtrl: (j, a) => current.dialCtrl(j, a),
@@ -128,6 +134,7 @@ export function installFakeWorktreeDriver(
     ensureBuildEngine: () => current.ensureBuildEngine(),
     prepareImage: (o) => current.prepareImage(o),
     prepareSubstrate: (i) => current.prepareSubstrate(i),
+    syncSshIdentities: () => current.syncSshIdentities(),
     launch: (s) => current.launch(s),
     awaitReady: (h) => current.awaitReady(h),
     startForwarders: (w, p) => current.startForwarders(w, p),
@@ -198,6 +205,15 @@ function defaultRuntime(): WorktreeDriver {
     virtualClusterStatus: () => Promise.resolve(null),
     allowHost: () => Promise.resolve(),
     forwardPort: (_t, containerPort) => Promise.resolve({ containerPort, hostPort: containerPort }),
+    // "Not an unforwarded listener" is the default for both of the
+    // answer-shaped verbs below: a test about the refusal path needs no
+    // setup, and one about the happy path says which port is live.
+    dismissPort: () => false,
+    listImageBuilds: () => [],
+    imageBuildLog: () => undefined,
+    dismissImageBuild: () => false,
+    retryImageBuild: () => false,
+    rebuildImage: (projectSlug) => Promise.resolve(`registry.test/${projectSlug}:rebuilt`),
     exec: () => Promise.resolve({ stdout: '', stderr: '' }),
     awaitAgentTransport: () => Promise.resolve(),
     // A stream that never connects and never dies: enough for a mediator
@@ -210,6 +226,7 @@ function defaultRuntime(): WorktreeDriver {
     ensureBuildEngine: () => Promise.resolve(),
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
+    syncSshIdentities: () => Promise.resolve(),
     // Echoes the spec back as a handle, the way a real launch does: a
     // mediator that goes on to exec into what it just launched addresses
     // the workspace it asked for rather than the fixture's default one.

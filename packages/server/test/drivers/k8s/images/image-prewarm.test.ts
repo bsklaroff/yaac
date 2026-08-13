@@ -6,6 +6,10 @@ vi.mock('#drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
   pushImageShared: vi.fn(),
 }))
+// The egress client is the process boundary an infra retry crosses: the
+// sidecar has no project chain, so re-running ensureRunning IS its rebuild.
+const { ensureRunning } = vi.hoisted(() => ({ ensureRunning: vi.fn() }))
+vi.mock('#drivers/k8s/egress', () => ({ proxyClient: { ensureRunning } }))
 // image-builds itself is the real in-memory registry, so retry's
 // forget/re-fire behavior is exercised end-to-end.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
@@ -213,6 +217,7 @@ describe('retryImageBuild', () => {
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
     mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
+    ensureRunning.mockResolvedValue(undefined)
   })
   afterEach(() => {
     clearAllImageBuildsForTests()
@@ -226,7 +231,7 @@ describe('retryImageBuild', () => {
     failImageBuild(id, 'boom')
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(true)
 
-    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: false })
+    expect(retryImageBuild(id, mockResolveConfig)).toBe(true)
     // The entry is forgotten, so it no longer backs off the prewarm sweep.
     expect(getImageBuild(id)).toBeUndefined()
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(false)
@@ -242,33 +247,66 @@ describe('retryImageBuild', () => {
     attachImageBuildProject(id, 'proj-b')
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: false })
+    expect(retryImageBuild(id, mockResolveConfig)).toBe(true)
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
     expect(mockResolveConfig).toHaveBeenCalledWith('proj-b')
   })
 
-  // The sidecar rebuild itself lives in the route: it goes through
-  // #drivers/k8s/egress, which sits above this feature. All that is owed here is
-  // forgetting the entry and reporting that the caller must do it.
-  it('forgets an infra build with no owning project and reports it', () => {
+  // A build with no owning project is the shared egress sidecar, which
+  // belongs to no chain: re-running ensureRunning is what rebuilds it,
+  // because that path redeploys when the image tag is missing — exactly what
+  // the failed build left behind. Detached, like the project path.
+  it('rebuilds the sidecar for an infra build with no owning project', async () => {
     const id = registerImageBuild({
       tag: 'yaac-proxy:abc', layer: 'proxy', action: 'build', reason: 'session',
     })
     failImageBuild(id, 'boom')
 
-    expect(retryImageBuild(id, mockResolveConfig)).toEqual({ retried: true, infra: true })
+    expect(retryImageBuild(id, mockResolveConfig)).toBe(true)
     expect(getImageBuild(id)).toBeUndefined()
+    expect(ensureRunning).toHaveBeenCalledTimes(1)
+    // No project chain to re-fire — the sidecar is nobody's.
     expect(mockResolveConfig).not.toHaveBeenCalled()
+    await flush()
+  })
+
+  // A project build rebuilds through its own chain; nothing touches the
+  // sidecar, which would redeploy the datapath under running worktrees.
+  it('leaves the sidecar alone for a project build', () => {
+    const id = registerImageBuild({
+      tag: 'yaac-tools:abc', layer: 'tools', action: 'build', projectSlug: 'proj-a', reason: 'prewarm',
+    })
+    failImageBuild(id, 'boom')
+
+    retryImageBuild(id, mockResolveConfig)
+
+    expect(ensureRunning).not.toHaveBeenCalled()
+  })
+
+  // A failed sidecar rebuild is logged, never raised: the caller already has
+  // its answer, and the retry is fire-and-forget on both paths.
+  it('swallows a sidecar rebuild that fails', async () => {
+    ensureRunning.mockRejectedValue(new Error('cluster down'))
+    const id = registerImageBuild({
+      tag: 'yaac-proxy:abc', layer: 'proxy', action: 'build', reason: 'session',
+    })
+    failImageBuild(id, 'boom')
+
+    expect(() => retryImageBuild(id, mockResolveConfig)).not.toThrow()
+    await flush()
+    expect(vi.mocked(serverLog).mock.calls.map((c) => String(c[0])).join('\n'))
+      .toMatch(/image-retry.*proxy.*cluster down/)
   })
 
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {
-    expect(retryImageBuild('missing', mockResolveConfig)).toEqual({ retried: false, infra: false })
+    expect(retryImageBuild('missing', mockResolveConfig)).toBe(false)
 
     const running = registerImageBuild({
       tag: 'x:1', layer: 'base', action: 'build', projectSlug: 'p', reason: 'session',
     })
-    expect(retryImageBuild(running, mockResolveConfig)).toEqual({ retried: false, infra: false })
+    expect(retryImageBuild(running, mockResolveConfig)).toBe(false)
     expect(getImageBuild(running)?.status).toBe('running') // still tracked
     expect(mockResolveConfig).not.toHaveBeenCalled()
+    expect(ensureRunning).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,6 @@
 import { listActiveWorktrees, listProvisioning } from '#domain/worktrees'
 import { listProjects } from '#domain/projects'
-import { listImageBuilds } from '#drivers/k8s/image-engine'
+import { worktreeDriver } from '#drivers/driver'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#domain/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
@@ -23,7 +23,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     planUsageForSnapshot(),
     codexPlanUsageForSnapshot(),
   ])
-  const imageBuilds = listImageBuilds()
+  const imageBuilds = worktreeDriver().listImageBuilds()
   // A worktree with a provisioning entry is mid-create/mid-restart (or
   // failed, awaiting dismissal) — the row, not the worktree, is what clients
   // should render. The pod lists as running well before setup finishes

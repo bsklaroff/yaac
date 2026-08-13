@@ -24,9 +24,19 @@ import {
   registerWorkspace,
 } from '#drivers/k8s/egress'
 import { getVclusterStatus } from '#drivers/k8s/cluster'
-import { prepareWorkspaceImage } from '#drivers/k8s/images'
+import {
+  prepareWorkspaceImage,
+  rebuildAndPushProjectImage,
+  retryImageBuild,
+} from '#drivers/k8s/images'
+import {
+  dismissImageBuild,
+  getImageBuildLog,
+  listImageBuilds,
+} from '#drivers/k8s/image-engine'
 import {
   adoptWorktreeForwarders,
+  dismissWorktreePort,
   forwardWorktreePort,
   getUnforwardedPorts,
   getWorktreePorts,
@@ -115,6 +125,13 @@ export function createK8sDriver(): WorktreeDriver {
     virtualClusterStatus: (workspaceId) => getVclusterStatus(workspaceId),
     allowHost: (target, host, opts) => allowWorktreeHost(target, host, opts),
     forwardPort: (target, port, opts) => forwardWorktreePort(target, port, opts),
+    dismissPort: (workspaceId, port) => dismissWorktreePort(workspaceId, port),
+
+    listImageBuilds: () => listImageBuilds(),
+    imageBuildLog: (id) => getImageBuildLog(id),
+    dismissImageBuild: (id) => dismissImageBuild(id),
+    retryImageBuild: (id, projectConfig) => retryImageBuild(id, projectConfig),
+    rebuildImage: (projectSlug, opts) => rebuildAndPushProjectImage(projectSlug, opts),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
@@ -130,6 +147,7 @@ export function createK8sDriver(): WorktreeDriver {
     ensureBuildEngine: () => ensureContainerRuntime(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
+    syncSshIdentities: () => proxyClient.syncSshKeysFromCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
     startForwarders: (workspaceId, ports) => adoptWorktreeForwarders(workspaceId, ports),

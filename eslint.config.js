@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|git|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees)|http)/.',
+  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees)|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -61,13 +61,11 @@ const NO_DATABASE_DIRECT = {
 // importable from every layer: both are zero-dependency outbound channels,
 // and a change notification is not a dependency on the hub that consumes
 // it.
-// The mediators name no driver: they reach the runtime through
+// Nothing above a driver names one: every layer over it — api, the
+// mediators, the machinery — reaches the runtime through
 // `#drivers/driver` (the registered instance) and `#drivers/contract` (its
-// vocabulary). `#runtime/*` stays open to them: that is driver-neutral
-// machinery, not substrate verbs. The api layer is
-// NOT on this rule yet — its substrate use is a different shape
-// (image-build rows, the proxy client, port forwards) and wants its own
-// pass over what belongs on the contract.
+// vocabulary). `#runtime/*` stays open to them too: that is driver-neutral
+// machinery, not substrate verbs.
 //
 // The machinery is on it too, which is what makes the mediators' module
 // graph genuinely cluster-free: `#runtime/agents` used to bind the stream
@@ -364,12 +362,51 @@ export default tseslint.config(
     },
   },
 
+  // The api layer: routes, the HTTP plumbing and the snapshot hub. It sits
+  // over the mediators, and reaches the runtime on the same terms they and
+  // the machinery do — `#drivers/driver` and `#drivers/contract`, never a
+  // concrete driver. What it may NOT do is name `#drivers/k8s`, which is
+  // what keeps every substrate word out of a route.
+  //
+  // Api holding the accessor is not a licence to put policy in a route: a
+  // read that resolves a worktree, decides something and then acts is a
+  // mediator's, and lives in `#domain`. What belongs here is the other
+  // kind — a display value the runtime already holds, asked for once and
+  // rendered. The line is composition, not layer, and no lint rule can see
+  // it; a wrapper that only forwards its arguments is worse than the call
+  // it hides.
+  //
+  // It cannot take NO_API_OR_MAIN — `#routes` and `#http` are its own.
+  {
+    files: ['packages/server/src/api/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_DRIVER_ABOVE_CONTRACT,
+            NO_DRIVER_INTERNALS,
+            {
+              regex: '^#main(/|$)',
+              message: 'The composition root is above api (docs/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // The composition root. It is the ONE place that knows which driver this
   // process runs — but it names the assembly and nothing under it: a
-  // driver's folders are its own. (The api layer is not on this rule yet;
-  // its remaining deep imports are display surfaces — the image-build feed,
-  // the proxy client, port dismissal — which want their own pass over what
-  // belongs on the contract. See docs/plans/runtime-contract-completion.md.)
+  // driver's folders are its own.
   {
     files: ['packages/server/src/main/**/*.ts'],
     rules: {

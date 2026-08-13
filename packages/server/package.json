@@ -7,6 +7,7 @@
     "#db": "./src/db/index.js",
     "#domain/auth": "./src/domain/auth/index.js",
     "#domain/git": "./src/domain/git/index.js",
+    "#domain/images": "./src/domain/images/index.js",
     "#domain/projects": "./src/domain/projects/index.js",
     "#domain/skills": "./src/domain/skills/index.js",
     "#domain/titles": "./src/domain/titles/index.js",

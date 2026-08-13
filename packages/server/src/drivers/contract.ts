@@ -3,6 +3,7 @@ import type {
   AgentMode,
   AgentTool,
   GitAuthFailure,
+  ImageBuildEntry,
   PendingSpawn,
   PortMapping,
   SpawnResultWire,
@@ -667,6 +668,68 @@ export interface WorktreeDriver {
   virtualClusterStatus(workspaceId: string): Promise<VirtualClusterStatus | null>
 
   /**
+   * Every image build this runtime has run or is running, for display.
+   *
+   * In-memory and lost on a restart, like the forwards: a build is
+   * observation of what the runtime is doing right now, not durable state.
+   * A runtime that builds no images answers empty, and the whole feed
+   * degrades to "nothing to show" rather than to an error. Synchronous
+   * because it is held state, and the snapshot the webapp hydrates from
+   * composes it inline.
+   */
+  listImageBuilds(): ImageBuildEntry[]
+  /**
+   * One build's raw engine output, or `undefined` when the runtime has no
+   * such build.
+   *
+   * Kept off `listImageBuilds` deliberately: it changes at line rate, so
+   * putting it in the feed would push a new snapshot to every client for
+   * every line. The viewer polls this only while it is open.
+   */
+  imageBuildLog(id: string): string | undefined
+  /** Hide a finished build from the feed, answering whether there was one
+   *  to hide. Display-only — nothing about what was built changes, and a
+   *  failed chain keeps backing off whatever schedule it was on. */
+  dismissImageBuild(id: string): boolean
+  /**
+   * Forget a finished build and run it again now, answering whether there
+   * was one to retry (an unknown id, or one still running, is `false`).
+   *
+   * Fire-and-forget: the rebuild reports through the feed like any other
+   * build, so a caller gets its answer without waiting for one. What a
+   * retry MEANS is entirely the runtime's — which chain to re-run, and what
+   * to do about a build no project owns (its own infrastructure, which only
+   * it can rebuild).
+   *
+   * `projectConfig` is handed in for the same reason as `PassContext`'s: a
+   * rebuild needs to know what a project's config asks for, and which
+   * config applies is answered above the runtime. Taken as a parameter
+   * rather than off a pass because a retry is caller-triggered.
+   */
+  retryImageBuild(
+    id: string,
+    projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  ): boolean
+  /**
+   * Rebuild a project's image from further up its chain than a content-hash
+   * tag would invalidate, and publish it where a workspace can run it.
+   *
+   * The verb exists because "the tag says nothing changed, but the world
+   * did" is a runtime judgement: the agent CLIs a project's image installs
+   * tick independently of the files that name them. What a caller decides
+   * is only that a project should be rebuilt; where the rebuild starts,
+   * what it re-runs, and how the result is published are the runtime's.
+   *
+   * Answers the ref that names the finished image, and narrates through
+   * `onLog` — a rebuild is minutes long, so its output is the response as
+   * far as a caller is concerned.
+   */
+  rebuildImage(
+    projectSlug: string,
+    opts?: { imagePrefix?: string; onLog?: (line: string) => void },
+  ): Promise<string>
+
+  /**
    * Widen one running workspace's egress to reach `host`, live.
    *
    * Live only: nothing here outlives the workspace, so a caller that wants
@@ -698,6 +761,17 @@ export interface WorktreeDriver {
     containerPort: number,
     opts: { fanOutToProject: boolean },
   ): Promise<PortMapping>
+  /**
+   * Stop offering one of a workspace's unforwarded listeners, answering
+   * whether it was one to begin with.
+   *
+   * `forwardPort`'s in-memory twin, and bounded the same way: only a port
+   * the runtime currently reports as an unforwarded listener may be named,
+   * so the dismissed set cannot be grown arbitrarily. Nothing about it
+   * outlives the runtime — a restart surfaces the port again, which is the
+   * intended behavior for a hint rather than a decision.
+   */
+  dismissPort(workspaceId: string, containerPort: number): boolean
 
   /**
    * Run a shell command inside a workspace and collect its output.
@@ -804,6 +878,21 @@ export interface WorktreeDriver {
    * state.
    */
   prepareSubstrate(intent: SubstrateIntent): Promise<WorkspaceSubstrate>
+  /**
+   * The set of SSH remotes this server may act as has changed — deliver it
+   * to wherever the runtime injects credentials from.
+   *
+   * The push half of `DriverDeps.sshIdentities`, which is the pull half: a
+   * runtime re-reads that on its own schedule, and this is the edge saying
+   * "now, because the user just changed one". Nothing is passed: the reader
+   * composed at the root is the authority on what the set IS, and a
+   * caller handing in a list would be a second one.
+   *
+   * A runtime with no egress path of its own, or one composed without that
+   * reader, resolves without doing anything — an unwired process must
+   * degrade, never fail a credential write that already succeeded.
+   */
+  syncSshIdentities(): Promise<void>
   /**
    * Start the workspace, and answer with the handle that addresses it.
    *

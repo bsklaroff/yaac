@@ -43,3 +43,27 @@ export async function forwardWorktreePort(
     { fanOutToProject: opts.persist },
   )
 }
+
+/**
+ * Stop offering a port a worktree is listening on — the webapp's "hide this
+ * one" beside the forward action, and bounded by the same rule: only a
+ * currently-surfaced listener may be named, so the hidden set cannot be
+ * grown arbitrarily.
+ *
+ * Purely in-memory, and the refusal is the same CONFLICT the forward raises
+ * for an ineligible port, worded the same way — the two actions sit on one
+ * row in the webapp, and a caller that races the surfaced list should not be
+ * able to tell which of them it lost.
+ */
+export async function dismissWorktreePort(
+  idOrName: string,
+  containerPort: number,
+): Promise<void> {
+  const target = await resolveWorktreeContainer(idOrName, { requireRunning: true })
+  if (!worktreeDriver().dismissPort(target.worktreeId, containerPort)) {
+    throw new ServerError(
+      'CONFLICT',
+      `port ${containerPort} is not an unforwarded listener in session ${target.worktreeId.slice(0, 8)}`,
+    )
+  }
+}

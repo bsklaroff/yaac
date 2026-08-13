@@ -17,6 +17,7 @@
  * never race a build).
  */
 import { ensureImage, pushImageShared } from './build-coordinator'
+import { proxyClient } from '#drivers/k8s/egress'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
@@ -120,36 +121,36 @@ export function _resetImagePrewarmForTests(): void {
  * single-flights and de-dups against any in-flight build. The rebuild
  * registers its own fresh entry, so the "building" row reappears.
  *
- * An entry with no owning project is an infrastructure build — the shared
- * proxy sidecar — and rebuilding it means going through #drivers/k8s/egress,
- * which sits above this feature. Rather than reach up for it, the entry is
- * forgotten here and `infra: true` hands the rebuild back to the caller.
+ * An entry with no owning project is an INFRASTRUCTURE build — the shared
+ * egress sidecar, which belongs to no project's chain. Re-running
+ * `ensureRunning` is what rebuilds it: that path redeploys the sidecar when
+ * its image tag is missing, which is exactly what the failed build left
+ * behind. It is driven here rather than handed back to a caller because
+ * nothing above this folder should have to know which builds are ours.
  *
- * `retried: false` means the id is unknown or still running, so there was
- * nothing to retry. Otherwise the project rebuild is already running in the
- * background: fire-and-forget, since it owns its own registry entry and
- * error logging.
+ * `false` means the id is unknown or still running, so there was nothing to
+ * retry. Otherwise the rebuild is already running in the background:
+ * fire-and-forget either way, since each owns its own registry entry and
+ * error logging, and the caller's answer is only that there WAS something.
  */
-export interface ImageRetry {
-  retried: boolean
-  /** The caller must rebuild the proxy sidecar; nothing was fired here. */
-  infra: boolean
-}
-
 export function retryImageBuild(
   id: string,
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
-): ImageRetry {
+): boolean {
   const entry = getImageBuild(id)
-  if (!entry || entry.status === 'running') return { retried: false, infra: false }
+  if (!entry || entry.status === 'running') return false
   forgetImageBuild(id)
 
-  if (entry.projectSlugs.length === 0) return { retried: true, infra: true }
+  if (entry.projectSlugs.length === 0) {
+    void proxyClient.ensureRunning().catch((err: unknown) =>
+      serverLog(`[image-retry] proxy: ${String(err)}`))
+    return true
+  }
 
   for (const slug of entry.projectSlugs) {
     void projectConfig(slug)
       .then((config) => prewarmProjectImage(slug, config ?? {}))
       .catch((err: unknown) => serverLog(`[image-retry] ${slug}: ${String(err)}`))
   }
-  return { retried: true, infra: false }
+  return true
 }

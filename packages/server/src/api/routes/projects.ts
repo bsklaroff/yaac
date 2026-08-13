@@ -19,7 +19,7 @@ import {
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { resolveProjectBuildDir } from '#lib/build-dirs'
-import { pushImageShared, rebuildProjectImage } from '#drivers/k8s/images'
+import { worktreeDriver } from '#drivers/driver'
 import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -169,16 +169,10 @@ export const projectApp = new Hono()
       try {
         // Resolve project first (throws NOT_FOUND if missing).
         await getProjectDetail(slug)
-        const finalTag = await rebuildProjectImage(slug, {
+        const finalTag = await worktreeDriver().rebuildImage(slug, {
           imagePrefix: testEnv.imagePrefix,
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
-        // New worktrees pull from the in-cluster registry, so the rebuilt
-        // image is invisible until it's pushed there.
-        await write({ type: 'progress', message: 'Pushing rebuilt image to the local registry...' })
-        // force: the rebuild changed image bytes under an unchanged
-        // content-hash tag, so the has-tag no-op would skip the real push.
-        await pushImageShared(finalTag, { projectSlug: slug, reason: 'rebuild' }, { force: true })
         await write({ type: 'result', result: { projectSlug: slug, finalTag } })
       } catch (err) {
         const { body: errBody } = toErrorBody(err)
