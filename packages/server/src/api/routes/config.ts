@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
-import { resolveUserBuildDir } from '#lib/build-dirs'
+import { userBuildDir } from '#lib/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
 
 /**
@@ -22,4 +22,4 @@ export const configApp = new Hono()
       return c.json({ content })
     },
   )
-  .route('/user-build-files', buildFilesApp(() => resolveUserBuildDir()))
+  .route('/user-build-files', buildFilesApp(() => Promise.resolve(userBuildDir())))

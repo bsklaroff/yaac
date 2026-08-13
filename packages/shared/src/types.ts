@@ -891,11 +891,8 @@ export const MAX_PROMPT_LENGTH = 4000
  */
 export interface PendingSpawn {
   requestId: string
-  /** The CALLING worktree (attributed by the proxy from the pod source IP).
-   *  Absent from a proxy predating the rename, which sends `sessionId`. */
-  worktreeId?: string
-  /** `worktreeId` under the name it had before the rename. */
-  sessionId?: string
+  /** The CALLING worktree (attributed by the proxy from the pod source IP). */
+  worktreeId: string
   prompt: string
   tool?: string
   /** Model override for the spawned worktree's agent. */
@@ -906,14 +903,7 @@ export interface PendingSpawn {
 export interface SpawnResultWire {
   requestId: string
   ok: boolean
-  /** New worktree id when ok. Sent under both names — a proxy predating the
-   *  rename reads only `sessionId`, and completes the waiting pod with it. */
+  /** New worktree id when ok. */
   worktreeId?: string
-  sessionId?: string
   error?: string
-}
-
-/** The calling worktree of a drained spawn, under whichever name it arrived. */
-export function pendingSpawnWorktreeId(p: PendingSpawn): string | undefined {
-  return p.worktreeId ?? p.sessionId
 }

@@ -9,7 +9,8 @@ describe('ensureImage', () => {
   it('builds base → tools → user when Dockerfile.user exists', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject')
@@ -36,10 +37,10 @@ describe('ensureImage', () => {
 
   it('uses Dockerfile.yaac instead of Dockerfile.default when present', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject')
@@ -53,10 +54,10 @@ describe('ensureImage', () => {
 
   it('layers Dockerfile.yaac on top of tools when it uses FROM ${BASE_IMAGE}', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject')
@@ -71,10 +72,10 @@ describe('ensureImage', () => {
 
   it('treats Dockerfile.yaac with FROM yaac-base (no ARG) as standalone', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject')
@@ -104,10 +105,10 @@ describe('ensureImage', () => {
 
   it('layers Dockerfile.yaac on nestable (not tools) when nestedContainers is set', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject', undefined, false, true)
@@ -120,10 +121,10 @@ describe('ensureImage', () => {
 
   it('skips the nestable layer for a standalone Dockerfile.yaac', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { ensureImage } = await h.load()
     const result = await ensureImage('myproject', undefined, false, true)
@@ -151,7 +152,8 @@ describe('ensureImage', () => {
   it('rejects Dockerfile.user without ARG BASE_IMAGE', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'FROM yaac-current\nRUN echo user\n')
+    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'build', 'Dockerfile.user'), 'FROM yaac-current\nRUN echo user\n')
 
     const { ensureImage } = await h.load()
     await expect(ensureImage('myproject')).rejects.toThrow('must use `ARG BASE_IMAGE` and `FROM \${BASE_IMAGE}`')
@@ -178,7 +180,8 @@ describe('rebuildProjectImage', () => {
   it('rebuilds the user layer downstream of tools (no --no-cache)', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { rebuildProjectImage } = await h.load()
     const result = await rebuildProjectImage('myproject')
@@ -192,10 +195,10 @@ describe('rebuildProjectImage', () => {
 
   it('rejects projects with a standalone Dockerfile.yaac', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { rebuildProjectImage } = await h.load()
     await expect(rebuildProjectImage('myproject')).rejects.toThrow(/standalone Dockerfile\.yaac/)

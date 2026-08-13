@@ -23,7 +23,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     namespace: 'test-ns',
     labels: {
       'yaac.project': 'demo',
-      'yaac.session-id': 'abcd',
+      'yaac.worktree-id': 'abcd',
       'yaac.data-dir-hash': 'ddh',
       'yaac.tool': 'claude',
     },

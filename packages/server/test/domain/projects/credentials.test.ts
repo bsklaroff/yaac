@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
@@ -8,8 +8,14 @@ import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/
 import { addEntry, listEntries, listSshEntries, loadKnownHostsEntryForHost, parseGitRemote, removeEntryChecked, replaceEntries, resolveCredentialForUrl, saveCredentials } from '#domain/projects'
 import { githubCredentialsPath } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
+import { serverLog } from '#log'
+
+// Asserted on: a dropped credential entry is announced, and the announcement
+// never carries the token.
+vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 const execFileAsync = promisify(execFile)
+const mockServerLog = vi.mocked(serverLog)
 
 const KNOWN_HOSTS = 'git.example.com ssh-ed25519 AAAA'
 
@@ -17,6 +23,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  mockServerLog.mockClear()
 })
 
 afterEach(async () => {
@@ -77,27 +84,13 @@ describe('listEntries', () => {
     ])
   })
 
-  it('migrates host-less patterns left by older yaac versions', async () => {
-    await storeRaw(JSON.stringify({ tokens: [
-      { pattern: '*', token: 'ghp_catchall' },
-      { pattern: 'acme/*', token: 'ghp_acme_org' },
-      { pattern: 'acme/repo', token: 'ghp_acme_repo' },
-      { pattern: 'gitlab.com/*', token: 'glp_untouched' },
-    ] }))
-
-    expect((await listEntries()).map((e) => e.pattern)).toEqual([
-      'github.com/*',
-      'github.com/acme/*',
-      'github.com/acme/repo',
-      'gitlab.com/*',
-    ])
-  })
-
   it('drops entries a reader could not act on', async () => {
     await storeRaw(JSON.stringify({ tokens: [
       { pattern: 'github.com/*', token: '' }, // no token
-      { pattern: 'a/b/c', token: 'ghp_x' }, // unfixable pattern (no host segment)
-      { pattern: 'bad host/*', token: 'ghp_x' }, // still invalid after migration
+      { pattern: '*', token: 'ghp_x' }, // no host axis
+      { pattern: 'acme/*', token: 'ghp_x' }, // owner with no host
+      { pattern: 'a/b/c', token: 'ghp_x' }, // no host segment
+      { pattern: 'bad host/*', token: 'ghp_x' }, // not a host
       { kind: 'ssh', pattern: 'git.example.com/*', privateKeyPath: '/k' }, // no knownHostsEntry
       { kind: 'ssh', pattern: 'nohost', privateKeyPath: '/k', knownHostsEntry: KNOWN_HOSTS },
       { kind: 'gpg', pattern: 'github.com/*' }, // unknown kind
@@ -109,6 +102,33 @@ describe('listEntries', () => {
     expect(await listEntries()).toEqual([
       { kind: 'https', pattern: 'github.com/org/*', preview: '***alid' },
     ])
+  })
+
+  // A dropped entry is otherwise invisible: git auth for that repo just stops,
+  // with nothing said at the point of use. Every rejected pattern is named,
+  // and one that only lacks a host is named with the rewrite that fixes it.
+  it('names every dropped pattern, and never a token, on the way past', async () => {
+    await storeRaw(JSON.stringify({ tokens: [
+      { pattern: '*', token: 'ghp_secret1' },
+      { pattern: 'acme/*', token: 'ghp_secret2' },
+      { pattern: 'bad host/*', token: 'ghp_secret3' },
+      { kind: 'ssh', pattern: 'nohost', privateKeyPath: '/k', knownHostsEntry: KNOWN_HOSTS },
+      { kind: 'https', pattern: 'github.com/org/*', token: 'ghp_kept' },
+    ] }))
+
+    await listEntries()
+    const logged = mockServerLog.mock.calls.map(([line]) => line).join('\n')
+
+    expect(logged).toContain('"*" names no host — use "github.com/*"')
+    expect(logged).toContain('"acme/*" names no host — use "github.com/acme/*"')
+    // No github.com/ rewrite can rescue a pattern whose host has a space.
+    expect(logged).toContain('"bad host/*" is not a valid <host>/<path> pattern')
+    expect(logged).toContain('ssh credential: pattern "nohost"')
+    // The entry that survived has nothing to announce.
+    expect(logged).not.toContain('github.com/org/*')
+    for (const secret of ['ghp_secret1', 'ghp_secret2', 'ghp_secret3', 'ghp_kept']) {
+      expect(logged).not.toContain(secret)
+    }
   })
 
   it('is [] for a file that is missing, unparseable, or the wrong shape', async () => {

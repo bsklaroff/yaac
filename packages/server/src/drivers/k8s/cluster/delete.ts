@@ -14,13 +14,6 @@ import { env } from '@yaac/shared/env'
  * the node. Nothing under the yaac data dir (projects, worktrees, worktrees)
  * is touched, so a later `yaac cluster setup` recreates the cluster and
  * re-pushes the images.
- *
- * There is deliberately no host-container step here any more. The registry
- * an older yaac ran as a podman container beside the cluster is not this
- * command's to reap: it outlives any single cluster, so tying its removal to
- * `cluster delete` would leave the orphan forever on an install that upgraded
- * and never deleted. Nothing removes it automatically now — see
- * docs/cluster-setup.md, which hands over the `podman rm -f` line.
  */
 
 // Lives in arg-guards.ts (which costs nothing to import) so the CLI can

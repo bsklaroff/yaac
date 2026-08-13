@@ -63,7 +63,7 @@ describe('reconcileSpawnRequests', () => {
   it('reports the caller resolved from the listing and relays the minted id', async () => {
     const result = await drainOne(makeReq(), () => Promise.resolve([makeCaller()]))
     expect(result).toEqual({
-      requestId: 'req-1', ok: true, worktreeId: 'minted-id', sessionId: 'minted-id',
+      requestId: 'req-1', ok: true, worktreeId: 'minted-id',
     })
     expect(reports).toEqual([{
       requestId: 'req-1',
@@ -127,7 +127,7 @@ describe('reconcileSpawnRequests', () => {
     })
     expect(posted).toHaveLength(1)
     expect(posted[0]).toEqual([
-      { requestId: 'a', ok: true, worktreeId: 'minted-id', sessionId: 'minted-id' },
+      { requestId: 'a', ok: true, worktreeId: 'minted-id' },
       { requestId: 'b', ok: false, error: 'calling worktree not found' },
     ])
   })

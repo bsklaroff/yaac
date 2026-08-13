@@ -36,7 +36,7 @@ const execFileAsync = promisify(execFile)
 
 /**
  * End-to-end coverage of the node-level egress redirect. Session pods are
- * BARE — no sidecars — carrying only the `yaac.session-id` label and a
+ * BARE — no sidecars — carrying only the `yaac.worktree-id` label and a
  * `dnsConfig` pointed at the proxy. Their outbound 443/80 is DNAT'd at
  * their veth by netd to the node-local Envoy, which forwards to the proxy
  * behind a PROXY-protocol preamble; the proxy identifies each connection
@@ -212,7 +212,7 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
 }
 
 /**
- * A bare session pod: the `yaac.session-id` label (so the proxy's pod-watch
+ * A bare worktree pod: the `yaac.worktree-id` label (so the proxy's pod-watch
  * resolves its source IP to a session and netd selects it for redirect), the
  * proxy-CA mount for `curl --cacert`, and `dnsConfig` pointed at the proxy
  * VIP DNS stub. No sidecars, no proxy env vars — egress is redirected at the

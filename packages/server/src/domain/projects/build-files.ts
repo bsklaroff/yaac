@@ -5,8 +5,8 @@ import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#lib/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
- * User-managed support files inside a build dir (`resolveProjectBuildDir` /
- * `resolveUserBuildDir`) — the files a Dockerfile can COPY. Everything here
+ * User-managed support files inside a build dir (`projectBuildDir` /
+ * `userBuildDir`) — the files a Dockerfile can COPY. Everything here
  * operates on paths relative to one build dir root and goes through
  * `resolveBuildFilePath`, the single traversal guard. Only regular files are
  * ever created, so no symlink can smuggle an out-of-tree read into the

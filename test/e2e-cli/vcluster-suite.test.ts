@@ -96,7 +96,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     const credsDir = path.join(testEnv.dataDir, '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
-      tokens: [{ pattern: 'test-org/*', token: 'fake-ghp-token' }],
+      tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
     }) + '\n')
     await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
       kind: 'api-key',
@@ -313,7 +313,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
 
     // Policy inheritance, fail-closed both ways: the synced pod reaches
     // its vcluster API (post-DNAT 8443) but neither the host apiserver
-    // nor the internet — synced pods carry no session-id label, so the
+    // nor the internet — synced pods carry no worktree-id label, so the
     // per-vcluster synced-pods policy is their only (and default-deny)
     // egress surface.
     const vcSvc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([

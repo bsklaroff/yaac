@@ -17,7 +17,7 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-  LABEL_WORKTREE_ID_LEGACY,
+  LABEL_WORKTREE_ID,
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
   LABEL_VCLUSTER_MANAGED_BY,
@@ -477,7 +477,7 @@ export function buildVclusterPodGuardBindingManifest(
  * synced pods are in the vcluster's own namespace — so the egress peers
  * are CROSS-NAMESPACE (namespaceSelector + podSelector). It admits the
  * worktree pod to reach ITS OWN vcluster API on 8443 and its synced pods
- * (managed-by label; the OSS syncer cannot stamp yaac.session-id, see
+ * (managed-by label; the OSS syncer cannot stamp yaac.worktree-id, see
  * values.yaml). The SOLE egress hole for these flows: NetworkPolicy
  * unions allow rules, so this punches a per-worktree hole through the
  * install-wide worktree-egress policy's default-deny (which has no
@@ -500,7 +500,7 @@ export function buildVclusterWorktreeNetworkPolicyManifest(
       labels: vclusterLabels(name, worktreeId),
     },
     spec: {
-      podSelector: { matchLabels: { [LABEL_WORKTREE_ID_LEGACY]: worktreeId } },
+      podSelector: { matchLabels: { [LABEL_WORKTREE_ID]: worktreeId } },
       policyTypes: ['Egress'],
       egress: [
         {
@@ -696,13 +696,6 @@ export async function ensureWorktreeVcluster(
   // itself, so no policy object here is dynamic.
   await kubectlApply(buildInnerProxyIngressNpManifest(vcNs, name, p.worktreeId, nodeCidrs))
   await kubectlApply(buildInnerWorktreeIngressLockNpManifest(vcNs, name))
-  // Same apply-then-delete as the install-namespace pair (proxy-apply.ts):
-  // the name this policy had before the rename, swept only once its
-  // replacement exists so the lock is never briefly absent.
-  await kubectlWithRetry([
-    'delete', 'networkpolicy', 'yaac-inner-session-ingress-lock',
-    '-n', vcNs, '--ignore-not-found',
-  ]).catch(() => { /* best-effort; a leftover policy is a duplicate, not a hole */ })
   await kubectlWithRetry(['apply', '-f', '-'], {
     input: await renderVclusterManifests({ worktreeId: p.worktreeId }),
   })

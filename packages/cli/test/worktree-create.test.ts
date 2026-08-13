@@ -228,10 +228,6 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/runtime/agents/codex', () => ({
-  removeLegacyCodexHook: vi.fn().mockResolvedValue(undefined),
-} satisfies Partial<typeof codexAgentModule>))
-
 vi.mock('@yaac/server/runtime/agents/opencode', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof opencodeAgentModule>))
@@ -763,7 +759,6 @@ describe('createWorktree', () => {
     const labels = {
       'yaac.project': 'demo',
       'yaac.worktree-id': 'abcd1234',
-      'yaac.session-id': 'abcd1234',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
     }
@@ -1330,7 +1325,6 @@ describe('resolveInitWindows', () => {
 
 import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
-import type * as codexAgentModule from '@yaac/server/runtime/agents/codex'
 import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'
 import type * as runtimeModule from '@yaac/server/drivers/k8s/container/runtime'
 import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'

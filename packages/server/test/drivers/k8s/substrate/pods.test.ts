@@ -114,12 +114,12 @@ describe('listWorktreePods', () => {
     mockGetJson.mockReset()
   })
 
-  it('queries pods in the namespace scoped by data-dir-hash + session-id labels', async () => {
+  it('queries pods in the namespace scoped by data-dir-hash + worktree-id labels', async () => {
     mockGetJson.mockResolvedValue({ items: [] })
     await listWorktreePods()
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.session-id',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id',
     ])
   })
 
@@ -128,7 +128,7 @@ describe('listWorktreePods', () => {
     await listWorktreePods('proj-a')
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'pods', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.session-id,yaac.project=proj-a',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id,yaac.project=proj-a',
     ])
   })
 
@@ -149,29 +149,7 @@ describe('listWorktreePods', () => {
     }])
   })
 
-  // A pod that was already running when the worktree-id label was renamed
-  // carries only `yaac.session-id`. Nothing errors if this regresses — the
-  // pod just stops resolving — so assert the old key explicitly, and the new
-  // key alone alongside it (what a pod will carry once the legacy stamp goes).
-  it.each([
-    ['the legacy yaac.session-id key', { 'yaac.session-id': 's9' }],
-    ['the yaac.worktree-id key alone', { 'yaac.worktree-id': 's9' }],
-  ])('resolves a pod carrying %s', async (_name, idLabel) => {
-    mockGetJson.mockResolvedValue({
-      items: [rawPod({
-        labels: {
-          [JOB_NAME_LABEL]: 'yaac-demo-s9',
-          ...idLabel,
-          [LABEL_PROJECT]: 'demo',
-          [LABEL_TOOL]: 'codex',
-        },
-      })],
-    })
-    const pods = await listWorktreePods()
-    expect(pods.map((p) => p.worktreeId)).toEqual(['s9'])
-  })
-
-  it('throws when a pod carries neither worktree-id key', async () => {
+  it('throws when a pod carries no worktree-id label', async () => {
     mockGetJson.mockResolvedValue({
       items: [rawPod({
         labels: {
@@ -372,7 +350,7 @@ describe('listWorktreeJobs', () => {
     const jobs = await listWorktreeJobs()
     expect(mockGetJson).toHaveBeenCalledWith([
       'get', 'jobs', '-n', 'test-ns',
-      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.session-id',
+      '-l', 'yaac.data-dir-hash=ddh0123456789abc,yaac.worktree-id',
     ])
     expect(jobs).toEqual([{
       jobName: 'yaac-demo-s1',
@@ -382,24 +360,21 @@ describe('listWorktreeJobs', () => {
     }])
   })
 
-  // The orphan-Job sweep keys on this; a Job created before the rename
-  // carries only the legacy key (see the pod-level case above).
-  it('maps a job carrying only the legacy yaac.session-id key', async () => {
+  // The orphan-Job sweep keys on this, and a Job with no worktree id is one
+  // it must not act on.
+  it('throws when a job carries no worktree-id label', async () => {
     mockGetJson.mockResolvedValue({
       items: [{
         metadata: {
           name: 'yaac-demo-s9',
-          labels: { 'yaac.session-id': 's9', [LABEL_PROJECT]: 'demo' },
+          labels: { [LABEL_PROJECT]: 'demo' },
           creationTimestamp: '2026-06-01T00:00:00Z',
         },
       }],
     })
-    await expect(listWorktreeJobs()).resolves.toEqual([{
-      jobName: 'yaac-demo-s9',
-      worktreeId: 's9',
-      projectSlug: 'demo',
-      createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
-    }])
+    await expect(listWorktreeJobs()).rejects.toThrow(
+      /malformed worktree job list[\s\S]*yaac\.worktree-id/,
+    )
   })
 
   it('throws when a job lacks metadata.name', async () => {

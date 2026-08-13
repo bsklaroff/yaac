@@ -315,35 +315,20 @@ export function worktreesDir(slug: string): string {
 }
 
 /**
- * SHARED. One worktree's metadata document — its durable index of what it
- * is and which agent sessions it has hosted (docs/worktree-storage.md).
- *
- * Written only by the server, and rewritten whole (tmp + rename), so it is
- * deliberately NOT mounted into the pod: a rename replaces the inode a `File`
- * hostPath mount pins, and the pod would read a stale document forever. What
- * the pod writes is {@link worktreeSessionStartsPath} instead.
- */
-export function worktreeMetaPath(slug: string, worktreeId: string): string {
-  return sharedProjectPath(slug, 'meta', `${worktreeId}.json`)
-}
-
-/**
  * SHARED. What the in-pod `SessionStart` hook appends to — one JSON line per
  * firing, named for the only thing that ever writes it.
  *
  * The hook is the only witness of a user-started agent session (`/clear`, a
  * hand-typed `claude --resume`), because it alone sees `TMUX_PANE` beside the
- * tool's worktree id. It cannot share the document above: two read-modify-writes
- * lose one side's write, and coordinating them would mean a lock held across a
- * hostPath mount from inside a gVisor sandbox. Appending needs neither, and
- * mounting this as a `File` hostPath is safe precisely because nothing ever
- * renames it.
+ * tool's worktree id. Appending is what makes it safe to mount as a `File`
+ * hostPath from inside a gVisor sandbox: nothing ever renames it, so the
+ * inode the mount pins stays the one both sides are writing and reading.
  */
 export function worktreeSessionStartsPath(slug: string, worktreeId: string): string {
   return sharedProjectPath(slug, 'meta', `${worktreeId}.session-starts.jsonl`)
 }
 
-/** SHARED. The `meta/` directory both of the above live in. */
+/** SHARED. The `meta/` directory the session-starts logs live in. */
 export function worktreeMetaDir(slug: string): string {
   return sharedProjectPath(slug, 'meta')
 }

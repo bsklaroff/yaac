@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
   LABEL_PROJECT,
-  LABEL_WORKTREE_ID_LEGACY,
+  LABEL_WORKTREE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
   execFileAsync,
@@ -25,7 +25,7 @@ export const REGISTRY_APP_LABEL = 'yaac-registry'
 /**
  * GC scope label: ties registry objects to this yaac install without
  * making them visible to the worktree reaper/list paths (which filter on
- * `yaac.data-dir-hash` + `yaac.session-id`).
+ * `yaac.data-dir-hash` + `yaac.worktree-id`).
  */
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /**
@@ -168,15 +168,10 @@ function registrySelector(projectSlug: string): string {
  * what lets the collect pod below mount the store beside the serving
  * registry instead of having to stop it.
  *
- * A project upgrading from the node-hostPath store pays the same trade the
- * main registry's module doc spells out, on the first ensure after the
- * upgrade rather than at server start: the claim comes up EMPTY, nothing
- * migrates blobs, and the cross-worktree layer cache refills by rebuild. The
- * part that is not merely a rebuild is anything a worktree `docker push`ed
- * here under a name yaac never mints — that becomes unreachable at the same
- * moment, and unlike the cache it is not regenerable. It is not lost: the
- * old store stays on the node under `/var/lib/yaac/registry/<install hash>`,
- * recoverable by hand.
+ * Losing the volume is not symmetric with the main registry's: the
+ * cross-worktree layer cache refills by rebuild, but anything a worktree
+ * `docker push`ed here under a name yaac never mints is not regenerable and
+ * goes with it.
  */
 export function buildProjectRegistryPvcManifest(projectSlug: string): Record<string, unknown> {
   return {
@@ -345,7 +340,7 @@ export function buildRegistryWorktreesNetworkPolicyManifest(
     spec: {
       podSelector: {
         matchLabels: { [LABEL_PROJECT]: projectSlug },
-        matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
+        matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
       },
       policyTypes: ['Egress'],
       egress: [
@@ -398,7 +393,7 @@ export function buildRegistryIngressNetworkPolicyManifest(
           from: [{
             podSelector: {
               matchLabels: { [LABEL_PROJECT]: projectSlug },
-              matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
+              matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
             },
           }],
           ports: [registryPort],

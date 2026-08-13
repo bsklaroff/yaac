@@ -5,6 +5,7 @@ import path from 'node:path'
 import {
   GVISOR_NODE_LABEL,
   LABEL_VCLUSTER_MANAGED_BY,
+  LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   PROXY_APP_NAME,
@@ -18,7 +19,6 @@ import {
   isDeferredClusterBootPending,
   k8sNamespace,
   kubectlApply,
-  labelWorktreeId,
   runPodToCompletion,
   runtimeClassSpec,
   podUid,
@@ -162,7 +162,7 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
  *      engine (nestedContainers; suid/file-caps are covered by the e2e)
  *  11. runtime-stamp (warn-only): every UNTRUSTED pod — worktree pods
- *      (yaac.session-id label) and vcluster-synced tenant pods (the
+ *      (yaac.worktree-id label) and vcluster-synced tenant pods (the
  *      syncer's managed-by label) — carries a gvisor-tier
  *      runtimeClassName. Trusted infra (proxy, registries, node-write,
  *      vcluster control planes) deliberately stamps none and runs on runc.
@@ -824,7 +824,7 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
 /**
  * Sandbox invariant sweep (warn-only): every pod hosting UNTRUSTED code
  * carries a gvisor-tier runtimeClassName. That's worktree pods (the
- * yaac.session-id label — stamped by the session builder, and propagated
+ * yaac.worktree-id label — stamped by the session builder, and propagated
  * verbatim for an inner yaac's synced worktrees) and vcluster-synced tenant
  * pods (the syncer's managed-by label, which a tenant cannot suppress).
  * Trusted infra — proxy, registries, node-write pods, vcluster control
@@ -850,7 +850,7 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
       podNs === ns || (podNs?.startsWith(`${ns}-vc-`) ?? false)
     const untrusted = (labels: Record<string, string> | undefined): boolean =>
       !!labels
-      && (labelWorktreeId(labels) !== undefined || LABEL_VCLUSTER_MANAGED_BY in labels)
+      && (LABEL_WORKTREE_ID in labels || LABEL_VCLUSTER_MANAGED_BY in labels)
     const strays = items
       .filter((p) => inScope(p.metadata?.namespace)
         && untrusted(p.metadata?.labels)

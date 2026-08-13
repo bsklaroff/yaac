@@ -36,7 +36,7 @@ import {
   splitHostHeader,
 } from './transparent'
 import { parsePp2Header } from './pp2'
-import { readJsonEither, writeJsonAtomic } from './state-files'
+import { readJsonOrNull, writeJsonAtomic } from './state-files'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import {
@@ -608,16 +608,6 @@ function isHostSegment(s: string): boolean {
   return s.includes('.') || s === 'localhost'
 }
 
-/** Read-time normalization of legacy entries — mirrors lib/project/credentials.ts. */
-function normalizeLegacyPattern(pattern: string): string {
-  if (pattern === '*') return 'github.com/*'
-  const parts = pattern.split('/')
-  if (parts.length === 2 && parts[0] && !isHostSegment(parts[0])) {
-    return `github.com/${pattern}`
-  }
-  return pattern
-}
-
 function parsePattern(pattern: string): ParsedPattern | null {
   if (!pattern || pattern.includes(' ')) return null
   const parts = pattern.split('/')
@@ -673,6 +663,25 @@ function parseGitRemote(remoteUrl: string | undefined): {
   return null
 }
 
+/**
+ * Patterns already complained about, so a dropped entry is named once rather
+ * than on every proxied git request — this file is re-read per request. The
+ * server logs the same rejection with the same rewrite (its
+ * `patternComplaint`); this side says it too because the proxy is where the
+ * request that lost its credential actually dies.
+ */
+const complainedPatterns = new Set<string>()
+
+function complainAboutPattern(pattern: string): void {
+  if (complainedPatterns.has(pattern)) return
+  complainedPatterns.add(pattern)
+  const qualified = `github.com/${pattern}`
+  const complaint = parsePattern(qualified)
+    ? `names no host — use "${qualified}" to mean the same thing on github.com`
+    : 'is not a valid <host>/<path> pattern'
+  console.log(`[proxy] ignoring git credential: pattern "${pattern}" ${complaint}`)
+}
+
 function readGitCredentials(): HttpsCredentialEntry[] {
   try {
     const raw = fs.readFileSync(GITHUB_CREDS_FILE, 'utf8')
@@ -687,9 +696,11 @@ function readGitCredentials(): HttpsCredentialEntry[] {
       const kind = e.kind ?? 'https'
       if (kind !== 'https') continue
       if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
-      const pattern = normalizeLegacyPattern(e.pattern)
-      if (!parsePattern(pattern)) continue
-      result.push({ pattern, token: e.token })
+      if (!parsePattern(e.pattern)) {
+        complainAboutPattern(e.pattern)
+        continue
+      }
+      result.push({ pattern: e.pattern, token: e.token })
     }
     return result
   } catch {
@@ -807,15 +818,6 @@ interface GitAuthFailureRecord {
 const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
 const GIT_AUTH_FAILURES_FILE = path.join(DATA_DIR, 'git-auth-failures.json')
 const WORKTREES_FILE = path.join(DATA_DIR, 'worktrees.json')
-/**
- * The name this file had before a worktree stopped being called a session.
- * /data is a hostPath that outlives the pod on purpose — it is how a replaced
- * proxy comes back knowing every worktree's allowlist — so a boot that finds
- * only the old name must still load it. Reading the wrong name fails SILENTLY:
- * the proxy starts empty, fails closed, and every running worktree loses
- * egress until something re-registers it.
- */
-const LEGACY_WORKTREES_FILE = path.join(DATA_DIR, 'sessions.json')
 
 /**
  * Atomic write via tmp+rename so a concurrent host-side reader never sees
@@ -923,7 +925,7 @@ function persistWorktrees(): void {
 
 function loadWorktrees(): void {
   // first boot or unreadable → null, and the proxy starts empty
-  const parsed = readJsonEither(WORKTREES_FILE, LEGACY_WORKTREES_FILE)
+  const parsed = readJsonOrNull(WORKTREES_FILE)
   if (!parsed || typeof parsed !== 'object') return
   for (const [sid, raw] of Object.entries(parsed as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object') continue
@@ -2141,13 +2143,9 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Register or update all state for a worktree. `/sessions/:id` is the path
-  // this took before the rename: a server predating it still calls that, and
-  // several server paths reach the proxy without the currency check that
-  // would have redeployed it first (allow-host and worktree stop both go
-  // through attachIfRunning, not ensureRunning).
+  // Register or update all state for a worktree.
   const registerMatch = req.method === 'PUT' && req.url
-    ? /^\/(?:worktrees|sessions)\/([^/]+)$/.exec(req.url)
+    ? /^\/worktrees\/([^/]+)$/.exec(req.url)
     : null
   if (registerMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -2218,7 +2216,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   // allowlist for the worktree's lifetime, and the server reads the pruned
   // blocked-hosts file straight off /data.
   const allowHostMatch = req.method === 'POST' && req.url
-    ? /^\/(?:worktrees|sessions)\/([^/]+)\/allow-host$/.exec(req.url)
+    ? /^\/worktrees\/([^/]+)\/allow-host$/.exec(req.url)
     : null
   if (allowHostMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -2284,7 +2282,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 
   // List registered worktree ids. Diagnostic surface — e2e tests use it
   // to assert a replaced pod reloaded its registrations from /data.
-  if (req.method === 'GET' && (req.url === '/worktrees' || req.url === '/sessions')) {
+  if (req.method === 'GET' && req.url === '/worktrees') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify([...worktreeAllowedHosts.keys()]))
@@ -2293,7 +2291,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 
   // Remove all state for a worktree
   const removeMatch = req.method === 'DELETE' && req.url
-    ? /^\/(?:worktrees|sessions)\/([^/]+)$/.exec(req.url)
+    ? /^\/worktrees\/([^/]+)$/.exec(req.url)
     : null
   if (removeMatch) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -3080,8 +3078,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     }
     socket.removeListener('data', onData)
 
-    // `sessionId` is what a server predating the rename sends.
-    let params: { token?: unknown; worktreeId?: unknown; sessionId?: unknown }
+    let params: { token?: unknown; worktreeId?: unknown }
     try {
       params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
     } catch {
@@ -3089,7 +3086,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       socket.destroy()
       return
     }
-    const dialled = typeof params.worktreeId === 'string' ? params.worktreeId : params.sessionId
+    const dialled = params.worktreeId
     if (
       typeof params.token !== 'string' || typeof dialled !== 'string'
       || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)

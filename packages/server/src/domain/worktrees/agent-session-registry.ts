@@ -158,11 +158,12 @@ export async function reconcileWorktreeAgentSessions(
   // fires for.
   const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
   if (links.length === 0) {
-    // Nothing recorded yet. That is ambiguous: either the pod predates the
-    // hook (its one session is pinned to the worktree id by `--session-id`),
-    // or the agent simply has not started — a pod lists as running as soon
-    // as its keepalive tmux is up, minutes before the agent window is
-    // respawned, so this branch is hit on nearly every fresh create.
+    // Nothing recorded yet. That is ambiguous: either the agent is running
+    // its one pinned session and no hook has reported it (the pin is the
+    // worktree id, via `--session-id`), or the agent simply has not started
+    // — a pod lists as running as soon as its keepalive tmux is up, minutes
+    // before the agent window is respawned, so this branch is hit on nearly
+    // every fresh create.
     //
     // Only the first case may be recorded, and the pinned transcript
     // existing is the evidence that separates them. Guessing instead would
@@ -175,7 +176,7 @@ export async function reconcileWorktreeAgentSessions(
     // opening message has to be probed out of the pod.
     const pinned = await sessionTranscriptPath(projectSlug, worktreeId, tool)
     if (pinned === undefined && tool !== 'opencode') return
-    const legacy = [await withFirstPrompt(
+    const pinnedOnly = [await withFirstPrompt(
       {
         tool,
         agentSessionId: worktreeId,
@@ -188,7 +189,7 @@ export async function reconcileWorktreeAgentSessions(
       type: 'sessions-discovered',
       projectSlug,
       worktreeId,
-      sessions: legacy.map((c) => toReported(projectSlug, c)),
+      sessions: pinnedOnly.map((c) => toReported(projectSlug, c)),
     })
     // Unlike the branch below, this reports the active set without consulting
     // `liveAgents` — safe only because a worktree reaching here has exactly
@@ -202,7 +203,7 @@ export async function reconcileWorktreeAgentSessions(
       type: 'sessions-active',
       projectSlug,
       worktreeId,
-      active: legacy.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId })),
+      active: pinnedOnly.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId })),
     })
     return
   }

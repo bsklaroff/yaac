@@ -151,15 +151,6 @@ export async function ensureProxyResources(
   // Lock the proxy's transparent ports to the node (forgery guard): only
   // netd's Envoy, which runs in the node netns, may originate PP2.
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
-  // The names these two policies had when a worktree was called a session.
-  // Deleted only AFTER their replacements are applied above: NetworkPolicies
-  // union, so an overlap is harmless, whereas deleting first would leave
-  // worktree egress unpoliced for the width of this function.
-  for (const stale of ['yaac-session-egress', 'yaac-session-ingress-lock']) {
-    await kubectlWithRetry([
-      'delete', 'networkpolicy', stale, '-n', k8sNamespace(), '--ignore-not-found',
-    ]).catch(() => { /* best-effort; a leftover policy is a duplicate, not a hole */ })
-  }
   // World-egress default-deny over non-worktree, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
   // The redirect layer. A nested install runs netd in CLAIM mode: its

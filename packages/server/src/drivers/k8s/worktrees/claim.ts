@@ -2,7 +2,7 @@ import {
   LABEL_DATA_DIR_HASH,
   LABEL_PREWARMED,
   LABEL_TOOL,
-  LABEL_WORKTREE_ID_LEGACY,
+  LABEL_WORKTREE_ID,
   dataDirHash,
   k8sNamespace,
   kubectlGetJson,
@@ -74,7 +74,7 @@ export async function claimSpareWorkspace(
 ): Promise<void> {
   const selector = [
     `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-    `${LABEL_WORKTREE_ID_LEGACY}=${workspaceId}`,
+    `${LABEL_WORKTREE_ID}=${workspaceId}`,
     `${LABEL_PREWARMED}=true`,
   ].join(',')
 

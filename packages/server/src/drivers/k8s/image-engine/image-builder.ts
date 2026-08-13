@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { PROJECT_DOCKERFILE, USER_DOCKERFILE, resolveProjectBuildDir, resolveUserBuildDir } from '#lib/build-dirs'
+import { PROJECT_DOCKERFILE, USER_DOCKERFILE, projectBuildDir, userBuildDir } from '#lib/build-dirs'
 import { imageExists, runTrackedPodman } from '#drivers/k8s/container'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#lib/build-context'
 import { podUid } from '#drivers/k8s/substrate'
@@ -193,7 +193,7 @@ export async function resolveImageChain(
   // support files next to the Dockerfile ship to the build and are part
   // of the layer's content hash, so editing one re-tags the image just
   // like a Dockerfile edit.
-  const projectBuild = await resolveProjectBuildDir(projectSlug)
+  const projectBuild = projectBuildDir(projectSlug)
   const localDockerfile = path.join(projectBuild, PROJECT_DOCKERFILE)
   let yaacDockerfile: string | null = null
   let yaacContent: string | null = null
@@ -310,7 +310,7 @@ export async function resolveImageChain(
   // Layer 2 (optional): <prefix>-user-<slug> (from ~/.yaac/build/
   // Dockerfile.user). Same containment rule as the project layer: the
   // build dir is the whole context, hashed as a unit.
-  const userBuild = await resolveUserBuildDir()
+  const userBuild = userBuildDir()
   const userDockerfile = path.join(userBuild, USER_DOCKERFILE)
   if (await fileExists(userDockerfile)) {
     const userContent = await fs.readFile(userDockerfile, 'utf8')

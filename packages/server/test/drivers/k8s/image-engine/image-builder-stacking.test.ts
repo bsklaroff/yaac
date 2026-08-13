@@ -8,11 +8,12 @@ describe('resolveImageChain', () => {
 
   it('names each dependency step in build order', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
-    await fs.writeFile(path.join(h.dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain('myproject', 'yaac', true)
@@ -21,10 +22,10 @@ describe('resolveImageChain', () => {
 
   it('names a standalone Dockerfile.yaac as the project step', async () => {
     const repoPath = path.join(h.dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain('myproject', 'yaac')
@@ -62,20 +63,6 @@ describe('resolveImageChain', () => {
     const third = await tagsByName()
     expect(third.project).toBe(second.project)
     expect(third.user).not.toBe(second.user)
-  })
-
-  it('serves the project Dockerfile from a legacy config/ location via migration', async () => {
-    const configDir = path.join(h.dataDir, 'projects', 'myproject', 'config')
-    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
-
-    const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain('myproject', 'yaac')
-    const project = layers.find((l) => l.name === 'project')
-    expect(project?.dockerfile).toBe(path.join(configDir, 'build', 'Dockerfile.yaac'))
-    expect(project?.context).toBe(path.join(configDir, 'build'))
-    await expect(fs.access(path.join(configDir, 'Dockerfile.yaac'))).rejects.toThrow()
   })
 })
 

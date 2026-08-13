@@ -96,11 +96,11 @@ sync:
     #   - STAMP (inject a label the virtual pod lacks): a vcluster PRO
     #     feature ("Translate Patches", sync.toHost.pods.patches) — the OSS
     #     syncer hard-errors on it. So the OUTER yaac cannot add
-    #     yaac.session-id to an arbitrary tenant pod.
+    #     yaac.worktree-id to an arbitrary tenant pod.
     #   - PROPAGATE (copy a label the virtual pod already carries): default
     #     behavior — the host pod gets the virtual pod's labels verbatim. So
     #     an INNER yaac's own pods (which it labels app=yaac-proxy /
-    #     yaac.role / yaac.session-id at creation) DO carry those labels on
+    #     yaac.role / yaac.worktree-id at creation) DO carry those labels on
     #     the host. A pure tenant workload that sets none carries none.
     # Containment therefore keys on vcluster.loft.sh/managed-by — the ONE
     # label the SYNCER itself stamps on every synced pod, which a tenant
@@ -108,7 +108,8 @@ sync:
     # (buildVclusterEgressFloorNpManifest), selecting managed-by, is the
     # default-deny egress policy for these pods (the node's netd listener
     # range, the vcluster API, sibling synced pods, the outer DNS stub),
-    # replacing yaac-session-egress for them. Every yaac label that DOES
+    # replacing the install-wide worktree egress lock for them. Every yaac
+    # label that DOES
     # propagate is forgeable, so nothing — neither policy nor the redirect —
     # relies on one: the inner redirect is driven by validated claims naming
     # pod IPs (drivers/k8s/cluster/redirect-claims.ts), and pod IPs come from

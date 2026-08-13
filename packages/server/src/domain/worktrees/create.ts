@@ -67,7 +67,6 @@ import {
   buildWorktreeLinkExec,
   ensureClaudeHooks,
   ensureOpencodeConfigJson,
-  removeLegacyCodexHook,
   validateInitWindows,
   type InitWindow,
 } from '#runtime/agents'
@@ -889,10 +888,7 @@ export async function createWorktree(
 
     // Codex discovers its conversations through the same managed SessionStart
     // hook as the others (/etc/codex, baked into the image and trusted by
-    // policy), so nothing is seeded into the mounted codex dir. For projects
-    // predating that hook, strip the stale user-layer one so it stops
-    // triggering Codex's /hooks trust-approval prompt.
-    await removeLegacyCodexHook(codex)
+    // policy), so nothing is seeded into the mounted codex dir.
 
     // opencode: grant the websearch permission in the shared opencode.json so
     // the Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA below).

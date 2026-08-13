@@ -10,22 +10,11 @@ import {
 /** Label keys attached to every worktree Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
 /**
- * The worktree a pod runs. Stamped alongside the legacy key below, which is
- * what every selector still matches on — see LABEL_WORKTREE_ID_LEGACY.
+ * The worktree a pod runs. Every list query, informer and cluster-side
+ * NetworkPolicy podSelector matches on this key, so it is what makes a
+ * worktree pod findable at all.
  */
 export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
-/**
- * The key this label had when a worktree was called a session. Every pod
- * that predates the rename carries ONLY this one, and a label selector
- * cannot express "either key" — so writers stamp both and every selector
- * (list queries, informers, and the cluster-side NetworkPolicy podSelectors
- * in `#drivers/k8s/cluster`) keeps matching on this one until the compatibility
- * window closes. Dropping it strands every worktree that was already running
- * at upgrade time, and it fails silently: a stale selector finds no pods, it
- * does not error. Code-level readers go through `labelWorktreeId`, which
- * accepts either key.
- */
-export const LABEL_WORKTREE_ID_LEGACY = 'yaac.session-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
 /**
@@ -64,30 +53,9 @@ export const VCLUSTER_API_PORT = 8443
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
 
-/**
- * The worktree id a set of labels carries, under either key. The only way
- * code should read it — a bare `labels[LABEL_WORKTREE_ID]` misses every pod
- * that was already running when the new key shipped.
- */
-export function labelWorktreeId(
-  labels: Record<string, string | undefined>,
-): string | undefined {
-  return labels[LABEL_WORKTREE_ID] ?? labels[LABEL_WORKTREE_ID_LEGACY]
-}
-
-/** Both keys, for a writer stamping a worktree Job or Pod. */
+/** The worktree-id stamp, for a writer labelling a worktree Job or Pod. */
 export function worktreeIdLabels(worktreeId: string): Record<string, string> {
-  return { [LABEL_WORKTREE_ID]: worktreeId, [LABEL_WORKTREE_ID_LEGACY]: worktreeId }
-}
-
-/**
- * `labelWorktreeId` for labels a schema has already refined to carry one —
- * the throw is unreachable, and stands in for a narrowing zod cannot express.
- */
-function requireLabelWorktreeId(labels: Record<string, string | undefined>): string {
-  const id = labelWorktreeId(labels)
-  if (id === undefined) throw new Error('pod labels carry no worktree id')
-  return id
+  return { [LABEL_WORKTREE_ID]: worktreeId }
 }
 
 /**
@@ -202,14 +170,10 @@ export const podItemSchema = z.object({
     name: z.string().min(1),
     labels: z.object({
       [JOB_NAME_LABEL]: z.string().min(1),
-      [LABEL_WORKTREE_ID]: z.string().min(1).optional(),
-      [LABEL_WORKTREE_ID_LEGACY]: z.string().min(1).optional(),
+      [LABEL_WORKTREE_ID]: z.string().min(1),
       [LABEL_PROJECT]: z.string().min(1),
       [LABEL_TOOL]: z.string().min(1),
-    }).catchall(z.string()).refine(
-      (labels) => labelWorktreeId(labels) !== undefined,
-      { message: `missing ${LABEL_WORKTREE_ID} (or legacy ${LABEL_WORKTREE_ID_LEGACY})` },
-    ),
+    }).catchall(z.string()),
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
   }),
@@ -254,7 +218,7 @@ export function mapPodItem({ metadata, status }: PodItem): PodInfo {
   return {
     jobName: metadata.labels[JOB_NAME_LABEL],
     podName: metadata.name,
-    worktreeId: requireLabelWorktreeId(metadata.labels),
+    worktreeId: metadata.labels[LABEL_WORKTREE_ID],
     projectSlug: metadata.labels[LABEL_PROJECT],
     tool: metadata.labels[LABEL_TOOL],
     ...(metadata.labels[LABEL_MODE] !== undefined ? { mode: metadata.labels[LABEL_MODE] } : {}),
@@ -281,13 +245,9 @@ const jobItemSchema = z.object({
   metadata: z.object({
     name: z.string().min(1),
     labels: z.object({
-      [LABEL_WORKTREE_ID]: z.string().min(1).optional(),
-      [LABEL_WORKTREE_ID_LEGACY]: z.string().min(1).optional(),
+      [LABEL_WORKTREE_ID]: z.string().min(1),
       [LABEL_PROJECT]: z.string().min(1),
-    }).catchall(z.string()).refine(
-      (labels) => labelWorktreeId(labels) !== undefined,
-      { message: `missing ${LABEL_WORKTREE_ID} (or legacy ${LABEL_WORKTREE_ID_LEGACY})` },
-    ),
+    }).catchall(z.string()),
     creationTimestamp: timestampSchema,
   }),
 })
@@ -299,7 +259,7 @@ export function mapJobObject(obj: unknown): JobInfo | null {
   const { metadata } = res.data
   return {
     jobName: metadata.name,
-    worktreeId: requireLabelWorktreeId(metadata.labels),
+    worktreeId: metadata.labels[LABEL_WORKTREE_ID],
     projectSlug: metadata.labels[LABEL_PROJECT],
     createdAtMs: toEpochMs(metadata.creationTimestamp),
   }
@@ -333,15 +293,11 @@ export async function listWorktreePods(projectFilter?: string): Promise<PodInfo[
   return items.map(mapPodItem)
 }
 
-/**
- * The label selector `listWorktreePods` and the pod watcher share. Keyed on
- * the legacy worktree-id label, the one key every live pod carries — see
- * LABEL_WORKTREE_ID_LEGACY.
- */
+/** The label selector `listWorktreePods` and the pod watcher share. */
 export function worktreePodSelector(projectFilter?: string): string {
   return [
     `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
-    `${LABEL_WORKTREE_ID_LEGACY}`,
+    `${LABEL_WORKTREE_ID}`,
     ...(projectFilter ? [`${LABEL_PROJECT}=${projectFilter}`] : []),
   ].join(',')
 }
@@ -453,5 +409,5 @@ export async function listWorktreeJobs(): Promise<JobInfo[]> {
 
 /** The label selector `listWorktreeJobs` and the Jobs informer share. */
 export function worktreeJobSelector(): string {
-  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID_LEGACY}`
+  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID}`
 }

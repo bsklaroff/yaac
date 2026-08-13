@@ -34,18 +34,6 @@ const RESPAWN_BASE_MS = 250
  */
 const RESPAWN_MAX_MS = 5_000
 /**
- * Retry cadence against a proxy that has no `/events` route (404) — one
- * that predates it and will not grow one until `ensureRunning` redeploys
- * it on the next worktree create.
- *
- * Deliberately the same 5s the reconciler's deleted poll lane ran at, and
- * each retry stands in for the edges the stream would have carried — the
- * spawn drain and a snapshot rebuild. This degrades to exactly the old
- * behavior, and costs one local tunnel call per tick only for as long as
- * the deployed proxy is out of date.
- */
-const UNSUPPORTED_RETRY_MS = 5_000
-/**
  * Read-idle deadline. The proxy pings every 15s, so silence past this
  * means the tunnel is dead in a way TCP has not noticed (a wedged
  * apiserver, a killed exec relay).
@@ -137,18 +125,15 @@ export class ProxyEventStream {
 
   private async run(): Promise<void> {
     while (!this.stopped) {
-      const unsupported = await this.connectOnce()
+      await this.connectOnce()
       if (this.stopped) return
-      await this.sleep(unsupported ? UNSUPPORTED_RETRY_MS : this.delayMs)
-      if (!unsupported) {
-        this.delayMs = Math.min(this.delayMs * 2, this.maxDelayMs)
-      }
+      await this.sleep(this.delayMs)
+      this.delayMs = Math.min(this.delayMs * 2, this.maxDelayMs)
     }
   }
 
-  /** One connect-and-consume cycle. Returns true when the proxy answered
-   *  404 — i.e. it predates this route and needs a redeploy, not a retry. */
-  private async connectOnce(): Promise<boolean> {
+  /** One connect-and-consume cycle. */
+  private async connectOnce(): Promise<void> {
     const controller = new AbortController()
     this.controller = controller
     try {
@@ -157,25 +142,6 @@ export class ProxyEventStream {
       // connect that hangs without failing.
       this.armDeadline(controller, this.connectDeadlineMs, 'connect timed out')
       const res = await this.open(controller.signal)
-      if (res.status === 404) {
-        if (!this.reportedDown) {
-          serverLog('[server] proxy events: deployed proxy has no /events route'
-            + ' — falling back to polling its spawn queue until it redeploys')
-          this.reportedDown = true
-        }
-        // No stream means no edges at all, so this tick has to stand in for
-        // every one of them. The spawn drain because the proxy is holding
-        // its caller's response against a TTL no longer than the resync
-        // interval; the snapshot because leaning on the resync would not
-        // work at all — resync dirties reconcile steps, and no reconcile
-        // step publishes any more, so on an otherwise quiet server a newly
-        // blocked host would wait for an unrelated store to notify, which
-        // may never come. The hub diffs, so a tick that changed nothing
-        // costs one rebuild — exactly what the old poll lane paid.
-        this.onChange('spawn-requests')
-        notifyWorktreeListChanged()
-        return true
-      }
       if (!res.ok) throw new Error(`status ${res.status}`)
 
       // Attached. Whatever changed while we were away is invisible to us,
@@ -199,14 +165,12 @@ export class ProxyEventStream {
       this.onChange('proxy-reconnect')
 
       await this.consume(res, controller)
-      return false
     } catch (err) {
       if (!this.stopped && !this.reportedDown) {
         const reason = err instanceof ProxyNotReachable ? 'proxy not reachable' : String(err)
         serverLog(`[server] proxy events: stream down (${reason}); retrying`)
         this.reportedDown = true
       }
-      return false
     } finally {
       this.clearIdleTimer()
       if (this.controller === controller) this.controller = null

@@ -192,7 +192,7 @@ describe('ensureActivator', () => {
     // is named by address — resolved here through the real cluster-cidrs
     // read of `get nodes`.
     expect(np.spec.ingress[0]).toMatchObject({ from: [{ ipBlock: { cidr: `${NODE_IP}/32` } }] })
-    expect(JSON.stringify(np.spec.ingress[1])).toContain('yaac.session-id')
+    expect(JSON.stringify(np.spec.ingress[1])).toContain('yaac.worktree-id')
     expect(JSON.stringify(np.spec.ingress)).toContain(String(VCLUSTER_API_PORT))
 
     expect(np.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: `${NODE_IP}/32` } }] })

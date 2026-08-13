@@ -102,7 +102,7 @@ describe('yaac prewarmed sessions', () => {
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(
       path.join(credsDir, 'github.json'),
-      JSON.stringify({ tokens: [{ pattern: 'test-org/*', token: 'fake-ghp-token' }] }) + '\n',
+      JSON.stringify({ tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }] }) + '\n',
     )
     await fs.writeFile(
       path.join(credsDir, 'claude.json'),

@@ -1,6 +1,5 @@
 import {
   gcOrphanEphemeralModuleDirs,
-  importLegacyMeta,
   reconcileAgentSessions,
   reconcilePrewarmPool,
   reconcileSpawnRequests,
@@ -33,19 +32,6 @@ export type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/cont
 export function defaultReconcileSteps(): ReconcileStep[] {
   const runtime = worktreeDriver().reconcileSteps()
   return [
-    // Carry a previous yaac's per-worktree metadata documents into rows.
-    // FIRST, and self-gating to once per server life: the sweeps below read
-    // the columns it fills — the spare flag a reap deletes a checkout on,
-    // and the log offset the conversation fold trusts panes against — so
-    // running either ahead of it would judge an install mid-upgrade against
-    // columns nobody had written yet.
-    //
-    // No triggers, so it runs on resync passes only. That is sufficient
-    // *because the first pass of a server's life is always a resync*
-    // (`startReconciler` seeds one before the loop) and a pass runs its steps
-    // in order, awaited. If that seeding ever changes, this needs a trigger
-    // of its own rather than the ordering alone.
-    { name: 'legacy-meta-import', triggers: [], run: () => importLegacyMeta() },
     // The stale reaper — first, so counts reflect just-reaped worktrees by
     // the time the prewarm pool runs. It reads what should exist from
     // db at the top of its pass; the sources here are the ones on

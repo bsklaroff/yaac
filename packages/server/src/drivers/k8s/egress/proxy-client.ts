@@ -315,17 +315,8 @@ export class ProxyClient {
   }
 
   /**
-   * A worktree-scoped proxy call, retried against the path this surface had
-   * before the rename when the deployed proxy 404s it.
-   *
-   * The redeploy-on-image-mismatch check only runs inside `ensureRunning`,
-   * which is reached from worktree create — not from server start, and not
-   * from the `attachIfRunning` callers (allow-host, worktree stop, the spawn
-   * drain). So a server restarted onto new code talks to the OLD proxy until
-   * the first create, and the old proxy serves only `/sessions/:id`.
-   *
-   * A 404 from BOTH paths is the caller's to interpret: for allow-host it
-   * means the proxy holds no registration for that worktree.
+   * A worktree-scoped proxy call. A 404 is the caller's to interpret: for
+   * allow-host it means the proxy holds no registration for that worktree.
    */
   private async worktreeFetch(
     worktreeId: string,
@@ -333,9 +324,7 @@ export class ProxyClient {
     init: Parameters<typeof tunnelFetch>[1],
   ): Promise<Response> {
     const id = encodeURIComponent(worktreeId)
-    const res = await tunnelFetch(`${this.baseUrl}/worktrees/${id}${suffix}`, init)
-    if (res.status !== 404) return res
-    return await tunnelFetch(`${this.baseUrl}/sessions/${id}${suffix}`, init)
+    return await tunnelFetch(`${this.baseUrl}/worktrees/${id}${suffix}`, init)
   }
 
   async removeWorktree(worktreeId: string): Promise<void> {
@@ -404,10 +393,6 @@ export class ProxyClient {
     const res = await tunnelFetch(`${this.baseUrl}/spawn/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
-    // A proxy pod predating the spawn feature has no such route. Quietly
-    // nothing-pending: it redeploys on the next ensureRunning (worktree
-    // create), and logging would recur every background tick until then.
-    if (res.status === 404) return []
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to fetch pending spawns: ${res.status} ${text}`)
@@ -564,9 +549,7 @@ export class ProxyClient {
    */
   async listWorktrees(): Promise<string[]> {
     const headers = { 'Authorization': `Bearer ${this.requireAuthSecret()}` }
-    let res = await tunnelFetch(`${this.baseUrl}/worktrees`, { headers })
-    // The path this listing had before the rename (see worktreeFetch).
-    if (res.status === 404) res = await tunnelFetch(`${this.baseUrl}/sessions`, { headers })
+    const res = await tunnelFetch(`${this.baseUrl}/worktrees`, { headers })
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to list proxy worktrees: ${res.status} ${text}`)

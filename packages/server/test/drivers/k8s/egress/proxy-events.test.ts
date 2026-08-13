@@ -165,24 +165,6 @@ describe('ProxyEventStream', () => {
     expect(delays).toEqual([250, 250, 250, 250])
   })
 
-  // A proxy predating this route will not grow one without a redeploy, which
-  // happens on the next worktree create. With no stream there is no edge, so
-  // the retry doubles as the old poll: it re-fires the spawn drain at the
-  // cadence that lane used to run at, because the proxy is holding a
-  // caller's response against a TTL no longer than the resync interval.
-  // Display state (blocked hosts, git-auth) is content to wait, so no push
-  // is claimed for data that was never received.
-  it('polls the spawn drain and the snapshot against a proxy with no /events route', async () => {
-    const delays = await run(responseOf([], { status: 404 }), { stopAfterSleeps: 2 })
-    expect(delays).toEqual([5_000, 5_000])
-    expect(changes).toEqual(['spawn-requests', 'spawn-requests'])
-    // The snapshot has to be rebuilt here too. Leaning on the resync would
-    // not work: resync dirties reconcile steps, and no reconcile step
-    // publishes any more, so on a quiet server a newly blocked host would
-    // wait for an unrelated store to notify — possibly forever.
-    expect(notified).toBe(2)
-  })
-
   // The dial is the bare fetch, so nothing else bounds it. A relay that
   // accepts the connection but never returns headers is precisely the hang
   // the idle deadline exists for — but that timer is only armed once the
@@ -201,8 +183,11 @@ describe('ProxyEventStream', () => {
     expect(changes).toEqual([])
   })
 
-  it('treats any other error status as a stream death', async () => {
-    const delays = await run(responseOf([], { status: 500 }), { stopAfterSleeps: 1 })
+  // Including a 404 — an unreachable route is a dead stream like any other,
+  // and nothing is claimed to have caught up on a connection that never
+  // attached.
+  it.each([404, 500])('treats status %i as a stream death', async (status) => {
+    const delays = await run(responseOf([], { status }), { stopAfterSleeps: 1 })
     expect(delays).toEqual([250])
     expect(notified).toBe(0)
     expect(changes).toEqual([])

@@ -408,7 +408,7 @@ describe('ensureWorktreeVcluster', () => {
     // The session policy lives in the INSTALL namespace (it selects the
     // session pod) and reaches the vcluster namespace cross-namespace.
     const worktreeNp = nps.find((m) => m.metadata.namespace === 'test-ns')! as unknown as NetPol
-    expect(worktreeNp.spec.podSelector.matchLabels).toEqual({ 'yaac.session-id': SID })
+    expect(worktreeNp.spec.podSelector.matchLabels).toEqual({ 'yaac.worktree-id': SID })
     expect(worktreeNp.spec.policyTypes).toEqual(['Egress'])
     expect(worktreeNp.spec.egress[0].to[0].namespaceSelector?.matchLabels)
       .toEqual({ 'kubernetes.io/metadata.name': VCNS })

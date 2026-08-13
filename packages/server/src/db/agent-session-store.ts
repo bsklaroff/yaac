@@ -488,9 +488,10 @@ export async function deleteWorktreeAgentSessions(
 
 /**
  * A worktree's first conversation — the one whose tool the worktree runs and
- * whose opening message labels it. Session create records it with the
- * worktree row, so every worktree has one; a row without one predates that
- * and is treated as unknown rather than guessed at.
+ * whose opening message labels it. Create records it moments after the
+ * worktree row itself, so a row can be read in between (and a create that
+ * died in that gap leaves one for good); that reads as unknown here rather
+ * than being guessed at, and each caller decides what to do without one.
  */
 export async function firstAgentSession(
   projectSlug: string,

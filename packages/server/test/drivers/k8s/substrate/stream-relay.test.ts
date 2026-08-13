@@ -108,7 +108,7 @@ function fakePortForward(port: number): FakeChild {
 }
 
 interface Received {
-  auth: { token?: string; worktreeId?: string; sessionId?: string }
+  auth: { token?: string; worktreeId?: string }
   handshake: Record<string, unknown>
   socket: net.Socket
   leftover: Buffer
@@ -197,7 +197,7 @@ describe('relayDial', () => {
     const socket = await relayDial(SID, { kind: 'ctrl', cmd: ['tmux'] })
     const r = received!
     // Both names — see relayDial: this path has no currency gate.
-    expect(r.auth).toEqual({ token: SECRET, worktreeId: SID, sessionId: SID })
+    expect(r.auth).toEqual({ token: SECRET, worktreeId: SID })
     expect(r.handshake).toEqual({
       token: await podStreamToken(SID),
       kind: 'ctrl',

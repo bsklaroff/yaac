@@ -270,13 +270,7 @@ export async function relayDial(
     socket.on('close', () => fail('connection closed during handshake'))
     socket.on('connect', () => {
       socket.write(
-        // Both names, because this is the ONE proxy path with no currency
-        // gate in front of it: relay dials never go through ProxyClient, and
-        // the boot path attaches to whatever proxy is deployed without
-        // checking its image. A server restarted onto new code therefore
-        // talks to the OLD proxy until the first worktree create redeploys
-        // it, and that proxy reads only `sessionId`.
-        JSON.stringify({ token: secret, worktreeId, sessionId: worktreeId }) + '\n'
+        JSON.stringify({ token: secret, worktreeId }) + '\n'
         + JSON.stringify({ token, ...handshake }) + '\n',
       )
     })

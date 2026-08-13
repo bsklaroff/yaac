@@ -278,7 +278,7 @@ async function happyResponses(
           {
             metadata: {
               name: 'yaac-session-abc', namespace: 'test-ns',
-              labels: { 'yaac.session-id': 'abc' },
+              labels: { 'yaac.worktree-id': 'abc' },
             },
             spec: { runtimeClassName: 'gvisor' },
           },
@@ -1114,7 +1114,7 @@ describe('runClusterCheck', () => {
               {
                 metadata: {
                   name: 'yaac-old-session', namespace: 'test-ns',
-                  labels: { 'yaac.session-id': 'old' },
+                  labels: { 'yaac.worktree-id': 'old' },
                 },
                 spec: {},
               },
