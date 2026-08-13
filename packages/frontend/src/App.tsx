@@ -103,7 +103,7 @@ function App(): JSX.Element {
   // A browser tab gets neither, so it always renders content flush.
   const isWorkspace = auth === 'authed'
   return (
-    <div className="flex h-full flex-col bg-base">
+    <div className="flex h-full flex-col bg-shell">
       {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
@@ -351,7 +351,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     // mounted when a phone is rotated across the breakpoint. Only the two
     // navigation regions swap component (they're cheap); the pane's wrapper
     // stays the same <div> and merely changes class.
-    <div className={clsx('bg-base', isMobile
+    <div className={clsx('bg-shell', isMobile
       ? 'safe-area-inset relative h-full overflow-hidden'
       : 'flex h-full')}
     >

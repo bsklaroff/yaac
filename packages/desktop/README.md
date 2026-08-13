@@ -30,7 +30,7 @@ is impossible (the SPA comes from the server it talks to).
 - **Native chrome.** `hiddenInset` title bar: the floating traffic lights sit
   over the SPA's top row, which reserves `titlebar-drag` regions for them
   (see the frontend's `App.tsx`/`Sidebar.tsx`/`ProjectRail.tsx`). The
-  window's native background mirrors the SPA's `--color-base` per OS
+  window's native background mirrors the SPA's `--color-shell` per OS
   appearance (`src/theme-bg.ts`); bounds persist across launches and are
   restored only while still on some display (`src/window-state.ts`); the
   role-based menu keeps Cmd-C/V working inside the xterm terminals.

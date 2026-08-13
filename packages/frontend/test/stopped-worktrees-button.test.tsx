@@ -38,6 +38,10 @@ const entry = (over: Partial<StoppedWorktreeEntry> = {}): StoppedWorktreeEntry =
   ...over,
 })
 
+/** The sidebar entry point's accessible name carries its count ("Stopped
+ *  worktrees 2"), so match on the prefix. */
+const STOPPED_ENTRY = { name: /^Stopped worktrees/ }
+
 const TWO = [
   entry({ worktreeId: 's1', title: 'Fix parser', prompt: 'fix the parser bug' }),
   entry({ worktreeId: 's2', title: 'Add tests', tool: 'codex' }),
@@ -64,7 +68,7 @@ function renderButton(): void {
 /** Render, wait for the (data-gated) sidebar entry point, and open the overlay. */
 async function open(): Promise<void> {
   renderButton()
-  fireEvent.click(await screen.findByRole('button', { name: 'Stopped worktrees' }))
+  fireEvent.click(await screen.findByRole('button', STOPPED_ENTRY))
 }
 
 describe('StoppedWorktreesButton', () => {
@@ -78,12 +82,12 @@ describe('StoppedWorktreesButton', () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([])
     renderButton()
     await waitFor(() => expect(getStoppedWorktrees).toHaveBeenCalled())
-    expect(screen.queryByRole('button', { name: 'Stopped worktrees' })).toBeNull()
+    expect(screen.queryByRole('button', STOPPED_ENTRY)).toBeNull()
   })
 
   it('shows the entry point once deleted worktrees exist', async () => {
     renderButton()
-    expect(await screen.findByRole('button', { name: 'Stopped worktrees' })).toBeTruthy()
+    expect(await screen.findByRole('button', STOPPED_ENTRY)).toBeTruthy()
   })
 
   it('lists deleted worktrees and shows the selected one in the detail pane', async () => {
@@ -140,19 +144,43 @@ describe('StoppedWorktreesButton', () => {
 
   it('shows no notification dot when every deletion was user-initiated', async () => {
     renderButton() // TWO are plain deletes (no deathReason)
-    await screen.findByRole('button', { name: 'Stopped worktrees' })
+    await screen.findByRole('button', STOPPED_ENTRY)
     expect(screen.queryByTitle(/died unexpectedly/)).toBeNull()
   })
 
-  it('marks the death seen server-side and clears the dot once its detail is viewed', async () => {
+  it('marks the death seen server-side and clears the dot once its row is clicked', async () => {
     vi.mocked(getStoppedWorktrees).mockResolvedValue([
       entry({ worktreeId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
-    await open() // sole died row auto-selected → its detail is on screen → seen
+    await open()
+    // The sole row stands in for the detail pane, but a stand-in is not a read:
+    // the acknowledgement is durable and cross-client, so it waits for a click.
+    await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
+    expect(markDeathSeen).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getAllByText('OOMed run')[0])
     // Persisted via the server, and the cached list is optimistically patched so
     // the dot clears without waiting for a refetch.
     await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
+  })
+
+  it('does not acknowledge deaths the search box walks the stand-in through', async () => {
+    // Each keystroke re-filters the list, so the top row — the desktop detail
+    // pane's stand-in — changes under the user. Acknowledging it would mean
+    // hunting for one dead worktree marks every death whose title shares a
+    // prefix with the query.
+    vi.mocked(getStoppedWorktrees).mockResolvedValue([
+      entry({ worktreeId: 's3', title: 'Oomed parser', deathReason: 'oom' }),
+      entry({ worktreeId: 's4', title: 'Oomed indexer', deathReason: 'oom' }),
+      entry({ worktreeId: 's5', title: 'Evicted run', deathReason: 'evicted' }),
+    ])
+    await open()
+    const search = screen.getByPlaceholderText('Search…')
+    for (const q of ['e', 'ev', 'evi']) fireEvent.change(search, { target: { value: q } })
+    await waitFor(() => expect(screen.getAllByText('Evicted run').length).toBeGreaterThan(0))
+    expect(markDeathSeen).not.toHaveBeenCalled()
+    expect(await screen.findByTitle('3 worktrees died unexpectedly')).toBeTruthy()
   })
 
   it('keeps the dot until each died row is individually viewed', async () => {
@@ -160,7 +188,7 @@ describe('StoppedWorktreesButton', () => {
       entry({ worktreeId: 's1', title: 'Plain delete' }),
       entry({ worktreeId: 's3', title: 'OOMed run', deathReason: 'oom' }),
     ])
-    await open() // top row (plain delete) auto-selected → the died row stays unseen
+    await open() // nothing clicked yet → the died row stays unseen
     expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
     expect(markDeathSeen).not.toHaveBeenCalled() // the plain delete isn't a death
     fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
@@ -238,7 +266,7 @@ describe('StoppedWorktreesButton', () => {
     expect(await screen.findByTitle('1 worktree died unexpectedly')).toBeTruthy()
 
     // Restart s1 from the overlay → records it mid-restart and closes the overlay.
-    fireEvent.click(await screen.findByRole('button', { name: 'Stopped worktrees' }))
+    fireEvent.click(await screen.findByRole('button', STOPPED_ENTRY))
     fireEvent.click(await screen.findByRole('button', { name: /Restart/ }))
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restart' }))
     expect(provision).toHaveBeenCalledTimes(1)
@@ -253,7 +281,7 @@ describe('StoppedWorktreesButton', () => {
       </QueryClientProvider>,
     )
     await waitFor(() => expect(client.getQueryData(['deleted', 'proj', 'sig-b'])).toEqual([]))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stopped worktrees' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', STOPPED_ENTRY)).toBeNull())
 
     // s1 dies again and re-enters the deleted list. With the stale filter pruned,
     // the death dot must reappear immediately — no browser reload needed.

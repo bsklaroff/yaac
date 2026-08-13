@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
 import { CheckIcon, CloseIcon, LoadingIcon, RestartIcon, WarningIcon } from '#lib/icons'
+import { MasterDetail } from '#components/ui/MasterDetail'
 import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
+import { useIsMobile } from '#lib/viewport'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 /** Human relative age from the entry's UTC 'YYYY-MM-DD HH:MM:SS' time. */
@@ -56,12 +58,20 @@ export function ImageBuildsOverlay({
   builds: ImageBuildEntry[]
 }): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const isMobile = useIsMobile()
 
   // Follow the user's pick while it exists; otherwise the newest running
   // entry (builds arrive newest-first), falling back to the newest overall.
-  const selected = builds.find((b) => b.id === selectedId)
-    ?? builds.find((b) => b.status === 'running')
-    ?? builds[0]
+  // That stand-in is desktop-only: a phone shows the list or the log, never
+  // both, so there the log — and its 1.5s poll — waits for an actual tap.
+  const picked = builds.find((b) => b.id === selectedId)
+  const selected = picked
+    ?? (isMobile ? undefined : builds.find((b) => b.status === 'running') ?? builds[0])
+
+  // This overlay stays mounted while closed, so a pick outlives a close.
+  // Clear it so a phone reopens on the list rather than behind the back
+  // chevron on whichever log it last showed.
+  useEffect(() => { if (!open) setSelectedId(null) }, [open])
 
   const [log, setLog] = useState('')
   const selectedRunning = selected?.status === 'running'
@@ -98,12 +108,12 @@ export function ImageBuildsOverlay({
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
           <div className="flex items-center justify-between">
-            <Dialog.Title className="text-xs font-semibold text-text-dim">Image builds</Dialog.Title>
+            <Dialog.Title className="text-xs font-semibold text-text-dim max-md:text-sm">Image builds</Dialog.Title>
             <Dialog.Close
               title="Close"
               aria-label="Close"
-              className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
             >
               <CloseIcon size={14} />
             </Dialog.Close>
@@ -114,73 +124,86 @@ export function ImageBuildsOverlay({
           )}
 
           {builds.length > 0 && (
-            <div className="flex min-h-0 flex-1 gap-3">
-              <ul className="w-80 shrink-0 overflow-y-auto">
-                {builds.map((b) => (
-                  <li key={b.id} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(b.id)}
-                      className={clsx(
-                        'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition',
-                        selected?.id === b.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',
-                      )}
-                    >
-                      <span className="flex items-center gap-1.5 text-xs">
-                        <StatusIcon status={b.status} />
-                        <span className="font-medium">{buildLabel(b)}</span>
-                        <span className="truncate font-mono text-text-faint">{shortTag(b.tag)}</span>
-                      </span>
-                      <span className="truncate text-[11px] text-text-dim">
-                        {b.projectSlugs.join(', ')} · {b.reason} · {relativeAge(b.startedAt)}
-                        {b.stepCurrent !== undefined && b.stepTotal !== undefined && (
-                          <> · step {b.stepCurrent}/{b.stepTotal}</>
+            <MasterDetail
+              detailOpen={isMobile && picked !== undefined}
+              onBack={() => setSelectedId(null)}
+              backLabel="Back to builds"
+              master={
+                <ul className="min-h-0 flex-1 overflow-y-auto">
+                  {builds.map((b) => (
+                    <li key={b.id} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedId(b.id)}
+                        className={clsx(
+                          'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left transition',
+                          // The action buttons never hide on touch, so the row
+                          // text insets clear of them there.
+                          b.status !== 'running' && 'max-md:pr-16',
+                          'max-md:py-2.5',
+                          selected?.id === b.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',
                         )}
-                      </span>
-                      {b.status === 'running' && b.stepText && (
-                        <span className="truncate font-mono text-[10px] text-text-faint">{b.stepText}</span>
-                      )}
-                      {b.status === 'failed' && b.error && (
-                        <span className="truncate text-[10px] text-[#d65858]">{b.error}</span>
-                      )}
-                    </button>
-                    {b.status !== 'running' && (
-                      <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
-                        {b.status === 'failed' && (
+                      >
+                        <span className="flex items-center gap-1.5 text-xs">
+                          <StatusIcon status={b.status} />
+                          <span className="font-medium">{buildLabel(b)}</span>
+                          <span className="truncate font-mono text-text-faint">{shortTag(b.tag)}</span>
+                        </span>
+                        <span className="truncate text-[11px] text-text-dim">
+                          {b.projectSlugs.join(', ')} · {b.reason} · {relativeAge(b.startedAt)}
+                          {b.stepCurrent !== undefined && b.stepTotal !== undefined && (
+                            <> · step {b.stepCurrent}/{b.stepTotal}</>
+                          )}
+                        </span>
+                        {b.status === 'running' && b.stepText && (
+                          <span className="truncate font-mono text-[10px] text-text-faint">{b.stepText}</span>
+                        )}
+                        {b.status === 'failed' && b.error && (
+                          <span className="truncate text-[10px] text-[#d65858]">{b.error}</span>
+                        )}
+                      </button>
+                      {b.status !== 'running' && (
+                        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+                          {b.status === 'failed' && (
+                            <button
+                              type="button"
+                              onClick={() => { void retryImageBuild(b.id).catch(() => {}) }}
+                              title="Retry build"
+                              aria-label="Retry build"
+                              className="flex h-5 w-5 items-center justify-center rounded
+                                text-text-faint transition hover:bg-surface-3 hover:text-text
+                                max-md:h-7 max-md:w-7"
+                            >
+                              <RestartIcon size={11} />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => { void retryImageBuild(b.id).catch(() => {}) }}
-                            title="Retry build"
-                            aria-label="Retry build"
+                            onClick={() => { void dismissImageBuild(b.id).catch(() => {}) }}
+                            title="Dismiss (hides this row; does not rebuild)"
+                            aria-label="Dismiss build entry"
                             className="flex h-5 w-5 items-center justify-center rounded
-                              text-text-faint transition hover:bg-surface-3 hover:text-text"
+                              text-text-faint transition hover:bg-surface-3 hover:text-text
+                              max-md:h-7 max-md:w-7"
                           >
-                            <RestartIcon size={11} />
+                            <CloseIcon size={11} />
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => { void dismissImageBuild(b.id).catch(() => {}) }}
-                          title="Dismiss (hides this row; does not rebuild)"
-                          aria-label="Dismiss build entry"
-                          className="flex h-5 w-5 items-center justify-center rounded
-                            text-text-faint transition hover:bg-surface-3 hover:text-text"
-                        >
-                          <CloseIcon size={11} />
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              <pre
-                ref={boxRef}
-                className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg/80 p-2
-                  font-mono text-[10px] leading-relaxed text-text-dim"
-              >
-                {log || (selectedRunning ? 'Waiting for build output…' : '')}
-              </pre>
-            </div>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              }
+              detail={
+                <pre
+                  ref={boxRef}
+                  className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg/80 p-2
+                    font-mono text-[10px] leading-relaxed text-text-dim"
+                >
+                  {log || (selectedRunning ? 'Waiting for build output…' : '')}
+                </pre>
+              }
+            />
           )}
         </Dialog.Popup>
       </Dialog.Portal>

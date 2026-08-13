@@ -10,8 +10,13 @@
   /* Deepest layer — the app shell the floating panes sit on. Light enough
    * that the panes' drop shadows actually read against it. The elevated
    * surface steps sit well clear of it so cards, popups and selected fills
-   * read as distinct elevation levels, not near-black on near-black. */
-  --color-base: #0f0f12;
+   * read as distinct elevation levels, not near-black on near-black.
+   *
+   * `shell`, not `base`: a `--color-<name>` token makes `text-<name>` a color
+   * utility, so `--color-base` would shadow Tailwind's own `text-base`
+   * font-size utility and quietly turn any `text-base` into shell-colored text
+   * on the shell. Same trap for any other token named after a size step. */
+  --color-shell: #0f0f12;
   --color-bg: #0b0b0d;
   --color-surface: #1b1b21;
   --color-surface-2: #26262d;
@@ -101,7 +106,7 @@
  * inherited light palette.
  */
 [data-theme="dark"] {
-  --color-base: #0f0f12;
+  --color-shell: #0f0f12;
   --color-bg: #0b0b0d;
   --color-surface: #1b1b21;
   --color-surface-2: #26262d;
@@ -123,7 +128,7 @@
  * Applied for a forced light choice and, below, for system-follows-light —
  * CSS can't share a declaration list. */
 [data-theme="light"] {
-  --color-base: #fcfcfb;       /* near-white shell the cards float on */
+  --color-shell: #fcfcfb;       /* near-white shell the cards float on */
   --color-bg: #eeedec;         /* soft neutral wash — settings nav, loading, window bg */
   --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
   --color-surface-2: #e9e8e7;  /* hover/selected fills, menu popups */
@@ -141,7 +146,7 @@
 
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {
-    --color-base: #fcfcfb;
+    --color-shell: #fcfcfb;
     --color-bg: #eeedec;
     --color-surface: #ffffff;
     --color-surface-2: #e9e8e7;
@@ -188,7 +193,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--color-base);
+  background: var(--color-shell);
   color: var(--color-text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
