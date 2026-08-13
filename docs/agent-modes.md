@@ -249,9 +249,13 @@ container*, on the real `/workspace`, with its own tools — so yaac declines
 those capabilities and the container boundary (gVisor, the egress proxy, the
 NetworkPolicy) stays the one thing constraining it.
 
-`worktree/request_permission` is always granted, matching the TUI mode's
-`claude --dangerously-skip-permissions`: what constrains a yaac worktree is the
-sandbox and a throwaway git worktree, not a prompt nobody is watching.
+`worktree/request_permission` is always granted: what constrains a yaac
+worktree is the sandbox and a throwaway git worktree, not a prompt nobody is
+watching. That is also why an ACP conversation is `bypass`-only — create
+refuses any other permission mode rather than advertise a restraint whose
+prompts this build answers for the user. Wiring the other postures up is a
+matter of forwarding those requests to the chat pane, not of changing the
+launch command.
 
 ## Where things live
 

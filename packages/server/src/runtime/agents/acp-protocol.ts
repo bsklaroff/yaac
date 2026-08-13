@@ -361,12 +361,16 @@ function chunk(
 /**
  * The permission decision yaac returns for `session/request_permission`.
  *
- * Sessions run the agent with permissions bypassed — the same posture as the
- * TUI mode's `claude --dangerously-skip-permissions` — because the sandbox,
- * not a prompt, is what constrains a yaac session: the agent is in a gVisor
+ * Sessions run the agent with permissions bypassed, because the sandbox, not
+ * a prompt, is what constrains a yaac session: the agent is in a gVisor
  * container behind an egress allowlist, on a throwaway git worktree. So the
  * answer is always "allow", and the option to pick is whichever the agent
  * offered that allows *without* also asking again next time.
+ *
+ * This is why an ACP conversation is `bypass`-only and create refuses the
+ * other permission modes: answering a prompt on the user's behalf is the
+ * opposite of the restraint they would be asking for. Honoring them means
+ * forwarding these requests to the chat pane instead.
  */
 export function chooseAllowOption(params: unknown): string | undefined {
   const options = asRecord(params)?.options

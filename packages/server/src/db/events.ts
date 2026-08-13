@@ -1,6 +1,7 @@
 import type {
   AgentMode,
   AgentTool,
+  PermissionMode,
   WorktreeDeathCause,
 } from '@yaac/shared/types'
 
@@ -51,10 +52,10 @@ export interface WorktreeCreated {
    *  It gets a row so a reap can still tell it from a stopped worktree once
    *  its pod is gone, but every listing filters it out until it is claimed. */
   spare?: boolean
-  /** Whether this worktree's agents launch with their auto-approve flags.
-   *  Recorded with the row because a restart has to relaunch them the way
-   *  the user asked rather than re-deriving today's default. */
-  autoApprove?: boolean
+  /** The permission posture its agents launch in. Recorded with the row
+   *  because a restart has to relaunch them the way the user asked rather
+   *  than re-deriving today's default. */
+  permissionMode?: PermissionMode
 }
 
 /**

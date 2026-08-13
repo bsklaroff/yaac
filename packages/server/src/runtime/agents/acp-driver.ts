@@ -516,6 +516,15 @@ export const acpDriver: AgentDriver = {
    * (`session/load`) the client makes after connecting, not a launch argument.
    * The whole string is embedded in a single-quoted `respawn-window '<cmd>'`,
    * so it deliberately contains no quotes.
+   *
+   * No permission posture either, and `spec.permissionMode` is unread here on
+   * purpose: an ACP conversation is `bypass`-only (create refuses the rest),
+   * because the adapter asks over `session/request_permission` and this build
+   * has no chat-pane UI to put that question in front of the user — the
+   * client answers every request itself (see `chooseAllowOption`). Honoring a
+   * posture whose prompts are auto-answered would claim a restraint that
+   * isn't there. Wiring the postures up is a matter of forwarding those
+   * requests to the pane, not of changing this command.
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)

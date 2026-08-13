@@ -496,7 +496,7 @@ describe('createWorktree', () => {
       // Recorded with the row: a restart has to relaunch the agents the way
       // the user asked rather than re-deriving today's default. True here
       // because the fake driver is a sandboxed one.
-      autoApprove: true,
+      permissionMode: 'bypass',
     })
     // The tool and the founding ask live on the conversation create launches,
     // which is the only reason a worktree can name either.
@@ -1051,7 +1051,7 @@ describe('createWorktree', () => {
       .map((args) => args[1])
       .find((c) => c.includes('respawn-window'))
     expect(respawn).toBeDefined()
-    expect(respawn).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8 --session-id abcd1234')
+    expect(respawn).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id abcd1234')
   })
 
   it('sets the branch upstream from inside the pod, not on the host', async () => {
@@ -1178,49 +1178,47 @@ describe('createWorktree', () => {
 
 describe('buildAgentCmd', () => {
   it('returns the codex respawn command unchanged', () => {
-    const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', autoApprove: true })
+    const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'bypass' })
     expect(fresh).toBe('codex --yolo')
     const resume = buildAgentCmd({
-      tool: 'codex', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+      tool: 'codex', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
     expect(resume).toBe('codex --yolo resume sid-abc')
   })
 
   it('returns the claude respawn command unchanged', () => {
-    const fresh = buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', autoApprove: true })
+    const fresh = buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'bypass' })
     expect(fresh).toBe(
-      'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sid-abc',
+      'CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
     )
     const resume = buildAgentCmd({
-      tool: 'claude', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+      tool: 'claude', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
     expect(resume).toBe(
-      'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sid-abc',
+      'CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
     )
   })
 
-  // Without a sandbox the auto-approve flag is the user's per-worktree
-  // choice, and off is what an unchecked box has to actually produce: the
-  // agent asks in its pane instead of acting.
-  it('drops each tool\'s auto-approve flag when the worktree did not opt in', () => {
-    expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', autoApprove: false }))
-      .toBe('codex')
-    expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', autoApprove: false }))
-      .toBe('CLAUDE_CODE_NO_FLICKER=1 claude --session-id sid-abc')
-    expect(buildAgentCmd({ tool: 'pi', worktreeId: 'sid-abc', autoApprove: false }))
-      .not.toContain('--approve')
+  // Without a sandbox the posture is the user's per-worktree choice, and
+  // `manual` has to actually produce one: the agent asks in its pane instead
+  // of acting.
+  it('asks for approval in each tool\'s own spelling under manual', () => {
+    expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' }))
+      .toBe('codex --ask-for-approval untrusted')
+    expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'manual' }))
+      .toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })
 
   it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {
-    const fresh = buildAgentCmd({ tool: 'opencode', worktreeId: 'sid-abc', autoApprove: true })
-    expect(fresh).toBe('opencode --port 4096 --hostname 127.0.0.1')
+    const fresh = buildAgentCmd({ tool: 'opencode', worktreeId: 'sid-abc', permissionMode: 'bypass' })
+    expect(fresh).toContain('opencode --port 4096 --hostname 127.0.0.1')
   })
 
   it('passes --continue when resuming an opencode session', () => {
     const resume = buildAgentCmd({
-      tool: 'opencode', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+      tool: 'opencode', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
-    expect(resume).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
+    expect(resume).toContain('opencode --port 4096 --hostname 127.0.0.1 --continue')
   })
 })
 

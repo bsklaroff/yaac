@@ -243,7 +243,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
       }
       await sleep(1000)
     }
-    expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
+    expect(startCmd).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8')
   }, 420_000)
 
   it('surfaces the proxy rejection for a model value outside the safe charset', async () => {

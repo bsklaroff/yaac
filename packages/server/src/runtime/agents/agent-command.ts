@@ -5,7 +5,13 @@ import {
   piProviderInfo,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
-import type { AgentTool, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
+import {
+  toolSupportsPermissionMode,
+  type AgentTool,
+  type InitCommandSpec,
+  type PermissionMode,
+  type YaacConfig,
+} from '@yaac/shared/types'
 import { shellEscape } from '#lib/shell'
 
 /**
@@ -78,35 +84,120 @@ export interface AgentCmdSpec {
    *  safe to embed bare in the single-quoted respawn-window wrapper. */
   model?: string
   /**
-   * Launch the agent with its auto-approve flag — the tool runs every
-   * action it decides on without asking.
+   * The permission posture to launch in — how much the agent may do before
+   * it stops to ask.
    *
    * Required rather than defaulted: it decides whether an agent can act
    * unsupervised, and on a runtime with no sandbox around it that is the
    * difference between a worktree and this machine. A caller states it,
    * and the worktree's row is what remembers the answer across a restart.
    */
-  autoApprove: boolean
+  permissionMode: PermissionMode
+}
+
+/**
+ * The posture to actually launch `tool` in, given what the worktree's row
+ * asks for.
+ *
+ * Create refuses a posture its tool doesn't have, so this only fires on a row
+ * written by a different build — where refusing would strand a worktree that
+ * cannot be restarted. Each fallback is the nearest posture the tool really
+ * has: opencode has no reviewer model, so `auto` lands on `accept-edits`; pi
+ * has no permission system at all, so every posture is `bypass` in practice
+ * and saying so beats launching flags that do nothing.
+ */
+function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
+  if (toolSupportsPermissionMode(tool, mode)) return mode
+  return tool === 'opencode' ? 'accept-edits' : 'bypass'
+}
+
+/**
+ * opencode's approval posture is config, not flags. `OPENCODE_PERMISSION`
+ * takes the same JSON as the config file's `permission` block and is read per
+ * process, which is what makes it per-worktree — the `opencode.json` session
+ * create writes is shared by every worktree in the project.
+ *
+ * **Every posture is stated in full, and only in keys opencode actually
+ * has.** Its permission config is a plain zod object over exactly `edit`,
+ * `bash`, `webfetch`, `doom_loop` and `external_directory` — no top-level
+ * wildcard — and a plain zod object *strips* what it does not know. An
+ * unrecognized key is therefore not a partial posture but an empty one, which
+ * `mergeAgentPermissions` then fills with `edit: allow`, `webfetch: allow`,
+ * `bash: {"*": "allow"}`. A posture spelled wrong here does not fail: it runs
+ * unrestrained, silently, on a containerless worktree's real filesystem.
+ *
+ * That is also why `bypass` states allow-everything rather than passing no
+ * config at all. Inheriting opencode's near-permissive defaults happens to
+ * land in the right place today, but `doom_loop` and `external_directory`
+ * already default to `ask`, and a future default that tightens would quietly
+ * stop meaning bypass with nothing to signal it.
+ */
+const OPENCODE_PERMISSION_RULES: Partial<Record<PermissionMode, Record<string, string>>> = {
+  bypass: {
+    edit: 'allow', bash: 'allow', webfetch: 'allow',
+    doom_loop: 'allow', external_directory: 'allow',
+  },
+  // The two left at opencode's own `ask` default are the point of the mode:
+  // edits inside the worktree land unprompted, stepping outside it does not.
+  'accept-edits': { edit: 'allow', bash: 'ask', webfetch: 'allow' },
+  manual: {
+    edit: 'ask', bash: 'ask', webfetch: 'ask',
+    doom_loop: 'ask', external_directory: 'ask',
+  },
+}
+
+/**
+ * The value for `OPENCODE_PERMISSION`, escaped for the launch command.
+ *
+ * Double-quoted with escaped inner quotes rather than single-quoted: the whole
+ * command is embedded in `respawn-window '<cmd>'`, so a single quote would end
+ * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
+ * than hand-written so the escaping cannot drift from the shape.
+ */
+function opencodePermissionArg(mode: PermissionMode): string | undefined {
+  const rules = OPENCODE_PERMISSION_RULES[mode]
+  if (rules === undefined) return undefined
+  return `OPENCODE_PERMISSION="${JSON.stringify(rules).replace(/"/g, '\\"')}"`
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
-  const { tool, worktreeId, piProvider, model, autoApprove } = spec
+  const { tool, worktreeId, piProvider, model } = spec
+  const mode = postureFor(tool, spec.permissionMode)
   const resume = spec.resume ?? false
   if (tool === 'codex') {
+    // codex splits the posture across two orthogonal axes — an approval
+    // policy and a sandbox — so each mode picks the pair that adds up to it:
+    //  - accept-edits is codex's own default preset (workspace-write +
+    //    on-request), hence no flags. Its sandbox has network off, which is
+    //    what makes it *ask* to escalate for anything reaching the network.
+    //  - auto keeps that sandbox and hands the approvals to a reviewer model.
+    //  - plan is the read-only sandbox; codex has no plan feature of its own.
+    //  - manual asks for everything but known-safe reads.
+    const posture = {
+      bypass: '--yolo',
+      auto: '--approve-for-me',
+      'accept-edits': '',
+      plan: '--sandbox read-only',
+      manual: '--ask-for-approval untrusted',
+    }[mode]
     // --model goes after the resume subcommand: codex defines -m/--model on
     // both the root TUI command and `codex resume`, so trailing placement
     // binds it to whichever command runs.
     return [
-      autoApprove ? 'codex --yolo' : 'codex',
+      'codex',
+      posture,
       resume ? `resume ${worktreeId}` : '',
       model ? `--model ${model}` : '',
     ].filter(Boolean).join(' ')
   }
   if (tool === 'pi') {
-    // pi runs its TUI in tmux (like claude/codex). `--approve` accepts the
-    // project trust prompt for the run; pi has no sandbox and executes tools
-    // without per-call approval — so it is exactly what `autoApprove` gates,
-    // and without it pi asks in the pane. `--model <provider>/<id>` selects the
+    // pi runs its TUI in tmux (like claude/codex). It has no permission
+    // system by design — tools execute immediately, nothing prompts — which
+    // is why `bypass` is the only posture it is offered, and why `--approve`
+    // is unconditional here: it accepts the *project trust* prompt (which
+    // gates loading `.pi/` settings, not tool execution), and without it pi
+    // stops to ask about the checkout on every launch.
+    // `--model <provider>/<id>` selects the
     // provider (pi reads that provider's api-key env var, which the proxy
     // swaps). `--session-id <id>` addresses this session by id in the shared
     // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
@@ -120,8 +211,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // guarded so a future registry gap falls back to pi's own default rather
     // than `--model undefined`).
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const approve = autoApprove ? ' --approve' : ''
-    const pi = `pi${approve}${modelFlag} --session-id ${worktreeId}`
+    const pi = `pi --approve${modelFlag} --session-id ${worktreeId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
     // '<id>'; creating a new session with that id." to stderr, which then
@@ -158,21 +248,47 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // --model takes `provider/model`; omitted, opencode uses the model
     // persisted in its shared config (or its own default).
     //
-    // `autoApprove` has no flag to gate here: opencode's approval behavior
-    // is a `permission` block in its config rather than a launch argument
-    // (the shared opencode.json session create writes), so an opencode
-    // worktree ignores the choice until that config learns it.
+    // The posture arrives two different ways because opencode expresses it
+    // two different ways. `plan` is one of its own built-in agents, and its
+    // rules are stronger than anything worth restating here — `edit: deny`
+    // plus a curated read-only bash allowlist — so `--agent plan` selects it
+    // rather than hand-writing an approximation. Every other posture is
+    // permission rules, which `OPENCODE_PERMISSION` carries per process.
+    //
+    // Deliberately no posture *flag*: opencode's TUI takes only model,
+    // continue, session, prompt, agent, port and hostname, and its parser is
+    // non-strict — an invented flag is dropped without a word, leaving the
+    // posture as whatever the defaults say.
     return [
+      opencodePermissionArg(mode) ?? '',
       'opencode',
+      mode === 'plan' ? '--agent plan' : '',
       '--port 4096 --hostname 127.0.0.1',
       model ? `--model ${model}` : '',
       resume ? '--continue' : '',
     ].filter(Boolean).join(' ')
   }
+  // claude names all five postures on one flag, so the mapping is a rename.
+  // `--permission-mode bypassPermissions` over the older
+  // `--dangerously-skip-permissions` spelling: same posture, and stating it
+  // on the same flag as the rest keeps one axis instead of two.
+  // `auto` is gated by subscription plan — an ineligible account fails in the
+  // pane, which is the honest place for it: nothing here can check first.
+  //
+  // `manual` over the `default` this flag also still accepts: `default` is
+  // absent from the flag's advertised choices, which reads like a compat
+  // alias on its way out. Naming the documented one keeps the cell off a
+  // spelling that could be dropped — and if it ever is, commander rejects the
+  // value and the pane dies at launch rather than running lax.
+  const posture = {
+    bypass: 'bypassPermissions',
+    auto: 'auto',
+    'accept-edits': 'acceptEdits',
+    plan: 'plan',
+    manual: 'manual',
+  }[mode]
   return [
-    autoApprove
-      ? 'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions'
-      : 'CLAUDE_CODE_NO_FLICKER=1 claude',
+    `CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
     resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')

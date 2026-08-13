@@ -85,7 +85,7 @@ const stopKey = (projectSlug: string, worktreeId: string): string =>
   `${projectSlug}/${worktreeId}`
 
 async function applyCreated(event: WorktreeCreated): Promise<void> {
-  const { projectSlug, worktreeId, baseBranch, resume, autoApprove } = event
+  const { projectSlug, worktreeId, baseBranch, resume, permissionMode } = event
   const key = stopKey(projectSlug, worktreeId)
   // A resume is about to clear the row's deletion — remember it first, so a
   // create that then fails can put the row back rather than leaving a dead
@@ -111,7 +111,7 @@ async function applyCreated(event: WorktreeCreated): Promise<void> {
     worktreeId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(event.spare === true ? { spare: true } : {}),
-    ...(autoApprove !== undefined ? { autoApprove } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
   })
 }
 

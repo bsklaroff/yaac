@@ -1,6 +1,6 @@
 import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface CreateWorktreeResult {
   worktreeId: string
@@ -36,10 +36,11 @@ export async function createWorktree(
   worktreeId?: string,
   branch?: string,
   mode?: AgentMode,
-  /** "Yolo mode" — launch the agents with their auto-approve flags. Omitted
-   *  when the user has never chosen, so the server's per-driver default
-   *  applies rather than the webapp guessing at one. */
-  autoApprove?: boolean,
+  /** How much the agent may do before asking. Omitted when the user did not
+   *  touch the dropdown, so the server resolves it (this project's last
+   *  choice, else the per-driver default) rather than the webapp guessing —
+   *  and so an untouched form never overwrites the remembered choice. */
+  permissionMode?: PermissionMode,
 ): Promise<CreateWorktreeResult> {
   const body = {
     project,
@@ -49,7 +50,7 @@ export async function createWorktree(
     // Omitted for tui: the server defaults it, and sending the default would
     // make every create look like an explicit mode choice in the logs.
     ...(mode === 'acp' ? { mode } : {}),
-    ...(autoApprove !== undefined ? { autoApprove } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

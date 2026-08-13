@@ -138,8 +138,8 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     name: 'isolation',
     status: 'warn',
     detail: 'none — agents run as this user with full access to this machine',
-    fix: 'Worktrees are not sandboxed in containerless mode. Auto-approve is '
-      + 'off by default per worktree ("yolo mode" opts in).',
+    fix: 'Worktrees are not sandboxed in containerless mode. New worktrees '
+      + 'default to accept-edits permissions; --permission-mode picks another.',
   })
 
   return results

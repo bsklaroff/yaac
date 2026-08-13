@@ -5,7 +5,7 @@ import { getDb } from './client'
 import { projects } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { getProjectsDir } from '@yaac/shared/project-paths'
-import type { ProjectMeta } from '@yaac/shared/types'
+import type { PermissionMode, ProjectMeta } from '@yaac/shared/types'
 
 /**
  * Which projects exist, as the server records them.
@@ -23,17 +23,72 @@ export async function recordProject(meta: ProjectMeta): Promise<void> {
   notifyWorktreeListChanged()
 }
 
-export async function getProjectRow(slug: string): Promise<ProjectMeta | undefined> {
+/**
+ * A project as this table holds it: its `project.json` identity plus the
+ * settings only the row carries. Separate from `ProjectMeta` because that
+ * type is also the shape of `project.json` on disk, and a remembered posture
+ * is not something the file has ever had.
+ */
+export interface ProjectRow extends ProjectMeta {
+  lastPermissionMode?: PermissionMode
+}
+
+function toProjectRow(r: typeof projects.$inferSelect): ProjectRow {
+  return {
+    slug: r.slug,
+    remoteUrl: r.remoteUrl,
+    addedAt: r.addedAt,
+    ...(r.lastPermissionMode !== null
+      ? { lastPermissionMode: r.lastPermissionMode as PermissionMode }
+      : {}),
+  }
+}
+
+export async function getProjectRow(slug: string): Promise<ProjectRow | undefined> {
   await adoptProjectDirs()
   const db = await getDb()
   const rows = await db.select().from(projects).where(eq(projects.slug, slug))
-  return rows[0]
+  return rows[0] !== undefined ? toProjectRow(rows[0]) : undefined
 }
 
-export async function listProjectRows(): Promise<ProjectMeta[]> {
+export async function listProjectRows(): Promise<ProjectRow[]> {
   await adoptProjectDirs()
   const db = await getDb()
-  return db.select().from(projects)
+  return (await db.select().from(projects)).map(toProjectRow)
+}
+
+/**
+ * The permission posture this project's last explicit create asked for, or
+ * undefined if every create so far has taken the default.
+ *
+ * The create form's memory. Kept here rather than in the browser so the CLI,
+ * the webapp and a second device all resolve the same default, and read back
+ * with a cast for the same reason the worktree column is: the launch path
+ * re-checks the value against the tool it is about to run.
+ */
+export async function getProjectLastPermissionMode(
+  slug: string,
+): Promise<PermissionMode | undefined> {
+  const db = await getDb()
+  const rows = await db.select({ mode: projects.lastPermissionMode })
+    .from(projects).where(eq(projects.slug, slug))
+  const mode = rows[0]?.mode
+  return mode !== null && mode !== undefined ? mode as PermissionMode : undefined
+}
+
+/**
+ * Remember a posture as this project's last explicit choice. Called only when
+ * the request named one — a create that took the default must not overwrite
+ * what the user last picked, or one defaulted create would erase the memory
+ * every later create is supposed to read.
+ */
+export async function recordProjectPermissionMode(
+  slug: string,
+  mode: PermissionMode,
+): Promise<void> {
+  const db = await getDb()
+  await db.update(projects).set({ lastPermissionMode: mode }).where(eq(projects.slug, slug))
+  notifyWorktreeListChanged()
 }
 
 export async function deleteProjectRow(slug: string): Promise<void> {

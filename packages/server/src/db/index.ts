@@ -78,9 +78,11 @@ export {
 } from './preferences'
 export {
   deleteProjectRow,
+  getProjectLastPermissionMode,
   getProjectRow,
   listProjectRows,
   recordProject,
+  recordProjectPermissionMode,
 } from './project-store'
 export {
   claimSpareWorktree,

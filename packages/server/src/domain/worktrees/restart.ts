@@ -143,9 +143,9 @@ export async function restartWorktree(
     // falls back to tui, the mode every pre-ACP worktree ran.
 
     // A restart relaunches the agents the way the user asked for them, not
-    // the way today's default would: the row remembers the choice, and a
-    // worktree that was deliberately created without auto-approve must not
-    // come back with it. A worktree with no row to read (a substrate-only
+    // the way today's default would: the row remembers the posture, and a
+    // worktree deliberately created in `plan` or `manual` must not come back
+    // acting freely. A worktree with no row to read (a substrate-only
     // resolve) falls through to the driver's default.
     const recorded = await findWorktreeRow(worktreeId).catch(() => undefined)
 
@@ -159,7 +159,7 @@ export async function restartWorktree(
       mode: active[0]?.mode ?? 'tui',
       resumeAgentSessions: resume,
       gitUser: opts.gitUser,
-      ...(recorded !== undefined ? { autoApprove: recorded.autoApprove } : {}),
+      ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
       onProgress,
     })
 

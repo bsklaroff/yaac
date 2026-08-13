@@ -73,9 +73,11 @@ export async function retoolSpare(
       tool,
       worktreeId: spare.workspaceId,
       // A spare only exists on a sandboxed runtime, where the isolation
-      // is what justifies auto-approve — the same unconditional answer
-      // every worktree there gets.
-      autoApprove: true,
+      // is what justifies unsupervised action — the same answer
+      // `defaultPermissionMode` gives every worktree there. A claim that
+      // wanted a different posture doesn't reach this path: the route only
+      // claims a spare for a create resolving to `bypass`.
+      permissionMode: 'bypass',
       ...(piProvider !== undefined ? { piProvider } : {}),
       ...(model !== undefined ? { model } : {}),
     })}'`,
@@ -163,7 +165,7 @@ export function buildRebranchPrep(params: {
       `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd({
         tool: respawnTool,
         worktreeId,
-        autoApprove: true,
+        permissionMode: 'bypass',
         ...(piProvider !== undefined ? { piProvider } : {}),
       })}'`,
     )

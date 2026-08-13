@@ -27,7 +27,7 @@
 
 import { acpDriver } from './acp-driver'
 import { tuiDriver } from './tui-driver'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 import type { AgentPaneStatus } from './agent-tools'
@@ -139,8 +139,8 @@ export interface AgentLaunchSpec {
   windowName: string
   model?: string
   piProvider?: PiProvider
-  /** Launch the agent with its auto-approve flag. See `AgentCmdSpec`. */
-  autoApprove: boolean
+  /** The permission posture to launch in. See `AgentCmdSpec`. */
+  permissionMode: PermissionMode
 }
 
 /**

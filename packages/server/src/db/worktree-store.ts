@@ -4,7 +4,11 @@ import { deleteWorktreeAgentSessions } from './agent-session-store'
 import { agentSessions, worktreeAgentSessions, worktrees } from './schema'
 import { notifyWorktreeListChanged } from '#notify'
 import { normalizeTitle } from '@yaac/shared/titles'
-import type { WorktreeDeathCause, WorktreeDeathReason } from '@yaac/shared/types'
+import type {
+  PermissionMode,
+  WorktreeDeathCause,
+  WorktreeDeathReason,
+} from '@yaac/shared/types'
 
 /**
  * The worktree spine: one row per (project, worktree id) for every worktree
@@ -62,9 +66,9 @@ export interface WorktreeRow {
   /** The session-starts log's length when that life began — the boundary the
    *  discovery fold reads to tell this life's panes from a dead pod's. */
   lifeLogBytes: number
-  /** Whether this worktree's agents launch with their auto-approve flags —
-   *  what a restart re-reads so it relaunches them the way the user asked. */
-  autoApprove: boolean
+  /** The permission posture its agents launch in — what a restart re-reads so
+   *  it relaunches them the way the user asked. */
+  permissionMode: PermissionMode
 }
 
 /** Fields `recordWorktreeCreated` stamps on a fresh (or restarted) worktree. */
@@ -83,10 +87,10 @@ export interface WorktreeCreatedInput {
    *  flag is never cleared here, because clearing it is a claim and a claim
    *  must be able to fail (see `claimSpareWorktree`). */
   spare?: boolean
-  /** Whether this worktree's agents launch with their auto-approve flags.
-   *  Re-stamped on a restart from what the row already holds, so a
-   *  worktree keeps the answer the user chose when they made it. */
-  autoApprove?: boolean
+  /** The permission posture its agents launch in. Re-stamped on a restart
+   *  from what the row already holds, so a worktree keeps the answer the
+   *  user chose when they made it. */
+  permissionMode?: PermissionMode
 }
 
 type Row = typeof worktrees.$inferSelect
@@ -106,7 +110,7 @@ function toRow(r: Row): WorktreeRow {
     spare: r.spare,
     ...(r.lifeStartedAt !== null ? { lifeStartedAt: r.lifeStartedAt } : {}),
     lifeLogBytes: r.lifeLogBytes,
-    autoApprove: r.autoApprove,
+    permissionMode: r.permissionMode as PermissionMode,
   }
 }
 
@@ -145,7 +149,7 @@ export async function recordWorktreeCreated(input: WorktreeCreatedInput): Promis
     // be able to fail loudly (a silently-missed flip would leave a real
     // worktree looking reapable). A fresh row takes the column default.
     ...(input.spare === true ? { spare: true } : {}),
-    ...(input.autoApprove !== undefined ? { autoApprove: input.autoApprove } : {}),
+    ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
   }
   await db.insert(worktrees)
     .values({

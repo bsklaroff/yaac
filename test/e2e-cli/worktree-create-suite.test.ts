@@ -1621,6 +1621,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
 
       const created = await createWorktree(
         SLUG, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
+        '--permission-mode', 'accept-edits',
       )
       jobName = created.jobName
       createStdout = created.stdout
@@ -1645,15 +1646,20 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(ok).toBe(true)
     }, 240_000)
 
-    it('launches claude with the requested --model', async () => {
-      // The agent window's launch command carries the override — the flag
-      // claude was actually started with, whatever the TUI renders.
+    it('launches claude with the requested --model and --permission-mode', async () => {
+      // The agent window's launch command carries both overrides — the flags
+      // claude was actually started with, whatever the TUI renders. This is
+      // also the only place the posture is observable end to end: it is a
+      // launch argument, so the pane is where it either took or did not.
       const { stdout: startCmd } = await execInJob(jobName, [
         'sh', '-c',
         `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
       ])
-      expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
+      expect(startCmd).toContain(
+        'claude --permission-mode acceptEdits --model claude-opus-4-8',
+      )
     }, 60_000)
+
 
     it('lands on the configured referenceBranch and tracks it', async () => {
       // The --branch override's happy path (on a prewarmed claim) lives in
@@ -1858,5 +1864,40 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // The check runs before the worktree, the Job, or a database row exists.
       expect((await listWorktreePods('acp-unsupported')).length).toBe(podsBefore)
     }, 120_000)
+
+    // Same shape of refusal for the permission posture, and for the same
+    // reason: a posture the tool cannot take would become a launch flag that
+    // silently does nothing, which is worse than a create that fails.
+    it('refuses a posture the tool does not have, and one ACP cannot enforce', async () => {
+      const podsBefore = (await listWorktreePods('acp-unsupported')).length
+      // pi has no permission system at all, so `plan` is not on offer.
+      const noPlan = await runYaac(
+        serverEnv, 'worktree', 'create', 'acp-unsupported',
+        '--tool', 'pi', '--permission-mode', 'plan',
+      )
+      expect(noPlan.exitCode).not.toBe(0)
+      expect(noPlan.stdout + noPlan.stderr).toMatch(/pi has no "plan" permission mode/)
+
+      // ACP's permission prompts are answered automatically, so anything but
+      // bypass would be a restraint yaac cannot actually keep.
+      const acpManual = await runYaac(
+        serverEnv, 'worktree', 'create', 'acp-unsupported',
+        '--tool', 'claude', '--mode', 'acp', '--permission-mode', 'manual',
+      )
+      expect(acpManual.exitCode).not.toBe(0)
+      expect(acpManual.stdout + acpManual.stderr).toMatch(/bypass" permissions only/)
+
+      expect((await listWorktreePods('acp-unsupported')).length).toBe(podsBefore)
+    }, 120_000)
+
+    // An invalid value never reaches the server: commander rejects it against
+    // the enum, which is what keeps the CLI's help and the wire type in step.
+    it('rejects an unknown --permission-mode at the CLI', async () => {
+      const bad = await runYaac(
+        serverEnv, 'worktree', 'create', 'acp-unsupported', '--permission-mode', 'yolo',
+      )
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stdout + bad.stderr).toMatch(/Allowed choices are bypass, auto, accept-edits/)
+    }, 60_000)
   })
 })

@@ -311,7 +311,7 @@ export const tuiDriver: AgentDriver = {
       tool: spec.tool,
       worktreeId: spec.agentSessionId,
       resume: spec.resume,
-      autoApprove: spec.autoApprove,
+      permissionMode: spec.permissionMode,
       ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
     })
