@@ -47,13 +47,6 @@ export interface SpawnRequest {
   requestId: string
   /** Calling worktree, attributed from the source pod IP. */
   worktreeId: string
-  /**
-   * The name `worktreeId` had on this wire before the rename, emitted
-   * alongside it. The server drains this queue over `/spawn/pending`, and a
-   * server predating the rename reads only this one — it would otherwise
-   * spawn for `undefined` and leave the in-pod caller hanging to its TTL.
-   */
-  sessionId: string
   prompt: string
   tool?: string
   /** Model override for the spawned worktree's agent. */
@@ -66,8 +59,6 @@ export interface SpawnResult {
   ok: boolean
   /** New worktree id when ok. */
   worktreeId?: string
-  /** `worktreeId` under the name it had before the rename (see SpawnRequest). */
-  sessionId?: string
   error?: string
 }
 
@@ -135,7 +126,6 @@ export class SpawnQueue {
       req: {
         requestId,
         worktreeId: req.worktreeId,
-        sessionId: req.worktreeId,
         prompt: req.prompt,
         tool: req.tool,
         model: req.model,
@@ -163,7 +153,7 @@ export class SpawnQueue {
     if (!held) return false
     this.claimed.delete(result.requestId)
     this.pending.delete(result.requestId)
-    const spawned = result.worktreeId ?? result.sessionId
+    const spawned = result.worktreeId
     if (result.ok && spawned) {
       held.complete(200, spawned)
     } else {

@@ -597,65 +597,6 @@ was a control plane or a worker that just went under disk pressure.
 > runtime-agnostic, unlike `kubectl port-forward`, which cannot reach
 > gVisor pods); nothing yaac deploys listens on host interfaces.
 
-### Upgrading from the host registry container
-
-Installs that predate the in-cluster registry ran it as a podman container
-named `yaac-registry`, published on `127.0.0.1:5001`. Standing the in-cluster
-registry up is automatic — the server ensures it at boot — but **two pieces of
-that era are no longer removed for you**, so an install jumping straight here
-from a pre-in-cluster-registry version has to clear them by hand:
-
-```sh
-kubectl delete endpointslice yaac-registry-1 -n yaac --ignore-not-found
-podman rm -f --ignore yaac-registry
-```
-
-The EndpointSlice is the one that matters, and it fails *silently*: it was
-hand-written to back the old selectorless Service, so it carries that
-Service's `kubernetes.io/service-name` label and no `managed-by`, and it
-survives the apply that converts the Service to selector-backed. kube-proxy
-unions every slice of a Service, so the registry ClusterIP then
-load-balances between the live registry pod and the dead container's
-address — pulls fail intermittently, forever, with nothing to self-heal or
-report it. Run the delete if `kubectl get endpointslice -n yaac` lists
-`yaac-registry-1`.
-
-The container itself is only wasted disk and a published loopback port;
-`cluster delete` no longer removes it either, since one `kind delete` takes
-the in-cluster registry with the node.
-
-Two things the upgrade deliberately does not do:
-
-- The node-local blob stores an older yaac wrote — `/var/lib/yaac/imagecache`,
-  `/var/lib/yaac/registry` and `/var/lib/yaac/main-registry`, each keyed by
-  install hash one level down — are no longer swept. Both registries store on
-  a PVC now and nothing mounts those directories, but they can be tens of GB
-  on a machine that ran an older yaac. Remove your install's subdirectory of
-  each on every node to reclaim it.
-
-- The `localhost/…` alias repos an older salvage left in a *project* registry
-  are no longer dropped. podman stores an unqualified local name under its
-  `localhost/` prefix, so an image the server had already pushed under its
-  bare tag gained a second repo holding a second, independently compressed
-  copy of every layer. The salvage canonicalizes the name now, so no new ones
-  appear — but the existing subtree is tagged, and the periodic collect only
-  retires `yaac-*` repos and only reclaims *untagged* manifests, so those
-  blobs are uncollectable where they stand. Drop the subtree and the next
-  collect (every 6h per project) reclaims the blobs behind it:
-
-  ```sh
-  kubectl exec -n yaac deploy/<project-registry> -- \
-    rm -rf /var/lib/registry/docker/registry/v2/repositories/localhost
-  ```
-
-  `kubectl get deploy -n yaac -l app=yaac-registry` lists the per-project
-  registries by name.
-
-- Images that existed ONLY in it — builder-pod-built untrusted layers and
-  their step caches, which never touch the host image store — are not
-  migrated. They are re-pushed or rebuilt on demand, so this costs one
-  slower build per affected image, not correctness.
-
 ## Deleting the cluster
 
 ```sh

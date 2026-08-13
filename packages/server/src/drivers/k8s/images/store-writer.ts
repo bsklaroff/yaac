@@ -130,7 +130,7 @@ export const DONE_MARKER = '.yaac-store-done'
 export const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 
 /** GC scope: ties writer pods to this install without making them visible
- *  to the worktree reaper (which filters on `yaac.session-id`). */
+ *  to the worktree reaper (which filters on `yaac.worktree-id`). */
 export const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
 
 /** How often one project's store is refreshed. A generation only gains

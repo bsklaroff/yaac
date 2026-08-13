@@ -18,7 +18,7 @@
  */
 
 import {
-  LABEL_WORKTREE_ID_LEGACY,
+  LABEL_WORKTREE_ID,
   LABEL_VCLUSTER_MANAGED_BY,
   LABEL_VCLUSTER_NAMESPACE,
   VCLUSTER_API_PORT,
@@ -207,7 +207,7 @@ export function buildActivatorNetworkPolicyManifest(
         { from: blocks(nodeCidrs), ports: [apiPort] },
         {
           from: [{
-            podSelector: { matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }] },
+            podSelector: { matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }] },
           }],
           ports: [apiPort],
         },

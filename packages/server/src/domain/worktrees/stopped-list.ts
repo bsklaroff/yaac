@@ -68,9 +68,9 @@ export async function listStoppedWorktrees(
     return {
       worktreeId: r.worktreeId,
       projectSlug: r.projectSlug,
-      // Both read off the first conversation — a worktree has no tool of its
-      // own. A row with none recorded predates that and reads as claude,
-      // which is what restart falls back to as well.
+      // Both read off the first conversation — a worktree has no tool of
+      // its own. A row whose create died before recording one reads as
+      // claude, which is what restart falls back to as well.
       tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       lastActiveAt: formatUtcTimestamp(await lastActiveMs(r, links) ?? r.createdAt.getTime()),
@@ -110,8 +110,8 @@ async function lastActiveMs(
   const known = stamps.filter((s): s is number => s !== undefined)
   if (known.length > 0) return Math.max(...known)
   // No links yet — a worktree that died before the registry's first tick
-  // ever ran. Fall back to the conversation the old pin guarantees, so its
-  // listing doesn't report its birth time as last-activity forever.
+  // ever ran. Fall back to the conversation the create-time pin guarantees,
+  // so its listing doesn't report its birth time as last-activity forever.
   const pinned = await sessionTranscriptPath(
     r.projectSlug, r.worktreeId, links[0]?.tool ?? 'claude',
   )

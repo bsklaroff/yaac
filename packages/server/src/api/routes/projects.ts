@@ -18,7 +18,7 @@ import {
 } from '#domain/projects'
 import { removeProject } from '#domain/worktrees'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
-import { resolveProjectBuildDir } from '#lib/build-dirs'
+import { projectBuildDir } from '#lib/build-dirs'
 import { worktreeDriver } from '#drivers/driver'
 import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -141,7 +141,7 @@ export const projectApp = new Hono()
     // string | undefined here; the mount guarantees it exists.
     const slug = c.req.param('slug') ?? ''
     await assertProjectExists(slug)
-    return resolveProjectBuildDir(slug)
+    return projectBuildDir(slug)
   }))
   .get('/:slug/dockerfile', async (c) => {
     await assertProjectExists(c.req.param('slug'))

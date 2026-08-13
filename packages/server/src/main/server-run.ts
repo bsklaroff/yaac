@@ -8,7 +8,6 @@ import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '
 import { closeDb, openDb } from '#db'
 import { EventHub } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
-import { warnAboutUnimportedLegacyData } from '#main/legacy-data-check'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
@@ -370,11 +369,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(process.pid)
     process.exit(1)
   }
-  // Outside the try: an empty database is indistinguishable from one this
-  // build never imported into, and only the disk can tell them apart. Warns
-  // and returns — a failure to stat is not a reason to fail a start.
-  await warnAboutUnimportedLegacyData()
-    .catch((err: unknown) => serverLog(`[server] legacy-data check failed: ${String(err)}`))
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
   // control returns to the event loop and any queued request is processed.

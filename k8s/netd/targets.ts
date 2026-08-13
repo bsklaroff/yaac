@@ -6,7 +6,7 @@
  * there is no precedence to reason about — the selection IS the decision,
  * and it lives in ordinary code that unit tests can pin.
  *
- *   1. A session pod in an install namespace (`yaac.session-id`) → that
+ *   1. A worktree pod in an install namespace (`yaac.worktree-id`) → that
  *      install's OUTER proxy.
  *   2. A vcluster-synced pod in a vcluster namespace THIS install owns,
  *      whose pod IP a VALIDATED redirect claim names as a source → the
@@ -54,10 +54,9 @@ import {
 
 /**
  * Must match the server's constants (netd cannot import from src/). This is
- * LABEL_WORKTREE_ID_LEGACY: the key every live worktree pod carries, and the
- * one the server keeps selecting on until the compatibility window closes.
+ * LABEL_WORKTREE_ID: the key every worktree pod carries.
  */
-export const LABEL_WORKTREE_ID_LEGACY = 'yaac.session-id'
+export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
 export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /** Deployment/Service name of every yaac proxy, outer and inner. */
 export const PROXY_APP_NAME = 'yaac-proxy'
@@ -252,7 +251,7 @@ export function selectTargets(input: SelectTargetsInput): PodTarget[] {
     if (!managedBy) {
       // Rule 1: an install-namespace worktree pod.
       if (pod.namespace !== input.installNamespace) continue
-      if (!pod.labels[LABEL_WORKTREE_ID_LEGACY]) continue
+      if (!pod.labels[LABEL_WORKTREE_ID]) continue
       if (outer) out.push({ pod, target: outer })
       continue
     }

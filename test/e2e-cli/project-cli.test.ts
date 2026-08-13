@@ -179,9 +179,11 @@ describe('yaac project rebuild (real CLI + real server)', () => {
 
   it('reports the "standalone Dockerfile.yaac" guard when the project has no tools layer', async () => {
     // Seed a project, then drop a standalone Dockerfile.yaac (its own FROM)
-    // into the per-machine config dir so resolveImageChain skips the tools
+    // into the project's build dir so resolveImageChain skips the tools
     // layer entirely. The server route should surface the guard error
-    // rather than attempting a (slow, network-bound) --no-cache build.
+    // rather than attempting a (slow, network-bound) --no-cache build —
+    // so a Dockerfile seeded anywhere else makes this pass in name only,
+    // spending 80s on the very build it exists to avoid.
     // Slug is `repo-rebuild` (not the original `repo-alpha`) because the
     // project-list suite above already seeded `repo-alpha` into the shared
     // data dir.
@@ -189,10 +191,10 @@ describe('yaac project rebuild (real CLI + real server)', () => {
     await createTestRepo(repoRebuild)
     await addTestProject(repoRebuild)
 
-    const configDir = path.join(testEnv.dataDir, 'projects', 'repo-rebuild', 'config')
-    await fs.mkdir(configDir, { recursive: true })
+    const buildDir = path.join(testEnv.dataDir, 'projects', 'repo-rebuild', 'config', 'build')
+    await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
-      path.join(configDir, 'Dockerfile.yaac'),
+      path.join(buildDir, 'Dockerfile.yaac'),
       'FROM docker.io/ubuntu:24.04\nRUN echo custom\n',
     )
 

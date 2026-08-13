@@ -4,7 +4,7 @@ import {
   INNER_PROXY_INGRESS_NP_NAME,
   INNER_WORKTREE_INGRESS_LOCK_NP_NAME,
   LABEL_ROLE,
-  LABEL_WORKTREE_ID_LEGACY,
+  LABEL_WORKTREE_ID,
   LABEL_VCLUSTER_MANAGED_BY,
   LABEL_VCLUSTER_NAMESPACE,
   NETD_LISTENER_PORT_BASE,
@@ -78,7 +78,7 @@ function np(
 
 /** Selector matching every worktree pod (the label the worktree builder stamps). */
 const worktreePodSelector = {
-  matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
+  matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
 }
 
 /**
@@ -238,7 +238,7 @@ export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
     podSelector: {
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
-        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'DoesNotExist' },
+        { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
       ],
     },
@@ -339,7 +339,7 @@ export function buildInnerProxyIngressNpManifest(
         // worktrees stay locked out; the bearer auth line is the second gate.
         from: [{
           namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': k8sNamespace() } },
-          podSelector: { matchLabels: { [LABEL_WORKTREE_ID_LEGACY]: ownerWorktreeId } },
+          podSelector: { matchLabels: { [LABEL_WORKTREE_ID]: ownerWorktreeId } },
         }],
         ports: [tcp(RELAY)],
       },
@@ -356,7 +356,7 @@ export function buildInnerProxyIngressNpManifest(
         from: [{
           podSelector: {
             matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: vcName },
-            matchExpressions: [{ key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' }],
+            matchExpressions: [{ key: LABEL_WORKTREE_ID, operator: 'Exists' }],
           },
         }],
         ports: [tcp(SSH_AGENT_PORT)],
@@ -378,7 +378,7 @@ export function buildInnerWorktreeIngressLockNpManifest(
     podSelector: {
       matchExpressions: [
         { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
-        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'Exists' },
+        { key: LABEL_WORKTREE_ID, operator: 'Exists' },
       ],
     },
     policyTypes: ['Ingress'],

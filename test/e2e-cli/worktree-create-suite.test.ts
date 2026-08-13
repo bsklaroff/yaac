@@ -137,7 +137,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     const credsDir = path.join(testEnv.dataDir, '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
-      tokens: [{ pattern: 'test-org/*', token: 'fake-ghp-token' }],
+      tokens: [{ pattern: 'github.com/test-org/*', token: 'fake-ghp-token' }],
     }) + '\n')
     await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
       kind: 'api-key',
@@ -1012,7 +1012,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
       const ns = k8sNamespace()
       const { stdout: ipOut } = await kubectlWithRetry([
-        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${worktreeId}`,
+        'get', 'pods', '-n', ns, '-l', `yaac.worktree-id=${worktreeId}`,
         '-o', 'jsonpath={.items[0].status.podIP}',
       ])
       const podIp = ipOut.trim()
@@ -1035,7 +1035,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // session ingress lock (its SYN is dropped — nc times out). The probe
       // runs the session image (guaranteed present on the node, has nc).
       const { stdout: imgOut } = await kubectlWithRetry([
-        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${worktreeId}`,
+        'get', 'pods', '-n', ns, '-l', `yaac.worktree-id=${worktreeId}`,
         '-o', 'jsonpath={.items[0].spec.containers[0].image}',
       ])
       const probeName = `streamd-lock-probe-${randomUUID().slice(0, 8)}`

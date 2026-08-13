@@ -16,7 +16,7 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 }))
 
 import { claimSpareWorkspace } from '#drivers/k8s/worktrees/claim'
-import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKTREE_ID_LEGACY } from '#drivers/k8s/substrate/pods'
+import { LABEL_PREWARMED, LABEL_TOOL, LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
 import { dataDirHash } from '#drivers/k8s/substrate/kubectl'
 
 /** The argv of the lookup a claim does before its write. */
@@ -50,7 +50,7 @@ describe('claimSpareWorkspace', () => {
     await claimSpareWorkspace('s1', 'codex')
 
     const selector = flag(getArgv(), '-l').split(',')
-    expect(selector).toContain(`${LABEL_WORKTREE_ID_LEGACY}=s1`)
+    expect(selector).toContain(`${LABEL_WORKTREE_ID}=s1`)
     expect(selector).toContain(`yaac.data-dir-hash=${dataDirHash()}`)
     expect(selector).toContain(`${LABEL_PREWARMED}=true`)
     // The pod name is the runtime's own, resolved here and never asked for.

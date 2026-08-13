@@ -211,7 +211,7 @@ describe('ClusterCache', () => {
     const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)
     const namespaces = informers.get('/api/v1/namespaces')
     expect(pods?.informer.startCalls).toBe(1)
-    expect(pods?.selector).toContain('yaac.session-id')
+    expect(pods?.selector).toContain('yaac.worktree-id')
     expect(jobs?.informer.startCalls).toBe(1)
     expect(jobs?.selector).toContain('yaac.data-dir-hash')
     expect(namespaces?.informer.startCalls).toBe(1)

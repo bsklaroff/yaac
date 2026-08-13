@@ -18,7 +18,6 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeHandle, RuntimeSnapshot } from '#drivers/contract'
 import { decideSpawn } from './spawn-policy'
 import { serverLog } from '#log'
-import { pendingSpawnWorktreeId } from '@yaac/shared/types'
 import type { PendingSpawn, SpawnResultWire } from '@yaac/shared/types'
 
 export interface SpawnReconcileDeps {
@@ -67,9 +66,8 @@ async function reportSpawnRequest(
 ): Promise<SpawnResultWire> {
   const fail = (error: string): SpawnResultWire => ({ requestId: req.requestId, ok: false, error })
 
-  // Under either name: a proxy predating the rename sends `sessionId`
-  // (see `pendingSpawnWorktreeId`).
-  const callerId = pendingSpawnWorktreeId(req)
+  // Off a wire, so the field can be missing however the type reads.
+  const callerId = req.worktreeId
   if (!callerId) return fail('spawn request names no calling worktree')
 
   let caller: RuntimeHandle | undefined
@@ -96,12 +94,6 @@ async function reportSpawnRequest(
   })
 
   return decision.ok
-    // Both names: an old proxy completes the waiting pod from `sessionId`.
-    ? {
-        requestId: req.requestId,
-        ok: true,
-        worktreeId: decision.workspaceId,
-        sessionId: decision.workspaceId,
-      }
+    ? { requestId: req.requestId, ok: true, worktreeId: decision.workspaceId }
     : fail(decision.error)
 }

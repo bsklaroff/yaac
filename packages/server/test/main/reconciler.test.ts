@@ -15,7 +15,6 @@ vi.mock('#domain/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi
 vi.mock('#domain/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
 vi.mock('#drivers/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#domain/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
-vi.mock('#domain/worktrees/meta-import', () => ({ importLegacyMeta: vi.fn() }))
 vi.mock('#domain/worktrees/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),
@@ -55,7 +54,6 @@ import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 import { reconcileImageSalvage } from '#drivers/k8s/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs } from '#domain/worktrees/cleanup'
-import { importLegacyMeta } from '#domain/worktrees/meta-import'
 import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
 import { reconcileBuildCacheGc } from '#drivers/k8s/images/build-cache-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
@@ -69,7 +67,7 @@ import { reconcileRedirectClaims } from '#drivers/k8s/cluster/redirect-claim-rec
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
-  importLegacyMeta, reconcileStaleWorktrees, reconcileSpawnRequests,
+  reconcileStaleWorktrees, reconcileSpawnRequests,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
@@ -302,16 +300,12 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
-  // The document import runs before anything reads the columns it fills (the
-  // spare flag a reap deletes checkouts on, the log offset the conversation
-  // fold trusts panes against), the reaper next — so counts reflect
-  // just-reaped worktrees by the time the prewarm pool runs — and titles
-  // last, after the conversation sweep, so a just-captured opening message is
-  // eligible in the same pass.
-  it('imports then reaps first, and generates titles last', () => {
+  // The reaper runs first — so counts reflect just-reaped worktrees by the
+  // time the prewarm pool runs — and titles last, after the conversation
+  // sweep, so a just-captured opening message is eligible in the same pass.
+  it('reaps first, and generates titles last', () => {
     const names = defaultReconcileSteps().map((s) => s.name)
-    expect(names[0]).toBe('legacy-meta-import')
-    expect(names[1]).toBe('stale-worktrees')
+    expect(names[0]).toBe('stale-worktrees')
     expect(names[names.length - 1]).toBe('generated-titles')
   })
 

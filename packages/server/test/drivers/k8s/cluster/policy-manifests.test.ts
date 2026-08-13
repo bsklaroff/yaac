@@ -8,7 +8,7 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
 
 import { buildEgressWorldDenyNpManifest } from '#drivers/k8s/cluster'
 import { EGRESS_WORLD_DENY_NAME, LABEL_ROLE, PROXY_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_WORKTREE_ID_LEGACY } from '#drivers/k8s/substrate/pods'
+import { LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
 
 interface Spec {
   podSelector: Record<string, unknown>
@@ -39,7 +39,7 @@ describe('buildEgressWorldDenyNpManifest', () => {
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
-        { key: LABEL_WORKTREE_ID_LEGACY, operator: 'DoesNotExist' },
+        { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: ['builder'] },
       ],
     })

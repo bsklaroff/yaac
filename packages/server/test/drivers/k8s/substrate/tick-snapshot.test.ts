@@ -38,7 +38,7 @@ function rawPod(name: string): unknown {
       name,
       labels: {
         'batch.kubernetes.io/job-name': `yaac-demo-${SID}`,
-        'yaac.session-id': SID,
+        'yaac.worktree-id': SID,
         'yaac.project': 'demo',
         'yaac.tool': 'claude',
       },
@@ -113,7 +113,7 @@ describe('createTickSnapshot', () => {
     // install-wide lists by data-dir-hash, the vcluster ones by namespace.
     const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
     expect(argv.find((c) => c.startsWith('get pods -n test-ns')))
-      .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.session-id/)
+      .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.worktree-id/)
     expect(argv).toContain(`get pods -n ${VC.namespace} -o json`)
     expect(argv).toContain(`get services -n ${VC.namespace} -l vcluster.loft.sh/managed-by=${VC.name} -o json`)
     expect(argv).toContain(`get configmaps -n ${VC.namespace} -o json`)

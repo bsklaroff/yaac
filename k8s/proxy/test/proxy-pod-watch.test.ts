@@ -11,7 +11,7 @@ import type { WatchedPod } from 'yaac-proxy-sidecar/pod-watch'
 
 function pod(ip: string | undefined, sid: string | undefined): WatchedPod {
   return {
-    metadata: sid === undefined ? {} : { labels: { 'yaac.session-id': sid } },
+    metadata: sid === undefined ? {} : { labels: { 'yaac.worktree-id': sid } },
     status: ip === undefined ? {} : { podIP: ip },
   }
 }

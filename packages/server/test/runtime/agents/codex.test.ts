@@ -5,7 +5,6 @@ import os from 'node:os'
 import {
   classifyCodexTitle,
   getCodexFirstUserMessage,
-  removeLegacyCodexHook,
 } from '#runtime/agents/codex'
 
 // Title fixtures below reproduce states observed against a live Codex
@@ -157,87 +156,5 @@ describe('getCodexFirstUserMessage', () => {
   it('ignores non-user event_msg payloads', async () => {
     await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'internal note' } })
     expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
-  })
-})
-
-const YAAC_HOOK_COMMAND = '/home/yaac/.codex/.yaac-hook.sh'
-
-interface HookEntry { type: string; command: string; timeout?: number }
-interface HookMatcher { matcher: string; hooks: HookEntry[] }
-interface HooksFile { hooks: Record<string, HookMatcher[]> }
-
-const yaacMatcher: HookMatcher = {
-  matcher: '*',
-  hooks: [{ type: 'command', command: YAAC_HOOK_COMMAND, timeout: 10 }],
-}
-
-describe('removeLegacyCodexHook', () => {
-  let tmpDir: string
-  const hooksPath = (): string => path.join(tmpDir, 'hooks.json')
-  const scriptPath = (): string => path.join(tmpDir, '.yaac-hook.sh')
-
-  beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-hooks-test-'))
-  })
-
-  afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  it('deletes the legacy .yaac-hook.sh script', async () => {
-    await fs.writeFile(scriptPath(), '#!/bin/sh\n')
-    await removeLegacyCodexHook(tmpDir)
-    await expect(fs.access(scriptPath())).rejects.toThrow()
-  })
-
-  it('removes the yaac SessionStart entry and drops the empty key', async () => {
-    const existing: HooksFile = { hooks: { SessionStart: [yaacMatcher] } }
-    await fs.writeFile(hooksPath(), JSON.stringify(existing))
-
-    await removeLegacyCodexHook(tmpDir)
-    const parsed = JSON.parse(await fs.readFile(hooksPath(), 'utf8')) as HooksFile
-    expect(parsed.hooks.SessionStart).toBeUndefined()
-  })
-
-  it('preserves other user hooks while removing only the yaac entry', async () => {
-    const other: HookMatcher = {
-      matcher: '*',
-      hooks: [{ type: 'command', command: '/some/other/hook.sh', timeout: 30 }],
-    }
-    const existing: HooksFile = {
-      hooks: {
-        SessionStart: [other, yaacMatcher],
-        PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: '/another/hook.sh' }] }],
-      },
-    }
-    await fs.writeFile(hooksPath(), JSON.stringify(existing))
-
-    await removeLegacyCodexHook(tmpDir)
-    const parsed = JSON.parse(await fs.readFile(hooksPath(), 'utf8')) as HooksFile
-
-    expect(parsed.hooks.SessionStart).toHaveLength(1)
-    expect(parsed.hooks.SessionStart[0].hooks[0].command).toBe('/some/other/hook.sh')
-    expect(parsed.hooks.PostToolUse).toHaveLength(1)
-  })
-
-  it('leaves hooks.json untouched when it has no yaac entry', async () => {
-    const existing: HooksFile = {
-      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: '/keep.sh' }] }] },
-    }
-    await fs.writeFile(hooksPath(), JSON.stringify(existing) + '\n')
-    const before = await fs.readFile(hooksPath(), 'utf8')
-
-    await removeLegacyCodexHook(tmpDir)
-    expect(await fs.readFile(hooksPath(), 'utf8')).toBe(before)
-  })
-
-  it('is a no-op when no hooks.json exists', async () => {
-    await expect(removeLegacyCodexHook(tmpDir)).resolves.toBeUndefined()
-    await expect(fs.access(hooksPath())).rejects.toThrow()
-  })
-
-  it('ignores an unreadable hooks.json without throwing', async () => {
-    await fs.writeFile(hooksPath(), 'not valid json')
-    await expect(removeLegacyCodexHook(tmpDir)).resolves.toBeUndefined()
   })
 })

@@ -88,7 +88,7 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '#drivers/k8s/substrate/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
@@ -439,7 +439,7 @@ describe('ensureProxyResources', () => {
     const agentIngress = proxyIngress.ingress.filter((r) =>
       (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
     expect(agentIngress).toHaveLength(1)
-    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKTREE_ID_LEGACY)
+    expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKTREE_ID)
     expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
 
     // World default-deny over everything that is not the proxy, a session,

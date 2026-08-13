@@ -3,11 +3,11 @@
  * on purpose, so a replaced proxy comes back knowing every worktree's
  * allowlist instead of failing closed on all of them.
  *
- * Its own module because the registrations file was renamed (`sessions.json`
- * → `worktrees.json`) and reading the wrong name fails SILENTLY — the proxy
- * starts empty and every running worktree loses egress until something
- * re-registers it. proxy.ts listens at import time and cannot be unit-tested,
- * so the fallback lives here where it can be.
+ * Its own module because proxy.ts listens at import time and cannot be
+ * unit-tested, while this half decides whether a redeployed proxy recovers
+ * its registrations — a read that goes wrong here fails SILENTLY, with the
+ * proxy starting empty and every running worktree losing egress until
+ * something re-registers it.
  */
 import fs from 'node:fs'
 import crypto from 'node:crypto'
@@ -20,26 +20,21 @@ export function writeJsonAtomic(filePath: string, value: unknown): void {
 }
 
 /**
- * Read `filePath`, falling back to `legacyPath` when it does not exist yet.
- * Returns null when neither is readable (first boot). The fallback is one
- * upgrade wide: once the proxy persists anything it writes `filePath`, and
- * the legacy name is never written again.
+ * Read `filePath`, or null when it is missing (first boot) or unparseable.
+ * A corrupt file reads as absent rather than throwing: the proxy comes up
+ * with no registrations, which is the same state it recovers from by being
+ * re-registered.
  */
-export function readJsonEither(filePath: string, legacyPath: string): unknown {
-  for (const p of [filePath, legacyPath]) {
-    let raw: string
-    try {
-      raw = fs.readFileSync(p, 'utf8')
-    } catch {
-      continue
-    }
-    // A present-but-corrupt file is not a reason to fall back to a stale
-    // one: the newer name is authoritative once it exists.
-    try {
-      return JSON.parse(raw)
-    } catch {
-      return null
-    }
+export function readJsonOrNull(filePath: string): unknown {
+  let raw: string
+  try {
+    raw = fs.readFileSync(filePath, 'utf8')
+  } catch {
+    return null
   }
-  return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
 }

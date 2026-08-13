@@ -72,7 +72,6 @@ export {
   transcriptLastActiveMs,
 } from './transcripts'
 export { ensureClaudeHooks } from './claude'
-export { removeLegacyCodexHook } from './codex'
 export { ensureOpencodeConfigJson } from './opencode'
 export {
   buildUpstreamExec,

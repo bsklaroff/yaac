@@ -4,8 +4,8 @@
  * netd's node-local Envoy receives redirected worktree-pod egress and stamps
  * the real source pod IP in the upstream PROXY-protocol header (it cannot be
  * spoofed — Envoy reads it off the connection's own peer address). This module
- * turns that IP into a session id by reading the pod's own `yaac.session-id`
- * label, keeping a `podIP → worktreeId` index fresh from a client-node
+ * turns that IP into a worktree id by reading the pod's own
+ * `yaac.worktree-id` label, keeping a `podIP → worktreeId` index fresh from a client-node
  * informer over this namespace's worktree pods. Authoritative and self-
  * correcting: a DELETED event evicts the IP, so a reused IP can never be
  * misattributed, and the informer's every (re)list diffs against its own
@@ -30,12 +30,11 @@ import {
   type KubernetesObject,
 } from '@kubernetes/client-node'
 /**
- * Must match LABEL_WORKTREE_ID_LEGACY in
- * packages/server/src/drivers/k8s/substrate/pods.ts
- * (proxy can't import src/) — the key every live worktree pod carries, and the
- * one the server keeps selecting on until the compatibility window closes.
+ * Must match LABEL_WORKTREE_ID in
+ * packages/server/src/drivers/k8s/substrate/pods.ts (proxy can't import
+ * src/) — the key every worktree pod carries and every selector matches on.
  */
-export const LABEL_WORKTREE_ID_LEGACY = 'yaac.session-id'
+export const LABEL_WORKTREE_ID = 'yaac.worktree-id'
 
 /** The shape we read out of a Pod object (only the fields we need). */
 export interface WatchedPod {
@@ -52,7 +51,7 @@ export interface PodWatchEvent {
 /** worktreeId carried by a pod, or null if it has no IP / worktree label yet. */
 export function podWorktreeId(pod: WatchedPod): string | null {
   const ip = pod.status?.podIP
-  const sid = pod.metadata?.labels?.[LABEL_WORKTREE_ID_LEGACY]
+  const sid = pod.metadata?.labels?.[LABEL_WORKTREE_ID]
   if (!ip || !sid) return null
   return sid
 }
@@ -119,7 +118,7 @@ export class PodWorktreeIndex {
  * object the host server pushes so the OUTER proxy can attribute a vcluster's
  * chained egress (its inner proxy's upstream dials, and synced pods before an
  * inner yaac opts in) to the OWNING outer worktree. Those pods live in another
- * host namespace with no `yaac.session-id` of their own (or only the *inner*
+ * host namespace with no `yaac.worktree-id` of their own (or only the *inner*
  * worktree's), so the pod-watch can't resolve them; the server — which knows each
  * vcluster namespace's owning worktree and reads the host pod IPs — supplies the
  * map instead. Full-replace semantics (the server sends the complete current set
@@ -178,7 +177,7 @@ export function _resetInClusterClientForTests(): void {
 }
 
 /** Every worktree pod in this namespace — the informer's scope and its seed. */
-const SESSION_POD_SELECTOR = LABEL_WORKTREE_ID_LEGACY
+const WORKTREE_POD_SELECTOR = LABEL_WORKTREE_ID
 
 /**
  * Feed `index` from an informer over this namespace's worktree pods, for the
@@ -197,9 +196,9 @@ export function startPodWatch(index: PodWorktreeIndex, client = inClusterClient(
   const listFn = (): ReturnType<CoreV1Api['listNamespacedPod']> =>
     client.core.listNamespacedPod({
       namespace: client.namespace,
-      labelSelector: SESSION_POD_SELECTOR,
+      labelSelector: WORKTREE_POD_SELECTOR,
     })
-  const informer = makeInformer(client.kubeConfig, path, listFn, SESSION_POD_SELECTOR)
+  const informer = makeInformer(client.kubeConfig, path, listFn, WORKTREE_POD_SELECTOR)
 
   const feed = (type: string) => (obj: KubernetesObject): void => {
     index.apply({ type, object: obj as WatchedPod })
@@ -248,7 +247,7 @@ export async function fetchPodIpByWorktreeId(
 ): Promise<string | undefined> {
   const list = await client.core.listNamespacedPod({
     namespace: client.namespace,
-    labelSelector: `${LABEL_WORKTREE_ID_LEGACY}=${worktreeId}`,
+    labelSelector: `${LABEL_WORKTREE_ID}=${worktreeId}`,
   })
   for (const pod of list.items) {
     const ip = pod.status?.podIP
@@ -272,7 +271,7 @@ export async function fetchWorktreeByPodIp(
 ): Promise<string | undefined> {
   const list = await client.core.listNamespacedPod({
     namespace: client.namespace,
-    labelSelector: SESSION_POD_SELECTOR,
+    labelSelector: WORKTREE_POD_SELECTOR,
     fieldSelector: `status.podIP=${ip}`,
   })
   for (const pod of list.items) {

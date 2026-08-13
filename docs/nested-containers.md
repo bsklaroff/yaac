@@ -396,7 +396,7 @@ nested `docker pull` goes through the MITM proxy, not this registry.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
 - Three policies: a worktrees→registry allow k8s NetworkPolicy (podSelector
-  requires the project label *and* a `yaac.session-id`, keeping it off the
+  requires the project label *and* a `yaac.worktree-id`, keeping it off the
   registry pod itself), a deny-all egress k8s NetworkPolicy on the registry
   pod, and a NetworkPolicy ingress lock confining the registry pod's
   ingress to same-project worktrees plus the host/remote-node entities.
@@ -436,7 +436,7 @@ worktree:
   exported kubeconfig use that name, so the ClusterIP need not be pinned.
   `defaultImageRegistry` points at the yaac registry; vcluster images are
   digest-pinned and mirrored. Every synced pod is stamped with
-  `yaac.session-id` so the egress backstop confines it for free.
+  `yaac.worktree-id` so the egress backstop confines it for free.
 - **VAP guard** (synced-pod containment): a ValidatingAdmissionPolicy +
   per-worktree binding restricts hostPath volumes to the worktree's
   nested-yaac dir and denies hostNetwork/hostPID/hostIPC/hostPorts/
@@ -595,7 +595,7 @@ Worktree egress is the netd / pod-watch model, not in-pod iptables. netd
 DNATs a worktree pod's outbound 443/80/ssh-sentinel at its veth to a
 node-local Envoy, which stamps the source IP into a PROXY-protocol
 preamble and forwards to the proxy's transparent listeners; the proxy
-resolves source-IP → worktree by reading the pod's `yaac.session-id` label
+resolves source-IP → worktree by reading the pod's `yaac.worktree-id` label
 off a pod-watch. Nested containers share the worktree pod's netns, so their
 `docker pull`/build traffic rides the same path with zero extra wiring;
 the proxy auto-appends the upstream registry + CDN hosts (docker.io,

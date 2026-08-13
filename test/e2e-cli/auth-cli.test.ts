@@ -107,16 +107,14 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
   })
 
   describe('auth list', () => {
-    it('auth list normalizes legacy github.json entries and renders masked previews', async () => {
+    it('auth list renders masked previews for every credential kind', async () => {
       const credsDir = await resetCreds()
-      // Legacy on-disk shape (pre host-prefix era). Read-time normalization
-      // should upgrade these to github.com/* prefixes without rewriting the file.
       await fs.writeFile(
         path.join(credsDir, 'github.json'),
         JSON.stringify({
           tokens: [
-            { pattern: 'acme/*', token: 'ghp_abcdef123456' },
-            { pattern: '*', token: 'ghp_fallback_token' },
+            { pattern: 'github.com/acme/*', token: 'ghp_abcdef123456' },
+            { pattern: 'github.com/*', token: 'ghp_fallback_token' },
           ],
         }) + '\n',
       )

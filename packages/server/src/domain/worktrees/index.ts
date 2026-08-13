@@ -24,7 +24,6 @@
 
 export { reconcileAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
-export { importLegacyMeta } from './meta-import'
 export {
   cleanupWorktreeDetached,
   gcOrphanEphemeralModuleDirs,

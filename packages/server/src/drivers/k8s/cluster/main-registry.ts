@@ -60,19 +60,12 @@
  * collect's sibling in project-registry.ts mount the volume beside a
  * serving registry.
  *
- * An install upgrading from the hostPath store comes up on a FRESH, EMPTY
- * claim: nothing migrates blobs, because nothing here has ever needed to —
+ * A claim that never binds — a cluster with NO default StorageClass — leaves
+ * the registry down rather than degraded, since `Recreate` takes the serving
+ * pod away first. `cluster setup` reports that precisely; the boot ensure
+ * only logs it. Losing the volume itself costs nothing permanent:
  * `registryHasTag` misses and the pushers refill, the same self-healing the
- * store has always relied on for a cluster recreate. The cost is one round
- * of re-pushes and rebuilds on the first worktree create after the upgrade.
- * The old hostPath data stays on the nodes under
- * `/var/lib/yaac/main-registry/<install hash>`, recoverable by hand.
- *
- * The upgrade is not free of failure modes: `Recreate` deletes the pod
- * serving the hostPath before anyone can discover the claim will not bind,
- * so on a cluster with NO default StorageClass the conversion takes a
- * working registry down until an operator supplies one. `cluster setup`
- * reports that precisely; the boot ensure only logs it.
+ * store relies on for a cluster recreate.
  */
 import crypto from 'node:crypto'
 import {

@@ -50,8 +50,8 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
   const row = await findWorktreeRow(idOrName)
   if (row) {
     // The tool is the first conversation's — a worktree has none of its own.
-    // A worktree with no conversation recorded cannot say what to launch, so
-    // it falls back to claude rather than refusing to restart.
+    // A worktree whose create died before recording one cannot say what to
+    // launch, so it falls back to claude rather than refusing to restart.
     const first = await firstAgentSession(row.projectSlug, row.worktreeId)
     return {
       projectSlug: row.projectSlug,

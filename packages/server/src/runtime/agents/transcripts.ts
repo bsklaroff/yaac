@@ -87,12 +87,9 @@ export function toProjectRelative(slug: string, absolute: string): string | null
  *
  * Refusing is logged because every caller degrades *silently* — `toLinkRow`
  * just omits the path, and the row surfaces as a listing with no prompt and no
- * last-activity. Two things can put an absolute here, and both are worth a
- * line: a new writer that bypassed the encoder, or a row stranded by an
- * install that upgraded past the pass that used to relativize them (claude and
- * pi rows recover through `stoppedPrompt`'s conventional-path fallback, but a
- * codex rollout filename follows from nothing, so that pointer is gone). The
- * line is pure signal — in a healthy install this branch is unreachable.
+ * last-activity. Only a writer that bypassed the encoder can put an absolute
+ * here, so the line names a bug rather than a state: it is pure signal, and in
+ * a healthy install this branch is unreachable.
  */
 export function resolveProjectPath(slug: string, stored: string): string | undefined {
   if (path.isAbsolute(stored)) {

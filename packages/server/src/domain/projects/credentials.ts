@@ -6,8 +6,9 @@ import {
   ensureDataDir,
 } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import { parsePattern, validatePattern, matchPattern, isHostSegment } from '@yaac/shared/credentials'
+import { parsePattern, validatePattern, matchPattern } from '@yaac/shared/credentials'
 import { expandTilde } from '@yaac/shared/paths'
+import { serverLog } from '#log'
 import type { ResolvedGitCredential } from '#domain/git'
 import type {
   GitCredentialEntry,
@@ -20,18 +21,20 @@ async function ensureCredentialsDir(): Promise<void> {
 }
 
 /**
- * One-way migration of legacy on-disk entries (from older yaac versions that
- * stored `{ pattern, token }` with no host axis). Catch-all `*` becomes
- * `github.com/*`; a two-segment pattern whose first segment is not a host
- * (no `.` and not `localhost`) is treated as a github.com owner.
+ * Why a stored entry was ignored, phrased for the person who has to fix it.
+ *
+ * Dropping one is otherwise invisible from the outside: git auth for that
+ * repo simply stops, with no error at the point of use. The pattern is safe
+ * to name — it is a host/path glob, never the token — and naming it is the
+ * difference between a support thread and a one-line edit. A pattern with no
+ * host axis is the common case, since that is the shape older yaac versions
+ * wrote, so it gets the rewrite that fixes it rather than just a complaint.
  */
-function normalizeLegacyPattern(pattern: string): string {
-  if (pattern === '*') return 'github.com/*'
-  const parts = pattern.split('/')
-  if (parts.length === 2 && parts[0] && !isHostSegment(parts[0])) {
-    return `github.com/${pattern}`
-  }
-  return pattern
+function patternComplaint(pattern: string): string {
+  const qualified = `github.com/${pattern}`
+  return validatePattern(qualified)
+    ? `names no host — use "${qualified}" to mean the same thing on github.com`
+    : 'is not a valid <host>/<path> pattern'
 }
 
 function normalizeEntry(raw: Record<string, unknown>): GitCredentialEntry | null {
@@ -40,9 +43,12 @@ function normalizeEntry(raw: Record<string, unknown>): GitCredentialEntry | null
     if (typeof raw.pattern !== 'string' || typeof raw.token !== 'string' || !raw.token) {
       return null
     }
-    const pattern = normalizeLegacyPattern(raw.pattern)
-    if (!validatePattern(pattern)) return null
-    return { kind: 'https', pattern, token: raw.token }
+    if (!validatePattern(raw.pattern)) {
+      serverLog('[credentials] ignoring git credential: pattern '
+        + `"${raw.pattern}" ${patternComplaint(raw.pattern)}`)
+      return null
+    }
+    return { kind: 'https', pattern: raw.pattern, token: raw.token }
   }
   if (kind === 'ssh') {
     if (typeof raw.pattern !== 'string'
@@ -50,7 +56,11 @@ function normalizeEntry(raw: Record<string, unknown>): GitCredentialEntry | null
       || typeof raw.knownHostsEntry !== 'string' || !raw.knownHostsEntry) {
       return null
     }
-    if (!validatePattern(raw.pattern)) return null
+    if (!validatePattern(raw.pattern)) {
+      serverLog('[credentials] ignoring ssh credential: pattern '
+        + `"${raw.pattern}" ${patternComplaint(raw.pattern)}`)
+      return null
+    }
     return {
       kind: 'ssh',
       pattern: raw.pattern,

@@ -16,7 +16,7 @@ import {
   kubectlWithRetry,
   type KubectlExecOptions,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID_LEGACY } from '@yaac/server/drivers/k8s/substrate/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
 import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
@@ -127,7 +127,7 @@ export async function execInJob(
  * budget is gone the next file's own namespace scoping is the backstop.
  */
 export async function cleanupWorktreeJobs(timeoutMs = 120_000): Promise<void> {
-  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID_LEGACY}`
+  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKTREE_ID}`
   try {
     // Issue the deletes without waiting, then poll: `kubectl delete --wait`
     // blocks per object, so a file with several worktrees would serialize

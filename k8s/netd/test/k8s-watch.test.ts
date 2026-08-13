@@ -62,10 +62,10 @@ const emptyList = (): Promise<KubernetesListObject<KubernetesObject>> =>
 describe('mapPod', () => {
   it('maps an API pod to netd\'s shape', () => {
     expect(mapPod({
-      metadata: { name: 'p', namespace: 'yaac', labels: { 'yaac.session-id': 's1' } },
+      metadata: { name: 'p', namespace: 'yaac', labels: { 'yaac.worktree-id': 's1' } },
       status: { podIP: '10.244.0.9' },
     })).toEqual({
-      name: 'p', namespace: 'yaac', podIp: '10.244.0.9', labels: { 'yaac.session-id': 's1' },
+      name: 'p', namespace: 'yaac', podIp: '10.244.0.9', labels: { 'yaac.worktree-id': 's1' },
     })
   })
 

@@ -2,11 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readJsonEither, writeJsonAtomic } from 'yaac-proxy-sidecar/state-files'
+import { readJsonOrNull, writeJsonAtomic } from 'yaac-proxy-sidecar/state-files'
 
 let dir: string
 const current = (): string => path.join(dir, 'worktrees.json')
-const legacy = (): string => path.join(dir, 'sessions.json')
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-state-'))
@@ -30,36 +29,20 @@ describe('writeJsonAtomic', () => {
   })
 })
 
-describe('readJsonEither', () => {
-  it('reads the current name', () => {
+describe('readJsonOrNull', () => {
+  it('reads what writeJsonAtomic wrote', () => {
     writeJsonAtomic(current(), { sid: 'now' })
-    expect(readJsonEither(current(), legacy())).toEqual({ sid: 'now' })
+    expect(readJsonOrNull(current())).toEqual({ sid: 'now' })
   })
 
-  // The upgrade case, and the reason this module exists: a /data written by a
-  // proxy that predates the rename has only sessions.json. Missing it does not
-  // error — the proxy just starts with zero registrations and fails closed on
-  // every running worktree's egress.
-  it('falls back to the legacy name when only it exists', () => {
-    writeJsonAtomic(legacy(), { sid: 'legacy' })
-    expect(readJsonEither(current(), legacy())).toEqual({ sid: 'legacy' })
+  // Missing does not error — the proxy just starts with zero registrations
+  // and fails closed on every running worktree's egress until re-registered.
+  it('returns null on first boot, when the file does not exist', () => {
+    expect(readJsonOrNull(current())).toBeNull()
   })
 
-  it('prefers the current name when both exist', () => {
-    writeJsonAtomic(legacy(), { sid: 'legacy' })
-    writeJsonAtomic(current(), { sid: 'now' })
-    expect(readJsonEither(current(), legacy())).toEqual({ sid: 'now' })
-  })
-
-  it('returns null on first boot, when neither exists', () => {
-    expect(readJsonEither(current(), legacy())).toBeNull()
-  })
-
-  // A present-but-corrupt current file is authoritative: falling back would
-  // resurrect registrations the proxy has already moved past.
-  it('returns null for a corrupt current file instead of reading the legacy one', () => {
-    writeJsonAtomic(legacy(), { sid: 'legacy' })
+  it('returns null for a corrupt file rather than throwing', () => {
     fs.writeFileSync(current(), '{not json')
-    expect(readJsonEither(current(), legacy())).toBeNull()
+    expect(readJsonOrNull(current())).toBeNull()
   })
 })

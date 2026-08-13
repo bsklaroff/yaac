@@ -10,7 +10,7 @@ import { serverLog } from '#log'
  * yaac-in-yaac chains a vcluster's egress through the OUTER proxy (the inner
  * proxy's upstream dials, and any synced pod before an inner yaac opts in). That
  * traffic arrives at the outer proxy with the source pod's *host* IP, but those
- * pods live in the vcluster's own namespace with no `yaac.session-id` the
+ * pods live in the vcluster's own namespace with no `yaac.worktree-id` the
  * proxy's pod-watch can resolve — so the outer proxy fail-closes on it. The
  * server (host cluster-admin) knows each vcluster namespace's owning worktree
  * and can read the host pod IPs, so it supplies the mapping; the proxy then

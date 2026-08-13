@@ -262,7 +262,6 @@ describe('launchWorkspace', () => {
     expect(job.metadata.labels).toMatchObject({
       'yaac.project': 'proj',
       'yaac.worktree-id': 's1',
-      'yaac.session-id': 's1',
       'yaac.data-dir-hash': 'ddh0123456789abc',
       'yaac.tool': 'claude',
     })

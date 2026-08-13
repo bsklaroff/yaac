@@ -190,7 +190,7 @@ const PROXY_SVC: NetdService = {
   name: 'yaac-proxy', namespace: 'yaac', clusterIp: '10.96.0.50', labels: { app: 'yaac-proxy' },
 }
 const SESSION_POD: NetdPod = {
-  name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9', labels: { 'yaac.session-id': 's1' },
+  name: 'sess-1', namespace: 'yaac', podIp: '10.244.0.9', labels: { 'yaac.worktree-id': 's1' },
 }
 
 interface Harness {
@@ -314,7 +314,7 @@ describe('reconcileOnce', () => {
     await reconcileOnce(h.deps, h.memo)
     h.calls.length = 0
     h.setPods([SESSION_POD, {
-      name: 'sess-2', namespace: 'yaac', podIp: '10.244.0.10', labels: { 'yaac.session-id': 's2' },
+      name: 'sess-2', namespace: 'yaac', podIp: '10.244.0.10', labels: { 'yaac.worktree-id': 's2' },
     }])
     h.deps.routes = () => Promise.resolve(
       '10.244.0.9 dev calia1 scope link\n10.244.0.10 dev calib2 scope link\n',
