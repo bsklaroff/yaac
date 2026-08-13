@@ -269,12 +269,58 @@ The fixed-size dialogs go full-screen below `md`: Settings loses its two-column
 split (the left nav becomes a scrolling row of chips), and the `inset-4`
 overlays (skills, stopped worktrees, image builds) go edge to edge.
 
+Going edge to edge is not enough for the three that are **master/detail** — a
+20rem list beside a detail pane leaves the detail a few dozen pixels at 390px.
+`components/ui/MasterDetail` is the shared body they render into: side by side
+above `md`, one screen deep below it, where the list owns the width until a row
+is tapped and the detail then takes over with a back chevron.
+
+The off-screen pane is `max-md:hidden` — `display: none`, the mechanism the
+screen layers above deliberately avoid, and here the right one: the visible
+pane has to *have* the full width, which a still-laid-out sibling would deny
+it. What made `display: none` unsafe there is absent here — nothing in these
+overlays measures itself off-screen (the one self-measure, the build log's
+`scrollTop = scrollHeight`, runs only while its pane is the visible one).
+
+Both panes stay rendered, so the **list** keeps its scroll position and its
+query across a drill-down and back. That is the list only: what the detail slot
+holds is the caller's business, and the skills overlay swaps its detail for an
+empty div on back, so re-tapping remounts the pane (its fetch is spared only by
+React Query's 30s `staleTime`, and its own scroll resets).
+
+Its `detailOpen` prop is "the user picked a row", not "a row is selected". Each
+of these overlays auto-selects its first row so the desktop detail is never
+blank, and that stand-in must not count as a navigation on a phone, so below
+the breakpoint the auto-pick is skipped and the detail waits for a tap.
+
+Which leaves the question of what may ride on the stand-in above the
+breakpoint. Reads may — the desktop detail pane genuinely shows that row, so
+its `SKILL.md` fetch and its build-log poll are the feature. A durable write
+may not: the stopped overlay's death acknowledgement is cross-client and
+irreversible, so it keys on the clicked row at every width. Otherwise merely
+opening the overlay acknowledges the top death; each keystroke in the search
+box re-filters the list, walking the stand-in through every match on the way to
+the one the user wants; and `useIsMobile` is live, so rotating a phone into
+landscape materializes a stand-in and acknowledges that.
+
+The **stopped-worktrees entry point** under the list is the one control that
+changes shape rather than size: a thin group-header-style line on the desktop,
+a full-width tap-sized card on touch, so it reads as one more list row.
+
+Elsewhere the rule is just that no row of controls may assume desktop width.
+The global `min-width: 0` above keeps such a row from overflowing, but fitting
+is not the same as usable: Settings' add-git-credential row leaves its token
+field about 70px once both inputs are at the 16px floor, so it stacks below
+`md`.
+
 ## Testing
 
 `packages/frontend/test/`: `viewport.test.ts` (the hook and the visual-viewport
 plumbing), `mobile-nav.test.ts` (the store's tap-vs-app-choosing split — the
 `autoSelectWorktree` case is the regression the whole design exists to
 prevent), `mobile-shell.test.tsx` (layer visibility and the history stack),
+`mobile-overlays.test.tsx` (the master/detail drill-down: no auto-pick, no
+detail-side fetch, and no death acknowledged until a row is tapped),
 `worktree-list.test.tsx`, `pty-input.test.ts`, `terminal-key-bar.test.tsx`.
 
 **The geometry is not covered by CI.** jsdom has no layout, so the behaviors
@@ -300,6 +346,13 @@ measures the pane's horizontal overflow, the input's font size and how the box
 grows. It drives the built app rather than the Vite dev server, because
 `React.StrictMode` double-mounts in development and the chat pane's second ACP
 socket displaces its first, so a prompt sent from the box never arrives.
+
+`test-playwright-scripts/mobile-overlay-panes-test.js` is the same kind of
+check for the overlays — which pane is actually displayed and how wide, whether
+anything overflows the viewport, whether every control clears a 32px tap
+target, and whether the list's scroll offset really survives the hide/show.
+jsdom can answer none of those: a `max-md:hidden` pane is present and "visible"
+to it.
 
 Touch scrolling is the same kind of gap for the same reason — every claim it
 rests on is a browser fact jsdom has no opinion about. `touch-scroll.test.ts`

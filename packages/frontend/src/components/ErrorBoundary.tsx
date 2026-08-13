@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
         </div>
         <pre className="max-w-md overflow-auto text-xs text-text-faint">{error.message}</pre>
         <button
-          className="rounded bg-base px-3 py-1 text-sm text-text"
+          className="rounded bg-shell px-3 py-1 text-sm text-text"
           onClick={() => window.location.reload()}
         >
           Reload

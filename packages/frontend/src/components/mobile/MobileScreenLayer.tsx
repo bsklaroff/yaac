@@ -29,7 +29,7 @@ export function MobileScreenLayer({
     <div
       inert={!active}
       className={clsx(
-        'absolute inset-0 flex flex-col bg-base',
+        'absolute inset-0 flex flex-col bg-shell',
         !active && 'invisible pointer-events-none',
       )}
     >

@@ -185,7 +185,8 @@ export function SettingsButton(
           {/* Content */}
           <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
             <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
-              text-text-faint transition hover:bg-surface-2 hover:text-text" aria-label="Close settings">
+              text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
+              aria-label="Close settings">
               <CloseIcon size={14} />
             </Dialog.Close>
 
@@ -1039,12 +1040,15 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
 
   return (
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-2">
-      <div className="flex gap-2">
+      {/* Stacked below md: at 16px (the phone-width floor every control gets)
+          two side-by-side fields leave the token one about 70px, which is a
+          box you can't read a pasted token in. */}
+      <div className="flex gap-2 max-md:flex-col">
         <input
           name="pattern"
           placeholder="github.com/*"
           className="w-40 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong"
+            outline-none focus:border-border-strong max-md:w-full"
         />
         <input
           name="token"
@@ -1057,7 +1061,7 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
           type="submit"
           disabled={busy}
           className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50"
+            hover:bg-border-strong disabled:opacity-50 max-md:py-2.5"
         >
           {busy ? 'Adding…' : 'Add'}
         </button>

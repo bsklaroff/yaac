@@ -974,7 +974,7 @@ export function WorktreeView({
         {/* Provisioning overlay — covers the workspace until ready. Scoped to
             the active project so it can't cover another project's worktree. */}
         {creatingHere && (
-          <div className="absolute inset-0 z-30 bg-base">
+          <div className="absolute inset-0 z-30 bg-shell">
             <CreatingPlaceholder creating={creatingHere} />
           </div>
         )}

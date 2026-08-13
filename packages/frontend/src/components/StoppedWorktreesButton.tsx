@@ -5,9 +5,11 @@ import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { MasterDetail } from '#components/ui/MasterDetail'
 import { restartWorktree } from '#lib/createWorktree'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
+import { useIsMobile } from '#lib/viewport'
 import { isUnseenDeath, useUiStore } from '#store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorktreeEntry } from '@yaac/shared/types'
@@ -55,6 +57,7 @@ export function StoppedWorktreesButton({
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const provision = useProvisionWorktree()
   const queryClient = useQueryClient()
+  const isMobile = useIsMobile()
 
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -108,22 +111,40 @@ export function StoppedWorktreesButton({
   const rows = q
     ? merged.filter((d) => `${label(d)} ${TOOL_LABEL[d.tool]}`.toLowerCase().includes(q))
     : merged
-  const selected = rows.find((d) => d.worktreeId === selectedId) ?? rows[0] ?? null
+  // `picked` is a row the user clicked; `selected` is what the detail pane
+  // shows. Desktop shows both panes, so the top row stands in there until the
+  // user picks one. A phone shows the list *or* the detail, so there the detail
+  // exists only once a row is actually tapped. Every consequence of opening a
+  // detail keys on `picked` (see the acknowledgement effect below).
+  const picked = rows.find((d) => d.worktreeId === selectedId) ?? null
+  const selected = picked ?? (isMobile ? null : rows[0] ?? null)
 
-  // Viewing a death's detail marks it seen server-side (durable, shared across
+  // Reopening the overlay on a phone should land on the list, not on whatever
+  // was last read.
+  useEffect(() => { if (!open) setSelectedId(null) }, [open])
+
+  // Clicking a death's row marks it seen server-side (durable, shared across
   // clients) and optimistically flips `seen` in the cached list so the dot /
-  // highlight clear instantly. Runs for the auto-selected top row and for any
-  // row the user clicks; only while the overlay is open. The `!selected.seen`
-  // guard stops the cache patch from re-triggering this effect (and re-POSTing);
-  // the partial query-key matcher survives activeSignature changing.
+  // highlight clear instantly. The `!picked.seen` guard stops the cache patch
+  // from re-triggering this effect (and re-POSTing); the partial query-key
+  // matcher survives activeSignature changing.
+  //
+  // Keyed on `picked`, never on `selected`: the desktop stand-in row is a
+  // display convenience, and a durable cross-client write must not ride on it.
+  // Three ways it otherwise fires for a row nobody read — merely opening the
+  // overlay acknowledges the top death; each keystroke in the search box
+  // re-filters `rows`, so hunting for one dead worktree walks the top match
+  // through several others and acknowledges each; and `useIsMobile` is live, so
+  // rotating a phone into landscape past the breakpoint materializes a
+  // stand-in and acknowledges it. "Mark all as read" is the bulk path.
   useEffect(() => {
-    if (!open || !selected?.deathReason || selected.seen) return
-    void markDeathSeen(projectSlug, selected.worktreeId)
+    if (!open || !picked?.deathReason || picked.seen) return
+    void markDeathSeen(projectSlug, picked.worktreeId)
     queryClient.setQueriesData<StoppedWorktreeEntry[]>(
       { queryKey: ['deleted', projectSlug] },
-      (old) => old?.map((e) => (e.worktreeId === selected.worktreeId ? { ...e, seen: true } : e)),
+      (old) => old?.map((e) => (e.worktreeId === picked.worktreeId ? { ...e, seen: true } : e)),
     )
-  }, [open, selected, projectSlug, queryClient])
+  }, [open, picked, projectSlug, queryClient])
 
   // Dismiss every death at once. Same server-persisted acknowledgement the
   // per-row view makes, with the same optimistic cache patch so the dot and
@@ -156,17 +177,25 @@ export function StoppedWorktreesButton({
         <button
           onClick={openOverlay}
           className="mt-1 flex w-full items-center gap-1.5 px-3 py-1 text-xs font-medium text-text-faint
-            outline-none transition hover:text-text-dim"
+            outline-none transition hover:text-text-dim
+            max-md:mx-2 max-md:mt-2 max-md:w-[calc(100%-1rem)] max-md:gap-2 max-md:rounded-lg
+            max-md:bg-surface-2/40 max-md:px-2.5 max-md:py-3.5 max-md:text-sm max-md:text-text-dim
+            max-md:active:bg-surface-2"
         >
-          <DeleteIcon size={13} className="shrink-0" />
+          <DeleteIcon size={13} className="shrink-0 max-md:hidden" />
+          <DeleteIcon size={15} className="hidden shrink-0 max-md:block" />
           <span>Stopped worktrees</span>
+          {/* The count reads as the same kind of row as a worktree group's
+              header on desktop; on touch it is the row's second affordance,
+              which is why the entry is a full tap-sized card there. */}
+          <span className="text-text-faint/70">{merged.length}</span>
           {/* Decorative unread dot (aria-hidden so it stays out of the button's
               accessible name); the title is a hover tooltip. */}
           {unseenDeaths > 0 && (
             <span
               aria-hidden="true"
               title={`${unseenDeaths} worktree${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
-              className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+              className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500 max-md:h-2 max-md:w-2"
             />
           )}
         </button>
@@ -180,8 +209,10 @@ export function StoppedWorktreesButton({
           bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
-          <div className="flex items-center justify-between">
-            <Dialog.Title className="text-xs font-semibold text-text-dim">Stopped worktrees</Dialog.Title>
+          <div className="flex items-center justify-between gap-2">
+            <Dialog.Title className="text-xs font-semibold text-text-dim max-md:text-sm">
+              Stopped worktrees
+            </Dialog.Title>
             <div className="flex items-center gap-2">
               {/* Only offered when there is something unread to clear. */}
               {unseenDeaths > 0 && (
@@ -189,7 +220,7 @@ export function StoppedWorktreesButton({
                   type="button"
                   onClick={onMarkAllRead}
                   className="rounded-md px-2 py-1 text-xs font-medium text-text-faint transition
-                    hover:bg-surface-2 hover:text-text"
+                    hover:bg-surface-2 hover:text-text max-md:px-2.5 max-md:py-2"
                 >
                   Mark all as read
                 </button>
@@ -197,8 +228,8 @@ export function StoppedWorktreesButton({
               <Dialog.Close
                 title="Close"
                 aria-label="Close"
-                className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
               >
                 <CloseIcon size={14} />
               </Dialog.Close>
@@ -212,92 +243,103 @@ export function StoppedWorktreesButton({
               description="Worktrees you stop are kept here so you can restart them."
             />
           ) : (
-            <div className="flex min-h-0 flex-1 gap-3">
-              {/* Master: search + list */}
-              <div className="flex w-80 shrink-0 flex-col gap-2">
-                <input
-                  value={queryText}
-                  onChange={(e) => setQueryText(e.target.value)}
-                  placeholder="Search…"
-                  className="rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-                    outline-none focus:border-border-strong"
-                />
-                <ul className="min-h-0 flex-1 overflow-y-auto">
-                  {rows.length === 0 && (
-                    <li className="px-2 py-2 text-xs text-text-faint">No matches.</li>
-                  )}
-                  {rows.map((d) => {
-                    const unseen = isUnseenDeath(d)
-                    return (
-                    <li key={d.worktreeId}>
+            <MasterDetail
+              detailOpen={isMobile && picked !== null}
+              onBack={() => setSelectedId(null)}
+              backLabel="Back to stopped worktrees"
+              master={
+                <>
+                  <input
+                    value={queryText}
+                    onChange={(e) => setQueryText(e.target.value)}
+                    placeholder="Search…"
+                    className="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
+                      outline-none focus:border-border-strong max-md:py-2.5"
+                  />
+                  <ul className="min-h-0 flex-1 overflow-y-auto">
+                    {rows.length === 0 && (
+                      <li className="px-2 py-2 text-xs text-text-faint">No matches.</li>
+                    )}
+                    {rows.map((d) => {
+                      const unseen = isUnseenDeath(d)
+                      return (
+                      <li key={d.worktreeId}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedId(d.worktreeId)}
+                          className={clsx(
+                            'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition max-md:py-3',
+                            selected?.worktreeId === d.worktreeId
+                              ? 'bg-surface-2'
+                              : unseen ? 'bg-amber-500/10 hover:bg-amber-500/15' : 'hover:bg-surface-2/50',
+                          )}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {unseen && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+                            <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
+                          </span>
+                          <span className="flex items-center gap-2 text-[11px] text-text-faint">
+                            <span className="truncate">
+                              {d.deathReason
+                                ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
+                                : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
+                            </span>
+                            <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
+                          </span>
+                        </button>
+                      </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              }
+              detail={
+                <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-hairline-soft bg-bg/50 p-4
+                  max-md:border-0 max-md:bg-transparent max-md:p-0">
+                  {selected && (
+                    <>
+                      {/* Title and metadata are shrink-0 so a long prompt (the
+                          one flex-1 band) can't squeeze them into clipped
+                          lines on a short phone screen. */}
+                      <h3 className="shrink-0 text-sm font-semibold text-text max-md:text-[0.9375rem]">
+                        {label(selected)}
+                      </h3>
+                      <dl className="mt-3 grid shrink-0 grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-text-faint">
+                        <dt>Tool</dt><dd className="text-text-dim">{TOOL_LABEL[selected.tool]}</dd>
+                        <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
+                        <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
+                        <dt>{selected.deathReason ? 'Died' : 'Stopped'}</dt>
+                        <dd className="text-text-dim">{relativeAge(selected.stoppedAt) || '—'}</dd>
+                        {selected.deathReason && (
+                          <>
+                            <dt>Cause</dt>
+                            <dd className="text-text-dim">
+                              {describeWorktreeDeathReason(selected.deathReason, selected.deathDetail)}
+                            </dd>
+                          </>
+                        )}
+                      </dl>
+                      {selected.prompt && (
+                        <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
+                          text-xs leading-relaxed text-text-dim">
+                          {selected.prompt}
+                        </p>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setSelectedId(d.worktreeId)}
-                        className={clsx(
-                          'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition',
-                          selected?.worktreeId === d.worktreeId
-                            ? 'bg-surface-2'
-                            : unseen ? 'bg-amber-500/10 hover:bg-amber-500/15' : 'hover:bg-surface-2/50',
-                        )}
+                        onClick={() => setConfirm(selected)}
+                        className="mt-4 flex w-fit items-center gap-1.5 self-end rounded-md bg-surface-3 px-3 py-1.5
+                          text-xs font-medium text-text transition hover:bg-border-strong
+                          max-md:w-full max-md:justify-center max-md:py-3 max-md:text-sm"
                       >
-                        <span className="flex items-center gap-1.5">
-                          {unseen && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-                          <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
-                        </span>
-                        <span className="flex items-center gap-2 text-[11px] text-text-faint">
-                          <span className="truncate">
-                            {d.deathReason
-                              ? `died ${relativeAge(d.stoppedAt)} — ${describeWorktreeDeathReason(d.deathReason)}`
-                              : d.stoppedAt ? `stopped ${relativeAge(d.stoppedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
-                          </span>
-                          <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
-                        </span>
+                        <RestartIcon size={13} />
+                        Restart
                       </button>
-                    </li>
-                    )
-                  })}
-                </ul>
-              </div>
-
-              {/* Detail */}
-              <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-hairline-soft bg-bg/50 p-4">
-                {selected && (
-                  <>
-                    <h3 className="text-sm font-semibold text-text">{label(selected)}</h3>
-                    <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-text-faint">
-                      <dt>Tool</dt><dd className="text-text-dim">{TOOL_LABEL[selected.tool]}</dd>
-                      <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
-                      <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
-                      <dt>{selected.deathReason ? 'Died' : 'Stopped'}</dt>
-                      <dd className="text-text-dim">{relativeAge(selected.stoppedAt) || '—'}</dd>
-                      {selected.deathReason && (
-                        <>
-                          <dt>Cause</dt>
-                          <dd className="text-text-dim">
-                            {describeWorktreeDeathReason(selected.deathReason, selected.deathDetail)}
-                          </dd>
-                        </>
-                      )}
-                    </dl>
-                    {selected.prompt && (
-                      <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
-                        text-xs leading-relaxed text-text-dim">
-                        {selected.prompt}
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setConfirm(selected)}
-                      className="mt-4 flex w-fit items-center gap-1.5 self-end rounded-md bg-surface-3 px-3 py-1.5
-                        text-xs font-medium text-text transition hover:bg-border-strong"
-                    >
-                      <RestartIcon size={13} />
-                      Restart
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
+                    </>
+                  )}
+                </div>
+              }
+            />
           )}
         </Dialog.Popup>
       </Dialog.Portal>
