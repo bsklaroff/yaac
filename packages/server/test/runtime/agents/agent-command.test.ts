@@ -11,10 +11,14 @@ import {
 } from '#runtime/agents/agent-command'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS } from '@yaac/shared/types'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
+
+// The container paths every case below is written against; the driver
+// answers these for a pod, and a containerless workspace gets its own.
+const PATHS = workspacePathsFixture()
+const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
 // Mocked at the contract boundary. `verifyAgentWindowAlive` branches on
 // WorkspaceExecError to tell "the probe ran and the window is gone" apart
@@ -23,44 +27,42 @@ const podExec = vi.fn<WorktreeDriver['exec']>()
   .mockResolvedValue({ stdout: '', stderr: '' })
 beforeEach(() => { installFakeWorktreeDriver({ exec: podExec }) })
 
-const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
-
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
     it('omits prompt arguments', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1')
+      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', autoApprove: true })
       expect(cmd).toBe('codex --yolo')
     })
 
     it('inserts the resume subcommand when resuming', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', true)
+      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: true, autoApprove: true })
       expect(cmd).toBe('codex --yolo resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', false, undefined, 'gpt-5.2-codex')
+      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'sess-1', resume: false, model: 'gpt-5.2-codex', autoApprove: true })
       expect(cmd).toBe('codex --yolo --model gpt-5.2-codex')
     })
 
     it('places --model after the resume subcommand (codex resume parses it)', () => {
-      const cmd = buildAgentCmd('codex', 'abc', true, undefined, 'gpt-5.2-codex')
+      const cmd = buildAgentCmd({ tool: 'codex', worktreeId: 'abc', resume: true, model: 'gpt-5.2-codex', autoApprove: true })
       expect(cmd).toBe('codex --yolo resume abc --model gpt-5.2-codex')
     })
   })
 
   describe('opencode tool', () => {
     it('starts the loopback server and omits model flags by default', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1')
+      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', autoApprove: true })
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
     })
 
     it('appends --continue when resuming', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1', true)
+      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: true, autoApprove: true })
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
     })
 
     it('inserts a provider/model override', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1', false, undefined, 'anthropic/claude-opus-4-8')
+      const cmd = buildAgentCmd({ tool: 'opencode', worktreeId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', autoApprove: true })
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --model anthropic/claude-opus-4-8')
     })
   })
@@ -77,27 +79,27 @@ describe('buildAgentCmd', () => {
       `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
 
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1')
+      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', autoApprove: true })
       expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
     })
 
     it('uses the given provider default model', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', false, 'anthropic')
+      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: false, piProvider: 'anthropic', autoApprove: true })
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('addresses the session by id when resuming (same command as create)', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', true, 'anthropic')
+      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: true, piProvider: 'anthropic', autoApprove: true })
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('prefers an explicit model override over the provider default', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', false, 'anthropic', 'openai/gpt-5.2')
+      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', autoApprove: true })
       expect(cmd).toBe(wrapped('pi --approve --model openai/gpt-5.2 --session-id sess-1'))
     })
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1')
+      const cmd = buildAgentCmd({ tool: 'pi', worktreeId: 'sess-1', autoApprove: true })
       // Must never contain a single quote: it is embedded in tmux
       // `respawn-window '<cmd>'`, itself passed through the host `sh -c`. The
       // sed pattern uses `.*` instead of the literal quotes around the id so
@@ -113,22 +115,22 @@ describe('buildAgentCmd', () => {
 
   describe('claude tool', () => {
     it('omits prompt flags', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1')
+      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', autoApprove: true })
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sess-1')
     })
 
     it('swaps --session-id for --resume when resuming', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', true)
+      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, autoApprove: true })
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', false, undefined, 'claude-opus-4-8')
+      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: false, model: 'claude-opus-4-8', autoApprove: true })
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', true, undefined, 'opus')
+      const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, model: 'opus', autoApprove: true })
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model opus --resume sess-1')
     })
   })
@@ -153,12 +155,12 @@ describe('agentWindowTarget', () => {
 describe('buildPromptPasteCmd', () => {
   it('round-trips arbitrary prompt text through the base64 payload', () => {
     const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
-    expect(embeddedPrompt(buildPromptPasteCmd('yaac:claude', nasty))).toBe(nasty)
+    expect(embeddedPrompt(buildPromptPasteCmd('yaac:claude', nasty, PATHS))).toBe(nasty)
   })
 
   it('verifies the paste against the first line, capped at 40 columns', () => {
     const prompt = `${'x'.repeat(60)} tail\nsecond line`
-    const cmd = buildPromptPasteCmd('yaac:claude', prompt)
+    const cmd = buildPromptPasteCmd('yaac:claude', prompt, PATHS)
     const probe = /probe="\$\(printf %s ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(cmd)
     expect(probe).not.toBeNull()
     expect(Buffer.from(probe![1], 'base64').toString('utf8')).toBe('x'.repeat(40))
@@ -166,7 +168,7 @@ describe('buildPromptPasteCmd', () => {
 
   it('never embeds the raw prompt, and stays single-quote-clean for the host shell', () => {
     const nasty = "it's $HOME; \"quoted\""
-    const cmd = buildPromptPasteCmd('yaac:claude', nasty)
+    const cmd = buildPromptPasteCmd('yaac:claude', nasty, PATHS)
     expect(cmd).not.toContain('$HOME')
     // The one single-quote pair is the outer sh -c wrapper; the script body
     // must not contain any (the host shell would split the command there).
@@ -176,13 +178,13 @@ describe('buildPromptPasteCmd', () => {
   })
 
   it.each(AGENT_TOOLS)('targets the %s agent window', (tool) => {
-    const cmd = buildPromptPasteCmd(agentWindowTarget(tool), 'prompt')
+    const cmd = buildPromptPasteCmd(agentWindowTarget(tool), 'prompt', PATHS)
     expect(cmd).toContain(`paste-buffer -p -d -b yaac-prompt -t yaac:${tool}`)
     expect(cmd).toContain(`send-keys -t yaac:${tool} Enter`)
   })
 
   it('gates on the alternate screen, verify-pastes, then submits with a guard resend', () => {
-    const cmd = buildPromptPasteCmd('yaac:codex', 'hello')
+    const cmd = buildPromptPasteCmd('yaac:codex', 'hello', PATHS)
     // Order matters: alternate_on readiness gate → paste-until-visible loop
     // (capture-pane grep) → Enter → delayed second Enter for a TUI that
     // dropped the first one mid-startup-render.
@@ -192,7 +194,7 @@ describe('buildPromptPasteCmd', () => {
   })
 
   it('degrades to a single blind paste for a whitespace-only prompt', () => {
-    const cmd = buildPromptPasteCmd('yaac:claude', ' \n ')
+    const cmd = buildPromptPasteCmd('yaac:claude', ' \n ', PATHS)
     expect(cmd).not.toContain('probe=')
     expect(cmd).toContain('paste-buffer -p -d -b yaac-prompt -t yaac:claude')
   })
@@ -200,17 +202,17 @@ describe('buildPromptPasteCmd', () => {
 
 describe('buildPromptPasteBgCmd', () => {
   it('decodes the paste script to a pod file and detaches it with setsid', () => {
-    const cmd = buildPromptPasteBgCmd('yaac:claude', 'hello')
+    const cmd = buildPromptPasteBgCmd('yaac:claude', 'hello', PATHS)
     expect(cmd).toMatch(/^printf %s [A-Za-z0-9+/=]+ \| base64 -d > \/tmp\/\.yaac-prompt\.sh/)
     expect(cmd).toContain('setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &')
   })
 
   it('embeds exactly the script buildPromptPasteCmd wraps', () => {
-    const cmd = buildPromptPasteBgCmd('yaac:codex', "it's $HOME\nline 2")
+    const cmd = buildPromptPasteBgCmd('yaac:codex', "it's $HOME\nline 2", PATHS)
     const b64 = /^printf %s ([A-Za-z0-9+/=]+) \|/.exec(cmd)
     expect(b64).not.toBeNull()
     const script = Buffer.from(b64![1], 'base64').toString('utf8')
-    expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('yaac:codex', "it's $HOME\nline 2"))
+    expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('yaac:codex', "it's $HOME\nline 2", PATHS))
   })
 })
 
@@ -221,7 +223,7 @@ describe('typeInitialPrompt', () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
     expect(podExec).toHaveBeenCalledWith(
       'yaac-job-1',
-      buildPromptPasteBgCmd('yaac:claude', 'hello there'),
+      buildPromptPasteBgCmd('yaac:claude', 'hello there', PATHS),
       { maxAttempts: 1, timeout: 15_000 },
     )
   })
@@ -229,7 +231,7 @@ describe('typeInitialPrompt', () => {
 
 describe('buildAgentWindowCheck', () => {
   it('probes for the agent window after a settle delay', () => {
-    expect(buildAgentWindowCheck('claude')).toBe(
+    expect(buildAgentWindowCheck('claude', PATHS)).toBe(
       `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF claude"`,
     )
   })
@@ -247,7 +249,7 @@ describe('verifyAgentWindowAlive', () => {
     // delegation passes its optional opts through, so the recorded call
     // carries a trailing undefined the caller never wrote.
     expect(podExec.mock.calls.at(-1)?.slice(0, 2))
-      .toEqual(['yaac-job-1', buildAgentWindowCheck('codex')])
+      .toEqual(['yaac-job-1', buildAgentWindowCheck('codex', PATHS)])
   })
 
   it('reports a missing window as a dead agent when the probe ran in the pod', async () => {
@@ -273,7 +275,7 @@ describe('verifyAgentWindowAlive', () => {
 
 describe('initWindowCommand', () => {
   it('creates a visible window with remain-on-exit chained on', () => {
-    const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false })
+    const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false }, PATHS)
     expect(cmd).toBe(
       `${TMUX} new-window -d -t yaac -n init 'cd /workspace && pnpm install'`
       + ' \\; set-option -t yaac:init remain-on-exit on',
@@ -281,7 +283,7 @@ describe('initWindowCommand', () => {
   })
 
   it('omits remain-on-exit for hidden panes', () => {
-    const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true })
+    const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true }, PATHS)
     expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps 'cd /workspace && pnpm install'`)
   })
 })

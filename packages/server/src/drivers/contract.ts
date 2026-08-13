@@ -2,6 +2,7 @@ import type net from 'node:net'
 import type {
   AgentMode,
   AgentTool,
+  DriverKind,
   GitAuthFailure,
   ImageBuildEntry,
   PendingSpawn,
@@ -330,8 +331,10 @@ export interface WorkspaceSpec {
   /** A warmed spare: hidden from user-facing views until it is claimed. */
   prewarm: boolean
   /** The image to run, as the runtime's registry will resolve it —
-   *  `prepareImage` produced it. */
-  image: string
+   *  `prepareImage` produced it. Absent for a runtime that runs no images:
+   *  the caller skipped `prepareImage` entirely rather than inventing a ref
+   *  nothing would resolve. */
+  image?: string
   /** Caller-decided `NAME=VALUE` entries; the runtime appends its own. */
   env: string[]
   /** Caller-decided mounts; the runtime appends its own. */
@@ -586,6 +589,66 @@ export interface DriverReconcileSteps {
 }
 
 /**
+ * Which substrate this process runs on — the one thing a layer above the
+ * driver may branch on, and the whole of the capability vocabulary.
+ *
+ * Deliberately a kind rather than a bag of feature flags. Every
+ * container-shaped feature (images and their builds, egress mediation and
+ * the placeholder credentials that depend on it, sandboxing, the port
+ * relay, nested clusters and engines, the spare pool, the in-workspace
+ * spawn channel) is present in `k8s` and absent in `containerless`, so a
+ * per-feature declaration would be a table with two identical columns and
+ * no reader able to tell which flag it was really asking about. A driver
+ * with a genuinely partial profile is what would earn the bag; until one
+ * exists, the honest statement is what the driver IS.
+ *
+ * What it never licenses is substrate detail: a caller branches on the kind
+ * to decide WHETHER a feature applies, never on HOW the driver realizes
+ * one. Both kinds answer every verb — what an absent feature answers is
+ * specified per verb below (empty, `null`, resolve), so most callers need
+ * no branch at all.
+ *
+ * The type itself is a shared one because it also crosses the wire: the
+ * webapp renders a different product per kind for the same reasons the
+ * mediators branch on it.
+ */
+export type { DriverKind }
+
+/**
+ * Where one workspace's things are, as the workspace itself sees them.
+ *
+ * The vocabulary every command the layers above author is written against:
+ * they build tmux invocations, `git -C` calls and prompt scripts, and a
+ * path baked into one of those is a substrate fact that escaped the driver.
+ * A container driver answers with its fixed in-container paths (every
+ * workspace has its own kernel, so one constant per path is safe); a
+ * host-process driver answers with per-workspace paths, since its
+ * workspaces share the host's filesystem and would otherwise collide on a
+ * single tmux server.
+ *
+ * Everything here is a path INSIDE the workspace's world. Nothing on it is
+ * a host path the server itself should read — what a worktree keeps on disk
+ * is `#domain/worktrees`, and a driver that happens to make the two equal
+ * (as a host-process driver does) does not make it the caller's business.
+ */
+export interface WorkspacePaths {
+  /** The tmux server socket every tmux invocation passes to `-S`. */
+  tmuxSock: string
+  /** The checkout: a window's cwd, and what `git -C` addresses. */
+  workspaceDir: string
+  /** The project's shared git dir, as the workspace sees it. */
+  repoGitDir: string
+  /** Workspace-private scratch: prompt scripts, their logs, diff indexes. */
+  scratchDir: string
+  /** Where acpd puts one socket per ACP conversation. */
+  acpSockDir: string
+  /** Where an ACP conversation's JSONL log is written. */
+  acpLogDir: string
+  /** acpd's entry module, for the launch command that supervises an agent. */
+  acpdEntry: string
+}
+
+/**
  * How a workspace is run. One implementation is registered per process
  * (`#drivers/driver`); everything above the runtime layer calls it and
  * nothing above names a substrate object.
@@ -595,6 +658,26 @@ export interface DriverReconcileSteps {
  * how any of that becomes a running workspace is here.
  */
 export interface WorktreeDriver {
+  /** Which substrate this is — see `DriverKind` for what a caller may do
+   *  with the answer. */
+  readonly kind: DriverKind
+
+  /**
+   * Where this workspace's things are, in its own world (see
+   * `WorkspacePaths`).
+   *
+   * Addressed by `jobName` like every other per-workspace verb, so a caller
+   * that already holds the handle it is about to `exec` against needs no
+   * second identity to write the command text for it.
+   *
+   * Pure and synchronous, and derived from the handle rather than looked
+   * up: a probe of a workspace that may already be gone still has to name
+   * the socket it WOULD have had, and a teardown composing a detached
+   * script has nothing left to consult. Two calls for the same handle
+   * always agree, whatever the substrate is doing.
+   */
+  workspacePaths(jobName: string): WorkspacePaths
+
   /**
    * Attach to the substrate and start watching it: whatever bootstrap it
    * needs, its caches and watches, its own upkeep of the host.
@@ -845,6 +928,23 @@ export interface WorktreeDriver {
    * workspace reads to decide what its own workspace should run.
    */
   claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
+
+  /**
+   * This runtime can actually run that agent, in that mode — rejects with
+   * the reason when it cannot.
+   *
+   * Asked before anything is recorded or provisioned, because the failure
+   * it prevents is silent: an adapter a runtime cannot exec produces a
+   * window that closes, a session that ends, and a create that already
+   * reported success.
+   *
+   * A verb rather than something derived from the driver kind, because the
+   * answer is not a property of the substrate alone: an image either ships
+   * an adapter or does not, and that is settled at build time, but a host
+   * has whatever the user installed. Only the runtime can answer it, and
+   * only at the moment it is asked.
+   */
+  assertCanLaunch(opts: { tool: AgentTool; mode: AgentMode }): Promise<void>
 
   /**
    * The machinery a launch will need exists and is running — the image

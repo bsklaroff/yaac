@@ -37,6 +37,7 @@ import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
+import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
 import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/drivers/k8s/cluster/arg-guards'
@@ -62,10 +63,85 @@ function rejectClusterArgs(command: 'setup' | 'delete', options: ClusterSetupArg
   return true
 }
 
+const DRIVER_FLAG_HELP =
+  'Which substrate to run worktrees on: "k8s" (default; one pod per worktree '
+  + 'in a local cluster) or "containerless" (a tmux session per worktree on '
+  + 'this host — no image, no proxy, and no sandbox around the agent)'
+
+/**
+ * Publish `--driver` as `YAAC_DRIVER` so the one reader of it — the server's
+ * composition root — sees it, including in the detached child `server start`
+ * spawns (which inherits this process's environment).
+ */
+function applyDriverFlag(driver: string | undefined): void {
+  if (driver === undefined) return
+  if (driver !== 'k8s' && driver !== 'containerless') {
+    console.error(`\n--driver must be "k8s" or "containerless" (got "${driver}")`)
+    process.exit(1)
+  }
+  // eslint-disable-next-line no-process-env -- publishing the flag for the server child to read back through env.driver is the whole point of the flag
+  process.env.YAAC_DRIVER = driver
+}
+
+/**
+ * Which substrate the RUNNING server uses, or undefined when none answers.
+ *
+ * Asked rather than assumed, because the CLI's own environment is not the
+ * authority: a server started elsewhere with `--driver containerless` leaves
+ * no trace in this shell, and a stray `YAAC_DRIVER` in this shell says
+ * nothing about a server that is genuinely running k8s. `/health` is
+ * auth-exempt, so this needs no credential; a server that does not answer
+ * (none running, or one predating the field) falls back to the environment,
+ * which is also the only answer available to `cluster setup` — which
+ * legitimately runs before any server exists.
+ */
+async function runningServerDriver(): Promise<string | undefined> {
+  try {
+    const { readLock } = await import('@yaac/shared/lock')
+    const lock = await readLock()
+    if (!lock) return undefined
+    const res = await fetch(`http://127.0.0.1:${String(lock.port)}/health`, {
+      signal: AbortSignal.timeout(2_000),
+    })
+    if (!res.ok) return undefined
+    const body = await res.json() as { driver?: string | null }
+    return body.driver ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Refuse a `yaac cluster …` command on an install that runs no cluster.
+ * Returns true when it did, and the action must return without loading the
+ * command — which also keeps the k8s cluster graph (and the kubernetes
+ * client with it) out of a containerless install's CLI entirely.
+ */
+async function rejectClusterOnContainerless(): Promise<boolean> {
+  // The running server first, then this shell's explicit choice, then what
+  // the install last ran. Only the last of those is available to `cluster
+  // setup`, which legitimately runs before any server exists.
+  const { recordedDriver } = await import('@yaac/server/main/driver-choice')
+  const running = await runningServerDriver()
+  const kind = running ?? env.driverExplicit ?? await recordedDriver()
+  if (kind !== 'containerless') return false
+  const where = running !== undefined
+    ? 'The running server uses the containerless driver'
+    : 'This install runs the containerless driver'
+  console.error(
+    `\n${where}: worktrees run on this host and there is no cluster to manage.`
+    + '\n    Run `yaac host check` to verify this machine instead.',
+  )
+  process.exitCode = 1
+  return true
+}
+
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
 // here so every command — `cluster setup` (kind inherits our env) and the
-// image build/push paths — targets the same engine. No-op on macOS and nested.
-ensureRootfulPodmanHost()
+// image build/push paths — targets the same engine. No-op on macOS and nested,
+// and skipped entirely on a containerless install, which has no engine to
+// point at and no images to build.
+if (env.driver === 'k8s') ensureRootfulPodmanHost()
 
 /**
  * Show subcommand options nested under each subcommand in help output.
@@ -115,7 +191,9 @@ server
   .command('run')
   .description('Run the server in the foreground (used internally by `start`)')
   .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_SERVER_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
-  .action(async (options: { port?: number }) => {
+  .option('--driver <kind>', DRIVER_FLAG_HELP)
+  .action(async (options: { port?: number; driver?: string }) => {
+    applyDriverFlag(options.driver)
     const { runServer } = await import('@yaac/server/main/server-run')
     await runServer({ port: options.port })
   })
@@ -123,7 +201,9 @@ server
 server
   .command('start')
   .description('Start the server in the background')
-  .action(async () => {
+  .option('--driver <kind>', DRIVER_FLAG_HELP)
+  .action(async (options: { driver?: string }) => {
+    applyDriverFlag(options.driver)
     const { startServer } = await import('@yaac/server/main/lifecycle')
     await startServer()
   })
@@ -139,7 +219,12 @@ server
 server
   .command('restart')
   .description('Restart the server (stop, then start)')
-  .action(async () => {
+  // Restart is when a substrate is switched, so the flag belongs here too.
+  // Omitted, it keeps whatever this install was already running — which is
+  // the whole point of recording the choice.
+  .option('--driver <kind>', DRIVER_FLAG_HELP)
+  .action(async (options: { driver?: string }) => {
+    applyDriverFlag(options.driver)
     const { restartServer } = await import('@yaac/server/main/lifecycle')
     await restartServer()
   })
@@ -172,6 +257,7 @@ cluster
   .command('check')
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
   .action(async () => {
+    if (await rejectClusterOnContainerless()) return
     const { clusterCheck } = await import('#commands/cluster-check')
     await clusterCheck()
   })
@@ -183,6 +269,7 @@ cluster
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal)')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
   .action(async (options: { repair?: boolean; nodes?: string; adoptCni?: boolean }) => {
+    if (await rejectClusterOnContainerless()) return
     if (rejectClusterArgs('setup', options)) return
     const { clusterSetup } = await import('#commands/cluster-setup')
     await clusterSetup(options)
@@ -196,9 +283,23 @@ cluster
   )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
+    if (await rejectClusterOnContainerless()) return
     if (rejectClusterArgs('delete')) return
     const { clusterDelete } = await import('#commands/cluster-delete')
     await clusterDelete(options)
+  })
+
+const host = program
+  .command('host')
+  .description('Inspect the host yaac runs containerless worktrees on')
+  .configureHelp({ formatHelp: nestedHelp })
+
+host
+  .command('check')
+  .description('Verify this machine can run containerless worktrees (tmux, git, agent CLIs)')
+  .action(async () => {
+    const { hostCheck } = await import('#commands/host-check')
+    await hostCheck()
   })
 
 const project = program

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { worktreeDriver } from '#drivers/driver'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { tmuxCmd } from '#runtime/agents'
+import type { WorkspacePaths } from '#drivers/contract'
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -84,8 +85,9 @@ function attachArgs(
   target: PtyTarget,
   viewName: string,
   size: { cols?: number; rows?: number },
+  paths: WorkspacePaths,
 ): string[] {
-  const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
+  const tmux = tmuxCmd(paths)
   const cols = size.cols ?? DEFAULT_COLS
   const rows = size.rows ?? DEFAULT_ROWS
   // The has-session guard is load-bearing: `new-session -t yaac` against a
@@ -136,8 +138,13 @@ function attachArgs(
 /** The tmux command to resize a webapp view's window to a client grid. The
  *  view is `window-size manual` (see attachArgs), so this is what tracks live
  *  browser-pane resizes — the client SIGWINCH alone no longer moves it. */
-function resizeWindowCmd(viewName: string, cols: number, rows: number): string {
-  return `tmux -S ${CONTAINER_TMUX_SOCK} resize-window -t ${viewName} -x ${cols} -y ${rows}`
+function resizeWindowCmd(
+  viewName: string,
+  cols: number,
+  rows: number,
+  paths: WorkspacePaths,
+): string {
+  return `${tmuxCmd(paths)} resize-window -t ${viewName} -x ${cols} -y ${rows}`
 }
 
 interface WindowResizer {
@@ -161,7 +168,11 @@ interface WindowResizer {
  * A failed exec (view gone, pod race) just pumps the next one: the following
  * resize, or none at all, is the right answer either way.
  */
-function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
+function makeWindowResizer(
+  jobName: string,
+  viewName: string,
+  paths: WorkspacePaths,
+): WindowResizer {
   let inFlight = false
   let pending: { cols: number; rows: number } | null = null
   const pump = (): void => {
@@ -173,7 +184,8 @@ function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
       inFlight = false
       pump()
     }
-    worktreeDriver().exec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
+    worktreeDriver()
+      .exec(jobName, resizeWindowCmd(viewName, p.cols, p.rows, paths), { maxAttempts: 1 })
       .then(done, done)
   }
   return {
@@ -188,8 +200,8 @@ function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
 }
 
 /** Command listing every tmux session name in the pod, one per line. */
-function listTmuxSessionsCmd(): string {
-  return `tmux -S ${CONTAINER_TMUX_SOCK} list-sessions -F '#{session_name}'`
+function listTmuxSessionsCmd(paths: WorkspacePaths): string {
+  return `${tmuxCmd(paths)} list-sessions -F '#{session_name}'`
 }
 
 /** Ghost views among `names`: view sessions no live connection owns. The
@@ -201,8 +213,8 @@ function ghostViews(names: string[], live: ReadonlySet<string>): string[] {
 
 /** One tmux invocation killing all the given view sessions; the command
  *  sequence keeps going past a view that already died on its own. */
-function killViewsCmd(views: string[]): string {
-  return `tmux -S ${CONTAINER_TMUX_SOCK} ${views.map((v) => `kill-session -t ${v}`).join(' \\; ')}`
+function killViewsCmd(views: string[], paths: WorkspacePaths): string {
+  return `${tmuxCmd(paths)} ${views.map((v) => `kill-session -t ${v}`).join(' \\; ')}`
 }
 
 /**
@@ -216,10 +228,14 @@ function killViewsCmd(views: string[]): string {
  * swept here on every fresh attach. `live` is read after the listing
  * returns, so views attached mid-sweep are never treated as ghosts.
  */
-async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Promise<void> {
+async function sweepGhostViews(
+  jobName: string,
+  live: ReadonlySet<string>,
+  paths: WorkspacePaths,
+): Promise<void> {
   let listed: { stdout: string }
   try {
-    listed = await worktreeDriver().exec(jobName, listTmuxSessionsCmd(), { maxAttempts: 1 })
+    listed = await worktreeDriver().exec(jobName, listTmuxSessionsCmd(paths), { maxAttempts: 1 })
   } catch {
     return // pod gone or tmux not up yet — nothing to sweep
   }
@@ -227,7 +243,7 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
   const ghosts = ghostViews(names, live)
   if (ghosts.length === 0) return
   try {
-    await worktreeDriver().exec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
+    await worktreeDriver().exec(jobName, killViewsCmd(ghosts, paths), { maxAttempts: 1 })
   } catch {
     // raced away (view self-destroyed, pod terminating) — fine
   }
@@ -242,11 +258,15 @@ async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Prom
  * Best-effort: "no such worktree" (closed before the attach landed, or
  * already reaped) and a gone pod are both fine.
  */
-async function killViewSession(jobName: string, viewName: string): Promise<void> {
+async function killViewSession(
+  jobName: string,
+  viewName: string,
+  paths: WorkspacePaths,
+): Promise<void> {
   try {
     await worktreeDriver().exec(
       jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${viewName}`,
+      `${tmuxCmd(paths)} kill-session -t ${viewName}`,
       { maxAttempts: 1 },
     )
   } catch {
@@ -420,11 +440,15 @@ export function attachPty(
 ): void {
   const target = parsePtyTarget(query.target)
   const size = parsePtySize(query.cols, query.rows)
+  const paths = worktreeDriver().workspacePaths(jobName)
 
-  // 'shell' is a raw zsh exec — no tmux, so there is no view session to
-  // register, sweep, resize or kill; exiting the shell ends the connection.
+  // 'shell' is a raw login-shell exec — no tmux, so there is no view session
+  // to register, sweep, resize or kill; exiting the shell ends the
+  // connection. `$SHELL` rather than a fixed `zsh`: the workspace's own
+  // login shell is the image's business under one driver and the host
+  // user's under the other, and only one of those is guaranteed to have zsh.
   if (target === 'shell') {
-    bridge(worktreeDriver().dialPty(jobName, ['zsh'], size), socket, {})
+    bridge(worktreeDriver().dialPty(jobName, ['sh', '-c', 'exec "${SHELL:-sh}" -l'], size), socket, {})
     return
   }
 
@@ -434,15 +458,16 @@ export function attachPty(
   const views = liveViews.get(jobName) ?? new Set<string>()
   views.add(viewName)
   liveViews.set(jobName, views)
-  void sweepGhostViews(jobName, views)
+  void sweepGhostViews(jobName, views, paths)
 
-  const ptyProc = worktreeDriver().dialPty(jobName, attachArgs(target, viewName, size), size)
+  const ptyProc = worktreeDriver()
+    .dialPty(jobName, attachArgs(target, viewName, size, paths), size)
   // Webapp views (agent / window:@) pin their tmux window to this client via
   // `window-size manual` + resize-window (see attachArgs), so their resizes
   // must drive resize-window; the resizer serializes those execs. 'native'
   // keeps tmux's default `latest` sizing, which the client's own SIGWINCH
   // already drives.
-  const resizer = target === 'native' ? null : makeWindowResizer(jobName, viewName)
+  const resizer = target === 'native' ? null : makeWindowResizer(jobName, viewName, paths)
   bridge(ptyProc, socket, {
     detach: () => {
       resizer?.dispose()
@@ -458,7 +483,7 @@ export function attachPty(
       // each other's views on every retry — a permanent reconnect flicker in
       // every terminal on the worktree.
       if (views.size === 0 && liveViews.get(jobName) === views) liveViews.delete(jobName)
-      void killViewSession(jobName, viewName)
+      void killViewSession(jobName, viewName, paths)
     },
     resizeWindow: resizer?.resize,
   })

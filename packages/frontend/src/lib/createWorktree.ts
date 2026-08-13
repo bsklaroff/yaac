@@ -36,6 +36,10 @@ export async function createWorktree(
   worktreeId?: string,
   branch?: string,
   mode?: AgentMode,
+  /** "Yolo mode" — launch the agents with their auto-approve flags. Omitted
+   *  when the user has never chosen, so the server's per-driver default
+   *  applies rather than the webapp guessing at one. */
+  autoApprove?: boolean,
 ): Promise<CreateWorktreeResult> {
   const body = {
     project,
@@ -45,6 +49,7 @@ export async function createWorktree(
     // Omitted for tui: the server defaults it, and sending the default would
     // make every create look like an explicit mode choice in the logs.
     ...(mode === 'acp' ? { mode } : {}),
+    ...(autoApprove !== undefined ? { autoApprove } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }

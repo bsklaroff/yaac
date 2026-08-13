@@ -53,6 +53,7 @@ export {
   kubectlWithRetry,
 } from './kubectl'
 export { ensurePinnedBinary } from './pinned-binary'
+export { k8sWorkspacePaths } from './workspace-paths'
 export { invalidatePortForward, resolvePortForward } from './port-forward'
 export type { ForwardAddr, PortForwardSpec } from './port-forward'
 export {

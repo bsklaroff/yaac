@@ -1,14 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { buildRebranchPrep } from '#domain/worktrees/spare-pool'
 import { initWindowCommand } from '#runtime/agents/agent-command'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 
-const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+// The container paths these commands are written against.
+const PATHS = workspacePathsFixture()
+const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
 describe('buildRebranchPrep', () => {
   it('resets by SHA and cleans without -x, excluding the default node_modules mount', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null,
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
     })
     expect(prep.resetExec).toBe(
       'sh -c "git -C /workspace reset --hard abc123 && git -C /workspace clean -fd'
@@ -31,7 +33,7 @@ describe('buildRebranchPrep', () => {
         ],
       },
       worktreeId: 's1',
-      respawnTool: null,
+      respawnTool: null, paths: PATHS,
     })
     expect(prep.resetExec).toContain(" -e 'packages/web/node_modules'")
     expect(prep.resetExec).toContain(" -e '.pip-cache'")
@@ -43,7 +45,7 @@ describe('buildRebranchPrep', () => {
 
   it('rewrites the upstream to the new branch, shell-escaped', () => {
     const prep = buildRebranchPrep({
-      branch: 'release/2.x', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null,
+      branch: 'release/2.x', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
     })
     expect(prep.upstreamExec).toBe(
       "git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
@@ -56,13 +58,13 @@ describe('buildRebranchPrep', () => {
       sha: 'abc123',
       config: { initCommands: [{ name: 'api', commands: ['pnpm dev'] }, { name: 'web', commands: ['pnpm web'], hidePane: true }] },
       worktreeId: 's1',
-      respawnTool: null,
+      respawnTool: null, paths: PATHS,
     })
     expect(prep.windowExecs).toEqual([
       `${TMUX} kill-window -t yaac:api 2>/dev/null; `
-      + initWindowCommand({ name: 'api', cmd: 'pnpm dev', hidePane: false }),
+      + initWindowCommand({ name: 'api', cmd: 'pnpm dev', hidePane: false }, PATHS),
       `${TMUX} kill-window -t yaac:web 2>/dev/null; `
-      + initWindowCommand({ name: 'web', cmd: 'pnpm web', hidePane: true }),
+      + initWindowCommand({ name: 'web', cmd: 'pnpm web', hidePane: true }, PATHS),
     ])
   })
 
@@ -75,14 +77,14 @@ describe('buildRebranchPrep', () => {
       sha: 'abc123',
       config: { initCommands: [{ name: 'api', commands: ['pnpm run "build:dev"'] }] },
       worktreeId: 's1',
-      respawnTool: null,
+      respawnTool: null, paths: PATHS,
     })
     expect(prep.windowExecs[0]).toContain(`'cd /workspace && pnpm run "build:dev"'`)
   })
 
   it('appends the agent respawn last when requested', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: 'claude',
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: 'claude', paths: PATHS,
     })
     expect(prep.windowExecs).toHaveLength(1)
     expect(prep.windowExecs[0]).toContain('respawn-window -k -t yaac:claude')
@@ -91,7 +93,7 @@ describe('buildRebranchPrep', () => {
 
   it('emits no window execs when there are no init commands and no respawn', () => {
     const prep = buildRebranchPrep({
-      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null,
+      branch: 'dev', sha: 'abc123', config: {}, worktreeId: 's1', respawnTool: null, paths: PATHS,
     })
     expect(prep.windowExecs).toEqual([])
   })

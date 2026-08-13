@@ -493,6 +493,10 @@ describe('createWorktree', () => {
     expect(vi.mocked(recordWorktreeCreated)).toHaveBeenCalledWith({
       projectSlug: 'demo',
       worktreeId: result?.worktreeId,
+      // Recorded with the row: a restart has to relaunch the agents the way
+      // the user asked rather than re-deriving today's default. True here
+      // because the fake driver is a sandboxed one.
+      autoApprove: true,
     })
     // The tool and the founding ask live on the conversation create launches,
     // which is the only reason a worktree can name either.
@@ -1174,30 +1178,48 @@ describe('createWorktree', () => {
 
 describe('buildAgentCmd', () => {
   it('returns the codex respawn command unchanged', () => {
-    const fresh = buildAgentCmd('codex', 'sid-abc', false)
+    const fresh = buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', autoApprove: true })
     expect(fresh).toBe('codex --yolo')
-    const resume = buildAgentCmd('codex', 'sid-abc', true)
+    const resume = buildAgentCmd({
+      tool: 'codex', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+    })
     expect(resume).toBe('codex --yolo resume sid-abc')
   })
 
   it('returns the claude respawn command unchanged', () => {
-    const fresh = buildAgentCmd('claude', 'sid-abc', false)
+    const fresh = buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', autoApprove: true })
     expect(fresh).toBe(
       'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sid-abc',
     )
-    const resume = buildAgentCmd('claude', 'sid-abc', true)
+    const resume = buildAgentCmd({
+      tool: 'claude', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+    })
     expect(resume).toBe(
       'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sid-abc',
     )
   })
 
+  // Without a sandbox the auto-approve flag is the user's per-worktree
+  // choice, and off is what an unchecked box has to actually produce: the
+  // agent asks in its pane instead of acting.
+  it('drops each tool\'s auto-approve flag when the worktree did not opt in', () => {
+    expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', autoApprove: false }))
+      .toBe('codex')
+    expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', autoApprove: false }))
+      .toBe('CLAUDE_CODE_NO_FLICKER=1 claude --session-id sid-abc')
+    expect(buildAgentCmd({ tool: 'pi', worktreeId: 'sid-abc', autoApprove: false }))
+      .not.toContain('--approve')
+  })
+
   it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {
-    const fresh = buildAgentCmd('opencode', 'sid-abc', false)
+    const fresh = buildAgentCmd({ tool: 'opencode', worktreeId: 'sid-abc', autoApprove: true })
     expect(fresh).toBe('opencode --port 4096 --hostname 127.0.0.1')
   })
 
   it('passes --continue when resuming an opencode session', () => {
-    const resume = buildAgentCmd('opencode', 'sid-abc', true)
+    const resume = buildAgentCmd({
+      tool: 'opencode', worktreeId: 'sid-abc', resume: true, autoApprove: true,
+    })
     expect(resume).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
   })
 })

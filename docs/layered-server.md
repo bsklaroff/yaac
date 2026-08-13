@@ -34,12 +34,41 @@ Everything below domain is one of two things, which is the property worth
 protecting: rows, or the runtime, fronted by a contract. Neither reads the
 other.
 
-The runtime is itself split, and the split is the seam a second driver
+The runtime is itself split, and the split is the seam each driver
 implements. `runtime/` is what is the same over any substrate — the
 tui/acp conduction, the status watchers and liveness policy, the PTY
 bridge, the report assembly and the forwarder restore. `drivers/` is what
 is not: `contract.ts` (the `WorktreeDriver` interface and its vocabulary),
-`driver.ts` (the registered instance), and one folder per substrate.
+`driver.ts` (the registered instance), one folder per substrate — `k8s/`
+(a single-pod Job per worktree) and `containerless/` (a tmux server per
+worktree on the host; docs/containerless-driver.md) — and `shared/`, the
+floor both stand on.
+
+`drivers/shared` exists because a driver is sealed from its siblings: they
+cannot see each other, so neither can host what both need (the review
+diff's script and parser, the port-exposure policy). Without it the choice
+would be duplicating that or pushing substrate concerns up into `#lib`,
+where every mediator would inherit them. The arrow runs driver → shared and
+never back, and the lint says so — nothing in `shared/` may import a
+driver, and nothing above a driver may import `shared/`. What belongs there
+is decided by who calls it: both drivers and nobody else.
+
+Which one a process runs is the composition root's single call, made from
+`env.driver` before anything can ask for one. Everything above branches on
+at most `driver.kind`, and only to decide WHETHER a feature applies —
+never how it is realized. Most callers need no branch at all: the contract
+specifies per verb what a runtime that lacks a feature answers (empty,
+`null`, a resolved no-op), so an absent feature degrades rather than
+failing.
+
+Command text is the one place a substrate used to leak through. Every
+tmux invocation, `git -C` call and prompt script the layers above author
+is written against `WorkspacePaths` — the driver's answer to where a
+workspace's things are in its own world. A pod driver answers with fixed
+container paths, because each pod has its own mount namespace; a
+host-process driver answers per-worktree, because its workspaces share a
+filesystem and a single tmux socket between them would be a single tmux
+server.
 
 The arrows there run downward, which reads backwards until you see what
 holds it up: `runtime/` imports the contract, and so does every driver,
@@ -49,14 +78,16 @@ in `driver.ts`, the same inversion `#notify` uses. So a driver folder is
 reachable from exactly one place, and nothing that runs over it can name
 it.
 
-A driver has ONE door: `#drivers/k8s`, the assembly. Its nine sealed
-folders are internal, and the eslint rule says so — `#drivers/k8s/*` is
-importable only from inside `drivers/`, with `main` naming the assembly
-alone. (One exception: the CLI's cluster-admin commands import the cluster
-barrel through the package's `exports` map. Administering a cluster is
-k8s-specific by nature, a host-process driver would ship its own doctor,
-so that door stays open and is governed by the pnpm boundary rather than a
-zone.)
+A driver has ONE door: `#drivers/k8s` or `#drivers/containerless`, the
+assembly. What is behind it is internal — the k8s driver's nine sealed
+folders, the containerless driver's flat modules — and the eslint rule
+says so: `#drivers/<kind>/*` is importable only from inside `drivers/`,
+with `main` naming the assemblies alone. (One exception: the substrate-admin
+commands import through the package's `exports` map —
+`drivers/k8s/cluster/{check,setup,delete}` and
+`drivers/containerless/check`, which back `yaac cluster …` and `yaac host
+check`. Administering a substrate is substrate-specific by nature, so that
+door stays open and is governed by the pnpm boundary rather than a zone.)
 
 Api reaches the runtime on the same terms as the mediators and the
 machinery: `#drivers/driver` and `#drivers/contract`, never a concrete
@@ -148,10 +179,10 @@ speak alone.
   contract's `startForwarders`).
 
   All of it runs over whichever driver is registered, which is the point:
-  a second driver inherits conduction, observation, attachment, report
-  assembly and restore without reimplementing any of it. tmux is the
-  supervisor either way (docs/agent-modes.md) — only the transport under
-  it differs, and that is on the contract.
+  the containerless driver inherits conduction, observation, attachment,
+  report assembly and restore without reimplementing any of it. tmux is
+  the supervisor either way (docs/agent-modes.md) — only the transport
+  under it differs, and that is on the contract.
 - **`drivers/`** — `contract.ts` (the `WorktreeDriver` interface and its
   substrate-neutral vocabulary: `RuntimeHandle`, handle-keyed
   `AgentLiveness`, `RuntimeSnapshot`, the stream types `StreamChild` and

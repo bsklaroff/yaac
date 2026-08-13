@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'BAD_BEARER'
   | 'UNAUTHENTICATED'
   | 'BAD_HOST'
+  | 'NOT_SUPPORTED'
   | 'INTERNAL'
 
 export interface ServerErrorBody {
@@ -44,6 +45,11 @@ export function defaultStatus(code: ErrorCode): number {
     case 'BAD_BEARER': return 401
     case 'UNAUTHENTICATED': return 401
     case 'BAD_HOST': return 403
+    // 501: the request is well-formed and the route exists, but THIS server
+    // has no such feature — a containerless server asked to build an image.
+    // Distinct from 404 (which would say the route is unknown) and from 400
+    // (which would blame the caller for asking).
+    case 'NOT_SUPPORTED': return 501
     case 'INTERNAL': return 500
   }
 }

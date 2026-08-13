@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees)|http)/.',
+  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -74,18 +74,19 @@ const NO_DATABASE_DIRECT = {
 // contract now (exec, dialCtrl, dialPty, reviveStatusStream), so nothing
 // above a driver folder reaches one.
 const NO_DRIVER_ABOVE_CONTRACT = {
-  regex: '^#drivers/k8s(/|$)',
+  regex: '^#drivers/(k8s|containerless|shared)(/|$)',
   message: 'Reach the runtime through #drivers/driver and #drivers/contract, never a concrete driver (docs/layered-server.md).',
 }
 
-// The driver's ONE door. `#drivers/k8s` is the assembly barrel and only the
-// composition root names it; everything past it — substrate, cluster,
-// egress, images — is internal to the folder and importable only from
-// inside `drivers/`. Distinct from SEALED_FOLDERS, which stops a caller
-// reaching past ONE of those barrels: this stops it naming them at all.
+// A driver's ONE door. `#drivers/k8s` and `#drivers/containerless` are the
+// assembly barrels and only the composition root names them; everything
+// past one — substrate, cluster, egress, images; or the host driver's own
+// modules — is internal to the folder and importable only from inside
+// `drivers/`. Distinct from SEALED_FOLDERS, which stops a caller reaching
+// past ONE of those barrels: this stops it naming them at all.
 const NO_DRIVER_INTERNALS = {
-  regex: '^#drivers/k8s/.',
-  message: 'A driver has one door: #drivers/k8s. Its folders are internal (docs/layered-server.md).',
+  regex: '^#drivers/(k8s|containerless)/.',
+  message: 'A driver has one door: #drivers/k8s or #drivers/containerless. Its modules are internal (docs/layered-server.md).',
 }
 
 const NO_API_OR_MAIN = {
@@ -298,8 +299,15 @@ export default tseslint.config(
   // reach: state a driver step needs from it is handed down through
   // `PassContext`, never imported up, which is what keeps the arrow one-way
   // and lets a second driver be written without reading the first.
-  {
-    files: ['packages/server/src/drivers/k8s/**/*.ts'],
+  //
+  // One zone per driver rather than one for both, so each can be told not to
+  // name the OTHER. A driver cannot see its siblings — that is what makes a
+  // second one writable without reading the first, and what forces anything
+  // genuinely common down into `#drivers/shared`. Without the split the ban
+  // is unstatable: every rule here is shared, and a driver must be able to
+  // name its own folders.
+  ...['k8s', 'containerless'].map((kind) => ({
+    files: [`packages/server/src/drivers/${kind}/**/*.ts`],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -310,6 +318,45 @@ export default tseslint.config(
             SEALED_FOLDERS,
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
+            {
+              regex: `^#drivers/${kind === 'k8s' ? 'containerless' : 'k8s'}(/|$)`,
+              message: 'A driver cannot see its siblings: put what both need in #drivers/shared (docs/layered-server.md).',
+            },
+            {
+              regex: '^(#db|#domain|#runtime)(/|$)',
+              message: 'A driver names nothing above its contract: no db, no mediators, no machinery (docs/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  })),
+
+  // What the drivers share with each other and with nothing else
+  // (`#drivers/shared`). Its own zone rather than the driver zone above,
+  // because it is bound by one rule more than a driver is: it may not
+  // import a driver. That is the whole point of the folder — the arrow
+  // runs driver → shared and never back, so this can be a floor both
+  // substrates stand on rather than a channel between them.
+  {
+    files: ['packages/server/src/drivers/shared/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            NO_DATABASE_DIRECT,
+            NO_API_OR_MAIN,
+            {
+              regex: '^#drivers/(k8s|containerless)(/|$)',
+              message: 'The drivers\' shared floor may not import a driver — the arrow runs driver → shared (docs/layered-server.md).',
+            },
             {
               regex: '^(#db|#domain|#runtime)(/|$)',
               message: 'A driver names nothing above its contract: no db, no mediators, no machinery (docs/layered-server.md).',
@@ -567,11 +614,14 @@ export default tseslint.config(
   },
 
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
-  // @yaac/shared, and the four sanctioned host-side modules — exec
-  // (drivers/k8s/substrate/exec, attaches/streams via `kubectl exec -it`) and cluster
-  // check/setup/delete (drivers/k8s/cluster/*, run before any server
-  // exists). The negation chain re-includes each parent dir (gitignore
-  // semantics: a leaf can't be un-ignored while its parent is).
+  // @yaac/shared, and the sanctioned host-side modules — exec
+  // (drivers/k8s/substrate/exec, attaches/streams via `kubectl exec -it`),
+  // cluster check/setup/delete (drivers/k8s/cluster/*, run before any server
+  // exists), and the host driver's own doctor (drivers/containerless/check,
+  // the same door for the same reason: administering a substrate is
+  // substrate-specific by nature). The negation chain re-includes each
+  // parent dir (gitignore semantics: a leaf can't be un-ignored while its
+  // parent is).
   {
     files: ['packages/cli/src/commands/**/*'],
     rules: {
@@ -594,8 +644,10 @@ export default tseslint.config(
                 '!@yaac/server/drivers/k8s/cluster/check',
                 '!@yaac/server/drivers/k8s/cluster/setup',
                 '!@yaac/server/drivers/k8s/cluster/delete',
+                '!@yaac/server/drivers/containerless', '@yaac/server/drivers/containerless/*',
+                '!@yaac/server/drivers/containerless/check',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/k8s/{substrate/exec,cluster/{check,setup,delete}}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/{k8s/{substrate/exec,cluster/{check,setup,delete}},containerless/check}.',
             },
           ],
         },

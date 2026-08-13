@@ -1,4 +1,3 @@
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { shellEscape } from './shell'
 import type { PortMapping } from '@yaac/shared/types'
 
@@ -24,7 +23,14 @@ export function buildStatusRight(
   return ` ${projectSlug} ${worktreeId.slice(0, 8)}${portInfo} `
 }
 
-/** The in-workspace command that sets the bar to `value`. */
-export function setStatusRightCmd(value: string): string {
-  return `tmux -S ${CONTAINER_TMUX_SOCK} set-option -t yaac status-right '${shellEscape(value)}'`
+/**
+ * The in-workspace command that sets the bar to `value`.
+ *
+ * The socket is a parameter because which one a workspace's tmux listens on
+ * is the driver's answer (`WorkspacePaths.tmuxSock`) and `#lib` sits below
+ * the driver seam — so the caller, which already holds the paths, passes it
+ * down rather than this module reaching up for it.
+ */
+export function setStatusRightCmd(value: string, tmuxSock: string): string {
+  return `tmux -S ${tmuxSock} set-option -t yaac status-right '${shellEscape(value)}'`
 }

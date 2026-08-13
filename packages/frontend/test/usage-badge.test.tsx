@@ -85,6 +85,7 @@ function stubSnapshot(
   codexPlanUsage: PlanUsageResult | null = null,
 ): void {
   vi.mocked(useSnapshot).mockReturnValue({
+    driver: 'k8s',
     worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
     imageBuilds: [],
     planUsage,

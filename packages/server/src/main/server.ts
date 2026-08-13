@@ -25,6 +25,7 @@ import { createTokensApp } from '#routes/tokens'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
+import { hasWorktreeDriver, worktreeDriver } from '#drivers/driver'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
@@ -143,6 +144,13 @@ export function buildApp(deps: ServerAppDeps) {
       buildId: deps.buildId,
       ready: isReady(),
       authRequired: !isCredentialOptional(),
+      // Which substrate this server runs, or null before the composition
+      // root has registered one. Here as well as on the snapshot because a
+      // caller may need it before it holds a credential: `yaac cluster …`
+      // asks this to decide whether it means anything against THIS server,
+      // rather than trusting its own shell's YAAC_DRIVER — a server started
+      // elsewhere leaves no trace in it.
+      driver: hasWorktreeDriver() ? worktreeDriver().kind : null,
     }))
     .route('/project', projectApp)
     .route('/worktree', worktreeApp)

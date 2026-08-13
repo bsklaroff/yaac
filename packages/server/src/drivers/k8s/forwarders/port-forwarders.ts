@@ -11,7 +11,7 @@
  * double-registers a batch.
  */
 
-import { relayTcpFactory, podExec } from '#drivers/k8s/substrate'
+import { relayTcpFactory, k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
 import { notifyWorktreeListChanged } from '#notify'
 import { reserveAvailablePort, startPortForwarders } from '#lib/port'
 import { ServerError } from '@yaac/shared/errors'
@@ -108,7 +108,10 @@ async function refreshStatusRight(
 ): Promise<void> {
   await podExec(
     jobName,
-    setStatusRightCmd(buildStatusRight(projectSlug, worktreeId, getWorktreePorts(worktreeId))),
+    setStatusRightCmd(
+      buildStatusRight(projectSlug, worktreeId, getWorktreePorts(worktreeId)),
+      k8sWorkspacePaths().tmuxSock,
+    ),
   )
 }
 

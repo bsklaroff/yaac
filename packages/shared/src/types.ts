@@ -845,7 +845,26 @@ export interface CheckResult {
  * `snapshot`. Mirrors the union of `GET /worktree/list` and
  * `GET /project/list`.
  */
+/**
+ * Which substrate a server runs worktrees on.
+ *
+ * `k8s` runs each worktree as a single-pod Job in a local cluster, built
+ * from an image and reached through an egress proxy. `containerless` runs
+ * it as a tmux server on the host, in the worktree checkout itself — no
+ * image, no proxy, and no sandbox around the agent.
+ *
+ * On the wire because the webapp has to render two different products: a
+ * containerless server has no Dockerfile to edit, no builds to show and no
+ * blocked hosts to allow, and its worktrees need the auto-approve choice
+ * the sandbox otherwise makes for the user. The server-side definition of
+ * what a kind may be branched on is `DriverKind` in the driver contract,
+ * which imports this one.
+ */
+export type DriverKind = 'k8s' | 'containerless'
+
 export interface ServerSnapshot {
+  /** Which substrate this server runs — see `DriverKind`. */
+  driver: DriverKind
   worktrees: WorktreeListEntry[]
   /** Every project's sidebar groups (clients filter by slug, as they do
    *  `worktrees`). Carries hidden groups too — whether a group shows is a

@@ -21,14 +21,21 @@ describe('buildStatusRight', () => {
 
 describe('setStatusRightCmd', () => {
   it('sets the option on the workspace tmux server, value quoted', () => {
-    expect(setStatusRightCmd(' proj abcdef01 :3000->3000 '))
+    expect(setStatusRightCmd(' proj abcdef01 :3000->3000 ', '/tmp/yaac-tmux/server'))
       .toBe("tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right ' proj abcdef01 :3000->3000 '")
+  })
+
+  it('addresses the socket the caller was handed', () => {
+    // Which socket a workspace's tmux listens on is the driver's answer, so
+    // a containerless workspace's per-worktree socket has to arrive intact.
+    expect(setStatusRightCmd(' p ', '/tmp/yaac-cl-ab12cd34/wt-9.sock'))
+      .toBe("tmux -S /tmp/yaac-cl-ab12cd34/wt-9.sock set-option -t yaac status-right ' p '")
   })
 
   it('escapes a value that would otherwise close the quoting', () => {
     // The bar carries a project slug, and nothing upstream promises it is
     // shell-safe — an unescaped quote here would run as a command.
-    const cmd = setStatusRightCmd(" it's ")
+    const cmd = setStatusRightCmd(" it's ", '/tmp/yaac-tmux/server')
     expect(cmd).toContain("'\\''")
     expect(cmd.startsWith("tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right '")).toBe(true)
   })

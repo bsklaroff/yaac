@@ -16,9 +16,13 @@ async function setWorkspaceStatusRight(
   worktreeId: string,
   ports: ReadonlyArray<PortMapping>,
 ): Promise<void> {
-  await worktreeDriver().exec(
+  const driver = worktreeDriver()
+  await driver.exec(
     jobName,
-    setStatusRightCmd(buildStatusRight(projectSlug, worktreeId, ports)),
+    setStatusRightCmd(
+      buildStatusRight(projectSlug, worktreeId, ports),
+      driver.workspacePaths(jobName).tmuxSock,
+    ),
   )
 }
 
@@ -90,7 +94,12 @@ async function provisionForwarders(
   portForward: PortForwardConfig[] | undefined,
 ): Promise<void> {
   const reserved: ReservedPort[] = []
-  if (portForward?.length) {
+  // A runtime whose workspaces bind host ports themselves needs no relay,
+  // and reserving one here would take the very port the workspace's server
+  // is about to want. What it is listening on is observed instead, so the
+  // status bar is refreshed from the empty set and nothing is bound.
+  const relayed = worktreeDriver().kind !== 'containerless'
+  if (relayed && portForward?.length) {
     for (const { containerPort, hostPortStart } of portForward) {
       reserved.push(await reserveAvailablePort(containerPort, hostPortStart))
     }

@@ -29,7 +29,7 @@ import { acpDriver } from './acp-driver'
 import { tuiDriver } from './tui-driver'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
-import type { StreamChild } from '#drivers/contract'
+import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 import type { AgentPaneStatus } from './agent-tools'
 
 /** The session a driver is connected to. */
@@ -119,6 +119,14 @@ export interface AgentConnectDeps {
 export interface AgentLaunchSpec {
   tool: AgentTool
   /**
+   * Where the workspace's things are, in its own world. Passed in rather
+   * than fetched because a launch command is authored before the workspace
+   * runs it, sometimes before anything has been launched at all — and
+   * because keeping it a parameter is what makes the command text a pure
+   * function of the spec, which is how it is tested.
+   */
+  paths: WorkspacePaths
+  /**
    * The conversation to create or resume. For `tui` this is the id passed to
    * the tool's own `--session-id`/`resume` flag. For `acp` it is only used on
    * a resume — a fresh ACP conversation's id comes back from `session/new`,
@@ -131,6 +139,8 @@ export interface AgentLaunchSpec {
   windowName: string
   model?: string
   piProvider?: PiProvider
+  /** Launch the agent with its auto-approve flag. See `AgentCmdSpec`. */
+  autoApprove: boolean
 }
 
 /**

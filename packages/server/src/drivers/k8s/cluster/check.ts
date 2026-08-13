@@ -49,13 +49,7 @@ import { env } from '@yaac/shared/env'
 import type { CheckResult } from '@yaac/shared/types'
 
 /** Render one result as the CLI line `yaac cluster check` prints. */
-export function formatCheckResult(r: CheckResult): string {
-  const icon = { pass: '✓', fail: '✗', warn: '!', skip: '-' }[r.status]
-  const head = `${icon} ${r.name}: ${r.detail}`
-  return r.fix && r.status !== 'pass' && r.status !== 'skip'
-    ? `${head}\n    fix: ${r.fix.split('\n').join('\n         ')}`
-    : head
-}
+export { formatCheckResult } from '@yaac/shared/checks'
 
 /** Probe image used for the end-to-end registry-pull + hostPath check. */
 const PROBE_SOURCE_IMAGE = 'docker.io/library/busybox:1.36'

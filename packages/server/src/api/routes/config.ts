@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
 import { userBuildDir } from '#lib/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
+import { requireDriverFeature } from '#http'
 
 /**
  * Global (non-project-scoped) editable config: the user Dockerfile
@@ -12,11 +13,17 @@ import { buildFilesApp } from '#routes/build-files'
  * context).
  */
 export const configApp = new Hono()
-  .get('/user-dockerfile', async (c) => c.json({ content: await readUserDockerfile() }))
+  // Both refuse on a runtime that builds no images — the file would be
+  // an editable layer over an image that is never built.
+  .get('/user-dockerfile', async (c) => {
+    requireDriverFeature('images')
+    return c.json({ content: await readUserDockerfile() })
+  })
   .put(
     '/user-dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
+      requireDriverFeature('images')
       const { content } = c.req.valid('json')
       await writeUserDockerfile(content)
       return c.json({ content })

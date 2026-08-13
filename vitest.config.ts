@@ -114,6 +114,26 @@ export default defineConfig({
           sequence: { groupOrder: 0 },
         },
       },
+      // The containerless tier: the same CLI, driven against a server that
+      // runs worktrees as tmux sessions on this host. It shares no cluster,
+      // builds no images, and needs no namespace — so it runs in parallel
+      // and its global setup is just the CLI build.
+      {
+        extends: true,
+        test: {
+          name: 'e2e-containerless',
+          include: ['test/e2e-containerless/**/*.test.ts'],
+          // Reaches the spawned servers through `spawnYaacServer`, which
+          // spreads `process.env` into the child.
+          env: { YAAC_DRIVER: 'containerless' },
+          // NOT cluster-setup: nothing here registers a k8s driver or has a
+          // namespace to drop, and loading it would pull the kubernetes
+          // client into every worker for nothing.
+          setupFiles: SETUP,
+          globalSetup: ['test/global-setup-containerless.ts'],
+          sequence: { groupOrder: 1 },
+        },
+      },
       {
         extends: true,
         test: {

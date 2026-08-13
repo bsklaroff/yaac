@@ -142,6 +142,13 @@ export async function restartWorktree(
     // with nothing recorded (an older row, or a create that never got an id)
     // falls back to tui, the mode every pre-ACP worktree ran.
 
+    // A restart relaunches the agents the way the user asked for them, not
+    // the way today's default would: the row remembers the choice, and a
+    // worktree that was deliberately created without auto-approve must not
+    // come back with it. A worktree with no row to read (a substrate-only
+    // resolve) falls through to the driver's default.
+    const recorded = await findWorktreeRow(worktreeId).catch(() => undefined)
+
     const result = await createWorktree(projectSlug, {
       // Always reuse the checkout — that is what a restart *is*. Clearing this
       // would send the create down `git worktree add` against a checkout that
@@ -152,6 +159,7 @@ export async function restartWorktree(
       mode: active[0]?.mode ?? 'tui',
       resumeAgentSessions: resume,
       gitUser: opts.gitUser,
+      ...(recorded !== undefined ? { autoApprove: recorded.autoApprove } : {}),
       onProgress,
     })
 

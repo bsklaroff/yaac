@@ -204,10 +204,10 @@ describe('attachPty', () => {
     expect(execCalls).toEqual([])
   })
 
-  it('gives the shell target a raw zsh with no view session to manage', async () => {
+  it('gives the shell target a raw login shell with no view session to manage', async () => {
     const a = attach(job(5), { target: 'shell', cols: '100', rows: '30' })
     await flush()
-    expect(a.argv).toEqual(['zsh'])
+    expect(a.argv).toEqual(['sh', '-c', 'exec "${SHELL:-sh}" -l'])
     expect(a.size).toEqual({ cols: 100, rows: 30 })
     // No tmux at all: nothing to sweep, resize or kill-session.
     a.sock.emitMessage('{"type":"resize","cols":120,"rows":40}', false)

@@ -43,7 +43,9 @@ import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
+  writeProjectClaudeCredentials,
   writeProjectClaudePlaceholder,
+  writeProjectCodexAuth,
   writeProjectCodexPlaceholder,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
@@ -158,6 +160,18 @@ export interface WorktreeCreateOptions {
    */
   model?: string
   /**
+   * Launch this worktree's agents with their auto-approve flags ("yolo
+   * mode") — the agent acts without asking.
+   *
+   * Absent means "the driver's default", which is what every caller that
+   * has no opinion passes: on a sandboxed runtime that is on, because the
+   * isolation is what makes unsupervised action safe, and on one without a
+   * sandbox it is off, because there the agent's reach is this machine.
+   * A restart passes the worktree's recorded answer rather than
+   * re-deriving it.
+   */
+  autoApprove?: boolean
+  /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
    * `yaac worktree create` can show what the server is doing.
@@ -226,6 +240,8 @@ interface WorktreeSetupParams {
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
   piProvider?: PiProvider
+  /** Whether the agents launch with their auto-approve flags. */
+  autoApprove: boolean
   /**
    * Called the moment the runtime has something running, before any of the
    * setup that can still fail. What it hands back is the only thing that
@@ -287,7 +303,7 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
 async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHandle> {
   const {
     spec, projectSlug, worktreeId, tool, mode, launching, initWindows, piProvider,
-    onLaunched, options, worktree,
+    autoApprove, onLaunched, options, worktree,
   } = params
   const runtime = worktreeDriver()
 
@@ -311,6 +327,10 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   const handle = await runtime.launch(spec)
   onLaunched(handle)
   const jobName = handle.jobName
+  // Where this workspace's things are, in its own world. Every command
+  // below is addressed inside it, and the answer differs per driver — a pod
+  // sees fixed container paths, a host process sees its own checkout.
+  const paths = runtime.workspacePaths(jobName)
   // Each race can abandon a still-pending wait when the worktree leg
   // rejects first — pre-mark the waits handled so a later rejection from
   // an abandoned one (e.g. a timeout against the runtime the retry loop is
@@ -343,9 +363,18 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
     throw new SetupInputError(err)
   }
 
-  // Re-point the worktree's git plumbing at in-container paths and lock it
+  // Re-point the worktree's git plumbing at in-workspace paths and lock it
   // against `git worktree prune` — one exec (see buildWorktreeLinkExec).
-  await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId))
+  //
+  // Skipped when the workspace sees the checkout at the very path the host
+  // `git worktree add` wrote into it: there is nothing to re-point, and the
+  // rewrite would be actively wrong, replacing correct host paths with
+  // themselves-via-a-different-route only if they happened to agree. The
+  // `locked` file that half of it writes is not lost — `addWorktree` writes
+  // it host-side for every driver.
+  if (paths.workspaceDir !== worktreeDir(projectSlug, worktreeId)) {
+    await runtime.exec(jobName, buildWorktreeLinkExec(worktreeId, paths))
+  }
 
   // Fresh worktree: set the worktree branch's upstream from inside the pod
   // (virtiofs cache coherence — see buildUpstreamExec), serialized against
@@ -353,7 +382,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   if (upstreamStartPoint) {
     const upstream = upstreamStartPoint
     await withUpstreamConfigLock(projectSlug, async () => {
-      await runtime.exec(jobName, buildUpstreamExec(upstream))
+      await runtime.exec(jobName, buildUpstreamExec(upstream, paths))
     })
   }
 
@@ -409,6 +438,8 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
       // socket's name, which is why the driver needs it and the TUI one
       // ignores it.
       windowName: agentWindowName(a.tool, i),
+      paths,
+      autoApprove,
       ...(piProvider !== undefined ? { piProvider } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
     }),
@@ -419,7 +450,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
     tool === 'pi' ? 'Pi' :
     'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
-  await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds))
+  await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
   if (options.initialPrompt !== undefined) {
     emit('Sending initial prompt...', options)
@@ -504,6 +535,15 @@ export async function createWorktree(
 
   const tool: AgentTool = options.tool ?? 'claude'
   const runtime = worktreeDriver()
+  // Whether this runtime intercepts the workspace's outbound traffic — the
+  // one fact every credential decision below turns on. With mediation the
+  // workspace only ever holds sentinels; without it, it holds the real
+  // secrets, because nothing downstream would swap them.
+  const mediatedEgress = runtime.kind !== 'containerless'
+  // Whether the agents run unsupervised. The caller's choice when it made
+  // one; otherwise the driver's default — on where the workspace is
+  // sandboxed, off where the agent's reach is the whole machine.
+  const autoApprove = options.autoApprove ?? runtime.kind !== 'containerless'
 
   await runtime.ensureBuildEngine()
 
@@ -563,6 +603,19 @@ export async function createWorktree(
   const virtualCluster = config.virtualCluster === true
   const nestedContainers = config.nestedContainers === true || virtualCluster
 
+  // Both keys ask for a container to put a container in, so neither means
+  // anything without the first one. Rejected here rather than degraded:
+  // a project whose config says it needs its own engine gets a worktree
+  // that silently lacks one otherwise, and the failure surfaces much later
+  // as a build command that cannot find docker.
+  if (runtime.kind === 'containerless' && (virtualCluster || nestedContainers)) {
+    const key = virtualCluster ? 'virtualCluster' : 'nestedContainers'
+    throw new ServerError(
+      'VALIDATION',
+      `${key} needs a container runtime; this server runs worktrees on the host.`,
+    )
+  }
+
   // Recursion cap: an inner yaac (running inside a vcluster worktree)
   // must not stand up vcluster-in-vcluster — the depth buys nothing
   // (synced pods already run on the host node) and the inner cluster
@@ -586,6 +639,11 @@ export async function createWorktree(
   if (mode === 'acp' && acpAdapterFor(tool) === undefined) {
     throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
   }
+  // And whether THIS runtime can run it: an image either ships the adapter
+  // or does not, but a host has whatever the user installed, and acpd
+  // exec'ing nothing ends the worktree seconds after a create that already
+  // reported success.
+  await runtime.assertCanLaunch({ tool, mode })
 
   const worktreeId = options.worktreeId ?? crypto.randomUUID()
   // The conversations this create will launch, decided here rather than at
@@ -638,6 +696,7 @@ export async function createWorktree(
     type: 'worktree-created',
     projectSlug,
     worktreeId,
+    autoApprove,
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
@@ -699,11 +758,16 @@ export async function createWorktree(
   // below — launchWithSetup joins it after pod-Ready, so the checkout
   // also overlaps the pod's image pull and gVisor boot.
 
-  const imageTask = runtime.prepareImage({
-    projectSlug,
-    nestedContainers,
-    onProgress: (m) => emit(m, options),
-  })
+  // A runtime that runs no images is asked for none: the whole leg drops
+  // out rather than resolving a ref the launch would carry and ignore.
+  // `spec.image` is optional for exactly this case.
+  const imageTask: Promise<string | undefined> = runtime.kind === 'containerless'
+    ? Promise.resolve(undefined)
+    : runtime.prepareImage({
+      projectSlug,
+      nestedContainers,
+      onProgress: (m) => emit(m, options),
+    })
   // The join below is what reads it; this marker only keeps a failure in
   // another leg from turning it into an unhandled rejection.
   imageTask.catch(() => { /* awaited at the join */ })
@@ -853,20 +917,32 @@ export async function createWorktree(
       await writeKnownHostsFile([knownHostsEntry], sshKnownHostsFile)
     }
 
-    // Refresh the per-project placeholder credential files from the current
-    // host OAuth bundles. Picks up expiresAt changes since the last worktree.
-    // Both tools are refreshed regardless of the active tool so a prewarmed
+    // Refresh the per-project credential files from the current host OAuth
+    // bundles. Picks up expiresAt changes since the last worktree. Both
+    // tools are refreshed regardless of the active tool so a prewarmed
     // spare stays retoolable at claim time.
+    //
+    // WHICH bundle is written turns on whether the runtime mediates egress.
+    // With a proxy, a sentinel goes in and the real token never enters the
+    // workspace — the proxy swaps it in flight. Without one there is
+    // nothing to do the swapping, so a placeholder would simply be what the
+    // agent tried to authenticate with; the real bundle goes in instead.
+    // That is the containerless bargain: no sandbox, so nothing is withheld
+    // from what runs inside it (docs/containerless-driver.md).
     if (toolAuthByTool.claude?.kind === 'oauth') {
       const hostClaudeCreds = await loadClaudeCredentialsFile()
       if (hostClaudeCreds?.kind === 'oauth') {
-        await writeProjectClaudePlaceholder(projectSlug, hostClaudeCreds.claudeAiOauth)
+        await (mediatedEgress ? writeProjectClaudePlaceholder : writeProjectClaudeCredentials)(
+          projectSlug, hostClaudeCreds.claudeAiOauth,
+        )
       }
     }
     if (toolAuthByTool.codex?.kind === 'oauth') {
       const hostCodexCreds = await loadCodexCredentialsFile()
       if (hostCodexCreds?.kind === 'oauth') {
-        await writeProjectCodexPlaceholder(projectSlug, hostCodexCreds.codexOauth)
+        await (mediatedEgress ? writeProjectCodexPlaceholder : writeProjectCodexAuth)(
+          projectSlug, hostCodexCreds.codexOauth,
+        )
       }
     }
 
@@ -985,10 +1061,13 @@ export async function createWorktree(
     }
   }
 
-  // Add placeholder values for proxied secrets so tools detect them. Same
-  // question the egress path is handed the answer to, so it is asked once.
-  for (const name of Object.keys(resolveProxySecrets(config))) {
-    env.push(`${name}=placeholder`)
+  // Proxied secrets. With a proxy, only a sentinel goes in and the egress
+  // path holds the value; with none, the sentinel would be what the tool
+  // actually sent, so the value itself goes in. Same question the egress
+  // path is handed the answer to, so it is resolved once either way.
+  const proxiedSecrets = resolveProxySecrets(config)
+  for (const [name, value] of Object.entries(proxiedSecrets)) {
+    env.push(`${name}=${mediatedEgress ? 'placeholder' : value}`)
   }
 
   // Add placeholder env vars so no tool prompts for login inside the
@@ -1000,8 +1079,12 @@ export async function createWorktree(
   // so carrying another tool's placeholder does grant access to its
   // credential — a deliberate widening (see k8s/proxy/proxy.ts). What keeps
   // the proxy off a user's own traffic is the sentinel match, not the tool.
+  // With a proxy the sentinel is what travels and the real key never enters
+  // the workspace; without one the key itself has to, or the agent
+  // authenticates with the literal word "placeholder".
+  const apiKeyFor = (real: string): string => mediatedEgress ? PLACEHOLDER_API_KEY : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
-    env.push(`ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`)
+    env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)
   }
   // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
   // .claude/.credentials.json, so no env var is needed.
@@ -1012,10 +1095,10 @@ export async function createWorktree(
     // swaps for the real key. The env var + host come from the generated
     // provider table.
     const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider)
-    env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
+    env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.opencode.apiKey)}`)
   }
   if (toolAuthByTool.codex?.kind === 'api-key') {
-    env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
+    env.push(`OPENAI_API_KEY=${apiKeyFor(toolAuthByTool.codex.apiKey)}`)
   }
   if (toolAuthByTool.pi?.kind === 'api-key') {
     // pi is api-key only. It reads the chosen provider's env var and sends the
@@ -1023,7 +1106,7 @@ export async function createWorktree(
     // (whichever of Authorization: Bearer / x-api-key carries the sentinel).
     // The env var + host come from the generated provider table.
     const info = piProviderInfo(toolAuthByTool.pi.piProvider)
-    env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
+    env.push(`${info.envVar}=${apiKeyFor(toolAuthByTool.pi.apiKey)}`)
   }
   // Codex OAuth: Codex reads the placeholder bundle from the mounted
   // .codex/auth.json. Setting OPENAI_API_KEY would risk steering Codex
@@ -1045,7 +1128,7 @@ export async function createWorktree(
   if (credential.kind === 'https'
     && ghApiHostForGitHost(parsedRemote.host) !== null
     && !userWiresGithubToken) {
-    env.push(`GH_TOKEN=${PLACEHOLDER_GH_TOKEN}`)
+    env.push(`GH_TOKEN=${mediatedEgress ? PLACEHOLDER_GH_TOKEN : credential.token}`)
   }
 
   // Enable opencode's Exa-backed websearch tool. opencode only registers
@@ -1187,7 +1270,7 @@ export async function createWorktree(
     tool,
     mode,
     prewarm: options.prewarm === true,
-    image: imageRef,
+    ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
     mounts,
     resources: WORKTREE_RESOURCES,
@@ -1213,7 +1296,7 @@ export async function createWorktree(
   let handle: RuntimeHandle | undefined
 
   const setupParams: WorktreeSetupParams = {
-    spec, projectSlug, worktreeId, tool, mode, launching, initWindows,
+    spec, projectSlug, worktreeId, tool, mode, launching, initWindows, autoApprove,
     piProvider: toolAuthByTool.pi?.piProvider,
     onLaunched: (h) => {
       target = { projectSlug, workspaceId: worktreeId, unitName: h.jobName }

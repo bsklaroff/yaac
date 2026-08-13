@@ -52,11 +52,11 @@ export {
   type AgentPaneStatus,
 } from './agent-tools'
 export {
-  TMUX,
   agentWindowTarget,
   buildAgentCmd,
   initWindowCommand,
   resolveInitWindows,
+  tmuxCmd,
   typeInitialPrompt,
   verifyAgentWindowAlive,
   type InitWindow,

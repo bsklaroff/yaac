@@ -14,6 +14,7 @@ const PINNED_USAGE_LS_KEY = 'yaac.pinnedusage.v1'
 const SOUND_LS_KEY = 'yaac.sound.v1'
 const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
 const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
+const AUTO_APPROVE_LS_KEY = 'yaac.autoapprove.v1'
 
 /** Whether the attention chime plays; defaults on (exported for tests). */
 export function loadSoundEnabled(): boolean {
@@ -27,6 +28,36 @@ export function loadSoundEnabled(): boolean {
 export function persistSoundEnabled(enabled: boolean): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Whether the new-worktree popover's "yolo mode" box starts checked.
+ *
+ * Remembered across creates because it is a working style rather than a
+ * per-worktree decision — someone who wants their agents to act freely wants
+ * that every time, and someone who does not wants the opposite every time.
+ * `undefined` means they have never touched it, and the caller falls back to
+ * the server's default for its driver: on where the worktree is sandboxed,
+ * off where the agent's reach is the whole machine.
+ */
+export function loadAutoApprovePref(): boolean | undefined {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(AUTO_APPROVE_LS_KEY)
+      if (raw === '1') return true
+      if (raw === '0') return false
+    }
+  } catch { /* fall through to "never chosen" */ }
+  return undefined
+}
+
+/** Remember the last "yolo mode" choice; best-effort. */
+export function persistAutoApprovePref(enabled: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AUTO_APPROVE_LS_KEY, enabled ? '1' : '0')
+    }
   } catch { /* non-fatal */ }
 }
 

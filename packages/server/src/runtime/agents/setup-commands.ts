@@ -10,15 +10,16 @@
  * hook; only the steps that need host coordination remain here.
  */
 import {
-  TMUX,
   initWindowCommand,
   resolveInitWindows,
+  tmuxCmd,
   type InitWindow,
 } from './agent-command'
 import { agentWindowName } from './agent-tools'
 import { shellEscape } from '#lib/shell'
 import { ServerError } from '@yaac/shared/errors'
 import { AGENT_TOOLS } from '@yaac/shared/types'
+import type { WorkspacePaths } from '#drivers/contract'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**
@@ -37,10 +38,11 @@ import type { AgentTool, YaacConfig } from '@yaac/shared/types'
  *    never `git worktree remove`d (teardown rm -rf's the dirs), so the
  *    lock needs no clearing.
  */
-export function buildWorktreeLinkExec(worktreeId: string): string {
-  const admin = `/repo/.git/worktrees/${worktreeId}`
-  return `echo 'gitdir: ${admin}' > /workspace/.git`
-    + ` && echo '/workspace/.git' > ${admin}/gitdir`
+export function buildWorktreeLinkExec(worktreeId: string, paths: WorkspacePaths): string {
+  const admin = `${paths.repoGitDir}/worktrees/${worktreeId}`
+  const dotGit = `${paths.workspaceDir}/.git`
+  return `echo 'gitdir: ${admin}' > ${dotGit}`
+    + ` && echo '${dotGit}' > ${admin}/gitdir`
     + ` && printf 'yaac worktree ${worktreeId}' > ${admin}/locked`
 }
 
@@ -56,8 +58,9 @@ export function buildWorktreeLinkExec(worktreeId: string): string {
  * Must run under `withUpstreamConfigLock` (git's config lock on the shared
  * /repo/.git/config).
  */
-export function buildUpstreamExec(upstreamStartPoint: string): string {
-  return `git -C /workspace branch --set-upstream-to '${shellEscape(upstreamStartPoint)}'`
+export function buildUpstreamExec(upstreamStartPoint: string, paths: WorkspacePaths): string {
+  return `git -C ${paths.workspaceDir} branch `
+    + `--set-upstream-to '${shellEscape(upstreamStartPoint)}'`
 }
 
 /**
@@ -108,8 +111,10 @@ export function buildWindowsExec(
   windows: InitWindow[],
   tool: AgentTool,
   agents: AgentWindowSpec[],
+  paths: WorkspacePaths,
 ): string {
-  const cmds = windows.map(initWindowCommand)
+  const TMUX = tmuxCmd(paths)
+  const cmds = windows.map((win) => initWindowCommand(win, paths))
   const [primary, ...extra] = agents
   // The placeholder window carries the worktree's tool name, so the primary
   // agent respawns into it whatever tool it runs. A primary whose tool

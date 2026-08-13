@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
+import { requireDriverFeature } from '#http'
 
 /**
  * Routes over one build dir's support files, mounted twice: under
@@ -14,9 +15,17 @@ import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeB
  * base64 overhead is irrelevant at build-context scale, and folder uploads
  * are per-file requests, which keeps request sizes bounded and progress
  * reporting trivial.
+ *
+ * The whole sub-app refuses on a runtime that builds no images: every file
+ * here exists to be COPYed by a Dockerfile, so on a server that runs no
+ * builds these routes would be a working editor over files nothing reads.
  */
 export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
   return new Hono()
+    .use('*', async (_c, next) => {
+      requireDriverFeature('images')
+      await next()
+    })
     .get('/', async (c) => c.json({ files: await listBuildFiles(await resolveRoot(c)) }))
     .get(
       '/file',

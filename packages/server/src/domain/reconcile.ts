@@ -30,7 +30,20 @@ export type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/cont
  * its own step.
  */
 export function defaultReconcileSteps(): ReconcileStep[] {
-  const runtime = worktreeDriver().reconcileSteps()
+  const driver = worktreeDriver()
+  const runtime = driver.reconcileSteps()
+  // What a spare buys is the wait a cold worktree pays — an image pull and
+  // a pod boot. A host-process runtime pays neither (a tmux server starts in
+  // milliseconds in a checkout that already exists), so a pool there would
+  // hold worktrees open to save nothing. The step is dropped rather than
+  // made to no-op so a pass over a containerless server has no prewarm
+  // vocabulary in it at all.
+  const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
+    // Keep one prewarmed spare per active project (after the stale sweep so
+    // counts reflect just-reaped worktrees). No-op when the pool size is 0.
+    { name: 'prewarm-pool', triggers: ['workspaces'],
+      run: async (ctx) => reconcilePrewarmPool((await ctx.defaultTool()) ?? 'claude', ctx.snapshot()) },
+  ]
   return [
     // The stale reaper — first, so counts reflect just-reaped worktrees by
     // the time the prewarm pool runs. It reads what should exist from
@@ -59,10 +72,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // should join image builds already running, and anything holding
     // capacity should be out of the way before those builds are launched.
     ...runtime.prePool,
-    // Keep one prewarmed spare per active project (after the stale sweep so
-    // counts reflect just-reaped worktrees). No-op when the pool size is 0.
-    { name: 'prewarm-pool', triggers: ['workspaces'],
-      run: async (ctx) => reconcilePrewarmPool((await ctx.defaultTool()) ?? 'claude', ctx.snapshot()) },
+    ...pool,
     // Which agent sessions each worktree holds, which are live, and what
     // each opened with — the in-pod hook's session-starts log folded into
     // rows and read back (or, under `acp`, the handshake), crossed with the
