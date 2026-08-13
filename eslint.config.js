@@ -554,11 +554,19 @@ export default tseslint.config(
   // the whole design exists to prevent. Keep it a conscious rule edit rather
   // than an autocomplete accident.
   //
+  // The delete flow is the third caller: deleting the open worktree hands the
+  // selection to the row below it, which fills the pane the delete emptied
+  // without walking a phone off the list the × was tapped on.
+  //
   // Re-states ImportExpression: this zone redeclares no-restricted-syntax, and
   // a redeclaration replaces the base rule's options wholesale.
   {
     files: ['packages/frontend/src/**/*.{ts,tsx}'],
-    ignores: ['packages/frontend/src/App.tsx', 'packages/frontend/src/store.ts'],
+    ignores: [
+      'packages/frontend/src/App.tsx',
+      'packages/frontend/src/store.ts',
+      'packages/frontend/src/lib/stopWorktreeFlow.ts',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',

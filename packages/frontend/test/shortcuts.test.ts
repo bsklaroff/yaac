@@ -92,7 +92,6 @@ describe('matchShortcut', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyS'))).toBe('new-shell')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-worktree')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyB'))).toBe('jump-attention')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyC'))).toBe('open-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyF'))).toBe('find-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyP'))).toBe('open-preview')
@@ -108,6 +107,7 @@ describe('matchShortcut', () => {
 
   it('returns null for an unbound chord', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyM'))).toBeNull()
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyB'))).toBeNull()
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN', { ctrlKey: true }))).toBeNull()
   })
 
@@ -131,7 +131,7 @@ describe('cycleDeltaFor', () => {
     expect(cycleDeltaFor('next-worktree')).toBe(1)
     expect(cycleDeltaFor('next-terminal')).toBe(1)
     expect(cycleDeltaFor('new-worktree')).toBeNull()
-    expect(cycleDeltaFor('jump-attention')).toBeNull()
+    expect(cycleDeltaFor('delete-worktree')).toBeNull()
   })
 })
 

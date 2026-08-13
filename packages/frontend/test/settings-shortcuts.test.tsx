@@ -62,7 +62,8 @@ describe('Settings → Shortcuts', () => {
     openShortcuts()
     expect(screen.getByText('New worktree')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Alt+N' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Alt+B' })).toBeTruthy()
+    expect(screen.getByText('Delete worktree')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Alt+D' })).toBeTruthy()
   })
 
   it('records a new chord, updating the store and persisting it', async () => {

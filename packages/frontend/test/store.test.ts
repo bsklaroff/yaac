@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, resolveAttentionTarget,
-  resolveNewWorktreeTool, unreadWaitingBySlug, useUiStore,
+  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning,
+  resolveNewWorktreeTool, resolveVacantSelection, unreadWaitingBySlug, useUiStore,
 } from '#store'
 import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
@@ -157,33 +157,48 @@ describe('unreadWaitingBySlug', () => {
   })
 })
 
-describe('resolveAttentionTarget', () => {
-  const s = (worktreeId: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
-    ({ worktreeId, status, waitingSinceMs })
-
-  it('prefers the topmost unread-waiting session', () => {
-    // r1 is topmost overall, w1 is waiting-but-read, w2 is unread waiting.
-    const sessions = [s('r1', 'running'), s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
-    expect(resolveAttentionTarget(sessions, { w1: 100 })).toBe('w2')
+describe('resolveVacantSelection', () => {
+  const args = (over: Partial<Parameters<typeof resolveVacantSelection>[0]> = {}) => ({
+    previousProjectSlug: 'p1',
+    activeProjectSlug: 'p1',
+    selectedWorktreeId: 'w1',
+    rowIds: ['w1', 'w2'],
+    ...over,
   })
 
-  it('picks the topmost unread when several are unread', () => {
-    const sessions = [s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
-    expect(resolveAttentionTarget(sessions, {})).toBe('w1')
+  it('leaves a live selection — and a provisioning one — alone', () => {
+    expect(resolveVacantSelection(args())).toBeNull()
+    // Mid-create: the provisioning row is a sidebar row like any other.
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'new', rowIds: ['new', 'w1'] }))).toBeNull()
   })
 
-  it('falls back to the topmost waiting when all waiting are read', () => {
-    const sessions = [s('r1', 'running'), s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
-    expect(resolveAttentionTarget(sessions, { w1: 100, w2: 200 })).toBe('w1')
+  it('takes the topmost row when the open worktree vanished', () => {
+    // A CLI delete / the stale reaper: the selection is still set, but its
+    // worktree is no longer among the selectable rows. Topmost is the sidebar's
+    // first row, not the snapshot's — the caller passes display order.
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone' }))).toBe('w1')
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
   })
 
-  it('falls back to the topmost running when nothing is waiting', () => {
-    const sessions = [s('r1', 'running'), s('r2', 'running')]
-    expect(resolveAttentionTarget(sessions, {})).toBe('r1')
+  it('takes the topmost row of a project switched into', () => {
+    expect(resolveVacantSelection(args({
+      previousProjectSlug: 'p0', selectedWorktreeId: null,
+    }))).toBe('w1')
   })
 
-  it('returns null when there are no sessions', () => {
-    expect(resolveAttentionTarget([], {})).toBeNull()
+  it('stays empty on a first paint, and on a deselect', () => {
+    // Nothing persisted: no previous project, nothing selected, so nobody has
+    // chosen a worktree yet.
+    expect(resolveVacantSelection(args({
+      previousProjectSlug: null, selectedWorktreeId: null,
+    }))).toBeNull()
+    // Same project, selection cleared by the user (a dismissed provisioning row).
+    expect(resolveVacantSelection(args({ selectedWorktreeId: null }))).toBeNull()
+  })
+
+  it('has nothing to fill the pane with when no row is selectable', () => {
+    expect(resolveVacantSelection(args({ selectedWorktreeId: 'gone', rowIds: [] }))).toBeNull()
+    expect(resolveVacantSelection(args({ activeProjectSlug: null }))).toBeNull()
   })
 })
 

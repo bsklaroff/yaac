@@ -213,8 +213,10 @@ export function WorktreeList({
   provisioning: ProvisioningWorktreeEntry[]
 }): JSX.Element {
   // A mid-flight optimistic delete doesn't move a row any more — it greys it
-  // where it sits — so the list itself has no use for pendingDeleteIds; each
-  // row reads it for its own placeholder.
+  // where it sits — so the list needs pendingDeleteIds only to keep the
+  // already-deleting rows out of the delete successor order; each row reads it
+  // again for its own placeholder.
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   // Only for the empty-state copy: there is no rail on a phone to point at.
   const isMobile = useIsMobile()
@@ -244,6 +246,9 @@ export function WorktreeList({
   ].filter((d) => !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
 
   const layout = sidebarLayout(worktrees, groups, stopped)
+  // Display order of the selectable rows, so a row's × can hand the selection
+  // to the row below it. Same list the Alt+K/J cycle steps through.
+  const rowIds = sidebarRowIds(provisioning, worktrees, groups, pendingDeleteIds)
   const visibleCount = layout.defaultList.length
     + layout.groups.reduce((n, s) => n + s.members.length + s.ghosts.length, 0)
 
@@ -386,7 +391,7 @@ export function WorktreeList({
         className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
       >
         {layout.defaultList.map((s) => (
-          <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={rowDrag} />
+          <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
         ))}
         {drag?.active && layout.defaultList.length === 0 && (
           <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
@@ -401,6 +406,7 @@ export function WorktreeList({
           section={section}
           shownGroups={shownGroups}
           drag={rowDrag}
+          rowIds={rowIds}
           dropTarget={dropTarget(section.group.groupId)}
           zoneRef={zoneRef(section.group.groupId)}
         />
@@ -480,6 +486,7 @@ function GroupSection({
   section,
   shownGroups,
   drag,
+  rowIds,
   dropTarget,
   zoneRef,
 }: {
@@ -487,6 +494,8 @@ function GroupSection({
   /** The groups on screen — a member row's dialog can move it into any. */
   shownGroups: WorktreeGroupSummary[]
   drag: SidebarDrag
+  /** The whole sidebar's rows in display order, for a member's delete. */
+  rowIds: string[]
   /** A drop here would move the dragged worktree into this group. */
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
@@ -588,7 +597,7 @@ function GroupSection({
         </div>
         <Collapsible.Panel>
           {members.map((s) => (
-            <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={drag} />
+            <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
           ))}
           {ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
         </Collapsible.Panel>
@@ -646,10 +655,14 @@ function WorktreeRow({
   worktree,
   shownGroups,
   drag,
+  rowIds,
 }: {
   worktree: WorktreeListEntry
   shownGroups: WorktreeGroupSummary[]
   drag: SidebarDrag
+  /** The sidebar's rows in display order — deleting this one moves the
+   *  selection to the next of them. */
+  rowIds: string[]
 }): JSX.Element {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectWorktree = useUiStore((s) => s.selectWorktree)
@@ -680,7 +693,7 @@ function WorktreeRow({
   // optimistically and restores it if the delete fails.
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
-    stopWorktreeOptimistic(worktree)
+    stopWorktreeOptimistic(worktree, rowIds)
   }
 
   // A stopping row is a non-interactive, greyed placeholder: no pulse, no

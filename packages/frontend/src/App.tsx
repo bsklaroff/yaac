@@ -11,8 +11,8 @@ import { useProvisionWorktree } from './lib/useProvisionWorktree'
 import { randomUUID } from './lib/uuid'
 import { useSnapshot } from './lib/useSnapshot'
 import {
-  mergeProvisioning, persistSelection, resolveAttentionTarget, resolveNewWorktreeTool, unreadWaitingBySlug,
-  useUiStore,
+  mergeProvisioning, persistSelection, resolveNewWorktreeTool, resolveVacantSelection,
+  unreadWaitingBySlug, useUiStore,
 } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
@@ -198,15 +198,9 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   //    credential (sign in via settings → credentials).
   //  - Alt+D deletes the selected worktree, through the same confirm dialog
   //    as the sidebar row's × (Enter confirms — the button holds focus).
-  //  - Alt+B jumps to the worktree that most needs attention: the topmost
-  //    unread-waiting one, else the topmost waiting, else the topmost running.
   // The ref keeps the single listener reading the current render's state.
   const provision = useProvisionWorktree()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
-  const attentionTarget = resolveAttentionTarget(
-    scoped.filter((s) => !s.stopping && !pendingDeleteIds.includes(s.worktreeId)),
-    readWaiting,
-  )
   const authList = useAuthList()
   const configured = configuredTools(authList)
   const newWorktree = (): void => {
@@ -222,8 +216,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const selectedWorktree = selectedWorktreeId && !pendingDeleteIds.includes(selectedWorktreeId)
     ? worktrees.find((s) => s.worktreeId === selectedWorktreeId && !s.stopping) ?? null
     : null
-  const shortcutCtx = useRef({ rowIds, selectedWorktreeId, selectedWorktree, newWorktree, attentionTarget })
-  shortcutCtx.current = { rowIds, selectedWorktreeId, selectedWorktree, newWorktree, attentionTarget }
+  const shortcutCtx = useRef({ rowIds, selectedWorktreeId, selectedWorktree, newWorktree })
+  shortcutCtx.current = { rowIds, selectedWorktreeId, selectedWorktree, newWorktree }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -246,12 +240,6 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           e.preventDefault()
           e.stopPropagation()
           setConfirmDelete(ctx.selectedWorktree)
-          return
-        case 'jump-attention':
-          if (!ctx.attentionTarget) return
-          e.preventDefault()
-          e.stopPropagation()
-          useUiStore.getState().selectWorktree(ctx.attentionTarget)
           return
         case 'prev-worktree':
         case 'next-worktree': {
@@ -280,25 +268,28 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
       .catch((e: unknown) => console.error(e))
   }, [])
 
-  // Auto-select: never show an empty pane when the project has worktrees — pick
-  // the first waiting one (else the first visible). But never override a
-  // selected provisioning row (it's not in `scoped`, so it would otherwise be
-  // stolen) — auto-open on create relies on the selection sticking.
+  // Fill a pane the user didn't empty — a project switched under the
+  // selection, or the open worktree vanished (see resolveVacantSelection).
+  // Deleting a worktree in the app doesn't come through here at all: that
+  // selects the row below it as it goes. `rowIds` is the sidebar's own order,
+  // so "the top row" is the one the user sees at the top; `worktrees` is in
+  // snapshot order, which is not it.
+  //
   // Goes through autoSelectWorktree, not selectWorktree: this is the app
   // choosing, so on mobile it must fill the pane *behind* the worktree list
   // rather than navigating the user onto it.
+  const lastProjectSlug = useRef(activeProjectSlug)
   useEffect(() => {
-    if (!activeProjectSlug) return
-    if (selectedWorktreeId && scopedProvisioning.some((p) => p.worktreeId === selectedWorktreeId)) return
-    // Terminating rows are excluded so a worktree deleted out from under the
-    // user (CLI/reaper) auto-navigates to a live one instead of showing a
-    // dying container.
-    const visible = scoped.filter((s) => !s.stopping && !pendingDeleteIds.includes(s.worktreeId))
-    if (visible.length === 0) return
-    if (selectedWorktreeId && visible.some((s) => s.worktreeId === selectedWorktreeId)) return
-    const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
-    autoSelectWorktree(pick.worktreeId)
-  }, [activeProjectSlug, scopedProvisioning, scoped, selectedWorktreeId, pendingDeleteIds, autoSelectWorktree])
+    const previousProjectSlug = lastProjectSlug.current
+    lastProjectSlug.current = activeProjectSlug
+    const pick = resolveVacantSelection({
+      previousProjectSlug,
+      activeProjectSlug,
+      selectedWorktreeId,
+      rowIds,
+    })
+    if (pick) autoSelectWorktree(pick)
+  }, [activeProjectSlug, rowIds, selectedWorktreeId, autoSelectWorktree])
   // Viewing a waiting worktree marks its current spell read — the pane shows
   // it, so it no longer needs attention. Covers both selecting a waiting
   // worktree and the open worktree flipping running → waiting under the
@@ -419,7 +410,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
         description="Stops and removes the worktree's container. The worktree history and worktree will be saved, and can be restarted."
         confirmLabel="Delete"
         onConfirm={() => {
-          if (confirmDelete) stopWorktreeOptimistic(confirmDelete)
+          if (confirmDelete) stopWorktreeOptimistic(confirmDelete, rowIds)
           setConfirmDelete(null)
         }}
       />

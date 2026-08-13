@@ -104,8 +104,9 @@ export function persistAutoApprovePref(enabled: boolean): void {
  *
  * Deliberately explicit rather than derived from
  * `activeProjectSlug`/`selectedWorktreeId`, which it looks like it could be:
- * App auto-selects a worktree as soon as a project has one, so a derived
- * screen would jump straight past the worktree list on every project tap.
+ * App fills the pane on the user's behalf when a project switch or a
+ * vanished worktree leaves the selection empty, so a derived screen would
+ * jump straight past the worktree list on every project tap.
  *
  * Navigation follows user *intent* instead, which means each change has two
  * actions: the one a tap goes through moves the screen (`setActiveProject`,
@@ -477,24 +478,39 @@ export function unreadWaitingBySlug(
 }
 
 /**
- * The worktree Alt+B lands on: the one most in need of attention. Callers pass
- * the sidebar's worktrees (mid-delete rows already filtered out); status order
- * within the array matches the display order, since the Waiting group renders
- * above Running and each group preserves array order. Priority:
- *   1. the topmost worktree with an unread waiting notification,
- *   2. else the topmost waiting worktree (already viewed this spell),
- *   3. else the topmost running worktree.
- * Null when there's nothing to jump to.
+ * The worktree that fills a pane nobody chose to empty, or null to leave it
+ * empty. Which worktree is open otherwise follows the sidebar — clicking a row
+ * opens it, deleting one hands the selection to the row below (see
+ * `successorRow`) — so this answers only the two cases where the selection
+ * goes through no act of the user's:
+ *   1. the project changed under it (a rail tap, or a fallback when the active
+ *      project is gone), and
+ *   2. the open worktree vanished (a CLI delete, the stale reaper), which
+ *      includes it being torn down with no row left to inherit from.
+ * Both take the topmost row: there is no neighbour to walk to.
+ *
+ * Null on a first paint with nothing persisted (nobody has chosen a worktree
+ * yet, and the sidebar is right there) and on a deselect. A provisioning row
+ * counts as a selection like any other — it is a sidebar row — so auto-open
+ * on create is left to stick.
  */
-export function resolveAttentionTarget(
-  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'waitingSinceMs'>[],
-  readWaiting: Record<string, number>,
-): string | null {
-  const unread = worktrees.find((s) => isUnreadWaiting(s, readWaiting))
-  if (unread) return unread.worktreeId
-  const waiting = worktrees.find((s) => s.status === 'waiting')
-  if (waiting) return waiting.worktreeId
-  return worktrees.find((s) => s.status === 'running')?.worktreeId ?? null
+export function resolveVacantSelection(args: {
+  /** The active project as of the previous render; null before there was one. */
+  previousProjectSlug: string | null
+  activeProjectSlug: string | null
+  selectedWorktreeId: string | null
+  /** The sidebar's selectable rows top-to-bottom (`sidebarRowIds`) — display
+   *  order, not snapshot order, and terminating rows already dropped: a dying
+   *  container is not somewhere to be. */
+  rowIds: string[]
+}): string | null {
+  const { previousProjectSlug, activeProjectSlug, selectedWorktreeId, rowIds } = args
+  if (!activeProjectSlug) return null
+  if (selectedWorktreeId && rowIds.includes(selectedWorktreeId)) return null
+  const vanished = selectedWorktreeId !== null
+  const switchedProject = previousProjectSlug !== null && previousProjectSlug !== activeProjectSlug
+  if (!vanished && !switchedProject) return null
+  return rowIds[0] ?? null
 }
 
 /**
@@ -699,10 +715,11 @@ interface UiState {
   /** The user picked a worktree (a sidebar/list tap) — on mobile this is what
    *  advances to the pane screen. */
   selectWorktree: (id: string | null) => void
-  /** The app picked a worktree on the user's behalf (App's auto-select, which
-   *  never leaves the pane empty). Identical to `selectWorktree` except that
-   *  it leaves the mobile screen alone — otherwise merely opening a project
-   *  would fling the user past its worktree list. */
+  /** The app picked a worktree on the user's behalf — the row below a deleted
+   *  one, or the top row when a project switch or a vanished worktree emptied
+   *  the selection. Identical to `selectWorktree` except that it leaves the
+   *  mobile screen alone — otherwise merely opening a project (or deleting a
+   *  worktree from the list) would fling the user past its worktree list. */
   autoSelectWorktree: (id: string) => void
   /** Jump to a specific worktree, switching the active project to match. */
   openWorktree: (projectSlug: string, worktreeId: string) => void

@@ -25,8 +25,9 @@ and is inert above the breakpoint — the desktop render path never reads it.
 
 It is explicit rather than derived from `activeProjectSlug` /
 `selectedWorktreeId`, which it looks like it could be. App fills the pane on
-the user's behalf as soon as a project has a worktree, so a derived screen
-would fling the user past the worktree list on every project tap. **Navigation
+the user's behalf whenever the selection is emptied by something other than a
+tap — a project switch, a deleted worktree — so a derived screen would fling
+the user past the worktree list on every project tap. **Navigation
 follows user intent**, and the store encodes that as a pair of actions per
 change:
 
@@ -36,9 +37,10 @@ change:
 | `selectWorktree` → `pane` | `autoSelectWorktree` (no move) |
 | `openWorktree` → `pane` (a tray/notification jump, a just-created worktree) | — |
 
-An eslint rule confines the two effect-side names to `App.tsx`, so reaching
-for one from a component is a lint failure rather than a silently stranded
-user.
+An eslint rule confines the two effect-side names to `App.tsx` and the delete
+flow (deleting the open worktree selects the row below it — the app choosing,
+not a walk onto that worktree), so reaching for one from a component is a lint
+failure rather than a silently stranded user.
 
 A shared `?project=…&worktree=…` link does not go through `openWorktree` —
 `loadSelection` reads it straight into the initial state — so `loadMobileScreen`

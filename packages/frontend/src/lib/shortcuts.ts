@@ -29,7 +29,6 @@ export type ShortcutId =
   | 'new-shell'
   | 'delete-worktree'
   | 'kill-terminal'
-  | 'jump-attention'
   | 'open-changes'
   | 'find-changes'
   | 'open-preview'
@@ -78,8 +77,6 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'Delete the selected worktree (asks to confirm).', defaultChord: alt('KeyD') },
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
-  { id: 'jump-attention', label: 'Jump to attention',
-    description: 'Select the worktree that most needs attention.', defaultChord: alt('KeyB') },
   { id: 'open-changes', label: 'Open changes',
     description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyC') },
   { id: 'find-changes', label: 'Find in changes',
