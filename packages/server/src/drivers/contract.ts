@@ -381,6 +381,23 @@ export class WorkspaceExecError extends Error {
 }
 
 /**
+ * The `changes` failure code that means no diff base came of the ref it was
+ * told to diff against — the ref names nothing in that checkout, or nothing
+ * the checkout shares history with. Either way there is no fork point, and
+ * a diff taken anyway would be against the wrong thing.
+ *
+ * It crosses the contract, so every driver reports exactly this code for
+ * that failure and nothing else for it — a `changes` read that fails for
+ * any other reason keeps its own code. What the failure PROVES depends on
+ * who chose the ref: with an explicit `base` the caller named a ref that
+ * does not resolve (their mistake), and with none the workspace could not
+ * resolve even the recorded fork branch or its own HEAD (ours). Only the
+ * caller knows which it passed, so the driver reports the code and leaves
+ * the verdict to whoever chose the base.
+ */
+export const CHANGES_BASE_UNRESOLVED = 4
+
+/**
  * A child-process-shaped stream into a workspace: the transport the agent
  * drivers speak over (tmux control mode for `tui`, acpd's JSON-RPC for
  * `acp`).
@@ -635,7 +652,11 @@ export interface WorktreeDriver {
   count(): Promise<Record<string, number>>
   /** How many one project is running, spares INCLUDED. 0 when unreachable. */
   countForProject(projectSlug: string): Promise<number>
-  /** The working-tree diff of a running workspace, read from inside it. */
+  /** The working-tree diff of a running workspace, read from inside it.
+   *
+   *  Rejects with `WorkspaceExecError` when the read ran inside the
+   *  workspace and failed; `CHANGES_BASE_UNRESOLVED` is the code that says
+   *  the base ref yielded no fork point there. */
   changes(jobName: string, base?: string, defaultBase?: string): Promise<WorktreeChanges>
   /** A fresh view for one reconcile pass. `resync` marks the periodic
    *  run-everything pass; a direct caller outside a pass takes its own. */

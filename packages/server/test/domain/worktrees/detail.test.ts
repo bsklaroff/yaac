@@ -16,6 +16,7 @@ import {
   getWorktreePrompt,
 } from '#domain/worktrees/detail'
 import { ServerError } from '@yaac/shared/errors'
+import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 import type { VirtualClusterStatus } from '#drivers/contract'
 import type { WorktreeChanges } from '@yaac/shared/types'
 
@@ -177,5 +178,43 @@ describe('getWorktreeChanges', () => {
 
     await expect(getWorktreeChanges('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockChanges).not.toHaveBeenCalled()
+  })
+
+  // A ref the CALLER named that resolves nowhere is a bad request, and this
+  // is the only place that knows the ref came from them — left alone it
+  // reaches the route as a bare exec failure and answers 500.
+  it('answers VALIDATION for an explicit base that resolves nowhere', async () => {
+    const workspaceId = installRunning()
+    mockChanges.mockRejectedValue(
+      new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', ''),
+    )
+
+    const err = await getWorktreeChanges(workspaceId, 'no-such-branch').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ServerError)
+    expect(err).toMatchObject({ code: 'VALIDATION', httpStatus: 400 })
+    // The message has to name the ref: it is the caller's only clue.
+    expect((err as ServerError).message).toContain('no-such-branch')
+  })
+
+  // The same code with no explicit base means the RECORDED fork branch is the
+  // one that resolves nowhere — our inconsistency, not the caller's, so it
+  // must keep surfacing as a fault rather than being blamed on them.
+  it('keeps an unresolvable default base a server fault', async () => {
+    const workspaceId = installRunning()
+    const failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
+    mockChanges.mockRejectedValue(failure)
+
+    await expect(getWorktreeChanges(workspaceId)).rejects.toBe(failure)
+  })
+
+  // Every other exec failure stays what it was: a nonzero exit on its own is
+  // no evidence of a bad ref (exit 3 is "this worktree has no /workspace"),
+  // and relabelling those as user error would hide real breakage.
+  it('leaves other exec failures alone even with an explicit base', async () => {
+    const workspaceId = installRunning()
+    const failure = new WorkspaceExecError('command exited 3', 3, '', '')
+    mockChanges.mockRejectedValue(failure)
+
+    await expect(getWorktreeChanges(workspaceId, 'dev')).rejects.toBe(failure)
   })
 })
