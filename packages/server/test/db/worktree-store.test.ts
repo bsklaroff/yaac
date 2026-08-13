@@ -19,9 +19,9 @@ import {
   recordWorktreeCreated,
   recordWorktreeStopped,
   clearWorktreeStopped,
-  setWorktreeBackground,
   setWorktreeTitle,
 } from '#db/worktree-store'
+import { createWorktreeGroup } from '#db/group-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
@@ -56,7 +56,6 @@ describe('session store', () => {
         projectSlug: 'proj',
         worktreeId: 'sid-1',
         baseBranch: 'main',
-        background: false,
         deathSeen: false,
       })
       expect(row?.stoppedAt).toBeUndefined()
@@ -73,15 +72,15 @@ describe('session store', () => {
       expect(row?.deathDetail).toBeUndefined()
     })
 
-    it('keeps the title and pin across a restart', async () => {
+    it('keeps the title and the sidebar group across a restart', async () => {
       await create('sid-1')
       await setWorktreeTitle('proj', 'sid-1', 'my session')
-      await setWorktreeBackground('proj', 'sid-1', true)
+      const group = await createWorktreeGroup('proj', 'release', 'sid-1')
       await create('sid-1') // restart: same id, no new prompt
 
       expect((await getProjectWorktreeRows('proj')).get('sid-1')).toMatchObject({
         title: 'my session',
-        background: true,
+        groupId: group.groupId,
       })
     })
 
@@ -141,7 +140,6 @@ describe('session store', () => {
       await recordWorktreeStopped('proj', 'spare')
       await recordDeathSeen('proj', 'spare')
       await setWorktreeTitle('proj', 'spare', 'nope')
-      await setWorktreeBackground('proj', 'spare', true)
       expect(await listWorktreeRows()).toEqual([])
     })
   })
@@ -166,26 +164,6 @@ describe('session store', () => {
       expect(pushes - before).toBe(1)
       await setWorktreeTitle('proj', 'sid-1', '')
       expect(pushes - before).toBe(2)
-    })
-  })
-
-  describe('setWorktreeBackground', () => {
-    it('pins and unpins the row', async () => {
-      await create('sid-1')
-      await setWorktreeBackground('proj', 'sid-1', true)
-      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.background).toBe(true)
-
-      await setWorktreeBackground('proj', 'sid-1', false)
-      expect((await getProjectWorktreeRows('proj')).get('sid-1')?.background).toBe(false)
-    })
-
-    // Regrouping the sidebar is the whole point of the flag, so the write
-    // pushes it.
-    it('pushes a fresh snapshot', async () => {
-      await create('sid-1')
-      const before = pushes
-      await setWorktreeBackground('proj', 'sid-1', true)
-      expect(pushes - before).toBe(1)
     })
   })
 

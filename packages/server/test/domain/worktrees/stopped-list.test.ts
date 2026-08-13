@@ -21,9 +21,9 @@ import type * as podsModule from '#drivers/k8s/substrate/pods'
 import {
   recordWorktreeCreated,
   recordWorktreeStopped,
-  setWorktreeBackground,
   setWorktreeTitle,
 } from '#db/worktree-store'
+import { createWorktreeGroup } from '#db/group-store'
 import { listWorktreeAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
@@ -162,13 +162,13 @@ describe('listStoppedWorktrees', () => {
     expect(removed?.deathDetail).toBeUndefined()
   })
 
-  it('carries the title and background pin', async () => {
+  it('carries the title and the sidebar group', async () => {
     await seedWorktree('demo', 'sid', { deleted: true })
     await setWorktreeTitle('demo', 'sid', 'fix the parser')
-    await setWorktreeBackground('demo', 'sid', true)
+    const group = await createWorktreeGroup('demo', 'release', 'sid')
     expect((await listStoppedWorktrees('demo'))[0]).toMatchObject({
       title: 'fix the parser',
-      background: true,
+      groupId: group.groupId,
     })
   })
 
@@ -181,16 +181,16 @@ describe('listStoppedWorktrees', () => {
     expect(result.map((r) => r.worktreeId)).toEqual(['s4', 's3'])
   })
 
-  it('keeps a pinned session past the cap so its sidebar row survives', async () => {
-    await seedWorktree('demo', 'pinned', { deleted: true })
-    await setWorktreeBackground('demo', 'pinned', true)
+  it('keeps a grouped session past the cap so its ghost row survives', async () => {
+    await seedWorktree('demo', 'grouped', { deleted: true })
+    await createWorktreeGroup('demo', 'release', 'grouped')
     await new Promise((r) => setTimeout(r, 5))
     for (const id of ['a', 'b', 'c']) {
       await seedWorktree('demo', id, { deleted: true })
       await new Promise((r) => setTimeout(r, 5))
     }
     const result = await listStoppedWorktrees('demo', 2)
-    expect(result.map((r) => r.worktreeId).sort()).toEqual(['b', 'c', 'pinned'])
+    expect(result.map((r) => r.worktreeId).sort()).toEqual(['b', 'c', 'grouped'])
   })
 
   it('returns all entries when limit is 0 or undefined', async () => {

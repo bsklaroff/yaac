@@ -30,9 +30,9 @@ export function stopWorktreeOptimistic(worktree: WorktreeListEntry): void {
       // The conversations come back with the stopped listing's next refetch;
       // the optimistic row only needs enough to render.
       agentSessions: [],
-      // Carry the pin so a stopped background worktree keeps its sidebar row
+      // Carry the group so a stopped member ghosts into its sidebar group
       // without waiting for the stopped list to refetch.
-      background: worktree.background,
+      groupId: worktree.groupId,
     })
   }
   void stopWorktree(id).catch((e: unknown) => {

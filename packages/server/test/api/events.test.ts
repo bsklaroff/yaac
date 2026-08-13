@@ -24,7 +24,8 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
-    worktrees: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
+    worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
+    imageBuilds: [],
     planUsage: null,
     codexPlanUsage: null,
     forwardBindHost: '127.0.0.1',

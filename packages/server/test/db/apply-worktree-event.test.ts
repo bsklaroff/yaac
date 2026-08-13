@@ -54,7 +54,7 @@ describe('applyWorktreeEvent', () => {
     await created('wt-new', { baseBranch: 'main' })
 
     expect(await rowOf('wt-new')).toMatchObject({
-      projectSlug: 'proj', worktreeId: 'wt-new', baseBranch: 'main', background: false,
+      projectSlug: 'proj', worktreeId: 'wt-new', baseBranch: 'main', deathSeen: false,
     })
   })
 

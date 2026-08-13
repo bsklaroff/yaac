@@ -71,14 +71,3 @@ export async function stopWorktree(worktreeId: string): Promise<void> {
 export async function renameWorktree(worktreeId: string, title: string): Promise<void> {
   await api.worktree[':id'].title.$post({ param: { id: worktreeId }, json: { title } })
 }
-
-/** Pin (or unpin) a worktree to the sidebar's "Background" section. Addressed
- *  by (project, worktree) rather than a container lookup so it works for
- *  deleted worktrees too — the pin outlives the container. */
-export async function setWorktreeBackground(
-  projectSlug: string,
-  worktreeId: string,
-  background: boolean,
-): Promise<void> {
-  await api.worktree['set-background'].$post({ json: { projectSlug, worktreeId, background } })
-}

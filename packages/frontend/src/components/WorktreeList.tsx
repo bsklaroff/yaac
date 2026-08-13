@@ -1,34 +1,59 @@
-import { useLayoutEffect, useRef, useState, type JSX } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type JSX,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RenameIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
+import { Dialog } from '@base-ui/react/dialog'
+import {
+  BranchIcon,
+  ChevronIcon,
+  CloseIcon,
+  GroupAddIcon,
+  GroupRemoveIcon,
+  LoadingIcon,
+  PinIcon,
+  RenameIcon,
+  RestartIcon,
+  TOOL_LABEL,
+} from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { dismissProvisioning, restartWorktree, setWorktreeBackground } from '#lib/createWorktree'
-import { useInlineRename } from '#lib/useInlineRename'
+import { dismissProvisioning, restartWorktree } from '#lib/createWorktree'
+import {
+  createWorktreeGroup,
+  deleteWorktreeGroup,
+  renameWorktreeGroup,
+  setWorktreeGroup,
+  setWorktreeGroupPinned,
+} from '#lib/groupApi'
+import { useInlineEdit, useInlineRename } from '#lib/useInlineRename'
 import { getStoppedWorktrees } from '#lib/stoppedApi'
 import { stopWorktreeOptimistic } from '#lib/stopWorktreeFlow'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
 import { isUnreadWaiting, useUiStore } from '#store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
-import type { StoppedWorktreeEntry, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
-
-/** User-facing worktree groups keyed by status, in triage order (Waiting
- *  first). Background pins and stopping are orthogonal to status and get
- *  their own sections rendered after these (see sidebarSections). */
-const GROUPS: { status: WorktreeListEntry['status']; label: string; defaultOpen: boolean }[] = [
-  { status: 'waiting', label: 'Waiting', defaultOpen: true },
-  { status: 'running', label: 'Running', defaultOpen: true },
-]
+import type {
+  StoppedWorktreeEntry,
+  ProvisioningWorktreeEntry,
+  WorktreeGroupSummary,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
 /** A worktree is stopping when the server has marked it (its pod has a
  *  deletionTimestamp, or a delete was just issued) or a client-side optimistic
- *  delete is still in flight. Such rows get their own "Terminating" section and
- *  render as non-interactive, greyed placeholders (see WorktreeRow). */
+ *  delete is still in flight. Such a row stays exactly where it sits — in the
+ *  default list or in its group — but renders as a non-interactive, greyed
+ *  placeholder and can't be selected or dragged (see WorktreeRow). */
 function isTerminating(
   worktree: Pick<WorktreeListEntry, 'worktreeId' | 'stopping'>,
   pendingDeleteIds: string[],
@@ -36,64 +61,92 @@ function isTerminating(
   return Boolean(worktree.stopping) || pendingDeleteIds.includes(worktree.worktreeId)
 }
 
+/** Oldest first, by the UTC 'YYYY-MM-DD HH:MM:SS' stamp — which compares
+ *  lexicographically — with the id as a stable tiebreak for worktrees created
+ *  inside the same second. */
+function byCreatedAt<T extends { createdAt: string; worktreeId: string }>(a: T, b: T): number {
+  return a.createdAt.localeCompare(b.createdAt) || a.worktreeId.localeCompare(b.worktreeId)
+}
+
+/** One group's section of the list. */
+export interface SidebarGroupSection {
+  group: WorktreeGroupSummary
+  /** Live (and terminating) members, oldest first. */
+  members: WorktreeListEntry[]
+  /** Stopped members, oldest first — ghost rows rendered after the live ones. */
+  ghosts: StoppedWorktreeEntry[]
+}
+
+export interface SidebarLayout {
+  /** Ungrouped worktrees, oldest first. Terminating rows sit in place. */
+  defaultList: WorktreeListEntry[]
+  /** The groups that are shown, oldest group first. */
+  groups: SidebarGroupSection[]
+}
+
 /**
- * The list's selectable rows in display order — provisioning first, then
- * the worktree groups in triage order, then the Background pins, minus
- * stopping worktrees. This is the list the Alt+↑/↓ worktree-switch shortcut
- * steps through (Workspace owns the handler). Terminating rows (server-marked,
- * or a mid-flight optimistic delete) still render, greyed, but aren't
- * selectable — nor are deleted Background rows (nothing to open).
+ * The sidebar's shape: every ungrouped worktree in creation order, then one
+ * section per shown group, also in creation order. Nothing is bucketed by
+ * status — a worktree's own markers (the running spinner, the unread dot, the
+ * stopping placeholder) say what state it is in, and its position says where
+ * the user filed it.
+ *
+ * A group is shown when it is pinned or holds at least one live worktree, and
+ * a shown group lists ALL its members: live ones as ordinary rows, stopped
+ * ones as ghost rows with a restart action. So an unpinned group whose
+ * worktrees have all stopped simply disappears — its row survives on the
+ * server, and restarting a member brings the whole section back — while
+ * pinning keeps it on screen as somewhere to restart into.
+ *
+ * `stopped` is the project's stopped listing, already de-duped against the
+ * active and provisioning ids by the caller; only entries belonging to a shown
+ * group are rendered, the rest live in the "Stopped worktrees" overlay. A
+ * worktree naming a group that no longer exists falls back to the default
+ * list, which is what a snapshot arriving mid-delete looks like.
+ */
+export function sidebarLayout(
+  worktrees: WorktreeListEntry[],
+  groups: WorktreeGroupSummary[],
+  stopped: StoppedWorktreeEntry[] = [],
+): SidebarLayout {
+  const known = new Set(groups.map((g) => g.groupId))
+  const filedIn = (entry: { groupId?: string }): string | null =>
+    entry.groupId !== undefined && known.has(entry.groupId) ? entry.groupId : null
+  const live = [...worktrees].sort(byCreatedAt)
+  const ghosts = [...stopped].sort(byCreatedAt)
+  const sections = [...groups]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.groupId.localeCompare(b.groupId))
+    .map((group) => ({
+      group,
+      members: live.filter((w) => filedIn(w) === group.groupId),
+      ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
+    }))
+    .filter((s) => s.group.pinned || s.members.length > 0)
+  return { defaultList: live.filter((w) => filedIn(w) === null), groups: sections }
+}
+
+/**
+ * The list's selectable rows in display order — provisioning first, then the
+ * ungrouped worktrees, then each shown group's live members. This is the list
+ * the Alt+↑/↓ worktree-switch shortcut steps through (Workspace owns the
+ * handler). Terminating rows (server-marked, or a mid-flight optimistic
+ * delete) still render, greyed, but aren't selectable — nor are ghost rows,
+ * which have nothing to open until they're restarted.
  */
 export function sidebarRowIds(
   provisioning: Pick<ProvisioningWorktreeEntry, 'worktreeId'>[],
-  worktrees: Pick<WorktreeListEntry, 'worktreeId' | 'status' | 'stopping' | 'background'>[],
+  worktrees: WorktreeListEntry[],
+  groups: WorktreeGroupSummary[],
   pendingDeleteIds: string[],
 ): string[] {
-  const shown = worktrees.filter((s) => !isTerminating(s, pendingDeleteIds))
-  const foreground = shown.filter((s) => !s.background)
+  // Built on the layout itself, so the cycle can't drift from what is drawn.
+  const layout = sidebarLayout(worktrees, groups)
+  const selectable = (list: WorktreeListEntry[]): string[] =>
+    list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.worktreeId)
   return [
     ...provisioning.map((p) => p.worktreeId),
-    ...GROUPS.flatMap((g) => foreground.filter((s) => s.status === g.status).map((s) => s.worktreeId)),
-    ...shown.filter((s) => s.background).map((s) => s.worktreeId),
-  ]
-}
-
-/** One collapsible section in the list. */
-export interface SidebarSection {
-  label: string
-  defaultOpen: boolean
-  worktrees: WorktreeListEntry[]
-  /** Deleted-but-pinned rows (Background section only) — rendered after the
-   *  active rows as non-selectable placeholders with a restart action. */
-  deleted?: StoppedWorktreeEntry[]
-}
-
-/**
- * List sections in render order: the status groups (Waiting, then Running)
- * holding live worktrees, then Background holding every pinned worktree —
- * whatever its state: running, waiting, stopping, or deleted (the
- * `deletedBackground` rows) — then a Terminating section for unpinned
- * worktrees on their way out. Status is orthogonal to both pins and
- * termination, so a pinned or stopping worktree leaves its status group.
- * Empty sections are kept in the list; WorktreeGroup renders nothing for them.
- */
-export function sidebarSections(
-  worktrees: WorktreeListEntry[],
-  pendingDeleteIds: string[],
-  deletedBackground: StoppedWorktreeEntry[] = [],
-): SidebarSection[] {
-  const foreground = worktrees.filter((s) => !s.background)
-  const background = worktrees.filter((s) => Boolean(s.background))
-  const live = foreground.filter((s) => !isTerminating(s, pendingDeleteIds))
-  const stopping = foreground.filter((s) => isTerminating(s, pendingDeleteIds))
-  return [
-    ...GROUPS.map((g) => ({
-      label: g.label,
-      defaultOpen: g.defaultOpen,
-      worktrees: live.filter((s) => s.status === g.status),
-    })),
-    { label: 'Background', defaultOpen: true, worktrees: background, deleted: deletedBackground },
-    { label: 'Terminating', defaultOpen: true, worktrees: stopping },
+    ...selectable(layout.defaultList),
+    ...layout.groups.flatMap((s) => selectable(s.members)),
   ]
 }
 
@@ -110,9 +163,36 @@ function relativeAge(createdAt: string): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
+/** Pointer travel that turns a press on a row into a drag rather than a
+ *  selection — the same threshold the pane tabs use. */
+const DRAG_THRESHOLD = 5
+
+interface DragState {
+  worktreeId: string
+  projectSlug: string
+  /** The group it started in; null for the default list. */
+  from: string | null
+  startX: number
+  startY: number
+  /** The press has travelled far enough to be a drag. */
+  active: boolean
+  /** The drop zone under the pointer: a group id, null for the default list,
+   *  or undefined when the pointer is over neither. */
+  over?: string | null
+}
+
+/** What a row needs to take part in dragging, handed down from the list. */
+interface SidebarDrag {
+  /** Track a press on a row. A press that never crosses the threshold calls
+   *  `onSelect` instead, so a row stays a click target. */
+  start: (e: ReactPointerEvent, worktree: WorktreeListEntry, onSelect: () => void) => void
+  /** The row being dragged right now, if any. */
+  activeId: string | null
+}
+
 /**
- * The scrollable body of the worktree list: provisioning rows, the status /
- * Background / Terminating sections, and the stopped-worktrees entry point.
+ * The scrollable body of the worktree list: provisioning rows, the ungrouped
+ * worktrees, the group sections, and the stopped-worktrees entry point.
  *
  * Chrome-free on purpose — the desktop `Sidebar` wraps it in its fixed-width
  * card and the mobile worktrees screen gives it the whole viewport, and both
@@ -122,13 +202,18 @@ function relativeAge(createdAt: string): string {
 export function WorktreeList({
   projectSlug,
   worktrees,
+  groups,
   provisioning,
 }: {
   projectSlug: string | null
   worktrees: WorktreeListEntry[]
+  /** The active project's groups, from the snapshot. */
+  groups: WorktreeGroupSummary[]
   provisioning: ProvisioningWorktreeEntry[]
 }): JSX.Element {
-  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  // A mid-flight optimistic delete doesn't move a row any more — it greys it
+  // where it sits — so the list itself has no use for pendingDeleteIds; each
+  // row reads it for its own placeholder.
   const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   // Only for the empty-state copy: there is no rail on a phone to point at.
   const isMobile = useIsMobile()
@@ -136,30 +221,136 @@ export function WorktreeList({
   // worktree appears, a restarted one drops).
   const activeSignature = worktrees.map((s) => s.worktreeId).sort().join(',')
 
-  // Deleted worktrees feed the Background section's pinned-but-deleted rows.
-  // Same query key as StoppedWorktreesButton, so the two share one fetch.
+  // Stopped worktrees feed the groups' ghost rows. Same query key as
+  // StoppedWorktreesButton, so the two share one fetch.
   const { data: deletedList } = useQuery({
     queryKey: ['deleted', projectSlug, activeSignature],
     queryFn: () => getStoppedWorktrees(projectSlug ?? '', 100),
     enabled: !!projectSlug,
     staleTime: 2000,
   })
-  // Pinned deleted rows: optimistic just-deleted entries ahead of the fetched
-  // list (de-duped), minus anything active again — a worktree mid-termination
-  // is still in the snapshot (its Background row renders the stopping
-  // placeholder), and one mid-restart has a provisioning row instead.
+  // Optimistic just-stopped entries ahead of the fetched list (de-duped),
+  // minus anything active again — a worktree mid-termination is still in the
+  // snapshot (its row renders the stopping placeholder), and one mid-restart
+  // has a provisioning row instead. Which of these are drawn at all is the
+  // layout's call: only members of a shown group become ghost rows.
   const activeIds = new Set(worktrees.map((s) => s.worktreeId))
   const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
   const fetchedIds = new Set((deletedList ?? []).map((d) => d.worktreeId))
-  const deletedBackground = [
+  const stopped = [
     ...optimisticStopped.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.worktreeId)),
     ...(deletedList ?? []),
-  ].filter((d) => d.background && !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
+  ].filter((d) => !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
 
-  const sections = sidebarSections(worktrees, pendingDeleteIds, deletedBackground)
-  const visibleCount = sections.reduce(
-    (n, sec) => n + sec.worktrees.length + (sec.deleted?.length ?? 0), 0,
-  )
+  const layout = sidebarLayout(worktrees, groups, stopped)
+  const visibleCount = layout.defaultList.length
+    + layout.groups.reduce((n, s) => n + s.members.length + s.ghosts.length, 0)
+
+  // --- row drag (move a worktree between the default list and groups) ---
+  const [drag, setDrag] = useState<DragState | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  dragRef.current = drag
+  // How to take the in-flight drag's window listeners back down, so an unmount
+  // mid-drag (switching projects, say) doesn't leave them attached to a list
+  // that is gone.
+  const detachDrag = useRef<(() => void) | null>(null)
+  useEffect(() => () => { detachDrag.current?.() }, [])
+  // Every drop zone that is currently on screen, keyed by the group it files
+  // into (null = the default list). Rects are read live on each move, so a
+  // section growing or collapsing mid-drag can't leave a stale target.
+  const zones = useRef(new Map<string | null, HTMLElement>())
+  const zoneRef = (groupId: string | null) => (el: HTMLDivElement | null): void => {
+    if (el) zones.current.set(groupId, el)
+    else zones.current.delete(groupId)
+  }
+  const zoneAt = (x: number, y: number): string | null | undefined => {
+    for (const [groupId, el] of zones.current) {
+      const r = el.getBoundingClientRect()
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return groupId
+    }
+    return undefined
+  }
+
+  // A row is both a drag handle and a click target, so the press is tracked
+  // here rather than left to the button: below the threshold it selects, above
+  // it moves the worktree. Mouse only — a pointerdown that preventDefaults
+  // would fight the scroll on touch, where the group dialog is the way to move
+  // a worktree.
+  const startDrag = (
+    e: ReactPointerEvent,
+    worktree: WorktreeListEntry,
+    onSelect: () => void,
+  ): void => {
+    if (e.pointerType !== 'mouse') return
+    // Suppresses the compatibility click, which is why the sub-threshold case
+    // below has to call `onSelect` itself.
+    e.preventDefault()
+    const init: DragState = {
+      worktreeId: worktree.worktreeId,
+      projectSlug: worktree.projectSlug,
+      from: layout.groups.some((s) => s.group.groupId === worktree.groupId)
+        ? worktree.groupId ?? null
+        : null,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+    }
+    // Write the ref directly too: a move can fire before React re-renders,
+    // which is when the ref would otherwise sync.
+    dragRef.current = init
+    setDrag(init)
+
+    const onMove = (ev: globalThis.PointerEvent): void => {
+      const d = dragRef.current
+      if (!d) return
+      if (!d.active && Math.hypot(ev.clientX - d.startX, ev.clientY - d.startY) <= DRAG_THRESHOLD) return
+      const next: DragState = { ...d, active: true, over: zoneAt(ev.clientX, ev.clientY) }
+      dragRef.current = next
+      setDrag(next)
+    }
+    const detach = (): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      detachDrag.current = null
+    }
+    const clear = (): void => {
+      detach()
+      dragRef.current = null
+      setDrag(null)
+    }
+    const onUp = (): void => {
+      const d = dragRef.current
+      clear()
+      if (!d) return
+      if (!d.active) { onSelect(); return }
+      if (d.over === undefined || d.over === d.from) return
+      // Not optimistic: the server pushes a snapshot and the row regroups,
+      // the same way the rename does. A group deleted mid-drag answers
+      // NOT_FOUND, and the snapshot already has the worktree where it belongs.
+      void setWorktreeGroup(d.projectSlug, d.worktreeId, d.over)
+        .catch((e: unknown) => console.error('group move failed', e))
+    }
+    // A cancelled pointer (the OS took it, a native drag started) is not a
+    // drop: it only puts the row back. Without it the listeners would stay
+    // armed and the next unrelated pointerup anywhere would run `onUp` against
+    // whatever zone the pointer had since wandered over — a move nobody made.
+    const onCancel = (): void => { clear() }
+    detachDrag.current = detach
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+  }
+
+  const rowDrag: SidebarDrag = { start: startDrag, activeId: drag?.active ? drag.worktreeId : null }
+  /** Whether a drop here would actually move the dragged worktree. */
+  const dropTarget = (groupId: string | null): boolean =>
+    Boolean(drag?.active) && drag?.over === groupId && drag.over !== drag.from
+  // What a row's dialog can move it into: the sections actually on screen, so
+  // it offers exactly the drop targets a drag has. A hidden group is one whose
+  // worktrees have all stopped, and moving a live worktree into it would make
+  // it reappear somewhere the user was not told about.
+  const shownGroups = layout.groups.map((s) => s.group)
 
   return (
     <div className="flex-1 overflow-y-auto py-1">
@@ -182,15 +373,38 @@ export function WorktreeList({
         />
       )}
       {provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
-      {sections.map((section) => (
-        <WorktreeGroup
-          key={section.label}
-          label={section.label}
-          defaultOpen={section.defaultOpen}
-          worktrees={section.worktrees}
-          deleted={section.deleted}
+
+      {/* The default list is a drop zone in its own right — dragging a row out
+          of a group and onto it files the worktree back under no group. It
+          keeps a placeholder while a drag is in flight so an empty list is
+          still somewhere to drop. */}
+      <div
+        ref={zoneRef(null)}
+        role="group"
+        aria-label="Ungrouped worktrees"
+        className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
+      >
+        {layout.defaultList.map((s) => (
+          <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={rowDrag} />
+        ))}
+        {drag?.active && layout.defaultList.length === 0 && (
+          <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
+            Ungrouped
+          </p>
+        )}
+      </div>
+
+      {layout.groups.map((section) => (
+        <GroupSection
+          key={section.group.groupId}
+          section={section}
+          shownGroups={shownGroups}
+          drag={rowDrag}
+          dropTarget={dropTarget(section.group.groupId)}
+          zoneRef={zoneRef(section.group.groupId)}
         />
       ))}
+
       {projectSlug && <StoppedWorktreesButton projectSlug={projectSlug} activeSignature={activeSignature} />}
     </div>
   )
@@ -254,34 +468,131 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.E
   )
 }
 
-function WorktreeGroup({
-  label,
-  worktrees,
-  deleted = [],
-  defaultOpen,
+/**
+ * One named group: a collapsible section holding its live rows and then its
+ * ghost rows, and a whole-section drop zone. The header carries the same
+ * overlay actions a worktree row does — rename inline, pin (keep the section
+ * when nothing in it is live), and delete, which needs no confirmation
+ * because it only releases the worktrees back to the default list.
+ */
+function GroupSection({
+  section,
+  shownGroups,
+  drag,
+  dropTarget,
+  zoneRef,
 }: {
-  label: string
-  worktrees: WorktreeListEntry[]
-  /** Deleted-but-pinned rows, rendered after the active ones (Background). */
-  deleted?: StoppedWorktreeEntry[]
-  defaultOpen: boolean
-}): JSX.Element | null {
-  const [open, setOpen] = useState(defaultOpen)
-  if (worktrees.length === 0 && deleted.length === 0) return null
+  section: SidebarGroupSection
+  /** The groups on screen — a member row's dialog can move it into any. */
+  shownGroups: WorktreeGroupSummary[]
+  drag: SidebarDrag
+  /** A drop here would move the dragged worktree into this group. */
+  dropTarget: boolean
+  zoneRef: (el: HTMLDivElement | null) => void
+}): JSX.Element {
+  const { group, members, ghosts } = section
+  const [open, setOpen] = useState(true)
+  const {
+    editing,
+    seed,
+    inputRef,
+    start: startRename,
+    handleKeyDown,
+    handleBlur,
+  } = useInlineEdit(group.name, (next) => {
+    void renameWorktreeGroup(group.projectSlug, group.groupId, next)
+      .catch((e: unknown) => console.error('group rename failed', e))
+  })
+
+  const togglePinned = (): void => {
+    void setWorktreeGroupPinned(group.projectSlug, group.groupId, !group.pinned)
+      .catch((e: unknown) => console.error('group pin failed', e))
+  }
+  const remove = (): void => {
+    void deleteWorktreeGroup(group.projectSlug, group.groupId)
+      .catch((e: unknown) => console.error('group delete failed', e))
+  }
 
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-        text-text-faint outline-none transition hover:text-text-dim">
-        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        <span>{label}</span>
-        <span className="text-text-faint/70">{worktrees.length + deleted.length}</span>
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
-        {worktrees.map((s) => <WorktreeRow key={s.worktreeId} worktree={s} />)}
-        {deleted.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
-      </Collapsible.Panel>
-    </Collapsible.Root>
+    <div
+      ref={zoneRef}
+      role="group"
+      aria-label={group.name}
+      className={clsx('py-1', dropTarget && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
+    >
+      <Collapsible.Root open={open} onOpenChange={setOpen}>
+        <div className="group relative">
+          {editing ? (
+            <div className="px-3 py-1">
+              <input
+                ref={inputRef}
+                aria-label="Group name"
+                defaultValue={seed}
+                placeholder="Group name"
+                onKeyDown={handleKeyDown}
+                onBlur={handleBlur}
+                className="w-full rounded border border-border-strong bg-bg px-1.5 py-0.5
+                  text-xs font-medium text-text outline-none"
+              />
+            </div>
+          ) : (
+            <>
+              <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
+                text-text-faint outline-none transition hover:text-text-dim group-hover:pr-20">
+                <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+                {/* Pinned is a property of the group, not a hover action's
+                    state, so it stays visible next to the name. */}
+                {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
+                <span className="truncate">{group.name}</span>
+                <span className="text-text-faint/70">{members.length + ghosts.length}</span>
+              </Collapsible.Trigger>
+
+              {/* Overlaid as siblings (the trigger is itself a button) and
+                  pointer-inert until hover, exactly like the row actions. */}
+              <button
+                onClick={startRename}
+                title="Rename group"
+                aria-label="Rename group"
+                className="absolute right-14 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
+                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+                  group-hover:pointer-events-auto group-hover:opacity-100
+                  max-md:right-16 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+              >
+                <RenameIcon size={12} />
+              </button>
+              <button
+                onClick={togglePinned}
+                title={group.pinned ? 'Unpin group' : 'Pin group (keep it when nothing is running)'}
+                aria-label={group.pinned ? 'Unpin group' : 'Pin group'}
+                className="absolute right-8 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
+                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+                  group-hover:pointer-events-auto group-hover:opacity-100
+                  max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+              >
+                <PinIcon size={12} className={clsx(group.pinned && 'rotate-45')} />
+              </button>
+              <button
+                onClick={remove}
+                title="Delete group (its worktrees move back to the list above)"
+                aria-label="Delete group"
+                className="absolute right-2 top-0.5 flex h-5 w-5 items-center justify-center rounded text-text-faint
+                  opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+                  group-hover:pointer-events-auto group-hover:opacity-100
+                  max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
+              >
+                <CloseIcon size={13} />
+              </button>
+            </>
+          )}
+        </div>
+        <Collapsible.Panel>
+          {members.map((s) => (
+            <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={drag} />
+          ))}
+          {ghosts.map((d) => <DeletedWorktreeRow key={d.worktreeId} entry={d} />)}
+        </Collapsible.Panel>
+      </Collapsible.Root>
+    </div>
   )
 }
 
@@ -330,12 +641,21 @@ function openAgentCount(worktree: WorktreeListEntry): number {
   return worktree.agentSessions.filter((a) => a.active).length
 }
 
-function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element {
+function WorktreeRow({
+  worktree,
+  shownGroups,
+  drag,
+}: {
+  worktree: WorktreeListEntry
+  shownGroups: WorktreeGroupSummary[]
+  drag: SidebarDrag
+}): JSX.Element {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectWorktree = useUiStore((s) => s.selectWorktree)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [grouping, setGrouping] = useState(false)
   const [hovered, setHovered] = useState(false)
   const {
     editing: editingTitle,
@@ -345,14 +665,14 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
     handleKeyDown: handleRenameKeyDown,
     handleBlur: handleRenameBlur,
   } = useInlineRename(worktree.worktreeId, worktree.title || worktree.prompt || '')
-  // Touch has no hover, so the row's overlay actions (rename, pin, delete) are
-  // always shown on mobile and the marquee never runs — a long title simply
+  // Touch has no hover, so the row's overlay actions (rename, group, delete)
+  // are always shown on mobile and the marquee never runs — a long title simply
   // stays truncated, and the pane header shows it in full.
   const isMobile = useIsMobile()
   const unread = isUnreadWaiting(worktree, readWaiting)
   // The container is being torn down — server-marked, or an optimistic delete
-  // not yet reflected in the snapshot. Either way the row is on its way out
-  // and the list has already routed it into the "Terminating" section.
+  // not yet reflected in the snapshot. The row stays where it is and renders
+  // as a placeholder until the snapshot drops the worktree.
   const stopping = isTerminating(worktree, pendingDeleteIds)
 
   // Close the dialog immediately; the shared flow marks the row stopping
@@ -360,13 +680,6 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
     stopWorktreeOptimistic(worktree)
-  }
-
-  // Pin/unpin to the Background section. The server pushes a fresh snapshot,
-  // so the row regroups without optimistic state.
-  const toggleBackground = (): void => {
-    void setWorktreeBackground(worktree.projectSlug, worktree.worktreeId, !worktree.background)
-      .catch((e: unknown) => console.error('background toggle failed', e))
   }
 
   // A stopping row is a non-interactive, greyed placeholder: no pulse, no
@@ -450,16 +763,23 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
       ) : (
         <>
           <button
+            // Dragging is tracked from the press so the row can be both a
+            // handle and a click target; the list calls this select back when
+            // the press turns out not to be a drag. Touch never starts one, so
+            // its click still fires here.
+            onPointerDown={(e) => drag.start(e, worktree, () => selectWorktree(worktree.worktreeId))}
             onClick={() => selectWorktree(worktree.worktreeId)}
             className={clsx(
               'flex w-full flex-col gap-0.5 rounded-lg px-2.5 text-left text-sm transition hover:bg-surface-2/60',
               // A taller row on touch: the whole thing is the tap target.
               'py-2 max-md:py-2.5',
+              'cursor-grab active:cursor-grabbing max-md:cursor-pointer',
+              drag.activeId === worktree.worktreeId && 'opacity-60',
               selectedWorktreeId === worktree.worktreeId && 'bg-surface-2 hover:bg-surface-2',
             )}
           >
             {/* Title fills the row; only on hover does it inset to clear the
-                rename + pin + delete buttons and marquee-scroll when it's too
+                rename + group + delete buttons and marquee-scroll when it's too
                 long to fit. On mobile those buttons never hide, so the inset
                 is permanent. */}
             <span className="flex items-center gap-2 group-hover:pr-20 max-md:pr-24">
@@ -519,15 +839,15 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
             <RenameIcon size={13} />
           </button>
           <button
-            onClick={toggleBackground}
-            title={worktree.background ? 'Remove from background' : 'Move to background'}
-            aria-label={worktree.background ? 'Remove from background' : 'Move to background'}
+            onClick={() => setGrouping(true)}
+            title="Add to group"
+            aria-label="Add to group"
             className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
               opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
               group-hover:pointer-events-auto group-hover:opacity-100
               max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
           >
-            <PinIcon size={13} className={clsx(worktree.background && 'rotate-45')} />
+            <GroupAddIcon size={13} />
           </button>
           <button
             onClick={() => setConfirmDelete(true)}
@@ -543,6 +863,12 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
         </>
       )}
 
+      <GroupDialog
+        open={grouping}
+        onOpenChange={setGrouping}
+        worktree={worktree}
+        shownGroups={shownGroups}
+      />
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
@@ -556,12 +882,144 @@ function WorktreeRow({ worktree }: { worktree: WorktreeListEntry }): JSX.Element
 }
 
 /**
- * A pinned worktree whose container is gone — the Background section keeps its
- * row (deleted worktrees still appear in the full "Stopped worktrees" overlay
- * too). Non-selectable: there's nothing to open until it's restarted. Hover
- * offers the same pin toggle as live rows (unpinning drops the row) and a
- * restart, which reuses the deleted-overlay flow: a provisioning row replaces
- * this one while the container is recreated.
+ * Name-a-group popup: the way a group is created, and — once a project has
+ * some — the way a worktree is filed into an existing one without a mouse.
+ * Dragging the row is the quicker path, but it is the only one touch and
+ * keyboard users don't have.
+ */
+function GroupDialog({
+  open,
+  onOpenChange,
+  worktree,
+  shownGroups,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  worktree: WorktreeListEntry
+  /** Where this worktree can be moved: the groups the sidebar is showing,
+   *  which is exactly the set a drag could drop it on. */
+  shownGroups: WorktreeGroupSummary[]
+}): JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = async (op: Promise<unknown>, failure: string): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      await op
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : failure)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const create = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    const raw = new FormData(event.currentTarget).get('name')
+    const name = (typeof raw === 'string' ? raw : '').trim()
+    if (!name) return
+    void run(
+      createWorktreeGroup(worktree.projectSlug, worktree.worktreeId, name),
+      'failed to create group',
+    )
+  }
+
+  const moveTo = (groupId: string | null): void => {
+    void run(
+      setWorktreeGroup(worktree.projectSlug, worktree.worktreeId, groupId),
+      'failed to move worktree',
+    )
+  }
+
+  const others = shownGroups.filter((g) => g.groupId !== worktree.groupId)
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next) }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
+          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
+        <Dialog.Popup className="fixed left-1/2 top-1/2 w-[380px] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2
+          rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none
+          transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
+          data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
+          <Dialog.Title className="text-sm font-semibold">Add to group</Dialog.Title>
+          <Dialog.Description className="mt-1 text-xs text-text-dim">
+            Groups collect worktrees at the bottom of the sidebar. Drag rows between them,
+            and pin one to keep it when nothing inside is running.
+          </Dialog.Description>
+          <form onSubmit={create} className="mt-4 flex flex-col gap-3">
+            <input
+              name="name"
+              autoFocus
+              placeholder="New group name"
+              className="rounded-md border border-border bg-bg px-3 py-2 text-xs text-text outline-none
+                focus:border-border-strong"
+            />
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <Dialog.Close
+                disabled={busy}
+                className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
+                  hover:bg-surface-3 hover:text-text disabled:opacity-50"
+              >
+                Cancel
+              </Dialog.Close>
+              <button
+                type="submit"
+                disabled={busy}
+                className="flex h-8 items-center rounded-md bg-accent px-3 text-xs font-medium text-bg transition
+                  hover:brightness-110 disabled:opacity-50"
+              >
+                {busy ? 'Creating…' : 'Create group'}
+              </button>
+            </div>
+          </form>
+
+          {(others.length > 0 || worktree.groupId !== undefined) && (
+            <div className="mt-4 border-t border-border pt-3">
+              <p className="text-[11px] uppercase tracking-wide text-text-faint">Or move it to</p>
+              <div className="mt-2 flex flex-col">
+                {others.map((g) => (
+                  <button
+                    key={g.groupId}
+                    disabled={busy}
+                    onClick={() => moveTo(g.groupId)}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-dim
+                      transition hover:bg-surface-3 hover:text-text disabled:opacity-50"
+                  >
+                    <span className="truncate">{g.name}</span>
+                  </button>
+                ))}
+                {worktree.groupId !== undefined && (
+                  <button
+                    disabled={busy}
+                    onClick={() => moveTo(null)}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-dim
+                      transition hover:bg-surface-3 hover:text-text disabled:opacity-50"
+                  >
+                    <GroupRemoveIcon size={12} className="shrink-0" />
+                    <span>Remove from group</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
+/**
+ * A stopped member of a shown group — the group keeps its row so the worktree
+ * can be restarted from where it was filed (they also appear in the full
+ * "Stopped worktrees" overlay). Non-selectable: there's nothing to open until
+ * it's restarted. Hover offers removal from the group (which drops the row)
+ * and a restart, which reuses the deleted-overlay flow: a provisioning row
+ * replaces this one while the container is recreated.
  */
 function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Element {
   const provision = useProvisionWorktree()
@@ -576,17 +1034,17 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
       (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }))
   }
 
-  // The deleted list isn't snapshot-pushed, so clear the pin in the cached
-  // query (and any optimistic copy) for an instant regroup; the server write
-  // makes it durable.
-  const unpin = (): void => {
+  // The stopped list isn't snapshot-pushed, so clear the membership in the
+  // cached query (and any optimistic copy) for an instant regroup; the server
+  // write makes it durable.
+  const ungroup = (): void => {
     queryClient.setQueriesData<StoppedWorktreeEntry[]>(
       { queryKey: ['deleted', entry.projectSlug] },
-      (old) => old?.map((e) => (e.worktreeId === entry.worktreeId ? { ...e, background: undefined } : e)),
+      (old) => old?.map((e) => (e.worktreeId === entry.worktreeId ? { ...e, groupId: undefined } : e)),
     )
     removeOptimisticStopped(entry.worktreeId)
-    void setWorktreeBackground(entry.projectSlug, entry.worktreeId, false)
-      .catch((e: unknown) => console.error('background toggle failed', e))
+    void setWorktreeGroup(entry.projectSlug, entry.worktreeId, null)
+      .catch((e: unknown) => console.error('group move failed', e))
   }
 
   const deletedLine = entry.deathReason
@@ -609,18 +1067,18 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
         </span>
       </div>
 
-      {/* Same overlay-button pattern as live rows: pin toggle left of the
-          action slot, which here restarts instead of deletes. */}
+      {/* Same overlay-button pattern as live rows: leave the group on the left
+          of the action slot, which here restarts instead of deletes. */}
       <button
-        onClick={unpin}
-        title="Remove from background"
-        aria-label="Remove from background"
+        onClick={ungroup}
+        title="Remove from group"
+        aria-label="Remove from group"
         className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
           opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
           group-hover:pointer-events-auto group-hover:opacity-100
           max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
       >
-        <PinIcon size={13} className="rotate-45" />
+        <GroupRemoveIcon size={13} />
       </button>
       <button
         onClick={() => setConfirmRestart(true)}

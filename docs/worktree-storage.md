@@ -4,7 +4,7 @@ A yaac worktree is recorded in the `worktrees` table of the server's PGlite
 DB (`packages/server/src/db/schema.ts`), one row per
 `(projectSlug, worktreeId)`. The cluster stays authoritative for whether a
 worktree is *running*; the row is authoritative for everything else — which
-worktrees have ever existed, their title, base branch, background pin, and
+worktrees have ever existed, their title, base branch, sidebar group, and
 when (and why) they stopped.
 
 Neither the tool nor the founding message is on that row. Both are read off
@@ -81,8 +81,10 @@ goes through them, and they are the only writers.
   its row and reaches the user as an ordinary stopped worktree instead.
 - **No stop deletes a row.** A row with `stoppedAt` set *is* the stopped
   listing. A restart reuses the id and clears the column, along with any death
-  cause from the previous life; the title and the background pin survive,
-  because they belong to the worktree rather than to one of its lives. The two
+  cause from the previous life; the title and the sidebar group survive,
+  because they belong to the worktree rather than to one of its lives — which
+  is what puts a restarted worktree back in the group its ghost row was
+  sitting in. The two
   deletes are scoped to something other than a running worktree going away:
   `project remove`, which takes the checkouts and transcripts with it (rows
   left behind would list worktrees whose restart resolves into a directory that

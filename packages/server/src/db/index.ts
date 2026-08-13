@@ -4,8 +4,9 @@
 // relative path, which is why they are unaffected by that rule.
 //
 // This feature is the durable half of a worktree: every fact a client can
-// ask about that no substrate can answer — the title a user typed, the pin
-// they set, the creation time that survives a restart the runtime did not,
+// ask about that no substrate can answer — the title a user typed, the
+// sidebar group they filed it under, the creation time that survives a
+// restart the runtime did not,
 // the conversations a worktree has hosted and what each opened with, and
 // how it died.
 //
@@ -19,7 +20,7 @@
 // exactly one door: code that watches the substrate or reads a worktree's
 // disk emits a `WorktreeEvent`, and `applyWorktreeEvent` alone decides
 // which rows that lands in — its per-event mutators are internal, off this
-// barrel. Intent (a title, a pin, a preference) is written through the
+// barrel. Intent (a title, a group, a preference) is written through the
 // ordinary functions below, and reads are free to every layer above.
 //
 // The join paths that read these rows alongside a runtime observation
@@ -53,6 +54,16 @@ export {
   type WorktreeEvent,
 } from './events'
 export { desiredWorktrees, type DesiredWorktree, type DesiredWorktrees } from './desired-worktrees'
+export {
+  createWorktreeGroup,
+  deleteProjectWorktreeGroups,
+  deleteWorktreeGroup,
+  listWorktreeGroupRows,
+  renameWorktreeGroup,
+  setWorktreeGroup,
+  setWorktreeGroupPinned,
+  type WorktreeGroupRow,
+} from './group-store'
 export { closeDb, openDb } from './client'
 export { loadTokens, saveTokens, type TokenEntry, type TokenKind } from './token-store'
 export {
@@ -84,7 +95,6 @@ export {
   recordAllDeathsSeen,
   recordDeathSeen,
   restoreSpareWorktree,
-  setWorktreeBackground,
   setWorktreeTitle,
   type PriorStop,
   type WorktreeRow,

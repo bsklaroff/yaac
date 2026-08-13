@@ -185,6 +185,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
 
   const scoped = worktrees.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
+  const scopedGroups = (snapshot?.worktreeGroups ?? [])
+    .filter((g) => g.projectSlug === activeProjectSlug)
 
   // Worktree shortcuts, window-captured so the chord is swallowed before
   // xterm's textarea handler could forward it to the PTY, and registered
@@ -200,7 +202,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   //    unread-waiting one, else the topmost waiting, else the topmost running.
   // The ref keeps the single listener reading the current render's state.
   const provision = useProvisionWorktree()
-  const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
+  const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
   const attentionTarget = resolveAttentionTarget(
     scoped.filter((s) => !s.stopping && !pendingDeleteIds.includes(s.worktreeId)),
     readWaiting,
@@ -380,6 +382,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
             projectSlug={activeProjectSlug}
             projectRemoteUrl={projectRemoteUrl}
             worktrees={scoped}
+            groups={scopedGroups}
             provisioning={scopedProvisioning}
             connected={connected}
             gitAuthFailures={scopedGitAuthFailures}
@@ -391,6 +394,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           projectSlug={activeProjectSlug}
           projectRemoteUrl={projectRemoteUrl}
           worktrees={scoped}
+          groups={scopedGroups}
           provisioning={scopedProvisioning}
           connected={connected}
           gitAuthFailures={scopedGitAuthFailures}

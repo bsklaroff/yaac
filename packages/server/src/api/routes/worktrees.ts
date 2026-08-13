@@ -24,10 +24,14 @@ import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#domain/worktre
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
+  createWorktreeGroup,
+  deleteWorktreeGroup,
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
   recordDeathSeen,
-  setWorktreeBackground,
+  renameWorktreeGroup,
+  setWorktreeGroup,
+  setWorktreeGroupPinned,
   setWorktreeTitle,
 } from '#db'
 import { getDefaultTool } from '#db'
@@ -197,19 +201,72 @@ export const worktreeApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Pin (or unpin) a worktree to the sidebar's "Background" section. Takes an
-  // explicit projectSlug (like /mark-death-seen) rather than resolving the
-  // container: the target may be a stopped worktree with no pod to resolve.
+  // The sidebar-group routes. All take an explicit projectSlug (like
+  // /mark-death-seen) rather than resolving a container: a group's members can
+  // be stopped worktrees with no pod to resolve, and the group itself has no
+  // container at all.
   .post(
-    '/set-background',
+    '/group/create',
     zv('json', z.object({
       projectSlug: z.string().min(1),
       worktreeId: z.string().min(1),
-      background: z.boolean(),
+      name: z.string().min(1).max(200),
     })),
     async (c) => {
-      const { projectSlug, worktreeId, background } = c.req.valid('json')
-      await setWorktreeBackground(projectSlug, worktreeId, background)
+      const { projectSlug, worktreeId, name } = c.req.valid('json')
+      const group = await createWorktreeGroup(projectSlug, name, worktreeId)
+      return c.json({ groupId: group.groupId })
+    },
+  )
+  .post(
+    '/group/rename',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      groupId: z.string().min(1),
+      name: z.string().min(1).max(200),
+    })),
+    async (c) => {
+      const { projectSlug, groupId, name } = c.req.valid('json')
+      await renameWorktreeGroup(projectSlug, groupId, name)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/group/set-pinned',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      groupId: z.string().min(1),
+      pinned: z.boolean(),
+    })),
+    async (c) => {
+      const { projectSlug, groupId, pinned } = c.req.valid('json')
+      await setWorktreeGroupPinned(projectSlug, groupId, pinned)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/group/delete',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      groupId: z.string().min(1),
+    })),
+    async (c) => {
+      const { projectSlug, groupId } = c.req.valid('json')
+      await deleteWorktreeGroup(projectSlug, groupId)
+      return c.body(null, 204)
+    },
+  )
+  // File a worktree under a group, or return it to the default list (null).
+  .post(
+    '/set-group',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      worktreeId: z.string().min(1),
+      groupId: z.string().min(1).nullable(),
+    })),
+    async (c) => {
+      const { projectSlug, worktreeId, groupId } = c.req.valid('json')
+      await setWorktreeGroup(projectSlug, worktreeId, groupId)
       return c.body(null, 204)
     },
   )

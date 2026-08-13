@@ -50,10 +50,14 @@ export async function listStoppedWorktrees(
   const sortKey = (r: WorktreeRow): number => (r.stoppedAt ?? r.createdAt).getTime()
   rows.sort((a, b) => sortKey(b) - sortKey(a) || b.createdAt.getTime() - a.createdAt.getTime())
 
-  // A pinned worktree drives a sidebar row, so it survives the cap no matter
-  // how far down the ordering it falls.
+  // A grouped worktree drives a ghost row in its sidebar group, so it survives
+  // the cap no matter how far down the ordering it falls. Membership alone is
+  // the test — whether the group is actually *shown* depends on its live
+  // members, which this listing has no business joining against; the sidebar
+  // already filters what it renders, and the extra entries belong in the
+  // stopped dialog regardless.
   const capped = limit && limit > 0
-    ? rows.filter((r, i) => i < limit || r.background)
+    ? rows.filter((r, i) => i < limit || r.groupId !== undefined)
     : rows
 
   const linksByWorktree = await getAgentSessionsFor(capped.map((r) => ({
@@ -81,7 +85,7 @@ export async function listStoppedWorktrees(
       ...(r.stoppedAt !== undefined ? { stoppedAt: formatUtcTimestamp(r.stoppedAt.getTime()) } : {}),
       ...(r.deathReason !== undefined ? { deathReason: r.deathReason } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
-      ...(r.background ? { background: true } : {}),
+      ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
     }
   }))
 }
