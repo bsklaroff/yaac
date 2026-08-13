@@ -80,7 +80,7 @@ describe('reconcilePrewarmPool', () => {
   it('spawns a prewarmed spare for an active project', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' })])
     await reconcilePrewarmPool('claude')
-    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' })
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
@@ -161,7 +161,7 @@ describe('reconcilePrewarmPool', () => {
     await reconcilePrewarmPool('claude', { ...snapshotFixture(), workspaces })
     expect(mockWorkspaces).not.toHaveBeenCalled()
     expect(workspaces).toHaveBeenCalledTimes(1)
-    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' })
   })
 
   it('does nothing for an empty cluster', async () => {
@@ -195,7 +195,7 @@ describe('reconcilePrewarmPool', () => {
     ])
     claiming.add('yaac-p-spare')
     await reconcilePrewarmPool('claude')
-    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' })
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
@@ -224,8 +224,8 @@ describe('reconcilePrewarmPool', () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' })])
     await reconcilePrewarmPool('claude')
     expect(mockCreate.mock.calls).toEqual([
-      ['p', { tool: 'claude', prewarm: true }],
-      ['p', { tool: 'claude', prewarm: true }],
+      ['p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' }],
+      ['p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' }],
     ])
   })
 
@@ -249,7 +249,7 @@ describe('reconcilePrewarmPool', () => {
       pod({ jobName: 'orphan', worktreeId: 'o1', projectSlug: '' }),
     ])
     await reconcilePrewarmPool('claude')
-    expect(mockCreate.mock.calls).toEqual([['b', { tool: 'claude', prewarm: true }]])
+    expect(mockCreate.mock.calls).toEqual([['b', { tool: 'claude', prewarm: true, permissionMode: 'bypass' }]])
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
@@ -257,7 +257,7 @@ describe('reconcilePrewarmPool', () => {
     mockDefaultTool.mockResolvedValue(undefined)
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', worktreeId: 'r1' })])
     await reconcilePrewarmPool('claude')
-    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true, permissionMode: 'bypass' })
   })
 
   it('decrements the in-flight count per settled spawn, clearing it at zero', async () => {

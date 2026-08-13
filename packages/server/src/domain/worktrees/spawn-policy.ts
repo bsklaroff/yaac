@@ -103,6 +103,11 @@ export async function decideSpawn(
       initialPrompt: request.prompt,
       worktreeId: workspaceId,
       model: request.model,
+      // No posture: createWorktree defaults it from the driver, deliberately
+      // without consulting the project's remembered choice. A spawned sibling
+      // is handed a prompt and left to work with nobody attached, so a `plan`
+      // or `manual` inherited from someone's last webapp create would strand
+      // it at a prompt no one will ever answer.
       onProgress,
     })).then(
     () => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned session ${workspaceId.slice(0, 8)}... in ${projectSlug}`),

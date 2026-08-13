@@ -9,12 +9,30 @@ import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { randomUUID } from '#lib/uuid'
 import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
-import { loadAutoApprovePref, persistAutoApprovePref, useUiStore } from '#store'
+import { useUiStore } from '#store'
 import { useSnapshot } from '#lib/useSnapshot'
-import { ACP_TOOLS } from '@yaac/shared/types'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import {
+  ACP_TOOLS,
+  defaultPermissionMode,
+  PERMISSION_MODE_COPY,
+  PERMISSION_MODES,
+  SUPPORTED_PERMISSION_MODES,
+  toolSupportsPermissionMode,
+} from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+
+/** Hover copy for the posture the dropdown is currently showing. */
+const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
+  bypass: 'The agent acts without ever asking.',
+  auto: 'The agent acts without asking, but a reviewer model judges each action'
+    + ' and blocks the dangerous ones. Claude gates this by subscription plan.',
+  'accept-edits': 'The agent edits files in the worktree without asking, and still'
+    + ' asks before running commands or reaching outside it.',
+  plan: 'The agent explores and plans read-only; it cannot edit until you approve a plan.',
+  manual: 'The agent asks before every action.',
+}
 const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 text-xs outline-none '
   + 'text-text-dim hover:bg-surface-3 hover:text-text'
 
@@ -50,19 +68,26 @@ export function NewWorktreeButton(
   const [branchInput, setBranchInput] = useState<string | null>(null)
   const [pinPending, setPinPending] = useState(false)
   const [pinError, setPinError] = useState<string | null>(null)
-  // The user's remembered working style, or `undefined` when they have never
-  // chosen — which stays undefined rather than being resolved to a boolean,
-  // for two reasons. A create then OMITS the flag, so the server applies its
-  // own per-driver default (the fallback that exists for exactly this).
-  // And the displayed state is derived at RENDER rather than captured in the
-  // initializer: `useSnapshot()` is undefined until the first events frame
-  // lands, so an initializer would read a containerless server as sandboxed
-  // and pre-check the box for the life of the component — the opposite of
-  // the containerless default.
-  const [autoApprove, setAutoApprove] = useState<boolean | undefined>(loadAutoApprovePref)
-  const driver = useSnapshot()?.driver
-  const sandboxed = driver !== undefined && driver !== 'containerless'
-  const autoApproveShown = autoApprove ?? sandboxed
+  // The posture picked in THIS popover, or `undefined` while untouched —
+  // which stays undefined rather than being resolved here, for two reasons.
+  // A create then OMITS the field, so the server applies the resolution it
+  // owns (this project's last choice, else the per-driver default), and the
+  // memory lives there rather than in this browser. And the displayed value
+  // is derived at RENDER: `useSnapshot()` is undefined until the first events
+  // frame lands, so an initializer would read a containerless server as
+  // sandboxed and show the wrong default for the life of the component.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(undefined)
+  const snapshot = useSnapshot()
+  const driver = snapshot?.driver
+  // What the server WOULD pick, mirrored so the dropdown shows the posture a
+  // create would actually run in. `defaultPermissionMode` is the same
+  // function the server resolves with, and the tool is not known until one is
+  // clicked — claude is the list's first and the server's own fallback, so it
+  // stands in for "what this form would do if submitted now".
+  const remembered = snapshot?.projects.find((p) => p.slug === projectSlug)?.lastPermissionMode
+  const modeShown = permissionMode
+    ?? remembered
+    ?? (driver !== undefined ? defaultPermissionMode(driver, 'claude') : 'bypass')
 
   const branchesKey = projectBranchesKey(projectSlug)
   const { data: branchData } = useQuery({
@@ -93,7 +118,7 @@ export function NewWorktreeButton(
     setOpen(false)
     provision(projectSlug, tool, 'create', worktreeId,
       (sid, onProgress) =>
-        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, autoApprove))
+        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, permissionMode))
   }
 
   const pinAsDefault = (): void => {
@@ -116,16 +141,13 @@ export function NewWorktreeButton(
     setOpen(next)
     if (!next) {
       // Reset per-open state so the next open starts from the default.
-      // The yolo choice deliberately survives: it is a working style, not a
-      // per-open decision, and it is remembered across reloads too.
+      // The posture is reset too, but nothing is lost: an explicit pick was
+      // recorded server-side as the project's default, so the next open shows
+      // it again through `remembered`.
       setBranchInput(null)
       setPinError(null)
+      setPermissionMode(undefined)
     }
-  }
-
-  const toggleAutoApprove = (next: boolean): void => {
-    setAutoApprove(next)
-    persistAutoApprovePref(next)
   }
 
   return (
@@ -196,40 +218,61 @@ export function NewWorktreeButton(
             />
 
             <label
-              className="mx-1 mb-1 flex cursor-default items-start gap-2 rounded-md px-1 py-1
-                text-[11px] text-text-dim hover:bg-surface-3"
-              title={
-                'Run the agent with its auto-approve flag, so it acts without asking.'
-                + (driver === 'containerless'
-                  ? ' This server runs worktrees on the host — the agent acts as you,'
-                    + ' with your access to this machine.'
-                  : ' The worktree is sandboxed: the agent can only reach its own container.')
-              }
+              className="mx-1 mb-1 flex cursor-default flex-col gap-1 rounded-md px-1 py-1
+                text-[11px] text-text-dim"
+              title={PERMISSION_MODE_HELP[modeShown]}
             >
-              <input
-                type="checkbox"
-                checked={autoApproveShown}
-                onChange={(e) => toggleAutoApprove(e.target.checked)}
-                className="mt-[2px] accent-accent"
-              />
-              <span>
-                Yolo mode
-                {driver === 'containerless' && (
-                  <span className="block text-text-faint">no sandbox — acts as you</span>
-                )}
+              <span className="flex items-center gap-2">
+                Permissions
+                <select
+                  value={modeShown}
+                  onChange={(e) => setPermissionMode(e.target.value as PermissionMode)}
+                  className="flex-1 rounded-md border border-border bg-surface-2 px-1 py-0.5
+                    text-[11px] text-text outline-none hover:bg-surface-3"
+                >
+                  {PERMISSION_MODES.map((m) => (
+                    <option key={m} value={m}>{PERMISSION_MODE_COPY[m]}</option>
+                  ))}
+                </select>
               </span>
+              {modeShown === 'bypass' && driver === 'containerless' && (
+                <span className="text-text-faint">no sandbox — acts as you</span>
+              )}
             </label>
 
             <div className="mx-1 mb-1 border-t border-border" />
+            {/* A tool that has no such posture is shown but not clickable:
+                the posture is picked before the tool, so the honest signal is
+                which tools can honor the one already chosen (pi, having no
+                permission system at all, only ever offers `bypass`). */}
             {TOOLS.map((t) => configured.has(t) ? (
               <div key={t} className="flex items-center">
-                <button type="button" className={clsx(ITEM, 'flex-1')} onClick={() => create(t)}>
+                <button
+                  type="button"
+                  className={clsx(ITEM, 'flex-1', !toolSupportsPermissionMode(t, modeShown)
+                    && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-text-dim')}
+                  disabled={!toolSupportsPermissionMode(t, modeShown)}
+                  title={toolSupportsPermissionMode(t, modeShown)
+                    ? undefined
+                    : `${TOOL_LABEL[t]} has no ${PERMISSION_MODE_COPY[modeShown].toLowerCase()} mode`}
+                  onClick={() => create(t)}
+                >
                   {TOOL_LABEL[t]}
+                  {!toolSupportsPermissionMode(t, modeShown) && (
+                    <span className="ml-auto pl-3 text-[11px] text-text-faint">
+                      {SUPPORTED_PERMISSION_MODES[t].length === 1
+                        ? `${PERMISSION_MODE_COPY[SUPPORTED_PERMISSION_MODES[t][0]].toLowerCase()} only`
+                        : 'unsupported'}
+                    </span>
+                  )}
                 </button>
                 {/* The same tool, driven over ACP instead of its TUI: the
                     worktree opens with a chat pane rather than a terminal.
                     Only offered for tools whose adapter ships in the image. */}
-                {ACP_TOOLS.includes(t) && (
+                {/* Only under `bypass`: an ACP conversation's permission
+                    prompts are answered automatically, so the server refuses
+                    any other posture rather than pretend to enforce it. */}
+                {ACP_TOOLS.includes(t) && modeShown === 'bypass' && (
                   <button
                     type="button"
                     title={`Run ${TOOL_LABEL[t]} as a chat pane (Agent Client Protocol)`}

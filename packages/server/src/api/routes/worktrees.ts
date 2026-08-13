@@ -20,7 +20,12 @@ import {
   toAgentSessionEntry,
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
-import { createWorktree, stopWorktree, tryClaimPrewarmed } from '#domain/worktrees'
+import {
+  createWorktree,
+  resolvePermissionMode,
+  stopWorktree,
+  tryClaimPrewarmed,
+} from '#domain/worktrees'
 import { typeInitialPrompt } from '#runtime/agents'
 import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#runtime/terminals'
 import {
@@ -34,11 +39,11 @@ import {
   setWorktreeGroupPinned,
   setWorktreeTitle,
 } from '#db'
-import { getDefaultTool } from '#db'
+import { getDefaultTool, recordProjectPermissionMode } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
 import { ServerError } from '@yaac/shared/errors'
-import { MODEL_RE } from '@yaac/shared/types'
+import { MODEL_RE, PERMISSION_MODES, SUPPORTED_PERMISSION_MODES } from '@yaac/shared/types'
 
 export const worktreeApp = new Hono()
   .get(
@@ -84,10 +89,11 @@ export const worktreeApp = new Hono()
       // `provider/model` for opencode and pi — see buildAgentCmd). MODEL_RE
       // keeps it safe to embed in the single-quoted agent launch command.
       model: z.string().regex(MODEL_RE).max(100).optional(),
-      // "Yolo mode": launch the agents with their auto-approve flags, so
-      // they act without asking. Omitted → the driver's default (on where
-      // the workspace is sandboxed, off where it is not).
-      autoApprove: z.boolean().optional(),
+      // How much the agents may do before stopping to ask. Omitted → what
+      // this project last had chosen, else the driver's default. Present is
+      // taken as a person's choice and becomes the project's next default.
+      // A posture the tool lacks is a 400, not a downgrade.
+      permissionMode: z.enum(PERMISSION_MODES).optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
@@ -106,15 +112,39 @@ export const worktreeApp = new Hono()
         // — the spare's agent window already runs a TUI. Skipping the claim is
         // what keeps it from being retooled into a half-ACP session.
         //
-        // An explicit "no auto-approve" skips it for the same shape of
-        // reason: a spare's agent is ALREADY running, started with this
-        // runtime's default (auto-approve on, since only a sandboxed runtime
-        // warms spares). Claiming one would hand back a yolo-mode worktree
-        // to a user who unchecked the box, and silently — the claim never
-        // rewrites the row's `autoApprove`, so a restart would preserve it
-        // too. Cold-creating is the honest answer; it costs the claim's
-        // saving, which is what the user asked for by unchecking.
-        const claimed = body.mode === 'acp' || body.autoApprove === false
+        // Any posture but `bypass` skips it for the same shape of reason: a
+        // spare's agent is ALREADY running, started in `bypass` (only a
+        // sandboxed runtime warms spares, where that is the default).
+        // Claiming one would hand back an unrestrained worktree to a user who
+        // asked for `plan`, and silently — the claim never rewrites the row's
+        // posture, so a restart would preserve it too. Cold-creating is the
+        // honest answer; it costs the claim's saving, which is the price of
+        // the posture actually being the one that was asked for.
+        //
+        // Resolved rather than read off the body, because an omitted posture
+        // is not the same as `bypass`: this project may have last been used
+        // in `plan`, and that is what the create below will pick up.
+        const permissionMode = await resolvePermissionMode({
+          projectSlug: body.project,
+          tool,
+          mode: body.mode ?? 'tui',
+          ...(body.permissionMode !== undefined ? { requested: body.permissionMode } : {}),
+        })
+        // A person picked this one; teach it to the project so the next
+        // create — from any client — starts there. Only an explicit choice
+        // writes, so a defaulted create never overwrites what was picked.
+        //
+        // Unless the choice was not really theirs. `bypass` is the only
+        // posture pi and ACP can be launched in, so reaching either REQUIRES
+        // asking for it — and recording that would turn "pi needs bypass"
+        // into "this project runs unrestrained", quietly moving every later
+        // claude create on the user's own machine. A pick with no alternative
+        // expresses nothing about working style, so it teaches nothing.
+        const forced = body.mode === 'acp' || SUPPORTED_PERMISSION_MODES[tool].length === 1
+        if (body.permissionMode !== undefined && !forced) {
+          await recordProjectPermissionMode(body.project, body.permissionMode)
+        }
+        const claimed = body.mode === 'acp' || permissionMode !== 'bypass'
           ? undefined
           : await tryClaimPrewarmed(
             body.project, tool, body.gitUser, onProgress, body.branch, body.model,
@@ -138,7 +168,7 @@ export const worktreeApp = new Hono()
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         if (body.model !== undefined) opts.model = body.model
         if (body.mode !== undefined) opts.mode = body.mode
-        if (body.autoApprove !== undefined) opts.autoApprove = body.autoApprove
+        opts.permissionMode = permissionMode
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ worktreeId, projectSlug: body.project, tool, kind: 'create' })

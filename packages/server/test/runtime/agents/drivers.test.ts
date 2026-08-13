@@ -150,10 +150,10 @@ describe('agentDriver', () => {
       resume: false,
       windowName: 'claude-2',
       paths: workspacePathsFixture(),
-      autoApprove: true,
+      permissionMode: 'bypass' as const,
     }
     // TUI: the tool's own binary, pinned to the conversation id.
-    expect(agentDriver('tui').launchCmd(spec)).toContain('claude --dangerously-skip-permissions')
+    expect(agentDriver('tui').launchCmd(spec)).toContain('claude --permission-mode bypassPermissions')
     expect(agentDriver('tui').launchCmd(spec)).toContain('--session-id conv-1')
 
     // ACP: acpd supervising the adapter, with the socket named for the window
@@ -177,7 +177,7 @@ describe('agentDriver', () => {
   it('rejects a tool with no ACP adapter rather than launching a window that exits', () => {
     expect(() => agentDriver('acp').launchCmd({
       tool: 'opencode', agentSessionId: 'c', resume: false, windowName: 'opencode',
-      paths: workspacePathsFixture(), autoApprove: true,
+      paths: workspacePathsFixture(), permissionMode: 'bypass',
     })).toThrow(/no ACP adapter/)
   })
 

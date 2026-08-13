@@ -13,6 +13,7 @@ import {
 } from '@yaac/shared/tool-auth'
 import { getDefaultTool } from '@yaac/server/db/preferences'
 import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
+import { getProjectLastPermissionMode, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
 import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
@@ -543,6 +544,40 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
       const body = await res.json() as { error: { code: string } }
       expect(body.error.code).toBe('VALIDATION')
+    })
+
+    // The project's remembered posture is meant to capture working style, so
+    // it must not be taught by a pick the user had no choice about: pi and
+    // ACP are reachable ONLY by asking for bypass, and recording that would
+    // silently move every later claude create in the project — on a
+    // containerless server, onto the user's real machine.
+    it('remembers a freely chosen posture, but not one the tool forced', async () => {
+      await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+      mockCreateWorktree.mockResolvedValue({
+        worktreeId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
+      })
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const create = async (body: Record<string, unknown>): Promise<void> => {
+        const res = await app.request('/worktree/create', withAuth({
+          method: 'POST', body: JSON.stringify({ project: 'demo', ...body }),
+        }))
+        await res.text() // drain the NDJSON stream so the handler finishes
+      }
+
+      await create({ tool: 'claude', permissionMode: 'plan' })
+      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
+
+      // pi has exactly one posture, so asking for it expresses no preference.
+      await create({ tool: 'pi', permissionMode: 'bypass' })
+      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
+
+      // Same for ACP, which is bypass-only whatever the tool supports.
+      await create({ tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
+      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
+
+      // A free pick still teaches, so the feature is not merely disabled.
+      await create({ tool: 'claude', permissionMode: 'bypass' })
+      expect(await getProjectLastPermissionMode('demo')).toBe('bypass')
     })
 
     it('streams progress and a terminal result event from createWorktree', async () => {

@@ -1,11 +1,15 @@
 import { listProjectRows } from '#db'
 import { worktreeDriver } from '#drivers/driver'
+import type { PermissionMode } from '@yaac/shared/types'
 
 export interface ProjectListEntry {
   slug: string
   remoteUrl: string
   addedAt: string
   worktreeCount: number
+  /** The posture this project's last explicit create asked for, if any —
+   *  what the webapp's create form offers as its default. */
+  lastPermissionMode?: PermissionMode
 }
 
 /**
@@ -27,5 +31,8 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
     worktreeCount: worktreeCounts[meta.slug] ?? 0,
+    ...(meta.lastPermissionMode !== undefined
+      ? { lastPermissionMode: meta.lastPermissionMode }
+      : {}),
   }))
 }

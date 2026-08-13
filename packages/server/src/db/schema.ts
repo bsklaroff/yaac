@@ -51,6 +51,18 @@ export const projects = snakeCase.table('projects', {
   slug: text().primaryKey(),
   remoteUrl: text().notNull(),
   addedAt: text().notNull(),
+  /**
+   * The permission posture this project's last explicit create asked for —
+   * the create form's memory, so a user who picks one once keeps getting it.
+   *
+   * Only an explicit choice writes here; a create that took the default
+   * leaves it alone, so the remembered value is always something a human
+   * actually picked. Null means nobody has, and `defaultPermissionMode`
+   * answers instead. Per project rather than global because posture tracks
+   * what the code is (a scratch repo vs one that deploys), and server-side
+   * rather than in the browser so the CLI and the webapp agree.
+   */
+  lastPermissionMode: text(),
 })
 
 /**
@@ -130,20 +142,23 @@ export const worktrees = snakeCase.table('worktrees', {
    */
   lifeLogBytes: integer().notNull().default(0),
   /**
-   * Whether this worktree's agents launch with their auto-approve flags —
-   * `claude --dangerously-skip-permissions`, `codex --yolo`, `pi --approve`.
+   * The permission posture this worktree's agents launch in — a
+   * `PermissionMode`, spelled per tool at launch (claude's
+   * `--permission-mode`, codex's approval/sandbox pair, opencode's permission
+   * config; pi has none and is always `bypass`).
    *
    * Durable rather than a launch-time decision because a worktree outlives
    * the request that made it: a restart relaunches its agents, and it must
    * relaunch them the way the user asked for rather than re-deriving the
    * answer from whatever the default is now.
    *
-   * Defaults true, which is what every row predating the column means: on a
-   * sandboxed runtime auto-approve has always been unconditional, and the
-   * isolation is what justifies it. A runtime with no sandbox makes it the
-   * user's per-worktree choice instead, defaulted off.
+   * Defaults `bypass`, which is what a sandboxed runtime resolves to anyway:
+   * the isolation is what justifies acting unprompted. Read back with a cast;
+   * an unknown value
+   * from a newer build reaching an older one is not worth a runtime guard
+   * here, since the launch path re-checks against the tool.
    */
-  autoApprove: boolean().notNull().default(true),
+  permissionMode: text().notNull().default('bypass'),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
 
 /**

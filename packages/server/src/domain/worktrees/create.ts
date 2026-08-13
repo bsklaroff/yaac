@@ -72,7 +72,7 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#runtime/agents'
-import { applyWorktreeEvent } from '#db'
+import { applyWorktreeEvent, getProjectLastPermissionMode } from '#db'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
 import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
@@ -87,7 +87,17 @@ import {
   stageWorktreeBin,
 } from './spawn-script'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentMode, AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
+import {
+  defaultPermissionMode,
+  SUPPORTED_PERMISSION_MODES,
+  toolSupportsPermissionMode,
+  type AgentMode,
+  type AgentTool,
+  type DriverKind,
+  type PermissionMode,
+  type PortMapping,
+  type YaacConfig,
+} from '@yaac/shared/types'
 import {
   opencodeProviderInfo,
   piProviderInfo,
@@ -162,17 +172,16 @@ export interface WorktreeCreateOptions {
    */
   model?: string
   /**
-   * Launch this worktree's agents with their auto-approve flags ("yolo
-   * mode") — the agent acts without asking.
+   * The permission posture this worktree's agents launch in — how much they
+   * may do before stopping to ask.
    *
-   * Absent means "the driver's default", which is what every caller that
-   * has no opinion passes: on a sandboxed runtime that is on, because the
-   * isolation is what makes unsupervised action safe, and on one without a
-   * sandbox it is off, because there the agent's reach is this machine.
-   * A restart passes the worktree's recorded answer rather than
-   * re-deriving it.
+   * Absent means "whatever this project last used, else the driver's
+   * default", which is what every caller with no opinion passes. Present is
+   * an explicit human choice, and is therefore also what the project
+   * remembers for next time. A restart passes the worktree's recorded
+   * answer rather than re-deriving either.
    */
-  autoApprove?: boolean
+  permissionMode?: PermissionMode
   /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
@@ -242,8 +251,8 @@ interface WorktreeSetupParams {
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
   piProvider?: PiProvider
-  /** Whether the agents launch with their auto-approve flags. */
-  autoApprove: boolean
+  /** The permission posture the agents launch in. */
+  permissionMode: PermissionMode
   /**
    * Called the moment the runtime has something running, before any of the
    * setup that can still fail. What it hands back is the only thing that
@@ -305,7 +314,7 @@ export async function withUpstreamConfigLock(projectSlug: string, task: () => Pr
 async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHandle> {
   const {
     spec, projectSlug, worktreeId, tool, mode, launching, initWindows, piProvider,
-    autoApprove, onLaunched, options, worktree,
+    permissionMode, onLaunched, options, worktree,
   } = params
   const runtime = worktreeDriver()
 
@@ -441,7 +450,7 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
       // ignores it.
       windowName: agentWindowName(a.tool, i),
       paths,
-      autoApprove,
+      permissionMode,
       ...(piProvider !== undefined ? { piProvider } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
     }),
@@ -520,6 +529,101 @@ async function reportCreateFailed(
  * lifetime. The CLI only prompts for git identity and then attaches
  * the user's terminal to the resulting tmux session.
  */
+/**
+ * The posture a create actually launches in, given what it was asked for.
+ *
+ * What the request named, else `defaultPermissionMode` for this driver and
+ * tool. Every caller reaching createWorktree directly — the spawn policy, a
+ * prewarm, a restart — wants exactly this: no project memory, because none of
+ * them is a person choosing (see `resolvePermissionMode` for the rung that
+ * is).
+ *
+ * A request naming a posture its tool lacks is refused rather than nudged to
+ * a neighbour: the caller asked for a restraint, and quietly launching with a
+ * weaker one is the failure mode worth being loud about.
+ *
+ * A `resume` is the exception. Its posture is the row's, not a person's, so
+ * it is not refused for being unsupported — a row written by a different
+ * build would otherwise make the worktree unrestartable, and stranding a
+ * checkout is worse than launching it at this tool's default. It is still
+ * *normalized*, though, and ACP is why: a row can predate the bypass-only
+ * rule (an older build recorded the posture without enforcing it), and
+ * passing that through would leave the restarted row durably claiming a
+ * restraint whose prompts are being auto-answered. Coercing here is what
+ * makes the record converge on the truth from the first restart onward.
+ *
+ * ACP is `bypass`-only for now: its permission prompts are auto-answered
+ * (see `acpDriver.launchCmd`), so any other posture would be a claim yaac
+ * cannot keep.
+ */
+export function launchPermissionMode(args: {
+  tool: AgentTool
+  mode: AgentMode
+  driver: DriverKind
+  requested?: PermissionMode
+  resume?: boolean
+}): PermissionMode {
+  const { tool, mode, driver, requested } = args
+  const fallback = defaultPermissionMode(driver, tool)
+  if (requested === undefined) return mode === 'acp' ? 'bypass' : fallback
+  if (args.resume === true) {
+    if (mode === 'acp') return 'bypass'
+    return toolSupportsPermissionMode(tool, requested) ? requested : fallback
+  }
+  if (!toolSupportsPermissionMode(tool, requested)) {
+    const supported = SUPPORTED_PERMISSION_MODES[tool].join(', ')
+    throw new ServerError(
+      'VALIDATION',
+      `${tool} has no "${requested}" permission mode; it supports: ${supported}`,
+    )
+  }
+  if (mode === 'acp' && requested !== 'bypass') {
+    throw new ServerError(
+      'VALIDATION',
+      '--mode acp runs with "bypass" permissions only; its prompts are '
+      + `answered automatically, so "${requested}" would not be enforced`,
+    )
+  }
+  return requested
+}
+
+/**
+ * The same decision with the project's remembered choice as a middle rung:
+ * what the request said, else what this project last had chosen, else the
+ * default. That rung is the whole point of persisting the choice — a user who
+ * picks `plan` once keeps getting `plan` from the CLI, the webapp and the
+ * keyboard shortcut alike.
+ *
+ * Exported for the create route, which is the one caller that speaks for a
+ * person, and which has to know the answer one step earlier than
+ * `createWorktree` does: a prewarmed spare is only claimable for a worktree
+ * that resolves to `bypass`, since the spare's agent is already running in
+ * that posture. The route passes the result back down explicitly, so the
+ * decision is made once.
+ *
+ * The remembered value is treated as a preference, not a demand — it was
+ * chosen for some other tool, so a tool that lacks it falls through to its
+ * default rather than failing the create.
+ */
+export async function resolvePermissionMode(args: {
+  projectSlug: string
+  tool: AgentTool
+  mode: AgentMode
+  driver?: DriverKind
+  requested?: PermissionMode
+}): Promise<PermissionMode> {
+  const { projectSlug, tool, mode, requested } = args
+  const driver = args.driver ?? worktreeDriver().kind
+  if (requested !== undefined || mode === 'acp') {
+    return launchPermissionMode({ tool, mode, driver, ...(requested !== undefined ? { requested } : {}) })
+  }
+  const remembered = await getProjectLastPermissionMode(projectSlug)
+  if (remembered !== undefined && toolSupportsPermissionMode(tool, remembered)) {
+    return remembered
+  }
+  return defaultPermissionMode(driver, tool)
+}
+
 export async function createWorktree(
   projectSlug: string,
   options: WorktreeCreateOptions,
@@ -542,10 +646,6 @@ export async function createWorktree(
   // workspace only ever holds sentinels; without it, it holds the real
   // secrets, because nothing downstream would swap them.
   const mediatedEgress = runtime.kind !== 'containerless'
-  // Whether the agents run unsupervised. The caller's choice when it made
-  // one; otherwise the driver's default — on where the workspace is
-  // sandboxed, off where the agent's reach is the whole machine.
-  const autoApprove = options.autoApprove ?? runtime.kind !== 'containerless'
   // Whether yaac's own skills reach the workspace as host state rather than
   // as mounts — a runtime with no mount namespace cannot layer a per-worktree
   // staging over the tool homes it links in (see #domain/skills).
@@ -651,6 +751,27 @@ export async function createWorktree(
   // reported success.
   await runtime.assertCanLaunch({ tool, mode })
 
+  // Same discipline for the permission posture, and for the same reason: a
+  // posture the tool cannot take is a launch flag that silently does nothing.
+  const permissionMode = launchPermissionMode({
+    tool,
+    mode,
+    driver: runtime.kind,
+    resume: options.resume === true,
+    ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
+  })
+  // The one path where an UNSANDBOXED worktree runs unrestrained without
+  // anyone having asked for it: ACP is bypass-only, and a containerless host
+  // is the user's own machine and credentials. The webapp cannot reach this
+  // (its chat buttons only render under `bypass`), but `--mode acp` can, so
+  // it is said out loud rather than left to the docs.
+  if (permissionMode === 'bypass' && mode === 'acp' && runtime.kind === 'containerless') {
+    options.onProgress?.(
+      'Note: chat (ACP) worktrees run with bypass permissions, and this server '
+      + 'has no sandbox — the agent acts as you, on this machine.',
+    )
+  }
+
   const worktreeId = options.worktreeId ?? crypto.randomUUID()
   // The conversations this create will launch, decided here rather than at
   // agent-command time so they can be recorded alongside the worktree row.
@@ -702,7 +823,7 @@ export async function createWorktree(
     type: 'worktree-created',
     projectSlug,
     worktreeId,
-    autoApprove,
+    permissionMode,
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
@@ -1304,7 +1425,7 @@ export async function createWorktree(
   let handle: RuntimeHandle | undefined
 
   const setupParams: WorktreeSetupParams = {
-    spec, projectSlug, worktreeId, tool, mode, launching, initWindows, autoApprove,
+    spec, projectSlug, worktreeId, tool, mode, launching, initWindows, permissionMode,
     piProvider: toolAuthByTool.pi?.piProvider,
     onLaunched: (h) => {
       target = { projectSlug, workspaceId: worktreeId, unitName: h.jobName }

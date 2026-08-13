@@ -6,9 +6,11 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import {
   deleteProjectRow,
+  getProjectLastPermissionMode,
   getProjectRow,
   listProjectRows,
   recordProject,
+  recordProjectPermissionMode,
 } from '#db/project-store'
 import { onWorktreeListChanged, _resetWorktreeListChangedForTests } from '#notify'
 
@@ -159,5 +161,44 @@ describe('listProjectRows', () => {
     await writeProjectDir('malformed', 'not json at all')
 
     expect(await listProjectRows()).toEqual([])
+  })
+})
+
+describe('getProjectLastPermissionMode', () => {
+  let tmpDir: string
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    _resetWorktreeListChangedForTests()
+  })
+  afterEach(async () => {
+    _resetWorktreeListChangedForTests()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  // Absent is a real answer, not a default in disguise: it is what tells the
+  // create path "nobody has chosen for this project" so it falls through to
+  // the per-driver default rather than to somebody else's posture.
+  it('answers undefined until a posture has been recorded', async () => {
+    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    expect(await getProjectLastPermissionMode('p')).toBeUndefined()
+    expect(await getProjectLastPermissionMode('missing')).toBeUndefined()
+  })
+
+  it('round-trips the recorded posture, per project', async () => {
+    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    await recordProject({ slug: 'q', remoteUrl: 'git@h:o/s.git', addedAt: 'now' })
+    await recordProjectPermissionMode('p', 'plan')
+    expect(await getProjectLastPermissionMode('p')).toBe('plan')
+    // A second project is untouched — posture tracks what the code is, so it
+    // is remembered per project rather than globally.
+    expect(await getProjectLastPermissionMode('q')).toBeUndefined()
+
+    await recordProjectPermissionMode('p', 'manual')
+    expect(await getProjectLastPermissionMode('p')).toBe('manual')
+    // And it survives a re-record of the project itself, which only rewrites
+    // the remote (an `add` of a project that already exists).
+    await recordProject({ slug: 'p', remoteUrl: 'git@h:o/moved.git', addedAt: 'now' })
+    expect(await getProjectLastPermissionMode('p')).toBe('manual')
   })
 })

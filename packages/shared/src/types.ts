@@ -55,6 +55,86 @@ export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 /** Tools with an ACP adapter in the worktree image. */
 export const ACP_TOOLS: readonly AgentTool[] = ['claude']
 
+/**
+ * How much the agent may do before it stops to ask. Orthogonal to both
+ * `AgentTool` and `AgentMode`: it selects the agent's *permission posture*,
+ * which every tool spells differently (a launch flag for claude and codex, a
+ * config block for opencode, nothing at all for pi).
+ *
+ * - `bypass`        no prompts; the agent acts freely. What a sandboxed
+ *                   worktree wants — the sandbox is the containment, so a
+ *                   second layer inside it only costs interruptions.
+ * - `auto`          no routine prompts, but a reviewer model adjudicates each
+ *                   action and blocks the dangerous ones. Availability is not
+ *                   ours to check: claude gates it by subscription plan and
+ *                   fails loudly in-pane when the account is ineligible.
+ * - `accept-edits`  file edits in the worktree run unprompted; anything else
+ *                   (other shells, out-of-tree paths, network) still asks.
+ * - `plan`          read and explore only; no edits until a plan is approved.
+ * - `manual`        every tool use asks first.
+ *
+ * Not every tool has every posture — ask `SUPPORTED_PERMISSION_MODES`, never
+ * assume. There is deliberately no "the tool's own default" member: what a
+ * bare `claude` does differs from a bare `codex` or `opencode`, so a worktree
+ * records the posture it actually launched with.
+ */
+export type PermissionMode = 'bypass' | 'auto' | 'accept-edits' | 'plan' | 'manual'
+
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  'bypass',
+  'auto',
+  'accept-edits',
+  'plan',
+  'manual',
+]
+
+/**
+ * Which postures each tool can actually be launched in.
+ *
+ * - claude and codex carry all five (claude `--permission-mode`, codex's
+ *   approval-policy × sandbox pair plus `--approve-for-me`).
+ * - opencode has no reviewer-model posture, so no `auto`.
+ * - pi has no permission system at all — by design, per its own docs: tools
+ *   execute immediately and nothing prompts. Rather than dress that up as a
+ *   posture it does not have, pi is `bypass`-only and callers are refused
+ *   anything else.
+ */
+export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
+  claude: PERMISSION_MODES,
+  codex: PERMISSION_MODES,
+  opencode: ['bypass', 'accept-edits', 'plan', 'manual'],
+  pi: ['bypass'],
+}
+
+export function toolSupportsPermissionMode(tool: AgentTool, mode: PermissionMode): boolean {
+  return SUPPORTED_PERMISSION_MODES[tool].includes(mode)
+}
+
+/** Dropdown labels — the enum's user-facing vocabulary, in one place. */
+export const PERMISSION_MODE_COPY: Record<PermissionMode, string> = {
+  bypass: 'Bypass permissions',
+  auto: 'Auto permissions',
+  'accept-edits': 'Accept edits',
+  plan: 'Plan mode',
+  manual: 'Manual permissions',
+}
+
+/**
+ * The posture a worktree gets when nobody has chosen one — neither the request
+ * nor the project's remembered last choice.
+ *
+ * A sandboxed substrate answers `bypass` for every tool: the container is the
+ * containment, and prompting inside it protects nothing. Containerless
+ * worktrees act as the user on the user's own machine, so they start at
+ * `accept-edits` — edits land in the worktree without nagging, while shells and
+ * out-of-tree writes still ask. pi is the exception in both directions: having
+ * no permission system, `bypass` is the only truthful answer anywhere.
+ */
+export function defaultPermissionMode(driver: DriverKind, tool: AgentTool): PermissionMode {
+  if (!toolSupportsPermissionMode(tool, 'accept-edits')) return 'bypass'
+  return driver === 'containerless' ? 'accept-edits' : 'bypass'
+}
+
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
@@ -773,6 +853,11 @@ export interface ProjectSummary {
   remoteUrl: string
   addedAt: string
   worktreeCount: number
+  /** The posture this project's last explicit create asked for, if any. What
+   *  the create form shows as its default, so the value on screen is the one
+   *  the server would pick if the form were submitted untouched. Absent until
+   *  someone has picked one; `defaultPermissionMode` answers in the meantime. */
+  lastPermissionMode?: PermissionMode
 }
 
 /**
@@ -855,8 +940,8 @@ export interface CheckResult {
  *
  * On the wire because the webapp has to render two different products: a
  * containerless server has no Dockerfile to edit, no builds to show and no
- * blocked hosts to allow, and its worktrees need the auto-approve choice
- * the sandbox otherwise makes for the user. The server-side definition of
+ * blocked hosts to allow, and its worktrees start at a stricter permission
+ * mode than the one a sandbox justifies. The server-side definition of
  * what a kind may be branched on is `DriverKind` in the driver contract,
  * which imports this one.
  */

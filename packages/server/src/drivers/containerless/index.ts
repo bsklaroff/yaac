@@ -47,7 +47,7 @@ import type { WorktreeDriver } from '#drivers/contract'
  * already made. No image, no cluster, no egress proxy, and no sandbox — the
  * agent runs as the user running yaac, with that user's access to the
  * machine. Choosing this driver IS the consent for that; what it changes
- * per worktree is the auto-approve default, which the create path decides
+ * per worktree is the default permission mode, which the create path decides
  * from the driver kind.
  *
  * Most of the contract it answers by DOING less rather than by pretending:

@@ -23,7 +23,11 @@ import type { AgentTool } from '@yaac/shared/types'
 /** Fire a prewarm spawn, decrementing the in-flight counter when it settles. */
 async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
   try {
-    await createWorktree(projectSlug, { tool, prewarm: true })
+    // Explicitly `bypass`, never the project's remembered posture: a spare is
+    // claimed only by a create that resolves to `bypass` (routes/worktrees),
+    // so warming one in anything else would build spares nothing can claim —
+    // and `retoolSpare` respawns its agent in `bypass` regardless.
+    await createWorktree(projectSlug, { tool, prewarm: true, permissionMode: 'bypass' })
   } catch (err) {
     serverLog(`[prewarm] spawn for ${projectSlug} failed: ${String(err)}`)
   } finally {

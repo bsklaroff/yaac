@@ -159,21 +159,33 @@ plainly. There is no boundary between the agent and this machine, so there
 is nothing to withhold a secret from. If that is not acceptable for a given
 project, that project wants the k8s driver.
 
-## Yolo mode
+## Permission modes
 
-Under a sandbox, auto-approve is unconditional: `claude
---dangerously-skip-permissions`, `codex --yolo`, `pi --approve`, justified
-by the container around them. Without one it is the user's per-worktree
-choice, made in the new-worktree popover and defaulted OFF. The choice is
-recorded on the worktree row (`worktrees.autoApprove`) because a restart
-relaunches the agents and must relaunch them the way the user asked, not the
-way today's default would. The webapp remembers the last choice as a working
-style; the server's fallback, when a request states none, is the driver's
-default.
+Under a sandbox the default is `bypass` — the container is the containment,
+so a second layer of prompting inside it only costs interruptions. Without
+one the default is `accept-edits`: edits land in the worktree unprompted,
+while shells, out-of-tree writes and the network still ask. pi is the
+exception in both directions, because it has no permission system at all
+(see docs/agent-modes.md) — `bypass` is the only truthful answer anywhere.
 
-opencode is the exception: its approval behavior is a config block rather
-than a launch flag, so an opencode worktree ignores the choice until that
-config learns it.
+That default is the last rung. A create takes the posture the request names,
+else the one this project last had chosen, else the default above. The
+remembered value lives on the project row rather than in the browser, so the
+CLI (`--permission-mode`), the webapp's dropdown and the keyboard shortcut
+all resolve the same answer, and only an explicit choice writes it.
+
+The resolved posture is recorded on the worktree row
+(`worktrees.permissionMode`) because a restart relaunches the agents and
+must relaunch them the way the user asked, not the way today's default
+would.
+
+One carve-out runs the other way, and it is the only place an unsandboxed
+worktree acts unrestrained without anyone choosing it: an ACP conversation is
+`bypass`-only (docs/permission-modes.md), and containerless allows ACP
+whenever the adapter is on the host's PATH. The webapp cannot reach it — its
+chat buttons render only under `bypass` — but `yaac worktree create --mode
+acp` can, so the create says so in its progress output rather than leaving it
+to this page.
 
 ## Observation, and recovery
 

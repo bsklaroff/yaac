@@ -7,7 +7,7 @@ import { resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface WorktreeCreateOptions {
   tool?: AgentTool
@@ -22,6 +22,10 @@ export interface WorktreeCreateOptions {
   /** How the agent is driven (default: tui). `acp` has no terminal to attach,
    *  so the CLI prints where to find the conversation instead. */
   mode?: AgentMode
+  /** How much the agent may do before it asks. Omitted → the project's last
+   *  choice, else the driver's default; the server owns that resolution and
+   *  rejects a posture the tool doesn't have. */
+  permissionMode?: PermissionMode
 }
 
 interface WorktreeCreateResult {
@@ -73,6 +77,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       prompt: options.prompt,
       model: options.model,
       mode: options.mode,
+      permissionMode: options.permissionMode,
     },
   })
 
