@@ -1,6 +1,5 @@
-import { WorkspaceExecError } from '#drivers/contract'
+import { WorkspaceExecError, type WorkspacePaths } from '#drivers/contract'
 import { worktreeDriver } from '#drivers/driver'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
   piProviderInfo,
@@ -9,12 +8,28 @@ import {
 import type { AgentTool, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { shellEscape } from '#lib/shell'
 
-// Every in-container `tmux` invocation routes through this prefix so they
-// all reach the same server socket, on the pod's own emptyDir. Nothing
-// host-side connects to it — a UNIX socket only rendezvouses within the
-// kernel that bound it — so liveness and pane-content probes reach tmux
-// through `kubectl exec` in the pod, like every other consumer.
-export const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+/**
+ * Every `tmux` invocation this file authors routes through this prefix so
+ * they all reach the same server socket — WHICH socket being the driver's
+ * answer, not ours (`WorkspacePaths.tmuxSock`).
+ *
+ * It has to be, because the two drivers need different answers for the same
+ * reason: a UNIX socket only rendezvouses within the kernel that bound it.
+ * A pod has its own, so one fixed in-container path is safe for every
+ * workspace; host processes share one, so a fixed path would land every
+ * worktree on a single tmux server, where `has-session -t yaac` and
+ * `respawn-window -t yaac:<tool>` would answer for whichever worktree got
+ * there first.
+ */
+export function tmuxCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>): string {
+  // Unquoted, and it has to be: this prefix is embedded both at the top
+  // level of an `exec` and INSIDE single-quoted script bodies (the prompt
+  // paste, an init window's `'cd … && …'`), where a quote would end the
+  // enclosing string. What keeps it safe is the other end — a driver's
+  // paths are shell-safe by construction, which `assertShellSafePaths`
+  // enforces at launch for the one driver whose paths are not constants.
+  return `tmux -S ${paths.tmuxSock}`
+}
 
 export interface InitWindow {
   name: string
@@ -49,25 +64,40 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
   }))
 }
 
-export function buildAgentCmd(
-  tool: AgentTool,
-  worktreeId: string,
-  resume = false,
+/** What one agent's launch command is built from. */
+export interface AgentCmdSpec {
+  tool: AgentTool
+  worktreeId: string
+  resume?: boolean
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
-  piProvider?: PiProvider,
+  piProvider?: PiProvider
   /** Model passed to the agent's `--model` flag: a model id or alias for
    *  claude/codex (`opus`, `gpt-5.2-codex`), `provider/model` for
    *  opencode and pi. Validated by the create route to MODEL_RE, so it is
    *  safe to embed bare in the single-quoted respawn-window wrapper. */
-  model?: string,
-): string {
+  model?: string
+  /**
+   * Launch the agent with its auto-approve flag — the tool runs every
+   * action it decides on without asking.
+   *
+   * Required rather than defaulted: it decides whether an agent can act
+   * unsupervised, and on a runtime with no sandbox around it that is the
+   * difference between a worktree and this machine. A caller states it,
+   * and the worktree's row is what remembers the answer across a restart.
+   */
+  autoApprove: boolean
+}
+
+export function buildAgentCmd(spec: AgentCmdSpec): string {
+  const { tool, worktreeId, piProvider, model, autoApprove } = spec
+  const resume = spec.resume ?? false
   if (tool === 'codex') {
     // --model goes after the resume subcommand: codex defines -m/--model on
     // both the root TUI command and `codex resume`, so trailing placement
     // binds it to whichever command runs.
     return [
-      'codex --yolo',
+      autoApprove ? 'codex --yolo' : 'codex',
       resume ? `resume ${worktreeId}` : '',
       model ? `--model ${model}` : '',
     ].filter(Boolean).join(' ')
@@ -75,7 +105,8 @@ export function buildAgentCmd(
   if (tool === 'pi') {
     // pi runs its TUI in tmux (like claude/codex). `--approve` accepts the
     // project trust prompt for the run; pi has no sandbox and executes tools
-    // without per-call approval. `--model <provider>/<id>` selects the
+    // without per-call approval — so it is exactly what `autoApprove` gates,
+    // and without it pi asks in the pane. `--model <provider>/<id>` selects the
     // provider (pi reads that provider's api-key env var, which the proxy
     // swaps). `--session-id <id>` addresses this session by id in the shared
     // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
@@ -89,7 +120,8 @@ export function buildAgentCmd(
     // guarded so a future registry gap falls back to pi's own default rather
     // than `--model undefined`).
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve${modelFlag} --session-id ${worktreeId}`
+    const approve = autoApprove ? ' --approve' : ''
+    const pi = `pi${approve}${modelFlag} --session-id ${worktreeId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
     // '<id>'; creating a new session with that id." to stderr, which then
@@ -125,6 +157,11 @@ export function buildAgentCmd(
     // data dir (isolated per container — no cwd-collision concern).
     // --model takes `provider/model`; omitted, opencode uses the model
     // persisted in its shared config (or its own default).
+    //
+    // `autoApprove` has no flag to gate here: opencode's approval behavior
+    // is a `permission` block in its config rather than a launch argument
+    // (the shared opencode.json session create writes), so an opencode
+    // worktree ignores the choice until that config learns it.
     return [
       'opencode',
       '--port 4096 --hostname 127.0.0.1',
@@ -133,7 +170,9 @@ export function buildAgentCmd(
     ].filter(Boolean).join(' ')
   }
   return [
-    'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
+    autoApprove
+      ? 'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions'
+      : 'CLAUDE_CODE_NO_FLICKER=1 claude',
     model ? `--model ${model}` : '',
     resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')
@@ -165,8 +204,12 @@ export function buildAgentCmd(
  * `paste-buffer -p` honors bracketed paste so a multiline prompt lands in
  * the input box instead of submitting line by line.
  */
-export function buildPromptPasteCmd(target: string, prompt: string): string {
-  return `sh -c '${promptPasteScript(target, prompt)}'`
+export function buildPromptPasteCmd(
+  target: string,
+  prompt: string,
+  paths: WorkspacePaths,
+): string {
+  return `sh -c '${promptPasteScript(target, prompt, paths)}'`
 }
 
 /**
@@ -181,7 +224,12 @@ export function agentWindowTarget(tool: AgentTool): string {
 
 /** The paste-and-submit shell script buildPromptPasteCmd wraps. `paneTarget`
  *  is any tmux target — a window (`yaac:claude`) or a pane id (`%3`). */
-function promptPasteScript(paneTarget: string, prompt: string): string {
+function promptPasteScript(
+  paneTarget: string,
+  prompt: string,
+  paths: WorkspacePaths,
+): string {
+  const TMUX = tmuxCmd(paths)
   const b64 = Buffer.from(prompt, 'utf8').toString('base64')
   const target = `-t ${paneTarget}`
   // First non-empty line anchors the paste verification; a whitespace-only
@@ -213,10 +261,16 @@ function promptPasteScript(paneTarget: string, prompt: string): string {
  * to /tmp/yaac-prompt.log for postmortems. The script travels
  * base64-encoded so its quoting survives the single shell pass unchanged.
  */
-export function buildPromptPasteBgCmd(target: string, prompt: string): string {
-  const b64 = Buffer.from(promptPasteScript(target, prompt), 'utf8').toString('base64')
-  return `printf %s ${b64} | base64 -d > /tmp/.yaac-prompt.sh`
-    + ' && setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &'
+export function buildPromptPasteBgCmd(
+  target: string,
+  prompt: string,
+  paths: WorkspacePaths,
+): string {
+  const b64 = Buffer.from(promptPasteScript(target, prompt, paths), 'utf8').toString('base64')
+  const script = `${paths.scratchDir}/.yaac-prompt.sh`
+  const log = `${paths.scratchDir}/yaac-prompt.log`
+  return `printf %s ${b64} | base64 -d > ${script}`
+    + ` && setsid sh ${script} >${log} 2>&1 </dev/null &`
 }
 
 /**
@@ -233,10 +287,13 @@ export async function typeInitialPrompt(
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  await worktreeDriver().exec(jobName, buildPromptPasteBgCmd(agentWindowTarget(tool), prompt), {
-    maxAttempts: 1,
-    timeout: 15_000,
-  })
+  const driver = worktreeDriver()
+  const cmd = buildPromptPasteBgCmd(
+    agentWindowTarget(tool),
+    prompt,
+    driver.workspacePaths(jobName),
+  )
+  await driver.exec(jobName, cmd, { maxAttempts: 1, timeout: 15_000 })
 }
 
 /**
@@ -251,8 +308,9 @@ export async function typeInitialPrompt(
  * still slips through — this catches the deterministic spawn-failure
  * class, not every crash.
  */
-export function buildAgentWindowCheck(tool: AgentTool): string {
-  return `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}"`
+export function buildAgentWindowCheck(tool: AgentTool, paths: WorkspacePaths): string {
+  return `sh -c "sleep 1; ${tmuxCmd(paths)} list-windows -t =yaac -F '#{window_name}' `
+    + `| grep -qxF ${tool}"`
 }
 
 /**
@@ -268,8 +326,9 @@ export function buildAgentWindowCheck(tool: AgentTool): string {
  * wrong trail.
  */
 export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
+  const driver = worktreeDriver()
   try {
-    await worktreeDriver().exec(jobName, buildAgentWindowCheck(tool))
+    await driver.exec(jobName, buildAgentWindowCheck(tool, driver.workspacePaths(jobName)))
   } catch (err) {
     if (!(err instanceof WorkspaceExecError)) throw err
     const detail = err.stderr.trim()
@@ -290,7 +349,8 @@ export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): 
  * follows the window list, so a hidePane init window shows while running and
  * disappears once done.
  */
-export function initWindowCommand(win: InitWindow): string {
-  return `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`
+export function initWindowCommand(win: InitWindow, paths: WorkspacePaths): string {
+  return `${tmuxCmd(paths)} new-window -d -t yaac -n ${win.name} `
+    + `'cd ${paths.workspaceDir} && ${win.cmd}'`
     + (win.hidePane ? '' : ` \\; set-option -t yaac:${win.name} remain-on-exit on`)
 }

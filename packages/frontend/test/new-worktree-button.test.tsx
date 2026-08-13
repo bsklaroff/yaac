@@ -21,6 +21,11 @@ vi.mock('#lib/projectApi', () => ({
 vi.mock('#lib/useProvisionWorktree', () => ({
   useProvisionWorktree: () => provision,
 }))
+// The snapshot arrives over the events socket; there is no queryFn, so a
+// component that mounts before the first frame sees `undefined` — which is
+// the case the yolo default has to survive.
+const snapshot = vi.hoisted(() => vi.fn())
+vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { createWorktree } from '#lib/createWorktree'
@@ -53,6 +58,7 @@ const BRANCHES: ProjectBranches = {
 beforeEach(() => {
   useUiStore.setState({ settingsOpen: false, settingsSection: 'general', settingsFocusTool: null })
   vi.clearAllMocks()
+  snapshot.mockReturnValue(undefined)
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
   vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
   vi.mocked(setProjectReferenceBranch).mockImplementation((_slug, branch) => Promise.resolve(branch))
@@ -134,7 +140,10 @@ describe('NewWorktreeButton', () => {
 
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui',
+      // undefined, not a boolean: the user has never touched the checkbox,
+      // so the create omits the flag and the SERVER applies its per-driver
+      // default. Sending one here would make that fallback unreachable.
+      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', undefined,
     )
   })
 
@@ -156,7 +165,7 @@ describe('NewWorktreeButton', () => {
 
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
-      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x', 'tui',
+      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x', 'tui', undefined,
     )
   })
 
@@ -176,5 +185,41 @@ describe('NewWorktreeButton', () => {
     // The pinned branch becomes the default resolution — pin disables again.
     await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(true))
     expect(branchInput().value).toBe('dev')
+  })
+
+  // The bargain the containerless mode is documented on: no sandbox, so the
+  // agent does not act unsupervised unless the user says so.
+  it('leaves yolo unchecked on a containerless server, even before the snapshot lands', async () => {
+    snapshot.mockReturnValue(undefined)
+    await openMenu()
+    const box = screen.getByRole('checkbox')
+    // Undefined snapshot must not read as "sandboxed": an initializer that
+    // captured it here would pre-check the box for the component's life.
+    expect(box).toHaveProperty('checked', false)
+
+    snapshot.mockReturnValue({ driver: 'containerless' })
+    cleanup()
+    await openMenu()
+    expect(screen.getByRole('checkbox')).toHaveProperty('checked', false)
+  })
+
+  it('pre-checks yolo on a sandboxed server, where the container is the boundary', async () => {
+    snapshot.mockReturnValue({ driver: 'k8s' })
+    await openMenu()
+    expect(screen.getByRole('checkbox')).toHaveProperty('checked', true)
+  })
+
+  it('sends the choice once made, and remembers it', async () => {
+    snapshot.mockReturnValue({ driver: 'containerless' })
+    provision.mockImplementation(
+      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
+        void op(sid, () => {})
+      })
+    await openMenu()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByText('Claude'))
+    expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
+      'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', true,
+    )
   })
 })

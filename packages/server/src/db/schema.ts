@@ -129,6 +129,21 @@ export const worktrees = snakeCase.table('worktrees', {
    * in.
    */
   lifeLogBytes: integer().notNull().default(0),
+  /**
+   * Whether this worktree's agents launch with their auto-approve flags —
+   * `claude --dangerously-skip-permissions`, `codex --yolo`, `pi --approve`.
+   *
+   * Durable rather than a launch-time decision because a worktree outlives
+   * the request that made it: a restart relaunches its agents, and it must
+   * relaunch them the way the user asked for rather than re-deriving the
+   * answer from whatever the default is now.
+   *
+   * Defaults true, which is what every row predating the column means: on a
+   * sandboxed runtime auto-approve has always been unconditional, and the
+   * isolation is what justifies it. A runtime with no sandbox makes it the
+   * user's per-worktree choice instead, defaulted off.
+   */
+  autoApprove: boolean().notNull().default(true),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
 
 /**

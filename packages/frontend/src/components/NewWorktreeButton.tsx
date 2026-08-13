@@ -9,7 +9,8 @@ import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { randomUUID } from '#lib/uuid'
 import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
-import { useUiStore } from '#store'
+import { loadAutoApprovePref, persistAutoApprovePref, useUiStore } from '#store'
+import { useSnapshot } from '#lib/useSnapshot'
 import { ACP_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
@@ -49,6 +50,19 @@ export function NewWorktreeButton(
   const [branchInput, setBranchInput] = useState<string | null>(null)
   const [pinPending, setPinPending] = useState(false)
   const [pinError, setPinError] = useState<string | null>(null)
+  // The user's remembered working style, or `undefined` when they have never
+  // chosen — which stays undefined rather than being resolved to a boolean,
+  // for two reasons. A create then OMITS the flag, so the server applies its
+  // own per-driver default (the fallback that exists for exactly this).
+  // And the displayed state is derived at RENDER rather than captured in the
+  // initializer: `useSnapshot()` is undefined until the first events frame
+  // lands, so an initializer would read a containerless server as sandboxed
+  // and pre-check the box for the life of the component — the opposite of
+  // the containerless default.
+  const [autoApprove, setAutoApprove] = useState<boolean | undefined>(loadAutoApprovePref)
+  const driver = useSnapshot()?.driver
+  const sandboxed = driver !== undefined && driver !== 'containerless'
+  const autoApproveShown = autoApprove ?? sandboxed
 
   const branchesKey = projectBranchesKey(projectSlug)
   const { data: branchData } = useQuery({
@@ -78,7 +92,8 @@ export function NewWorktreeButton(
     const branch = branchValue && !isDefault ? branchValue : undefined
     setOpen(false)
     provision(projectSlug, tool, 'create', worktreeId,
-      (sid, onProgress) => createWorktree(projectSlug, tool, onProgress, sid, branch, mode))
+      (sid, onProgress) =>
+        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, autoApprove))
   }
 
   const pinAsDefault = (): void => {
@@ -101,9 +116,16 @@ export function NewWorktreeButton(
     setOpen(next)
     if (!next) {
       // Reset per-open state so the next open starts from the default.
+      // The yolo choice deliberately survives: it is a working style, not a
+      // per-open decision, and it is remembered across reloads too.
       setBranchInput(null)
       setPinError(null)
     }
+  }
+
+  const toggleAutoApprove = (next: boolean): void => {
+    setAutoApprove(next)
+    persistAutoApprovePref(next)
   }
 
   return (
@@ -172,6 +194,31 @@ export function NewWorktreeButton(
               }
               belowInput={pinError && <div className="px-2 pb-1 text-[11px] text-[#d65858]">{pinError}</div>}
             />
+
+            <label
+              className="mx-1 mb-1 flex cursor-default items-start gap-2 rounded-md px-1 py-1
+                text-[11px] text-text-dim hover:bg-surface-3"
+              title={
+                'Run the agent with its auto-approve flag, so it acts without asking.'
+                + (driver === 'containerless'
+                  ? ' This server runs worktrees on the host — the agent acts as you,'
+                    + ' with your access to this machine.'
+                  : ' The worktree is sandboxed: the agent can only reach its own container.')
+              }
+            >
+              <input
+                type="checkbox"
+                checked={autoApproveShown}
+                onChange={(e) => toggleAutoApprove(e.target.checked)}
+                className="mt-[2px] accent-accent"
+              />
+              <span>
+                Yolo mode
+                {driver === 'containerless' && (
+                  <span className="block text-text-faint">no sandbox — acts as you</span>
+                )}
+              </span>
+            </label>
 
             <div className="mx-1 mb-1 border-t border-border" />
             {TOOLS.map((t) => configured.has(t) ? (

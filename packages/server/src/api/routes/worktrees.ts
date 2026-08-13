@@ -36,6 +36,7 @@ import {
 } from '#db'
 import { getDefaultTool } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
+import { requireDriverFeature } from '#http'
 import { ServerError } from '@yaac/shared/errors'
 import { MODEL_RE } from '@yaac/shared/types'
 
@@ -83,6 +84,10 @@ export const worktreeApp = new Hono()
       // `provider/model` for opencode and pi — see buildAgentCmd). MODEL_RE
       // keeps it safe to embed in the single-quoted agent launch command.
       model: z.string().regex(MODEL_RE).max(100).optional(),
+      // "Yolo mode": launch the agents with their auto-approve flags, so
+      // they act without asking. Omitted → the driver's default (on where
+      // the workspace is sandboxed, off where it is not).
+      autoApprove: z.boolean().optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
@@ -100,7 +105,16 @@ export const worktreeApp = new Hono()
         // Spares are warmed in tui mode, so an acp create can never claim one
         // — the spare's agent window already runs a TUI. Skipping the claim is
         // what keeps it from being retooled into a half-ACP session.
-        const claimed = body.mode === 'acp'
+        //
+        // An explicit "no auto-approve" skips it for the same shape of
+        // reason: a spare's agent is ALREADY running, started with this
+        // runtime's default (auto-approve on, since only a sandboxed runtime
+        // warms spares). Claiming one would hand back a yolo-mode worktree
+        // to a user who unchecked the box, and silently — the claim never
+        // rewrites the row's `autoApprove`, so a restart would preserve it
+        // too. Cold-creating is the honest answer; it costs the claim's
+        // saving, which is what the user asked for by unchecking.
+        const claimed = body.mode === 'acp' || body.autoApprove === false
           ? undefined
           : await tryClaimPrewarmed(
             body.project, tool, body.gitUser, onProgress, body.branch, body.model,
@@ -124,6 +138,7 @@ export const worktreeApp = new Hono()
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         if (body.model !== undefined) opts.model = body.model
         if (body.mode !== undefined) opts.mode = body.mode
+        if (body.autoApprove !== undefined) opts.autoApprove = body.autoApprove
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ worktreeId, projectSlug: body.project, tool, kind: 'create' })
@@ -329,7 +344,16 @@ export const worktreeApp = new Hono()
     },
   )
   .get('/:id', async (c) => c.json(await getWorktreeDetail(c.req.param('id'))))
-  .get('/:id/blocked-hosts', async (c) => c.json(await getWorktreeBlockedHosts(c.req.param('id'))))
+  // The egress and port-relay routes below refuse on a runtime that
+  // mediates neither. Guarded BEFORE the id resolve, because what this
+  // server can do is not a property of the worktree being asked about — a
+  // 404 for an id that happens not to exist would hide the real answer.
+  // The driver's own verbs still answer empty, which is what keeps the
+  // snapshot composing them unconditionally.
+  .get('/:id/blocked-hosts', async (c) => {
+    requireDriverFeature('egress')
+    return c.json(await getWorktreeBlockedHosts(c.req.param('id')))
+  })
   // Allow a previously-blocked host (webapp click-to-allow). The proxy prunes
   // the host from its recorded blocked set, so the snapshot we push clears the
   // badge. Persist/fan-out policy lives in the domain verb.
@@ -342,6 +366,7 @@ export const worktreeApp = new Hono()
       persist: z.boolean().optional(),
     })),
     async (c) => {
+      requireDriverFeature('egress')
       const { host, persist } = c.req.valid('json')
       await allowWorktreeHost(c.req.param('id'), host, { persist: persist ?? false })
       return c.body(null, 204)
@@ -358,6 +383,7 @@ export const worktreeApp = new Hono()
       persist: z.boolean().optional(),
     })),
     async (c) => {
+      requireDriverFeature('portRelay')
       const { containerPort, persist } = c.req.valid('json')
       const mapping = await forwardWorktreePort(
         c.req.param('id'), containerPort, { persist: persist ?? false },
@@ -372,6 +398,7 @@ export const worktreeApp = new Hono()
     '/:id/dismiss-port',
     zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
     async (c) => {
+      requireDriverFeature('portRelay')
       await dismissWorktreePort(c.req.param('id'), c.req.valid('json').containerPort)
       return c.body(null, 204)
     },

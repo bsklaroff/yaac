@@ -31,15 +31,15 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { type StreamChild } from '#drivers/contract'
+import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { worktreeDriver } from '#drivers/driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { CONTAINER_TMUX_SOCK, containerAcpLog, containerAcpSock } from '@yaac/shared/paths'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { AcpConversation } from './acp-client'
 import { readAcpInFlight } from './acp-log'
+import { tmuxCmd } from './agent-command'
 import { agentWindowTool } from './agent-tools'
 import {
   acpConversationByHandle,
@@ -57,6 +57,26 @@ import type {
   LiveAgent,
 } from './drivers'
 import type { AgentTool } from '@yaac/shared/types'
+
+/**
+ * One conversation's acpd socket, inside the workspace.
+ *
+ * Named for the tmux window that supervises it (`claude`, `claude-2`) —
+ * the same handle the status store keys the conversation by, which is what
+ * lets a reattach find the socket from the window list alone. The directory
+ * is the driver's (`WorkspacePaths.acpSockDir`) because a UNIX socket only
+ * rendezvouses within the kernel that bound it: one fixed path per pod is
+ * safe, one shared by every host process is not.
+ */
+function acpSockPath(paths: Pick<WorkspacePaths, 'acpSockDir'>, handle: string): string {
+  return `${paths.acpSockDir}/${handle}.sock`
+}
+
+/** One conversation's ACP log, inside the workspace. Named for the
+ *  CONVERSATION rather than its window — see `launchCmd` for why. */
+function acpLogPath(paths: Pick<WorkspacePaths, 'acpLogDir'>, name: string): string {
+  return `${paths.acpLogDir}/${name}.jsonl`
+}
 
 /** Where the ACP adapter for each tool lives on the session image's PATH. */
 const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = {
@@ -294,9 +314,11 @@ class AcpConnection implements AgentConnection {
   }
 
   private async listAcpWindows(): Promise<Array<{ handle: string; tool: AgentTool }>> {
-    const { stdout } = await worktreeDriver().exec(
+    const driver = worktreeDriver()
+    const { stdout } = await driver.exec(
       this.session.jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} list-windows -t yaac -F '#{window_name}'`,
+      `${tmuxCmd(driver.workspacePaths(this.session.jobName))} `
+      + "list-windows -t yaac -F '#{window_name}'",
       { maxAttempts: 1, timeout: this.commandTimeoutMs },
     )
     return stdout.split('\n').flatMap((line) => {
@@ -313,7 +335,10 @@ class AcpConnection implements AgentConnection {
       // socat, not a new streamd kind: `ctrl` already gives us a raw duplex to
       // an argv in the pod, and the agent's endpoint is a UNIX socket rather
       // than a port precisely so it stays out of the auto-forward port scan.
-      child = this.dial(this.session, ['socat', '-', `UNIX-CONNECT:${containerAcpSock(handle)}`])
+      const paths = worktreeDriver().workspacePaths(this.session.jobName)
+      child = this.dial(this.session, [
+        'socat', '-', `UNIX-CONNECT:${acpSockPath(paths, handle)}`,
+      ])
     } catch (err) {
       this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: dial failed: ${String(err)}`)
       return
@@ -327,7 +352,7 @@ class AcpConnection implements AgentConnection {
     this.attached.set(handle, entry)
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
-      cwd: '/workspace',
+      cwd: worktreeDriver().workspacePaths(this.session.jobName).workspaceDir,
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a conversation we can already name has a record to read, and it
@@ -505,8 +530,8 @@ export const acpDriver: AgentDriver = {
     // already known and this is its final name; on a fresh create the agent has
     // not minted one yet, so it starts under the worktree id and is adopted
     // once `session/new` answers (see `adoptLog`).
-    return `node /opt/yaac/acpd/main.js --sock ${containerAcpSock(spec.windowName)}`
-      + ` --log ${containerAcpLog(spec.agentSessionId)} -- ${adapter}${model}`
+    return `node ${spec.paths.acpdEntry} --sock ${acpSockPath(spec.paths, spec.windowName)}`
+      + ` --log ${acpLogPath(spec.paths, spec.agentSessionId)} -- ${adapter}${model}`
   },
 
   connect(session, sink, deps = {}): AgentConnection {

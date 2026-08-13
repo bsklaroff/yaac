@@ -6,6 +6,7 @@ import type {
   StrayUnit,
   StreamChild,
   StreamPty,
+  WorkspacePaths,
   WorkspaceSubstrate,
   WorktreeDriver,
 } from '@yaac/server/drivers/contract'
@@ -40,6 +41,27 @@ export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHa
     prewarmed: false,
     terminating: false,
     deathCause: { reason: 'pod-stopped' },
+    ...overrides,
+  }
+}
+
+/**
+ * The paths a k8s workspace sees — the container constants, spelled out
+ * rather than imported so a test asserting on command text is pinned to the
+ * exact strings it expects rather than to whatever the driver currently
+ * answers. A containerless case overrides what it is about.
+ */
+export function workspacePathsFixture(
+  overrides: Partial<WorkspacePaths> = {},
+): WorkspacePaths {
+  return {
+    tmuxSock: '/tmp/yaac-tmux/server',
+    workspaceDir: '/workspace',
+    repoGitDir: '/repo/.git',
+    scratchDir: '/tmp',
+    acpSockDir: '/tmp/yaac-acp',
+    acpLogDir: '/home/yaac/.yaac-acp',
+    acpdEntry: '/opt/yaac/acpd/main.js',
     ...overrides,
   }
 }
@@ -100,6 +122,11 @@ export function installFakeWorktreeDriver(
 ): FakeWorktreeDriver {
   let current: WorktreeDriver = { ...defaultRuntime(), ...overrides }
   const fake: FakeWorktreeDriver = {
+    // Read through `current` like every verb, so `override({kind})` moves
+    // them: a test about what a containerless server does differently flips
+    // the kind and asserts on the mediator, with no second fake to build.
+    get kind() { return current.kind },
+    workspacePaths: (ref) => current.workspacePaths(ref),
     start: (sinks, deps) => current.start(sinks, deps),
     stop: () => current.stop(),
     release: () => current.release(),
@@ -130,6 +157,7 @@ export function installFakeWorktreeDriver(
     dialPty: (j, a, s) => current.dialPty(j, a, s),
     reviveStatusStream: (j) => current.reviveStatusStream(j),
     claimSpare: (w, t) => current.claimSpare(w, t),
+    assertCanLaunch: (o) => current.assertCanLaunch(o),
     ensureBuildEngine: () => current.ensureBuildEngine(),
     prepareImage: (o) => current.prepareImage(o),
     prepareSubstrate: (i) => current.prepareSubstrate(i),
@@ -180,6 +208,11 @@ function deadStreamPty(): StreamPty {
 
 function defaultRuntime(): WorktreeDriver {
   return {
+    // k8s by default, and the container paths with it, so a mediator test
+    // asserting on command text keeps asserting the same strings it always
+    // did. A containerless case says so with `override({kind, workspacePaths})`.
+    kind: 'k8s',
+    workspacePaths: () => workspacePathsFixture(),
     // Attaches instantly and reports nothing: a test that drives the
     // lifecycle overrides these, and one that does not must not have a
     // fake quietly watching anything.
@@ -221,6 +254,7 @@ function defaultRuntime(): WorktreeDriver {
     dialPty: () => deadStreamPty(),
     reviveStatusStream: () => Promise.resolve(),
     claimSpare: () => Promise.resolve(),
+    assertCanLaunch: () => Promise.resolve(),
     ensureBuildEngine: () => Promise.resolve(),
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
     prepareSubstrate: () => Promise.resolve(substrateFixture()),

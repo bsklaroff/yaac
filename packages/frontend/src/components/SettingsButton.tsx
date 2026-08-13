@@ -47,6 +47,7 @@ import { useUiStore, type SettingsSection } from '#store'
 import type { ThemePref } from '#lib/theme'
 import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
+import { useSnapshot } from '#lib/useSnapshot'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -85,13 +86,17 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
 ]
 
 /**
- * The nav entries for this environment. 'server' switches which server the
- * desktop shell attaches to, so it exists only where the preload bridge
- * does — in a plain browser the tab is already bound to the origin that
- * served it and the section would be a no-op.
+ * The nav entries for this environment: what this build and this server can
+ * actually offer, so a section is never shown that would be a no-op.
  */
-function visibleSections(): typeof SECTIONS {
-  return serverBridge() ? SECTIONS : SECTIONS.filter((s) => s.key !== 'server')
+function visibleSections(buildsImages: boolean): typeof SECTIONS {
+  return SECTIONS.filter((s) =>
+    // 'server' switches which server the shell attaches to — only the
+    // desktop shell can.
+    (s.key !== 'server' || serverBridge())
+    // The user Dockerfile layers the worktree image; a server that builds
+    // none has nothing to layer.
+    && (s.key !== 'userDockerfile' || buildsImages))
 }
 
 /**
@@ -116,6 +121,7 @@ export function SettingsButton(
   const setSoundEnabled = useUiStore((s) => s.setSoundEnabled)
   const [tool, setTool] = useState<AgentTool | null>(null)
   const queryClient = useQueryClient()
+  const buildsImages = useSnapshot()?.driver !== 'containerless'
 
   // On open, re-pull both the default tool and the credentials list — either
   // may have changed server-side (e.g. via the CLI) since the last look.
@@ -164,7 +170,7 @@ export function SettingsButton(
             <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
               Settings
             </Dialog.Title>
-            {visibleSections().map(({ key, label, Icon }) => (
+            {visibleSections(buildsImages).map(({ key, label, Icon }) => (
               <button
                 key={key}
                 onClick={() => setSection(key)}

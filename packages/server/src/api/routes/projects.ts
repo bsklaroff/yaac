@@ -22,6 +22,7 @@ import { remoteBranchExists } from '#domain/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
+import { requireDriverFeature } from '#http'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -139,7 +140,12 @@ export const projectApp = new Hono()
     await assertProjectExists(slug)
     return projectBuildDir(slug)
   }))
+  // The project's image layer. Both refuse on a runtime that builds no
+  // images, BEFORE the project check: what this server can build is not a
+  // property of the project being asked about, and a 404 for a slug that
+  // happens not to exist would hide the real answer.
   .get('/:slug/dockerfile', async (c) => {
+    requireDriverFeature('images')
     await assertProjectExists(c.req.param('slug'))
     return c.json({ content: await readProjectDockerfile(c.req.param('slug')) })
   })
@@ -147,6 +153,7 @@ export const projectApp = new Hono()
     '/:slug/dockerfile',
     zv('json', z.object({ content: z.string() })),
     async (c) => {
+      requireDriverFeature('images')
       await assertProjectExists(c.req.param('slug'))
       const { content } = c.req.valid('json')
       await writeProjectDockerfile(c.req.param('slug'), content)

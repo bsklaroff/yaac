@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
 import {
   WorktreeStatusWatcher,
@@ -110,6 +111,10 @@ let watchers: WorktreeStatusWatcher[] = []
 beforeEach(() => {
   _resetWorktreeStatusStoreForTests()
   _clearControlStreamRegistryForTests()
+  // The dial and the streamd revive are injected below, but the attach argv
+  // is written against the workspace's own tmux socket — which is the
+  // driver's answer, so a fake has to be installed to supply it.
+  installFakeWorktreeDriver()
 })
 
 afterEach(() => {

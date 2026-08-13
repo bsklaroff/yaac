@@ -10,9 +10,10 @@ import {
   buildAgentCmd,
   verifyAgentWindowAlive,
   initWindowCommand,
-  TMUX,
+  tmuxCmd,
 } from '#runtime/agents'
 import { withUpstreamConfigLock } from './create'
+import type { WorkspacePaths } from '#drivers/contract'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 import type { PiProvider } from '@yaac/shared/tool-providers'
 
@@ -46,6 +47,7 @@ export async function retoolSpare(
   // needs the stored provider (from the single pi.json credential).
   const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
   const runtime = worktreeDriver()
+  const TMUX = tmuxCmd(runtime.workspacePaths(spare.jobName))
   await runtime.registerWorkspace({
     workspaceId: spare.workspaceId,
     projectSlug: spare.projectSlug,
@@ -67,7 +69,16 @@ export async function retoolSpare(
   )
   await runtime.exec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.workspaceId, false, piProvider, model)}'`,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd({
+      tool,
+      worktreeId: spare.workspaceId,
+      // A spare only exists on a sandboxed runtime, where the isolation
+      // is what justifies auto-approve — the same unconditional answer
+      // every worktree there gets.
+      autoApprove: true,
+      ...(piProvider !== undefined ? { piProvider } : {}),
+      ...(model !== undefined ? { model } : {}),
+    })}'`,
   )
   await verifyAgentWindowAlive(spare.jobName, tool)
 }
@@ -100,9 +111,10 @@ export interface RebranchPrepCommands {
  * untracked directories, and removing a mount point fails (EBUSY), which
  * would taint every re-branch.
  */
-function workspaceMountPaths(config: YaacConfig): string[] {
+function workspaceMountPaths(config: YaacConfig, workspaceDir: string): string[] {
+  const prefix = `${workspaceDir}/`
   const underWorkspace = (p: string): string | null =>
-    p.startsWith('/workspace/') ? p.slice('/workspace/'.length) : null
+    p.startsWith(prefix) ? p.slice(prefix.length) : null
   return [
     ...resolveEphemeralModulesPaths(config),
     ...Object.values(config.cacheVolumes ?? {}).map(underWorkspace),
@@ -124,8 +136,13 @@ export function buildRebranchPrep(params: {
   respawnTool: AgentTool | null
   /** pi only — provider for the respawn's `pi --model` (see buildAgentCmd). */
   piProvider?: PiProvider
+  /** Where this workspace's things are, in its own world — the commands
+   *  below are all addressed inside it. */
+  paths: WorkspacePaths
 }): RebranchPrepCommands {
-  const { branch, sha, config, worktreeId, respawnTool, piProvider } = params
+  const { branch, sha, config, worktreeId, respawnTool, piProvider, paths } = params
+  const TMUX = tmuxCmd(paths)
+  const wd = paths.workspaceDir
   const windowExecs: string[] = []
   for (const win of resolveInitWindows(config)) {
     // Kill and re-create in ONE exec, so re-running the pair is a no-op.
@@ -138,20 +155,26 @@ export function buildRebranchPrep(params: {
     // tolerates a missing window — hidePane windows are gone once their
     // command finishes — and `;` keeps its status out of the result.
     windowExecs.push(
-      `${TMUX} kill-window -t yaac:${win.name} 2>/dev/null; ${initWindowCommand(win)}`,
+      `${TMUX} kill-window -t yaac:${win.name} 2>/dev/null; ${initWindowCommand(win, paths)}`,
     )
   }
   if (respawnTool) {
     windowExecs.push(
-      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, worktreeId, false, piProvider)}'`,
+      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd({
+        tool: respawnTool,
+        worktreeId,
+        autoApprove: true,
+        ...(piProvider !== undefined ? { piProvider } : {}),
+      })}'`,
     )
   }
-  const cleanExcludes = workspaceMountPaths(config)
+  const cleanExcludes = workspaceMountPaths(config, wd)
     .map((p) => ` -e '${shellEscape(p)}'`)
     .join('')
   return {
-    resetExec: `sh -c "git -C /workspace reset --hard ${sha} && git -C /workspace clean -fd${cleanExcludes}"`,
-    upstreamExec: `git -C /workspace branch --set-upstream-to 'origin/${shellEscape(branch)}'`,
+    resetExec: `sh -c "git -C ${wd} reset --hard ${sha} `
+      + `&& git -C ${wd} clean -fd${cleanExcludes}"`,
+    upstreamExec: `git -C ${wd} branch --set-upstream-to 'origin/${shellEscape(branch)}'`,
     windowExecs,
   }
 }
@@ -186,6 +209,7 @@ export async function rebranchSpare(
     worktreeId: spare.workspaceId,
     respawnTool: respawnAgent ? spare.tool as AgentTool : null,
     piProvider,
+    paths: worktreeDriver().workspacePaths(spare.jobName),
   })
   // The reset+clean walks the whole worktree, so it gets a wider deadline
   // than the runtime's 30s default. Only the run phase widens — the

@@ -46,6 +46,7 @@ import {
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
+  k8sWorkspacePaths,
   podExec,
   waitForJobPodReady,
   waitForStreamd,
@@ -103,6 +104,11 @@ async function execInWorkspace(
 
 export function createK8sDriver(): WorktreeDriver {
   return {
+    kind: 'k8s',
+    // Every pod sees the same paths — see `k8sWorkspacePaths` for why the
+    // workspace is not part of the answer.
+    workspacePaths: () => k8sWorkspacePaths(),
+
     start: (sinks, deps) => startK8sDriver(sinks, deps),
     stop: () => stopK8sDriver(),
     release: () => releaseK8sDriver(),
@@ -142,6 +148,9 @@ export function createK8sDriver(): WorktreeDriver {
 
     claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
 
+    // Whether the image ships a tool's adapter is settled at build time,
+    // and the caller already refuses a tool that has none.
+    assertCanLaunch: () => Promise.resolve(),
     ensureBuildEngine: () => ensureContainerRuntime(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),

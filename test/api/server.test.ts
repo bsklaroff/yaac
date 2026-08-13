@@ -25,7 +25,10 @@ describe('buildApp', () => {
     // credential-optional by default, so it reports authRequired: false.
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123', ready: true, authRequired: false })
+    // `driver` is 'k8s' here: this project's setup registers the real one
+    // (cluster-setup.ts), standing in for the composition root.
+    expect(await res.json())
+      .toEqual({ ok: true, buildId: 'abc123', ready: true, authRequired: false, driver: 'k8s' })
   })
 
   it('GET /project/list requires bearer auth', async () => {

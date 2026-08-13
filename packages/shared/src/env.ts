@@ -1,4 +1,4 @@
-import type { AgentTool } from '#types'
+import type { AgentTool, DriverKind } from '#types'
 
 /**
  * The single place that reads `process.env` for yaac's own variables. Every
@@ -187,6 +187,43 @@ export const env = {
   /** `YAAC_NESTED` — set to `1` by the server inside a nested (vcluster) worktree. */
   get nested(): boolean {
     return process.env.YAAC_NESTED === '1'
+  },
+
+  /**
+   * `YAAC_DRIVER` — which substrate this server runs worktrees on.
+   *
+   * `k8s` (the default) runs each worktree as a single-pod Job in a local
+   * cluster; `containerless` runs it as a tmux server on this host, in the
+   * worktree checkout itself — no image, no proxy, and no sandbox around
+   * the agent.
+   *
+   * Read exactly once, by the composition root, and necessarily from the
+   * environment rather than from a row: the driver has to be registered
+   * before anything can ask for one, which is well before the database is
+   * open. `yaac server start --driver <kind>` sets it for the server it
+   * spawns.
+   *
+   * A value that is neither throws rather than falling back, so a typo
+   * fails at startup instead of silently running the wrong substrate.
+   */
+  get driver(): DriverKind {
+    return env.driverExplicit ?? 'k8s'
+  },
+
+  /**
+   * The same variable, distinguishing "not set" from "set to the default".
+   *
+   * The server needs the difference: unset means "whatever this install was
+   * already running" (see `#main/driver-choice`), and collapsing that to
+   * `k8s` is what would move a containerless install onto a cluster on the
+   * next bare `yaac server restart`. Everything that only wants an answer
+   * reads `driver`.
+   */
+  get driverExplicit(): DriverKind | undefined {
+    const raw = (process.env.YAAC_DRIVER ?? '').trim()
+    if (raw === '') return undefined
+    if (raw === 'k8s' || raw === 'containerless') return raw
+    throw new Error(`YAAC_DRIVER must be "k8s" or "containerless" (got "${raw}")`)
   },
 
   /**

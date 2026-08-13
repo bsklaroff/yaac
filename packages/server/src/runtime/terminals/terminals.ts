@@ -1,6 +1,6 @@
 import { worktreeDriver } from '#drivers/driver'
+import { tmuxCmd } from '#runtime/agents'
 import { worktreeControlStreamSend } from '#runtime/status'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { WorktreeTerminalEntry } from '@yaac/shared/types'
 
 /**
@@ -73,9 +73,10 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
     }
   }
   try {
-    const { stdout } = await worktreeDriver().exec(
+    const driver = worktreeDriver()
+    const { stdout } = await driver.exec(
       jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
+      `${tmuxCmd(driver.workspacePaths(jobName))} ${tmuxArgs}`,
       { maxAttempts: 1 },
     )
     return stdout
@@ -94,9 +95,12 @@ export async function listWorktreeTerminals(jobName: string): Promise<WorktreeTe
  *  (and open a pane) without waiting for the next terminals poll. */
 export async function createShellWindow(jobName: string): Promise<WorktreeTerminalEntry> {
   const name = nextShellName(await listWorktreeTerminals(jobName))
-  const { stdout } = await worktreeDriver().exec(
+  const driver = worktreeDriver()
+  const paths = driver.workspacePaths(jobName)
+  const { stdout } = await driver.exec(
     jobName,
-    `tmux -S ${CONTAINER_TMUX_SOCK} new-window -d -P -F '#{window_id}' -t yaac -n ${name} -c /workspace`,
+    `${tmuxCmd(paths)} new-window -d -P -F '#{window_id}' -t yaac -n ${name} `
+    + `-c ${paths.workspaceDir}`,
     { maxAttempts: 1 },
   )
   const id = stdout.trim()
@@ -116,9 +120,10 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
   if (rows.find((r) => r.index === agentIndex)?.id === id) {
     throw new Error('refusing to kill the agent window')
   }
-  await worktreeDriver().exec(
+  const driver = worktreeDriver()
+  await driver.exec(
     jobName,
-    `tmux -S ${CONTAINER_TMUX_SOCK} kill-window -t ${id}`,
+    `${tmuxCmd(driver.workspacePaths(jobName))} kill-window -t ${id}`,
     { maxAttempts: 1 },
   )
 }

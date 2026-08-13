@@ -308,6 +308,14 @@ export async function prepareWorkspaceSubstrate(
 export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
   const substrate = narrow(spec.substrate)
   const jobName = worktreeJobName(spec.projectSlug, spec.workspaceId)
+  // The spec's image is optional because a runtime that runs none takes no
+  // ref; for this one it is what the pod starts from, so an absent one is a
+  // caller that skipped `prepareImage` for a driver that needs it — a wiring
+  // bug, and one worth naming before a manifest goes out without an image.
+  if (!spec.image) {
+    throw new Error(`launch ${jobName}: no image on the spec (prepareImage was skipped)`)
+  }
+  const image = spec.image
 
   const env = [...spec.env]
   // CA-trust env only — no HTTP(S)_PROXY routing vars. Interception is
@@ -355,7 +363,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     jobName,
     namespace: k8sNamespace(),
     labels,
-    image: spec.image,
+    image,
     env,
     mounts,
     memoryRequestBytes: spec.resources.memoryRequestBytes,

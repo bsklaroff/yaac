@@ -27,6 +27,8 @@ import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver } from '#drivers/driver'
 import { listSshEntries } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
+import { createContainerlessDriver } from '#drivers/containerless'
+import { resolveDriverKind } from '#main/driver-choice'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -125,10 +127,25 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // make, and it is made before anything can ask for one: every mediator
   // reaches the substrate through the registered driver, so an unregistered
   // one is a startup-order bug rather than a null branch downstream.
-  setWorktreeDriver(createK8sDriver())
-
+  //
+  // The choice comes from the environment because it has to be made here,
+  // long before the database this server would otherwise remember it in is
+  // open. This is also the only place in `src/` that names a concrete
+  // driver — everything else reaches one through `#drivers/driver`.
   await preflightHostTor()
   await ensureDataDir()
+
+  // `--driver`/`YAAC_DRIVER` when the operator stated one, else whatever
+  // this install last ran — a bare restart must not move a containerless
+  // install onto a cluster (see `#main/driver-choice`). After the data dir,
+  // because the record lives beside the lock; before anything can ask for a
+  // runtime, which is what makes an unregistered one a startup-order bug
+  // rather than a null branch downstream.
+  const driverKind = await resolveDriverKind()
+  setWorktreeDriver(
+    driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
+  )
+  serverLog(`[server] runtime driver: ${driverKind}`)
 
   // Read build-id up front so a broken install fails loudly before we
   // bind a port or write a lock file.

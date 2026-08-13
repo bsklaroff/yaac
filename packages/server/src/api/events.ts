@@ -36,6 +36,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const provisioning = listProvisioning()
   const provisioningIds = new Set(provisioning.map((p) => p.worktreeId))
   return {
+    driver: worktreeDriver().kind,
     worktrees: active.worktrees.filter((w) => !provisioningIds.has(w.worktreeId)),
     worktreeGroups,
     stale: active.stale,

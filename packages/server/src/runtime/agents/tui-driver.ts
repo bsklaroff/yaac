@@ -27,8 +27,7 @@
  */
 
 import { StringDecoder } from 'node:string_decoder'
-import { type StreamChild } from '#drivers/contract'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { type StreamChild, type WorkspacePaths } from '#drivers/contract'
 import { serverLog } from '#log'
 import { ControlModeClient, type ControlModeNotification } from './control-mode'
 import { agentStatusFormat, agentWindowTool, classifyAgentObservation } from './agent-tools'
@@ -75,10 +74,10 @@ export function attachClientFlags(): string {
   return 'read-only,ignore-size,no-output'
 }
 
-/** The in-pod control-mode attach argv, dialed as a relay ctrl stream. */
-function attachArgv(): string[] {
+/** The in-workspace control-mode attach argv, dialed as a ctrl stream. */
+function attachArgv(paths: WorkspacePaths): string[] {
   return [
-    'tmux', '-S', CONTAINER_TMUX_SOCK, '-C', 'attach-session', '-t', 'yaac', '-f', attachClientFlags(),
+    'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac', '-f', attachClientFlags(),
   ]
 }
 
@@ -117,7 +116,10 @@ class TuiConnection implements AgentConnection {
 
     let child: StreamChild
     try {
-      child = (deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv)))(session, attachArgv())
+      const paths = worktreeDriver().workspacePaths(session.jobName)
+      child = (deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv)))(
+        session, attachArgv(paths),
+      )
     } catch (err) {
       this.down(`spawn failed: ${String(err)}`)
       return
@@ -305,7 +307,14 @@ export const tuiDriver: AgentDriver = {
   mode: 'tui',
 
   launchCmd(spec: AgentLaunchSpec): string {
-    return buildAgentCmd(spec.tool, spec.agentSessionId, spec.resume, spec.piProvider, spec.model)
+    return buildAgentCmd({
+      tool: spec.tool,
+      worktreeId: spec.agentSessionId,
+      resume: spec.resume,
+      autoApprove: spec.autoApprove,
+      ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
+      ...(spec.model !== undefined ? { model: spec.model } : {}),
+    })
   },
 
   connect(session, sink, deps = {}): AgentConnection {
@@ -315,9 +324,8 @@ export const tuiDriver: AgentDriver = {
   async deliverPrompt(session: DrivenWorktree, handle: string, text: string): Promise<void> {
     // The handle is a pane id, which is exactly what tmux's paste target
     // wants — no window-name indirection needed.
-    await worktreeDriver().exec(session.jobName, buildPromptPasteBgCmd(handle, text), {
-      maxAttempts: 1,
-      timeout: 15_000,
-    })
+    const driver = worktreeDriver()
+    const cmd = buildPromptPasteBgCmd(handle, text, driver.workspacePaths(session.jobName))
+    await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000 })
   },
 }

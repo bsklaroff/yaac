@@ -52,6 +52,11 @@ export function ProjectSettings(): JSX.Element {
 
   const filesApi = useMemo(() => (slug ? projectBuildFilesApi(slug) : null), [slug])
 
+  // A containerless server runs no images, so a project has no Dockerfile
+  // and no build context — the editors below would write files nothing
+  // ever builds.
+  const buildsImages = useSnapshot()?.driver !== 'containerless'
+
   const loadDockerfile = useCallback(
     (): Promise<string> => (slug ? getProjectDockerfile(slug) : Promise.resolve('')),
     [slug],
@@ -99,7 +104,9 @@ export function ProjectSettings(): JSX.Element {
             </div>
           </div>
 
-          <div className="mt-6">
+          {/* A driver that builds no images has nothing to build these
+              into: the editor would keep saving files nothing ever reads. */}
+          {buildsImages && <><div className="mt-6">
             <div className="text-xs font-medium text-text">Dockerfile</div>
             <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
               Overrides the base image for this project. Use{' '}
@@ -128,7 +135,7 @@ export function ProjectSettings(): JSX.Element {
             <div className="mt-2">
               {filesApi && <BuildFiles key={`files:${slug}`} filesApi={filesApi} title={slug} />}
             </div>
-          </div>
+          </div></>}
         </>
       )}
     </section>

@@ -3,6 +3,7 @@ import { type PodInfo, isPrewarmed, relayDial } from '#drivers/k8s/substrate'
 import { getWorktreePorts } from './port-forwarders'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
+import { MAX_SURFACED_PORTS, isForwardablePort } from '#drivers/shared'
 
 /**
  * Detected in-pod listeners, per worktree: streamd's `ports` stream pushes
@@ -21,28 +22,6 @@ import { serverLog } from '#log'
  * in-pod infra range is hidden, sensitive well-known ports are never
  * offered one-click, and the count is capped.
  */
-
-/** Well-known ports never offered for one-click forwarding — exposing
- *  them is a step toward RCE (node --inspect) or data exposure (DBs). */
-export const SENSITIVE_PORTS: ReadonlySet<number> = new Set([
-  22, // sshd
-  2375, 2376, // docker daemon
-  3306, // mysql
-  5432, // postgres
-  6379, // redis
-  9229, 9230, // node --inspect
-  11211, // memcached
-  27017, // mongodb
-])
-
-/** yaac's in-pod infra port range (streamd 10300, relay 10260, …) —
- *  fail closed: anything here is hidden, not surfaced. */
-const INFRA_PORT_MIN = 10250
-const INFRA_PORT_MAX = 10350
-
-/** Cap on ports surfaced per worktree — a hostile listener flood shows a
- *  bounded badge, not an unbounded snapshot. */
-const MAX_SURFACED_PORTS = 10
 
 /** Cap on ports stored per worktree from a single push. */
 const MAX_DETECTED_PORTS = 100
@@ -63,14 +42,6 @@ const dismissed = new Map<string, Set<number>>()
 export function _resetPortDetectorForTests(): void {
   detected.clear()
   dismissed.clear()
-}
-
-/** Whether a detected port may be offered for forwarding at all. */
-export function isForwardablePort(port: number): boolean {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return false
-  if (SENSITIVE_PORTS.has(port)) return false
-  if (port >= INFRA_PORT_MIN && port <= INFRA_PORT_MAX) return false
-  return true
 }
 
 /** Test-only: seed a worktree's detected set directly. */

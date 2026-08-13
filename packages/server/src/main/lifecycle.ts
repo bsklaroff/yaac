@@ -8,6 +8,7 @@ import { ensureDataDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
 import { preflightHostTor } from '#main/server-run'
 import { env } from '@yaac/shared/env'
+import { assertDriverSwitchSafe } from '#main/driver-choice'
 
 /**
  * Entry point for `yaac server start`.
@@ -21,6 +22,10 @@ import { env } from '@yaac/shared/env'
 export async function startServer(): Promise<void> {
   await preflightHostTor()
   await ensureDataDir()
+  // Before the spawn, so a refusal reaches the operator directly: the
+  // detached child dies before its log exists, and they would otherwise
+  // wait out the ready poll for a timeout that explains nothing.
+  await assertDriverSwitchSafe()
   const cliBuildId = await readBuildId()
 
   const existing = await readLock()

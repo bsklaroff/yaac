@@ -13,7 +13,7 @@ import {
   acpConversation,
   acpConversationByHandle,
 } from '#runtime/agents/acp-registry'
-import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 import type { StreamChild, WorktreeDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
@@ -149,6 +149,8 @@ describe('agentDriver', () => {
       agentSessionId: 'conv-1',
       resume: false,
       windowName: 'claude-2',
+      paths: workspacePathsFixture(),
+      autoApprove: true,
     }
     // TUI: the tool's own binary, pinned to the conversation id.
     expect(agentDriver('tui').launchCmd(spec)).toContain('claude --dangerously-skip-permissions')
@@ -175,6 +177,7 @@ describe('agentDriver', () => {
   it('rejects a tool with no ACP adapter rather than launching a window that exits', () => {
     expect(() => agentDriver('acp').launchCmd({
       tool: 'opencode', agentSessionId: 'c', resume: false, windowName: 'opencode',
+      paths: workspacePathsFixture(), autoApprove: true,
     })).toThrow(/no ACP adapter/)
   })
 

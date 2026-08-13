@@ -9,14 +9,17 @@ import {
 } from '#runtime/agents/setup-commands'
 import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/spawn-script'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 
-const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+import { workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+
+// The container paths these commands are written against.
+const PATHS = workspacePathsFixture()
+const TMUX = `tmux -S ${PATHS.tmuxSock}`
 
 describe('buildWorktreeLinkExec', () => {
   it('rewrites the gitdir pair and drops the prune lock in one command', () => {
-    const cmd = buildWorktreeLinkExec('sid-1')
+    const cmd = buildWorktreeLinkExec('sid-1', PATHS)
     expect(cmd).toBe(
       "echo 'gitdir: /repo/.git/worktrees/sid-1' > /workspace/.git"
       + " && echo '/workspace/.git' > /repo/.git/worktrees/sid-1/gitdir"
@@ -27,7 +30,7 @@ describe('buildWorktreeLinkExec', () => {
 
 describe('buildUpstreamExec', () => {
   it('sets the upstream from inside /workspace, shell-escaped', () => {
-    expect(buildUpstreamExec('origin/release/2.x')).toBe(
+    expect(buildUpstreamExec('origin/release/2.x', PATHS)).toBe(
       "git -C /workspace branch --set-upstream-to 'origin/release/2.x'",
     )
   })
@@ -53,13 +56,13 @@ describe('validateInitWindows', () => {
 
 describe('buildWindowsExec', () => {
   it('with no init windows, only respawns the agent into the keepalive window', () => {
-    const cmd = buildWindowsExec([], 'claude', [{ tool: 'claude', cmd: 'claude --session-id x' }])
+    const cmd = buildWindowsExec([], 'claude', [{ tool: 'claude', cmd: 'claude --session-id x' }], PATHS)
     expect(cmd).toBe(`${TMUX} respawn-window -k -t yaac:claude 'claude --session-id x'`)
   })
 
   it('chains each init window before the agent respawn', () => {
     const wins = validateInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
-    const cmd = buildWindowsExec(wins, 'codex', [{ tool: 'codex', cmd: 'codex --yolo' }])
+    const cmd = buildWindowsExec(wins, 'codex', [{ tool: 'codex', cmd: 'codex --yolo' }], PATHS)
     const [initPart, respawnPart] = cmd.split(' && tmux -S ')
     expect(initPart).toContain('new-window -d -t yaac -n init')
     expect(initPart).toContain('pnpm install && pnpm dev')
@@ -81,9 +84,11 @@ describe('yaac-worktree-init script', () => {
     expect(st.mode & 0o111).not.toBe(0)
   })
 
-  it('drives tmux over the pod-local socket (CONTAINER_TMUX_SOCK)', async () => {
+  it('drives tmux over the same pod-local socket the k8s driver answers with', async () => {
+    // The script is baked into the image, so it cannot ask the driver — it
+    // hard-codes the path, and this is what catches the two drifting apart.
     const body = await fs.readFile(scriptPath, 'utf8')
-    expect(body).toContain(`tmux -S ${CONTAINER_TMUX_SOCK}`)
+    expect(body).toContain(`tmux -S ${PATHS.tmuxSock}`)
   })
 
   it('consumes exactly the env session-create injects', async () => {

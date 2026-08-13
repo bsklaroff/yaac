@@ -538,6 +538,28 @@ export async function writeProjectClaudePlaceholder(
 }
 
 /**
+ * Write the REAL Claude OAuth bundle into a project's `.credentials.json`.
+ *
+ * The placeholder writer above exists because a worktree's egress is
+ * mediated: the sentinel never leaves the pod, and the proxy swaps it for
+ * this bundle on the way out. A runtime with no proxy has no such swap, so
+ * the agent needs the real thing — and gets it, on disk, in a directory it
+ * can read. That is the containerless bargain stated plainly (see
+ * docs/containerless-driver.md): no sandbox, so no secret is held back
+ * from what runs in it.
+ */
+export async function writeProjectClaudeCredentials(
+  slug: string,
+  bundle: ClaudeOAuthBundle,
+): Promise<void> {
+  await fs.mkdir(claudeDir(slug), { recursive: true })
+  await writeCredentialsFileAtomic(
+    projectClaudeCredentialsFile(slug),
+    JSON.stringify({ claudeAiOauth: bundle }, null, 2) + '\n',
+  )
+}
+
+/**
  * Run `fn` for every tracked project slug. A missing projects dir is a
  * no-op; a per-project failure is warned (as `Warning: <warnLabel> for
  * project "<slug>": <message>`) and does not block the rest.
@@ -611,6 +633,34 @@ export async function writeProjectCodexPlaceholder(
       account_id: placeholder.accountId ?? null,
     },
     last_refresh: placeholder.lastRefresh,
+  }
+  await writeCredentialsFileAtomic(
+    projectCodexAuthFile(slug),
+    JSON.stringify(payload, null, 2) + '\n',
+  )
+}
+
+/**
+ * Write the REAL Codex `auth.json` into a project's codex dir — the
+ * unmediated twin of `writeProjectCodexPlaceholder`, for a runtime with no
+ * proxy to swap a sentinel (see `writeProjectClaudeCredentials`). Same
+ * on-disk shape, real tokens.
+ */
+export async function writeProjectCodexAuth(
+  slug: string,
+  bundle: CodexOAuthBundle,
+): Promise<void> {
+  await fs.mkdir(codexDir(slug), { recursive: true })
+  const payload: Record<string, unknown> = {
+    OPENAI_API_KEY: null,
+    auth_mode: 'chatgpt',
+    tokens: {
+      id_token: bundle.idTokenRawJwt,
+      access_token: bundle.accessToken,
+      refresh_token: bundle.refreshToken,
+      account_id: bundle.accountId ?? null,
+    },
+    last_refresh: bundle.lastRefresh,
   }
   await writeCredentialsFileAtomic(
     projectCodexAuthFile(slug),

@@ -24,6 +24,7 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
+    driver: 'k8s',
     worktrees: [], worktreeGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
     imageBuilds: [],
     planUsage: null,

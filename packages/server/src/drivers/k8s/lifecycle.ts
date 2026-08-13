@@ -27,6 +27,12 @@ import {
 import { runtimeHandleFromPod } from '#drivers/k8s/view'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
+import {
+  fanOutClaudePlaceholders,
+  fanOutCodexPlaceholders,
+  loadClaudeCredentialsFile,
+  loadCodexCredentialsFile,
+} from '@yaac/shared/tool-auth'
 import { env } from '@yaac/shared/env'
 import {
   MEDIATOR_TRIGGERS,
@@ -85,7 +91,35 @@ let clusterCache: ClusterCache | null = null
 let portDetector: PortDetectorManager | null = null
 let proxyEvents: ProxyEventStream | null = null
 
+/**
+ * Put the per-project credential files back to placeholders.
+ *
+ * The one thing a driver flip leaves behind. A containerless server writes
+ * REAL OAuth bundles into `projects/<slug>/{claude,codex}` — correctly,
+ * since nothing would swap a sentinel there — and those are the very files a
+ * worktree pod hostPath-mounts. Pods outlive the server, so a data dir
+ * switched back to k8s can have live sandboxed worktrees holding real
+ * tokens, which is the one regression class the split otherwise avoids.
+ *
+ * Re-seeding on attach makes that window bounded rather than open-ended: it
+ * closes at the next k8s server start instead of at the next create in each
+ * affected project. Idempotent and best-effort — on an install that never
+ * ran containerless it rewrites the same placeholders it already had.
+ */
+async function reseedPlaceholderCredentials(): Promise<void> {
+  const claude = await loadClaudeCredentialsFile()
+  if (claude?.kind === 'oauth') await fanOutClaudePlaceholders(claude.claudeAiOauth)
+  const codex = await loadCodexCredentialsFile()
+  if (codex?.kind === 'oauth') await fanOutCodexPlaceholders(codex.codexOauth)
+}
+
 async function attachNow(sinks: DriverSinks): Promise<void> {
+  // Before anything can launch a pod that would mount them: a data dir this
+  // server is adopting may have been run containerless, which leaves real
+  // credentials in the files every pod mounts (see above).
+  await reseedPlaceholderCredentials()
+    .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
+
   // Kill any podman build/push a previous server left running before the
   // first thing that could duplicate it (the registry bootstrap's own
   // podman calls, then the reconciler's prewarm sweep). The graceful path

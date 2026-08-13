@@ -12,7 +12,7 @@
  */
 import { WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
 import { worktreeDriver } from '#drivers/driver'
-import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { tmuxCmd } from '#runtime/agents'
 import { isWorktreeStreamHealthy } from './status-store'
 
 /**
@@ -111,10 +111,11 @@ export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
  * masquerades as a dead worktree.
  */
 async function probeTmuxLivenessUncached(target: ProbeTarget): Promise<TmuxLiveness> {
+  const driver = worktreeDriver()
   try {
-    await worktreeDriver().exec(
+    await driver.exec(
       target.jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} has-session -t yaac`,
+      `${tmuxCmd(driver.workspacePaths(target.jobName))} has-session -t yaac`,
       { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
     return 'alive'
@@ -202,9 +203,11 @@ export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPan
   const key = tmuxAliveKey(target.projectSlug, target.workspaceId)
   if (agentStartedCache.has(key)) return 'started'
   try {
-    const { stdout } = await worktreeDriver().exec(
+    const driver = worktreeDriver()
+    const { stdout } = await driver.exec(
       target.jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} display-message -p -t 'yaac:^' '#{pane_current_command}'`,
+      `${tmuxCmd(driver.workspacePaths(target.jobName))} `
+      + "display-message -p -t 'yaac:^' '#{pane_current_command}'",
       { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
     if (stdout.trim() === 'sleep') return 'placeholder'
