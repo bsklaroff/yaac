@@ -21,7 +21,8 @@
  *    error rather than as "No changes".
  */
 
-import { podExec } from '#drivers/k8s/substrate'
+import { RelayExecError, podExec } from '#drivers/k8s/substrate'
+import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import type { ChangeStatus, WorktreeChange, WorktreeChanges } from '@yaac/shared/types'
 
@@ -59,8 +60,9 @@ const POD_INDEX = '/tmp/yaac-changes.idx'
  * Two optional args (see buildChangesScript):
  *  - `$1` — an explicit base branch the user picked. The fork point is taken
  *    against `origin/<$1>`, then the local `<$1>`; an explicit-but-unresolvable
- *    base fails hard (exit 4) rather than silently diffing against the wrong
- *    base.
+ *    base fails hard (exit `CHANGES_BASE_UNRESOLVED`) rather than silently
+ *    diffing against the wrong base — which is also what lets the mediator
+ *    answer such a request as the bad request it is.
  *  - `$2` — the branch the worktree forked from (its recorded upstream, e.g.
  *    `main`), used as the DEFAULT when no explicit base is given. The fork
  *    point is taken against `origin/<$2>`, then the local `<$2>`, then the
@@ -91,13 +93,13 @@ const POD_SCRIPT =
   'cd /workspace 2>/dev/null || exit 3; '
   + 'fork=1; '
   + 'if [ -n "$1" ]; then '
-  + 'base=$(git merge-base "origin/$1" HEAD 2>/dev/null || git merge-base "$1" HEAD 2>/dev/null) || exit 4; '
+  + `base=$(git merge-base "origin/$1" HEAD 2>/dev/null || git merge-base "$1" HEAD 2>/dev/null) || exit ${CHANGES_BASE_UNRESOLVED}; `
   + 'elif [ -n "$2" ]; then '
   + 'base=$(git merge-base "origin/$2" HEAD 2>/dev/null || git merge-base "$2" HEAD 2>/dev/null || git merge-base @{upstream} HEAD 2>/dev/null) '
-  + '|| { base=$(git rev-parse HEAD 2>/dev/null) || exit 4; fork=0; }; '
+  + `|| { base=$(git rev-parse HEAD 2>/dev/null) || exit ${CHANGES_BASE_UNRESOLVED}; fork=0; }; `
   + 'else '
   + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null) '
-  + '|| { base=$(git rev-parse HEAD 2>/dev/null) || exit 4; fork=0; }; '
+  + `|| { base=$(git rev-parse HEAD 2>/dev/null) || exit ${CHANGES_BASE_UNRESOLVED}; fork=0; }; `
   + 'fi; '
   // Our own index (a stable path — see POD_INDEX), reused across polls so
   // git's stat cache can make `add -A` incremental. Starting from whatever
@@ -295,7 +297,16 @@ const inFlight = new Map<string, Promise<WorktreeChanges>>()
  *  `defaultBase` is the worktree's recorded fork branch (e.g. `main`), used as
  *  the default when no explicit `base` is given so committed work stays
  *  visible even after the agent renames and pushes its branch (see
- *  POD_SCRIPT). */
+ *  POD_SCRIPT).
+ *
+ *  A script that RAN and exited nonzero crosses the contract as a
+ *  `WorkspaceExecError` carrying the exit code, because that code is the
+ *  whole of what the mediator has to tell a base that yielded nothing
+ *  (`CHANGES_BASE_UNRESOLVED` — the one failure a caller can be at fault
+ *  for) from a worktree that is not what we think it is. A transport
+ *  failure proves neither and passes through as itself. The same
+ *  distinction `exec` makes, drawn here because this is where the exit
+ *  codes are defined — and it is what decides 400 vs 500 upstream. */
 export async function getWorktreeChanges(jobName: string, base?: string, defaultBase?: string): Promise<WorktreeChanges> {
   const key = [jobName, base ?? '', defaultBase ?? ''].join(' ')
   const shared = inFlight.get(key)
@@ -304,7 +315,12 @@ export async function getWorktreeChanges(jobName: string, base?: string, default
   const run = changesMutex(jobName, async () => {
     const { stdout } = await podExec(
       jobName, buildChangesScript(base, defaultBase), { timeout: 20_000, maxAttempts: 2 },
-    )
+    ).catch((err: unknown) => {
+      if (err instanceof RelayExecError) {
+        throw new WorkspaceExecError(err.message, err.code, err.stdout, err.stderr, { cause: err })
+      }
+      throw err
+    })
     return parseChangesOutput(stdout)
   })
   inFlight.set(key, run)

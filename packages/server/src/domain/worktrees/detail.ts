@@ -5,6 +5,7 @@ import { worktreeForkBranch } from './fork-branch'
 import { resolveWorktreeContainer } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { worktreeDriver } from '#drivers/driver'
+import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 import type { RuntimeHandle, VirtualClusterStatus } from '#drivers/contract'
 import type { AgentTool, GitAuthFailure, WorktreeChanges } from '@yaac/shared/types'
 
@@ -70,6 +71,15 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
  *
  * An explicit `base` from the caller wins; the fork branch is looked up
  * only as the fallback, and is cached because this is polled.
+ *
+ * Naming the base is also what makes an unresolvable one this caller's
+ * mistake, so translating that failure is this verb's job: it is the one
+ * place that knows the ref came from the request. Both qualifiers on the
+ * mapping are load-bearing. Any other exec failure stays a fault — a bare
+ * nonzero exit is not evidence of a bad ref, and a workspace with no
+ * checkout is not the caller's doing. And with no explicit `base` the ref
+ * came from the recorded fork branch instead, where an unresolvable one is
+ * an inconsistency of ours and blaming the caller for it would hide it.
  */
 export async function getWorktreeChanges(
   idOrName: string,
@@ -79,7 +89,22 @@ export async function getWorktreeChanges(
     idOrName, { requireRunning: true },
   )
   const forkBranch = await worktreeForkBranch(projectSlug, worktreeId)
-  return worktreeDriver().changes(jobName, base, forkBranch ?? undefined)
+  // Trimmed, because that is what the runtime does with it: a blank `base`
+  // selects the default path pod-side, so it names no ref to blame.
+  const named = base?.trim()
+  try {
+    return await worktreeDriver().changes(jobName, base, forkBranch ?? undefined)
+  } catch (err) {
+    if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
+      // "no diff base" rather than "no such ref": the ref may exist and
+      // simply share no history with this worktree, which is just as
+      // unusable a base and just as much the caller's to fix.
+      throw new ServerError(
+        'VALIDATION', `base ref "${named}" gives no diff base in this worktree`,
+      )
+    }
+    throw err
+  }
 }
 
 export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[]> {

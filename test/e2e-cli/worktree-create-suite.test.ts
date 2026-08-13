@@ -631,6 +631,20 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])
     }, 60_000)
 
+    // The other end of that path: a base the caller named that resolves
+    // nowhere in the worktree. The pod script refuses to diff against a wrong
+    // base, and that refusal has to reach the client as the bad request it is
+    // rather than as a server fault.
+    it('answers 400 for a ?base= ref that resolves nowhere', async () => {
+      const res = await fetch(
+        `${base}/worktree/${worktreeId}/changes?base=no-such-branch`, { headers: auth },
+      )
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { code: string; message: string } }
+      expect(body.error.code).toBe('VALIDATION')
+      expect(body.error.message).toContain('no-such-branch')
+    }, 30_000)
+
     it('relay accepts sequential requests while the event loop stays responsive', async () => {
       // Regression: startPortForwarders needs the Node event loop to
       // accept TCP connections. A wedged event loop would let the first

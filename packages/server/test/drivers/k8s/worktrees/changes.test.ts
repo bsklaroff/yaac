@@ -4,10 +4,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-vi.mock('#drivers/k8s/substrate/stream-relay', () => ({
+// The real module with only `podExec` stubbed: its two error classes are
+// what the folder classifies a failed run BY, so a factory that returned the
+// stub alone would hand `changes.ts` an undefined `RelayExecError` to branch
+// on and quietly pass every failure through untranslated.
+vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof StreamRelay>(),
   podExec: vi.fn(),
 }))
-import { podExec } from '#drivers/k8s/substrate/stream-relay'
+import type * as StreamRelay from '#drivers/k8s/substrate/stream-relay'
+import { RelayDialError, RelayExecError, podExec } from '#drivers/k8s/substrate/stream-relay'
 import {
   statusFromCode,
   resolveRenamePath,
@@ -17,6 +23,7 @@ import {
   buildChangesScript,
   getWorktreeChanges,
 } from '#drivers/k8s/worktrees/changes'
+import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 
 const mockExec = vi.mocked(podExec)
 
@@ -396,10 +403,13 @@ describe('buildChangesScript', () => {
     expect(out.files.map((f) => f.path)).toEqual(['dirty.txt'])
   })
 
+  // Never silently diffs against the wrong base — and the code is the exact
+  // one the contract publishes, because that is what the mediator reads to
+  // answer a caller-named ref that resolves nowhere as a bad request.
   it('hard-fails on an explicit base that resolves nowhere', () => {
     const { repo, idx } = scratchRepo()
     const { code } = runPodScript(repo, idx, 'no-such-branch', 'main')
-    expect(code).toBe(4) // never silently diffs against the wrong base
+    expect(code).toBe(CHANGES_BASE_UNRESOLVED)
   })
 
   it('reuses the index across runs and recovers from a lock a killed run left', () => {
@@ -518,5 +528,33 @@ describe('getWorktreeChanges', () => {
   it('throws rather than reporting no changes when the run failed partway', async () => {
     mockExec.mockResolvedValue({ stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n', stderr: '' })
     await expect(getWorktreeChanges('yaac-proj-abc')).rejects.toThrow(/completion marker/)
+  })
+
+  // The script's exit codes are this folder's vocabulary, so a run that
+  // exited nonzero has to leave it in the CONTRACT's — the code is what the
+  // mediator reads to answer an unusable caller-named base with a 400, and a
+  // substrate error is not a vocabulary the layer above may name.
+  it('restates a nonzero exit as the contract error, carrying the code', async () => {
+    mockExec.mockRejectedValue(
+      new RelayExecError('command exited 4 in yaac-proj-abc: ', CHANGES_BASE_UNRESOLVED, '', ''),
+    )
+
+    const err = await getWorktreeChanges('yaac-proj-abc', 'no-such-branch').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorkspaceExecError)
+    expect(err).toMatchObject({ code: CHANGES_BASE_UNRESOLVED })
+    expect((err as WorkspaceExecError).cause).toBeInstanceOf(RelayExecError)
+  })
+
+  // The other direction, and the one that matters most: a workspace the exec
+  // never reached proves nothing about the base. Translated, it would arrive
+  // upstream indistinguishable from a real verdict and a cluster blip would
+  // be answered as the caller's bad ref.
+  it('passes a transport failure through untranslated', async () => {
+    const dial = new RelayDialError('stream relay dial (yaac-pro...): connection refused')
+    mockExec.mockRejectedValue(dial)
+
+    const err = await getWorktreeChanges('yaac-proj-abc', 'dev').catch((e: unknown) => e)
+    expect(err).toBe(dial)
+    expect(err).not.toBeInstanceOf(WorkspaceExecError)
   })
 })
