@@ -15,6 +15,42 @@ const SOUND_LS_KEY = 'yaac.sound.v1'
 const CHAT_DRAFTS_LS_KEY = 'yaac.chatdrafts.v1'
 const MOBILE_SCREEN_LS_KEY = 'yaac.mobilescreen.v1'
 const AUTO_APPROVE_LS_KEY = 'yaac.autoapprove.v1'
+const SIDEBAR_WIDTH_LS_KEY = 'yaac.sidebarwidth.v1'
+
+/** Desktop worktree-sidebar width, in px: the drag handle's resting place and
+ *  the bounds it may be dragged between. The floor keeps a row's name and its
+ *  chits legible; the ceiling keeps the pane the larger half on a laptop. */
+export const DEFAULT_SIDEBAR_WIDTH = 256
+export const MIN_SIDEBAR_WIDTH = 180
+export const MAX_SIDEBAR_WIDTH = 640
+
+/** Hold a dragged/restored width inside the bounds (exported for tests). */
+export function clampSidebarWidth(px: number): number {
+  if (!Number.isFinite(px)) return DEFAULT_SIDEBAR_WIDTH
+  return Math.round(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, px)))
+}
+
+/** Persisted sidebar width, falling back to the default when unset or
+ *  unparseable (exported for tests). */
+export function loadSidebarWidth(): number {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(SIDEBAR_WIDTH_LS_KEY)
+      if (raw !== null && raw.trim() !== '') {
+        const px = Number(raw)
+        if (Number.isFinite(px)) return clampSidebarWidth(px)
+      }
+    }
+  } catch { /* fall through to the default */ }
+  return DEFAULT_SIDEBAR_WIDTH
+}
+
+/** Persist the sidebar width; best-effort (exported for tests). */
+export function persistSidebarWidth(px: number): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(SIDEBAR_WIDTH_LS_KEY, String(px))
+  } catch { /* non-fatal — the width just won't stick */ }
+}
 
 /** Whether the attention chime plays; defaults on (exported for tests). */
 export function loadSoundEnabled(): boolean {
@@ -511,6 +547,10 @@ interface UiState {
   /** Whether the worktree sidebar is shown. Desktop only — the mobile shell
    *  gives the worktree list a screen of its own. */
   sidebarOpen: boolean
+  /** The worktree sidebar's width in px, set by its drag handle. Desktop
+   *  only, like `sidebarOpen`; persisted, and clamped to the bounds above. */
+  sidebarWidth: number
+  setSidebarWidth: (px: number) => void
   /** Which mobile screen is showing (inert above the mobile breakpoint).
    *  Persisted. */
   mobileScreen: MobileScreen
@@ -709,6 +749,7 @@ export const useUiStore = create<UiState>((set) => ({
   layouts: loadPersistedLayouts(),
   previewPort: {},
   sidebarOpen: true,
+  sidebarWidth: loadSidebarWidth(),
   mobileScreen: loadMobileScreen(),
   setMobileScreen: (screen) => set((s) => (s.mobileScreen === screen ? s : { mobileScreen: screen })),
   themePref: loadThemePref(),
@@ -825,6 +866,10 @@ export const useUiStore = create<UiState>((set) => ({
     }
   }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setSidebarWidth: (px) => set((s) => {
+    const width = clampSidebarWidth(px)
+    return width === s.sidebarWidth ? s : { sidebarWidth: width }
+  }),
   setThemePref: (pref) => {
     persistThemePref(pref)
     applyThemeAttribute(pref)
@@ -958,6 +1003,12 @@ export const useUiStore = create<UiState>((set) => ({
 // back too.
 useUiStore.subscribe((state, prev) => {
   if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
+})
+
+// The sidebar's dragged width survives reloads. Written per changed pixel
+// during a drag — a two-digit string, so no debounce is worth the state.
+useUiStore.subscribe((state, prev) => {
+  if (state.sidebarWidth !== prev.sidebarWidth) persistSidebarWidth(state.sidebarWidth)
 })
 
 // The active project + worktree survive reloads and are mirrored into the URL

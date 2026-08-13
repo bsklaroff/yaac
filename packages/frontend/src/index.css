@@ -308,6 +308,15 @@ body {
   padding-left: env(safe-area-inset-left);
 }
 
+/* Set on <body> while the sidebar's resize handle is being dragged: the whole
+   document keeps the resize cursor and stops selecting text, so a drag that
+   travels across a terminal doesn't flicker the cursor or paint a selection. */
+body.col-resizing,
+body.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 *::-webkit-scrollbar {
   width: 3px;
   height: 3px;
