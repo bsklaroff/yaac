@@ -21,13 +21,13 @@
  * the worktree's in-pod podman, which IS the outer sandbox — an inner
  * builder pod would be a vcluster pod, unvalidated and strictly worse.
  *
- * The seam is build/imageExists/remove. Pushes are deliberately NOT routed
+ * The seam is build/imageExists. Pushes are deliberately NOT routed
  * per layer: host products push through `pushImageShared` (which
  * coalesces + HEAD-skips), while a cluster-pod build's delta push is an
  * inseparable step of the build itself — the product only ever exists in
  * the registry.
  */
-import { imageExists, registryHasTag, removeImage } from '#drivers/k8s/container'
+import { imageExists, registryHasTag } from '#drivers/k8s/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
@@ -55,8 +55,6 @@ export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
 export interface EngineBuildContext {
   /** Project whose chain is being built (keys the step-cache repo). */
   projectSlug: string
-  /** Required, not defaulted: every build path decides this explicitly. */
-  noCache: boolean
   onLog?: (line: string) => void
   /**
    * Shared builder pod for adjacent untrusted layers of one request.
@@ -72,18 +70,14 @@ export interface BuildEngine {
   build(layer: ImageLayer, ctx: EngineBuildContext): Promise<void>
   /** Whether the layer's tag is already realized where this engine looks. */
   imageExists(tag: string): Promise<boolean>
-  /** Best-effort stale-tag removal before an exclusive rebuild. */
-  remove(tag: string): Promise<void>
 }
 
 export const hostPodmanEngine: BuildEngine = {
   kind: 'host-podman',
   build: (layer, ctx) => buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
-    noCache: ctx.noCache,
     onLog: ctx.onLog,
   }),
   imageExists: (tag) => imageExists(tag),
-  remove: (tag) => removeImage(tag),
 }
 
 export const clusterPodEngine: BuildEngine = {
@@ -91,9 +85,6 @@ export const clusterPodEngine: BuildEngine = {
   build: (layer, ctx) => buildLayerInPod(layer, ctx),
   // The registry is authoritative — the host store never sees these tags.
   imageExists: (tag) => registryHasTag(tag),
-  // Nothing to remove host-side; a rebuild's in-pod --no-cache build
-  // overwrites the unchanged content-hash tag in the registry directly.
-  remove: () => Promise.resolve(),
 }
 
 export function engineForLayer(name: ImageLayerName): BuildEngine {

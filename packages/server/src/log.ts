@@ -29,9 +29,9 @@ export function serverLog(message: string): void {
  * output (e.g. `podman build`) lands in `~/.yaac/server.log` instead of
  * being dropped when the server runs detached with `stdio: 'ignore'`.
  *
- * Pass `onLine` to also fan each line out to a caller — used by streaming
- * commands (e.g. `yaac project rebuild`) that need to mirror build output
- * to an NDJSON response while still landing it in the persistent log.
+ * Pass `onLine` to also fan each line out to a caller — used where the
+ * output has a live audience as well as the log (the image-build registry
+ * the webapp tails, a command's captured stderr).
  */
 export function pipeToServerLog(
   stream: NodeJS.ReadableStream | null,

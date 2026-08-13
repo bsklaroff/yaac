@@ -307,11 +307,10 @@ export function builderParentPullScript(parentTag: string, clusterHost: string):
 /**
  * `podman build` argv for the in-pod build (everything after `podman`).
  *
- * There is no --no-cache variant: the only forced rebuild is `yaac project
- * rebuild`, which forces exactly the tools layer, and tools is always
- * host-built. An in-pod layer therefore always keeps its step cache. If a
- * forced in-pod rebuild is ever wanted, add the flag here and thread it
- * from rebuildProjectImage — the absence is deliberate, not an oversight.
+ * There is no --no-cache variant, and nothing above asks for one: a layer
+ * builds only when its content-hash tag is missing, so the step cache can
+ * only ever be reused for inputs that have not changed. The absence is
+ * deliberate, not an oversight.
  */
 export function builderBuildArgs(
   layer: ImageLayer,
@@ -517,8 +516,8 @@ async function ensureBuilderNetworkPolicies(): Promise<void> {
  * One builder pod, lazily created and shared by the untrusted layers of a
  * single build request. `acquire` is idempotent (first caller creates the
  * pod, later callers reuse it); `release` deletes it. The creator
- * (ensureImage / rebuildProjectImage) owns release; a coordinator joiner
- * shares only the build promise, never the lease.
+ * (ensureImage) owns release; a coordinator joiner shares only the build
+ * promise, never the lease.
  */
 export class BuilderPodLease {
   private podName: string | null = null
@@ -654,9 +653,9 @@ export async function buildLayerInPod(
   layer: ImageLayer,
   ctx: EngineBuildContext,
 ): Promise<void> {
-  // The lease belongs to the ensureImage/rebuildProjectImage call that
-  // created it — adjacent untrusted layers share one pod, and that caller's
-  // `finally` releases it. Nothing here owns the pod's lifetime.
+  // The lease belongs to the ensureImage call that created it — adjacent
+  // untrusted layers share one pod, and that caller's `finally` releases
+  // it. Nothing here owns the pod's lifetime.
   const pod = await ctx.lease.acquire(layer.tag)
   const clusterHost = registryHost()
   const logPrefix = `[build ${layer.tag}] `
@@ -703,8 +702,10 @@ async function runLayerBuild(
 
   // Delta push: parent blobs were just pulled from this registry, so
   // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
-  // Always pushes (no HEAD skip) — a --no-cache rebuild must overwrite
-  // the unchanged content-hash tag with fresh bytes.
+  // Always pushes (no HEAD skip) — this build only ran because the
+  // coordinator saw the tag missing (`registryHasTag` is the exists check
+  // for a cluster-pod layer), so the push is the product's first publish;
+  // a HEAD here would cost an exec to learn what we already know.
   await execInBuilderPod(
     pod,
     ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],

@@ -20,7 +20,7 @@ import { stripAnsi } from '@yaac/shared/ansi'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'
 
-export type ImageBuildReason = 'session' | 'prewarm' | 'rebuild'
+export type ImageBuildReason = 'session' | 'prewarm'
 
 interface BuildRecord {
   id: string

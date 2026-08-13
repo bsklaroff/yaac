@@ -321,7 +321,7 @@ function UserDockerfilePane(): JSX.Element {
           <>
             Files stored next to Dockerfile.user as its build context — reference them
             with <code className="text-text-dim">COPY</code>. Changes apply on the next
-            rebuild or worktree create.
+            worktree create.
           </>
         )}
       >

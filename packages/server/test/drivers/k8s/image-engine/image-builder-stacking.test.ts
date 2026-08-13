@@ -69,10 +69,10 @@ describe('resolveImageChain', () => {
 describe('buildImage', () => {
   const h = setupStackingHarness()
 
-  it('passes tag, dockerfile, build args, and --no-cache to podman', async () => {
+  it('passes tag, dockerfile, and build args to podman', async () => {
     const { buildImage } = await h.load()
-    await buildImage('img:tag', '/some/Dockerfile', '/some', { K: 'v' }, { noCache: true })
-    expect(h.operations).toEqual(['build img:tag [K=v] --no-cache'])
+    await buildImage('img:tag', '/some/Dockerfile', '/some', { K: 'v' })
+    expect(h.operations).toEqual(['build img:tag [K=v]'])
   })
 
   // The build budget is idle, not total: a long build that keeps logging must

@@ -14,7 +14,6 @@
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
  */
-import { imageExists } from '#drivers/k8s/container'
 import {
   engineForLayer,
   TRUSTED_PARENT_COMPRESSION,
@@ -37,12 +36,11 @@ import {
 interface BuildContext {
   projectSlug: string
   reason: ImageBuildReason
-  onLog?: (line: string) => void
   /**
    * Builder-pod lease for trust-split untrusted layers, owned by the
-   * ensureImage/rebuild call that created it — adjacent untrusted layers
-   * of one chain build in the same pod. Ignored by the host engine.
-   * Required so no build path can reach the cluster engine without one.
+   * ensureImage call that created it — adjacent untrusted layers of one
+   * chain build in the same pod. Ignored by the host engine. Required so no
+   * build path can reach the cluster engine without one.
    */
   lease: BuilderPodLease
 }
@@ -52,14 +50,12 @@ const inflightPushes = new Map<string, Promise<string>>()
 
 /**
  * Tags verified present (image store / registry respectively) this server
- * run. Content-hash tags are immutable, so a verified tag never needs
- * re-checking — this trades a `podman image exists` child process (and a
- * registry HEAD) per layer per create for one per tag per run. `yaac
- * project rebuild` changes bytes under unchanged tags, so the rebuild path
- * invalidates before removing and re-verifies after. The residual staleness
- * (someone prunes the podman store or wipes the registry mid-run) surfaces
- * as a fail-fast ErrImagePull on the next worktree pod, same as any missing
- * immutable tag.
+ * run. Content-hash tags are immutable — nothing publishes new bytes under
+ * an existing tag — so a verified tag never needs re-checking: this trades
+ * a `podman image exists` child process (and a registry HEAD) per layer per
+ * create for one per tag per run. The residual staleness (someone prunes
+ * the podman store or wipes the registry mid-run) surfaces as a fail-fast
+ * ErrImagePull on the next worktree pod, same as any missing immutable tag.
  */
 const realizedTags = new Set<string>()
 const pushedTags = new Set<string>()
@@ -94,7 +90,7 @@ export function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<
     projectSlug: ctx.projectSlug,
     reason: ctx.reason,
   })
-  const promise = runBuild(id, layer, ctx, { noCache: false })
+  const promise = runBuild(id, layer, ctx)
   // Set synchronously (before any await inside runBuild resolves) so a
   // same-tick caller joins instead of double-building.
   inflightBuilds.set(layer.tag, { id, promise })
@@ -105,21 +101,13 @@ async function runBuild(
   id: string,
   layer: ImageLayer,
   ctx: BuildContext,
-  opts: { noCache: boolean; preStep?: () => Promise<void> },
 ): Promise<void> {
   try {
-    // The rebuild path removes the stale image inside the single-flight
-    // slot, so the removal never races a concurrent build of the tag.
-    if (opts.preStep) await opts.preStep()
     serverLog(`[build] starting ${layer.tag}`)
     await engineForLayer(layer.name).build(layer, {
       projectSlug: ctx.projectSlug,
-      noCache: opts.noCache,
       lease: ctx.lease,
-      onLog: (line) => {
-        ingestImageBuildLine(id, line)
-        ctx.onLog?.(line)
-      },
+      onLog: (line) => ingestImageBuildLine(id, line),
     })
     finishImageBuild(id)
     realizedTags.add(layer.tag)
@@ -132,122 +120,29 @@ async function runBuild(
 }
 
 /**
- * Force-rebuild one layer (`yaac project rebuild`): remove the existing
- * image and rebuild it, optionally with --no-cache. Waits out any in-flight
- * normal build of the tag first, then holds the single-flight slot itself —
- * so the removal never races a concurrent build, and a create/prewarm
- * arriving mid-rebuild joins the fresh build instead.
- */
-export async function rebuildLayerExclusive(
-  layer: ImageLayer,
-  ctx: BuildContext,
-  opts: { noCache: boolean },
-): Promise<void> {
-  // Wait for any in-flight build of this tag to drain; its outcome doesn't
-  // matter (we're about to remove and rebuild), only that podman is done.
-  for (;;) {
-    const existing = inflightBuilds.get(layer.tag)
-    if (!existing) break
-    await existing.promise.catch(() => {})
-  }
-
-  // The rebuild is about to remove the image — the verified-tag caches
-  // must not vouch for it (or its registry copy, which the rebuild
-  // force-pushes) until the fresh build lands.
-  realizedTags.delete(layer.tag)
-  pushedTags.delete(layer.tag)
-
-  const id = registerImageBuild({
-    tag: layer.tag,
-    layer: layer.name,
-    action: 'build',
-    projectSlug: ctx.projectSlug,
-    reason: ctx.reason,
-  })
-  const promise = runBuild(id, layer, ctx, {
-    noCache: opts.noCache,
-    preStep: () => engineForLayer(layer.name).remove(layer.tag),
-  })
-  // Set synchronously (before any await inside runBuild resolves) so a
-  // same-tick caller joins instead of double-building.
-  inflightBuilds.set(layer.tag, { id, promise })
-  return promise
-}
-
-/**
- * Wait until no push of `tag` is in flight.
- *
- * A loop rather than one await because a third caller may start one while
- * we wait; each turn awaits a distinct promise, and the map entry is gone
- * by the time ours resolves (the stored promise includes the `finally`
- * that deletes it), so this settles as soon as the traffic does. The
- * identity check is a backstop against spinning if that ever stops
- * holding.
- *
- * A failed push resolves the wait rather than raising: it owns its own
- * feed row and error path, and the caller waiting behind it is about to
- * push the same tag anyway.
- */
-async function settleInflightPush(tag: string): Promise<void> {
-  let existing = inflightPushes.get(tag)
-  while (existing) {
-    await existing.catch(() => undefined)
-    const next = inflightPushes.get(tag)
-    if (next === existing) break
-    existing = next
-  }
-}
-
-/**
  * Push a built tag to the local registry, coalescing concurrent pushes of
  * the same tag. Skips both the push and the registry entry when the tag is
  * already present (content-hash tags are immutable) — the background sweep
  * calls this every tick and must not mint a "succeeded push" row each time.
- * `force` pushes even when the tag is present, for `yaac project rebuild`,
- * which changes image bytes under an unchanged content-hash tag; such a
- * call is the LAST word on the tag, so it waits out any push in flight
- * rather than joining it.
  * Returns the in-cluster ref, like `pushImageToRegistry`.
  */
 export async function pushImageShared(
   tag: string,
   ctx: { projectSlug: string; reason: ImageBuildReason },
-  opts: { force?: boolean; compressionFormat?: 'zstd' | 'gzip' } = {},
+  opts: { compressionFormat?: 'zstd' | 'gzip' } = {},
 ): Promise<string> {
-  // A forced push must be the LAST word on the tag, so it never JOINS one
-  // in flight. That push was started against the bytes the tag named
-  // before the rebuild replaced them, so joining it would return its ref
-  // and report a rebuild that published nothing — the exact silent
-  // staleness `force` exists to prevent. Waiting for it, rather than
-  // pushing alongside, keeps the one-push-per-tag guarantee intact.
-  if (opts.force) await settleInflightPush(tag)
-  else {
-    const existing = inflightPushes.get(tag)
-    if (existing) return existing
-  }
+  const existing = inflightPushes.get(tag)
+  if (existing) return existing
 
-  if (!opts.force && pushedTags.has(tag)) return registryRef(tag)
-  if (!opts.force && await registryHasTag(tag)) {
+  if (pushedTags.has(tag)) return registryRef(tag)
+  if (await registryHasTag(tag)) {
     pushedTags.add(tag)
     return registryRef(tag)
   }
 
-  // A force-push of a tag the host store never held (a cluster-pod-built
-  // untrusted layer) is already satisfied: the builder pod force-pushed
-  // the fresh bytes as part of its build. Pushing would fail — there is
-  // nothing local to push.
-  if (opts.force && !await imageExists(tag) && await registryHasTag(tag)) {
-    return registryRef(tag)
-  }
-
   // Re-check after the await: another caller may have started the push.
-  // A forced call waits it out for the same reason as above rather than
-  // taking its answer.
   const raced = inflightPushes.get(tag)
-  if (raced) {
-    if (!opts.force) return raced
-    await settleInflightPush(tag)
-  }
+  if (raced) return raced
 
   const id = registerImageBuild({
     tag,
@@ -258,7 +153,6 @@ export async function pushImageShared(
   })
   const promise = pushImageToRegistry(tag, {
     onLog: (line) => ingestImageBuildLine(id, line),
-    force: opts.force,
     compressionFormat: opts.compressionFormat,
   })
     .then((ref) => {
@@ -288,8 +182,7 @@ export interface EnsureImageOpts {
  * Layer 1: yaac-base (Dockerfile.default — Ubuntu + system packages + Node)
  *   Skipped when Dockerfile.yaac is standalone (any FROM that isn't ${BASE_IMAGE}).
  * Layer 1a: yaac-tools (Dockerfile.tools — claude, codex, opencode, etc.)
- *   Included whenever the canonical base is in use. Rebuilt with --no-cache
- *   by `yaac project rebuild` to pick up new upstream agent CLI versions.
+ *   Included whenever the canonical base is in use.
  * Layer 1b (optional): yaac-nestable (Dockerfile.nestable — in-pod rootless
  *   podman + docker CLI/compose), only when `nestedContainers` is set.
  * Layer 2: yaac-base from Dockerfile.yaac — when present:
@@ -363,95 +256,6 @@ export async function ensureImage(
     await lease.release()
   }
 
-  return finalTag
-}
-
-/**
- * Rebuild a project's tools layer and every layer downstream of it.
- *
- * The tools layer (Dockerfile.tools) installs the agent CLIs (claude, codex,
- * opencode, chrome-devtools-mcp) from upstream installers/registries; those
- * tools tick independently of the Dockerfile content, so the content-hash
- * tag never invalidates and a normal `ensureImage` would silently reuse a
- * stale cached layer. This forces a `--no-cache` rebuild of the tools layer
- * (re-fetching the latest upstream version of each CLI) and re-runs every
- * downstream layer (Dockerfile.yaac overlay / Dockerfile.user) so
- * they sit on the new tools image.
- *
- * The system base (Dockerfile.default — apt packages, Node, Playwright) is
- * left untouched: it's slow to rebuild and its content hash already
- * invalidates correctly when the Dockerfile changes.
- *
- * Returns the final image tag (same as `ensureImage`).
- *
- * @throws when the project uses a standalone Dockerfile.yaac (no tools layer
- *   in the chain) — there's nothing for this command to invalidate.
- */
-export async function rebuildProjectImage(
-  projectSlug: string,
-  opts: {
-    imagePrefix?: string
-    onLog?: (line: string) => void
-  } = {},
-): Promise<string> {
-  const prefix = opts.imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
-
-  const toolsIdx = layers.findIndex((l) => l.tag.startsWith(`${prefix}-tools:`))
-  if (toolsIdx < 0) {
-    throw new Error(
-      `Project "${projectSlug}" uses a standalone Dockerfile.yaac (no tools ` +
-      'layer in the image chain). `yaac project rebuild` has nothing to ' +
-      'invalidate — rebuild your custom image directly with ' +
-      '`podman build --no-cache`.',
-    )
-  }
-
-  const emit = (msg: string): void => {
-    serverLog(`[rebuild ${projectSlug}] ${msg}`)
-    opts.onLog?.(msg)
-  }
-
-  // Tools layer is rebuilt with --no-cache so the upstream agent CLI
-  // installers re-execute. Downstream layers use the normal cache; their
-  // RUN steps are unchanged, but FROM resolves to the new tools digest so
-  // they're rebuilt cleanly. Each removal happens inside the layer's
-  // single-flight slot, so concurrent creates join the fresh build instead
-  // of racing the removed tag.
-  const lease = new BuilderPodLease()
-  try {
-    for (let i = toolsIdx; i < layers.length; i++) {
-      const layer = layers[i]
-      const noCache = i === toolsIdx
-      const engine = engineForLayer(layer.name)
-      // A cluster-pod layer pulls its parent from the registry. A rebuild
-      // changes bytes under unchanged content-hash tags, so a host-built
-      // parent that was itself just rebuilt (index >= toolsIdx) must be
-      // FORCE-pushed — a HEAD-skip would hand the builder pod stale bytes.
-      // A cluster-pod parent already force-pushed from its own builder pod.
-      if (engine.kind === 'cluster-pod' && layer.buildArgs?.BASE_IMAGE) {
-        const parentTag = layer.buildArgs.BASE_IMAGE
-        const parentIdx = layers.findIndex((l) => l.tag === parentTag)
-        const parentRebuilt = parentIdx >= toolsIdx
-          && engineForLayer(layers[parentIdx].name).kind === 'host-podman'
-        await pushImageShared(parentTag, { projectSlug, reason: 'rebuild' }, {
-          force: parentRebuilt,
-          compressionFormat: TRUSTED_PARENT_COMPRESSION,
-        })
-      }
-      emit(`removing existing image ${layer.tag}`)
-      emit(`building ${layer.tag}${noCache ? ' (no cache)' : ''}`)
-      await rebuildLayerExclusive(
-        layer,
-        { projectSlug, reason: 'rebuild', onLog: opts.onLog, lease },
-        { noCache },
-      )
-    }
-  } finally {
-    await lease.release()
-  }
-
-  emit(`done — final image is ${finalTag}`)
   return finalTag
 }
 

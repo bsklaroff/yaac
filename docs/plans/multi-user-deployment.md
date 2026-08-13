@@ -307,7 +307,7 @@ Two coherent shapes:
   and the image chain.
 - **Communal projects** (recommended): any authenticated user may create
   worktrees in any project — the worktree is owned by its creator; project
-  *mutation* (config, Dockerfile, build files, rebuild, delete) stays
+  *mutation* (config, Dockerfile, build files, delete) stays
   owner-gated. Creating a worktree in someone's project means running
   their config and image — the same trust class as sharing the repo — and
   it is the shape team projects grow into. Project delete gains a guard:
@@ -455,9 +455,9 @@ class — *install-global* writes any user can make today:
 - **Image/build surface**: `PUT /config/user-dockerfile` (top layer of
   *every* project image — highest blast radius), `/config/user-build-files/*`
   (same, and the shared `resolveRoot` signature can't express per-user until
-  it takes the Principal), `PUT /project/:slug/dockerfile`, the
-  `build-files` CRUD, and `POST /project/:slug/rebuild` are all code-in-
-  every-pod writes — admin or project-owner only. `POST /image/builds/:id/retry`
+  it takes the Principal), `PUT /project/:slug/dockerfile` and the
+  `build-files` CRUD are all code-in-every-pod writes — admin or
+  project-owner only. `POST /image/builds/:id/retry`
   can rebuild the shared egress-proxy sidecar (infra DoS) — admin.
 - **Cross-boundary fan-out writes**: `allow-host` and `forward-port` with
   `persist:true` widen every running sibling worktree of the project (an

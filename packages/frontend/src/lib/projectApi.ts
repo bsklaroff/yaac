@@ -66,7 +66,7 @@ export async function getProjectDockerfile(slug: string): Promise<string> {
 }
 
 /** Write (or clear, when empty) the per-project Dockerfile.yaac. Takes
- *  effect on the next `yaac project rebuild`. */
+ *  effect on the next worktree created for the project. */
 export async function saveProjectDockerfile(slug: string, content: string): Promise<void> {
   await api.project[':slug'].dockerfile.$put({ param: { slug }, json: { content } })
 }

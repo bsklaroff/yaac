@@ -152,7 +152,7 @@ describe('configEditDockerfile', () => {
 
     expect(get).toHaveBeenCalledWith({ param: { slug: 'demo' } })
     expect(put).toHaveBeenCalledWith({ param: { slug: 'demo' }, json: { content: 'RUN true\n' } })
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/yaac project rebuild demo/))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/next worktree created/))
     logSpy.mockRestore()
   })
 })

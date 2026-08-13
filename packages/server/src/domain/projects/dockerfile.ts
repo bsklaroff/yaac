@@ -38,7 +38,8 @@ export async function readProjectDockerfile(slug: string): Promise<string> {
 /**
  * Write (or clear) the per-project Dockerfile.yaac. Whitespace-only
  * content removes the file so the project reverts to the bundled base.
- * The image only changes on the next `yaac project rebuild`.
+ * The image changes on the next worktree created for the project: the
+ * edit moves the layer's content hash, so its chain rebuilds.
  */
 export async function writeProjectDockerfile(slug: string, content: string): Promise<void> {
   const filePath = projectDockerfilePath(slug)

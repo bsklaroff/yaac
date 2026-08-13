@@ -6,9 +6,9 @@ import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { makeServerApiClient } from '@yaac/test-utils/api'
 
 /**
- * Merged e2e coverage for `yaac project` (list/add), `yaac project rebuild`,
- * and `yaac config` — all server-backed CLI commands. One test env + one
- * real server are shared across the whole file (spawning a server acquires
+ * Merged e2e coverage for `yaac project` (list/add) and `yaac config` — all
+ * server-backed CLI commands. One test env + one real server are shared
+ * across the whole file (spawning a server acquires
  * the cross-worker server mutex and is by far the slowest step, so per-test
  * servers made these suites pay that cost for every it()).
  *
@@ -25,7 +25,7 @@ import { makeServerApiClient } from '@yaac/test-utils/api'
  *    that persist for the rest of the file, so the seeded `project list`
  *    test is declared before them to keep its expected output exact.
  *  - Every seeded project slug is unique file-wide (repo-alpha/repo-beta,
- *    repo-rebuild, demo-*) so no test trips over another's clone.
+ *    demo-*) so no test trips over another's clone.
  */
 
 let testEnv: YaacTestEnv
@@ -157,52 +157,6 @@ describe('yaac project (real CLI + real server)', () => {
     expect(gitlab.exitCode).not.toBe(0)
     expect(gitlab.stderr).toContain('"myrepo"')
     expect(gitlab.stderr).toContain('already exists')
-  })
-})
-
-describe('yaac project rebuild (real CLI + real server)', () => {
-  it('errors at commander level when the <project> argument is omitted', async () => {
-    const { stderr, exitCode } = await runYaac(testEnv.env, 'project', 'rebuild')
-    expect(exitCode).not.toBe(0)
-    // commander emits "missing required argument" — exact phrasing varies
-    // by version, so just match the project token.
-    expect(stderr).toMatch(/missing.*argument.*project/i)
-  })
-
-  it('errors cleanly when the named project does not exist', async () => {
-    const { stdout, stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'rebuild', 'no-such-project',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stdout + stderr).toMatch(/not found/i)
-  })
-
-  it('reports the "standalone Dockerfile.yaac" guard when the project has no tools layer', async () => {
-    // Seed a project, then drop a standalone Dockerfile.yaac (its own FROM)
-    // into the project's build dir so resolveImageChain skips the tools
-    // layer entirely. The server route should surface the guard error
-    // rather than attempting a (slow, network-bound) --no-cache build —
-    // so a Dockerfile seeded anywhere else makes this pass in name only,
-    // spending 80s on the very build it exists to avoid.
-    // Slug is `repo-rebuild` (not the original `repo-alpha`) because the
-    // project-list suite above already seeded `repo-alpha` into the shared
-    // data dir.
-    const repoRebuild = path.join(testEnv.scratchDir, 'repo-rebuild')
-    await createTestRepo(repoRebuild)
-    await addTestProject(repoRebuild)
-
-    const buildDir = path.join(testEnv.dataDir, 'projects', 'repo-rebuild', 'config', 'build')
-    await fs.mkdir(buildDir, { recursive: true })
-    await fs.writeFile(
-      path.join(buildDir, 'Dockerfile.yaac'),
-      'FROM docker.io/ubuntu:24.04\nRUN echo custom\n',
-    )
-
-    const { stdout, stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'rebuild', 'repo-rebuild',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stdout + stderr).toMatch(/standalone Dockerfile\.yaac/)
   })
 })
 

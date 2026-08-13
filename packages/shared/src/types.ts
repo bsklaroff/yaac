@@ -792,7 +792,7 @@ export interface ImageBuildEntry {
    *  proxy sidecar) — the webapp always shows those regardless of the
    *  active project. */
   projectSlugs: string[]
-  reason: 'session' | 'prewarm' | 'rebuild'
+  reason: 'session' | 'prewarm'
   status: 'running' | 'succeeded' | 'failed'
   /** Parsed from podman's `STEP N/M: <instruction>` output lines. */
   stepCurrent?: number

@@ -31,7 +31,7 @@ export interface HeldBuild {
 export interface StackingHarness {
   /** Real temp data dir for this test; write Dockerfiles under it before `load`. */
   readonly dataDir: string
-  /** Ordered `build <tag> [k=v,…][ --no-cache]` rows in build order. */
+  /** Ordered `build <tag> [k=v,…]` rows in build order. */
   readonly operations: string[]
   /**
    * Stop the podman fake from exiting on its own, so a test owns when (and
@@ -107,8 +107,7 @@ export function setupStackingHarness(): StackingHarness {
           if (args[i] === '--build-arg') buildArgPairs.push(args[i + 1])
         }
         const suffix = buildArgPairs.length ? ` [${buildArgPairs.join(',')}]` : ''
-        const noCache = args.includes('--no-cache') ? ' --no-cache' : ''
-        operations.push(`build ${imageName}${suffix}${noCache}`)
+        operations.push(`build ${imageName}${suffix}`)
         // Real streams: the idle timeout watches them for output, so a
         // stubbed `on` would make every build look permanently silent.
         // `exitCode`/`signalCode` are what `killGroup` checks before
@@ -158,13 +157,10 @@ export function setupStackingHarness(): StackingHarness {
         release(): Promise<void> { return Promise.resolve() }
       },
       buildLayerInPod: vi.fn(
-        (
-          layer: { tag: string; buildArgs?: Record<string, string> },
-          ctx: { noCache: boolean },
-        ) => {
+        (layer: { tag: string; buildArgs?: Record<string, string> }) => {
           const pairs = Object.entries(layer.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`)
           const suffix = pairs.length ? ` [${pairs.join(',')}]` : ''
-          operations.push(`build ${layer.tag}${suffix}${ctx.noCache ? ' --no-cache' : ''}`)
+          operations.push(`build ${layer.tag}${suffix}`)
           return Promise.resolve()
         },
       ),
