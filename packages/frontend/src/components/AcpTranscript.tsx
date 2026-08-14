@@ -8,7 +8,8 @@ import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import { WarningIcon, ChevronIcon } from '#lib/icons'
 import type {
-  AcpContent, AcpDiff, AcpEvent, AcpPlanEntry, AcpToolCall, AcpToolContent,
+  AcpContent, AcpDiff, AcpEvent, AcpPermissionOption, AcpPlanEntry, AcpToolCall,
+  AcpToolContent,
 } from '@yaac/shared/acp'
 
 /**
@@ -41,6 +42,19 @@ export type Group =
   | { kind: 'plan'; seq: number; entries: AcpPlanEntry[] }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
+  /**
+   * A permission ask and, once it has one, its answer — one group rather than
+   * two events' worth, because they are one thing to a reader: a question that
+   * is either still on the table or already settled.
+   */
+  | {
+    kind: 'permission'
+    seq: number
+    requestId: string
+    toolCall?: AcpToolCall
+    options: AcpPermissionOption[]
+    decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
+  }
 
 function textOf(content: AcpContent[]): string {
   return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
@@ -64,12 +78,45 @@ function toolTextOf(content: AcpToolContent[] | undefined): string {
  * expected outcome and rendering it would put a divider under every reply.
  * `turn-start` is dropped outright: it drives the working indicator, and a
  * turn beginning is already visible as the reply that follows it.
+ *
+ * A third collapse joins a permission ask to its answer, in place: the pending
+ * card BECOMES the decided line, so a settled question does not leave a dead
+ * set of buttons above the sentence saying which one was pressed. An answer
+ * whose request is not in this stream is dropped — under `bypass` the server
+ * settles asks itself and both lines are recorded, so the pair is always
+ * whole; a lone answer means the record was truncated ahead of it.
  */
 export function groupEvents(events: AcpEvent[]): Group[] {
   const groups: Group[] = []
   const toolIndex = new Map<string, number>()
+  const permissionIndex = new Map<string, number>()
   for (const e of events) {
     if (e.type === 'commands' || e.type === 'turn-start') continue
+    if (e.type === 'permission-request') {
+      permissionIndex.set(e.requestId, groups.length)
+      groups.push({
+        kind: 'permission',
+        seq: e.seq,
+        requestId: e.requestId,
+        ...(e.toolCall !== undefined ? { toolCall: e.toolCall } : {}),
+        options: e.options,
+      })
+      continue
+    }
+    if (e.type === 'permission-resolved') {
+      const at = permissionIndex.get(e.requestId)
+      if (at === undefined) continue
+      const asked = groups[at]
+      if (asked.kind !== 'permission') continue
+      groups[at] = {
+        ...asked,
+        decided: {
+          outcome: e.outcome,
+          ...(e.optionId !== undefined ? { optionId: e.optionId } : {}),
+        },
+      }
+      continue
+    }
     if (e.type === 'turn-end') {
       if (e.stopReason !== 'end_turn') {
         groups.push({ kind: 'turn-end', seq: e.seq, stopReason: e.stopReason })
@@ -304,6 +351,112 @@ function ThoughtRow({ text }: { text: string }): JSX.Element {
   )
 }
 
+/** Whether an option says yes. Used for styling only, so an option the agent
+ *  gave no kind falls in with the refusals: an unlabelled button is not one to
+ *  dress up as the safe default. */
+function isAllow(option: AcpPermissionOption | undefined): boolean {
+  return option?.kind === 'allow_once' || option?.kind === 'allow_always'
+}
+
+/**
+ * The agent asking to do something, and the answer once there is one.
+ *
+ * The call being asked about is rendered by `ToolRow` — the same row it will
+ * appear as once it runs — because that is exactly the evidence the decision
+ * needs: the command, or the diff, not a restatement of it. An answered ask
+ * collapses to a single line naming what was chosen, so a `manual` transcript
+ * reads back as the decisions that produced it.
+ *
+ * Answering is optimistic about the click and not about the outcome: the
+ * buttons disable the moment one is pressed, but the card retires only when the
+ * server's `permission-resolved` arrives. A send that never left (socket down)
+ * re-enables them, because nothing on the far side heard it.
+ *
+ * With no `onAnswer` there is nothing behind the buttons, so they are not
+ * offered: a stopped worktree's transcript can contain an ask whose agent died
+ * unanswered, and a live-looking button that silently does nothing is worse
+ * than plainly saying the question outlived its conversation.
+ */
+function PermissionRow({
+  requestId,
+  toolCall,
+  options,
+  decided,
+  onAnswer,
+}: {
+  requestId: string
+  toolCall?: AcpToolCall
+  options: AcpPermissionOption[]
+  decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
+  onAnswer?: (requestId: string, optionId?: string) => boolean
+}): JSX.Element {
+  const [sending, setSending] = useState(false)
+  const answer = (optionId?: string): void => {
+    if (onAnswer === undefined) return
+    setSending(true)
+    if (!onAnswer(requestId, optionId)) setSending(false)
+  }
+
+  if (decided !== undefined) {
+    const chosen = options.find((o) => o.optionId === decided.optionId)
+    const allowed = decided.outcome === 'selected' && isAllow(chosen)
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-text-faint">
+        <span className={clsx('shrink-0', allowed ? 'text-[#3fb950]' : 'text-[#f85149]')}>
+          {allowed ? '✓' : '✕'}
+        </span>
+        <span className="truncate">
+          {decided.outcome === 'cancelled'
+            ? 'permission dismissed'
+            : chosen?.name ?? decided.optionId ?? 'answered'}
+          {toolCall !== undefined && ` — ${toolCall.title}`}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-[#d29922] bg-surface-2 p-2">
+      <div className="flex items-center gap-1.5 px-0.5 text-xs text-[#d29922]">
+        <WarningIcon size={12} className="shrink-0" />
+        {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
+      </div>
+      {toolCall !== undefined && <ToolRow call={toolCall} />}
+      {onAnswer !== undefined && (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map((o) => (
+            <button
+              key={o.optionId}
+              type="button"
+              disabled={sending}
+              onClick={() => answer(o.optionId)}
+              className={clsx(
+                'rounded-md border px-2.5 py-1 text-xs disabled:opacity-40',
+                isAllow(o)
+                  ? 'border-[#3fb950] text-[#3fb950] hover:bg-[#3fb950]/10'
+                  : 'border-hairline text-text-dim hover:text-text',
+              )}
+            >
+              {o.name}
+            </button>
+          ))}
+          {/* Always available, even when the agent offered only allows: the
+              turn is blocked until this is answered, so a user who wants
+              neither needs a way out that is not "restart the worktree". */}
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => answer()}
+            className="ml-auto rounded-md px-2 py-1 text-xs text-text-faint hover:text-text-dim disabled:opacity-40"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
   return (
     <div className="rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 text-xs">
@@ -346,9 +499,16 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
 export function AcpTranscript({
   groups,
   className,
+  onAnswerPermission,
 }: {
   groups: Group[]
   className?: string
+  /**
+   * How to answer a permission ask, when there is anything to answer it with.
+   * The live pane passes its socket send; a stopped worktree's transcript
+   * passes nothing, and its cards render as the unanswered questions they are.
+   */
+  onAnswerPermission?: (requestId: string, optionId?: string) => boolean
 }): JSX.Element {
   return (
     <div className={clsx('space-y-2.5 break-words text-sm', className)}>
@@ -375,6 +535,18 @@ export function AcpTranscript({
         if (g.kind === 'thought') return <ThoughtRow key={g.seq} text={g.text} />
         if (g.kind === 'tool') return <ToolRow key={g.seq} call={g.call} />
         if (g.kind === 'plan') return <PlanRow key={g.seq} entries={g.entries} />
+        if (g.kind === 'permission') {
+          return (
+            <PermissionRow
+              key={g.seq}
+              requestId={g.requestId}
+              {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
+              options={g.options}
+              {...(g.decided !== undefined ? { decided: g.decided } : {})}
+              {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}
+            />
+          )
+        }
         if (g.kind === 'turn-end') {
           return (
             <div key={g.seq} className="text-xs text-text-faint">

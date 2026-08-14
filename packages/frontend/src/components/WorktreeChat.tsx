@@ -190,6 +190,18 @@ export function WorktreeChat({
     }
   }
 
+  /** Answer a permission ask. Reports whether it left, so a card whose click
+   *  never made it onto a dead socket can offer its buttons again. */
+  const answerPermission = (requestId: string, optionId?: string): boolean =>
+    send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) })
+
+  /**
+   * A turn parked on a question. It is `busy` — its prompt is unanswered — but
+   * calling it "working…" under the card asking the user to act is the one
+   * place that label misreads the room.
+   */
+  const awaitingPermission = groups.some((g) => g.kind === 'permission' && g.decided === undefined)
+
   return (
     <div className="flex h-full w-full flex-col bg-bg">
       <div
@@ -202,8 +214,8 @@ export function WorktreeChat({
             {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
           </div>
         )}
-        <AcpTranscript groups={groups} />
-        {busy && (
+        <AcpTranscript groups={groups} onAnswerPermission={answerPermission} />
+        {busy && !awaitingPermission && (
           <div className="mt-2.5 flex items-center gap-1.5 text-xs text-text-dim">
             <LoadingIcon size={12} />
             working…

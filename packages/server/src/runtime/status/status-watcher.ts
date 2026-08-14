@@ -18,7 +18,7 @@ import {
   type ControlStreamSend,
 } from './control-stream-registry'
 import { serverLog } from '#log'
-import type { AgentMode } from '@yaac/shared/types'
+import type { AgentMode, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Per-worktree status watchers: one live driver connection per running worktree
@@ -50,6 +50,12 @@ export interface StatusWatcherDeps {
    * features are built on (teardown calls in here to evict; never the reverse).
    */
   recordedSessions?: (session: WatchedWorktree) => Promise<Array<{ handle: string; agentSessionId: string }>>
+  /**
+   * A worktree's permission posture, for the same reason and by the same route
+   * as `recordedSessions`: the ACP driver tells its adapter which posture to
+   * run in, and the answer is a row this layer may not read for itself.
+   */
+  permissionMode?: (session: WatchedWorktree) => Promise<PermissionMode | undefined>
   /**
    * Injected for tests — the stream-daemon self-heal (see scheduleRespawn).
    * Default: the driver's own `reviveStatusStream`.
@@ -121,6 +127,9 @@ export class WorktreeStatusWatcher {
         ...(this.deps.dial !== undefined ? { dial: this.deps.dial } : {}),
         ...(this.deps.recordedSessions !== undefined
           ? { recordedSessions: () => this.deps.recordedSessions!(this.session) }
+          : {}),
+        ...(this.deps.permissionMode !== undefined
+          ? { permissionMode: () => this.deps.permissionMode!(this.session) }
           : {}),
       },
     )

@@ -268,11 +268,11 @@ export function NewWorktreeButton(
                 </button>
                 {/* The same tool, driven over ACP instead of its TUI: the
                     worktree opens with a chat pane rather than a terminal.
-                    Only offered for tools whose adapter ships in the image. */}
-                {/* Only under `bypass`: an ACP conversation's permission
-                    prompts are answered automatically, so the server refuses
-                    any other posture rather than pretend to enforce it. */}
-                {ACP_TOOLS.includes(t) && modeShown === 'bypass' && (
+                    Only offered for tools whose adapter ships in the image,
+                    and gated on the posture exactly as the TUI button is —
+                    a chat conversation honors every posture its tool has,
+                    asking in the pane for whatever the mode does not settle. */}
+                {ACP_TOOLS.includes(t) && toolSupportsPermissionMode(t, modeShown) && (
                   <button
                     type="button"
                     title={`Run ${TOOL_LABEL[t]} as a chat pane (Agent Client Protocol)`}

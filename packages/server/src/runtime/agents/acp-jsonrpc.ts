@@ -6,6 +6,13 @@
  *
  * "Peer", not "client", because ACP is bidirectional: the agent calls back for
  * permission decisions and file access, so both directions carry requests.
+ *
+ * One asymmetry to know about when adding a handler. Closing rejects this
+ * peer's *outgoing* requests, but an incoming one whose handler has not
+ * resolved yet is not settled here — nothing can be, since only the handler
+ * holds the promise. A handler that parks its answer (as the permission one
+ * does, waiting on a human) therefore owns settling it on teardown, and
+ * `AcpConversation` is where that is done for the one handler that parks.
  */
 
 import crypto from 'node:crypto'
@@ -51,9 +58,17 @@ interface Pending {
 const MAX_LINE_UNITS = 32 * 1024 * 1024
 
 export interface JsonRpcPeerHandlers {
-  /** Incoming request from the far side. Resolve with the result, or throw a
-   *  `JsonRpcCallError` to answer with a protocol error. */
-  onRequest?: (method: string, params: unknown) => Promise<unknown>
+  /**
+   * Incoming request from the far side. Resolve with the result, or throw a
+   * `JsonRpcCallError` to answer with a protocol error.
+   *
+   * The id comes along because one handler holds its answer open across
+   * connections: a permission ask is settled by a human, who may take longer
+   * than the relay stays up, and the reply is then sent by whichever
+   * connection is attached when they finally answer (`respondTo`). Everything
+   * else answers on the spot and can ignore it.
+   */
+  onRequest?: (method: string, params: unknown, id: string | number) => Promise<unknown>
   onNotification?: (method: string, params: unknown) => void
   /**
    * A response arrived for an id this peer never sent. Only possible after a
@@ -165,7 +180,7 @@ export class JsonRpcPeer {
       return
     }
     try {
-      this.reply(id, await handler(method, params))
+      this.reply(id, await handler(method, params, id))
     } catch (err) {
       this.reply(id, undefined, err instanceof JsonRpcCallError
         ? err.rpc
@@ -187,6 +202,24 @@ export class JsonRpcPeer {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
       this.transport.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
     })
+  }
+
+  /**
+   * Answer a request this peer never served — one the PREVIOUS connection
+   * received and left open.
+   *
+   * The mirror image of `onOrphanResponse`, and possible for the same reason:
+   * ids on the far side are the agent's, not namespaced to a connection of
+   * ours, and acpd pipes whatever is written to the same agent stdin either
+   * way. So a permission ask delivered before a relay drop can still be
+   * settled afterwards, which is the difference between a blocked agent that
+   * resumes and one that has to be restarted.
+   *
+   * Best-effort by nature: this peer cannot know the agent still cares about
+   * that id, and JSON-RPC lets it ignore a reply it does not recognize.
+   */
+  respondTo(id: string | number, result: unknown): void {
+    this.reply(id, result)
   }
 
   notify(method: string, params?: unknown): void {

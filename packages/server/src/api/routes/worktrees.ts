@@ -128,7 +128,6 @@ export const worktreeApp = new Hono()
         const permissionMode = await resolvePermissionMode({
           projectSlug: body.project,
           tool,
-          mode: body.mode ?? 'tui',
           ...(body.permissionMode !== undefined ? { requested: body.permissionMode } : {}),
         })
         // A person picked this one; teach it to the project so the next
@@ -136,15 +135,19 @@ export const worktreeApp = new Hono()
         // writes, so a defaulted create never overwrites what was picked.
         //
         // Unless the choice was not really theirs. `bypass` is the only
-        // posture pi and ACP can be launched in, so reaching either REQUIRES
-        // asking for it — and recording that would turn "pi needs bypass"
-        // into "this project runs unrestrained", quietly moving every later
-        // claude create on the user's own machine. A pick with no alternative
-        // expresses nothing about working style, so it teaches nothing.
-        const forced = body.mode === 'acp' || SUPPORTED_PERMISSION_MODES[tool].length === 1
+        // posture pi can be launched in, so reaching it REQUIRES asking for
+        // it — and recording that would turn "pi needs bypass" into "this
+        // project runs unrestrained", quietly moving every later claude create
+        // on the user's own machine. A pick with no alternative expresses
+        // nothing about working style, so it teaches nothing.
+        const forced = SUPPORTED_PERMISSION_MODES[tool].length === 1
         if (body.permissionMode !== undefined && !forced) {
           await recordProjectPermissionMode(body.project, body.permissionMode)
         }
+        // A spare's agent is already running, and in `bypass` — so it can only
+        // be handed to a create that resolved there. An ACP create is not
+        // excluded for its mode but for its shape: a spare boots a `tui`
+        // window, which is not a conversation this create could adopt.
         const claimed = body.mode === 'acp' || permissionMode !== 'bypass'
           ? undefined
           : await tryClaimPrewarmed(

@@ -545,29 +545,23 @@ async function reportCreateFailed(
  * A `resume` is the exception. Its posture is the row's, not a person's, so
  * it is not refused for being unsupported — a row written by a different
  * build would otherwise make the worktree unrestartable, and stranding a
- * checkout is worse than launching it at this tool's default. It is still
- * *normalized*, though, and ACP is why: a row can predate the bypass-only
- * rule (an older build recorded the posture without enforcing it), and
- * passing that through would leave the restarted row durably claiming a
- * restraint whose prompts are being auto-answered. Coercing here is what
- * makes the record converge on the truth from the first restart onward.
+ * checkout is worse than launching it at this tool's default.
  *
- * ACP is `bypass`-only for now: its permission prompts are auto-answered
- * (see `acpDriver.launchCmd`), so any other posture would be a claim yaac
- * cannot keep.
+ * Both modes answer the same way. An ACP conversation honors its posture by
+ * telling the adapter (`session/set_mode`) and putting the asks it still makes
+ * in front of the user in the chat pane, so there is no posture it can be
+ * given that it would silently fail to keep.
  */
 export function launchPermissionMode(args: {
   tool: AgentTool
-  mode: AgentMode
   driver: DriverKind
   requested?: PermissionMode
   resume?: boolean
 }): PermissionMode {
-  const { tool, mode, driver, requested } = args
+  const { tool, driver, requested } = args
   const fallback = defaultPermissionMode(driver, tool)
-  if (requested === undefined) return mode === 'acp' ? 'bypass' : fallback
+  if (requested === undefined) return fallback
   if (args.resume === true) {
-    if (mode === 'acp') return 'bypass'
     return toolSupportsPermissionMode(tool, requested) ? requested : fallback
   }
   if (!toolSupportsPermissionMode(tool, requested)) {
@@ -575,13 +569,6 @@ export function launchPermissionMode(args: {
     throw new ServerError(
       'VALIDATION',
       `${tool} has no "${requested}" permission mode; it supports: ${supported}`,
-    )
-  }
-  if (mode === 'acp' && requested !== 'bypass') {
-    throw new ServerError(
-      'VALIDATION',
-      '--mode acp runs with "bypass" permissions only; its prompts are '
-      + `answered automatically, so "${requested}" would not be enforced`,
     )
   }
   return requested
@@ -608,14 +595,13 @@ export function launchPermissionMode(args: {
 export async function resolvePermissionMode(args: {
   projectSlug: string
   tool: AgentTool
-  mode: AgentMode
   driver?: DriverKind
   requested?: PermissionMode
 }): Promise<PermissionMode> {
-  const { projectSlug, tool, mode, requested } = args
+  const { projectSlug, tool, requested } = args
   const driver = args.driver ?? worktreeDriver().kind
-  if (requested !== undefined || mode === 'acp') {
-    return launchPermissionMode({ tool, mode, driver, ...(requested !== undefined ? { requested } : {}) })
+  if (requested !== undefined) {
+    return launchPermissionMode({ tool, driver, requested })
   }
   const remembered = await getProjectLastPermissionMode(projectSlug)
   if (remembered !== undefined && toolSupportsPermissionMode(tool, remembered)) {
@@ -755,20 +741,18 @@ export async function createWorktree(
   // posture the tool cannot take is a launch flag that silently does nothing.
   const permissionMode = launchPermissionMode({
     tool,
-    mode,
     driver: runtime.kind,
     resume: options.resume === true,
     ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
   })
-  // The one path where an UNSANDBOXED worktree runs unrestrained without
-  // anyone having asked for it: ACP is bypass-only, and a containerless host
-  // is the user's own machine and credentials. The webapp cannot reach this
-  // (its chat buttons only render under `bypass`), but `--mode acp` can, so
-  // it is said out loud rather than left to the docs.
-  if (permissionMode === 'bypass' && mode === 'acp' && runtime.kind === 'containerless') {
+  // An unsandboxed worktree running unrestrained, which is a thing worth
+  // saying out loud rather than leaving to the docs: a containerless host is
+  // the user's own machine and credentials, so `bypass` there is not the
+  // "sandbox holds it" bargain it is under k8s.
+  if (permissionMode === 'bypass' && runtime.kind === 'containerless') {
     options.onProgress?.(
-      'Note: chat (ACP) worktrees run with bypass permissions, and this server '
-      + 'has no sandbox — the agent acts as you, on this machine.',
+      'Note: this worktree runs with bypass permissions, and this server has '
+      + 'no sandbox — the agent acts as you, on this machine.',
     )
   }
 

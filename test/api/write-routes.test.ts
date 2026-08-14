@@ -547,10 +547,10 @@ describe('write routes', () => {
     })
 
     // The project's remembered posture is meant to capture working style, so
-    // it must not be taught by a pick the user had no choice about: pi and
-    // ACP are reachable ONLY by asking for bypass, and recording that would
-    // silently move every later claude create in the project — on a
-    // containerless server, onto the user's real machine.
+    // it must not be taught by a pick the user had no choice about: pi is
+    // reachable ONLY by asking for bypass, and recording that would silently
+    // move every later claude create in the project — on a containerless
+    // server, onto the user's real machine.
     it('remembers a freely chosen posture, but not one the tool forced', async () => {
       await recordProject({ slug: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
       mockCreateWorktree.mockResolvedValue({
@@ -571,9 +571,10 @@ describe('write routes', () => {
       await create({ tool: 'pi', permissionMode: 'bypass' })
       expect(await getProjectLastPermissionMode('demo')).toBe('plan')
 
-      // Same for ACP, which is bypass-only whatever the tool supports.
-      await create({ tool: 'claude', mode: 'acp', permissionMode: 'bypass' })
-      expect(await getProjectLastPermissionMode('demo')).toBe('plan')
+      // A chat worktree's pick is as free as a terminal one's — every posture
+      // claude has is available over ACP too — so it teaches like any other.
+      await create({ tool: 'claude', mode: 'acp', permissionMode: 'manual' })
+      expect(await getProjectLastPermissionMode('demo')).toBe('manual')
 
       // A free pick still teaches, so the feature is not merely disabled.
       await create({ tool: 'claude', permissionMode: 'bypass' })

@@ -86,14 +86,43 @@ therefore re-states the row's posture, which is neither remembered (it is
 not a person choosing) nor refused when unsupported (a row written by a
 different build would otherwise strand a checkout).
 
-## Two places a posture is not honored
+## How a conversation honors one
 
-**ACP conversations are `bypass`-only.** The adapter asks over
-`session/request_permission`, and this build has no chat-pane UI to put that
-question in front of the user, so the client answers every request itself.
-Any other posture would claim a restraint that isn't there, so create
-refuses it. Honoring them is a matter of forwarding those requests to the
-pane (see docs/agent-modes.md), not of changing the launch command.
+A `tui` agent gets its posture as a launch flag, and its own UI does the
+asking. An `acp` conversation has no UI of its own, so yaac supplies both
+halves — and the split is worth stating, because each half alone would be a
+posture in name only:
+
+- **The adapter is told**, over `session/set_mode`, once the handshake has a
+  session to set it on. That is what decides which questions get asked at
+  all — without it `accept-edits` would prompt for every edit, since the
+  adapter's own default is to ask about everything.
+- **The asks it still makes are forwarded** to the chat pane, where the user
+  answers them. The served JSON-RPC request is held open, with no timeout: the
+  agent is blocked until a person decides, and answering *for* them after some
+  interval is exactly the auto-approval the posture exists to refuse.
+
+`bypass` is the one posture yaac still answers itself, and it stays that way
+even with the mode set: an adapter honors a `permissions.ask` rule the user
+configured even with permissions skipped, and an adapter running as root
+outside a sandbox does not offer `bypassPermissions` at all. Auto-granting
+those is what makes bypass mean bypass wherever it runs.
+
+Both directions of the ask are in acpd's record, so a pane attaching mid-ask
+is shown the question and a `bypass` transcript reads back as the decisions
+that were made. That is also what survives a dropped relay: nothing replays a
+request, but the record names it, and the id it must be answered under is the
+agent's own — so the connection that takes over can settle an ask it never
+received. See docs/agent-modes.md.
+
+One posture is *not* re-asserted: a reattach leaves a live adapter's mode
+alone. Leaving plan mode is itself a permission ask whose options are mode
+ids, so a user who accepted "yes, and auto-accept edits" moved the session to
+`acceptEdits`; re-stating the row on the next relay hiccup would drag them
+back. The row wins again at the next restart, which is where it is the durable
+answer.
+
+## One place a posture is not honored
 
 **A prewarmed spare is only claimable for a create resolving to `bypass`.**
 The spare's agent is already running, in that posture — claiming one for a

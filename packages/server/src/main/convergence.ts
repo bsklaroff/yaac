@@ -1,7 +1,7 @@
 import { worktreeDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
-import { recordedConversationHandles } from '#db'
+import { findWorktreeRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { serverLog } from '#log'
 import type { DriverDeps, ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -52,6 +52,16 @@ export async function attachConvergence(opts: {
   const manager = new StatusWatcherManager({
     recordedSessions: (session) =>
       recordedConversationHandles(session.slug, session.worktreeId),
+    // And its posture, which for `acp` is not a launch argument but something
+    // the adapter is told over the protocol — so the connection needs it, and
+    // only the row knows it.
+    //
+    // A missing row answers `undefined` rather than a default. It is not
+    // evidence that this worktree runs unrestrained, and treating it as such
+    // would auto-answer asks the row might well have said to forward — so the
+    // absence is passed on as the absence it is.
+    permissionMode: async (session) =>
+      (await findWorktreeRow(session.worktreeId))?.permissionMode,
   })
   statusWatchers = manager
 

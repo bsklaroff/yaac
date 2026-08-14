@@ -77,6 +77,19 @@ export interface AcpToolCall {
   locations?: Array<{ path: string; line?: number }>
 }
 
+/**
+ * One answer the agent offers for a permission ask, verbatim from ACP.
+ *
+ * `kind` is what a pane styles by — an `allow_*` is the affirmative and a
+ * `reject_*` the refusal — and is absent when the agent labelled an option
+ * with none, in which case the name is all there is to go on.
+ */
+export interface AcpPermissionOption {
+  optionId: string
+  name: string
+  kind?: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always'
+}
+
 /** One entry of the agent's running plan (ACP's `plan` update). */
 export interface AcpPlanEntry {
   content: string
@@ -126,6 +139,39 @@ export type AcpEvent =
   /** The agent, adapter, or transport failed. Terminal for the turn, not for
    *  the conversation — the pane stays attached and the user can retry. */
   | { type: 'error'; seq: number; message: string }
+  /**
+   * The agent is asking permission to do something, and the turn is blocked
+   * until someone answers. Under `bypass` the server answers it itself and the
+   * pair renders as a decided line; under every other posture this is the
+   * question the user is there to answer.
+   *
+   * `requestId` is the agent's own JSON-RPC request id, as a string. It is
+   * what a pane sends back, and it is unique within one agent life — which is
+   * also the scope of one record, so a replay can pair a request with its
+   * answer without the server holding anything.
+   */
+  | {
+    type: 'permission-request'
+    seq: number
+    requestId: string
+    /** The call being asked about, when the agent named one. Rendered like
+     *  any other tool row, since that is what it is about to become. */
+    toolCall?: AcpToolCall
+    options: AcpPermissionOption[]
+  }
+  /**
+   * A permission ask was settled — by the user, by the `bypass` auto-answer,
+   * or by a cancel. Pairs with the `permission-request` of the same
+   * `requestId`, which is how a pane retires a pending card.
+   */
+  | {
+    type: 'permission-resolved'
+    seq: number
+    requestId: string
+    outcome: 'selected' | 'cancelled'
+    /** Which option was taken. Absent for `cancelled`. */
+    optionId?: string
+  }
 
 /**
  * An event before the server stamps its sequence number — what a producer
@@ -155,6 +201,16 @@ export type AcpClientMessage =
   | { type: 'prompt'; text: string }
   /** Interrupt the running turn (ACP `session/cancel`). */
   | { type: 'cancel' }
+  /**
+   * The user's answer to a `permission-request`. `optionId` absent means they
+   * dismissed the ask rather than choosing, which the agent is told as
+   * `cancelled`.
+   *
+   * Answering is idempotent and late answers are harmless: the server drops
+   * one for an ask it has already settled, so two panes racing on the same
+   * card cannot send the agent two replies.
+   */
+  | { type: 'permission'; requestId: string; optionId?: string }
 
 /** The `/pty/attach`-style pane target that addresses one ACP conversation. */
 export const ACP_TARGET_PREFIX = 'acp:'

@@ -6,6 +6,7 @@ import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation } from '#runtime/agents/acp-client'
+import { readAcpInFlight, readAcpPendingPermissions } from '#runtime/agents/acp-log'
 import {
   _resetAcpRegistryForTests,
   registerAcpConversation,
@@ -89,13 +90,23 @@ const updateLine = (u: unknown): unknown => ({
   params: { sessionId: 'acp-1', update: u },
 })
 
-/** A conversation already past its handshake, holding a short history. */
+/**
+ * A conversation already past its handshake, holding a short history.
+ *
+ * Wired to the record the way the driver wires it, so a reattach recovers what
+ * the previous connection was left holding — a running turn, and any ask the
+ * agent is still blocked on. Recovery reads the file at construction, so a test
+ * that wants either has to record it BEFORE calling this.
+ */
 function liveConversation(): AcpConversation {
   transport = new FakeTransport()
+  const logPath = path.join(acpLogDir('demo', 'wt-1'), 'acp-1.jsonl')
   const c = new AcpConversation({
     transport,
     cwd: '/workspace',
     resumeSessionId: 'acp-1',
+    recoverInFlight: () => readAcpInFlight(logPath),
+    recoverPendingPermissions: () => readAcpPendingPermissions(logPath),
     onSessionId: () => {},
     onBusy: () => {},
     onDown: () => {},
@@ -103,6 +114,14 @@ function liveConversation(): AcpConversation {
   })
   transport.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
   return c
+}
+
+/** Re-attach to the conversation now that the test has written its record —
+ *  recovery is a construction-time read, so it has to happen after. */
+function reattach(): void {
+  conversation.close()
+  conversation = liveConversation()
+  registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
 }
 
 
@@ -253,6 +272,51 @@ describe('attachAcp', () => {
       .find((m) => m.method === 'session/cancel')
     expect(cancel?.params).toEqual({ sessionId: 'acp-1' })
     expect(sock.closedWith).toBeUndefined()
+  })
+
+  it('routes a permission answer to the agent, and replays a pending ask on attach', async () => {
+    // The pane's half of an enforced posture. Note what does NOT happen here:
+    // the bridge sends nothing back for the answer, because what a pane renders
+    // is the record — acpd tees yaac's reply into it, and the tail projects
+    // that as `permission-resolved`. One source, so a card cannot retire ahead
+    // of the agent actually being told.
+    await record([
+      { jsonrpc: '2.0', id: 'p-1', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'clean up' }] } },
+      {
+        jsonrpc: '2.0',
+        id: 55,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'acp-1',
+          toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute' },
+          options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+        },
+      },
+    ])
+    reattach()
+    await waitFor(() => conversation.isAwaitingPermission)
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+
+    // A pane joining mid-ask is shown the question, not an idle transcript
+    // with a stuck agent underneath it.
+    const hello = sock.sent.find((m) => m.type === 'hello')!
+    expect(hello.events.map((e) => e.type)).toEqual(['user', 'permission-request'])
+    expect(hello.events[1]).toMatchObject({
+      requestId: '55',
+      options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+    })
+
+    // This conversation never served the ask — it is the one recovered from the
+    // record — so the answer goes out addressed as the agent wrote it.
+    sock.clientSend({ type: 'permission', requestId: '55', optionId: 'allow' })
+    await waitFor(() => transport.written.some((l) => l.includes('"outcome"')))
+    const reply = transport.written
+      .map((l) => JSON.parse(l.trim()) as Record<string, unknown>)
+      .find((m) => m.result !== undefined)!
+    expect(reply.id).toBe(55)
+    expect(reply.result).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
   })
 
   it('lands a pane idle when the turn it is greeting ends underneath it', async () => {

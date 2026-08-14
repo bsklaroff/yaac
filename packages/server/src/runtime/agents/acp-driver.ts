@@ -38,7 +38,7 @@ import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { AcpConversation } from './acp-client'
-import { readAcpInFlight } from './acp-log'
+import { readAcpInFlight, readAcpPendingPermissions } from './acp-log'
 import { tmuxCmd } from './agent-command'
 import { agentWindowTool } from './agent-tools'
 import {
@@ -56,7 +56,7 @@ import type {
   DrivenWorktree,
   LiveAgent,
 } from './drivers'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * One conversation's acpd socket, inside the workspace.
@@ -201,6 +201,22 @@ class AcpConnection implements AgentConnection {
   private readonly log: (msg: string) => void
   private readonly dial: (session: DrivenWorktree, argv: string[]) => StreamChild
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
+  private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
+  /**
+   * The posture as of the last sweep, or undefined while no sweep has
+   * successfully read one. Held rather than fetched per use because a
+   * conversation asks for it on the synchronous path where an ask arrives, and
+   * re-reading it there would put a database round trip between the agent
+   * blocking and yaac noticing. Refreshed every sweep, so a restart that
+   * rewrote the row is picked up without the connection being rebuilt.
+   *
+   * Starts unknown rather than at a default. Seeding it with `bypass` would
+   * mean a read that failed on the very first sweep — before there is any
+   * "last known answer" to keep — attaches the conversation to the auto-answer
+   * while the row says `manual`, and the handshake would then lock that in at
+   * the adapter.
+   */
+  private permissionMode: PermissionMode | undefined
 
   constructor(
     private readonly session: DrivenWorktree,
@@ -212,6 +228,7 @@ class AcpConnection implements AgentConnection {
     this.log = deps.log ?? serverLog
     this.dial = deps.dial ?? ((s, argv) => worktreeDriver().dialCtrl(s.jobName, argv))
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
+    this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
     void this.sweep().then(() => this.rearm())
   }
 
@@ -290,6 +307,20 @@ class AcpConnection implements AgentConnection {
     const recorded = new Map(
       (await this.recordedSessions().catch(() => [])).map((r) => [r.handle, r.agentSessionId]),
     )
+    // Refreshed before the attach loop, so a conversation built on this sweep
+    // handshakes with the posture the row holds now rather than the one the
+    // connection started with. A failed read keeps the last known answer — the
+    // posture this worktree has been running under — rather than resolving to
+    // anything: relaxing to `bypass` on a transient database error would
+    // quietly stop enforcing what the user asked for, and before the first
+    // successful read there is no answer to keep, so it stays unknown and every
+    // ask is forwarded.
+    try {
+      this.permissionMode = await this.readPermissionMode()
+    } catch (err) {
+      this.log(`[server] acp-driver ${this.session.worktreeId}: could not read the`
+        + ` permission posture: ${String(err)}`)
+    }
     for (const w of windows) {
       if (this.attached.has(w.handle)) continue
       this.attach(w.handle, w.tool, recorded.get(w.handle))
@@ -353,12 +384,15 @@ class AcpConnection implements AgentConnection {
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       cwd: worktreeDriver().workspacePaths(this.session.jobName).workspaceDir,
+      permissionMode: () => this.permissionMode,
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a conversation we can already name has a record to read, and it
         // is exactly those that can be mid-turn: a reattach happens on a
         // conversation yaac already recorded.
         recoverInFlight: () => readAcpInFlight(this.recordPath(resumeSessionId)),
+        recoverPendingPermissions: () =>
+          readAcpPendingPermissions(this.recordPath(resumeSessionId)),
       } : {}),
       onSessionId: (agentSessionId) => {
         entry.agentSessionId = agentSessionId
@@ -373,7 +407,22 @@ class AcpConnection implements AgentConnection {
         this.publishAgents()
       },
       onBusy: (busy) => {
-        this.sink({ kind: 'status', handle, status: busy ? 'running' : 'waiting' })
+        // Asked of the conversation rather than derived from `busy`, because a
+        // turn parked on a permission ask is busy and waiting at once, and only
+        // it knows which. Falls back while it is still being constructed —
+        // `onBusy` fires from the handshake, so in practice never.
+        this.sink({
+          kind: 'status',
+          handle,
+          status: entry.conversation?.status ?? (busy ? 'running' : 'waiting'),
+        })
+      },
+      onPermissionPending: () => {
+        // A status change with no turn boundary behind it: the agent stopped
+        // working and started waiting on a person, which is exactly the
+        // transition the sidebar dot, the chime and the tray badge exist for.
+        const status = entry.conversation?.status
+        if (status !== undefined) this.sink({ kind: 'status', handle, status })
       },
       onDown: (reason) => {
         // One conversation's stream dropped; the others are unaffected, and
@@ -518,13 +567,12 @@ export const acpDriver: AgentDriver = {
    * so it deliberately contains no quotes.
    *
    * No permission posture either, and `spec.permissionMode` is unread here on
-   * purpose: an ACP conversation is `bypass`-only (create refuses the rest),
-   * because the adapter asks over `session/request_permission` and this build
-   * has no chat-pane UI to put that question in front of the user — the
-   * client answers every request itself (see `chooseAllowOption`). Honoring a
-   * posture whose prompts are auto-answered would claim a restraint that
-   * isn't there. Wiring the postures up is a matter of forwarding those
-   * requests to the pane, not of changing this command.
+   * purpose — but not because there isn't one. A posture is something the
+   * adapter is *told* (`session/set_mode`, once the handshake has a session to
+   * set it on), not something it is launched with, and the connection that
+   * tells it is rebuilt on every reattach long after this string was written.
+   * Putting it on the command line as well would give a reconnect two sources
+   * for one answer, and only one of them refreshed.
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)

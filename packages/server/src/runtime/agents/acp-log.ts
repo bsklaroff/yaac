@@ -254,6 +254,11 @@ function parseLine(line: string): Record<string, unknown> | undefined {
   }
 }
 
+/** A line's JSON-RPC id as the string the events key permission asks by. */
+function lineId(msg: Record<string, unknown>): string | undefined {
+  return typeof msg.id === 'string' || typeof msg.id === 'number' ? String(msg.id) : undefined
+}
+
 /** One recorded line's contribution to the rendered conversation. */
 function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   const msg = parseLine(line)
@@ -269,8 +274,23 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const event = projection.apply(msg.params)
     return event === undefined ? [] : [event]
   }
-  // Responses, `initialize`, `session/new` and acpd's control lines carry no
-  // conversation content.
+  // A permission ask, and the answer that settled it. These come from the
+  // record rather than the live socket for the same reason turn state does:
+  // acpd holds nothing for an absent client, so an ask that arrived while the
+  // relay was down exists only here — and a pane that reattaches has to see a
+  // question the agent is still blocked on.
+  if (msg.method === ACP.requestPermission) {
+    const id = lineId(msg)
+    return id === undefined ? [] : [projection.openPermission(id, msg.params)]
+  }
+  if (msg.method === undefined) {
+    const id = lineId(msg)
+    if (id === undefined) return []
+    const event = projection.closePermission(id, msg.result)
+    return event === undefined ? [] : [event]
+  }
+  // `initialize`, `session/new` and acpd's control lines carry no conversation
+  // content.
   return []
 }
 
@@ -326,6 +346,60 @@ export async function readAcpInFlight(logPath: string): Promise<boolean> {
     if (id !== undefined && id === pending) pending = undefined
   }
   return pending !== undefined
+}
+
+/**
+ * The permission asks the agent was still blocked on when the record was last
+ * written, as the JSON-RPC ids they must be answered under.
+ *
+ * The same question `readAcpInFlight` answers, for the same reason and from the
+ * same evidence: acpd tees both directions, so an ask and its answer are both
+ * on disk, and an ask with no answer after it is one nobody has settled. A
+ * connection that took over a live agent cannot learn this any other way —
+ * the ask was delivered to a client that is gone, and nothing replays it.
+ *
+ * The ids come back verbatim rather than normalized to strings, because they
+ * are what a reply has to carry: JSON-RPC matches an id by value AND type, so
+ * answering the agent's `42` with `"42"` is a reply it will never pair with the
+ * request it is still waiting on.
+ *
+ * Unlike a turn, several can be open at once — an agent may ask about a batch
+ * of calls — so this returns all of them.
+ */
+export async function readAcpPendingPermissions(
+  logPath: string,
+): Promise<Array<string | number>> {
+  let raw: string
+  try {
+    raw = await fs.readFile(logPath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      serverLog(`[server] acp log ${logPath}: ${String(err)}`)
+    }
+    return []
+  }
+  // Keyed by the string form so a reply pairs with its request, valued by the
+  // original so the answer can be addressed the way the agent asked.
+  const open = new Map<string, string | number>()
+  for (const line of raw.split('\n')) {
+    const msg = parseLine(line)
+    if (msg === undefined) continue
+    const raw = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
+    if (msg.method === ACP.requestPermission) {
+      if (raw !== undefined) open.set(String(raw), raw)
+      continue
+    }
+    if (msg.method === ACPD.exit) {
+      // The agent process is gone, and with it whatever it was waiting to be
+      // told. acpd restarts under a fresh record, so this only ever refers to
+      // the life being scanned.
+      open.clear()
+      continue
+    }
+    if (msg.method !== undefined) continue
+    if (raw !== undefined) open.delete(String(raw))
+  }
+  return [...open.values()]
 }
 
 /**

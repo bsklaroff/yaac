@@ -145,6 +145,17 @@ export function attachAcp(
       conversation.cancel()
       return
     }
+    if (msg.type === 'permission' && typeof msg.requestId === 'string') {
+      // The answer goes to the agent; what comes BACK to the pane is the
+      // recorded reply, which the tail projects as `permission-resolved`. So
+      // there is nothing to echo here, and a pane that retires its card on the
+      // event rather than on the click cannot get ahead of the agent.
+      conversation.answerPermission(
+        msg.requestId,
+        typeof msg.optionId === 'string' ? msg.optionId : undefined,
+      )
+      return
+    }
     if (msg.type === 'prompt' && typeof msg.text === 'string' && msg.text.trim() !== '') {
       // Not awaited: the turn's progress is the event stream's business, and
       // the socket must stay responsive to a cancel while it runs.

@@ -1723,9 +1723,18 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // different pod (a different launch command and a different pod label),
     // so no shared TUI fixture can stand in for it. One create for the whole
     // block, and both cases below only read it.
+    //
+    // Created under an enforced posture rather than `bypass`, so everything
+    // below is proved on the path a user actually gets: `accept-edits` reaches
+    // the adapter over `session/set_mode`, and asks it does not settle are
+    // forwarded to the pane instead of answered here. Nothing in this block
+    // depends on a turn completing, so a conversation that stops to ask does
+    // not destabilize it.
     beforeAll(async () => {
       await setupProject(SLUG)
-      const created = await createWorktree(SLUG, '--tool', 'claude', '--mode', 'acp')
+      const created = await createWorktree(
+        SLUG, '--tool', 'claude', '--mode', 'acp', '--permission-mode', 'accept-edits',
+      )
       jobName = created.jobName
       worktreeId = (await findWorktreePod(SLUG)).worktreeId
 
@@ -1875,7 +1884,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     // Same shape of refusal for the permission posture, and for the same
     // reason: a posture the tool cannot take would become a launch flag that
     // silently does nothing, which is worse than a create that fails.
-    it('refuses a posture the tool does not have, and one ACP cannot enforce', async () => {
+    it('refuses a posture the tool does not have', async () => {
       const podsBefore = (await listWorktreePods('acp-unsupported')).length
       // pi has no permission system at all, so `plan` is not on offer.
       const noPlan = await runYaac(
@@ -1884,18 +1893,46 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       )
       expect(noPlan.exitCode).not.toBe(0)
       expect(noPlan.stdout + noPlan.stderr).toMatch(/pi has no "plan" permission mode/)
-
-      // ACP's permission prompts are answered automatically, so anything but
-      // bypass would be a restraint yaac cannot actually keep.
-      const acpManual = await runYaac(
-        serverEnv, 'worktree', 'create', 'acp-unsupported',
-        '--tool', 'claude', '--mode', 'acp', '--permission-mode', 'manual',
-      )
-      expect(acpManual.exitCode).not.toBe(0)
-      expect(acpManual.stdout + acpManual.stderr).toMatch(/bypass" permissions only/)
-
       expect((await listWorktreePods('acp-unsupported')).length).toBe(podsBefore)
     }, 120_000)
+
+    // The posture is a property of the worktree, not of how its agent is
+    // presented, so `--mode acp` takes the same postures `--mode tui` does —
+    // the create above would have been refused outright before. How one is
+    // honored is the difference: not a launch flag, but a protocol call made
+    // once per agent process, against the session the handshake just produced.
+    it('tells the adapter its posture over the protocol, not on the command line', async () => {
+      const { stdout: startCmd } = await execInJob(jobName, [
+        'sh', '-c',
+        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
+      ])
+      expect(startCmd).not.toContain('--permission-mode')
+
+      // Against the real pinned adapter: `accept-edits` is `acceptEdits` on the
+      // wire, and the record proves it was both sent and accepted.
+      let recorded = ''
+      for (let i = 0; i < 60 && !recorded.includes('session/set_mode'); i++) {
+        recorded = (await execInJob(jobName, [
+          'sh', '-c', `cat /home/yaac/.yaac-acp/${agentSessionId}.jsonl`,
+        ])).stdout
+        if (!recorded.includes('session/set_mode')) await sleep(1000)
+      }
+      const lines = recorded.split('\n').flatMap((l) => {
+        try { return [JSON.parse(l) as Record<string, unknown>] } catch { return [] }
+      })
+      const setMode = lines.find((m) => m.method === 'session/set_mode')
+      expect(setMode?.params).toMatchObject({ modeId: 'acceptEdits' })
+
+      // The REPLY, not just the request — and matched as a parsed line rather
+      // than a substring, because the request carries its own id and would
+      // satisfy any `toContain` on it whether or not the adapter ever answered.
+      // An adapter that refused the mode leaves the conversation in its default,
+      // which is not the posture that was asked for.
+      const reply = lines.find((m) =>
+        m.method === undefined && m.id === setMode?.id && 'result' in m)
+      expect(reply, `no reply to session/set_mode in:\n${recorded}`).toBeDefined()
+      expect(reply?.error).toBeUndefined()
+    }, 180_000)
 
     // An invalid value never reaches the server: commander rejects it against
     // the enum, which is what keeps the CLI's help and the wire type in step.

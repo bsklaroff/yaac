@@ -17,6 +17,7 @@ import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-uti
 import type { StreamChild, WorktreeDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /**
  * The driver seam, exercised the way the status watcher exercises it: connect,
@@ -120,6 +121,44 @@ const helloLine = (firstAttach: boolean): string =>
 /** Every status this connection published, in order. */
 const statuses = (seen: AgentObservation[]): string[] =>
   seen.flatMap((o) => (o.kind === 'status' ? [o.status] : []))
+
+/** A permission ask's params, in the shape the pinned claude adapter sends:
+ *  the call being asked about, and one option per answer. */
+const askParams = {
+  sessionId: 'acp-1',
+  toolCall: { toolCallId: 'call-1', title: 'rm -rf build', kind: 'execute' },
+  options: [
+    { optionId: 'no', name: 'Deny', kind: 'reject_once' },
+    { optionId: 'yes-always', name: 'Always Allow', kind: 'allow_always' },
+  ],
+}
+
+/** The agent asking, as a line off the wire. */
+const permissionAsk = (id: number): string =>
+  `${JSON.stringify({ jsonrpc: '2.0', id, method: 'session/request_permission', params: askParams })}\n`
+
+/**
+ * A connection reattached to a live conversation under a given posture — the
+ * state every permission test starts from, since an ask can only arrive at an
+ * agent that is already running.
+ */
+async function attachedUnder(
+  permissionMode: PermissionMode,
+  agentSessionId: string,
+): Promise<{ stream: FakeStream; seen: AgentObservation[] }> {
+  const stream = new FakeStream()
+  podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+  const seen: AgentObservation[] = []
+  connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+    dial: () => stream,
+    recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId }]),
+    permissionMode: () => Promise.resolve(permissionMode),
+    log: () => {},
+  }))
+  await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', agentSessionId)).toBeDefined())
+  stream.feed(helloLine(false))
+  return { stream, seen }
+}
 
 let dataDir: string
 
@@ -491,7 +530,7 @@ describe('agentDriver', () => {
     expect(statuses(seen)).toEqual(['waiting'])
   })
 
-  it('grants tool permission rather than prompting, matching the sandbox posture', async () => {
+  it('grants tool permission rather than prompting under bypass, matching the sandbox posture', async () => {
     const stream = new FakeStream()
     podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
     connections.push(agentDriver('acp').connect(session, () => {}, {
@@ -504,24 +543,228 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
 
-    stream.feed(`${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 99,
-      method: 'session/request_permission',
-      params: {
-        sessionId: 'acp-1',
-        options: [
-          { optionId: 'no', kind: 'reject_once' },
-          { optionId: 'yes-always', kind: 'allow_always' },
-        ],
-      },
-    })}\n`)
+    stream.feed(permissionAsk(99))
 
     await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 99)).toBe(true))
     // allow_always over allow_once: a session behind gVisor and an egress
     // allowlist is constrained by the sandbox, not by a prompt nobody sees.
     expect(stream.sent().find((m) => m.id === 99)!.result)
       .toEqual({ outcome: { outcome: 'selected', optionId: 'yes-always' } })
+  })
+
+  /**
+   * The heart of an enforced posture: the ask is held open, the conversation
+   * says it is waiting on a person rather than working, and the answer that
+   * finally comes back is the user's.
+   */
+  it('parks a permission ask for the user under a posture that is not bypass', async () => {
+    const { stream, seen } = await attachedUnder('accept-edits', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+
+    stream.feed(permissionAsk(99))
+    // Nothing is answered on the agent's behalf — that is the whole posture.
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
+
+    // A blocked turn is `busy` at the protocol level but is not working, and
+    // the sidebar dot, the chime and the tray badge all read this one field.
+    await vi.waitFor(() => expect(conversation.status).toBe('waiting'))
+    expect(statuses(seen).at(-1)).toBe('waiting')
+
+    conversation.answerPermission('99', 'no')
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 99)).toBe(true))
+    expect(stream.sent().find((m) => m.id === 99)!.result)
+      .toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
+    expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  it('answers a dismissal as cancelled, and ignores a second answer for the same ask', async () => {
+    const { stream } = await attachedUnder('manual', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+
+    stream.feed(permissionAsk(7))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+
+    conversation.answerPermission('7')
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 7)).toBe(true))
+    expect(stream.sent().find((m) => m.id === 7)!.result)
+      .toEqual({ outcome: { outcome: 'cancelled' } })
+
+    // Two panes can hold the same card; the loser's click must not become a
+    // second reply to an agent that has already moved on.
+    conversation.answerPermission('7', 'yes-always')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent().filter((m) => m.id === 7)).toHaveLength(1)
+  })
+
+  it('releases a parked ask when the turn is cancelled, rather than stranding the promise', async () => {
+    const { stream } = await attachedUnder('manual', 'acp-1')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    // A turn has to be running for `cancel` to do anything.
+    void conversation.prompt('go').catch(() => {})
+    await vi.waitFor(() => expect(conversation.isBusy).toBe(true))
+    stream.feed(permissionAsk(11))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+
+    conversation.cancel()
+
+    // ACP puts resolving outstanding asks on the client when it cancels. The
+    // parked promise is a request the peer is awaiting a handler for, so
+    // leaving it would strand both the agent and the served request.
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 11)).toBe(true))
+    expect(stream.sent().find((m) => m.id === 11)!.result)
+      .toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(stream.sent().some((m) => m.method === 'session/cancel')).toBe(true)
+    expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  it('answers an ask that arrived before a reconnect, rather than stranding the agent', async () => {
+    // acpd buffers nothing for an absent client, so an ask delivered to the
+    // previous connection is not replayed to this one. The record is the only
+    // evidence it happened, and the agent's own id is what makes it answerable
+    // from a connection that never received it.
+    await record('acp-held', [
+      lifeLine,
+      promptLine('acp-held', 'old-1', 'do the thing'),
+      { jsonrpc: '2.0', id: 42, method: 'session/request_permission', params: askParams },
+    ])
+    const { stream, seen } = await attachedUnder('manual', 'acp-held')
+    const conversation = acpConversation('demo', 'wt-1', 'acp-held')!
+
+    // Recovered from the record: waiting on a person, not working.
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    await vi.waitFor(() => expect(statuses(seen).at(-1)).toBe('waiting'))
+
+    conversation.answerPermission('42', 'yes-always')
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 42)).toBe(true))
+    expect(stream.sent().find((m) => m.id === 42)!.result)
+      .toEqual({ outcome: { outcome: 'selected', optionId: 'yes-always' } })
+    expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  it('lands an answer clicked before recovery knew which ask it was for', async () => {
+    // The registry publishes a conversation the moment it is built, and a
+    // reattaching pane replays the pending card straight from the record — but
+    // recovery only names the outstanding asks after acpd's greeting and two
+    // file reads. A click in that window has a real ask behind it, and
+    // discarding it would leave the agent blocked with a dead card until the
+    // worktree restarted.
+    await record('acp-held', [
+      lifeLine,
+      promptLine('acp-held', 'old-1', 'do the thing'),
+      { jsonrpc: '2.0', id: 42, method: 'session/request_permission', params: askParams },
+    ])
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-held' }]),
+      permissionMode: () => Promise.resolve('manual'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-held')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-held')!
+
+    // Answered BEFORE the greeting that starts recovery — the window itself.
+    conversation.answerPermission('42', 'yes-always')
+    stream.feed(helloLine(false))
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 42)).toBe(true))
+    expect(stream.sent().find((m) => m.id === 42)!.result)
+      .toEqual({ outcome: { outcome: 'selected', optionId: 'yes-always' } })
+    expect(conversation.isAwaitingPermission).toBe(false)
+  })
+
+  it('forwards an ask when the posture could not be read, rather than granting it', async () => {
+    // The asymmetry the whole feature turns on: a needless prompt costs a
+    // click, a needless approval is silent and irreversible. So "not known
+    // yet" — a failed row read, or no row — must never reach the auto-answer.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      permissionMode: () => Promise.reject(new Error('database is down')),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-1')!
+    stream.feed(helloLine(false))
+
+    stream.feed(permissionAsk(99))
+    await vi.waitFor(() => expect(conversation.isAwaitingPermission).toBe(true))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent().some((m) => m.id === 99)).toBe(false)
+  })
+
+  it('tells the adapter its posture on a first attach, and leaves a live one alone', async () => {
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('plan'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(helloLine(true))
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: {
+        sessionId: 'acp-1',
+        modes: {
+          currentModeId: 'default',
+          availableModes: [{ id: 'default' }, { id: 'plan' }, { id: 'acceptEdits' }],
+        },
+      },
+    })}\n`)
+
+    // Forwarding asks decides who answers; the mode decides which questions
+    // get asked at all, so a posture that never reaches the adapter is not
+    // being enforced.
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
+    expect(stream.sent().find((m) => m.method === 'session/set_mode')!.params)
+      .toEqual({ sessionId: 'acp-1', modeId: 'plan' })
+  })
+
+  it('leaves the mode alone on a mode the adapter never advertised', async () => {
+    // `bypassPermissions` is withheld by an adapter running as root outside a
+    // sandbox, and `auto` by a model with no classifier. Setting one throws at
+    // the adapter, and losing the conversation over it would be worse than
+    // running in its default — where the bypass auto-answer still applies.
+    const stream = new FakeStream()
+    podExec.mockResolvedValue({ stdout: 'claude\n', stderr: '' })
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: () => stream,
+      permissionMode: () => Promise.resolve('bypass'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: created.id,
+      result: { sessionId: 'acp-1', modes: { currentModeId: 'default', availableModes: [{ id: 'default' }] } },
+    })}\n`)
+
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
+    // And the conversation still works: the ask is auto-answered, because
+    // bypass is what this posture means however the adapter is running.
+    stream.feed(permissionAsk(3))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.id === 3)).toBe(true))
   })
 
   it('gives up on a reattach it cannot address rather than talking to the wrong session', async () => {
