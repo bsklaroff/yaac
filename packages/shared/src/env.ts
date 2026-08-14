@@ -190,6 +190,21 @@ export const env = {
   },
 
   /**
+   * `YAAC_WORKTREE_ID` — the worktree this process runs inside, stamped into
+   * every worktree's environment by `createWorktree` (both drivers: k8s reads
+   * it off the pod spec, containerless off the tmux server environment).
+   * Undefined for a server running on a user's own machine.
+   *
+   * Its one reader is the credential gate: a server in here is reachable only
+   * through the outer install's port-forward, never fronted on its own. Empty
+   * is treated as unset so an explicit `YAAC_WORKTREE_ID=` clears it.
+   */
+  get worktreeId(): string | undefined {
+    const raw = (process.env.YAAC_WORKTREE_ID ?? '').trim()
+    return raw === '' ? undefined : raw
+  },
+
+  /**
    * `YAAC_DRIVER` — which substrate this server runs worktrees on.
    *
    * `k8s` (the default) runs each worktree as a single-pod Job in a local

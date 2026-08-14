@@ -1171,8 +1171,14 @@ export async function createWorktree(
   // image's — so no image-inspect merge step is needed.
   const env: string[] = []
 
-  // The worktree this pod runs. The only thing left reading it inside an
-  // image is the zsh prompt in Dockerfile.default.
+  // The worktree this pod runs. Read by the zsh prompt in Dockerfile.default,
+  // and — load-bearing — by a yaac started in here: its presence is what tells
+  // that inner server nothing outside the machine can address it, so it needs
+  // no client credential (see isCredentialOptional). Pushed first, and
+  // `envPassthrough`/`config.env` are applied after it and win, so a project
+  // config setting `YAAC_WORKTREE_ID` to empty puts the credential gate back
+  // on inside its own worktrees. That is the explicit-clear semantics working
+  // as written, not a hole — but it is the one config that unstamps this.
   env.push(`YAAC_WORKTREE_ID=${worktreeId}`)
 
   // How this workspace's `yaac-mama` reaches the server, where it has to

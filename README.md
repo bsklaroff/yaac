@@ -462,6 +462,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
 | `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) worktree — not something you set yourself. |
+| `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reachable only through the outer server's port-forward" and skips the client credential (see docs/remote-hosting.md). |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for worktree port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
