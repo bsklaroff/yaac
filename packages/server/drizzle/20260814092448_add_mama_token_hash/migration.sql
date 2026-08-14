@@ -1,0 +1,1 @@
+ALTER TABLE "worktrees" ADD COLUMN "mama_token_hash" text;

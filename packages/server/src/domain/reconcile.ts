@@ -2,7 +2,7 @@ import {
   gcOrphanEphemeralModuleDirs,
   reconcileAgentSessions,
   reconcilePrewarmPool,
-  reconcileSpawnRequests,
+  reconcileMamaRequests,
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileGeneratedTitles } from '#domain/titles'
@@ -60,14 +60,14 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // the worktree.
     { name: 'stale-worktrees', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorktrees(ctx.snapshot()) },
-    // Service in-worktree `yaac-spawn` requests queued at the egress proxy.
+    // Service in-worktree `yaac-mama` requests queued at the egress proxy.
     // The drain resolves who called from pod labels; what a request MEANS
-    // (tool precedence, the fan-out cap, the minted id) is `decideSpawn`'s.
+    // (which commands exist, and what each may do) is `runMamaCommand`'s.
     // The proxy holds the caller's HTTP response open until we answer, so
     // it reports the enqueue over its event stream rather than making the
     // caller wait out a poll.
-    { name: 'spawn-requests', triggers: ['spawn-requests'],
-      run: (ctx) => reconcileSpawnRequests({}, ctx.snapshot()) },
+    { name: 'mama-requests', triggers: ['mama-requests'],
+      run: (ctx) => reconcileMamaRequests({}, ctx.snapshot()) },
     // The runtime's own work that has to precede the pool: a spare's create
     // should join image builds already running, and anything holding
     // capacity should be out of the way before those builds are launched.

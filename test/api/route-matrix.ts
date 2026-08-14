@@ -120,7 +120,17 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/stop', body: { worktreeId: 'nope' }, k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/mark-death-seen', body: { projectSlug: 'nope', worktreeId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'POST', path: '/worktree/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },
+  // The in-worktree command channel. Only the runtime whose workspaces can
+  // dial the server has it: a pod speaks to the egress proxy instead, and
+  // holds no token to present here. 401 rather than a refusal on
+  // containerless because the matrix asks with no bearer, which is exactly
+  // what an unknown caller looks like.
+  { method: 'POST', path: '/worktree/mama', body: { command: 'list' },
+    why: 'a pod reaches yaac-mama through the egress proxy, not the server',
+    k8s: UNSUPPORTED, containerless: 401 },
+  { method: 'GET', path: '/worktree/group/list', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/worktree/group/create', body: { name: 'g' }, k8s: [200, 400], containerless: [200, 400] },
+  { method: 'POST', path: '/worktree/group/move', body: { worktreeId: 'nope', group: null }, k8s: [200, 400, 404], containerless: [200, 400, 404] },
   { method: 'POST', path: '/worktree/group/rename', body: { id: 'nope', name: 'g' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
   { method: 'POST', path: '/worktree/group/set-pinned', body: { id: 'nope', pinned: true }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },
   { method: 'POST', path: '/worktree/group/delete', body: { id: 'nope' }, k8s: [200, 204, 400, 404], containerless: [200, 204, 400, 404] },

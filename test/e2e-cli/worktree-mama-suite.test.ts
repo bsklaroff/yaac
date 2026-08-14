@@ -31,13 +31,14 @@ import { collectSnapshots } from '@yaac/test-utils/events-ws'
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
- * End-to-end coverage for in-session spawning: a session pod runs the
- * auto-installed `yaac-spawn` command, the request rides the transparent
+ * End-to-end coverage for the in-session command channel: a session pod runs
+ * the auto-installed `yaac-mama`, its JSON envelope rides the transparent
  * HTTP egress path to the proxy's magic host, the server's background tick
- * drains it and fires a headless create, and the new session comes up in
- * the same project with the prompt typed into its agent pane.
+ * drains it, and the command runs against the caller's own project — a
+ * sibling session created with its prompt typed into its agent pane, the
+ * project's sessions listed back, groups made and filled.
  */
-describe('yaac-spawn from inside a session (real CLI + server + cluster)', () => {
+describe('yaac-mama from inside a session (real CLI + server + cluster)', () => {
   const SLUG = 'spawner'
   let testEnv: YaacTestEnv
   let server: SpawnedServer | null = null
@@ -124,11 +125,11 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     await testEnv.cleanup()
   })
 
-  /** Run yaac-spawn in session A, capturing exit code + combined output
+  /** Run yaac-mama in session A, capturing exit code + combined output
    *  ourselves (execInJob throws-and-retries on non-zero exits). */
-  async function runSpawn(args: string): Promise<{ exitCode: number; output: string }> {
+  async function runMama(args: string): Promise<{ exitCode: number; output: string }> {
     const { stdout } = await execInJob(jobA, [
-      'sh', '-c', `yaac-spawn ${args} 2>&1; echo "EXIT:$?"`,
+      'sh', '-c', `yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
     ], { timeout: 120_000 })
     const m = /\nEXIT:(\d+)\s*$/.exec(stdout) ?? /^EXIT:(\d+)\s*$/.exec(stdout)
     if (!m) throw new Error(`no exit marker in output:\n${stdout}`)
@@ -136,19 +137,38 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
   }
 
   it('is installed on PATH as a read-only file', async () => {
-    const { stdout } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-spawn'])
-    expect(stdout.trim()).toBe('/usr/local/bin/yaac-spawn')
+    const { stdout } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-mama'])
+    expect(stdout.trim()).toBe('/usr/local/bin/yaac-mama')
     const { stdout: watchPrs } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-watch-prs'])
     expect(watchPrs.trim()).toBe('/usr/local/bin/yaac-watch-prs')
-    // Read-only mount: a session cannot tamper with the host-staged copy.
-    const { output, exitCode } = await runSpawn('') // also covers usage error
+    // No command at all is a usage error, not a request.
+    const { output, exitCode } = await runMama('')
     expect(exitCode).toBe(2)
-    expect(output).toContain('usage:')
+    expect(output).toContain('Usage:')
+    // Read-only mount: a session cannot tamper with the host-staged copy.
     const { stdout: rw } = await execInJob(jobA, [
-      'sh', '-c', 'sh -c ">> /usr/local/bin/yaac-spawn" 2>&1; echo "EXIT:$?"',
+      'sh', '-c', 'sh -c ">> /usr/local/bin/yaac-mama" 2>&1; echo "EXIT:$?"',
     ])
     expect(rw).not.toContain('EXIT:0')
   })
+
+  it('refuses a command outside the allowlist, whatever the caller sends', async () => {
+    // The script rejects what it does not offer...
+    const viaScript = await runMama('stop 1234')
+    expect(viaScript.exitCode).toBe(2)
+    expect(viaScript.output).toContain('unknown command')
+
+    // ...and the SERVER refuses it too, which is the half that matters: the
+    // proxy queues envelopes without knowing what any command means, so a
+    // caller bypassing the script reaches the same allowlist.
+    const { stdout } = await execInJob(jobA, ['sh', '-c',
+      `curl -sS -X POST -H 'Content-Type: application/json' \
+        --data-binary '{"command":"stop","args":{},"body":"x"}' \
+        -w '\nHTTP:%{http_code}' http://yaac.internal/cmd 2>&1`,
+    ], { timeout: 120_000 })
+    expect(stdout).toContain('unknown command')
+    expect(stdout).toContain('HTTP:422')
+  }, 120_000)
 
   it('spawns a sibling session with the prompt and --model delivered to its agent', async () => {
     // Watch the webapp snapshot stream: a spawned session must provision in
@@ -163,7 +183,8 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     await sub.opened
 
     const PROMPT = 'hello from spawn e2e'
-    const { exitCode, output } = await runSpawn(`--model claude-opus-4-8 "${PROMPT}"`)
+    const { exitCode, output } = await runMama(
+      `create --model claude-opus-4-8 --group "release train" "${PROMPT}"`)
     expect(exitCode).toBe(0)
     const newWorktreeId = output.trim()
     expect(newWorktreeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
@@ -246,45 +267,99 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(startCmd).toContain('claude --permission-mode bypassPermissions --model claude-opus-4-8')
   }, 420_000)
 
+  it('lists the project\u2019s sessions, marking the caller and its group', async () => {
+    // Runs after the spawn above, so both sessions are up and the spawned
+    // one is filed under the group `create --group` made.
+    const { exitCode, output } = await runMama('list')
+    expect(exitCode).toBe(0)
+    expect(output).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+    // The caller's own row is marked, which is how an agent tells itself
+    // from its siblings.
+    expect(output).toContain('(you)')
+    // The group made during the spawn is listed, and holds the sibling.
+    expect(output).toContain('release train')
+    expect(output).toContain('Groups: release train')
+  }, 120_000)
+
+  it('makes a group and files a session into it, by name and short id', async () => {
+    const made = await runMama('group create "review queue"')
+    expect(made.exitCode).toBe(0)
+    expect(made.output).toContain('review queue')
+
+    // Idempotent: an agent can name a group without checking first.
+    const again = await runMama('group create "review queue"')
+    expect(again.exitCode).toBe(0)
+
+    // Move the CALLER itself, addressed by the 8-char prefix `list` prints.
+    const listed = await runMama('list')
+    const selfShortId = /^([0-9a-f]{8}) \(you\)/m.exec(listed.output)?.[1]
+    expect(selfShortId).toBeTruthy()
+
+    const moved = await runMama(`group move ${selfShortId!} "review queue"`)
+    expect(moved.exitCode).toBe(0)
+    expect(moved.output).toContain('review queue')
+
+    const after = await runMama('list')
+    expect(after.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*review queue`))
+
+    // Omitting the group puts it back in the default list, leaving the
+    // group behind.
+    const out = await runMama(`group move ${selfShortId!}`)
+    expect(out.exitCode).toBe(0)
+    expect(out.output).toContain('out of its group')
+    const restored = await runMama('list')
+    expect(restored.output).toContain('Groups: ')
+    expect(restored.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*\\(you\\)`))
+  }, 180_000)
+
+  it('renames itself over the proxy queue, with no session named', async () => {
+    const { exitCode, output } = await runMama('rename "driving the mama e2e"')
+    expect(exitCode).toBe(0)
+    expect(output).toContain('driving the mama e2e')
+
+    // The caller is attributed by source pod IP, so the title has to land on
+    // the calling session and no other.
+    const listed = await runMama('list')
+    expect(listed.output).toContain('(you)')
+  }, 120_000)
+
   it('surfaces the proxy rejection for a model value outside the safe charset', async () => {
-    // `;` passes shell/URL handling in yaac-spawn but fails the proxy's
-    // MODEL_RE mirror — proving the model validation round trip without
-    // provisioning a session.
-    const { exitCode, output } = await runSpawn('--model "opus;rm" "x"')
+    // `;` survives the script's JSON encoding but fails the proxy's MODEL_RE
+    // mirror — proving the option validation round trip without provisioning
+    // a session.
+    const { exitCode, output } = await runMama('create --model "opus;rm" "x"')
     expect(exitCode).toBe(1)
-    expect(output).toContain('invalid model')
+    expect(output).toContain('invalid value for --model')
     expect(output).toContain('HTTP 400')
   }, 120_000)
 
   it('surfaces the server rejection for an unknown tool', async () => {
     // 'bogus' passes the proxy's charset check; the server's AGENT_TOOLS
     // validation rejects it — proving the full round trip of the error path.
-    const { exitCode, output } = await runSpawn('--tool bogus "x"')
+    const { exitCode, output } = await runMama('create --tool bogus "x"')
     expect(exitCode).toBe(1)
     expect(output).toContain('bogus')
     expect(output).toContain('HTTP 422')
   }, 120_000)
 
-  it('--models reports authed tools + model ids from the proxy', async () => {
-    // The proxy answers GET yaac.internal/tools from the host-mounted creds
-    // dir: only claude.json (api-key) is seeded here, so claude is authed and
-    // the rest are not — and the baked catalog supplies claude's model ids.
-    const { exitCode, output } = await runSpawn('--models')
+  it('reports which tools the host can authenticate, and their model ids', async () => {
+    // Answered by the SERVER from the host's own credentials: only
+    // claude.json (api-key) is seeded here, so claude is configured and the
+    // rest are not, with the baked catalog supplying claude's model ids.
+    const { exitCode, output } = await runMama('models')
     expect(exitCode).toBe(0)
-    expect(output).toContain('current worktree tool: claude')
+    expect(output).toContain('this session runs: claude')
     expect(output).toContain('claude-opus-4-8')
-    // codex/opencode/pi have no creds in this env.
-    expect(output).toContain('not configured')
     expect(output).toMatch(/codex\s+not configured/)
     // No session was spawned: the output is a report, not a session id.
     expect(output).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/m)
   }, 120_000)
 
-  it('--help prints usage documenting --models without touching the proxy', async () => {
-    const { exitCode, output } = await runSpawn('--help')
+  it('--help prints usage without touching the proxy', async () => {
+    const { exitCode, output } = await runMama('--help')
     expect(exitCode).toBe(0)
     expect(output).toContain('Usage:')
-    expect(output).toContain('--tool claude|codex|opencode|pi')
-    expect(output).toContain('--models')
+    expect(output).toContain('yaac-mama create')
+    expect(output).toContain('--group <name>')
   }, 120_000)
 })

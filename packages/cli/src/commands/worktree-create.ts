@@ -26,6 +26,10 @@ export interface WorktreeCreateOptions {
    *  choice, else the driver's default; the server owns that resolution and
    *  rejects a posture the tool doesn't have. */
   permissionMode?: PermissionMode
+  /** Sidebar group to file the worktree under, by name (or id). A name
+   *  matching no group creates it — the caller is naming a group here, not
+   *  picking one from a list they can see. */
+  group?: string
 }
 
 interface WorktreeCreateResult {
@@ -78,6 +82,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       model: options.model,
       mode: options.mode,
       permissionMode: options.permissionMode,
+      group: options.group,
     },
   })
 

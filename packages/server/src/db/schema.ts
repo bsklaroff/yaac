@@ -159,6 +159,21 @@ export const worktrees = snakeCase.table('worktrees', {
    * here, since the launch path re-checks against the tool.
    */
   permissionMode: text().notNull().default('bypass'),
+  /**
+   * SHA-256 of the bearer this worktree's `yaac-mama` presents, when its
+   * runtime reaches the server directly (containerless). Null where the
+   * substrate attributes a caller itself — a pod is identified by its source
+   * IP at the proxy and never holds one of these.
+   *
+   * Durable, and NOT re-minted on server restart: the token was handed to a
+   * tmux server that outlives this process, so re-minting would silently
+   * break `yaac-mama` in every worktree that was already running. A worktree
+   * *restart* is a new tmux server and does take a fresh one.
+   *
+   * The hash rather than the token, so the value the agent holds is not also
+   * sitting in the database.
+   */
+  mamaTokenHash: text(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.worktreeId] })])
 
 /**

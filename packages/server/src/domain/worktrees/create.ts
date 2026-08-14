@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import crypto from 'node:crypto'
+import crypto, { createHash } from 'node:crypto'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { reserveAvailablePort } from '#lib/port'
 import type { ReservedPort } from '#lib/port'
@@ -39,6 +39,7 @@ import {
 import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { getGitUserConfig } from '@yaac/shared/git'
+import { readLock } from '@yaac/shared/lock'
 import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
@@ -72,7 +73,12 @@ import {
   validateInitWindows,
   type InitWindow,
 } from '#runtime/agents'
-import { applyWorktreeEvent, getProjectLastPermissionMode } from '#db'
+import {
+  applyWorktreeEvent,
+  getProjectLastPermissionMode,
+  setWorktreeGroup,
+  setWorktreeMamaTokenHash,
+} from '#db'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
 import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
@@ -85,7 +91,7 @@ import {
   worktreeBinDir,
   worktreeBinMounts,
   stageWorktreeBin,
-} from './spawn-script'
+} from './worktree-bin'
 import { ServerError } from '@yaac/shared/errors'
 import {
   defaultPermissionMode,
@@ -161,7 +167,7 @@ export interface WorktreeCreateOptions {
   /**
    * Initial prompt typed into the agent's tmux pane once the agent window
    * is up (pasted + submitted, not passed on the agent's command line).
-   * Used by `yaac-spawn` and `worktree create --prompt`.
+   * Used by `yaac-mama create` and `worktree create --prompt`.
    */
   initialPrompt?: string
   /**
@@ -171,6 +177,13 @@ export interface WorktreeCreateOptions {
    * Not persisted: a restart resumes with the default model.
    */
   model?: string
+  /**
+   * Sidebar group to file the new worktree under — an id the caller has
+   * already resolved (`resolveGroupId`), never a name. Filed the moment the
+   * row exists rather than when provisioning finishes, so the worktree is in
+   * the group the user asked for for its whole visible life.
+   */
+  groupId?: string
   /**
    * The permission posture this worktree's agents launch in — how much they
    * may do before stopping to ask.
@@ -812,6 +825,13 @@ export async function createWorktree(
     ...(options.prewarm === true ? { spare: true } : {}),
   })
 
+  // File it under its group now that the row exists, before provisioning
+  // takes its tens of seconds: the group is where the user expects to watch
+  // this worktree come up, not where it lands once it already has.
+  if (options.groupId !== undefined) {
+    await setWorktreeGroup(projectSlug, worktreeId, options.groupId)
+  }
+
   // The life this create is starting, stamped after the row exists (it is an
   // UPDATE) and before any handle can be recorded — a life is exactly the
   // boundary that invalidates the previous one's handles, and stamping it
@@ -1102,7 +1122,7 @@ export async function createWorktree(
       ? await syncSharedBuiltinSkills(builtinSkillsDir(), projectSlug)
       : await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
 
-    // In-session helper commands (yaac-spawn, and the yaac-worktree-init
+    // In-session helper commands (yaac-mama, and the yaac-worktree-init
     // postStart hook): staged like the builtin skills and File-mounted
     // read-only onto /usr/local/bin in the pod.
     const worktreeBinStaging = path.join(worktreeStateDir(projectSlug, worktreeId), 'bin')
@@ -1154,6 +1174,36 @@ export async function createWorktree(
   // The worktree this pod runs. The only thing left reading it inside an
   // image is the zsh prompt in Dockerfile.default.
   env.push(`YAAC_WORKTREE_ID=${worktreeId}`)
+
+  // How this workspace's `yaac-mama` reaches the server, where it has to
+  // carry its own way in.
+  //
+  // Only without mediated egress: with a proxy, the workspace addresses the
+  // magic host and the proxy attributes it by source pod IP, so a pod is
+  // given no credential and no server address at all — and must not be, since
+  // the pod is exactly what the boundary exists to hold things back from.
+  // A host process has no such boundary and no proxy to speak through, so it
+  // posts to the server directly and proves which worktree it is with a
+  // bearer minted here (docs/containerless-driver.md).
+  if (!mediatedEgress && !options.prewarm) {
+    // 256 bits from the CSPRNG rather than a v4 uuid's 122: this is a bearer
+    // whose only job is to be unguessable, and the extra entropy is free.
+    const mamaToken = crypto.randomBytes(32).toString('hex')
+    await setWorktreeMamaTokenHash(
+      projectSlug,
+      worktreeId,
+      createHash('sha256').update(mamaToken).digest('hex'),
+    )
+    env.push(`YAAC_MAMA_TOKEN=${mamaToken}`)
+    // Baked at launch rather than looked up per call: the tmux server holds
+    // this env for its whole life, which outlives the yaac server that made
+    // it. A restart on the SAME port (the default, and what a plain
+    // `yaac server restart` does) keeps it valid; one moved to a different
+    // port leaves the worktree's yaac-mama pointing at nothing until the
+    // worktree itself is restarted.
+    const lock = await readLock()
+    if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
+  }
 
   // Passthrough env vars
   if (config.envPassthrough) {

@@ -12,20 +12,20 @@ You stay the dispatcher. You never review the PR yourself, and reviewer
 sessions never report back to you — their output is the PR thread.
 
 Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
-[`yaac-spawn`](../yaac-spawn/SKILL.md) (the reviewer).
+[`yaac-mama`](../yaac-mama/SKILL.md) (the reviewer).
 
 ## The reviewer argument
 
 One **required argument** names the agent: `<model>` (you resolve the tool),
 `:<model>` (same, said explicitly), or `<tool>:<model>`.
 
-There is **no default model**. If it's missing, run `yaac-spawn --models`, show
+There is **no default model**. If it's missing, run `yaac-mama models`, show
 the user the authed tools and the ids each accepts, and ask — then stop until
 they answer. Do not pick for them, and **do not arm the watcher first**: a
 watcher armed without a reviewer baselines its seen-state, so PRs opened while
 you wait are recorded as seen and never reviewed.
 
-Run `yaac-spawn --models` before the first spawn. If a **tool was given**,
+Run `yaac-mama models` before the first spawn. If a **tool was given**,
 check it's authed and accepts that model; if not, say so and stop — never
 silently fall back, since an unauthed tool spawns fine and *then* fails to
 authenticate, which looks like a hung review rather than a misconfiguration.
@@ -130,7 +130,7 @@ to flag likely conflicts for whoever merges second — **not** to resolve them.
 ### 3. Spawn it
 
 ```
-yaac-spawn --tool <tool> --model <model> "<prompt>"
+yaac-mama create --tool <tool> --model <model> "<prompt>"
 ```
 
 One quoted argument, max 10,000 characters, carrying these five steps whatever
@@ -170,7 +170,7 @@ follow-up commit rather than assuming the earlier answer holds.
 
 Relay: the event line, the PR link and size, the reviewer session id, and one
 line on what you aimed the review at. The session id is how the user follows it
-in the yaac webapp — `yaac-spawn` is fire-and-forget and you cannot watch its
+in the yaac webapp — `yaac-mama create` is fire-and-forget and you cannot watch its
 progress from here.
 
 ## Keeping the watch alive

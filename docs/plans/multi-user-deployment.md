@@ -472,7 +472,7 @@ class — *install-global* writes any user can make today:
 
 ### The spawn flow needs an owner carried through it
 
-`yaac-spawn` attribution is otherwise sound — the caller worktree is
+`yaac-mama` attribution is otherwise sound — the caller worktree is
 resolved from source pod IP (not self-declared), project is taken from the
 caller's pod labels, and a pod *cannot* spawn into another project
 (`domain/worktrees/spawn-policy.ts`, `spawn-reconcile.ts`). Gaps under

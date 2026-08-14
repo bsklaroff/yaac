@@ -7,7 +7,7 @@ import { serverLog } from '#log'
  *
  * Three things only the proxy process can see are inputs to the server's
  * work: a worktree's blocked-host set growing, a git credential being
- * rejected upstream, and an in-worktree `yaac-spawn` landing in its queue.
+ * rejected upstream, and an in-worktree `yaac-mama` landing in its queue.
  * The proxy cannot dial the server (it is an in-cluster pod; the server is
  * a host process with no in-cluster address, and nested it sits inside a
  * pod of the *outer* cluster), so the signal rides the control tunnel the
@@ -22,7 +22,7 @@ import { serverLog } from '#log'
  */
 
 /** A change the reconciler owes a pass on, as this stream reports it. */
-export const PROXY_CHANGE_SOURCES = ['spawn-requests', 'proxy-reconnect'] as const
+export const PROXY_CHANGE_SOURCES = ['mama-requests', 'proxy-reconnect'] as const
 export type ProxyChangeSource = typeof PROXY_CHANGE_SOURCES[number]
 
 /** First respawn delay after a stream death; doubles to the cap. */
@@ -158,7 +158,7 @@ export class ProxyEventStream {
         this.reportedDown = false
       }
       notifyWorktreeListChanged()
-      this.onChange('spawn-requests')
+      this.onChange('mama-requests')
       // A reattach is also the only edge that says "the proxy pod may have
       // been replaced" — which is exactly what the ssh-agent heal and the
       // vcluster attribution re-push are waiting for.
@@ -227,8 +227,12 @@ export class ProxyEventStream {
         // Snapshot inputs the server re-reads off /data. No reconcile work.
         notifyWorktreeListChanged()
         return
+      // `spawn` is what a proxy predating the yaac-mama command envelope
+      // emits for the same edge; both mean "a worktree is waiting on an
+      // answer" (docs/legacy-compat-shims.md).
+      case 'mama':
       case 'spawn':
-        this.onChange('spawn-requests')
+        this.onChange('mama-requests')
         return
       default:
         return // 'ping', or an event from a newer proxy we don't know

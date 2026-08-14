@@ -68,11 +68,16 @@ describe('push-pr skill', () => {
   })
 })
 
-describe('yaac-spawn skill', () => {
+describe('yaac-mama skill', () => {
   it('is discoverable and documents the worktree-bin usage shape', async () => {
-    expectShipped('yaac-spawn')
-    expect(await bodyOf('yaac-spawn'))
-      .toContain('yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"')
+    expectShipped('yaac-mama')
+    const body = await bodyOf('yaac-mama')
+    expect(body).toContain('yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"')
+    expect(body).toContain('yaac-mama list')
+    expect(body).toContain('yaac-mama group create "<name>"')
+    // The subset is the point of the skill, so it has to say so: an agent
+    // reading this must not go looking for a stop or a delete.
+    expect(body).toContain('strict subset')
   })
 })
 
@@ -95,8 +100,8 @@ describe('spawn-pr-reviewers skill', () => {
     // The spawn half must name a tool and model, and resolve the tool itself
     // when the argument names only a model. The model is required with no
     // default, so no model id is baked in anywhere as one.
-    expect(body).toContain('yaac-spawn --tool <tool> --model <model>')
-    expect(body).toContain('yaac-spawn --models')
+    expect(body).toContain('yaac-mama create --tool <tool> --model <model>')
+    expect(body).toContain('yaac-mama models')
     expect(body).toContain('There is **no default model**.')
   })
 })

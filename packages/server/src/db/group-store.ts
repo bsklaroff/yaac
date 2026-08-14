@@ -36,32 +36,48 @@ const key = (projectSlug: string, groupId: string) =>
   and(eq(worktreeGroups.projectSlug, projectSlug), eq(worktreeGroups.groupId, groupId))
 
 /**
- * Create a group around its founding worktree — the only way one comes into
- * being, so a group is never born empty and the sidebar has something to
- * render it under immediately.
+ * Create a group, either around a founding worktree or empty.
  *
- * Both halves in one transaction, and the founding stamp has to have landed:
- * a group row whose UPDATE matched nothing would be an unpinned, memberless
- * group, which nothing lists and therefore nothing can delete — it would sit
- * in the table forever. So an unknown worktree (or one belonging to another
+ * With a founding worktree, both halves land in one transaction and the
+ * founding stamp has to have matched: an unpinned, memberless group is
+ * listed by nothing and therefore deletable by nothing — it would sit in the
+ * table forever. So an unknown worktree (or one belonging to another
  * project) throws, rolling the insert back with it.
+ *
+ * `null` asks for an empty one, which is what a caller naming a group before
+ * it has members needs (`yaac group create`, and `--group` on a create whose
+ * worktree does not exist yet). It is born PINNED, because pinning is what
+ * keeps a memberless group on screen: without it the user could not see the
+ * thing they just made.
+ *
+ * Pinning is not an invariant, though, and it is worth being exact about
+ * what it does and does not guarantee. A group founded around a worktree is
+ * unpinned, and nothing re-pins it when that worktree moves out or its row
+ * goes away — so a founded group CAN end up empty and unpinned, which the
+ * sidebar hides. That is a hidden group, not a stranded one: every group is
+ * listed unfiltered (`listWorktreeGroups`), so `yaac group list` shows it
+ * and `yaac group delete` removes it, and project teardown reaps it either
+ * way. It is left hidden deliberately — a group the user made around a
+ * worktree that has since left is noise on screen, not something to
+ * resurrect by pinning it for them.
  */
 export async function createWorktreeGroup(
   projectSlug: string,
   name: string,
-  worktreeId: string,
+  worktreeId: string | null,
 ): Promise<WorktreeGroupRow> {
   const groupId = crypto.randomUUID()
   const row: WorktreeGroupRow = {
     projectSlug,
     groupId,
     name: groupName(name),
-    pinned: false,
+    pinned: worktreeId === null,
     createdAt: new Date(),
   }
   const db = await getDb()
   await db.transaction(async (tx) => {
     await tx.insert(worktreeGroups).values(row)
+    if (worktreeId === null) return
     const filed = await tx.update(worktrees).set({ groupId })
       .where(and(eq(worktrees.projectSlug, projectSlug), eq(worktrees.worktreeId, worktreeId)))
       .returning({ worktreeId: worktrees.worktreeId })

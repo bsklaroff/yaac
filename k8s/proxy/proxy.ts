@@ -40,13 +40,15 @@ import { readJsonOrNull, writeJsonAtomic } from './state-files'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import {
-  SPAWN_MAGIC_HOST,
-  SPAWN_MAX_BODY_BYTES,
-  SPAWN_PATH,
-  SpawnQueue,
-  validateSpawnRequest,
-} from './spawn-queue'
-import type { SpawnResult } from './spawn-queue'
+  LEGACY_SPAWN_PATH,
+  MAMA_MAGIC_HOST,
+  MAMA_MAX_BODY_BYTES,
+  MAMA_PATH,
+  MamaQueue,
+  parseMamaEnvelope,
+  validateMamaRequest,
+} from './mama-queue'
+import type { MamaResult } from './mama-queue'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
@@ -1998,8 +2000,8 @@ function dispatchToUpstream(
   // The spawn endpoint is HTTP-only (the transparent HTTP listener handles it
   // before the allowlist). A stray HTTPS/CONNECT attempt would otherwise land
   // in the blocked-hosts record and confuse the webapp badge — hint instead.
-  if (hostname === SPAWN_MAGIC_HOST) {
-    console.log(`[proxy] spawn magic host dialed on ${opts.writeConnectOk ? 'CONNECT' : 'HTTPS'} — use http://${SPAWN_MAGIC_HOST}${SPAWN_PATH}`)
+  if (hostname === MAMA_MAGIC_HOST) {
+    console.log(`[proxy] yaac magic host dialed on ${opts.writeConnectOk ? 'CONNECT' : 'HTTPS'} — use http://${MAMA_MAGIC_HOST}${MAMA_PATH}`)
     if (opts.writeConnectOk) {
       clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       clientSocket.end()
@@ -2081,7 +2083,7 @@ const EVENT_PING_MS = 15_000
  * costs a reconnect, never a lost update, because the reconnecting server
  * re-reads everything anyway.
  */
-function emitProxyEvent(type: 'blocked-hosts' | 'git-auth-failures' | 'spawn' | 'ping'): void {
+function emitProxyEvent(type: 'blocked-hosts' | 'git-auth-failures' | 'mama' | 'ping'): void {
   if (eventSubscribers.size === 0) return
   const line = JSON.stringify({ type }) + '\n'
   for (const res of eventSubscribers) {
@@ -2384,17 +2386,17 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // In-worktree spawn requests: the server drains pending requests when the
-  // `spawn` event above wakes it (drain = claim, at-most-once) ...
-  if (req.method === 'GET' && req.url === '/spawn/pending') {
+  // In-worktree yaac-mama requests: the server drains pending requests when
+  // the `mama` event above wakes it (drain = claim, at-most-once) ...
+  if (req.method === 'GET' && req.url === '/cmd/pending') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(spawnQueue.drain()))
+    res.end(JSON.stringify(mamaQueue.drain()))
     return
   }
 
   // ... and posts back results, which complete the held worktree responses.
-  if (req.method === 'POST' && req.url === '/spawn/results') {
+  if (req.method === 'POST' && req.url === '/cmd/results') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     let body = ''
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
@@ -2411,13 +2413,13 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         if (!item || typeof item !== 'object') continue
         const r = item as Record<string, unknown>
         if (typeof r.requestId !== 'string' || typeof r.ok !== 'boolean') continue
-        const result: SpawnResult = {
+        const result: MamaResult = {
           requestId: r.requestId,
           ok: r.ok,
-          worktreeId: typeof r.worktreeId === 'string' ? r.worktreeId : undefined,
+          output: typeof r.output === 'string' ? r.output : undefined,
           error: typeof r.error === 'string' ? r.error : undefined,
         }
-        if (spawnQueue.complete(result)) completed++
+        if (mamaQueue.complete(result)) completed++
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ completed }))
@@ -2790,46 +2792,57 @@ const transparentHttpsServer = net.createServer((socket) => {
 // already uses) and carry the verified worktree id on the socket.
 type IdentifiedSocket = net.Socket & { yaacWorktreeId?: string; yaacVclusterAttributed?: boolean }
 
-// In-worktree spawn requests (see spawn-queue.ts). Held responses expire on a
-// coarse sweep — precision doesn't matter, only that abandoned requests
+// In-worktree yaac-mama requests (see mama-queue.ts). Held responses expire
+// on a coarse sweep — precision doesn't matter, only that abandoned requests
 // eventually 504 instead of leaking.
-const spawnQueue = new SpawnQueue()
-setInterval(() => { spawnQueue.expire() }, 5_000).unref()
+const mamaQueue = new MamaQueue()
+setInterval(() => { mamaQueue.expire() }, 5_000).unref()
 
 /**
- * `POST http://yaac.internal/spawn` from inside a worktree: validate, then
- * hold the response open until the server drains the queue and posts the
- * result (or the TTL sweep 504s it). Runs BEFORE the allowlist — spawning
- * works in every worktree without registration and is never recorded as a
- * blocked host.
+ * `POST http://yaac.internal/cmd?command=<name>&<opts>` from inside a
+ * worktree: validate the envelope's shape, then hold the response open until
+ * the server drains the queue and posts the result (or the TTL sweep 504s
+ * it). Runs BEFORE the allowlist — a worktree can always reach its own
+ * server, without registration and never recorded as a blocked host.
+ *
+ * `POST /spawn` is the same thing from a worktree whose mounted script
+ * predates named commands: it carries the prompt as the body and `tool` /
+ * `model` as query params, which is exactly a `create`
+ * (docs/legacy-compat-shims.md).
  */
-function handleSpawnRequest(
+function handleMamaRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   worktreeId: string,
   viaVclusterAttribution: boolean,
 ): void {
+  const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
+  const legacy = url.pathname === LEGACY_SPAWN_PATH
+  // The queue writes the completed reply itself (see `MamaReplyShape`); this
+  // is for everything refused before it ever gets there, in the shape that
+  // caller's script can read.
   const respond = (status: number, body: string): void => {
-    res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' })
-    res.end(body)
+    if (legacy || status === 404 || status === 405) {
+      res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end(body)
+      return
+    }
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(status === 200 ? JSON.stringify({ output: body }) : JSON.stringify({ error: body }))
   }
-  const url = new URL(req.url ?? '/', `http://${SPAWN_MAGIC_HOST}`)
-  if (url.pathname !== SPAWN_PATH) { respond(404, 'Not found'); return }
+  if (url.pathname !== MAMA_PATH && !legacy) { respond(404, 'Not found'); return }
   if (req.method !== 'POST') { respond(405, 'Method not allowed'); return }
   if (viaVclusterAttribution) {
-    respond(403, 'spawn is not available to nested workloads via the outer proxy')
+    respond(403, 'yaac-mama is not available to nested workloads via the outer proxy')
     return
   }
-  const tool = url.searchParams.get('tool') ?? undefined
-  const model = url.searchParams.get('model') ?? undefined
-
   const chunks: Buffer[] = []
   let received = 0
   let overflow = false
   req.on('data', (chunk: Buffer) => {
     received += chunk.length
-    if (received > SPAWN_MAX_BODY_BYTES) {
-      if (!overflow) { overflow = true; respond(413, 'prompt too large') }
+    if (received > MAMA_MAX_BODY_BYTES) {
+      if (!overflow) { overflow = true; respond(413, 'argument too large') }
       req.destroy()
       return
     }
@@ -2837,27 +2850,59 @@ function handleSpawnRequest(
   })
   req.on('end', () => {
     if (overflow) return
-    const prompt = Buffer.concat(chunks).toString('utf8')
-    const valid = validateSpawnRequest(prompt, tool, model)
+    const raw = Buffer.concat(chunks).toString('utf8')
+
+    // The envelope arrives as JSON, which is the one shape both substrates
+    // send (worktree-bin/yaac-mama). A legacy /spawn call predates it: the
+    // prompt IS the body and `tool`/`model` ride the query string, which is
+    // exactly a `create` (docs/legacy-compat-shims.md).
+    let command: string
+    let args: Record<string, string>
+    let body: string
+    if (legacy) {
+      command = 'create'
+      args = {}
+      for (const [name, value] of url.searchParams) args[name] = value
+      body = raw
+    } else {
+      const parsed = parseMamaEnvelope(raw)
+      if (!parsed) { respond(400, 'invalid request envelope'); return }
+      ;({ command, args, body } = parsed)
+    }
+
+    const valid = validateMamaRequest(command, args, body)
     if (!valid.ok) { respond(valid.status, valid.error); return }
     // No-op the completer once the caller is gone; the entry still expires
     // off the queue on the normal TTL sweep.
     let gone = false
     res.on('close', () => { gone = true })
-    const enqueued = spawnQueue.enqueue(
-      { worktreeId, prompt, tool, model },
-      (status, body) => { if (!gone) respond(status, body) },
+    const enqueued = mamaQueue.enqueue(
+      { worktreeId, command, args, body, reply: legacy ? 'text' : 'json' },
+      // The queue has already shaped this reply for the caller's script, so
+      // it is written through verbatim rather than through `respond`.
+      (status, text) => {
+        if (gone) return
+        res.writeHead(status, {
+          'Content-Type': legacy
+            ? 'text/plain; charset=utf-8'
+            : 'application/json; charset=utf-8',
+        })
+        res.end(text)
+      },
     )
     if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }
-    console.log(`[proxy] spawn request from worktree ${worktreeId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
+    console.log(`[proxy] ${command} request from worktree ${worktreeId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
     // The caller's response is held until the server drains and answers, so
     // the drain is worth waking immediately rather than at the next resync.
-    emitProxyEvent('spawn')
+    emitProxyEvent('mama')
   })
 }
 
 /**
- * `GET http://yaac.internal/tools` from inside a worktree (yaac-spawn --models):
+ * `GET http://yaac.internal/tools` from inside a worktree — the endpoint
+ * `yaac-spawn --models` asked, kept for worktrees whose mounted script
+ * predates the command envelope (docs/legacy-compat-shims.md). `yaac-mama
+ * models` is answered by the SERVER instead, from its own credentials.
  * report which agent tools have host credentials, their provider/host, and —
  * with `?models=1` — their accepted model ids from the baked catalog. Answered
  * synchronously from proxy-local state (mounted creds + the worktree's registered
@@ -2880,7 +2925,7 @@ function handleToolsRequest(
     respond(403, 'text/plain; charset=utf-8', 'tools is not available to nested workloads via the outer proxy')
     return
   }
-  const url = new URL(req.url ?? '/', `http://${SPAWN_MAGIC_HOST}`)
+  const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
   const includeModels = url.searchParams.get('models') === '1'
   const asJson = url.searchParams.get('json') === '1'
 
@@ -2914,13 +2959,13 @@ const internalHttpServer = http.createServer((req, res) => {
     res.end('Missing or malformed Host header')
     return
   }
-  if (target.hostname === SPAWN_MAGIC_HOST) {
+  if (target.hostname === MAMA_MAGIC_HOST) {
     const pathname = (req.url ?? '/').split('?', 1)[0]
     if (pathname === '/tools') {
       handleToolsRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
       return
     }
-    handleSpawnRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
+    handleMamaRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
     return
   }
   forwardPlainHttp(req, res, worktreeId, {

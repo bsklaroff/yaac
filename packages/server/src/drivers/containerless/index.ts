@@ -187,11 +187,12 @@ export function createContainerlessDriver(): WorktreeDriver {
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: () => destroyProjectSubstrate(),
 
-    // The in-workspace spawn channel rides the egress proxy's magic host,
-    // which this runtime does not have. Empty forever, which reads as "no
-    // requests" — `yaac-spawn` from inside a containerless worktree is not
-    // supported yet.
-    pendingSpawns: () => Promise.resolve([]),
-    resolveSpawns: () => Promise.resolve(),
+    // Empty forever, and NOT because the feature is missing: this pair is
+    // the pull transport, which exists so a sandboxed pod — unable to dial
+    // the host — can still be answered. A host process has no such problem,
+    // so its `yaac-mama` posts straight to the server's own `/worktree/mama`
+    // and never touches a queue (docs/containerless-driver.md).
+    pendingMamaRequests: () => Promise.resolve([]),
+    resolveMamaRequests: () => Promise.resolve(),
   }
 }

@@ -20,7 +20,7 @@
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/worktrees/. Modules not re-exported are
-// internal: the seed/spawn-script staging is covered through `createWorktree`.
+// internal: the seed/worktree-bin staging is covered through `createWorktree`.
 
 export { reconcileAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
@@ -43,7 +43,7 @@ export {
   type WorktreeDetail,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
-export { listWorktreeGroups } from './groups'
+export { listWorktreeGroups, resolveGroupId } from './groups'
 export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { ensureProjectExists, listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'
@@ -57,10 +57,15 @@ export {
   removeProvisioning,
   runProvisioned,
 } from './provisioning'
-export { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
+export {
+  resolveSessionInProject,
+  resolveWorktreeContainer,
+  resolveWorktreeRecord,
+} from './resolve'
 export { restartWorktree } from './restart'
 export { rebranchSpare, retoolSpare } from './spare-pool'
-export { reconcileSpawnRequests } from './spawn-reconcile'
+export { runMamaCommand, type MamaCaller } from './mama'
+export { reconcileMamaRequests } from './mama-reconcile'
 export { reconcileStaleWorktrees } from './stale-worktrees'
 export { stopWorktree, type StoppedWorktreeInfo } from './stop'
 export { listStoppedWorktrees } from './stopped-list'

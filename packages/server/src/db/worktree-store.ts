@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { and, eq, isNotNull, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { deleteWorktreeAgentSessions } from './agent-session-store'
@@ -403,6 +404,46 @@ export async function recordAllDeathsSeen(projectSlug: string): Promise<void> {
 }
 
 /** Set (or, with a blank title, clear) a worktree's display title. */
+/**
+ * Record the bearer this worktree's `yaac-mama` will present, as a SHA-256
+ * of the token itself.
+ *
+ * Written at launch by the runtimes whose workspaces reach the server
+ * directly; nothing reads it back but `findWorktreeByMamaToken`. No
+ * notification: it changes nothing anyone renders.
+ */
+export async function setWorktreeMamaTokenHash(
+  projectSlug: string,
+  worktreeId: string,
+  hash: string,
+): Promise<void> {
+  const db = await getDb()
+  await db.update(worktrees).set({ mamaTokenHash: hash }).where(key(projectSlug, worktreeId))
+}
+
+/**
+ * Which worktree presented this token, if any — the containerless
+ * attribution step, standing where the proxy's source-IP lookup stands under
+ * k8s.
+ *
+ * Takes the token and hashes it here rather than taking a hash, so no caller
+ * can be handed the shape of what is stored. A stopped worktree still
+ * matches: its tmux server may be gone, but a request arriving on its token
+ * is still *from* it, and the commands are scoped by project either way.
+ */
+export async function findWorktreeByMamaToken(
+  token: string,
+): Promise<{ projectSlug: string; worktreeId: string } | undefined> {
+  if (token === '') return undefined
+  const hash = createHash('sha256').update(token).digest('hex')
+  const db = await getDb()
+  const rows = await db.select({
+    projectSlug: worktrees.projectSlug,
+    worktreeId: worktrees.worktreeId,
+  }).from(worktrees).where(eq(worktrees.mamaTokenHash, hash))
+  return rows[0]
+}
+
 export async function setWorktreeTitle(
   projectSlug: string,
   worktreeId: string,

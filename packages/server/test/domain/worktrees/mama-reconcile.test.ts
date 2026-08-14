@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type { SpawnDecision, SpawnRequest } from '#domain/worktrees/spawn-policy'
+import type { MamaCaller, MamaOutcome, MamaRequestInput } from '#domain/worktrees/mama'
 
-vi.mock('#domain/worktrees/spawn-policy', () => ({ decideSpawn: vi.fn() }))
-import { decideSpawn } from '#domain/worktrees/spawn-policy'
-import type { PendingSpawn, SpawnResultWire } from '@yaac/shared/types'
+vi.mock('#domain/worktrees/mama', () => ({ runMamaCommand: vi.fn() }))
+import { runMamaCommand } from '#domain/worktrees/mama'
+import type { PendingMamaRequest, MamaResultWire } from '@yaac/shared/types'
 import type { RuntimeHandle } from '#drivers/contract'
 import { handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
-import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
+import { reconcileMamaRequests } from '#domain/worktrees/mama-reconcile'
 
 function makeCaller(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return handleFixture({
@@ -19,26 +19,28 @@ function makeCaller(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
   })
 }
 
-function makeReq(over: Partial<PendingSpawn> = {}): PendingSpawn {
+function makeReq(over: Partial<PendingMamaRequest> = {}): PendingMamaRequest {
   return {
     requestId: 'req-1',
     worktreeId: 'caller-session',
-    prompt: 'write the report',
+    command: 'create',
+    args: {},
+    body: 'write the report',
     ...over,
   }
 }
 
-/** What the drain handed to the policy, and what the policy answered.
- *  Nothing about a spawn's MEANING is decided on this side, so the policy
- *  seam is the whole of what these tests assert against. */
-const reports: SpawnRequest[] = []
-let answer: SpawnDecision = { ok: true, workspaceId: 'minted-id' }
+/** Who the drain said was calling, and what it handed over. Nothing about a
+ *  command's MEANING is decided on this side, so the handler seam is the
+ *  whole of what these tests assert against. */
+const handled: Array<{ caller: MamaCaller; request: MamaRequestInput }> = []
+let answer: MamaOutcome = { ok: true, output: 'minted-id' }
 
 beforeEach(() => {
-  reports.length = 0
-  answer = { ok: true, workspaceId: 'minted-id' }
-  vi.mocked(decideSpawn).mockImplementation((request) => {
-    reports.push(request)
+  handled.length = 0
+  answer = { ok: true, output: 'minted-id' }
+  vi.mocked(runMamaCommand).mockImplementation((caller, request) => {
+    handled.push({ caller, request })
     return Promise.resolve(answer)
   })
 })
@@ -47,11 +49,11 @@ beforeEach(() => {
  *  per-request path has no entry point of its own — a drain is the only way
  *  in, which is also the only way a request reaches it. */
 async function drainOne(
-  req: PendingSpawn,
+  req: PendingMamaRequest,
   pods: () => Promise<RuntimeHandle[]>,
-): Promise<SpawnResultWire> {
-  const posted: SpawnResultWire[][] = []
-  await reconcileSpawnRequests({
+): Promise<MamaResultWire> {
+  const posted: MamaResultWire[][] = []
+  await reconcileMamaRequests({
     listWorkspacesFn: pods,
     fetchPendingFn: () => Promise.resolve([req]),
     postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
@@ -59,40 +61,52 @@ async function drainOne(
   return posted[0][0]
 }
 
-describe('reconcileSpawnRequests', () => {
-  it('reports the caller resolved from the listing and relays the minted id', async () => {
+describe('reconcileMamaRequests', () => {
+  it('hands over the caller resolved from the listing and relays the output', async () => {
     const result = await drainOne(makeReq(), () => Promise.resolve([makeCaller()]))
-    expect(result).toEqual({
-      requestId: 'req-1', ok: true, worktreeId: 'minted-id',
-    })
-    expect(reports).toEqual([{
-      requestId: 'req-1',
-      callerWorkspaceId: 'caller-session',
-      callerProjectSlug: 'proj',
-      callerTool: 'codex',
-      prompt: 'write the report',
+    expect(result).toEqual({ requestId: 'req-1', ok: true, output: 'minted-id' })
+    expect(handled).toEqual([{
+      caller: {
+        workspaceId: 'caller-session',
+        projectSlug: 'proj',
+        tool: 'codex',
+      },
+      request: { command: 'create', args: {}, body: 'write the report' },
     }])
   })
 
-  it('passes an explicit tool and model through without judging them', async () => {
+  it('passes the command and its options through without judging them', async () => {
+    // Which commands exist at all is the handler's; the drain carries
+    // whatever arrived, so an unknown one reaches the one place that refuses
+    // it rather than being silently dropped here.
     await drainOne(
-      makeReq({ tool: 'not-a-tool', model: "opus'; rm -rf /" }),
+      makeReq({ command: 'not-a-command', args: { tool: 'not-a-tool' } }),
       () => Promise.resolve([makeCaller()]),
     )
-    expect(reports[0]).toMatchObject({ tool: 'not-a-tool', model: "opus'; rm -rf /" })
+    expect(handled[0].request).toMatchObject({
+      command: 'not-a-command',
+      args: { tool: 'not-a-tool' },
+    })
   })
 
-  // A caller running something yaac does not know says nothing about what
-  // the spawned workspace should run, and reporting a guess would outrank
-  // the server's own configured default.
+  it('tolerates an envelope missing its optional halves', async () => {
+    // Off a wire, so args/body can be absent however the type reads.
+    const bare = { requestId: 'req-1', worktreeId: 'caller-session', command: 'list' }
+    await drainOne(bare as PendingMamaRequest, () => Promise.resolve([makeCaller()]))
+    expect(handled[0].request).toEqual({ command: 'list', args: {}, body: '' })
+  })
+
+  // A caller running something yaac does not know says nothing about what a
+  // spawned workspace should run, and reporting a guess would outrank the
+  // server's own configured default.
   it('omits the caller tool when the caller declares something else', async () => {
     const caller = makeCaller()
     delete caller.declaredTool
     await drainOne(makeReq(), () => Promise.resolve([caller]))
-    expect(reports[0].callerTool).toBeUndefined()
+    expect(handled[0].caller.tool).toBeUndefined()
   })
 
-  it('relays the server’s refusal back to the caller', async () => {
+  it('relays the handler’s refusal back to the caller', async () => {
     answer = { ok: false, error: 'too many concurrent spawns' }
     const result = await drainOne(makeReq(), () => Promise.resolve([makeCaller()]))
     expect(result).toEqual({
@@ -102,22 +116,22 @@ describe('reconcileSpawnRequests', () => {
 
   // The one judgement this side makes: a request from a worktree the runtime
   // does not report cannot be attributed to a project.
-  it('rejects a caller the runtime does not report, without reporting it', async () => {
+  it('rejects a caller the runtime does not report, without running anything', async () => {
     const result = await drainOne(makeReq(), () => Promise.resolve([]))
     expect(result).toEqual({ requestId: 'req-1', ok: false, error: 'calling worktree not found' })
-    expect(reports).toEqual([])
+    expect(handled).toEqual([])
   })
 
   it('fails soft when the workspace listing throws', async () => {
     const result = await drainOne(makeReq(), () => Promise.reject(new Error('apiserver down')))
     expect(result.ok).toBe(false)
     expect(result.ok ? '' : result.error).toContain('apiserver down')
-    expect(reports).toEqual([])
+    expect(handled).toEqual([])
   })
 
-  it('drains, reports, and posts one result per request', async () => {
-    const posted: SpawnResultWire[][] = []
-    await reconcileSpawnRequests({
+  it('drains, answers, and posts one result per request', async () => {
+    const posted: MamaResultWire[][] = []
+    await reconcileMamaRequests({
       listWorkspacesFn: () => Promise.resolve([makeCaller()]),
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a' }),
@@ -127,14 +141,14 @@ describe('reconcileSpawnRequests', () => {
     })
     expect(posted).toHaveLength(1)
     expect(posted[0]).toEqual([
-      { requestId: 'a', ok: true, worktreeId: 'minted-id' },
+      { requestId: 'a', ok: true, output: 'minted-id' },
       { requestId: 'b', ok: false, error: 'calling worktree not found' },
     ])
   })
 
   it('lists workspaces once per drain, not once per request', async () => {
     const listWorkspacesFn = vi.fn(() => Promise.resolve([makeCaller()]))
-    await reconcileSpawnRequests({
+    await reconcileMamaRequests({
       listWorkspacesFn,
       fetchPendingFn: () => Promise.resolve([
         makeReq({ requestId: 'a', worktreeId: 'nobody-1' }),
@@ -148,8 +162,8 @@ describe('reconcileSpawnRequests', () => {
 
   it('resolves callers from the pass view when one is given', async () => {
     const workspaces = vi.fn(() => Promise.resolve([makeCaller()]))
-    const posted: SpawnResultWire[][] = []
-    await reconcileSpawnRequests({
+    const posted: MamaResultWire[][] = []
+    await reconcileMamaRequests({
       // No listWorkspacesFn: the pass view wins over a view of its own, so
       // a leaked second listing would fail the caller lookup.
       fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
@@ -161,7 +175,7 @@ describe('reconcileSpawnRequests', () => {
 
   it('skips the post when nothing is pending', async () => {
     const postResultsFn = vi.fn()
-    await reconcileSpawnRequests({
+    await reconcileMamaRequests({
       fetchPendingFn: () => Promise.resolve([]),
       postResultsFn,
     })
@@ -169,7 +183,7 @@ describe('reconcileSpawnRequests', () => {
   })
 
   it('never throws when the proxy fetch fails', async () => {
-    await expect(reconcileSpawnRequests({
+    await expect(reconcileMamaRequests({
       fetchPendingFn: () => Promise.reject(new Error('tunnel down')),
     })).resolves.toBeUndefined()
   })

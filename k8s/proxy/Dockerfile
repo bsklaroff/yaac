@@ -21,7 +21,7 @@ COPY activator.ts /app/activator.ts
 COPY activator-main.ts /app/activator-main.ts
 COPY secure-compare.ts /app/secure-compare.ts
 COPY state-files.ts /app/state-files.ts
-COPY spawn-queue.ts /app/spawn-queue.ts
+COPY mama-queue.ts /app/mama-queue.ts
 COPY ssh-agent-relay.ts /app/ssh-agent-relay.ts
 COPY torrc /etc/tor/torrc
 COPY entrypoint.sh /app/entrypoint.sh

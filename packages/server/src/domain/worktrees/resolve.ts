@@ -1,5 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
-import { findWorktreeRow } from '#db'
+import { findWorktreeRow, getProjectWorktreeRows } from '#db'
 import type { RuntimeHandle } from '#drivers/contract'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -62,4 +62,30 @@ export async function resolveWorktreeRecord(
   const row = await findWorktreeRow(idOrName)
   if (row) return { projectSlug: row.projectSlug, worktreeId: row.worktreeId }
   throw new ServerError('NOT_FOUND', `worktree ${idOrName} not found`)
+}
+
+/**
+ * Resolve a session id, or its unique short prefix, WITHIN one project.
+ *
+ * Project-scoped by construction rather than by a check afterwards: this is
+ * what an in-worktree caller uses (`yaac-mama`) and what the name-addressed
+ * group routes use, and neither may reach a worktree in another project. An
+ * id from elsewhere simply is not in this project's rows, so there is no
+ * cross-project case to refuse separately.
+ *
+ * `null` for both "no such session" and "that prefix names several" — a move
+ * or a rename aimed at the wrong session is silent, so an ambiguous prefix
+ * must not resolve to whichever row came back first. Rows in any state
+ * match: a stopped worktree keeps its title and its group.
+ */
+export async function resolveSessionInProject(
+  projectSlug: string,
+  session: string,
+): Promise<string | null> {
+  const trimmed = session.trim()
+  if (trimmed === '') return null
+  const rows = await getProjectWorktreeRows(projectSlug)
+  if (rows.has(trimmed)) return trimmed
+  const matches = [...rows.keys()].filter((id) => id.startsWith(trimmed))
+  return matches.length === 1 ? matches[0] : null
 }

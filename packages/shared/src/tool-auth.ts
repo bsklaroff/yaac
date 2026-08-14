@@ -53,7 +53,7 @@ function truncateForMessage(value: string): string {
 }
 
 function providerError(tool: 'opencode' | 'pi', value: string | undefined): ServerError {
-  const repair = `Run \`yaac auth update ${tool}\` or pass a provider id from \`yaac-spawn --models\`.`
+  const repair = `Run \`yaac auth update ${tool}\` or pass a provider id from \`yaac-mama models\`.`
   return new ServerError(
     'VALIDATION',
     value === undefined || value === ''

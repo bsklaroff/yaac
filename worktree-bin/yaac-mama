@@ -1,0 +1,219 @@
+#!/bin/sh
+# yaac-mama — ask the yaac server that runs this session to do something.
+#
+# Usage:
+#   yaac-mama list
+#   yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
+#   yaac-mama rename [<session>] "<title>"
+#   yaac-mama group create "<name>"
+#   yaac-mama group move <session> ["<group>"]
+#   yaac-mama models
+#
+# A strict subset of the `yaac` CLI: see what this project is running, start
+# another session, and file sessions into named groups. Nothing here stops,
+# deletes or reconfigures anything — that stays with the user.
+#
+# One request shape for both substrates — a JSON envelope {command, args,
+# body} — because they differ only in where it goes and how the caller is
+# identified:
+#
+#   - Containerless ($YAAC_MAMA_URL set): the session is a host process
+#     beside the server, so it POSTs to the server's own /worktree/mama and
+#     proves which session it is with $YAAC_MAMA_TOKEN.
+#   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the host, so it
+#     POSTs to the egress proxy's magic host, which holds the request until
+#     the server drains it. Attribution is by source pod IP — no token and no
+#     config, which is why nothing is set for this case. Keep the host in
+#     sync with k8s/proxy/mama-queue.ts MAMA_MAGIC_HOST.
+#
+# Both end at the same server-side handler, which owns what the commands
+# mean; this script only shapes the request. --max-time outlives the proxy's
+# 120s queue TTL (MAMA_TTL_MS) so its self-describing 504 surfaces instead of
+# a curl timeout. Keep it above that constant whenever either moves.
+set -u
+
+MAX_TIME=150
+
+usage() {
+  cat <<'EOF'
+yaac-mama — ask the yaac server running this session to do something.
+
+Usage:
+  yaac-mama list                                   # sessions + groups here
+  yaac-mama create [opts] "<prompt>"               # start another session
+  yaac-mama rename [<session>] "<title>"           # retitle (default: yourself)
+  yaac-mama group create "<name>"                  # make an empty group
+  yaac-mama group move <session> ["<group>"]       # omit the group to ungroup
+  yaac-mama models                                 # tools/models available
+  yaac-mama --help
+
+Options for create:
+  --tool <tool>    agent for the new session: claude, codex, opencode, or pi.
+                   Omitted, inherits this session's tool, then the project
+                   default, then claude. Must be logged in on the host (see
+                   `yaac-mama models`) or the new agent can't authenticate.
+  --model <model>  model id the agent launches with — any id the tool accepts:
+                   a model id/alias for claude/codex (e.g. opus), provider/model
+                   for opencode and pi (e.g. anthropic/claude-opus-4-8).
+  --group <name>   file the new session under this group, creating it if needed.
+
+create prints the new session's id; the session provisions in the background
+(watch it in the yaac webapp). Everything else prints a short report.
+EOF
+}
+
+# JSON-encode one string as a quoted scalar. Byte-oriented and locale-proof:
+# the shell hands awk raw bytes, and only the seven characters JSON requires
+# are rewritten, so any UTF-8 in a prompt or group name passes through whole.
+json_string() {
+  awk 'BEGIN{
+    s = ARGV[1]
+    gsub(/\\/, "\\\\", s)
+    gsub(/"/, "\\\"", s)
+    gsub(/\n/, "\\n", s)
+    gsub(/\r/, "\\r", s)
+    gsub(/\t/, "\\t", s)
+    printf "%s", "\"" s "\""
+  }' "$1"
+}
+
+# Unwrap {"output":"…"} and undo the escaping above, so what the server
+# rendered is what lands on stdout.
+print_output() {
+  text=$(printf '%s' "$1" \
+    | sed -n 's/^{"output":"\(.*\)"}$/\1/p' \
+    | sed 's/\\n/\
+/g; s/\\t/	/g; s/\\r//g; s/\\"/"/g; s/\\\\/\\/g')
+  # Command substitution ate any trailing newlines, so exactly one goes back
+  # on — a caller doing `id=$(yaac-mama create …)` gets a clean value, and a
+  # caller reading a table gets it terminated.
+  printf '%s\n' "$text"
+}
+
+# Pull the message out of {"error":"…"}, for a refusal the server described.
+error_text() {
+  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+
+# Run one command. $1 command, $2 body, then alternating arg name/value pairs
+# (a pair with an empty value is omitted, so an unset option is absent rather
+# than blank).
+run() {
+  cmd=$1; body=$2; shift 2
+  args=""
+  sep=""
+  while [ $# -gt 1 ]; do
+    if [ -n "$2" ]; then
+      args="$args$sep$(json_string "$1"):$(json_string "$2")"
+      sep=","
+    fi
+    shift 2
+  done
+  json="{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
+
+  if [ -n "${YAAC_MAMA_URL:-}" ]; then
+    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
+      --data-binary @- -w '\n%{http_code}' \
+      "${YAAC_MAMA_URL}/worktree/mama") || {
+      echo "yaac-mama: cannot reach the yaac server at $YAAC_MAMA_URL" >&2
+      exit 1
+    }
+  else
+    resp=$(printf '%s' "$json" | curl -sS --max-time "$MAX_TIME" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- -w '\n%{http_code}' \
+      'http://yaac.internal/cmd') || {
+      echo "yaac-mama: cannot reach the yaac proxy" >&2
+      exit 1
+    }
+  fi
+
+  code=$(printf '%s\n' "$resp" | tail -n 1)
+  payload=$(printf '%s\n' "$resp" | sed '$d')
+  if [ "$code" != "200" ]; then
+    msg=$(error_text "$payload")
+    echo "yaac-mama: ${msg:-${payload:-request failed}} (HTTP $code)" >&2
+    exit 1
+  fi
+  print_output "$payload"
+  exit 0
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+
+  list) run list '' ;;
+
+  models) run models '' ;;
+
+  create)
+    shift
+    tool=""; model=""; group=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --tool) tool="${2:?yaac-mama: --tool needs a value}"; shift 2 ;;
+        --model) model="${2:?yaac-mama: --model needs a value}"; shift 2 ;;
+        --group) group="${2:?yaac-mama: --group needs a value}"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"' >&2
+      exit 2
+    fi
+    run create "$1" tool "$tool" model "$model" group "$group"
+    ;;
+
+  rename)
+    shift
+    # One argument retitles the caller, two retitle the session named first.
+    if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama rename [<session>] "<title>"' >&2
+      exit 2
+    fi
+    if [ $# -eq 1 ]; then
+      run rename "$1"
+    else
+      run rename "$2" session "$1"
+    fi
+    ;;
+
+  group)
+    shift
+    [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move …' >&2; exit 2; }
+    sub=$1; shift
+    case "$sub" in
+      create)
+        if [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo 'usage: yaac-mama group create "<name>"' >&2
+          exit 2
+        fi
+        run group-create "$1"
+        ;;
+      move)
+        # The group is optional, and omitting it is how a caller says "no
+        # group" — the same idiom `yaac group move` uses, where a bare `--`
+        # could never work (its parser eats it as end-of-options).
+        if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ]; then
+          echo 'usage: yaac-mama group move <session> ["<group>"]   (omit the group to ungroup)' >&2
+          exit 2
+        fi
+        run group-move "${2:-}" session "$1"
+        ;;
+      *)
+        echo "yaac-mama: unknown group subcommand '$sub' (expected: create, move)" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
+  *)
+    echo "yaac-mama: unknown command '$1' (expected: list, create, rename, group, models)" >&2
+    echo 'run "yaac-mama --help" for usage' >&2
+    exit 2
+    ;;
+esac

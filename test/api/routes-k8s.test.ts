@@ -54,11 +54,16 @@ describe('every route, k8s', () => {
     })
   }
 
-  // Nothing is ever unsupported here: this substrate has every feature, so a
-  // 501 would mean a guard fired on the wrong driver.
-  it('never refuses a route as unsupported', async () => {
+  // A 501 here means a guard fired on the wrong driver — with one honest
+  // exception, which the matrix has to have declared: the in-worktree
+  // command channel is the containerless half of a pair whose k8s half is
+  // the egress proxy's queue, so it is this substrate that lacks the route.
+  // Anything else refusing is the bug this test exists for.
+  it('refuses only what the matrix declares unsupported here', async () => {
     for (const route of ROUTE_MATRIX) {
-      expect((await request(route)).status, label(route)).not.toBe(501)
+      const status = (await request(route)).status
+      if (expectedFor(route, 'k8s').includes(501)) continue
+      expect(status, label(route)).not.toBe(501)
     }
   })
 })

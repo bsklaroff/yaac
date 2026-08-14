@@ -26,6 +26,9 @@ interface ProvisioningEntry {
   kind: ProvisioningKind
   message: string
   error?: string
+  /** Group the create asked for, so the row renders in its sidebar section
+   *  while it provisions. The worktree row carries the durable membership. */
+  groupId?: string
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
    *  ms read) can tie or straddle a millisecond between two back-to-back
@@ -46,6 +49,7 @@ export function registerProvisioning(input: {
   tool: AgentTool
   kind: ProvisioningKind
   message?: string
+  groupId?: string
 }): void {
   entries.set(input.worktreeId, {
     worktreeId: input.worktreeId,
@@ -53,6 +57,7 @@ export function registerProvisioning(input: {
     tool: input.tool,
     kind: input.kind,
     message: input.message ?? 'Starting…',
+    ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
@@ -147,6 +152,7 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
+      ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       createdAt: formatUtcTimestamp(e.startedAt),
     }))
 }

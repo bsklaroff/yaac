@@ -5,9 +5,9 @@ import type {
   DriverKind,
   GitAuthFailure,
   ImageBuildEntry,
-  PendingSpawn,
+  PendingMamaRequest,
   PortMapping,
-  SpawnResultWire,
+  MamaResultWire,
   WorktreeChanges,
   WorktreeDeathCause,
   YaacConfig,
@@ -1091,13 +1091,18 @@ export interface WorktreeDriver {
   destroyProjectSubstrate(projectSlug: string): Promise<void>
 
   /**
-   * Take the in-workspace spawn requests waiting to be answered.
+   * Take the in-workspace `yaac-mama` requests waiting to be answered.
    *
    * A drain is a CLAIM: each request is handed out once, and a crash before
-   * `resolveSpawns` loses the request (the caller's pod times out) rather
-   * than doubling it. Empty when the runtime has no channel for them.
+   * `resolveMamaRequests` loses the request (the caller times out) rather
+   * than doubling it.
+   *
+   * Empty forever on a runtime whose workspaces reach the server directly
+   * instead — this pair is the PULL transport, which exists because a
+   * sandboxed pod cannot dial the host. A runtime answering empty here is
+   * not one without the feature.
    */
-  pendingSpawns(): Promise<PendingSpawn[]>
+  pendingMamaRequests(): Promise<PendingMamaRequest[]>
   /** Answer a drained batch, releasing the waiting workspaces. */
-  resolveSpawns(results: SpawnResultWire[]): Promise<void>
+  resolveMamaRequests(results: MamaResultWire[]): Promise<void>
 }

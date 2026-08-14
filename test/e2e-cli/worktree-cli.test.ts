@@ -474,6 +474,233 @@ describe('with seeded projects', () => {
   })
 
   /**
+   * `yaac worktree rename`, whose whole subject is recorded state: a title
+   * lives on the host, so a stopped worktree can be renamed and no cluster
+   * is involved.
+   */
+  describe('yaac worktree rename (real CLI + real server)', () => {
+    const REN_SLUG = 'proj-rename'
+    const renameId = crypto.randomUUID()
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, REN_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(repo)
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      await recordWorktreeCreated({ projectSlug: REN_SLUG, worktreeId: renameId })
+      await recordWorktreeStopped(REN_SLUG, renameId)
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('sets a stopped worktree\u2019s title, and the listing shows it', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'worktree', 'rename', renameId, 'porting the lexer to rust',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('porting the lexer to rust')
+
+      const listed = await runYaac(testEnv.env, 'worktree', 'list', REN_SLUG, '--stopped')
+      expect(listed.stdout).toContain('porting the lexer to rust')
+    })
+
+    it('404s for an id no worktree has', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'worktree', 'rename', crypto.randomUUID(), 'nope',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr.toLowerCase()).toContain('not found')
+    })
+  })
+
+  /**
+   * The sidebar groups, from the terminal. Recorded state like the listings
+   * above — a group has no pod and its members can be stopped worktrees — so
+   * this needs no cluster either.
+   *
+   * Groups are addressed by NAME here, which is the whole point of the CLI
+   * surface: the uuid the webapp drags around is not something a person (or
+   * an agent running `yaac-mama`) has ever seen.
+   */
+  describe('yaac group (real CLI + real server)', () => {
+    const GRP_SLUG = 'proj-groups'
+    const memberId = crypto.randomUUID()
+    const otherId = crypto.randomUUID()
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, GRP_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(repo)
+
+      // Same single-writer dance as the describes above: rows go in with the
+      // server stopped, then a fresh server reads them.
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      await recordWorktreeCreated({ projectSlug: GRP_SLUG, worktreeId: memberId })
+      await recordWorktreeCreated({ projectSlug: GRP_SLUG, worktreeId: otherId })
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('group list reports the empty state with the command that fixes it', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No worktree groups')
+      expect(stdout).toContain('yaac group create')
+    })
+
+    it('group create is idempotent, so it cannot manufacture an ambiguous name', async () => {
+      // `yaac-mama group create` reuses an existing group by name; the two
+      // surfaces have to agree, and a duplicate only creates the ambiguity
+      // that `move` and `delete` then have to refuse.
+      const first = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      expect(first.exitCode).toBe(0)
+      const again = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      expect(again.exitCode).toBe(0)
+      expect(again.stdout).toContain('already exists')
+
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout.match(/nightly/g)).toHaveLength(1)
+    })
+
+    it('group move by id reports the group\u2019s name, not the id it was given', async () => {
+      const made = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'by id')
+      const id = /\(([0-9a-f-]{36})\)/.exec(made.stdout)?.[1]
+      expect(id).toBeTruthy()
+
+      // Passing an id is exactly what the ambiguity error asks for, so the
+      // success line must not echo a uuid back at the user.
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', memberId, id!, '--project', GRP_SLUG,
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('"by id"')
+      expect(stdout).not.toContain(id!)
+    })
+
+    it('group create makes an empty group, and group list shows it', async () => {
+      const created = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'release train')
+      expect(created.exitCode).toBe(0)
+      expect(created.stdout).toContain('release train')
+
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(exitCode).toBe(0)
+      expect(stdout).toMatch(/GROUP\s+PROJECT\s+RUNNING\s+PINNED\s+CREATED/)
+      expect(stdout).toContain('release train')
+      // Pinned, or a group with no members would be listed by nothing.
+      expect(stdout).toMatch(/release train\s+proj-groups\s+0\s+yes/)
+    })
+
+    it('group move files a worktree by name, and omitting one ungroups it', async () => {
+      const moved = await runYaac(
+        testEnv.env, 'group', 'move', memberId, 'release train', '--project', GRP_SLUG,
+      )
+      expect(moved.exitCode).toBe(0)
+      expect(moved.stdout).toContain('release train')
+
+      // Creating on move: a name matching no group is made, so a caller
+      // never has to create-then-move. Addressed by the 8-character prefix
+      // every listing prints — the membership write matches ids exactly, so
+      // a prefix that reached it would file nothing and still report success.
+      const fresh = await runYaac(
+        testEnv.env, 'group', 'move', otherId.slice(0, 8), 'brand new', '--project', GRP_SLUG,
+      )
+      expect(fresh.exitCode).toBe(0)
+      const grouped = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(grouped.stdout).toMatch(/brand new\s+proj-groups\s+0/)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout).toContain('brand new')
+
+      // No group named: back to the default list. A bare `--` could never
+      // serve here — commander eats it as its end-of-options marker.
+      const out = await runYaac(
+        testEnv.env, 'group', 'move', memberId, '--project', GRP_SLUG,
+      )
+      expect(out.exitCode).toBe(0)
+      expect(out.stdout).toContain('out of its group')
+    })
+
+    it('finds a stopped worktree\u2019s project without being told it', async () => {
+      // Filing a stopped worktree is normal — its group is where it comes
+      // back when restarted — so it must not be the case that needs a flag.
+      await runYaac(testEnv.env, 'worktree', 'stop', memberId).catch(() => null)
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', memberId, 'release train',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('release train')
+    })
+
+    it('group move reports a worktree it cannot find rather than moving nothing', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'move', crypto.randomUUID(), 'release train',
+      )
+      expect(exitCode).not.toBe(0)
+      // No --project and not running, so it cannot be resolved — and the
+      // error says which flag would have answered it.
+      expect(stderr).toContain('--project')
+    })
+
+    it('group delete releases its members instead of stopping anything', async () => {
+      const { stdout, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'brand new',
+      )
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('default list')
+
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout).not.toContain('brand new')
+      // The worktree it held is still there, just ungrouped.
+      const stopped = await runYaac(testEnv.env, 'worktree', 'list', GRP_SLUG, '--stopped')
+      expect(stopped.stdout).toContain(otherId.slice(0, 8))
+    })
+
+    it('group delete refuses an ambiguous name rather than guessing which to destroy', async () => {
+      // Names are not unique, and this command destroys the row it picks —
+      // so it refuses, like every other name resolution in the CLI.
+      //
+      // Made through the route, because the CLI can no longer produce this
+      // state: `group create` is idempotent. The webapp's own "new group"
+      // still can, which is exactly why the refusal has to exist.
+      for (let i = 0; i < 2; i++) {
+        const res = await fetch(`http://127.0.0.1:${server.lock.port}/worktree/group/create`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${server.lock.secret}`,
+          },
+          body: JSON.stringify({ projectSlug: GRP_SLUG, name: 'twin' }),
+        })
+        expect(res.ok).toBe(true)
+      }
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'twin',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain('names 2 groups')
+
+      // Both survive, and the id it named is enough to remove one.
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(listed.stdout.match(/twin/g)).toHaveLength(2)
+      const id = /\(([0-9a-f-]{36})\)/.exec(stderr)?.[1]
+        ?? /([0-9a-f-]{36})/.exec(stderr)?.[1]
+      expect(id).toBeTruthy()
+      const byId = await runYaac(testEnv.env, 'group', 'delete', GRP_SLUG, id!)
+      expect(byId.exitCode).toBe(0)
+    })
+
+    it('group delete rejects a name that names nothing', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'group', 'delete', GRP_SLUG, 'never existed',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain('No such group')
+    })
+  })
+
+  /**
    * The agent-session listing, against a real server and a real DB. It is
    * about *recorded* state — a worktree's conversations outlive its pod — so
    * it needs no cluster, and the stopped case is the one that shipped broken

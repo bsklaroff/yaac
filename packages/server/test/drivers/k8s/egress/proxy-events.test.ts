@@ -104,12 +104,12 @@ describe('ProxyEventStream', () => {
     await run(responseOf(['{"type":"blocked-hosts"}\n{"type":"git-auth-failures"}\n']))
     // Two events, plus the one catch-up push on connect.
     expect(notified).toBe(3)
-    expect(changes).toEqual(['spawn-requests', 'proxy-reconnect'])
+    expect(changes).toEqual(['mama-requests', 'proxy-reconnect'])
   })
 
   it('turns a queued spawn into a reconcile trigger', async () => {
     await run(responseOf(['{"type":"spawn"}\n']))
-    expect(changes).toEqual(['spawn-requests', 'proxy-reconnect', 'spawn-requests'])
+    expect(changes).toEqual(['mama-requests', 'proxy-reconnect', 'mama-requests'])
   })
 
   // Attaching says nothing about what happened while we were away, so the
@@ -121,8 +121,8 @@ describe('ProxyEventStream', () => {
     // Once per connect: two connects, two catch-ups.
     expect(notified).toBe(2)
     expect(changes).toEqual([
-      'spawn-requests', 'proxy-reconnect',
-      'spawn-requests', 'proxy-reconnect',
+      'mama-requests', 'proxy-reconnect',
+      'mama-requests', 'proxy-reconnect',
     ])
   })
 
@@ -132,14 +132,14 @@ describe('ProxyEventStream', () => {
   it('ignores pings, unknown types and unparseable lines', async () => {
     await run(responseOf(['{"type":"ping"}\n{"type":"from-the-future"}\nnot json\n\n']))
     expect(notified).toBe(1) // the catch-up alone
-    expect(changes).toEqual(['spawn-requests', 'proxy-reconnect'])
+    expect(changes).toEqual(['mama-requests', 'proxy-reconnect'])
   })
 
   // The proxy writes whole lines but TCP does not deliver them that way.
   it('reassembles events split across chunks', async () => {
     await run(responseOf(['{"type":"bl', 'ocked-hosts"}', '\n{"type":"spa', 'wn"}\n']))
     expect(notified).toBe(2) // catch-up + the reassembled blocked-hosts
-    expect(changes).toEqual(['spawn-requests', 'proxy-reconnect', 'spawn-requests'])
+    expect(changes).toEqual(['mama-requests', 'proxy-reconnect', 'mama-requests'])
   })
 
   // Bounded so a wedged proxy can't outpace the resync by much: this is the

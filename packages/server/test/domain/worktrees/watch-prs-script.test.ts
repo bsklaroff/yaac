@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile, spawnSync } from 'node:child_process'
-import { worktreeBinDir } from '#domain/worktrees/spawn-script'
+import { worktreeBinDir } from '#domain/worktrees/worktree-bin'
 
 /**
  * The shipped `yaac-watch-prs` worktree-bin script, exercised for real: a temp

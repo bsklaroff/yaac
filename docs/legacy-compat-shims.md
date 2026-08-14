@@ -111,6 +111,42 @@ kubectl get ns -l yaac.vcluster -o json \
 When it prints nothing on every cluster in use, the either-key read goes and
 this entry with it.
 
+## The pre-envelope spawn channel
+
+`yaac-spawn` became `yaac-mama`, and a single-purpose spawn queue became a
+command envelope. Three pieces exist only to carry installs across that.
+
+**The proxy's `/spawn` path and `/tools` endpoint** (`k8s/proxy/proxy.ts`,
+`LEGACY_SPAWN_PATH` in `mama-queue.ts`). A worktree's helper scripts are
+File-mounted read-only at create and never replaced, so every worktree
+created by an older yaac has the old `yaac-spawn` on its PATH for its whole
+life — posting a prompt as a text body with `tool`/`model` in the query
+string, and asking `/tools` for `--models`. Both are still served; `/spawn`
+maps to `command=create`. Delete them and those worktrees get a 404 from a
+command that used to work, with nothing to suggest the fix is to restart the
+worktree. Safe to remove once no worktree predating this change is still
+running — a restart re-stages the scripts, so this drains on its own; it does
+not need users to do anything except restart worktrees eventually.
+
+**The server's fallback drain** (`fetchLegacyPendingSpawns` and
+`legacySpawnQueue` in `drivers/k8s/egress/proxy-client.ts`). This one is the
+reverse direction and is *ordinary*, not exotic: the server upgrades first,
+and the proxy Deployment only rolls on the next worktree launch, so between
+those two moments a new server is talking to an old proxy that serves
+`/spawn/pending` and 404s `/cmd/pending`. The fallback drains the old queue
+and posts results back in the old shape. Deleting it early does not break
+loudly — the drain just fails, logged as `[mama] reconcile failed`, while
+in-worktree commands from every running worktree time out at 120s until
+something happens to create a worktree. **Remove this before the proxy's
+`/spawn` path, never after**: it is the half that keeps working during the
+window, and the proxy half is what it talks to.
+
+**The `spawn` proxy event** (`dispatch` in `drivers/k8s/egress/proxy-events.ts`
+accepts `mama` and `spawn`). Same window as the fallback drain, and the same
+fix: an old proxy announces a queued request as `spawn`. Without it the
+server still drains on its 60s resync, so the failure is a slow spawn rather
+than a broken one — the quietest item here, and the reason it is written down.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

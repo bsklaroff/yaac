@@ -5,7 +5,7 @@ import { getDefaultTool } from '#db'
 import { AGENT_TOOLS, MODEL_RE, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#log'
 
-/** A drained `yaac-spawn`, with everything the substrate could resolve. */
+/** A drained `yaac-mama create`, with everything the substrate could resolve. */
 export interface SpawnRequest {
   /** Correlates the answer back to the pod blocked at the proxy. */
   requestId: string
@@ -19,6 +19,9 @@ export interface SpawnRequest {
   prompt: string
   tool?: string
   model?: string
+  /** Sidebar group for the new worktree — already resolved to an id by the
+   *  caller, since a group named by a request may have to be created first. */
+  groupId?: string
 }
 
 /** What the server decided about one spawn request. */
@@ -45,7 +48,7 @@ export interface SpawnPolicyDeps {
 }
 
 /**
- * Decide what a drained `yaac-spawn` means and start it.
+ * Decide what a drained `yaac-mama create` means and start it.
  *
  * Every decision in a spawn is here rather than in the drain that queued it:
  * the tool precedence ends at a preference row, the fan-out cap is a policy,
@@ -96,13 +99,20 @@ export async function decideSpawn(
   // same row lifecycle as a user-initiated create — the spawned worktree shows
   // provisioning progress in the webapp and a failed spawn leaves a failed
   // row (dismissable) instead of vanishing silently.
-  registerProvisioning({ worktreeId: workspaceId, projectSlug, tool, kind: 'create' })
+  registerProvisioning({
+    worktreeId: workspaceId,
+    projectSlug,
+    tool,
+    kind: 'create',
+    ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
+  })
   void runProvisioned(workspaceId, (onProgress) =>
     createWorktree(projectSlug, {
       tool,
       initialPrompt: request.prompt,
       worktreeId: workspaceId,
       model: request.model,
+      ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
       // No posture: createWorktree defaults it from the driver, deliberately
       // without consulting the project's remembered choice. A spawned sibling
       // is handed a prompt and left to work with nobody attached, so a `plan`

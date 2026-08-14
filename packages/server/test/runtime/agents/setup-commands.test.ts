@@ -7,7 +7,7 @@ import {
   buildWorktreeLinkExec,
   validateInitWindows,
 } from '#runtime/agents/setup-commands'
-import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/spawn-script'
+import { WORKTREE_INIT_SCRIPT, worktreeBinDir } from '#domain/worktrees/worktree-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 
