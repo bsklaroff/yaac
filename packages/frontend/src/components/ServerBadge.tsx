@@ -37,7 +37,11 @@ export function ServerBadge(): JSX.Element | null {
       onClick={() => openSettings('server')}
       title={`Connected to ${origin} — open server settings`}
       aria-label="Open server settings"
-      className="flex min-w-0 max-w-40 items-center gap-1 rounded bg-surface-2 px-1 py-0.5 text-xs
+      // The only shrinkable chit in the row — every other one is shrink-0 — so
+      // it takes its natural width whenever the sidebar has the room and gives
+      // way (truncating) only when the row genuinely runs out. No max-width:
+      // a host long enough to need one is exactly the host worth reading.
+      className="flex min-w-0 items-center gap-1 rounded bg-surface-2 px-1 py-0.5 text-xs
         font-medium text-text-dim transition hover:bg-surface-3 hover:text-text"
     >
       <ServerIcon size={11} className="shrink-0" />

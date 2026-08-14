@@ -69,6 +69,10 @@ async function mintToken(lock) {
 
 const SHOTS = '/tmp/yaac-shots'
 const CHIT = '[aria-label="Open server settings"]'
+// Kept in sync with store.ts by hand — this is a standalone node script, not
+// part of the frontend's module graph.
+const MIN_SIDEBAR_WIDTH = 180
+const MAX_SIDEBAR_WIDTH = 640
 
 /** The bridge body, shared by the pre-load and post-load paths — and the
  *  same text the devtools recipe in the header pastes. */
@@ -86,7 +90,10 @@ const BRIDGE = () => {
 async function openApp(page, lock) {
   const token = await mintToken(lock)
   await page.goto(`http://127.0.0.1:${lock.port}/?token=${token}`)
-  await page.waitForFunction(() => !window.location.search.includes('token='), { timeout: 15_000 })
+  // waitForURL, not waitForFunction: the app's CSP has no 'unsafe-eval', and
+  // a string predicate evaluated in the page trips it once the served
+  // document (rather than the pre-navigation one) is current.
+  await page.waitForURL((url) => !url.searchParams.has('token'), { timeout: 15_000 })
   await page.locator('aside').first().waitFor({ state: 'visible', timeout: 15_000 })
 }
 
@@ -142,6 +149,48 @@ async function main() {
   await page.screenshot({ path: path.join(SHOTS, 'server-badge-settings.png') })
   await page.keyboard.press('Escape')
   await page.close()
+
+  // --- 2b. The chit takes the room a wide sidebar gives it, and only
+  // truncates when the row really is too narrow. This is measured against a
+  // long host stuffed into the label, because the origin under test is a
+  // short loopback one — a tailscale host is what exposes a width cap.
+  for (const [width, shouldFit] of [[MAX_SIDEBAR_WIDTH, true], [MIN_SIDEBAR_WIDTH, false]]) {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(BRIDGE)
+    await ctx.addInitScript((px) => {
+      localStorage.setItem('yaac.sidebarwidth.v1', String(px))
+    }, width)
+    const p = await ctx.newPage()
+    p.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
+    await openApp(p, lock)
+
+    const m = await p.locator(CHIT).first().evaluate((el) => {
+      const span = el.querySelector('span')
+      const before = span.textContent
+      span.textContent = 'yaac-dev.tail9edf1.ts.net:8787'
+      const row = el.parentElement.getBoundingClientRect()
+      const box = el.getBoundingClientRect()
+      const out = {
+        maxWidth: getComputedStyle(el).maxWidth,
+        width: Math.round(box.width),
+        truncated: span.scrollWidth > span.clientWidth + 1,
+        overflowsRow: box.right > row.right + 1,
+      }
+      span.textContent = before
+      return out
+    })
+    check(m.maxWidth === 'none', `chit carries no width cap (got ${m.maxWidth})`)
+    check(m.truncated === !shouldFit,
+      `long host ${shouldFit ? 'fits' : 'truncates'} at sidebar ${width}px `
+      + `(width ${m.width}px, truncated=${m.truncated})`)
+    check(!m.overflowsRow, `chit stays inside the row at sidebar ${width}px`)
+    if (shouldFit) {
+      await p.locator('aside').first().screenshot({
+        path: path.join(SHOTS, 'server-badge-wide-sidebar.png'),
+      })
+    }
+    await p.close()
+  }
 
   // --- 3. The devtools recipe: bridge pasted post-load, then a re-render.
   {
