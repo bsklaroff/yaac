@@ -1039,6 +1039,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
   const provision = useProvisionWorktree()
   const queryClient = useQueryClient()
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
+  const openStoppedOverlay = useUiStore((s) => s.openStoppedOverlay)
   const [confirmRestart, setConfirmRestart] = useState(false)
 
   const onConfirmRestart = (): void => {
@@ -1069,7 +1070,18 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
 
   return (
     <div className="group relative mx-2">
-      <div className="flex w-full cursor-default flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm opacity-60">
+      {/* Opens the stopped-worktrees overlay on this worktree, which is where
+          its conversation is readable. There is still nothing to *select* —
+          it has no pane until it is restarted — so it stays out of the row
+          cycle (`sidebarRowIds`) and reads as dimmed rather than active. */}
+      <button
+        type="button"
+        onClick={() => openStoppedOverlay(entry.worktreeId)}
+        title="Read this worktree's conversation"
+        className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm opacity-60
+          transition hover:bg-surface-2/50 hover:opacity-90 focus-visible:outline-none
+          focus-visible:ring-1 focus-visible:ring-border-strong"
+      >
         <span className="flex items-center gap-2 group-hover:pr-12 max-md:pr-14">
           <span className="truncate font-medium text-text-dim">
             {entry.title || entry.prompt || 'New worktree'}
@@ -1079,7 +1091,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
           <span className="truncate">{deletedLine}</span>
           <span className="ml-auto shrink-0">{TOOL_LABEL[entry.tool]}</span>
         </span>
-      </div>
+      </button>
 
       {/* Same overlay-button pattern as live rows: leave the group on the left
           of the action slot, which here restarts instead of deletes. */}

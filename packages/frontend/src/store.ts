@@ -663,7 +663,11 @@ interface UiState {
   /** Whether the full-screen deleted-worktrees view is open. Opened from the
    *  sidebar header; scoped to the active project when rendered. */
   stoppedOverlayOpen: boolean
-  openStoppedOverlay: () => void
+  /** A worktree the overlay should open onto, set when it was opened from
+   *  that worktree's own row rather than from the header. Consumed by the
+   *  overlay on open and cleared with it, so it never outlives the gesture. */
+  stoppedOverlayFocus: string | null
+  openStoppedOverlay: (worktreeId?: string) => void
   closeStoppedOverlay: () => void
   /** Whether the full-screen skills view is open. Opened from the sidebar
    *  header; scoped to the active project when rendered. */
@@ -771,8 +775,12 @@ export const useUiStore = create<UiState>((set) => ({
   closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   stoppedOverlayOpen: false,
-  openStoppedOverlay: () => set({ stoppedOverlayOpen: true }),
-  closeStoppedOverlay: () => set({ stoppedOverlayOpen: false }),
+  stoppedOverlayFocus: null,
+  openStoppedOverlay: (worktreeId) => set({
+    stoppedOverlayOpen: true,
+    stoppedOverlayFocus: worktreeId ?? null,
+  }),
+  closeStoppedOverlay: () => set({ stoppedOverlayOpen: false, stoppedOverlayFocus: null }),
 
   skillsOverlayOpen: false,
   openSkillsOverlay: () => set({ skillsOverlayOpen: true }),

@@ -3,13 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { setDataDir } from '@yaac/shared/paths'
-import { worktreeDir } from '@yaac/shared/project-paths'
+import { acpLogDir, worktreeDir } from '@yaac/shared/project-paths'
 import {
   assertShellSafePaths,
   assertSocketPathsFit,
   containerlessJobName,
   containerlessWorkspacePaths,
   refFromJobName,
+  workspaceStateDir,
 } from '#drivers/containerless/paths'
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
@@ -102,6 +103,18 @@ describe('containerlessWorkspacePaths', () => {
     expect(() => assertSocketPathsFit(paths)).not.toThrow()
     expect(() => assertSocketPathsFit({ ...paths, tmuxSock: `/${'x'.repeat(200)}.sock` }))
       .toThrow(/exceeds the 104-byte limit/)
+  })
+
+  it('records ACP conversations where the layers above read them, and where a stop cannot reach', () => {
+    // The one path here that is not this driver's own. Everything that reads a
+    // conversation — the chat pane's tail, the registry's first-prompt scan,
+    // a stopped worktree's transcript — looks at the shared project location,
+    // so a driver-private directory would be written where nobody looks. It
+    // also has to outlive the state dir: that is removed on stop, and a
+    // stopped worktree's conversation stays readable.
+    const paths = containerlessWorkspacePaths(containerlessJobName('demo', UUID))
+    expect(paths.acpLogDir).toBe(acpLogDir('demo', UUID))
+    expect(paths.acpLogDir.startsWith(workspaceStateDir('demo', UUID))).toBe(false)
   })
 
   it('answers identically for the same handle, without consulting anything', () => {

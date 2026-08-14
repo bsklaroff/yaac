@@ -129,6 +129,11 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/worktree/:id/title', request: '/worktree/nope/title', body: { title: 't' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'GET', path: '/worktree/:id', request: '/worktree/nope', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/agent-sessions', request: '/worktree/nope/agent-sessions', k8s: MISSING, containerless: MISSING },
+  // Reads recorded state and files on the host, so it answers the same under
+  // both substrates — the 501 it can raise is about the *tool* whose
+  // conversation is asked for (opencode keeps its history in the container),
+  // never about which driver is installed.
+  { method: 'GET', path: '/worktree/:id/agent-sessions/:sessionId/transcript', request: '/worktree/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/changes', request: '/worktree/nope/changes', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/prompt', request: '/worktree/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
   { method: 'GET', path: '/worktree/:id/terminals', request: '/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },

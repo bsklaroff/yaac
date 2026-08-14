@@ -67,6 +67,8 @@
     "./*": "./src/*.js"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "catalog:",
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@electric-sql/pglite": "catalog:",
     "@hono/node-server": "catalog:",
     "@hono/node-ws": "catalog:",

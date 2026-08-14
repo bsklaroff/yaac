@@ -6,6 +6,7 @@ import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MasterDetail } from '#components/ui/MasterDetail'
+import { StoppedTranscript } from '#components/StoppedTranscript'
 import { restartWorktree } from '#lib/createWorktree'
 import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
@@ -53,6 +54,7 @@ export function StoppedWorktreesButton({
   const open = useUiStore((s) => s.stoppedOverlayOpen)
   const openOverlay = useUiStore((s) => s.openStoppedOverlay)
   const closeOverlay = useUiStore((s) => s.closeStoppedOverlay)
+  const focus = useUiStore((s) => s.stoppedOverlayFocus)
   const optimisticStopped = useUiStore((s) => s.optimisticStopped)
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const provision = useProvisionWorktree()
@@ -120,8 +122,12 @@ export function StoppedWorktreesButton({
   const selected = picked ?? (isMobile ? null : rows[0] ?? null)
 
   // Reopening the overlay on a phone should land on the list, not on whatever
-  // was last read.
-  useEffect(() => { if (!open) setSelectedId(null) }, [open])
+  // was last read — unless it was opened from one worktree's own row, which
+  // is a request to read that one.
+  useEffect(() => {
+    if (!open) setSelectedId(null)
+    else if (focus !== null) setSelectedId(focus)
+  }, [open, focus])
 
   // Clicking a death's row marks it seen server-side (durable, shared across
   // clients) and optimistically flips `seen` in the cached list so the dot /
@@ -175,7 +181,7 @@ export function StoppedWorktreesButton({
           an open dialog keeps its exit animation if the list empties out. */}
       {merged.length > 0 && (
         <button
-          onClick={openOverlay}
+          onClick={() => openOverlay()}
           className="mt-1 flex w-full items-center gap-1.5 px-3 py-1 text-xs font-medium text-text-faint
             outline-none transition hover:text-text-dim
             max-md:mx-2 max-md:mt-2 max-md:w-[calc(100%-1rem)] max-md:gap-2 max-md:rounded-lg
@@ -319,12 +325,17 @@ export function StoppedWorktreesButton({
                           </>
                         )}
                       </dl>
-                      {selected.prompt && (
-                        <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
-                          text-xs leading-relaxed text-text-dim">
-                          {selected.prompt}
-                        </p>
-                      )}
+                      {/* The conversation itself, where the founding ask alone
+                          used to be. Keyed by worktree so switching rows
+                          starts the pane over rather than carrying the last
+                          one's chosen conversation into it. */}
+                      <StoppedTranscript
+                        key={selected.worktreeId}
+                        worktreeId={selected.worktreeId}
+                        sessions={selected.agentSessions}
+                        tool={selected.tool}
+                        prompt={selected.prompt}
+                      />
                       <button
                         type="button"
                         onClick={() => setConfirm(selected)}

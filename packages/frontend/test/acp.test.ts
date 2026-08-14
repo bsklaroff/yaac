@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mergeEvents } from '#lib/acp'
-import { groupEvents } from '#components/WorktreeChat'
+import { groupEvents } from '#components/AcpTranscript'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**

@@ -64,6 +64,15 @@ filesystem.
 | project git dir | `/repo/.git` | `~/.yaac/projects/<slug>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-cl-<hash>/<id>.sock` |
 | scratch | `/tmp` | the worktree's own state dir |
+| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/projects/<slug>/acp/<id>` |
+
+The ACP record is the one row the driver does not get to answer freely. Under
+k8s the container path is a mount whose host side is the shared project
+location, and that location is what every reader above the driver opens — the
+chat pane's tail, the registry's first-prompt scan, a stopped worktree's
+transcript. So this driver names it directly. It is also the one per-worktree
+path that must outlive the state dir, which a stop removes: a stopped
+worktree's conversation stays readable (docs/agent-modes.md).
 
 Because the checkout the agent sees IS the one the server made, there is no
 git plumbing to re-point: the create path skips the in-pod gitdir rewrite

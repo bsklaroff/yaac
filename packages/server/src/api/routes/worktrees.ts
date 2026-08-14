@@ -6,6 +6,7 @@ import {
   allowWorktreeHost,
   dismissWorktreePort,
   forwardWorktreePort,
+  getAgentSessionTranscript,
   getWorktreeBlockedHosts,
   getWorktreeChanges,
   getWorktreeDetail,
@@ -340,6 +341,18 @@ export const worktreeApp = new Hono()
     const { projectSlug, worktreeId } = await resolveWorktreeRecord(c.req.param('id'))
     const links = await listWorktreeAgentSessions(projectSlug, worktreeId)
     return c.json(links.map((l) => toAgentSessionEntry(l)))
+  })
+  // One conversation's history, as the events the chat pane renders. Resolved
+  // from the record for the same reason the listing above is, and the whole
+  // point of it: a stopped worktree's conversation is still readable, which is
+  // what the stopped-worktrees view shows instead of just the founding ask.
+  // A conversation whose tool leaves no host transcript refuses with 501.
+  .get('/:id/agent-sessions/:sessionId/transcript', async (c) => {
+    const { projectSlug, worktreeId } = await resolveWorktreeRecord(c.req.param('id'))
+    const events = await getAgentSessionTranscript(
+      projectSlug, worktreeId, c.req.param('sessionId'),
+    )
+    return c.json({ events })
   })
   .get('/:id/terminals', async (c) => {
     const { jobName } = await resolveWorktreeContainer(c.req.param('id'), { requireRunning: true })

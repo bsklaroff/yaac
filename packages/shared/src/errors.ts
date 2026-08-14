@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'UNAUTHENTICATED'
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
+  | 'TOO_LARGE'
   | 'INTERNAL'
 
 export interface ServerErrorBody {
@@ -50,6 +51,10 @@ export function defaultStatus(code: ErrorCode): number {
     // Distinct from 404 (which would say the route is unknown) and from 400
     // (which would blame the caller for asking).
     case 'NOT_SUPPORTED': return 501
+    // 413: the thing asked for exists but is too big to answer with. Said out
+    // loud rather than truncated, because a silently shortened answer is
+    // indistinguishable from a complete one.
+    case 'TOO_LARGE': return 413
     case 'INTERNAL': return 500
   }
 }

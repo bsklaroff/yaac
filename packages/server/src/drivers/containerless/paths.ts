@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
-import { repoDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
+import { acpLogDir, repoDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
@@ -186,7 +186,14 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
     // Beside the socket rather than under the state dir, for the sun_path
     // reason above: an acpd socket is addressed the same way tmux's is.
     acpSockDir: path.join(tmuxSockDir(), shortId(worktreeId)),
-    acpLogDir: path.join(state, 'acp'),
+    // The one path here that is NOT this driver's own: the conversation record
+    // is read by the layers above (the chat pane's tail, the registry's
+    // first-prompt scan, the stopped worktree's transcript) at the shared
+    // project location, so a driver-private one would be written where nobody
+    // looks. It is also the only per-worktree thing that must outlive the
+    // state dir above — that is pruned on stop, and a stopped worktree's
+    // conversation stays readable.
+    acpLogDir: acpLogDir(projectSlug, worktreeId),
     acpdEntry: acpdEntry(),
   }
 }

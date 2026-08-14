@@ -16,10 +16,61 @@ import { serverLog } from '#log'
  * simply carry no path (their first message is captured over HTTP instead).
  */
 
-/** Claude writes `<claudeDir>/projects/-workspace/<worktreeId>.jsonl` — the
- *  agent's cwd is always /workspace, so the project dir name is fixed. */
+/** Where claude files a conversation: one directory per cwd it has been run
+ *  in, named for that path with the separators punched out (`/workspace`
+ *  becomes `-workspace`). */
+function claudeProjectsDir(slug: string): string {
+  return path.join(claudeDir(slug), 'projects')
+}
+
+/**
+ * Under the pod driver the agent's cwd is always `/workspace`, so this is the
+ * only directory that can hold a conversation — and checking it first keeps
+ * the common case a single `access`.
+ */
 function claudeTranscriptDir(slug: string): string {
-  return path.join(claudeDir(slug), 'projects', '-workspace')
+  return path.join(claudeProjectsDir(slug), '-workspace')
+}
+
+/**
+ * A claude conversation's transcript, by searching rather than by assuming
+ * one cwd.
+ *
+ * The pod driver's `/workspace` is not universal: a containerless worktree
+ * runs claude in the host checkout, so its conversations are filed under a
+ * directory named for *that* path. Deriving the name would mean reproducing
+ * claude's munging of an absolute path, and reproducing it for whichever
+ * driver launched this particular worktree; the file is named for the
+ * conversation either way, so looking for it is both simpler and driver-
+ * neutral.
+ *
+ * Only reached when nothing recorded a path — the hook stamps one for every
+ * conversation it sees, so this is the fallback for a worktree whose pod died
+ * before the registry's first tick.
+ *
+ * A conversation id identifies one conversation, so at most one directory
+ * should hold it; the scan is sorted anyway, so a session somehow filed twice
+ * (resumed from a different cwd) resolves to the same file on every call
+ * rather than to whatever the filesystem happened to enumerate first. An
+ * arbitrary-but-stable answer is worth more here than a fresh coin flip per
+ * read, since this one feeds a rendered transcript.
+ */
+async function findClaudeTranscript(slug: string, sessionId: string): Promise<string | undefined> {
+  const conventional = path.join(claudeTranscriptDir(slug), `${sessionId}.jsonl`)
+  if (await exists(conventional)) return conventional
+  let entries: Dirent[]
+  try {
+    entries = await fs.readdir(claudeProjectsDir(slug), { withFileTypes: true })
+  } catch {
+    return undefined
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name))
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const candidate = path.join(claudeProjectsDir(slug), entry.name, `${sessionId}.jsonl`)
+    if (await exists(candidate)) return candidate
+  }
+  return undefined
 }
 
 /**
@@ -180,8 +231,7 @@ export async function sessionTranscriptPath(
     const logs = await piSessionLogs(projectSlug, worktreeId)
     return logs[logs.length - 1]
   }
-  const file = path.join(claudeTranscriptDir(projectSlug), `${worktreeId}.jsonl`)
-  return await exists(file) ? file : undefined
+  return findClaudeTranscript(projectSlug, worktreeId)
 }
 
 /** Last time the agent appended to a transcript, or undefined if it's gone. */
