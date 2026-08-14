@@ -123,6 +123,7 @@ interface JobManifest {
   metadata: { name: string; namespace: string; labels: Record<string, string> }
   spec: {
     template: {
+      metadata: { labels: Record<string, string> }
       spec: {
         containers: Array<{
           image: string
@@ -219,6 +220,12 @@ describe('prepareWorkspaceSubstrate', () => {
     )
     // Plain HTTP registry: the in-pod engine needs the drop-in to pull it.
     expect(containerEnv().YAAC_REGISTRY_CONF_B64).toEqual(expect.any(String))
+    // And the engine is announced on the POD, not just the Job: the image
+    // salvage picks its worktrees out of pod deltas, where the spec env
+    // that actually starts the engine (YAAC_NESTED_ENGINE, set by
+    // worktree-create) is not in hand.
+    const podLabels = appliedJob().spec.template.metadata.labels
+    expect(podLabels['yaac.nested']).toBe('true')
   })
 
   it('sleeps a virtual cluster it just booted, and wires the pod at it', async () => {
@@ -269,6 +276,10 @@ describe('launchWorkspace', () => {
     // predating modes — reads as tui rather than as a broken acp one.
     expect(job.metadata.labels['yaac.mode']).toBeUndefined()
     expect(job.metadata.labels['yaac.prewarmed']).toBeUndefined()
+    // Same rule for the engine stamp — absent means "no engine here", which
+    // is what keeps the image salvage from probing a workspace that has
+    // nothing to salvage.
+    expect(job.metadata.labels['yaac.nested']).toBeUndefined()
 
     // The handle names what was just stamped, without a read-back.
     expect(handle).toMatchObject({

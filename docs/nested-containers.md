@@ -240,12 +240,23 @@ so the postStart script pays the single cold walk with a background
 `podman image ls` and every later `image ls` is answered from the daemon's
 memory.
 
-Both halves are best-effort and self-gating (no podman, no sudo, or no
+Both halves are best-effort and self-gating (no engine, no sudo, or no
 registry ⇒ a single cheap exec that does nothing; no generation ⇒ an empty
 store); a cold cache only ever costs a rebuild. Salvage runs
 **mid-worktree** (a periodic reconciler, so a project's large first salvage
 lands during the run) and at **worktree cleanup**, before the Job is
 deleted.
+
+"No engine" is the pod's own `YAAC_NESTED_ENGINE`, tested before the sudo
+that every in-pod leg runs behind, and the reconciler additionally skips
+pods without the `yaac.nested` label so a non-nested worktree is not sent a
+probe at all. The test is deliberately not "is podman installed" — a
+binary's presence never implied an engine, and pods from images built
+before podman left the base ship it engineless. Running podman without one
+is not a no-op: unconfigured rootless podman under sudo resolves its
+runtime dir to a relative `libpod/tmp`, and an in-pod exec inherits the
+container's workingDir, so the probe plants a root-owned directory in the
+user's checkout.
 
 Destinations carry no content hash: they are name-for-name, and the chain
 tags are slots keyed by (repo, tag, depth). That is what bounds the tag

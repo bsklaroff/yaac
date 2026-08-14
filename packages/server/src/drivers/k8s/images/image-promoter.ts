@@ -50,8 +50,10 @@ import { serverLog } from '#log'
  * never matches. Clobbered manifests become untagged, which is what
  * reconcileProjectRegistryGc reclaims.
  *
- * Self-gating: a non-nested worktree pod has no podman, so a salvage is a
- * single cheap exec that reports nothing.
+ * Self-gating: every leg runs through sudoExecCommand, which does nothing
+ * in a pod that carries no engine, so a non-nested worktree costs a single
+ * cheap exec that reports nothing — and the reconcile loop skips even that
+ * (worktrees/salvage-reconcile.ts).
  */
 
 /**
@@ -286,7 +288,6 @@ export function parseSurveyReport(stdout: string): SurveyReport {
 export function buildSurveyScript(): string {
   return [
     'set -u',
-    'command -v podman >/dev/null 2>&1 || exit 0',
     `[ -f ${PUSHED_LEDGER} ] && sed 's/^/have /' ${PUSHED_LEDGER}`,
     // One row per NAME, so an id can appear both writably and read-only
     // (a build that cache-hit the store then tagged its product). Only an
@@ -356,7 +357,6 @@ export const SALVAGE_COMPRESSION_LEVEL = 1
 export function buildPushScript(): string {
   return [
     'set -u',
-    'command -v podman >/dev/null 2>&1 || exit 0',
     'ok=0; fail=0',
     'while [ "$#" -ge 2 ]; do',
     `  if nice -n 19 podman push --tls-verify=false --compression-format ${SALVAGE_COMPRESSION} `
@@ -528,16 +528,30 @@ export function rankedRegistryTagsScript(): string {
 }
 
 /**
- * Wrap an in-pod script in the sudo gate both directions share: images and
- * storage belong to the rootful engine, and an image without passwordless
- * sudo no-ops quietly. Extra argv (validated push pairs) is appended after
- * the script, reaching it as `$@`.
+ * Wrap an in-pod script in the gate every leg of the salvage shares: images
+ * and storage belong to the rootful engine, so nothing here runs unless this
+ * pod HAS one, and an image without passwordless sudo no-ops quietly. Extra
+ * argv (validated push pairs) is appended after the script, reaching it as
+ * `$@`.
+ *
+ * The engine test is the pod's own YAAC_NESTED_ENGINE — set by
+ * worktree-create for exactly the pods whose init script starts an engine
+ * (`domain/worktrees/create.ts`, read again by worktree-bin/yaac-worktree-init)
+ * — and NOT `command -v podman`. A binary's presence never answered the
+ * question being asked: an image can ship podman and run no engine, which
+ * every pod built before podman left the base image does. Running it there
+ * is not the harmless no-op that reading it suggests. Unconfigured rootless
+ * podman under sudo resolves its runtime dir to a RELATIVE `libpod/tmp`, and
+ * an exec inherits the container's workingDir — so the probe plants a
+ * root-owned 0700 directory in the user's checkout, where it breaks any tool
+ * that walks the repo and leaves the worktree undeletable.
  */
 export function sudoExecCommand(script: string, argv: string[] = []): string {
   const args = argv.map((a) => ` ${shellQuote(a)}`).join('')
   const sudoRun = `exec sudo -n -H sh -c ${shellQuote(script)} --${args}`
   return `sh -c ${shellQuote(
-    'command -v sudo >/dev/null 2>&1 || exit 0; '
+    '[ "${YAAC_NESTED_ENGINE:-}" = 1 ] || exit 0; '
+    + 'command -v sudo >/dev/null 2>&1 || exit 0; '
     + `sudo -n true 2>/dev/null || exit 0; ${sudoRun}`,
   )}`
 }

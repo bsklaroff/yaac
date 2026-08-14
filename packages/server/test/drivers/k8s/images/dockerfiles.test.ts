@@ -14,11 +14,24 @@ const read = (name: string): Promise<string> =>
   fs.readFile(path.join(DOCKERFILES_DIR, name), 'utf8')
 
 describe('Dockerfile.default', () => {
-  it('ships the pinned upstream base and the session toolbelt', async () => {
+  it('ships the pinned upstream base and the session toolbelt, and installs no engine', async () => {
     const content = await read('Dockerfile.default')
     expect(content).toContain('FROM docker.io/ubuntu:24.04')
     expect(content).toContain('gh')
     expect(content).toContain('tmux')
+    // The engine belongs to the nestable layer, and ONLY there. A podman in
+    // the base image is not the harmless extra it looks like: the rootless
+    // apparatus it needs (uidmap, an overlay mount_program) is not here, so
+    // it cannot work, while every probe that reasons "podman is installed,
+    // so this pod must have an engine" starts believing a plain worktree
+    // has one. Salvage did, and its `sudo podman` — run from the
+    // container's workingDir, which is the user's checkout — left a
+    // root-owned directory there each time it fired.
+    //
+    // This pins the Dockerfile TEXT, which is what a reintroduction would
+    // look like. A binary arriving as some other package's transitive
+    // dependency is invisible here and would need an image-content check.
+    expect(content).not.toContain('podman')
   })
 
   it('runs as the non-root yaac user, built with the injected YAAC_UID', async () => {

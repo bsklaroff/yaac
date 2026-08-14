@@ -65,9 +65,12 @@ export async function deregisterWorkspace(workspaceId: string): Promise<void> {
  * registry, before the pod (and the graphroot tmpfs holding them) is
  * destroyed.
  *
- * Best-effort and self-gating — the in-pod survey no-ops without podman, so
- * a non-nested or already-dead workspace costs one probe — and never
- * throws: losing a salvage costs a rebuild, and must not strand a teardown.
+ * Best-effort and self-gating — the in-pod survey does nothing in a pod
+ * that carries no engine, so a non-nested or already-dead workspace costs
+ * one probe — and never throws: losing a salvage costs a rebuild, and must
+ * not strand a teardown. Unlike the mid-life reconciler this is unfiltered:
+ * a teardown holds a name, not a pod, so the gate that decides is the
+ * in-pod one.
  */
 export async function salvageWorkspaceImages(target: TeardownTarget): Promise<void> {
   await salvageWorktreeImages({

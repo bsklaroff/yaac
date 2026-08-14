@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libcups2t64 libdbus-1-3 libgbm1 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
     libxkbcommon0 libxrandr2 locales ncat netcat-openbsd openssh-client \
-    pipx podman python3 python3-pip python3-venv ripgrep socat sudo tmux \
+    pipx python3 python3-pip python3-venv ripgrep socat sudo tmux \
     wget xz-utils zsh && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -137,6 +137,9 @@ RUN zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
 
 WORKDIR /workspace
 # catatonit acts as PID 1, reaping zombies (orphaned conmon etc.) and
-# forwarding signals.  Without a real init, rootless podman leaks zombie
-# conmon processes under PID 1 and eventually hits RLIMIT_NPROC.
+# forwarding signals.  Without a real init, the in-pod engine a nested
+# worktree runs (Dockerfile.nestable) leaks zombie conmon processes under
+# PID 1 and eventually hits RLIMIT_NPROC.  It stays in THIS image because
+# PID 1 is the entrypoint's to choose, and every worktree wants its
+# zombies reaped whether or not it has an engine.
 ENTRYPOINT ["catatonit", "--", "sleep", "infinity"]

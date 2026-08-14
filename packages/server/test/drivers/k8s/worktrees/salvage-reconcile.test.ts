@@ -40,7 +40,12 @@ function pod(worktreeId: string, over: Partial<PodInfo> = {}): PodInfo {
     running: true,
     terminating: false,
     createdAtMs: 0,
-    labels: {},
+    // Salvage only ever visits worktrees running the in-pod engine, so the
+    // default fixture is one. The label is spelled out rather than imported
+    // because it is a wire value a pod already in the cluster carries: a
+    // rename that silently stopped matching live pods is exactly what this
+    // should fail on.
+    labels: { 'yaac.nested': 'true' },
     ...over,
   }
 }
@@ -74,13 +79,26 @@ describe('reconcileImageSalvage', () => {
   it('skips prewarmed spares, terminating pods, and yaac-marked terminating sessions', async () => {
     markWorktreeTerminating('s-marked')
     mockListPods.mockResolvedValue([
-      pod('s-prewarm', { labels: { 'yaac.prewarmed': 'true' } }),
+      pod('s-prewarm', { labels: { 'yaac.nested': 'true', 'yaac.prewarmed': 'true' } }),
       pod('s-term', { terminating: true }),
       pod('s-marked'),
       pod('s-stopped', { running: false }),
     ])
     await reconcileImageSalvage(isWorktreeTerminating, 1_000)
     expect(mockSalvage).not.toHaveBeenCalled()
+  })
+
+  it('never probes a worktree that has no in-pod engine', async () => {
+    // A worktree with no engine has no images of its own, so the survey it
+    // would be sent can only report nothing. Skipping it here is not just
+    // the saved exec: the in-pod script runs podman as root from the
+    // container's workingDir — the user's checkout — and podman with no
+    // engine configured writes its runtime state to a RELATIVE path, so
+    // the probe leaves a root-owned directory in the worktree.
+    mockListPods.mockResolvedValue([pod('s-plain', { labels: {} }), pod('s-nested')])
+    await reconcileImageSalvage(isWorktreeTerminating, 1_000)
+    expect(mockSalvage).toHaveBeenCalledOnce()
+    expect(mockSalvage).toHaveBeenCalledWith(expect.objectContaining({ worktreeId: 's-nested' }))
   })
 
   it('prunes throttle state for sessions that went away (no leak, fresh session re-runs)', async () => {
