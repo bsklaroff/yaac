@@ -262,7 +262,7 @@ export function NewWorktreeButton(
                     <span className="ml-auto pl-3 text-[11px] text-text-faint">
                       {SUPPORTED_PERMISSION_MODES[t].length === 1
                         ? `${PERMISSION_MODE_COPY[SUPPORTED_PERMISSION_MODES[t][0]].toLowerCase()} only`
-                        : 'unsupported'}
+                        : `${modeShown} mode unsupported`}
                     </span>
                   )}
                 </button>
