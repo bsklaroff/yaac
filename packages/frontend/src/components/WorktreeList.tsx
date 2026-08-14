@@ -42,6 +42,10 @@ import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
 import { isUnreadWaiting, useUiStore } from '#store'
 import { describeWorktreeDeathReason } from '@yaac/shared/death-reason'
+// A group name is stored under this cap, and the routes refuse a longer one
+// — so the fields that mint names stop there rather than taking a name the
+// server will not keep.
+import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type {
   StoppedWorktreeEntry,
   ProvisioningWorktreeEntry,
@@ -539,6 +543,7 @@ function GroupSection({
                 aria-label="Group name"
                 defaultValue={seed}
                 placeholder="Group name"
+                maxLength={MAX_TITLE_LENGTH}
                 onKeyDown={handleKeyDown}
                 onBlur={handleBlur}
                 className="w-full rounded border border-border-strong bg-bg px-1.5 py-0.5
@@ -969,6 +974,7 @@ function GroupDialog({
               name="name"
               autoFocus
               placeholder="New group name"
+              maxLength={MAX_TITLE_LENGTH}
               className="rounded-md border border-border bg-bg px-3 py-2 text-xs text-text outline-none
                 focus:border-border-strong"
             />

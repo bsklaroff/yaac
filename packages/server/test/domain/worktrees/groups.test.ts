@@ -3,7 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import { createWorktreeGroup, listWorktreeGroupRows } from '#db/group-store'
 import { recordWorktreeCreated } from '#db/worktree-store'
-import { listWorktreeGroups, resolveGroupId } from '#domain/worktrees/groups'
+import { listWorktreeGroups, resolveGroup } from '#domain/worktrees/groups'
 import { ServerError } from '@yaac/shared/errors'
 
 describe('worktree groups (domain)', () => {
@@ -42,15 +42,19 @@ describe('worktree groups (domain)', () => {
     })
   })
 
-  describe('resolveGroupId', () => {
+  describe('resolveGroup', () => {
     it('takes an id exactly, and a name however it was typed', async () => {
       const group = await createWorktreeGroup('proj', 'Release Train', null)
 
-      expect(await resolveGroupId('proj', group.groupId)).toBe(group.groupId)
-      expect(await resolveGroupId('proj', 'Release Train')).toBe(group.groupId)
+      expect(await resolveGroup('proj', group.groupId))
+        .toEqual({ groupId: group.groupId, name: 'Release Train' })
+      expect(await resolveGroup('proj', 'Release Train'))
+        .toEqual({ groupId: group.groupId, name: 'Release Train' })
       // Same normalization the name was stored under, plus case folding —
-      // what a person retypes is rarely byte-identical.
-      expect(await resolveGroupId('proj', '  release   train ')).toBe(group.groupId)
+      // what a person retypes is rarely byte-identical. The STORED name comes
+      // back either way, so a caller handed an id can name what it picked.
+      expect(await resolveGroup('proj', '  release   train '))
+        .toEqual({ groupId: group.groupId, name: 'Release Train' })
     })
 
     it('refuses an unknown name rather than inventing one', async () => {
@@ -59,8 +63,8 @@ describe('worktree groups (domain)', () => {
       // that never existed.
       await createWorktreeGroup('other', 'staging', null)
 
-      await expect(resolveGroupId('proj', 'staging')).rejects.toThrow(ServerError)
-      await expect(resolveGroupId('proj', 'staging')).rejects.toThrow(/No such worktree group/)
+      await expect(resolveGroup('proj', 'staging')).rejects.toThrow(ServerError)
+      await expect(resolveGroup('proj', 'staging')).rejects.toThrow(/No such worktree group/)
     })
 
     it('refuses an ambiguous name instead of guessing which was meant', async () => {
@@ -69,27 +73,39 @@ describe('worktree groups (domain)', () => {
       const first = await createWorktreeGroup('proj', 'release', null)
       const second = await createWorktreeGroup('proj', 'release', null)
 
-      await expect(resolveGroupId('proj', 'release')).rejects.toThrow(/names 2 groups/)
+      await expect(resolveGroup('proj', 'release')).rejects.toThrow(/names 2 groups/)
       // The escape hatch the error names: an id is never ambiguous.
-      expect(await resolveGroupId('proj', second.groupId)).toBe(second.groupId)
-      expect(await resolveGroupId('proj', first.groupId)).toBe(first.groupId)
+      expect((await resolveGroup('proj', second.groupId)).groupId).toBe(second.groupId)
+      expect((await resolveGroup('proj', first.groupId)).groupId).toBe(first.groupId)
     })
 
     it('creates the group when the caller is naming one, and only then', async () => {
-      const id = await resolveGroupId('proj', 'fresh', { create: true })
+      const fresh = await resolveGroup('proj', 'fresh', { create: true })
 
       const rows = await listWorktreeGroupRows('proj')
       expect(rows).toHaveLength(1)
-      expect(rows[0]).toMatchObject({ groupId: id, name: 'fresh', pinned: true })
+      expect(rows[0]).toMatchObject({ groupId: fresh.groupId, name: 'fresh', pinned: true })
 
       // Idempotent: naming it again resolves to the group that now exists
       // rather than making a second one with the same name.
-      expect(await resolveGroupId('proj', 'fresh', { create: true })).toBe(id)
+      expect(await resolveGroup('proj', 'fresh', { create: true })).toEqual(fresh)
       expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
 
-      // A blank name would create a group nothing could ever name again.
-      await expect(resolveGroupId('proj', '   ', { create: true })).rejects.toThrow(ServerError)
+      // Including when it is typed with the whitespace the store collapses:
+      // the created row already holds the normalized name, so resolving has
+      // to normalize before comparing or this makes a duplicate.
+      const spaced = await resolveGroup('proj', ' fresh  ', { create: true })
+      expect(spaced).toEqual(fresh)
       expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
+
+      // A name that only exists in typed form is stored normalized, and the
+      // resolver answers with what it stored.
+      const spacedNew = await resolveGroup('proj', 'release  train', { create: true })
+      expect(spacedNew.name).toBe('release train')
+
+      // A blank name would create a group nothing could ever name again.
+      await expect(resolveGroup('proj', '   ', { create: true })).rejects.toThrow(ServerError)
+      expect(await listWorktreeGroupRows('proj')).toHaveLength(2)
     })
   })
 })

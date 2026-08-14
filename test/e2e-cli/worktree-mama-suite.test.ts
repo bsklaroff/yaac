@@ -302,6 +302,15 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     const after = await runMama('list')
     expect(after.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*review queue`))
 
+    // Addressed by group id — which is what the ambiguity error tells an
+    // agent to pass — the line still names the group it landed on.
+    const groupId = /\(([0-9a-f-]{36})\)/.exec(made.output)?.[1]
+    expect(groupId).toBeTruthy()
+    const byId = await runMama(`group move ${selfShortId!} ${groupId!}`)
+    expect(byId.exitCode).toBe(0)
+    expect(byId.output).toContain('"review queue"')
+    expect(byId.output).not.toContain(groupId!)
+
     // Omitting the group puts it back in the default list, leaving the
     // group behind.
     const out = await runMama(`group move ${selfShortId!}`)

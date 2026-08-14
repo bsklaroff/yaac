@@ -16,7 +16,7 @@ import {
   listWorktreeGroups,
   registerProvisioning,
   removeProvisioning,
-  resolveGroupId,
+  resolveGroup,
   resolveSessionInProject,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
@@ -50,6 +50,11 @@ import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
 import { worktreeDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
+// A group name is stored under `normalizeTitle`, which caps at this — so it
+// is also what every route may ACCEPT. A larger bound would take a name in,
+// truncate it on the way to the table, and let two distinct long names
+// sharing a prefix resolve to one group.
+import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { MODEL_RE, PERMISSION_MODES, SUPPORTED_PERMISSION_MODES } from '@yaac/shared/types'
 
 export const worktreeApp = new Hono()
@@ -104,7 +109,7 @@ export const worktreeApp = new Hono()
       // Sidebar group to file the worktree under, by id or name; a name
       // matching no group is created. Resolved before anything is
       // provisioned, so a typo'd group is not a half-built worktree.
-      group: z.string().min(1).max(200).optional(),
+      group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
@@ -112,7 +117,7 @@ export const worktreeApp = new Hono()
       return streamProvisioned(c, worktreeId, async (onProgress) => {
         const groupId = body.group === undefined
           ? undefined
-          : await resolveGroupId(body.project, body.group, { create: true })
+          : (await resolveGroup(body.project, body.group, { create: true })).groupId
 
         // Resolve the tool server-side: explicit --tool wins, else the
         // configured default (yaac tool set), else claude. This is the tool the
@@ -356,12 +361,15 @@ export const worktreeApp = new Hono()
       // empty and pinned — `yaac group create` names a group before anything
       // is in it.
       worktreeId: z.string().min(1).optional(),
-      name: z.string().min(1).max(200),
+      name: z.string().min(1).max(MAX_TITLE_LENGTH),
     })),
     async (c) => {
       const { projectSlug, worktreeId, name } = c.req.valid('json')
       const group = await createWorktreeGroup(projectSlug, name, worktreeId ?? null)
-      return c.json({ groupId: group.groupId })
+      // The stored name, not the typed one: the store normalizes (whitespace
+      // collapsed, length capped), and a caller that echoes what it sent
+      // would report a group that is not the one now in the table.
+      return c.json({ groupId: group.groupId, name: group.name })
     },
   )
   .post(
@@ -369,7 +377,7 @@ export const worktreeApp = new Hono()
     zv('json', z.object({
       projectSlug: z.string().min(1),
       groupId: z.string().min(1),
-      name: z.string().min(1).max(200),
+      name: z.string().min(1).max(MAX_TITLE_LENGTH),
     })),
     async (c) => {
       const { projectSlug, groupId, name } = c.req.valid('json')
@@ -413,7 +421,7 @@ export const worktreeApp = new Hono()
       projectSlug: z.string().min(1),
       worktreeId: z.string().min(1),
       // A group id or name; null returns the worktree to the default list.
-      group: z.string().min(1).max(200).nullable(),
+      group: z.string().min(1).max(MAX_TITLE_LENGTH).nullable(),
       // Create the group when the name matches none. For a caller that is
       // naming the group rather than picking one.
       create: z.boolean().optional(),
@@ -427,16 +435,13 @@ export const worktreeApp = new Hono()
       if (resolved === null) {
         throw new ServerError('NOT_FOUND', `No such worktree in ${projectSlug}: ${worktreeId}`)
       }
-      const groupId = group === null
+      const target = group === null
         ? null
-        : await resolveGroupId(projectSlug, group, { create: create ?? false })
-      await setWorktreeGroup(projectSlug, resolved, groupId)
+        : await resolveGroup(projectSlug, group, { create: create ?? false })
+      await setWorktreeGroup(projectSlug, resolved, target?.groupId ?? null)
       // The NAME too: the caller may have passed an id (the ambiguity error
       // tells it to), and echoing a uuid back at a person is not an answer.
-      const name = groupId === null
-        ? null
-        : (await listWorktreeGroups(projectSlug)).find((g) => g.groupId === groupId)?.name ?? null
-      return c.json({ groupId, name })
+      return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null })
     },
   )
   // File a worktree under a group, or return it to the default list (null).
