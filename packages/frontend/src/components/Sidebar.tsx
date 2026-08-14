@@ -4,6 +4,7 @@ import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { NewWorktreeButton } from '#components/NewWorktreeButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
+import { ServerBadge } from '#components/ServerBadge'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { WorktreeList } from '#components/WorktreeList'
@@ -177,6 +178,9 @@ export function Sidebar({
               nothing (empty:hidden) when no chit has anything to show. */}
           <div className="flex items-center gap-2 px-4 pb-2 empty:hidden">
             <UsageBadge />
+            {/* App-scoped, not project-scoped, but it belongs with the other
+                chits: the header strip above is the project's. */}
+            <ServerBadge />
             <ImageBuildIndicator projectSlug={projectSlug} />
             {/* Project-wide: the stored credential is the project's, so the
                 flag lives on the project header, not on individual worktrees. */}
