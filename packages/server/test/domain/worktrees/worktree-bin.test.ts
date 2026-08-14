@@ -7,10 +7,10 @@ import {
   worktreeBinMounts,
   setWorktreeBinDir,
   stageWorktreeBin,
-} from '#domain/worktrees/spawn-script'
+} from '#domain/worktrees/worktree-bin'
 
 async function makeTmpDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'yaac-spawn-script-'))
+  return fs.mkdtemp(path.join(os.tmpdir(), 'yaac-worktree-bin-'))
 }
 
 afterEach(() => {
@@ -26,9 +26,9 @@ describe('worktreeBinDir', () => {
     expect(worktreeBinDir().endsWith(path.join('worktree-bin'))).toBe(true)
   })
 
-  it('the shipped dir contains an executable-stageable yaac-spawn and yaac-watch-prs', async () => {
+  it('the shipped dir contains an executable-stageable yaac-mama and yaac-watch-prs', async () => {
     const names = await stageWorktreeBin(worktreeBinDir(), await makeTmpDir())
-    expect(names).toContain('yaac-spawn')
+    expect(names).toContain('yaac-mama')
     expect(names).toContain('yaac-watch-prs')
   })
 })
@@ -71,9 +71,9 @@ describe('stageWorktreeBin', () => {
 
 describe('worktreeBinMounts', () => {
   it('File-mounts each staged script read-only onto /usr/local/bin', () => {
-    expect(worktreeBinMounts('/staging', ['yaac-spawn'])).toEqual([{
-      source: { kind: 'hostPath', path: path.join('/staging', 'yaac-spawn'), type: 'File' },
-      mountPath: '/usr/local/bin/yaac-spawn',
+    expect(worktreeBinMounts('/staging', ['yaac-mama'])).toEqual([{
+      source: { kind: 'hostPath', path: path.join('/staging', 'yaac-mama'), type: 'File' },
+      mountPath: '/usr/local/bin/yaac-mama',
       readOnly: true,
     }])
     expect(worktreeBinMounts('/staging', [])).toEqual([])

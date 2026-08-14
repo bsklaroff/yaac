@@ -353,7 +353,7 @@ Three facts the server needs are visible only inside the egress proxy: a
 worktree's blocked-host set growing, a git credential being rejected
 upstream (the proxy MITMs the git exchange, so pods never hold the
 credential and only it sees the rejection), and an in-worktree
-`yaac-spawn` landing in its queue.
+`yaac-mama` command landing in its queue.
 
 The proxy cannot dial the server — it is an in-cluster pod, the server is
 a host process with no in-cluster address, and nested the server sits

@@ -875,6 +875,10 @@ export interface ProvisioningWorktreeEntry {
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
+  /** The sidebar group this worktree was created into (`--group`), so the row
+   *  renders in its section while it provisions rather than jumping there
+   *  when it lands. Absent means the default list. */
+  groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' UTC, derived from when provisioning started — so
    *  the sidebar can show a relative age for a row that has no pod yet. */
   createdAt: string
@@ -1012,30 +1016,60 @@ export type DesktopServerOutcome =
 export const MAX_PROMPT_LENGTH = 4000
 
 /**
- * A queued in-worktree `yaac-spawn` request, as drained from the proxy.
- * Wire shape mirrors k8s/proxy/spawn-queue.ts (SpawnRequest sans
+ * What a worktree's agent may ask its own yaac server to do, via the
+ * in-worktree `yaac-mama` command.
+ *
+ * This union IS the allowlist — the strict subset of the yaac CLI reachable
+ * from inside a worktree. It is enforced where the request is answered
+ * (`runMamaCommand`), so neither transport can widen it: the k8s proxy
+ * queues opaque envelopes without knowing what any command means, and the
+ * containerless route validates against this same list.
+ *
+ * Deliberately absent: anything that stops, deletes or reconfigures. An
+ * agent may make work and file it; unmaking it stays the user's.
+ */
+export const MAMA_COMMANDS = [
+  'list',
+  'create',
+  'rename',
+  'group-create',
+  'group-move',
+  'models',
+] as const
+export type MamaCommand = (typeof MAMA_COMMANDS)[number]
+
+/**
+ * One queued in-worktree `yaac-mama` request, as drained from a runtime that
+ * holds them. Wire shape mirrors k8s/proxy/mama-queue.ts (MamaRequest sans
  * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
  *
  * Shared vocabulary because it crosses a wire the proxy sidecar and the
  * server each hold one end of, exactly like the other types in this file:
  * the runtime that drains the queue and the mediator that answers each
  * request both name it, and neither owns it.
+ *
+ * The envelope is deliberately untyped beyond this: `command` is a bare
+ * string because it comes off a wire, and `args` is a flat option map. What
+ * any of it MEANS is the server's, which is what keeps the queue a queue.
  */
-export interface PendingSpawn {
+export interface PendingMamaRequest {
   requestId: string
-  /** The CALLING worktree (attributed by the proxy from the pod source IP). */
+  /** The CALLING worktree (attributed by the runtime, never by the caller). */
   worktreeId: string
-  prompt: string
-  tool?: string
-  /** Model override for the spawned worktree's agent. */
-  model?: string
+  /** A `MamaCommand`, unvalidated — an unknown one is refused server-side. */
+  command: string
+  /** Options as `--name value` pairs, e.g. `{ tool: 'claude' }`. */
+  args: Record<string, string>
+  /** The single free-text positional: a prompt, or a group name. */
+  body: string
 }
 
-/** Mirror of k8s/proxy/spawn-queue.ts SpawnResult — keep in sync. */
-export interface SpawnResultWire {
+/** Mirror of k8s/proxy/mama-queue.ts MamaResult — keep in sync. */
+export interface MamaResultWire {
   requestId: string
   ok: boolean
-  /** New worktree id when ok. */
-  worktreeId?: string
+  /** What the caller's stdout gets when ok — already rendered for a human
+   *  (or an agent) to read, since the caller is a shell script. */
+  output?: string
   error?: string
 }

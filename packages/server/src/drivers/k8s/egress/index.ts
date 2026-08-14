@@ -29,7 +29,7 @@ export { readBlockedHosts } from './blocked-hosts'
 export { readAllGitAuthFailures, readGitAuthFailures } from './git-auth-failures'
 export {
   ProxyClient,
-  drainPendingSpawns,
+  drainPendingMamaRequests,
   proxyClient,
   resolveProxyImageTag,
   type ProxyClientConfig,

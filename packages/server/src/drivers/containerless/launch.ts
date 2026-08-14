@@ -201,7 +201,7 @@ function destinationFor(
   const inHome = underPrefix(mountPath, '/home/yaac/') ?? underPrefix(mountPath, `${home}/`)
   if (inHome !== null) return path.join(home, inHome)
   // The pod's `/usr/local/bin` is where the server stages the helper
-  // scripts a worktree's agent can run (`yaac-spawn`, the init script).
+  // scripts a worktree's agent can run (`yaac-mama`, the init script).
   // There is no writable system bin here, so they go in the workspace's own
   // bin dir, which the launch puts on its PATH.
   const inBin = underPrefix(mountPath, '/usr/local/bin/')

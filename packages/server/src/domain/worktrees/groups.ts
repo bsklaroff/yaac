@@ -1,5 +1,7 @@
-import { listWorktreeGroupRows } from '#db'
+import { createWorktreeGroup, listWorktreeGroupRows } from '#db'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { normalizeTitle } from '@yaac/shared/titles'
+import { ServerError } from '@yaac/shared/errors'
 import type { WorktreeGroupSummary } from '@yaac/shared/types'
 
 /**
@@ -23,4 +25,47 @@ export async function listWorktreeGroups(
     pinned: r.pinned,
     createdAt: formatUtcTimestamp(r.createdAt.getTime()),
   }))
+}
+
+/**
+ * Resolve what a human (or an agent) typed into a group id: an exact group
+ * id first, then a name match, case-insensitively and under the same
+ * normalization a group is stored with.
+ *
+ * Id-before-name is what lets one route serve both the sidebar — which holds
+ * ids and means them exactly — and a person typing "review", whose id is
+ * something they have never seen. A name that lands on two groups is refused
+ * rather than guessed: both are equally what was asked for, and filing a
+ * worktree in the wrong one is silent.
+ *
+ * `create` is for the callers that are naming a group rather than picking
+ * one (`--group` on a create, `yaac-mama create --group`): the group is
+ * theirs to bring into being, and demanding they create it first would make
+ * every such call two round trips and a race.
+ */
+export async function resolveGroupId(
+  projectSlug: string,
+  group: string,
+  opts: { create?: boolean } = {},
+): Promise<string> {
+  const rows = await listWorktreeGroupRows(projectSlug)
+  const byId = rows.find((r) => r.groupId === group)
+  if (byId) return byId.groupId
+
+  const wanted = normalizeTitle(group).toLowerCase()
+  const byName = rows.filter((r) => r.name.toLowerCase() === wanted)
+  if (byName.length === 1) return byName[0].groupId
+  if (byName.length > 1) {
+    throw new ServerError(
+      'VALIDATION',
+      `"${group}" names ${byName.length} groups in ${projectSlug} — pass the group id instead `
+      + `(${byName.map((r) => r.groupId).join(', ')})`,
+    )
+  }
+
+  if (opts.create !== true) {
+    throw new ServerError('NOT_FOUND', `No such worktree group in ${projectSlug}: ${group}`)
+  }
+  if (wanted === '') throw new ServerError('VALIDATION', 'group name must not be blank')
+  return (await createWorktreeGroup(projectSlug, group, null)).groupId
 }

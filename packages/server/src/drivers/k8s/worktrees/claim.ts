@@ -65,7 +65,7 @@ function pointerSegment(key: string): string {
  * with its own value is a no-op on the substrate and buys an unconditional
  * guarantee above it: once this resolves, the workspace declares `tool`, so
  * every handle observed from here on reports `declaredTool === tool` — which
- * is what a `yaac-spawn` from the claimed workspace reads to decide what to
+ * is what a `yaac-mama create` from the claimed workspace reads to decide what to
  * run.
  */
 export async function claimSpareWorkspace(

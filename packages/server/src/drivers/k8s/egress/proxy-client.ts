@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AgentTool,
-  PendingSpawn,
+  PendingMamaRequest,
   SecretProxyRule,
-  SpawnResultWire,
+  MamaResultWire,
 } from '@yaac/shared/types'
 import { imageExists } from '#drivers/k8s/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
@@ -117,16 +117,16 @@ export function buildRulesFromConfig(
 }
 
 /**
- * Take whatever in-worktree `yaac-spawn` requests the proxy is holding.
+ * Take whatever in-worktree `yaac-mama` requests the proxy is holding.
  *
  * `attachIfRunning`, never `ensureRunning`: this must not bootstrap the
  * proxy, which deploys lazily on the first worktree create. No proxy means
  * no worktrees means nothing queued, so an absent proxy is an empty queue
  * rather than a reason to stand one up.
  */
-export async function drainPendingSpawns(): Promise<PendingSpawn[]> {
+export async function drainPendingMamaRequests(): Promise<PendingMamaRequest[]> {
   if (!await proxyClient.attachIfRunning()) return []
-  return proxyClient.fetchPendingSpawns()
+  return proxyClient.fetchPendingMamaRequests()
 }
 
 // --- ProxyClient ---
@@ -178,6 +178,14 @@ export class ProxyClient {
    * the first ensureRunning() still performs the real check.
    */
   private deployVerifiedCurrent = false
+  /**
+   * The deployed proxy answers only the pre-envelope spawn queue — set by a
+   * 404 from `/cmd/pending` and cleared the moment it answers again, so
+   * results always go back on the queue they were drained from. Ordinary
+   * between a server upgrade and the worktree launch that rolls the proxy
+   * (docs/legacy-compat-shims.md).
+   */
+  private legacySpawnQueue = false
   private authSecret: string | null = null
   private readonly forward = new ExecTunnel(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
@@ -385,11 +393,66 @@ export class ProxyClient {
   }
 
   /**
-   * Drain the proxy's queued in-worktree `yaac-spawn` requests. A drain is a
+   * Drain the proxy's queued in-worktree `yaac-mama` requests. A drain is a
    * claim — the proxy hands each request out exactly once and holds the
-   * worktree's HTTP response open until `postSpawnResults` (or its TTL).
+   * worktree's HTTP response open until `postMamaResults` (or its TTL).
    */
-  async fetchPendingSpawns(): Promise<PendingSpawn[]> {
+  async fetchPendingMamaRequests(): Promise<PendingMamaRequest[]> {
+    const res = await tunnelFetch(`${this.baseUrl}/cmd/pending`, {
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
+    })
+    // A proxy predating the command envelope serves only the spawn queue.
+    // The server is upgraded before the proxy is (it rolls on the next
+    // worktree launch), so this is the ordinary state of an install between
+    // the two (docs/legacy-compat-shims.md).
+    if (res.status === 404) {
+      this.legacySpawnQueue = true
+      return this.fetchLegacyPendingSpawns()
+    }
+    this.legacySpawnQueue = false
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to fetch pending yaac-mama requests: ${res.status} ${text}`)
+    }
+    return await res.json() as PendingMamaRequest[]
+  }
+
+  /** Complete drained requests — the proxy answers the waiting pods. */
+  async postMamaResults(results: MamaResultWire[]): Promise<void> {
+    if (results.length === 0) return
+    // Answered on the queue they were drained from: the two are never mixed,
+    // since a drain sets this and the post follows it in the same pass.
+    const legacy = this.legacySpawnQueue
+    const path = legacy ? '/spawn/results' : '/cmd/results'
+    const body = legacy
+      ? results.map((r) => ({
+        requestId: r.requestId,
+        ok: r.ok,
+        // The legacy queue answers a spawn with the new worktree's id, which
+        // is exactly what `create` renders as its output.
+        worktreeId: r.output,
+        error: r.error,
+      }))
+      : results
+    const res = await tunnelFetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to post yaac-mama results: ${res.status} ${text}`)
+    }
+  }
+
+  /**
+   * Drain a pre-envelope proxy's spawn queue, read as the one command it
+   * could express (docs/legacy-compat-shims.md).
+   */
+  private async fetchLegacyPendingSpawns(): Promise<PendingMamaRequest[]> {
     const res = await tunnelFetch(`${this.baseUrl}/spawn/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
@@ -397,24 +460,23 @@ export class ProxyClient {
       const text = await res.text()
       throw new Error(`Failed to fetch pending spawns: ${res.status} ${text}`)
     }
-    return await res.json() as PendingSpawn[]
-  }
-
-  /** Complete drained spawn requests — the proxy answers the waiting pods. */
-  async postSpawnResults(results: SpawnResultWire[]): Promise<void> {
-    if (results.length === 0) return
-    const res = await tunnelFetch(`${this.baseUrl}/spawn/results`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.requireAuthSecret()}`,
+    const legacy = await res.json() as Array<{
+      requestId: string
+      worktreeId: string
+      prompt?: string
+      tool?: string
+      model?: string
+    }>
+    return legacy.map((s) => ({
+      requestId: s.requestId,
+      worktreeId: s.worktreeId,
+      command: 'create',
+      args: {
+        ...(s.tool !== undefined ? { tool: s.tool } : {}),
+        ...(s.model !== undefined ? { model: s.model } : {}),
       },
-      body: JSON.stringify(results),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to post spawn results: ${res.status} ${text}`)
-    }
+      body: s.prompt ?? '',
+    }))
   }
 
   /**

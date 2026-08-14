@@ -134,15 +134,15 @@ describe('launchWorkspace', () => {
   it('puts the staged helper scripts somewhere the workspace will find them', async () => {
     // A pod gets these from `/usr/local/bin` already being on PATH; there is
     // no writable system bin here, so they go in the workspace's own.
-    const staged = path.join(dataDir, 'staged-yaac-spawn')
+    const staged = path.join(dataDir, 'staged-yaac-mama')
     await fsp.writeFile(staged, '#!/bin/sh\n')
     const mounts: WorkspaceMount[] = [
-      { source: { kind: 'hostPath', path: staged, type: 'File' }, mountPath: '/usr/local/bin/yaac-spawn' },
+      { source: { kind: 'hostPath', path: staged, type: 'File' }, mountPath: '/usr/local/bin/yaac-mama' },
     ]
     await launchWorkspace(spec({ mounts }))
     const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const binDir = path.join(home, '.local', 'bin')
-    expect(await fsp.realpath(path.join(binDir, 'yaac-spawn'))).toBe(await fsp.realpath(staged))
+    expect(await fsp.realpath(path.join(binDir, 'yaac-mama'))).toBe(await fsp.realpath(staged))
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.PATH?.startsWith(binDir)).toBe(true)

@@ -168,6 +168,46 @@ plainly. There is no boundary between the agent and this machine, so there
 is nothing to withhold a secret from. If that is not acceptable for a given
 project, that project wants the k8s driver.
 
+## `yaac-mama`, and how a worktree reaches its server
+
+`yaac-mama` is the in-worktree command channel — a strict subset of the yaac
+CLI an agent may run against the server that started it: list the project's
+sessions, start another, retitle one, and make and fill sidebar groups.
+Everything in it either observes or labels, plus the one command that makes
+something new; nothing stops, deletes or reconfigures. Both drivers have it,
+and the difference is only the transport, because the two substrates differ
+in one fact: whether a workspace can dial the server at all.
+
+A pod cannot. It is inside the cluster, the server is a host process with no
+in-cluster address, and the whole point of the sandbox is that the pod holds
+no credential for it. So a pod POSTs to the egress proxy's magic host, the
+proxy holds the request open, and the server collects it on its reconcile
+pass — attribution by source pod IP, nothing configured inside the worktree.
+
+A host process has neither problem. It runs beside the server, so it POSTs
+straight to `/worktree/mama` with a bearer minted for that worktree at
+create and handed to it in its environment (`YAAC_MAMA_TOKEN`, alongside
+`YAAC_MAMA_URL`). The server keeps only the SHA-256 of it, on the worktree
+row, and the token is what identifies the caller — a request never names its
+own worktree, so nothing it sends can claim to be a different one.
+
+The token is not a confinement boundary here, and it is worth being exact
+about that: a containerless agent is a process running as the user, so it
+could invoke the `yaac` CLI directly and do anything the user can. What the
+token buys is *attribution* — the server knowing which worktree is asking,
+so `list` and `create` resolve to the right project — plus one honest,
+stable interface that behaves identically under both drivers.
+
+Both transports end at `runMamaCommand` in `#domain/worktrees`, which is
+where the command allowlist lives, so neither can widen it.
+
+The URL is baked into the worktree's environment at launch rather than
+resolved per call, because the tmux server holds that environment for its
+whole life and outlives the yaac server that made it. A restart on the same
+port (the default) keeps working; a server moved to a different port leaves
+`yaac-mama` in already-running worktrees pointing at nothing until those
+worktrees are themselves restarted.
+
 ## Permission modes
 
 Under a sandbox the default is `bypass` — the container is the containment,
@@ -258,9 +298,6 @@ answer under both drivers on one line.
   a container in. A project config requesting either is rejected at create.
 - **The prewarmed spare pool.** A spare amortizes an image pull and a pod
   boot; a tmux server in an existing checkout costs neither.
-- **`yaac-spawn`.** The in-workspace spawn channel rides the proxy's magic
-  host, which does not exist here, so an agent cannot spawn sibling
-  worktrees yet.
 - **Per-worktree module caching.** See the mount note above.
 - **Codex session discovery.** Every tool's `SessionStart` hook runs the same
   staged `worktree-bin/yaac-agent-links`, which works here — but codex reaches

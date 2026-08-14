@@ -171,8 +171,8 @@ export function installFakeWorktreeDriver(
     destroy: (t, o) => current.destroy(t, o),
     detachedTeardownCommand: (t) => current.detachedTeardownCommand(t),
     destroyProjectSubstrate: (s) => current.destroyProjectSubstrate(s),
-    pendingSpawns: () => current.pendingSpawns(),
-    resolveSpawns: (r) => current.resolveSpawns(r),
+    pendingMamaRequests: () => current.pendingMamaRequests(),
+    resolveMamaRequests: (r) => current.resolveMamaRequests(r),
     override(next) { current = { ...current, ...next } },
   }
   setWorktreeDriver(fake)
@@ -284,7 +284,7 @@ function defaultRuntime(): WorktreeDriver {
     destroy: () => Promise.resolve(true),
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),
-    pendingSpawns: () => Promise.resolve([]),
-    resolveSpawns: () => Promise.resolve(),
+    pendingMamaRequests: () => Promise.resolve([]),
+    resolveMamaRequests: () => Promise.resolve(),
   }
 }

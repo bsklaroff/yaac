@@ -1,4 +1,5 @@
-// Pure helpers for the `GET yaac.internal/tools` endpoint (yaac-spawn --models):
+// Pure helpers for the `GET yaac.internal/tools` endpoint, which serves the
+// legacy `yaac-spawn --models` (docs/legacy-compat-shims.md):
 // given which tool credentials the host has and the worktree's registered tool,
 // report which agent tools are usable and their accepted model ids. proxy.ts
 // starts servers on import, so this logic lives in its own side-effect-free

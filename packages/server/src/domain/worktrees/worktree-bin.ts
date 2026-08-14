@@ -1,7 +1,7 @@
 /**
  * In-worktree helper commands — every `worktree-bin/*` script shipped inside
  * the yaac package, which yaac installs into every worktree on PATH: the
- * setup hook, the spawn and PR-watch helpers, and the agent-session discovery
+ * setup hook, the yaac-mama and PR-watch helpers, and the agent-session discovery
  * hook the tools run on SessionStart.
  *
  * Delivery mirrors the builtin-skills tier (features/skills): at

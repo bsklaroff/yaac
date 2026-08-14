@@ -13,11 +13,15 @@ import {
   getWorktreePrompt,
   listActiveWorktrees,
   listStoppedWorktrees,
+  listWorktreeGroups,
   registerProvisioning,
   removeProvisioning,
+  resolveGroupId,
+  resolveSessionInProject,
   resolveWorktreeContainer,
   resolveWorktreeRecord,
   restartWorktree,
+  runMamaCommand,
   toAgentSessionEntry,
   type WorktreeCreateOptions,
 } from '#domain/worktrees'
@@ -32,6 +36,7 @@ import { createShellWindow, killWindowTerminal, listWorktreeTerminals } from '#r
 import {
   createWorktreeGroup,
   deleteWorktreeGroup,
+  findWorktreeByMamaToken,
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
   recordDeathSeen,
@@ -43,6 +48,7 @@ import {
 import { getDefaultTool, recordProjectPermissionMode } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature } from '#http'
+import { worktreeDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { MODEL_RE, PERMISSION_MODES, SUPPORTED_PERMISSION_MODES } from '@yaac/shared/types'
 
@@ -95,11 +101,19 @@ export const worktreeApp = new Hono()
       // taken as a person's choice and becomes the project's next default.
       // A posture the tool lacks is a 400, not a downgrade.
       permissionMode: z.enum(PERMISSION_MODES).optional(),
+      // Sidebar group to file the worktree under, by id or name; a name
+      // matching no group is created. Resolved before anything is
+      // provisioned, so a typo'd group is not a half-built worktree.
+      group: z.string().min(1).max(200).optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
       const worktreeId = body.worktreeId ?? randomUUID()
       return streamProvisioned(c, worktreeId, async (onProgress) => {
+        const groupId = body.group === undefined
+          ? undefined
+          : await resolveGroupId(body.project, body.group, { create: true })
+
         // Resolve the tool server-side: explicit --tool wins, else the
         // configured default (yaac tool set), else claude. This is the tool the
         // prewarm pool warms, so a bare create matches its spare.
@@ -154,6 +168,11 @@ export const worktreeApp = new Hono()
             body.project, tool, body.gitUser, onProgress, body.branch, body.model,
           )
         if (claimed) {
+          // A claimed spare already has its row, so its group is filed here
+          // rather than by the create below.
+          if (groupId !== undefined) {
+            await setWorktreeGroup(body.project, claimed.worktreeId, groupId)
+          }
           // The spare's agent booted with no prompt; type it in now.
           if (body.prompt !== undefined) {
             onProgress('Sending initial prompt...')
@@ -173,9 +192,16 @@ export const worktreeApp = new Hono()
         if (body.model !== undefined) opts.model = body.model
         if (body.mode !== undefined) opts.mode = body.mode
         opts.permissionMode = permissionMode
+        if (groupId !== undefined) opts.groupId = groupId
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
-        registerProvisioning({ worktreeId, projectSlug: body.project, tool, kind: 'create' })
+        registerProvisioning({
+          worktreeId,
+          projectSlug: body.project,
+          tool,
+          kind: 'create',
+          ...(groupId !== undefined ? { groupId } : {}),
+        })
         return await createWorktree(body.project, opts)
       })
     },
@@ -254,16 +280,87 @@ export const worktreeApp = new Hono()
   // /mark-death-seen) rather than resolving a container: a group's members can
   // be stopped worktrees with no pod to resolve, and the group itself has no
   // container at all.
+  /**
+   * The in-worktree command channel, for a runtime whose workspaces reach
+   * this server directly — `yaac-mama` inside a containerless worktree.
+   *
+   * The push half of what the k8s proxy's queue does by pull. A pod cannot
+   * dial the host, so its requests are held at the proxy and collected by
+   * the reconcile drain; a host process just posts here. Both land in
+   * `runMamaCommand`, which is the single place the command allowlist lives.
+   *
+   * Authenticated per WORKTREE, not per user: the bearer is the opaque
+   * token minted for this worktree at create, and it is what identifies the
+   * caller — the request never says which worktree it is, so nothing it
+   * sends can claim to be another one. Unauthenticated at the global gate
+   * (`isPublicPath`) precisely because the credential it carries is not the
+   * server secret.
+   */
+  .post(
+    '/mama',
+    zv('json', z.object({
+      command: z.string().min(1).max(32),
+      args: z.record(z.string(), z.string()).optional(),
+      body: z.string().max(10000).optional(),
+    })),
+    async (c) => {
+      // A k8s worktree has a channel, and it is not this one — it holds no
+      // token to present, and issuing it one would put a server credential
+      // inside the sandbox the whole substrate exists to keep it out of.
+      if (worktreeDriver().kind !== 'containerless') {
+        throw new ServerError(
+          'NOT_SUPPORTED',
+          'This server runs worktrees in containers, where yaac-mama speaks to the egress '
+          + 'proxy rather than to the server.',
+        )
+      }
+      const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+      const caller = await findWorktreeByMamaToken(bearer)
+      if (!caller) throw new ServerError('BAD_BEARER', 'unknown or revoked yaac-mama token')
+
+      const { command, args, body } = c.req.valid('json')
+      // The caller's tool comes off the runtime, the same fact the drain
+      // reads from pod labels — not from the request, which could claim any.
+      const handle = await worktreeDriver().find(caller.worktreeId).catch(() => null)
+      const outcome = await runMamaCommand(
+        {
+          workspaceId: caller.worktreeId,
+          projectSlug: caller.projectSlug,
+          ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
+        },
+        { command, args: args ?? {}, body: body ?? '' },
+      )
+      // 422 for a refusal, mirroring what the proxy hands a queued caller,
+      // so the script's two transports report failure identically.
+      return outcome.ok
+        ? c.json({ output: outcome.output })
+        : c.json({ error: outcome.error }, 422)
+    },
+  )
+  // Every group of a project, for a client that holds no snapshot — the CLI's
+  // `yaac group list`. The webapp reads the same rows off `/events`.
+  .get(
+    '/group/list',
+    zv('query', z.object({ project: z.string().optional() })),
+    async (c) => {
+      const { project } = c.req.valid('query')
+      return c.json({ groups: await listWorktreeGroups(project || undefined) })
+    },
+  )
   .post(
     '/group/create',
     zv('json', z.object({
       projectSlug: z.string().min(1),
-      worktreeId: z.string().min(1),
+      // The founding worktree, when the group is being made around one (the
+      // sidebar's "new group from this worktree"). Omitted, the group is born
+      // empty and pinned — `yaac group create` names a group before anything
+      // is in it.
+      worktreeId: z.string().min(1).optional(),
       name: z.string().min(1).max(200),
     })),
     async (c) => {
       const { projectSlug, worktreeId, name } = c.req.valid('json')
-      const group = await createWorktreeGroup(projectSlug, name, worktreeId)
+      const group = await createWorktreeGroup(projectSlug, name, worktreeId ?? null)
       return c.json({ groupId: group.groupId })
     },
   )
@@ -305,6 +402,43 @@ export const worktreeApp = new Hono()
       return c.body(null, 204)
     },
   )
+  // File a worktree under a group NAMED rather than identified — `yaac group
+  // move` and `yaac-mama group move`, where the caller is a person or an
+  // agent who has seen names and never an id. Distinct from `/set-group`
+  // below, which is the sidebar's precise instrument: a drag onto a group
+  // that has since been deleted must fail, not resurrect it by name.
+  .post(
+    '/group/move',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      worktreeId: z.string().min(1),
+      // A group id or name; null returns the worktree to the default list.
+      group: z.string().min(1).max(200).nullable(),
+      // Create the group when the name matches none. For a caller that is
+      // naming the group rather than picking one.
+      create: z.boolean().optional(),
+    })),
+    async (c) => {
+      const { projectSlug, worktreeId, group, create } = c.req.valid('json')
+      // An id or its unique short prefix, which is what every surface prints
+      // — the membership write itself matches exactly, so a prefix reaching
+      // it would file nothing and report success.
+      const resolved = await resolveSessionInProject(projectSlug, worktreeId)
+      if (resolved === null) {
+        throw new ServerError('NOT_FOUND', `No such worktree in ${projectSlug}: ${worktreeId}`)
+      }
+      const groupId = group === null
+        ? null
+        : await resolveGroupId(projectSlug, group, { create: create ?? false })
+      await setWorktreeGroup(projectSlug, resolved, groupId)
+      // The NAME too: the caller may have passed an id (the ambiguity error
+      // tells it to), and echoing a uuid back at a person is not an answer.
+      const name = groupId === null
+        ? null
+        : (await listWorktreeGroups(projectSlug)).find((g) => g.groupId === groupId)?.name ?? null
+      return c.json({ groupId, name })
+    },
+  )
   // File a worktree under a group, or return it to the default list (null).
   .post(
     '/set-group',
@@ -329,9 +463,11 @@ export const worktreeApp = new Hono()
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),
     async (c) => {
-      // Resolve in any state — renaming a waiting or just-stopped worktree is
-      // fine; the title lives on the host, not in the container.
-      const { projectSlug, worktreeId } = await resolveWorktreeContainer(c.req.param('id'))
+      // The RECORD, not a container: a title lives on the host, so renaming
+      // a waiting, stopped or just-died worktree is fine — and renaming one
+      // before restarting it is a normal thing to do. Resolving a container
+      // here 404'd every worktree without a live pod.
+      const { projectSlug, worktreeId } = await resolveWorktreeRecord(c.req.param('id'))
       await setWorktreeTitle(projectSlug, worktreeId, c.req.valid('json').title)
       return c.body(null, 204)
     },

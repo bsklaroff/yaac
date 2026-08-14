@@ -97,6 +97,8 @@ export {
   recordAllDeathsSeen,
   recordDeathSeen,
   restoreSpareWorktree,
+  findWorktreeByMamaToken,
+  setWorktreeMamaTokenHash,
   setWorktreeTitle,
   type PriorStop,
   type WorktreeRow,

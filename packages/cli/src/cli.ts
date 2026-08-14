@@ -5,8 +5,10 @@ import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
+import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
 import { worktreeCreate } from '#commands/worktree-create'
 import { worktreeList } from '#commands/worktree-list'
+import { worktreeRename } from '#commands/worktree-rename'
 import { worktreeStop } from '#commands/worktree-stop'
 import { worktreeRestart } from '#commands/worktree-restart'
 import { worktreeAttach } from '#commands/worktree-attach'
@@ -318,6 +320,41 @@ project
   .argument('<remote-url>', 'Git remote URL')
   .action(projectAdd)
 
+const group = program
+  .command('group')
+  .description('Manage the named groups a project\'s worktrees are filed under in the sidebar')
+  .configureHelp({ formatHelp: nestedHelp })
+
+group
+  .command('create')
+  .description('Create an empty group (pinned, so it stays listed until it has worktrees)')
+  .argument('<project>', 'Project slug')
+  .argument('<name>', 'Group name')
+  .action(groupCreate)
+
+group
+  .command('list')
+  .description('List worktree groups and how many running worktrees each holds')
+  .argument('[project]', 'Filter by project slug')
+  .action(groupList)
+
+group
+  .command('move')
+  .description('File a worktree under a group, creating the group if needed')
+  .argument('<worktree-id>', 'Worktree ID (or its unique prefix)')
+  // Optional rather than a `--none` sentinel: commander eats a bare `--` as
+  // its end-of-options marker, so it could never reach the handler.
+  .argument('[group]', 'Group name; omit it to return the worktree to the default list')
+  .option('--project <slug>', 'Project the worktree belongs to (required for a stopped worktree)')
+  .action(groupMove)
+
+group
+  .command('delete')
+  .description('Delete a group; its worktrees return to the default list (nothing is stopped)')
+  .argument('<project>', 'Project slug')
+  .argument('<group>', 'Group name')
+  .action(groupDelete)
+
 const worktree = program
   .command('worktree')
   .description('Manage worktrees — a git worktree plus the container and agents running in it')
@@ -333,6 +370,7 @@ worktree
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi')
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app (claude only)').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, plan explores read-only, manual asks for everything. Defaults to this project\'s last choice, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
+  .option('-g, --group <group>', 'File the worktree under this sidebar group (by name; created if it does not exist)')
   .action(async (project: string, options: Parameters<typeof worktreeCreate>[1]) => {
     await worktreeCreate(project, options)
   })
@@ -345,6 +383,13 @@ worktree
   .option('-n, --num <n>', 'With -s, cap stopped results to N rows (default 25)', (v) => Number.parseInt(v, 10))
   .option('-a, --all', 'With -s, show all stopped rows without a cap')
   .action(worktreeList)
+
+worktree
+  .command('rename')
+  .description('Set a worktree\'s title — the label the sidebar shows in place of its id')
+  .argument('<worktree-id>', 'Worktree ID, container name, or container ID')
+  .argument('<title>', 'New title (quote it if it has spaces)')
+  .action(worktreeRename)
 
 worktree
   .command('stop')

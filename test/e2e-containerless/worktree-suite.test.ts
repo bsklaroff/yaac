@@ -319,6 +319,164 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // Nothing was recorded: no running row, and no stopped one either.
     expect(await listWorktrees()).toHaveLength(before)
   }, 60_000)
+  /**
+   * What a process *inside* the worktree sees: the environment of a live
+   * pane, read straight out of `/proc`.
+   *
+   * Two probes are wrong here and both are worth naming. `show-environment`
+   * reports the session environment tmux maintains for FUTURE panes, not the
+   * one the server process was started with — which is what panes actually
+   * inherit, and what the driver set at launch. And running `printenv` in a
+   * new window mutates the fixture every later test shares; it is also what
+   * left a tmux server alive through the stop case below.
+   */
+  async function worktreeEnv(id: string): Promise<Record<string, string>> {
+    const pid = (await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim()
+    const raw = await fs.readFile(`/proc/${pid}/environ`, 'utf8')
+    const env: Record<string, string> = {}
+    // NUL-delimited, and a value may itself contain '='.
+    for (const entry of raw.split('\0')) {
+      const eq = entry.indexOf('=')
+      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1)
+    }
+    return env
+  }
+
+  /** The worktree's own yaac-mama credentials, memoized per file. */
+  let mamaEnv: Record<string, string> | undefined
+  const mamaCreds = async (): Promise<Record<string, string>> =>
+    (mamaEnv ??= await worktreeEnv(worktreeId))
+
+  /**
+   * `yaac-mama` as the worktree would run it, over the transport that only
+   * exists here: no proxy to queue the request, so it posts straight to the
+   * server with the bearer its launch put in its environment. Handed exactly
+   * the two variables the worktree itself was given, so nothing the test
+   * knows can stand in for them.
+   */
+  async function runMama(...args: string[]): Promise<{ code: number; out: string }> {
+    const creds = await mamaCreds()
+    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const { stdout } = await execFileAsync('sh', ['-c',
+      `YAAC_MAMA_URL='${creds.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${creds.YAAC_MAMA_TOKEN}' `
+      + `${path.join(process.cwd(), 'worktree-bin', 'yaac-mama')} ${quoted} 2>&1; echo "EXIT:$?"`,
+    ])
+    const m = /EXIT:(\d+)\s*$/.exec(stdout)
+    if (!m) throw new Error(`no exit marker:\n${stdout}`)
+    return { code: Number(m[1]), out: stdout.slice(0, m.index) }
+  }
+
+  it('hands the worktree a yaac-mama credential and server address', async () => {
+    const creds = await mamaCreds()
+    expect(creds.YAAC_MAMA_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect(creds.YAAC_MAMA_TOKEN).toBeTruthy()
+    // A bearer of its own, never the server's secret — holding that would
+    // give the worktree the whole CLI rather than the subset.
+    expect(creds.YAAC_MAMA_TOKEN).not.toBe(server.lock.secret)
+    expect(Object.values(creds)).not.toContain(server.lock.secret)
+  })
+
+  it('lists this project’s sessions from inside the worktree', async () => {
+    const { code, out } = await runMama('list')
+    expect(code).toBe(0)
+    expect(out).toMatch(/SESSION\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
+    // Attributed by the token alone: the request never names a worktree, and
+    // the row it marks is the caller's.
+    expect(out).toContain(`${worktreeId.slice(0, 8)} (you)`)
+  })
+
+  it('makes a group and files itself into it, without a proxy anywhere', async () => {
+    const made = await runMama('group', 'create', 'nightly')
+    expect(made.code).toBe(0)
+
+    const moved = await runMama('group', 'move', worktreeId.slice(0, 8), 'nightly')
+    expect(moved.code).toBe(0)
+
+    // Read back through the ordinary API: what the command channel wrote is
+    // the same state the sidebar renders.
+    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`, {
+      headers: authHeader(),
+    })
+    const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
+    expect(groups.map((g) => g.name)).toContain('nightly')
+
+    const listed = await runMama('list')
+    expect(listed.out).toMatch(new RegExp(`${worktreeId.slice(0, 8)}[^\\n]*nightly`))
+  })
+
+  it('renames itself, which the server records against the caller\u2019s own id', async () => {
+    // No session named: the token alone says who is asking, so an agent can
+    // label itself without knowing its own id.
+    const renamed = await runMama('rename', 'wiring up the mama channel')
+    expect(renamed.code).toBe(0)
+    expect(renamed.out).toContain('wiring up the mama channel')
+
+    // Read back through the ordinary API — one title, one piece of state.
+    const res = await fetch(`${origin()}/worktree/list?project=${SLUG}`, {
+      headers: authHeader(),
+    })
+    const body = await res.json() as { worktrees: Array<{ worktreeId: string; title?: string }> }
+    const mine = body.worktrees.find((w) => w.worktreeId === worktreeId)
+    expect(mine?.title).toBe('wiring up the mama channel')
+  })
+
+  it('attributes a request to the token\u2019s OWN worktree, not the one asking', async () => {
+    // The security property the whole design rests on: a request never names
+    // a worktree, so the token is the only thing that says who is calling.
+    // Proving it needs a second worktree — one token, run with no session
+    // argument, must retitle ITS worktree and leave the other alone.
+    const otherId = await createWorktree()
+    try {
+      const theirs = await worktreeEnv(otherId)
+      expect(theirs.YAAC_MAMA_TOKEN).not.toBe((await mamaCreds()).YAAC_MAMA_TOKEN)
+
+      const res = await fetch(`${origin()}/worktree/mama`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${theirs.YAAC_MAMA_TOKEN}`,
+        },
+        body: JSON.stringify({ command: 'rename', args: {}, body: 'named by its own token' }),
+      })
+      expect(res.status).toBe(200)
+
+      const listed = await fetch(`${origin()}/worktree/list?project=${SLUG}`, {
+        headers: authHeader(),
+      })
+      const body = await listed.json() as {
+        worktrees: Array<{ worktreeId: string; title?: string }>
+      }
+      const byId = new Map(body.worktrees.map((w) => [w.worktreeId, w.title]))
+      expect(byId.get(otherId)).toBe('named by its own token')
+      // The caller of every other case in this file is untouched: holding a
+      // token gets you that worktree and no other.
+      expect(byId.get(worktreeId)).not.toBe('named by its own token')
+    } finally {
+      await runYaac(serverEnv, 'worktree', 'stop', otherId)
+    }
+  }, 120_000)
+
+  it('refuses a command outside the allowlist, and an unknown token', async () => {
+    const denied = await runMama('stop', worktreeId)
+    expect(denied.code).toBe(2)
+    expect(denied.out).toContain('unknown command')
+
+    // Straight at the route, past the script: the server refuses the same
+    // command, and refuses a caller it cannot identify.
+    const post = async (token: string, command: string): Promise<number> => {
+      const res = await fetch(`${origin()}/worktree/mama`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ command, args: {}, body: 'x' }),
+      })
+      return res.status
+    }
+    const token = (await mamaCreds()).YAAC_MAMA_TOKEN
+    expect(await post(token, 'stop')).toBe(422)
+    expect(await post('not-a-real-token', 'list')).toBe(401)
+    // The server's own secret is not a yaac-mama credential either.
+    expect(await post(server.lock.secret, 'list')).toBe(401)
+  })
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
     // The delivery a pod does with a read-only mount over each tool home. No
@@ -421,5 +579,43 @@ describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () =
     )
 
     await runYaac(serverEnv, 'worktree', 'stop', id)
+  }, 180_000)
+})
+
+/**
+ * `yaac worktree create --group`, which no other tier drives: the k8s suite
+ * reaches the same server code through `yaac-mama create --group`, but the
+ * FLAG's own path — parse, into the create body, resolved before anything is
+ * provisioned — is only exercised here. Containerless because a real create
+ * costs a second here and a pod elsewhere.
+ */
+describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
+  it('creates the named group and files the new worktree into it', async () => {
+    const before = new Set((await listWorktrees()).map((w) => w.worktreeId))
+    const { stdout, stderr, exitCode } = await runYaac(
+      serverEnv, 'worktree', 'create', SLUG, '--tool', 'claude', '--group', 'friday batch',
+    )
+    if (exitCode !== 0) {
+      throw new Error(`create failed (exit ${String(exitCode)})\n${stdout}\n${stderr}`)
+    }
+    const fresh = (await listWorktrees()).find((w) => !before.has(w.worktreeId))
+    expect(fresh).toBeDefined()
+
+    // The group was created by name — the caller was naming one, not picking
+    // it from a list they could see.
+    const res = await fetch(`${origin()}/worktree/group/list?project=${SLUG}`, {
+      headers: authHeader(),
+    })
+    const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
+    const made = groups.find((g) => g.name === 'friday batch')
+    expect(made).toBeDefined()
+
+    // And the worktree is IN it, which is the half a create could silently
+    // skip: the filing happens as the row is written, not when provisioning
+    // finishes.
+    const listed = await runYaac(serverEnv, 'worktree', 'list', SLUG)
+    expect(listed.stdout).toMatch(new RegExp(`${fresh!.worktreeId.slice(0, 8)}[^\\n]*friday batch`))
+
+    await runYaac(serverEnv, 'worktree', 'stop', fresh!.worktreeId)
   }, 180_000)
 })

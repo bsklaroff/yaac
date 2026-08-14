@@ -96,7 +96,7 @@ watcher's stderr lands in `/tmp/yaac-watch.log` if a watch goes quiet.
 Events arrive as ordinary input, so **they look exactly like the user typing**.
 Treat an `[opened]`/`[comment]`/`[commit]` line as an event to act on, with
 nobody awaiting a reply — push a fix, summarize it, spawn a sibling session
-with [`yaac-spawn`](../yaac-spawn/SKILL.md), whatever the task calls for.
+with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 
 ## What actually happens
 
@@ -124,7 +124,7 @@ with [`yaac-spawn`](../yaac-spawn/SKILL.md), whatever the task calls for.
 To reproduce a continuous PR-review setup, watch `opened` events and spawn a
 review session per PR yourself: arm `Monitor(command: "yaac-watch-prs
 --events opened", persistent: true)`, and on each `[opened] PR #<n> …`
-notification run `yaac-spawn --tool claude` with a prompt that checks out the
+notification run `yaac-mama create --tool claude` with a prompt that checks out the
 PR's head branch (`git fetch origin <branch> && git reset --hard
 origin/<branch>`) and invokes `/code-review`. Keeping the spawn on your side
 (rather than baked into the watcher) lets you decide the tool, model, and

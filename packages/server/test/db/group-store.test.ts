@@ -50,6 +50,20 @@ describe('worktree group store', () => {
       expect(pushes - before).toBe(1)
     })
 
+    it('is born pinned when it is born empty, so it can be seen and removed', async () => {
+      const group = await createWorktreeGroup('proj', 'release', null)
+
+      // Pinned is what lists a memberless group; an unpinned one would be
+      // invisible to every surface, and so undeletable.
+      expect(group).toMatchObject({ name: 'release', pinned: true })
+      expect((await listWorktreeGroupRows('proj')).map((g) => g.groupId)).toEqual([group.groupId])
+
+      // And it still takes members afterwards, like any other group.
+      await create('sid-1')
+      await setWorktreeGroup('proj', 'sid-1', group.groupId)
+      expect(await groupOf('sid-1')).toBe(group.groupId)
+    })
+
     it('refuses a founding worktree the project does not have', async () => {
       // An empty group is unreachable — nothing lists an unpinned group with
       // no members, so nothing could ever delete it. The insert has to go back

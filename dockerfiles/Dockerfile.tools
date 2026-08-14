@@ -76,7 +76,7 @@ RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
 # config.toml layer sets check_for_update_on_startup = false so a fresh pod
 # skips codex's startup update probe (against api.github.com) and drops
 # straight to the agent input instead of stalling on a version check — which
-# matters for yaac-spawn's unattended sessions. The script text is exercised by
+# matters for yaac-mama's unattended sessions. The script text is exercised by
 # packages/server/test/domain/worktrees/session-start-hook.test.ts, which runs
 # the shipped copy directly. Verified against codex-cli 0.144.5.
 USER root

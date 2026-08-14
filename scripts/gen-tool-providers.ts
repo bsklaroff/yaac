@@ -199,7 +199,7 @@ function hostFromUrl(url: string): string | null {
  * @param catalog tool-calling model ids per provider (from buildModelsCatalog).
  *   A provider absent from it has no model an agent can drive, so selecting it
  *   is a dead end: the credential picker would offer it, the pod would get its
- *   env var, and `yaac-spawn --models` would then report no ids for it. Some
+ *   env var, and `yaac-mama models` would then report no ids for it. Some
  *   have a usable sibling carrying the tool-calling ids under the same key and
  *   host (models.dev splits perplexity into perplexity / perplexity-agent), so
  *   dropping the empty one steers the picker at the entry that works.
@@ -227,7 +227,7 @@ function buildOpencodeRows(
 
 /**
  * Each models.dev provider's TOOL-CALLING model ids, keyed by provider id.
- * Baked in so `yaac-spawn --models` can report usable `--model` values with no
+ * Baked in so `yaac-mama models` can report usable `--model` values with no
  * worktree-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
  * configured provider. Filtered to `tool_call` models because every agent tool
  * drives models via tool calls — this drops embedding/image/tts/realtime
@@ -325,7 +325,7 @@ async function buildPiRows(): Promise<ProviderRow[]> {
 /**
  * pi's own per-provider model ids (bare, e.g. `claude-opus-4-8`), from its
  * installed registry (`getBuiltinModels`). pi's catalog differs from models.dev
- * — it is pi's curated per-provider list — so `yaac-spawn --models` reports it
+ * — it is pi's curated per-provider list — so `yaac-mama models` reports it
  * for pi rather than reusing the models.dev map. (pi still accepts any
  * `provider/model` at runtime; this is the convenience list.)
  */
@@ -461,7 +461,8 @@ ${hostMap('PI_PROVIDER_HOSTS', pi)}
 ${piDefaultModelsMap(pi)}
 
 // ── Model catalogs: candidate --model values per provider ────────────────
-// Served by \`GET yaac.internal/tools?models=1\` (yaac-spawn --models) so a
+// Served to a worktree asking \`yaac-mama models\` (and by the proxy's legacy
+// \`GET yaac.internal/tools?models=1\`) so a
 // worktree can discover valid \`--model\` values without a network fetch; also
 // available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
 // tool-calling models (claude → anthropic, codex → openai, opencode → provider);

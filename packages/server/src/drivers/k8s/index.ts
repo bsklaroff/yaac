@@ -16,7 +16,7 @@ import {
 } from '#drivers/k8s/worktrees'
 import {
   allowWorktreeHost,
-  drainPendingSpawns,
+  drainPendingMamaRequests,
   proxyClient,
   readBlockedHosts,
   readAllGitAuthFailures,
@@ -166,7 +166,7 @@ export function createK8sDriver(): WorktreeDriver {
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (projectSlug) => destroyProjectSubstrate(projectSlug),
 
-    pendingSpawns: () => drainPendingSpawns(),
-    resolveSpawns: (results) => proxyClient.postSpawnResults(results),
+    pendingMamaRequests: () => drainPendingMamaRequests(),
+    resolveMamaRequests: (results) => proxyClient.postMamaResults(results),
   }
 }

@@ -46,6 +46,12 @@ export function sessionCookieName(): string {
 export function isPublicPath(method: string, path: string): boolean {
   if (path === '/health') return true
   if (path === '/auth/web-session') return method === 'POST'
+  // The in-worktree command channel, which carries its own credential: a
+  // worktree holds a per-worktree bearer, never the server secret this gate
+  // checks, and the route rejects anything else. Public here in the same
+  // sense the exchange above is — the gate does not apply because a
+  // stricter, per-caller one does (see `/worktree/mama`).
+  if (path === '/worktree/mama') return method === 'POST'
   if (path === '/') return true
   if (path.startsWith('/assets/')) return true
   return false

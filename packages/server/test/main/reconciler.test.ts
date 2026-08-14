@@ -11,7 +11,7 @@ import type * as titleGenerationModule from '#domain/titles/title-generation'
 // substrate. Which steps a pass owes is the thing under test, so what each
 // one does is beside the point — that it ran, and in what order, is not.
 vi.mock('#domain/worktrees/stale-worktrees', () => ({ reconcileStaleWorktrees: vi.fn() }))
-vi.mock('#domain/worktrees/spawn-reconcile', () => ({ reconcileSpawnRequests: vi.fn() }))
+vi.mock('#domain/worktrees/mama-reconcile', () => ({ reconcileMamaRequests: vi.fn() }))
 vi.mock('#domain/worktrees/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
 vi.mock('#drivers/k8s/worktrees/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#domain/worktrees/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
@@ -49,7 +49,7 @@ import {
 } from '#main/reconciler'
 import type { AgentTool } from '@yaac/shared/types'
 import { reconcileStaleWorktrees } from '#domain/worktrees/stale-worktrees'
-import { reconcileSpawnRequests } from '#domain/worktrees/spawn-reconcile'
+import { reconcileMamaRequests } from '#domain/worktrees/mama-reconcile'
 import { reconcilePrewarmPool } from '#domain/worktrees/prewarm-reconcile'
 import { reconcileImageSalvage } from '#drivers/k8s/worktrees/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/worktrees/agent-session-registry'
@@ -67,7 +67,7 @@ import { reconcileRedirectClaims } from '#drivers/k8s/cluster/redirect-claim-rec
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
-  reconcileStaleWorktrees, reconcileSpawnRequests,
+  reconcileStaleWorktrees, reconcileMamaRequests,
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
@@ -346,7 +346,7 @@ describe('defaultReconcileSteps', () => {
   // The proxy holds the calling pod's HTTP response open until the drain
   // answers it, so the enqueue is reported rather than waited for.
   it('runs only the spawn drain when the proxy reports a queued spawn', async () => {
-    await expectOnly(['spawn-requests'], [reconcileSpawnRequests])
+    await expectOnly(['mama-requests'], [reconcileMamaRequests])
   })
 
   // A stream reattach is the one edge that says the proxy pod may have been
