@@ -90,7 +90,7 @@ describe('withUpstreamConfigLock', () => {
  */
 describe('launchPermissionMode', () => {
   const launch = (args: Partial<Parameters<typeof launchPermissionMode>[0]> = {}) =>
-    launchPermissionMode({ tool: 'claude', mode: 'tui', driver: 'k8s', ...args })
+    launchPermissionMode({ tool: 'claude', driver: 'k8s', ...args })
 
   it('falls back to the driver default when nothing was asked for', () => {
     // Sandboxed: the container is the containment, so prompting inside it
@@ -111,28 +111,12 @@ describe('launchPermissionMode', () => {
     expect(launch({ tool: 'opencode', requested: 'plan' })).toBe('plan')
   })
 
-  it('refuses any posture but bypass under acp, where prompts are auto-answered', () => {
-    expect(() => launch({ mode: 'acp', requested: 'plan' })).toThrow(/bypass" permissions only/)
-    expect(launch({ mode: 'acp', requested: 'bypass' })).toBe('bypass')
-    expect(launch({ mode: 'acp' })).toBe('bypass')
-  })
-
   // A restart re-states the row's posture rather than a person's. Refusing
   // one written by a different build would strand a checkout, and stranding
   // work is worse than launching at this tool's default.
   it('treats a resumed posture as a preference, not a demand', () => {
     expect(launch({ resume: true, tool: 'pi', requested: 'plan' })).toBe('bypass')
     expect(launch({ resume: true, requested: 'manual' })).toBe('manual')
-  })
-
-  // A row can predate the bypass-only rule — an older build recorded an ACP
-  // worktree's posture without enforcing it, and the migration carries that
-  // forward. Passing it through would leave the restarted row durably
-  // claiming a restraint whose prompts are auto-answered, so the resume
-  // normalizes rather than merely tolerating it.
-  it('coerces a resumed acp posture to bypass, not just an unsupported one', () => {
-    expect(launch({ resume: true, mode: 'acp', requested: 'manual' })).toBe('bypass')
-    expect(launch({ resume: true, mode: 'acp', requested: 'plan' })).toBe('bypass')
   })
 })
 
@@ -154,7 +138,7 @@ describe('resolvePermissionMode', () => {
 
   const resolve = (args: Partial<Parameters<typeof resolvePermissionMode>[0]> = {}) =>
     resolvePermissionMode({
-      projectSlug: 'p', tool: 'claude', mode: 'tui', driver: 'k8s', ...args,
+      projectSlug: 'p', tool: 'claude', driver: 'k8s', ...args,
     })
 
   it('prefers what the project last had chosen over the driver default', async () => {
@@ -175,10 +159,13 @@ describe('resolvePermissionMode', () => {
     expect(await getProjectLastPermissionMode('p')).toBe('plan')
   })
 
-  it('skips the remembered rung under acp, which is bypass-only', async () => {
+  // The posture is a property of the worktree, not of how its agent is
+  // presented: a chat conversation enforces one by telling the adapter and
+  // asking the pane about the rest, so there is no mode-shaped exception here
+  // — which is why the resolver takes no mode at all.
+  it('answers the same for a conversation as for a terminal', async () => {
     await recordProjectPermissionMode('p', 'plan')
-    expect(await resolve({ mode: 'acp' })).toBe('bypass')
-    await expect(resolve({ mode: 'acp', requested: 'plan' }))
-      .rejects.toThrow(/bypass" permissions only/)
+    expect(await resolve()).toBe('plan')
+    expect(await resolve({ requested: 'accept-edits' })).toBe('accept-edits')
   })
 })

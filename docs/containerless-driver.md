@@ -188,13 +188,17 @@ The resolved posture is recorded on the worktree row
 must relaunch them the way the user asked, not the way today's default
 would.
 
-One carve-out runs the other way, and it is the only place an unsandboxed
-worktree acts unrestrained without anyone choosing it: an ACP conversation is
-`bypass`-only (docs/permission-modes.md), and containerless allows ACP
-whenever the adapter is on the host's PATH. The webapp cannot reach it — its
-chat buttons render only under `bypass` — but `yaac worktree create --mode
-acp` can, so the create says so in its progress output rather than leaving it
-to this page.
+A chat (ACP) worktree resolves its posture by the same three rungs and
+enforces it the same way every other posture is enforced here — the adapter is
+told, and what it still asks about goes to the chat pane
+(docs/permission-modes.md). So the containerless default applies to it too:
+`accept-edits`, not `bypass`.
+
+`bypass` is still reachable by asking for it, and on this driver that means
+something it does not mean under a sandbox — the agent acts as the user, on
+the user's own machine and credentials, with nothing else in the way. A create
+that resolves there says so in its progress output rather than leaving it to
+this page.
 
 ## Observation, and recovery
 

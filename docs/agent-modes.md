@@ -274,13 +274,30 @@ container*, on the real `/workspace`, with its own tools — so yaac declines
 those capabilities and the container boundary (gVisor, the egress proxy, the
 NetworkPolicy) stays the one thing constraining it.
 
-`worktree/request_permission` is always granted: what constrains a yaac
-worktree is the sandbox and a throwaway git worktree, not a prompt nobody is
-watching. That is also why an ACP conversation is `bypass`-only — create
-refuses any other permission mode rather than advertise a restraint whose
-prompts this build answers for the user. Wiring the other postures up is a
-matter of forwarding those requests to the chat pane, not of changing the
-launch command.
+`session/request_permission` is the one request yaac does serve, and what it
+answers depends on the worktree's posture (docs/permission-modes.md). Under
+`bypass` it grants immediately: what constrains such a worktree is the sandbox
+and a throwaway git checkout, not a prompt nobody is watching. Under every
+other posture the request is held open and forwarded to the chat pane, where
+the user answers it — the adapter is separately told the posture over
+`session/set_mode`, so it only asks about what the mode leaves open.
+
+A held request is a turn that is `busy` but not working, so the conversation
+reports `waiting` while one is outstanding. That is what makes the sidebar dot,
+the chime and the tray badge fire on the one moment a conversation genuinely
+wants attention — status otherwise moves only at turn boundaries, and a blocked
+agent would look busiest exactly when it is stuck.
+
+Two things make an ask survive the relay dropping, and both come from the
+record rather than from anything the server holds. acpd tees both directions,
+so an unanswered ask is visible as a request with no reply after it — which is
+how a reattaching connection knows a human is being waited on, and how a pane
+attaching mid-ask is shown the question. And the id it must be answered under
+is the *agent's*, not namespaced to a connection of ours (unlike our own
+outgoing ids, which carry a per-connection prefix — see the orphan-reply rule
+above). So the connection that takes over can settle an ask it never received,
+which is the difference between a blocked agent that resumes and one that has
+to be restarted mid-turn.
 
 ## Where things live
 

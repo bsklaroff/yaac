@@ -105,6 +105,21 @@ export interface AgentConnectDeps {
    * database access, which is exactly what keeps it sealed.
    */
   recordedSessions?: () => Promise<Array<{ handle: string; agentSessionId: string }>>
+  /**
+   * The worktree's permission posture. `acp` needs it because the posture is
+   * something it tells the *adapter* over the protocol (`session/set_mode`)
+   * and uses to decide who answers a permission ask — and a connection is
+   * rebuilt independently of the launch that carried `AgentLaunchSpec`, so it
+   * cannot be read from there. A row, hence injected: the agents feature has
+   * no database access, which is what keeps it sealed.
+   *
+   * Resolving to `undefined` means the posture is not known — no row, or a
+   * read that failed — and is deliberately not the same as `bypass`: an ask is
+   * forwarded rather than auto-granted, because a needless prompt is
+   * recoverable and a needless approval is not. Omitting the accessor entirely
+   * is the legacy case, and gets `bypass`.
+   */
+  permissionMode?: () => Promise<PermissionMode | undefined>
   /** Injected by tests — replaces the real relay ctrl-stream dial, which is
    *  the process boundary both drivers are mocked at. */
   dial?: (session: DrivenWorktree, argv: string[]) => StreamChild

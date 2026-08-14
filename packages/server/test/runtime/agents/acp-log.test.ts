@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { readAcpFirstPrompt, readAcpLog, replayAcpLog, tailAcpLog } from '#runtime/agents/acp-log'
+import {
+  readAcpFirstPrompt,
+  readAcpLog,
+  readAcpPendingPermissions,
+  replayAcpLog,
+  tailAcpLog,
+} from '#runtime/agents/acp-log'
 
 /**
  * The record acpd writes is now a conversation's history, so this projection
@@ -29,6 +35,30 @@ const prompt = (text: string): string => line({
   id: 'abc-1',
   method: 'session/prompt',
   params: { worktreeId: 'acp-1', prompt: [{ type: 'text', text }] },
+})
+
+/** The agent asking permission, as acpd recorded it coming the other way. */
+const ask = (id: string | number, title = 'rm -rf build'): string => line({
+  jsonrpc: '2.0',
+  id,
+  method: 'session/request_permission',
+  params: {
+    sessionId: 'acp-1',
+    toolCall: { toolCallId: 'call-1', title, kind: 'execute' },
+    options: [
+      { optionId: 'no', name: 'Deny', kind: 'reject_once' },
+      { optionId: 'allow', name: 'Allow Once', kind: 'allow_once' },
+    ],
+  },
+})
+
+/** yaac's answer to one, which acpd tees back into the same record. */
+const answer = (id: string | number, optionId?: string): string => line({
+  jsonrpc: '2.0',
+  id,
+  result: optionId === undefined
+    ? { outcome: { outcome: 'cancelled' } }
+    : { outcome: { outcome: 'selected', optionId } },
 })
 
 const dirs: string[] = []
@@ -280,6 +310,58 @@ describe('readAcpFirstPrompt', () => {
   })
 })
 
+/**
+ * How a reconnecting server learns the agent is blocked on a human. Nothing
+ * replays a permission ask — acpd holds nothing for an absent client — so the
+ * record is the only evidence, exactly as it is for turn state.
+ */
+describe('readAcpPendingPermissions', () => {
+  const write = async (name: string, lines: string[]): Promise<string> => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-log-'))
+    dirs.push(dir)
+    const file = path.join(dir, `${name}.jsonl`)
+    await fs.writeFile(file, lines.join('\n') + '\n')
+    return file
+  }
+
+  it('returns an unanswered ask with the id the agent used, type included', async () => {
+    // Verbatim, not stringified: JSON-RPC pairs an id by value AND type, so a
+    // numeric 42 answered as "42" is a reply the agent never matches — and a
+    // turn that stays blocked forever.
+    const file = await write('blocked', [life('l1'), prompt('go'), ask(42)])
+    expect(await readAcpPendingPermissions(file)).toEqual([42])
+
+    const strung = await write('blocked-str', [life('l1'), ask('req-9')])
+    expect(await readAcpPendingPermissions(strung)).toEqual(['req-9'])
+  })
+
+  it('answers empty once the ask has been settled, or when there was never one', async () => {
+    const settled = await write('settled', [life('l1'), ask(1), answer(1, 'allow')])
+    expect(await readAcpPendingPermissions(settled)).toEqual([])
+
+    const quiet = await write('quiet', [life('l1'), prompt('go')])
+    expect(await readAcpPendingPermissions(quiet)).toEqual([])
+    expect(await readAcpPendingPermissions('/nonexistent/none.jsonl')).toEqual([])
+  })
+
+  it('forgets asks the agent died holding, which nobody can answer any more', async () => {
+    // The bound on "unanswered ⇒ still blocked". Without acpd's exit line the
+    // scan would report a conversation waiting on a decision whose process is
+    // gone, and nothing would ever clear it.
+    const file = await write('dead', [
+      life('l1'),
+      ask(1),
+      line({ jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } }),
+    ])
+    expect(await readAcpPendingPermissions(file)).toEqual([])
+  })
+
+  it('reports every ask of a batch the agent is holding at once', async () => {
+    const file = await write('batch', [life('l1'), ask(1), ask(2), ask(3), answer(2, 'allow')])
+    expect(await readAcpPendingPermissions(file)).toEqual([1, 3])
+  })
+})
+
 describe('replayAcpLog', () => {
   it('reconstructs user turns from the client\'s own prompts', () => {
     // The agent echoes a user message only when replaying under `session/load`,
@@ -350,6 +432,46 @@ describe('replayAcpLog', () => {
 
     const events = replayAcpLog(raw)
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
+  })
+
+  it('projects a permission ask and the answer that settled it', () => {
+    // Both directions are in the record, which is why a pane can be shown a
+    // question the agent asked a connection that no longer exists — and why a
+    // `bypass` conversation, whose asks the server answers itself, still reads
+    // back as the decisions that were made.
+    const events = replayAcpLog([
+      prompt('clean the build'),
+      ask(42),
+      answer(42, 'allow'),
+    ].join('\n'))
+
+    expect(events.map((e) => e.type)).toEqual(['user', 'permission-request', 'permission-resolved'])
+    expect(events[1]).toMatchObject({
+      requestId: '42',
+      toolCall: { toolCallId: 'call-1', title: 'rm -rf build', kind: 'execute' },
+      options: [
+        { optionId: 'no', name: 'Deny', kind: 'reject_once' },
+        { optionId: 'allow', name: 'Allow Once', kind: 'allow_once' },
+      ],
+    })
+    expect(events[2]).toMatchObject({ requestId: '42', outcome: 'selected', optionId: 'allow' })
+  })
+
+  it('leaves an unanswered ask unresolved, which is what a pane renders as pending', () => {
+    const events = replayAcpLog([prompt('go'), ask(1)].join('\n'))
+    expect(events.map((e) => e.type)).toEqual(['user', 'permission-request'])
+  })
+
+  it('reads a dismissal as cancelled, and ignores a reply to something else', () => {
+    const events = replayAcpLog([
+      // A reply whose request was never an ask — the handshake's, say — must
+      // not become a permission event just for being an anonymous result.
+      line({ jsonrpc: '2.0', id: 'x-1', result: { protocolVersion: 1 } }),
+      ask(7),
+      answer(7),
+    ].join('\n'))
+    expect(events.map((e) => e.type)).toEqual(['permission-request', 'permission-resolved'])
+    expect(events[1]).toMatchObject({ requestId: '7', outcome: 'cancelled' })
   })
 
   it('skips adapter noise rather than losing the conversation around it', () => {

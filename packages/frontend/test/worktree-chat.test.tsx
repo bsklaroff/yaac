@@ -459,3 +459,104 @@ describe('WorktreeChat with hostile agent output', () => {
     expect(container.querySelector('[onerror]')).toBeNull()
   })
 })
+
+/**
+ * The pane's half of an enforced permission mode. The agent is blocked until
+ * one of these buttons is pressed, so what matters is that the question is
+ * answerable, that the answer reaches the socket, and that the card retires on
+ * the server's word rather than on the click.
+ */
+describe('WorktreeChat permission asks', () => {
+  const ask = (seq: number, requestId = '5'): AcpEvent => ({
+    type: 'permission-request',
+    seq,
+    requestId,
+    toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+    options: [
+      { optionId: 'no', name: 'Deny', kind: 'reject_once' },
+      { optionId: 'allow', name: 'Allow Once', kind: 'allow_once' },
+    ],
+  })
+
+  beforeEach(() => {
+    stream.events = []
+    stream.busy = false
+    stream.connected = true
+    stream.send.mockClear()
+    stream.send.mockReturnValue(true)
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+  })
+
+  it('offers one button per option, over the call being asked about', () => {
+    stream.events = [ask(0)]
+    show()
+    // The command itself, not a restatement of it: deciding needs the evidence.
+    expect(screen.getByText('rm -rf build')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Allow Once' })).toBeTruthy()
+  })
+
+  it('sends the chosen option and stops offering the rest', () => {
+    stream.events = [ask(0)]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }))
+
+    expect(stream.send).toHaveBeenCalledWith({
+      type: 'permission', requestId: '5', optionId: 'allow',
+    })
+    // The card stays until the server says so, but its buttons do not invite a
+    // second answer while the first is in flight.
+    expect(screen.getByRole('button', { name: 'Allow Once' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveProperty('disabled', true)
+  })
+
+  it('sends a dismissal with no option, which the agent is told as cancelled', () => {
+    stream.events = [ask(0)]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'permission', requestId: '5' })
+  })
+
+  it('re-offers the buttons when the answer never left a dead socket', () => {
+    stream.events = [ask(0)]
+    stream.send.mockReturnValue(false)
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
+    // Nothing on the far side heard it, so the question is still open.
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveProperty('disabled', false)
+  })
+
+  it('collapses to the decision once the server reports it', () => {
+    stream.events = [
+      ask(0),
+      { type: 'permission-resolved', seq: 1, requestId: '5', outcome: 'selected', optionId: 'allow' },
+    ]
+    show()
+    expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
+    // Named rather than dropped, so a manual-mode transcript reads back as the
+    // decisions that produced it.
+    expect(screen.getByText(/Allow Once/)).toBeTruthy()
+  })
+
+  it('says the agent is waiting on the user rather than working', () => {
+    // A blocked turn is `busy` — its prompt is unanswered — but "working…"
+    // under the card asking the user to act is the one place that misreads.
+    stream.events = [ask(0)]
+    stream.busy = true
+    show()
+    expect(screen.queryByText('working…')).toBeNull()
+
+    cleanup()
+    stream.events = [
+      ask(0),
+      { type: 'permission-resolved', seq: 1, requestId: '5', outcome: 'selected', optionId: 'allow' },
+    ]
+    show()
+    expect(screen.getByText('working…')).toBeTruthy()
+  })
+})

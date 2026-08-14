@@ -261,4 +261,24 @@ describe('NewWorktreeButton', () => {
     expect(screen.getByText('Pi').closest('button')).toHaveProperty('disabled', true)
     expect(screen.getByText('Claude').closest('button')).toHaveProperty('disabled', false)
   })
+
+  it('offers a chat worktree under every posture its tool supports', async () => {
+    // A conversation enforces a posture by telling its adapter and asking the
+    // pane about whatever the mode does not settle, so the chat button is gated
+    // on the same thing the terminal one is — not on `bypass`.
+    vi.mocked(getAuthList).mockResolvedValue({
+      gitCredentials: [],
+      toolAuth: [
+        { tool: 'claude', kind: 'oauth', keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    })
+    snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
+    await openMenu()
+    expect(screen.getByText('chat')).toBeTruthy()
+
+    for (const mode of ['plan', 'manual', 'accept-edits']) {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: mode } })
+      expect(screen.getByText('chat')).toBeTruthy()
+    }
+  })
 })

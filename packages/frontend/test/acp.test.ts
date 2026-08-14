@@ -16,6 +16,18 @@ const user = (seq: number, text: string): AcpEvent =>
   ({ type: 'user', seq, content: [{ type: 'text', text }] })
 const tool = (seq: number, id: string, status: 'pending' | 'completed', title = 'Read a.ts'): AcpEvent =>
   ({ type: 'tool', seq, call: { toolCallId: id, title, kind: 'read', status } })
+const ask = (seq: number, requestId = '5'): AcpEvent => ({
+  type: 'permission-request',
+  seq,
+  requestId,
+  toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+  options: [
+    { optionId: 'no', name: 'Deny', kind: 'reject_once' },
+    { optionId: 'allow', name: 'Allow Once', kind: 'allow_once' },
+  ],
+})
+const resolved = (seq: number, optionId: string, requestId = '5'): AcpEvent =>
+  ({ type: 'permission-resolved', seq, requestId, outcome: 'selected', optionId })
 
 describe('mergeEvents', () => {
   it('appends new events in sequence order', () => {
@@ -124,5 +136,38 @@ describe('groupEvents', () => {
   it('keeps thoughts out of the reply they interleave with', () => {
     const groups = groupEvents([agent(0, 'a'), { type: 'thought', seq: 1, content: [{ type: 'text', text: 'hmm' }] }, agent(2, 'b')])
     expect(groups.map((g) => g.kind)).toEqual(['agent', 'thought', 'agent'])
+  })
+
+  it('leaves an unanswered permission ask pending, in the place it was asked', () => {
+    const groups = groupEvents([agent(0, 'let me clean up'), ask(1)])
+    expect(groups.map((g) => g.kind)).toEqual(['agent', 'permission'])
+    expect(groups[1]).toMatchObject({ requestId: '5' })
+    // Undecided is what the pane renders as a live question, so it is the
+    // absence of this that the card turns on.
+    expect(groups[1].kind === 'permission' && groups[1].decided).toBeUndefined()
+  })
+
+  it('settles the ask in place rather than appending its answer under it', () => {
+    // One question, one row: a resolved ask that appended would leave a dead
+    // set of buttons above the line saying which one was pressed.
+    const groups = groupEvents([ask(0), resolved(1, 'allow')])
+    expect(groups.map((g) => g.kind)).toEqual(['permission'])
+    expect(groups[0]).toMatchObject({
+      seq: 0,
+      requestId: '5',
+      decided: { outcome: 'selected', optionId: 'allow' },
+    })
+  })
+
+  it('keeps two open asks apart, settling only the one that was answered', () => {
+    const groups = groupEvents([ask(0, '5'), ask(1, '6'), resolved(2, 'allow', '6')])
+    expect(groups.map((g) => (g.kind === 'permission' ? g.decided?.optionId : null)))
+      .toEqual([undefined, 'allow'])
+  })
+
+  it('drops an answer whose question is not in this stream', () => {
+    // The record carries both lines, so a lone answer means it was truncated
+    // ahead of the ask — there is no card to retire and nothing to say.
+    expect(groupEvents([resolved(0, 'allow')])).toEqual([])
   })
 })

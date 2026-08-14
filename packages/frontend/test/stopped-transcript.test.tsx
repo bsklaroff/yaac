@@ -139,4 +139,45 @@ describe('StoppedTranscript', () => {
     renderPane()
     expect(await screen.findByText(/no messages/i)).toBeTruthy()
   })
+
+  it('shows an unanswered permission ask as one, without buttons that cannot work', async () => {
+    // A worktree can be stopped while its agent sits blocked on a question, so
+    // this is an ordinary thing to find in a transcript. There is no socket
+    // behind it any more, and a live-looking Allow that silently does nothing
+    // would be worse than saying plainly that the question outlived its
+    // conversation.
+    vi.mocked(getSessionTranscript).mockResolvedValue([
+      {
+        type: 'permission-request',
+        seq: 0,
+        requestId: '7',
+        toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+        options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+      },
+    ])
+    renderPane()
+
+    expect(await screen.findByText(/never answered/i)).toBeTruthy()
+    // The call is still shown — it is what the question was about.
+    expect(screen.getByText('rm -rf build')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+  })
+
+  it('shows a decided ask as the decision, the same as a live pane would', async () => {
+    vi.mocked(getSessionTranscript).mockResolvedValue([
+      {
+        type: 'permission-request',
+        seq: 0,
+        requestId: '7',
+        toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+        options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+      },
+      { type: 'permission-resolved', seq: 1, requestId: '7', outcome: 'selected', optionId: 'allow' },
+    ])
+    renderPane()
+
+    expect(await screen.findByText(/Allow Once/)).toBeTruthy()
+    expect(screen.queryByText(/never answered/i)).toBeNull()
+  })
 })

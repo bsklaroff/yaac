@@ -24,6 +24,7 @@
 import type {
   AcpContent,
   AcpEventInit,
+  AcpPermissionOption,
   AcpPlanEntry,
   AcpStopReason,
   AcpToolCall,
@@ -31,6 +32,7 @@ import type {
   AcpToolKind,
   AcpToolStatus,
 } from '@yaac/shared/acp'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /** The ACP revision this client negotiates. */
 export const ACP_PROTOCOL_VERSION = 1
@@ -45,6 +47,7 @@ export const ACP = {
   sessionPrompt: 'session/prompt',
   sessionCancel: 'session/cancel',
   sessionUpdate: 'session/update',
+  sessionSetMode: 'session/set_mode',
   requestPermission: 'session/request_permission',
 } as const
 
@@ -64,9 +67,15 @@ export interface AcpInitializeResult {
   authMethods?: Array<{ id: string; name?: string; description?: string }>
 }
 
+/** The session modes an adapter advertises, as `session/new` reports them. */
+export interface AcpSessionModes {
+  currentModeId?: string
+  availableModes?: Array<{ id: string; name?: string }>
+}
+
 export interface AcpNewSessionResult {
   sessionId: string
-  modes?: { currentModeId?: string; availableModes?: Array<{ id: string; name?: string }> }
+  modes?: AcpSessionModes
 }
 
 export interface AcpPromptResult {
@@ -277,6 +286,47 @@ export function mergeToolCall(
  */
 export class AcpProjection {
   private readonly toolCalls = new Map<string, AcpToolCall>()
+  /**
+   * Permission asks seen without an answer yet. Needed because a reply line is
+   * anonymous — a bare `{id, result}` — so the only way to know one settles a
+   * permission ask, rather than answering `initialize`, is to have seen the
+   * request go past.
+   */
+  private readonly openPermissions = new Set<string>()
+
+  /** Project one `session/request_permission` request line. */
+  openPermission(requestId: string, params: unknown): AcpEventInit {
+    this.openPermissions.add(requestId)
+    const { toolCall, options } = parsePermissionRequest(params)
+    return {
+      type: 'permission-request',
+      requestId,
+      ...(toolCall !== undefined ? { toolCall } : {}),
+      options,
+    }
+  }
+
+  /** Project a reply line, or undefined when it does not settle a permission
+   *  ask this projection is holding open. */
+  closePermission(requestId: string, result: unknown): AcpEventInit | undefined {
+    if (!this.openPermissions.delete(requestId)) return undefined
+    const decided = parsePermissionOutcome(result)
+    return {
+      type: 'permission-resolved',
+      requestId,
+      // A reply that parses as neither outcome still settles the ask — the
+      // pane's pending card must retire either way, and "we could not read the
+      // answer" is closer to cancelled than to any particular option.
+      outcome: decided?.outcome ?? 'cancelled',
+      ...(decided?.optionId !== undefined ? { optionId: decided.optionId } : {}),
+    }
+  }
+
+  /** The asks still unanswered. A conversation with one is blocked on a human,
+   *  which is what makes it `waiting` rather than `running`. */
+  get pendingPermissions(): string[] {
+    return [...this.openPermissions]
+  }
 
   /** Project one `session/update`'s params, or undefined when it carries
    *  nothing a pane can render. */
@@ -359,28 +409,126 @@ function chunk(
 }
 
 /**
- * The permission decision yaac returns for `session/request_permission`.
+ * The permission decision yaac returns for `session/request_permission` when
+ * the conversation's posture is `bypass`.
  *
- * Sessions run the agent with permissions bypassed, because the sandbox, not
- * a prompt, is what constrains a yaac session: the agent is in a gVisor
- * container behind an egress allowlist, on a throwaway git worktree. So the
- * answer is always "allow", and the option to pick is whichever the agent
- * offered that allows *without* also asking again next time.
+ * A bypassed session is constrained by its sandbox rather than by a prompt —
+ * the agent is in a gVisor container behind an egress allowlist, on a
+ * throwaway git worktree — so the answer is always "allow", and the option to
+ * pick is whichever the agent offered that allows *without* also asking again
+ * next time.
  *
- * This is why an ACP conversation is `bypass`-only and create refuses the
- * other permission modes: answering a prompt on the user's behalf is the
- * opposite of the restraint they would be asking for. Honoring them means
- * forwarding these requests to the chat pane instead.
+ * Every other posture forwards the ask to the pane instead
+ * (`AcpConversation.onRequest`). This stays the bypass answer rather than
+ * becoming dead code: the adapter is told its posture over `session/set_mode`,
+ * but it can still ask under bypass — a `permissions.ask` rule the user
+ * configured is honored even with permissions skipped — and an adapter that
+ * never advertised `bypassPermissions` is running in its default mode with
+ * this as the only thing making it a bypass.
  */
 export function chooseAllowOption(params: unknown): string | undefined {
-  const options = asRecord(params)?.options
-  if (!Array.isArray(options)) return undefined
-  const parsed = options.flatMap((raw) => {
-    const o = asRecord(raw)
+  const options = parsePermissionRequest(params).options
+  return (options.find((o) => o.kind === 'allow_always')
+    ?? options.find((o) => o.kind === 'allow_once')
+    ?? options[0])?.optionId
+}
+
+const PERMISSION_OPTION_KINDS: readonly NonNullable<AcpPermissionOption['kind']>[] = [
+  'allow_once', 'allow_always', 'reject_once', 'reject_always',
+]
+
+/**
+ * A `session/request_permission` payload as the pane's question: what is being
+ * asked about, and the answers on offer.
+ *
+ * The tool call rides in as the same shape a `tool_call` update carries, so it
+ * goes through the same translation and a pane renders the ask with the row it
+ * is about to become. An option with no `optionId` is dropped — it names no
+ * answer that could be sent back — and an unknown `kind` is dropped to absent
+ * rather than passed through, leaving a pane to style by name alone.
+ */
+export function parsePermissionRequest(params: unknown): {
+  toolCall?: AcpToolCall
+  options: AcpPermissionOption[]
+} {
+  const p = asRecord(params)
+  const raw = Array.isArray(p?.options) ? p.options : []
+  const options = raw.flatMap((entry): AcpPermissionOption[] => {
+    const o = asRecord(entry)
     const optionId = asString(o?.optionId)
-    return optionId === undefined ? [] : [{ optionId, kind: asString(o?.kind) }]
+    if (optionId === undefined) return []
+    const kind = asString(o?.kind)
+    return [{
+      optionId,
+      name: asString(o?.name) ?? optionId,
+      ...(kind !== undefined && (PERMISSION_OPTION_KINDS as readonly string[]).includes(kind)
+        ? { kind: kind as AcpPermissionOption['kind'] }
+        : {}),
+    }]
   })
-  return (parsed.find((o) => o.kind === 'allow_always')
-    ?? parsed.find((o) => o.kind === 'allow_once')
-    ?? parsed[0])?.optionId
+  const call = asRecord(p?.toolCall)
+  const patch = call === undefined ? undefined : toToolCallPatch(call)
+  return {
+    ...(patch !== undefined ? { toolCall: mergeToolCall(undefined, patch) } : {}),
+    options,
+  }
+}
+
+/** The result yaac replies with. One shape, one place, because a `selected`
+ *  carrying no option id is malformed and an agent offering none must get a
+ *  `cancelled` rather than a half-built answer. */
+export function permissionReply(optionId: string | undefined): unknown {
+  return optionId === undefined
+    ? { outcome: { outcome: 'cancelled' } }
+    : { outcome: { outcome: 'selected', optionId } }
+}
+
+/** The decision a recorded reply carries, or undefined when the line is not
+ *  one — which is how the record's projection tells a permission answer from
+ *  every other response going past. */
+export function parsePermissionOutcome(result: unknown): {
+  outcome: 'selected' | 'cancelled'
+  optionId?: string
+} | undefined {
+  const outcome = asRecord(asRecord(result)?.outcome)
+  const kind = asString(outcome?.outcome)
+  if (kind === 'cancelled') return { outcome: 'cancelled' }
+  if (kind !== 'selected') return undefined
+  const optionId = asString(outcome?.optionId)
+  return { outcome: 'selected', ...(optionId !== undefined ? { optionId } : {}) }
+}
+
+/**
+ * yaac's permission postures as the ACP session mode ids that express them,
+ * verified against the pinned adapter's `availableModes`.
+ *
+ * The one that does not read across is `manual`: ACP's id for "ask me about
+ * everything" is `default`, which the adapter labels "Manual". The adapter
+ * also offers `dontAsk` (deny anything not pre-approved), which yaac has no
+ * posture for and never selects.
+ */
+const ACP_MODE_IDS: Record<PermissionMode, string> = {
+  bypass: 'bypassPermissions',
+  auto: 'auto',
+  'accept-edits': 'acceptEdits',
+  plan: 'plan',
+  manual: 'default',
+}
+
+export function acpModeId(mode: PermissionMode): string {
+  return ACP_MODE_IDS[mode]
+}
+
+/**
+ * Whether the session can be put in this mode.
+ *
+ * Asked before setting one because `session/set_mode` throws for a mode the
+ * session does not advertise, and both of the adapter's conditional modes are
+ * ones yaac asks for: `auto` appears only when the model supports a classifier,
+ * and `bypassPermissions` only when the adapter is not running as root outside
+ * a sandbox. A missing list means the adapter said nothing about modes, which
+ * is not permission to guess.
+ */
+export function acpModeOffered(modes: AcpSessionModes | undefined, modeId: string): boolean {
+  return modes?.availableModes?.some((m) => m.id === modeId) === true
 }

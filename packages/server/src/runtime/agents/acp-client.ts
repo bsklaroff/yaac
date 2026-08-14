@@ -47,15 +47,20 @@ import {
   ACP,
   ACPD,
   ACP_PROTOCOL_VERSION,
+  acpModeId,
+  acpModeOffered,
   chooseAllowOption,
   clientCapabilities,
+  permissionReply,
   toStopReason,
   type AcpInitializeResult,
   type AcpNewSessionResult,
   type AcpPromptResult,
+  type AcpSessionModes,
 } from './acp-protocol'
 import { serverLog } from '#log'
 import type { AcpEventInit } from '@yaac/shared/acp'
+import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpConversationDeps {
   /** The pod-side transport, already dialed. */
@@ -91,6 +96,31 @@ export interface AcpConversationDeps {
    * existed.
    */
   recoverInFlight?: () => Promise<boolean>
+  /**
+   * The permission asks the agent was still blocked on when the record was
+   * last written — `readAcpPendingPermissions` over this conversation's
+   * record. Consulted on a reattach for the same reason `recoverInFlight` is:
+   * the ask was delivered to a connection that is gone, and nothing replays
+   * it, so the record is the only evidence that a human is being waited on.
+   */
+  recoverPendingPermissions?: () => Promise<Array<string | number>>
+  /**
+   * This conversation's permission posture. An accessor rather than a value
+   * because a conversation outlives the connection that built it, and the row
+   * it comes from can be rewritten by a restart in between.
+   *
+   * It may answer `undefined`, meaning the posture is not known *yet* — the
+   * row could not be read, or is not there. That is distinct from the accessor
+   * being absent altogether; see `permissionMode()` for why the two get
+   * opposite answers.
+   */
+  permissionMode?: () => PermissionMode | undefined
+  /**
+   * An ask started or stopped blocking the agent. Separate from `onBusy`
+   * because it is a different question about the same turn: `busy` says a turn
+   * is running, this says the turn is not going anywhere until a human answers.
+   */
+  onPermissionPending?: (pending: boolean) => void
   onDown: (reason: string) => void
   log?: (msg: string) => void
 }
@@ -134,13 +164,43 @@ export class AcpConversation {
   private helloSeen = false
   private readyWaiters: Array<(err?: Error) => void> = []
   private closed = false
+  /**
+   * Permission asks this connection is holding open, by the agent's own
+   * request id. The value settles the served request, which is what unblocks
+   * the agent — so an entry here is a turn parked on a human.
+   */
+  private readonly pendingPermissions = new Map<string, (result: unknown) => void>()
+  /**
+   * Asks already settled, so a second answer for one is dropped rather than
+   * sent. Two panes can hold the same card, and the loser's click arrives
+   * after the winner's — and across a reconnect an answer takes the
+   * `respondTo` path, which has no pending entry to consume and would
+   * otherwise let every late click write another reply to the agent.
+   */
+  private readonly answeredPermissions = new Set<string>()
+  /**
+   * Asks recovered from the record on a reattach — outstanding at the agent,
+   * but received by a connection that is gone, so there is no served promise
+   * here to resolve. Valued by the id as the agent wrote it, because that is
+   * what the reply has to carry to be paired with the request.
+   */
+  private readonly recoveredPermissions = new Map<string, string | number>()
+  /**
+   * Answers for asks this connection did not know about when they arrived —
+   * a pane clicking a recovered card while `recover()` is still reading the
+   * record. Applied the moment recovery names the ask, so the user's decision
+   * lands instead of vanishing into a window they cannot see.
+   */
+  private readonly deferredAnswers = new Map<string, unknown>()
+  /** What `session/new` (or `session/load`) said this session's modes are. */
+  private sessionModes: AcpSessionModes | undefined
 
   constructor(private readonly deps: AcpConversationDeps) {
     this.log = deps.log ?? serverLog
     this.sessionId = deps.resumeSessionId
     this.peer = new JsonRpcPeer(deps.transport, {
       onNotification: (method, params) => this.onNotification(method, params),
-      onRequest: (method, params) => this.onRequest(method, params),
+      onRequest: (method, params, id) => this.onRequest(method, params, id),
       onOrphanResponse: () => this.endTurn('end_turn'),
       onClose: (reason) => this.onClose(reason),
     })
@@ -164,7 +224,18 @@ export class AcpConversation {
    */
   get status(): 'running' | 'waiting' | undefined {
     if (!this.statusKnown) return undefined
+    // A turn blocked on a permission ask is `busy` — its `session/prompt` is
+    // unanswered — but it is not working, it is waiting for the user. Reporting
+    // `running` would be the exact inverse of what the sidebar dot, the chime
+    // and the tray badge are for: the one moment the conversation genuinely
+    // wants attention is the one it would look busiest.
+    if (this.isAwaitingPermission) return 'waiting'
     return this.busy ? 'running' : 'waiting'
+  }
+
+  /** Whether the agent is parked on an ask nobody has answered. */
+  get isAwaitingPermission(): boolean {
+    return this.pendingPermissions.size > 0 || this.recoveredPermissions.size > 0
   }
 
   get isClosed(): boolean {
@@ -274,6 +345,10 @@ export class AcpConversation {
       }
       case ACPD.exit: {
         const code = (params as { code?: number } | undefined)?.code
+        // Nothing is left to answer: the process that asked is gone, and a
+        // parked promise would keep the conversation reading as `waiting` on a
+        // decision that can no longer reach anyone.
+        this.cancelPendingPermissions()
         this.endTurn('cancelled')
         this.emit({ type: 'error', message: `the agent process exited (code ${code ?? '?'})` })
         return
@@ -292,24 +367,163 @@ export class AcpConversation {
   }
 
   /**
-   * Serve a request the agent makes of us. Returns a promise because the peer
-   * contract is async — a client that served `fs/*` would do real I/O here —
-   * but every answer yaac gives is a decision it can make on the spot.
+   * Serve a request the agent makes of us.
+   *
+   * Under `bypass` every answer is one this can make on the spot. Under any
+   * other posture a permission ask is the user's to answer, so the promise is
+   * parked — deliberately without a timeout. The agent is blocked until it
+   * settles, and there is no deadline that is right: a person may be at lunch,
+   * and answering *for* them after five minutes is the auto-approval the
+   * posture exists to refuse. What releases it instead is a decision, a cancel,
+   * the agent exiting, or the conversation closing — all of which settle the
+   * map explicitly.
    */
-  private onRequest(method: string, params: unknown): Promise<unknown> {
+  private onRequest(method: string, params: unknown, id: string | number): Promise<unknown> {
     if (method === ACP.requestPermission) {
-      // Always allow — see chooseAllowOption for why a yaac session grants
-      // rather than prompts. `selected` with no option id would be malformed,
-      // so an agent that offered none is refused instead.
-      const optionId = chooseAllowOption(params)
-      return Promise.resolve(optionId === undefined
-        ? { outcome: { outcome: 'cancelled' } }
-        : { outcome: { outcome: 'selected', optionId } })
+      if (this.permissionMode() === 'bypass') {
+        // See chooseAllowOption: a bypassed session grants rather than prompts.
+        // `selected` with no option id would be malformed, so an agent that
+        // offered none is refused instead.
+        return Promise.resolve(permissionReply(chooseAllowOption(params)))
+      }
+      const requestId = String(id)
+      this.log(`[server] acp: awaiting a permission decision on ${requestId}`)
+      return new Promise<unknown>((resolve) => {
+        this.pendingPermissions.set(requestId, resolve)
+        // The same ask cannot be both recovered and served — but if the record
+        // scan and the live delivery raced over one, the served promise is the
+        // better handle on it.
+        this.recoveredPermissions.delete(requestId)
+        this.publishPermissionPending()
+      })
     }
     // fs/* and terminal/* are declined in `clientCapabilities`, so an agent
     // asking anyway is out of contract; JsonRpcPeer answers method-not-found
     // by throwing here.
     throw new JsonRpcCallError({ code: -32601, message: `yaac does not serve ${method}` })
+  }
+
+  /**
+   * The posture to answer by, or undefined when it is not known yet — a row
+   * that could not be read, or one that is not there.
+   *
+   * Unknown is deliberately NOT `bypass`. The two answers are not symmetric:
+   * parking an ask that could have been auto-granted costs the user a click,
+   * while auto-granting one that should have been asked about is irreversible
+   * and silent. So the only thing that reaches the auto-answer is a posture
+   * positively read as `bypass`.
+   *
+   * A caller supplying no accessor at all is a different case — it predates
+   * postures entirely, and gets the answer every ACP conversation used to.
+   */
+  private permissionMode(): PermissionMode | undefined {
+    if (this.deps.permissionMode === undefined) return 'bypass'
+    return this.deps.permissionMode()
+  }
+
+  /** Say what this conversation's status is now, since a pending ask changes
+   *  it without any turn boundary having happened. */
+  private publishPermissionPending(): void {
+    this.deps.onPermissionPending?.(this.isAwaitingPermission)
+  }
+
+  /**
+   * Settle a permission ask with the user's decision. `optionId` absent means
+   * they dismissed it, which the agent is told as `cancelled`.
+   *
+   * Two paths, because an ask outlives the connection that received it. The
+   * ordinary one resolves the served request. The other answers an ask this
+   * connection never saw — the relay dropped, or the server restarted, while
+   * the agent sat blocked — by writing the reply against the agent's own id,
+   * which is not namespaced to any connection of ours. Without it a pane could
+   * show a live question that nothing could answer, and the only cure would be
+   * restarting the worktree mid-turn.
+   */
+  answerPermission(requestId: string, optionId?: string): void {
+    if (this.answeredPermissions.has(requestId)) {
+      this.log(`[server] acp: permission ${requestId} already answered — ignoring`)
+      return
+    }
+    this.settlePermission(requestId, permissionReply(optionId))
+  }
+
+  /**
+   * Send one answer by whichever route this connection has to the agent, and
+   * republish the status the ask was holding down.
+   *
+   * An answer matching neither map is *held* rather than dropped, and
+   * deliberately not recorded as answered. A pane can legitimately answer an
+   * ask this connection does not know about yet: the registry publishes a
+   * conversation the moment it is constructed, and a reattaching pane replays
+   * the pending card straight from the record — but `recover()` only learns
+   * which asks are outstanding after acpd's greeting and two file reads. A
+   * click in that window has a real ask behind it; recording it as answered
+   * would make `recover()` skip the very id it belongs to, leaving the agent
+   * blocked with a dead card until the worktree restarts.
+   */
+  private settlePermission(requestId: string, result: unknown): void {
+    const resolve = this.pendingPermissions.get(requestId)
+    if (resolve !== undefined) {
+      this.pendingPermissions.delete(requestId)
+      this.answeredPermissions.add(requestId)
+      resolve(result)
+      this.publishPermissionPending()
+      return
+    }
+    const recovered = this.recoveredPermissions.get(requestId)
+    if (recovered !== undefined) {
+      this.recoveredPermissions.delete(requestId)
+      this.answeredPermissions.add(requestId)
+      if (!this.closed) {
+        this.log(`[server] acp: answering permission ${requestId} across a reconnect`)
+        // Addressed as the AGENT wrote it: JSON-RPC pairs an id by value and
+        // type, so a numeric `42` answered as `"42"` is a reply it never
+        // matches and a turn that stays blocked.
+        this.peer.respondTo(recovered, result)
+      }
+      this.publishPermissionPending()
+      return
+    }
+    // Unknown to this connection. Held for a recovery that may still name it;
+    // if none ever does, it costs one map entry for the life of a conversation
+    // that is by then answering nothing.
+    this.log(`[server] acp: holding an answer for the unrecognized permission ${requestId}`)
+    this.deferredAnswers.set(requestId, result)
+  }
+
+  /** Apply answers that arrived before the ask they belong to was known. */
+  private applyDeferredAnswers(): void {
+    for (const [requestId, result] of [...this.deferredAnswers]) {
+      if (!this.recoveredPermissions.has(requestId)) continue
+      this.deferredAnswers.delete(requestId)
+      this.log(`[server] acp: applying the held answer for permission ${requestId}`)
+      this.settlePermission(requestId, result)
+    }
+  }
+
+  /**
+   * Give up on every open ask. Used where the answer can no longer matter: the
+   * turn is being cancelled, the agent is gone, or this connection is going
+   * away. ACP asks a client to resolve outstanding permission requests when it
+   * cancels, and leaving one unresolved strands the served promise — which is
+   * a request `JsonRpcPeer` is still awaiting and would never reply to.
+   */
+  private cancelPendingPermissions(): void {
+    // Held answers go too: the turn they were meant for is over, and applying
+    // one to a later ask that happened to reuse the id would answer a question
+    // the user never read.
+    this.deferredAnswers.clear()
+    if (!this.isAwaitingPermission) return
+    for (const [requestId, resolve] of [...this.pendingPermissions]) {
+      this.pendingPermissions.delete(requestId)
+      this.answeredPermissions.add(requestId)
+      resolve(permissionReply(undefined))
+    }
+    // A recovered ask has no promise to settle here, and answering it over the
+    // wire would be answering for the user; the turn it belonged to is being
+    // abandoned either way, so it is simply dropped.
+    this.recoveredPermissions.clear()
+    this.publishPermissionPending()
   }
 
   /**
@@ -342,11 +556,12 @@ export class AcpConversation {
         // Replays the whole conversation as `session/update` notifications,
         // which is exactly the pane's history — so a restarted worktree comes
         // back with its transcript already on screen.
-        await this.peer.request(ACP.sessionLoad, {
+        const loaded = await this.peer.request<{ modes?: AcpSessionModes }>(ACP.sessionLoad, {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,
           mcpServers: [],
         })
+        this.sessionModes = loaded.modes
       } else {
         if (this.sessionId !== undefined) {
           this.log('[server] acp: adapter cannot load sessions — starting a fresh conversation')
@@ -359,8 +574,10 @@ export class AcpConversation {
           throw new Error('session/new returned no session id')
         }
         this.sessionId = created.sessionId
+        this.sessionModes = created.modes
         this.deps.onSessionId(created.sessionId)
       }
+      await this.applyPermissionMode()
       this.markReady()
       // A first attach is a fresh agent process, so nothing can be in flight —
       // said out loud, because a caller cannot publish an unclassified
@@ -371,6 +588,57 @@ export class AcpConversation {
       this.log(`[server] acp: handshake failed: ${message}`)
       this.emit({ type: 'error', message: `ACP handshake failed: ${message}` })
       this.deps.onDown(`handshake failed: ${message}`)
+    }
+  }
+
+  /**
+   * Put the session in the mode its posture names.
+   *
+   * This is what makes a posture mean anything: forwarding asks to the pane
+   * only decides who answers the questions, and the mode decides which
+   * questions get asked at all. Without it `accept-edits` would prompt for
+   * every edit — the adapter's own default is "ask about everything" — and the
+   * user would be answering the restraint they asked to be spared.
+   *
+   * Only on a first attach, and deliberately so. A reattach lands on a live
+   * adapter that is already holding a mode, and that mode may no longer be the
+   * row's: leaving plan mode is itself a permission ask whose options ARE mode
+   * ids, so a user who accepted "yes, and auto-accept edits" moved the session
+   * to `acceptEdits`. Re-asserting the row here would drag them back into plan
+   * mode on the next relay hiccup. The row wins again at the next restart,
+   * which is the point at which it is the durable answer.
+   *
+   * A mode the adapter did not advertise is logged and skipped rather than
+   * thrown: create refuses a posture the tool cannot express, so reaching this
+   * means the session clamped one (`auto` on a model with no classifier,
+   * `bypassPermissions` for an adapter running as root outside a sandbox), and
+   * losing the conversation over it would be worse than running in the
+   * adapter's default and prompting.
+   */
+  private async applyPermissionMode(): Promise<void> {
+    if (this.sessionId === undefined) return
+    const mode = this.permissionMode()
+    if (mode === undefined) {
+      // Nothing to assert, and the adapter's own default is the strict one —
+      // it asks about everything, and this conversation forwards all of it.
+      this.log('[server] acp: no posture known for this worktree'
+        + ' — leaving the session in the adapter default and forwarding its asks')
+      return
+    }
+    const modeId = acpModeId(mode)
+    if (this.sessionModes?.currentModeId === modeId) return
+    if (!acpModeOffered(this.sessionModes, modeId)) {
+      this.log(`[server] acp: adapter does not offer mode ${modeId} for "${mode}"`
+        + ` — leaving the session in ${this.sessionModes?.currentModeId ?? 'its default'}`)
+      return
+    }
+    try {
+      await this.peer.request(ACP.sessionSetMode, { sessionId: this.sessionId, modeId })
+      this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
+      this.log(`[server] acp: session mode set to ${modeId} for "${mode}"`)
+    } catch (err) {
+      this.log(`[server] acp: could not set mode ${modeId}: ${
+        err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -395,8 +663,33 @@ export class AcpConversation {
           err instanceof Error ? err.message : String(err)}`)
       }
     }
+    // Only worth asking about a turn that is actually running: an ask can only
+    // be outstanding inside one, and a finished turn's asks were all settled to
+    // get it finished.
+    let awaiting: Array<string | number> = []
+    if (inFlight && this.deps.recoverPendingPermissions !== undefined) {
+      try {
+        awaiting = await this.deps.recoverPendingPermissions()
+      } catch (err) {
+        this.log(`[server] acp: could not recover permission state: ${
+          err instanceof Error ? err.message : String(err)}`)
+      }
+    }
     if (this.closed || this.statusKnown) return
+    // Recorded before the status is published, so the first classification a
+    // caller sees already accounts for it rather than flipping a moment later.
+    for (const id of awaiting) {
+      const requestId = String(id)
+      if (this.pendingPermissions.has(requestId) || this.answeredPermissions.has(requestId)) continue
+      this.recoveredPermissions.set(requestId, id)
+    }
+    if (this.recoveredPermissions.size > 0) {
+      this.log('[server] acp: reattached to a conversation blocked on a permission decision')
+    }
     this.setBusy(inFlight)
+    if (this.recoveredPermissions.size > 0) this.publishPermissionPending()
+    // Last, so a click that beat this scan settles the ask it was always for.
+    this.applyDeferredAnswers()
   }
 
   private markReady(): void {
@@ -488,6 +781,11 @@ export class AcpConversation {
    *  `session/prompt` reply. */
   cancel(): void {
     if (this.sessionId === undefined || !this.busy) return
+    // ACP puts resolving outstanding permission requests on the client when it
+    // cancels. Leaving one parked would strand two things at once: the agent,
+    // still waiting to be told, and the served request the peer is awaiting a
+    // handler for and would never reply to.
+    this.cancelPendingPermissions()
     this.peer.notify(ACP.sessionCancel, { sessionId: this.sessionId })
   }
 
@@ -502,6 +800,16 @@ export class AcpConversation {
   close(): void {
     if (this.closed) return
     this.closed = true
+    // Settles the parked asks WITHOUT any of them reaching the agent, and both
+    // halves of that are deliberate. A parked promise is a request the peer is
+    // awaiting a handler for; left unresolved it is never replied to and never
+    // collected, and this object is meant to be finished with. But the reply a
+    // resolve produces is an `await` continuation — a microtask, which cannot
+    // run before `peer.close()` below — so nothing is written to a live agent.
+    // That is the behavior we want: a detach is not the user declining, and an
+    // ask left unanswered here is one the NEXT connection recovers from the
+    // record and can still put in front of them.
+    this.cancelPendingPermissions()
     this.failWaiters(new Error('conversation is closed'))
     // A prompt held behind a recovered turn would otherwise wait for a boundary
     // that can no longer arrive; released, it fails on the closed check above it.
