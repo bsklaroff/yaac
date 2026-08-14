@@ -562,6 +562,20 @@ describe('with seeded projects', () => {
 
       const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
       expect(listed.stdout.match(/nightly/g)).toHaveLength(1)
+
+      // Including when it is retyped with whitespace the server collapses:
+      // the local pre-check matches under the same normalization the name is
+      // stored with, or it makes the duplicate this exists to prevent.
+      const spaced = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced  out')
+      expect(spaced.exitCode).toBe(0)
+      // And reports the name as stored, not as typed.
+      expect(spaced.stdout).toContain('"spaced out"')
+      const retyped = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced   out')
+      expect(retyped.exitCode).toBe(0)
+      expect(retyped.stdout).toContain('already exists')
+
+      const both = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      expect(both.stdout.match(/spaced out/g)).toHaveLength(1)
     })
 
     it('group move by id reports the group\u2019s name, not the id it was given', async () => {

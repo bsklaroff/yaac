@@ -15,6 +15,7 @@ import { getDefaultTool } from '@yaac/server/db/preferences'
 import { getProjectWorktreeRows, recordWorktreeCreated } from '@yaac/server/db/worktree-store'
 import { getProjectLastPermissionMode, recordProject } from '@yaac/server/db/project-store'
 import { listWorktreeGroups } from '@yaac/server/domain/worktrees/groups'
+import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
 import type * as sessionCreateModule from '@yaac/server/domain/worktrees/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
@@ -864,6 +865,24 @@ describe('write routes', () => {
         body: JSON.stringify({ projectSlug: 'demo', worktreeId: 'nope', name: 'Release' }),
       }))
       expect(res.status).toBe(404)
+      expect(await listWorktreeGroups('demo')).toEqual([])
+    })
+
+    it('rejects a group name longer than the store keeps', async () => {
+      // The store normalizes to MAX_TITLE_LENGTH, so accepting a longer name
+      // would truncate it on the way to the table — and two distinct names
+      // sharing their first MAX_TITLE_LENGTH characters would then resolve
+      // to one group.
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/worktree/group/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({
+          projectSlug: 'demo',
+          worktreeId: 'sess-a',
+          name: 'x'.repeat(MAX_TITLE_LENGTH + 1),
+        }),
+      }))
+      expect(res.status).toBe(400)
       expect(await listWorktreeGroups('demo')).toEqual([])
     })
 

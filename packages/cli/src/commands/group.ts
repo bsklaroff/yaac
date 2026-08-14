@@ -1,4 +1,5 @@
 import { api } from '#commands/api'
+import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorktreeGroupSummary, WorktreeListEntry } from '@yaac/shared/types'
 
 /**
@@ -7,7 +8,7 @@ import type { WorktreeGroupSummary, WorktreeListEntry } from '@yaac/shared/types
  *
  * Groups are addressed by NAME here, never by the uuid the webapp drags
  * around: a name is the only handle a person (or an agent running
- * `yaac-mama`) has ever seen. The server resolves it (`resolveGroupId`),
+ * `yaac-mama`) has ever seen. The server resolves it (`resolveGroup`),
  * which is also where an ambiguous name is refused rather than guessed.
  */
 
@@ -22,10 +23,12 @@ export async function groupCreate(projectSlug: string, name: string): Promise<vo
     console.log(`Group "${existing[0].name}" already exists in ${projectSlug} (${existing[0].groupId}).`)
     return
   }
-  const { groupId } = await api.worktree.group.create.$post({
+  const created = await api.worktree.group.create.$post({
     json: { projectSlug, name },
   })
-  console.log(`Created group "${name}" in ${projectSlug} (${groupId}).`)
+  // The name the server stored, not what was typed: it normalizes, so
+  // echoing the input would report a group the table does not hold.
+  console.log(`Created group "${created.name}" in ${projectSlug} (${created.groupId}).`)
 }
 
 export async function groupList(projectSlug?: string): Promise<void> {
@@ -123,6 +126,13 @@ async function projectOfWorktree(worktreeId: string): Promise<string | undefined
  * Every match, not the first: names are not unique, and the caller has to be
  * able to tell one hit from several before deleting anything. An exact id is
  * never ambiguous, so it short-circuits.
+ *
+ * Matched under the same normalization the server stores a name with
+ * (`normalizeTitle`), or the two would disagree about what "the same name"
+ * means: a typed "release  train" would miss the stored "release train", and
+ * the idempotent create above would then make the duplicate it exists to
+ * prevent — one `yaac-mama group move` away from an ambiguity nothing can
+ * resolve by name.
  */
 function resolveLocally(
   groups: WorktreeGroupSummary[],
@@ -130,7 +140,8 @@ function resolveLocally(
 ): WorktreeGroupSummary[] {
   const byId = groups.find((g) => g.groupId === group)
   if (byId) return [byId]
-  return groups.filter((g) => g.name.toLowerCase() === group.toLowerCase())
+  const wanted = normalizeTitle(group).toLowerCase()
+  return groups.filter((g) => g.name.toLowerCase() === wanted)
 }
 
 function renderGroups(groups: WorktreeGroupSummary[], worktrees: WorktreeListEntry[]): void {

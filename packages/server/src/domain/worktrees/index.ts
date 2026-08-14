@@ -43,7 +43,7 @@ export {
   type WorktreeDetail,
 } from './detail'
 export { allowWorktreeHost } from './allow-host'
-export { listWorktreeGroups, resolveGroupId } from './groups'
+export { listWorktreeGroups, resolveGroup } from './groups'
 export { dismissWorktreePort, forwardWorktreePort } from './forward-port'
 export { ensureProjectExists, listActiveWorktrees } from './list'
 export { purgeProjectBytes } from './project-purge'

@@ -21,10 +21,11 @@
  */
 import { decideSpawn } from './spawn-policy'
 import { listActiveWorktrees } from './list'
-import { listWorktreeGroups, resolveGroupId } from './groups'
+import { listWorktreeGroups, resolveGroup } from './groups'
 import { getProjectWorktreeRows, setWorktreeGroup, setWorktreeTitle } from '#db'
 import { resolveSessionInProject } from './resolve'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import {
   AGENT_TOOLS,
   MAMA_COMMANDS,
@@ -59,8 +60,14 @@ export type MamaOutcome =
   | { ok: true; output: string }
   | { ok: false; error: string }
 
-/** Longest a group name may be, matching the group routes' own bound. */
-const MAX_GROUP_NAME_CHARS = 200
+/**
+ * Longest a group name may be — the store's own cap, which the group routes
+ * bound themselves by too. Anything longer is refused rather than accepted
+ * and truncated on the way to the table, where two distinct long names
+ * sharing their first `MAX_TITLE_LENGTH` characters would resolve to one
+ * group and file a session into a group nobody named.
+ */
+const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
 /**
  * Which options each command reads. An option a command does not take is
@@ -206,7 +213,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
   const group = request.args.group
   const groupId = group === undefined
     ? undefined
-    : await resolveGroupId(caller.projectSlug, group, { create: true })
+    : (await resolveGroup(caller.projectSlug, group, { create: true })).groupId
 
   const decision = await decideSpawn({
     requestId: `mama:${caller.workspaceId}`,
@@ -265,8 +272,11 @@ async function runGroupCreate(
   }
   // Idempotent by construction: naming a group that exists resolves to it
   // rather than making a second one with the same name.
-  const groupId = await resolveGroupId(caller.projectSlug, name, { create: true })
-  return { ok: true, output: `Group "${name}" is ready (${groupId}).` }
+  const group = await resolveGroup(caller.projectSlug, name, { create: true })
+  // The resolved name, not the typed one — the group it landed on may have
+  // been named slightly differently (case, spacing), and an agent reading
+  // this back should see the label the sidebar will show.
+  return { ok: true, output: `Group "${group.name}" is ready (${group.groupId}).` }
 }
 
 async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
@@ -287,15 +297,18 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   // it — `yaac group move` cannot use a bare `--` (its parser eats it as
   // end-of-options), so omitting the argument is the shared idiom. `--` is
   // still honored for anyone who reaches for it.
-  const groupId = target === '--' || target === ''
+  const resolved = target === '--' || target === ''
     ? null
-    : await resolveGroupId(caller.projectSlug, target, { create: true })
-  await setWorktreeGroup(caller.projectSlug, worktreeId, groupId)
+    : await resolveGroup(caller.projectSlug, target, { create: true })
+  await setWorktreeGroup(caller.projectSlug, worktreeId, resolved?.groupId ?? null)
   return {
     ok: true,
-    output: groupId === null
+    // The resolved NAME, like the CLI's own line: the ambiguity error tells a
+    // caller to pass the group id, and an agent is the caller most likely to
+    // take it up — echoing that uuid back is not an answer.
+    output: resolved === null
       ? `Moved ${worktreeId.slice(0, 8)} out of its group.`
-      : `Moved ${worktreeId.slice(0, 8)} into "${target}".`,
+      : `Moved ${worktreeId.slice(0, 8)} into "${resolved.name}".`,
   }
 }
 

@@ -179,7 +179,7 @@ export interface WorktreeCreateOptions {
   model?: string
   /**
    * Sidebar group to file the new worktree under — an id the caller has
-   * already resolved (`resolveGroupId`), never a name. Filed the moment the
+   * already resolved (`resolveGroup`), never a name. Filed the moment the
    * row exists rather than when provisioning finishes, so the worktree is in
    * the group the user asked for for its whole visible life.
    */

@@ -23,6 +23,7 @@ import { recordProject } from '#db/project-store'
 import { clearAllProvisioningForTests } from '#domain/worktrees/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/worktrees/list'
 import { runMamaCommand, type MamaCaller } from '#domain/worktrees/mama'
+import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 
 const CALLER: MamaCaller = {
   workspaceId: 'caller-session',
@@ -273,6 +274,27 @@ describe('runMamaCommand', () => {
       expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
     })
 
+    it('reports the name as stored, not as typed', async () => {
+      // The store collapses whitespace, so the typed string is not what the
+      // sidebar will show — and the same typing has to reach the same group
+      // rather than making a second one beside it.
+      const text = await output('group-create', 'release   train')
+      expect(text).toContain('"release train"')
+
+      await output('group-create', ' release train ')
+      expect(await listWorktreeGroupRows('proj')).toHaveLength(1)
+    })
+
+    it('refuses a name longer than the store keeps', async () => {
+      // Bounded by what the store will hold, not by something larger: a name
+      // accepted and then truncated would let two distinct long names
+      // sharing a prefix resolve to one group.
+      const outcome = await run('group-create', 'x'.repeat(MAX_TITLE_LENGTH + 1))
+      expect(outcome.ok).toBe(false)
+      if (!outcome.ok) expect(outcome.error).toContain(`exceeds ${MAX_TITLE_LENGTH}`)
+      expect(await listWorktreeGroupRows('proj')).toEqual([])
+    })
+
     it('refuses a blank name', async () => {
       const outcome = await run('group-create', '   ')
       expect(outcome).toEqual({ ok: false, error: 'group name must not be empty' })
@@ -294,6 +316,17 @@ describe('runMamaCommand', () => {
 
       const rows = await listWorktreeGroupRows('proj')
       expect(await groupOf('aaaabbbb-1111-2222')).toBe(rows[0].groupId)
+    })
+
+    it('reports the group’s name when it was addressed by id', async () => {
+      // Passing an id is exactly what the ambiguity error tells an agent to
+      // do, so the line it reads back must not be a uuid.
+      const group = await createWorktreeGroup('proj', 'release train', null)
+
+      const text = await output('group-move', group.groupId, { session: 'aaaabbbb' })
+
+      expect(text).toContain('into "release train"')
+      expect(text).not.toContain(group.groupId)
     })
 
     it('returns a session to the default list on "--"', async () => {

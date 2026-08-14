@@ -27,8 +27,14 @@ export async function listWorktreeGroups(
   }))
 }
 
+/** The group a caller's name or id landed on. */
+export interface ResolvedGroup {
+  groupId: string
+  name: string
+}
+
 /**
- * Resolve what a human (or an agent) typed into a group id: an exact group
+ * Resolve what a human (or an agent) typed into a group: an exact group
  * id first, then a name match, case-insensitively and under the same
  * normalization a group is stored with.
  *
@@ -38,23 +44,28 @@ export async function listWorktreeGroups(
  * rather than guessed: both are equally what was asked for, and filing a
  * worktree in the wrong one is silent.
  *
+ * The NAME travels back beside the id because every surface that reports a
+ * move renders it, and the caller may well have passed an id — the ambiguity
+ * error tells it to. This is the one place that knows which row was picked,
+ * so no renderer has to echo what was typed or look the name up again.
+ *
  * `create` is for the callers that are naming a group rather than picking
  * one (`--group` on a create, `yaac-mama create --group`): the group is
  * theirs to bring into being, and demanding they create it first would make
  * every such call two round trips and a race.
  */
-export async function resolveGroupId(
+export async function resolveGroup(
   projectSlug: string,
   group: string,
   opts: { create?: boolean } = {},
-): Promise<string> {
+): Promise<ResolvedGroup> {
   const rows = await listWorktreeGroupRows(projectSlug)
   const byId = rows.find((r) => r.groupId === group)
-  if (byId) return byId.groupId
+  if (byId) return { groupId: byId.groupId, name: byId.name }
 
   const wanted = normalizeTitle(group).toLowerCase()
   const byName = rows.filter((r) => r.name.toLowerCase() === wanted)
-  if (byName.length === 1) return byName[0].groupId
+  if (byName.length === 1) return { groupId: byName[0].groupId, name: byName[0].name }
   if (byName.length > 1) {
     throw new ServerError(
       'VALIDATION',
@@ -67,5 +78,6 @@ export async function resolveGroupId(
     throw new ServerError('NOT_FOUND', `No such worktree group in ${projectSlug}: ${group}`)
   }
   if (wanted === '') throw new ServerError('VALIDATION', 'group name must not be blank')
-  return (await createWorktreeGroup(projectSlug, group, null)).groupId
+  const created = await createWorktreeGroup(projectSlug, group, null)
+  return { groupId: created.groupId, name: created.name }
 }
