@@ -81,6 +81,7 @@ export { waitForJobPodReady } from './pod-wait'
 export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
   LABEL_DATA_DIR_HASH,
+  LABEL_NESTED,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_WORKTREE_ID,
@@ -89,6 +90,7 @@ export {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
   findWorktreePod,
+  isNested,
   isPrewarmed,
   listWorktreeJobs,
   listWorktreePods,

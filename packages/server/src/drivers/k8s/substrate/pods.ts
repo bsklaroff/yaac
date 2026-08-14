@@ -52,6 +52,16 @@ export const VCLUSTER_API_PORT = 8443
  * normal worktree pod simply lacks the label.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
+/**
+ * Marks a worktree pod as running the in-pod container engine
+ * (`nestedContainers`). Stamped only when present, like LABEL_PREWARMED, so
+ * a pod predating it reads as non-nested — which costs a nested worktree
+ * alive across the upgrade its MID-LIFE image salvage until it is recreated,
+ * never a salvage that should not run. It rides a label because the salvage
+ * reconciler picks its worktrees out of informer deltas, where the pod spec
+ * that carries the engine's env is not in hand.
+ */
+export const LABEL_NESTED = 'yaac.nested'
 
 /** The worktree-id stamp, for a writer labelling a worktree Job or Pod. */
 export function worktreeIdLabels(worktreeId: string): Record<string, string> {
@@ -134,6 +144,11 @@ export interface PodInfo {
 /** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
 export function isPrewarmed(pod: PodInfo): boolean {
   return pod.labels[LABEL_PREWARMED] === 'true'
+}
+
+/** True when a pod runs the in-pod engine (carries the `yaac.nested` label). */
+export function isNested(pod: PodInfo): boolean {
+  return pod.labels[LABEL_NESTED] === 'true'
 }
 
 /**

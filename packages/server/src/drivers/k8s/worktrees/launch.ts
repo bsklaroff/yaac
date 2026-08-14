@@ -3,6 +3,7 @@ import path from 'node:path'
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_MODE,
+  LABEL_NESTED,
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_TOOL,
@@ -357,6 +358,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // Prewarmed spares carry this until claimed; claiming removes it,
     // flipping the pod to a normal workspace that lists in user-facing views.
     ...(spec.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
+    // Stamped only when this pod runs the in-pod engine, so the image
+    // salvage can tell from a pod alone whether there is anything to
+    // salvage — the engine's own marker (YAAC_NESTED_ENGINE, below) lives
+    // in the spec's env, which the reconciler never has.
+    ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
   }
 
   const manifest = buildPodJobManifest({

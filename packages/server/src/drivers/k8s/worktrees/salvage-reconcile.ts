@@ -1,4 +1,9 @@
-import { getActiveClusterCache, isPrewarmed, listWorktreePods } from '#drivers/k8s/substrate'
+import {
+  getActiveClusterCache,
+  isNested,
+  isPrewarmed,
+  listWorktreePods,
+} from '#drivers/k8s/substrate'
 import { salvageWorktreeImages } from '#drivers/k8s/images'
 
 /**
@@ -9,9 +14,16 @@ import { salvageWorktreeImages } from '#drivers/k8s/images'
  * run — the multi-GB first salvage of a project's base chain happens in
  * the background instead of blocking termination.
  *
- * Cost when there is nothing to do: one exec per worktree per interval
- * (the in-pod survey self-gates for non-nested engines and reports
- * no-op when every image is already in the registry).
+ * Only nested worktrees are visited: a worktree with no in-pod engine has
+ * no images of its own, and the survey it would be sent is one this side
+ * already knows the answer to. The in-pod gate still stands behind this
+ * (image-promoter.ts) — it is what makes the teardown salvage safe on the
+ * same pods — but a probe that can only ever report nothing should not be
+ * a standing per-worktree exec every interval.
+ *
+ * Cost when there is nothing to do: one exec per NESTED worktree per
+ * interval (the in-pod survey reports no-op when every image is already in
+ * the registry).
  */
 export const SALVAGE_INTERVAL_MS = 10 * 60_000
 
@@ -44,6 +56,7 @@ export async function reconcileImageSalvage(
   const live = new Set<string>()
   for (const p of pods) {
     if (!p.running || !p.worktreeId || !p.projectSlug || isPrewarmed(p)) continue
+    if (!isNested(p)) continue
     if (p.terminating || isTerminating(p.worktreeId)) continue
     live.add(p.worktreeId)
     const last = lastAttemptMs.get(p.worktreeId)

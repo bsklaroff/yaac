@@ -84,13 +84,21 @@ beforeEach(() => {
 })
 
 describe('salvageWorktreeImages', () => {
-  it('gates on podman and passwordless sudo, and stays one exec with nothing to push', async () => {
+  it('gates on the in-pod engine and passwordless sudo, and stays one exec with nothing to push', async () => {
     await expect(salvageReporting('')).resolves.toBe(true)
     const cmd = surveyCommand()
     expect(cmd).toContain('command -v sudo >/dev/null 2>&1 || exit 0')
     expect(cmd).toContain('sudo -n true 2>/dev/null || exit 0')
     expect(cmd).toContain('exec sudo -n -H sh -c ')
-    expect(cmd).toContain('command -v podman >/dev/null 2>&1 || exit 0')
+    // The engine marker, NOT `command -v podman`: a pod can ship the binary
+    // and run no engine — every pod from an image built before podman left
+    // the base does. The gate has to precede the sudo, because an
+    // unconfigured rootless podman run as root resolves its runtime dir
+    // RELATIVE and plants a root-owned directory in the exec's cwd, which is
+    // the user's checkout (/workspace).
+    expect(cmd).toContain('[ "${YAAC_NESTED_ENGINE:-}" = 1 ] || exit 0')
+    expect(cmd.indexOf('YAAC_NESTED_ENGINE')).toBeLessThan(cmd.indexOf('sudo'))
+    expect(cmd).not.toContain('command -v podman')
     // The survey only reads metadata — no push exec when nothing is new.
     expect(mockContainerExec).toHaveBeenCalledOnce()
   })
