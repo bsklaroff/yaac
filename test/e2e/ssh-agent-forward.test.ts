@@ -11,7 +11,6 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_PROXY_CONFIG,
-  IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
@@ -101,7 +100,7 @@ async function startWorktreePod(name: string, worktreeId: string): Promise<void>
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      ...runtimeClassSpec({ inner: IS_NESTED_YAAC }),
+      ...runtimeClassSpec(),
       dnsPolicy: 'None',
       dnsConfig: { nameservers: [proxyHost] },
       containers: [{
@@ -212,9 +211,6 @@ async function startForwarder(pod: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  // The hooks are file-level, so a skipped describe would still pay for
-  // them — deploying a proxy and two pods for a suite that never runs.
-  if (IS_NESTED_YAAC) return
   await requirePodman()
   await requireCluster()
   restoreNamespace = useTestNamespace()
@@ -248,7 +244,6 @@ beforeAll(async () => {
 }, 900_000)
 
 afterAll(async () => {
-  if (IS_NESTED_YAAC) return
   for (const pod of [sshPod, httpsPod, strayPod]) {
     await kubectlWithRetry([
       'delete', 'pod', pod, '-n', k8sNamespace(),
@@ -267,14 +262,10 @@ afterAll(async () => {
   keyDir = null
 }, 300_000)
 
-// Host-only. Inside a nested yaac these pods are vcluster-synced, so the
-// policy governing the agent port is the OUTER install's inner-proxy ingress
-// lock — programmed by the host's yaac, not by this checkout (a vcluster's
-// own NetworkPolicies are deliberately never synced to the host, see
-// k8s/vcluster/values.yaml). The assertions would then be about the host
-// yaac's version rather than this code. The proxy-side gate is covered
-// runtime-free in k8s/proxy/test/proxy-ssh-agent-relay.test.ts.
-describe.skipIf(IS_NESTED_YAAC)('ssh-agent forwarding over the proxy', () => {
+// The proxy-side gate is covered runtime-free in
+// k8s/proxy/test/proxy-ssh-agent-relay.test.ts; this file drives the whole
+// path against a real proxy and real pods.
+describe('ssh-agent forwarding over the proxy', () => {
   it('lists the proxy-held identity from inside a session pod, over a pod-local socket', async () => {
     await startForwarder(sshPod)
 

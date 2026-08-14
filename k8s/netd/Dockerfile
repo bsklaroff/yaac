@@ -18,7 +18,6 @@ COPY package.json /app/package.json
 RUN npm install --omit=dev
 COPY netd.ts /app/netd.ts
 COPY targets.ts /app/targets.ts
-COPY claims.ts /app/claims.ts
 COPY cidr.ts /app/cidr.ts
 COPY routes.ts /app/routes.ts
 COPY rules.ts /app/rules.ts
@@ -28,9 +27,6 @@ COPY envoy-config.ts /app/envoy-config.ts
 COPY envoy-admin.ts /app/envoy-admin.ts
 COPY listeners.ts /app/listeners.ts
 COPY k8s-watch.ts /app/k8s-watch.ts
-# Host mode runs as root in the host network namespace: programming nat
-# rules needs CAP_NET_ADMIN, which the DaemonSet grants narrowly (no
-# privileged: true). Claim mode (NETD_MODE=claim) runs the same image as an
-# ordinary sandboxed pod with every capability dropped — it only reads its
-# own namespace and writes one ConfigMap.
+# Runs as root in the host network namespace: programming nat rules needs
+# CAP_NET_ADMIN, which the DaemonSet grants narrowly (no privileged: true).
 CMD ["node_modules/.bin/tsx", "/app/netd.ts"]

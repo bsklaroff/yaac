@@ -1,5 +1,5 @@
 import { confirmDefault, kindEnv } from './setup'
-import { ClusterDeleteError, assertNotNested } from './arg-guards'
+import { ClusterDeleteError } from './arg-guards'
 import { execFileAsync } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 
@@ -8,7 +8,7 @@ import { env } from '@yaac/shared/env'
  * setup` created, leaving on-disk worktrees and worktrees untouched.
  *
  * One `kind delete` is now the whole teardown: every yaac workload lives
- * inside the cluster (Calico, netd, every vcluster, the main and
+ * inside the cluster (Calico, netd, the main and
  * per-project registries) and so does all of their node-local storage,
  * including the registries' image blobs — the node's filesystem goes with
  * the node. Nothing under the yaac data dir (projects, worktrees, worktrees)
@@ -61,7 +61,6 @@ async function listKindClusters(): Promise<string[]> {
 export async function runClusterDelete(
   opts: ClusterDeleteOptions = {},
 ): Promise<void> {
-  assertNotNested('delete')
 
   const cluster = env.kindCluster
   const exists = (await listKindClusters()).includes(cluster)

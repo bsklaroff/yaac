@@ -152,12 +152,8 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
   resetClusterCidrCache: vi.fn(),
 }))
-
-const mockVapAvailable = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 
 const mockEnsureMainRegistry = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster/main-registry', async (importOriginal) => ({
@@ -329,7 +325,6 @@ beforeEach(() => {
   // ensure also crosses: only the pinned podman-stable mirror is present,
   // so `ensureBuilderImage` resolves to its ref without pulling or pushing.
   mockHasTag.mockImplementation((tag: string) => Promise.resolve(tag === BUILDER_LOCAL_TAG))
-  mockVapAvailable.mockResolvedValue(true)
   mockEnsureKubernetes.mockResolvedValue(undefined)
   mockEnsureMainRegistry.mockResolvedValue(undefined)
   mockKubectlApply.mockResolvedValue(undefined)
@@ -613,27 +608,21 @@ describe('ensureImage', () => {
     expect(mockPush).not.toHaveBeenCalled()
   })
 
-  it('sandboxes any non-whitelisted layer name, but not in a nested install', async () => {
+  it('sandboxes any non-whitelisted layer name', async () => {
     // Whitelist semantics: an unknown name must not fall through to host podman.
     chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
     await ensureImage('proj')
     expect(appliedKinds()).toContain('Pod')
     expect(mockBuildImage).not.toHaveBeenCalled()
-
-    // A nested install's engine IS the outer sandbox; an inner builder pod
-    // would be an unvalidated vcluster pod and strictly worse.
-    _clearBuildCoordinatorForTests()
-    mockKubectlApply.mockClear()
-    vi.stubEnv('YAAC_NESTED', '1')
-    chain([layer('yaac-base:n1', 'project'), layer('yaac-user:n2', 'user')])
-    mockBuildImage.mockResolvedValue(undefined)
-    await ensureImage('proj')
-    expect(appliedKinds()).not.toContain('Pod')
-    expect(mockBuildImage).toHaveBeenCalledTimes(2)
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
-    mockVapAvailable.mockResolvedValue(false)
+    // Probed at the kubectl boundary, the way `vapAvailable` probes it: an
+    // apiserver with no such resource type answers with an error.
+    mockKubectlWithRetry.mockImplementation((args: string[]) =>
+      args.includes('validatingadmissionpolicies')
+        ? Promise.reject(new Error("the server doesn't have a resource type"))
+        : Promise.resolve({ stdout: '', stderr: '' }))
     chain([await podLayer({ buildArgs: undefined })])
     await expect(ensureImage('proj')).rejects.toThrow(/ValidatingAdmissionPolicy/)
     // Without the guard the builder role label is forgeable — no pod may exist.

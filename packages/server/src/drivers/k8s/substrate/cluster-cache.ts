@@ -6,7 +6,6 @@ import {
 } from './informer-cache'
 import { k8sNamespace } from './kubectl'
 import {
-  LABEL_VCLUSTER_MANAGED_BY,
   mapJobObject,
   mapPodObject,
   worktreeJobSelector,
@@ -14,44 +13,21 @@ import {
   type JobInfo,
   type PodInfo,
 } from './pods'
-import {
-  mapVclusterConfigMapObject,
-  mapVclusterNamespaceObject,
-  mapVclusterPodObject,
-  mapVclusterServiceObject,
-  vclusterNamespaceSelector,
-  type VclusterConfigMap,
-  type VclusterNamespaceInfo,
-  type VclusterPod,
-  type VclusterService,
-} from './vcluster-objects'
 import { serverLog } from '#log'
 
 /**
  * Every informer the server runs, in one registry: the install-scoped
- * worktree pods / worktree Jobs / vcluster namespaces watches, plus a
- * dynamic pods+services+claims informer set per live vcluster namespace
- * (created and torn down as the namespaces cache changes). Consumers —
- * the reconciler, the status-watcher sync, the display path — read the
- * caches and subscribe to `onDelta` instead of listing the cluster.
+ * worktree pods and worktree Jobs watches. Consumers — the reconciler,
+ * the status-watcher sync, the display path — read the caches and
+ * subscribe to `onDelta` instead of listing the cluster.
  */
 /** The install-scoped informers: a workspace and the unit holding it. The
  *  two the layers above have their own words for, and so the two anything
  *  forwarding a delta upward has to translate. */
 export const WORKSPACE_DELTA_SOURCES = ['worktree-pods', 'worktree-jobs'] as const
 
-/** The per-vcluster informers. Nothing above the runtime has a word for
- *  these, so they travel upward unchanged. */
-export const VCLUSTER_DELTA_SOURCES = [
-  'vcluster-namespaces',
-  'vcluster-pods',
-  'vcluster-services',
-  'vcluster-configmaps',
-] as const
-
 export type WorkspaceDeltaSource = typeof WORKSPACE_DELTA_SOURCES[number]
-export type VclusterDeltaSource = typeof VCLUSTER_DELTA_SOURCES[number]
-export type DeltaSource = WorkspaceDeltaSource | VclusterDeltaSource
+export type DeltaSource = WorkspaceDeltaSource
 
 export interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */
@@ -60,21 +36,11 @@ export interface ClusterCacheDeps {
   log?: (msg: string) => void
 }
 
-interface VclusterInformers {
-  pods: InformerCache<VclusterPod>
-  services: InformerCache<VclusterService>
-  /** The synced redirect-claim ConfigMaps (picked out by name). */
-  configMaps: InformerCache<VclusterConfigMap>
-}
-
 export class ClusterCache {
   private readonly pods: InformerCache<PodInfo>
   private readonly jobs: InformerCache<JobInfo>
-  private readonly namespaces: InformerCache<VclusterNamespaceInfo>
-  private readonly vcInformers = new Map<string, VclusterInformers>()
   private readonly listeners = new Set<(source: DeltaSource) => void>()
   private readonly deps: ClusterCacheDeps
-  private stopped = true
 
   constructor(deps: ClusterCacheDeps = {}) {
     this.deps = deps
@@ -95,35 +61,16 @@ export class ClusterCache {
       mapItem: mapJobObject,
       keyOf: (j) => j.jobName,
     })
-    this.namespaces = this.buildCache('vcluster-namespaces', {
-      path: '/api/v1/namespaces',
-      labelSelector: vclusterNamespaceSelector(),
-      listFn: () => getCoreApi().listNamespace(
-        { labelSelector: vclusterNamespaceSelector() }),
-      mapItem: mapVclusterNamespaceObject,
-      keyOf: (v) => v.namespace,
-    })
-    this.namespaces.onChange(() => this.syncVclusterInformers())
   }
 
   start(): void {
-    this.stopped = false
     this.pods.start()
     this.jobs.start()
-    this.namespaces.start()
   }
 
   stop(): void {
-    this.stopped = true
     this.pods.stop()
     this.jobs.stop()
-    this.namespaces.stop()
-    for (const entry of this.vcInformers.values()) {
-      entry.pods.stop()
-      entry.services.stop()
-      entry.configMaps.stop()
-    }
-    this.vcInformers.clear()
   }
 
   /** Subscribe to deltas (multi-listener; errors are isolated). */
@@ -140,32 +87,9 @@ export class ClusterCache {
     return this.jobs.items()
   }
 
-  vclusterNamespaces(): VclusterNamespaceInfo[] {
-    return this.namespaces.items()
-  }
-
-  /** null when no healthy informer covers the namespace (caller lists live). */
-  vclusterPods(namespace: string): VclusterPod[] | null {
-    const entry = this.vcInformers.get(namespace)
-    return entry?.pods.healthy() ? entry.pods.items() : null
-  }
-
-  /** null when no healthy informer covers the namespace (caller lists live). */
-  vclusterServices(namespace: string): VclusterService[] | null {
-    const entry = this.vcInformers.get(namespace)
-    return entry?.services.healthy() ? entry.services.items() : null
-  }
-
-  /** null when no healthy informer covers the namespace (caller lists live). */
-  vclusterConfigMaps(namespace: string): VclusterConfigMap[] | null {
-    const entry = this.vcInformers.get(namespace)
-    return entry?.configMaps.healthy() ? entry.configMaps.items() : null
-  }
-
-  healthy(source: 'worktree-pods' | 'worktree-jobs' | 'vcluster-namespaces'): boolean {
+  healthy(source: WorkspaceDeltaSource): boolean {
     if (source === 'worktree-pods') return this.pods.healthy()
-    if (source === 'worktree-jobs') return this.jobs.healthy()
-    return this.namespaces.healthy()
+    return this.jobs.healthy()
   }
 
   private buildCache<T>(
@@ -190,50 +114,6 @@ export class ClusterCache {
       } catch (err) {
         (this.deps.log ?? serverLog)(`[server] cluster-cache listener failed: ${String(err)}`)
       }
-    }
-  }
-
-  /** Keep one pods+services+claims informer set per live vcluster namespace. */
-  private syncVclusterInformers(): void {
-    if (this.stopped) return
-    const live = new Map(this.namespaces.items().map((v) => [v.namespace, v] as const))
-    for (const [ns, entry] of this.vcInformers) {
-      if (live.has(ns)) continue
-      entry.pods.stop()
-      entry.services.stop()
-      entry.configMaps.stop()
-      this.vcInformers.delete(ns)
-    }
-    for (const [ns, vc] of live) {
-      if (this.vcInformers.has(ns)) continue
-      const selector = `${LABEL_VCLUSTER_MANAGED_BY}=${vc.name}`
-      const pods = this.buildCache<VclusterPod>('vcluster-pods', {
-        path: `/api/v1/namespaces/${ns}/pods`,
-        listFn: () => getCoreApi().listNamespacedPod({ namespace: ns }),
-        mapItem: mapVclusterPodObject,
-        keyOf: (p) => p.name,
-      })
-      const services = this.buildCache<VclusterService>('vcluster-services', {
-        path: `/api/v1/namespaces/${ns}/services`,
-        labelSelector: selector,
-        listFn: () => getCoreApi().listNamespacedService(
-          { namespace: ns, labelSelector: selector }),
-        mapItem: mapVclusterServiceObject,
-        keyOf: (s) => s.name,
-      })
-      // No label selector: which ConfigMap is a claim is decided by name
-      // (isClaimConfigMapName), so the path does not depend on the syncer
-      // propagating labels. A vcluster namespace holds a handful of them.
-      const configMaps = this.buildCache<VclusterConfigMap>('vcluster-configmaps', {
-        path: `/api/v1/namespaces/${ns}/configmaps`,
-        listFn: () => getCoreApi().listNamespacedConfigMap({ namespace: ns }),
-        mapItem: mapVclusterConfigMapObject,
-        keyOf: (cm) => cm.name,
-      })
-      pods.start()
-      services.start()
-      configMaps.start()
-      this.vcInformers.set(ns, { pods, services, configMaps })
     }
   }
 }

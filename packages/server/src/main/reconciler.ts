@@ -12,7 +12,7 @@ import type { AgentTool, YaacConfig } from '@yaac/shared/types'
  * Event-driven reconciler. Steps run when something they watch changes,
  * not on a fixed clock — two lanes feed one serialized pass executor:
  *
- * - changes: the convergence signals (worktree pods/Jobs, vcluster
+ * - changes: the convergence signals (worktree pods/Jobs,
  *   namespaces and their pods/services, the set of live conversations,
  *   driver-stream health, and what the egress proxy reports over its
  *   event stream) mark their sources dirty; a pass runs after a short

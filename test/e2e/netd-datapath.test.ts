@@ -7,13 +7,11 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_PROXY_CONFIG,
-  IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { NETD_APP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import { REDIRECT_CLAIMS_CM_NAME } from '@yaac/server/drivers/k8s/cluster/redirect-claims'
 import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { worktreeIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
@@ -31,9 +29,8 @@ import {
  * transparent-egress.test.ts; everything here is about what happens when
  * the redirect is absent, late, or attacked.
  *
- * All of it asserts on the node's real dataplane, so the whole file is
- * gated on a host run: inside a nested yaac the session's redirect is
- * programmed by the OUTER netd on a node this vcluster cannot see.
+ * All of it asserts on the node's real dataplane, so it needs a host with
+ * a wired-up cluster.
  */
 
 let restoreNamespace: (() => void) | null = null
@@ -65,12 +62,16 @@ async function deleteTestPod(name: string): Promise<void> {
   ]).catch(() => { /* ok */ })
 }
 
-async function waitForPodRunning(name: string, timeoutMs = 120_000): Promise<void> {
+async function waitForPodRunning(
+  name: string,
+  timeoutMs = 120_000,
+  namespace = k8sNamespace(),
+): Promise<void> {
   interface RawPod { status?: { phase?: string } }
   const deadline = Date.now() + timeoutMs
   let phase = 'Pending'
   while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
+    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
     phase = pod?.status?.phase ?? 'Unknown'
     if (phase === 'Running') {
       // The pod that just came up is the one the following assertions are
@@ -104,7 +105,7 @@ async function startWorktreePod(
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
-      ...runtimeClassSpec({ inner: IS_NESTED_YAAC, nested: opts.netRaw }),
+      ...runtimeClassSpec({ nested: opts.netRaw }),
       dnsPolicy: 'None',
       dnsConfig: { nameservers: [proxyHost] },
       containers: [{
@@ -291,115 +292,7 @@ async function redirectChainRules(): Promise<string[]> {
   return stdout.split('\n').filter(Boolean)
 }
 
-/**
- * A synced-pod-shaped pod: what the vcluster syncer would land in a
- * vcluster's host namespace. The managed-by label is the one a tenant can
- * neither forge nor shed, and the one containment keys on. Returns its IP.
- */
-async function startSyncedPod(name: string, namespace: string, vcName: string): Promise<string> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Pod',
-    metadata: {
-      name,
-      namespace,
-      labels: { 'vcluster.loft.sh/managed-by': vcName, 'yaac.test': 'true' },
-    },
-    spec: {
-      restartPolicy: 'Never',
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      containers: [{
-        name: 'synced',
-        image: await resolveTestBaseImageRef(),
-        imagePullPolicy: 'IfNotPresent',
-      }],
-    },
-  })
-  interface RawPod { status?: { phase?: string; podIP?: string } }
-  const deadline = Date.now() + 120_000
-  for (;;) {
-    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
-    if (pod?.status?.phase === 'Running' && pod.status.podIP) {
-      await focusNetdOnPod(name, namespace)
-      return pod.status.podIP
-    }
-    if (Date.now() >= deadline) throw new Error(`synced pod ${name} never ran`)
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-}
-
-/**
- * Publish validated redirect claims, playing the outer server's role (see
- * packages/server/src/features/cluster/redirect-claims.ts). netd watches this
- * ConfigMap in its own namespace and re-validates every claim in it.
- */
-async function publishClaims(data: Record<string, string>): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: REDIRECT_CLAIMS_CM_NAME,
-      namespace: k8sNamespace(),
-      labels: { app: NETD_APP_NAME, 'yaac.test': 'true' },
-    },
-    data,
-  })
-}
-
-interface RawLds {
-  resources?: Array<{
-    name: string
-    filter_chains?: Array<{
-      filter_chain_match?: { source_prefix_ranges?: Array<{ address_prefix?: string }> }
-      filters: Array<{ typed_config: { cluster: string } }>
-    }>
-  }>
-}
-
-/** The Envoy cluster this pod IP's flows are routed to, per the LDS. */
-async function clusterFor(podIp: string): Promise<string> {
-  const raw = await netdExec(['cat', '/etc/yaac-envoy/lds.yaml'])
-  const doc = JSON.parse(raw) as RawLds
-  const https = (doc.resources ?? []).find((r) => r.name.endsWith('-https'))
-  const chain = (https?.filter_chains ?? []).find((c) =>
-    (c.filter_chain_match?.source_prefix_ranges ?? [])
-      .some((range) => range.address_prefix === podIp))
-  return chain?.filters[0]?.typed_config.cluster ?? ''
-}
-
-/** Poll until the pod has a cluster, optionally a DIFFERENT one. */
-async function waitForCluster(
-  podIp: string, want: string | null, timeoutMs = 90_000,
-): Promise<string> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const got = await clusterFor(podIp)
-    if (got && got !== want) return got
-    if (Date.now() >= deadline) return got
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-}
-
-/** Every upstream address netd's Envoy is configured to dial. */
-async function cdsAddresses(): Promise<string[]> {
-  interface RawCds {
-    resources?: Array<{
-      load_assignment?: {
-        endpoints?: Array<{
-          lb_endpoints?: Array<{ endpoint?: { address?: { socket_address?: { address?: string } } } }>
-        }>
-      }
-    }>
-  }
-  const doc = JSON.parse(await netdExec(['cat', '/etc/yaac-envoy/cds.yaml'])) as RawCds
-  return (doc.resources ?? []).flatMap((r) =>
-    (r.load_assignment?.endpoints ?? []).flatMap((e) =>
-      (e.lb_endpoints ?? []).map((lb) => lb.endpoint?.address?.socket_address?.address ?? '')))
-    .filter(Boolean)
-}
-
-/** The DNAT ports programmed for one pod in a vcluster namespace. */
+/** The DNAT ports programmed for one pod. */
 async function trioPortsFor(namespace: string, pod: string): Promise<number[]> {
   return (await redirectChainRules())
     .filter((l) => l.includes(`yaac:${namespace}/${pod}`))
@@ -487,9 +380,7 @@ async function waitForNetdReady(want: 0 | 'all', timeoutMs = 180_000): Promise<v
   }
 }
 
-// Every assertion here reads or mutates the node's dataplane, which a
-// nested run has no access to (its redirect lives on the host node).
-describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
+describe('netd datapath gates', () => {
   const client = new ProxyClient(TEST_PROXY_CONFIG)
   const suffix = crypto.randomBytes(4).toString('hex')
   const podA = `yaac-netd-a-${suffix}`
@@ -672,238 +563,66 @@ describe.skipIf(IS_NESTED_YAAC)('netd datapath gates', () => {
     expect(await egressWorks(podA)).toBe(true)
   }, 600_000)
 
-  it('redirects a synced pod to a CLAIMED proxy pod IP, and back when the claim goes', async () => {
-    // The yaac-in-yaac override, asserted on netd's real output rather than
-    // through a full vcluster: a synced pod starts on the outer proxy, a
-    // validated claim naming a pod IP moves it to that install's proxy, and
-    // withdrawing the claim reverts it. This file plays the two roles a real
-    // deployment fills — the vcluster syncer (stamping managed-by) and the
-    // server (publishing validated claims) — because netd's own behaviour is
-    // what is under test here.
-    const vcNs = `${k8sNamespace()}-vc-e2e-${suffix}`
-    const vcName = `yvc-e2e-${suffix}`
-    const installHash = `e2e${suffix}`
-    const syncedPod = `yaac-netd-synced-${suffix}`
-    const proxyPod = `yaac-netd-inner-proxy-${suffix}`
-
-    try {
-      await kubectlApply({
-        apiVersion: 'v1', kind: 'Namespace',
-        metadata: { name: vcNs, labels: { 'yaac.test': 'true' } },
-      })
-      const [syncedIp, proxyIp] = await Promise.all([
-        startSyncedPod(syncedPod, vcNs, vcName),
-        startSyncedPod(proxyPod, vcNs, vcName),
-      ])
-
-      // Rule 3: nothing has claimed it, so it rides the OUTER proxy.
-      const outerCluster = await waitForCluster(syncedIp, null)
-      expect(outerCluster).toMatch(/^yaac-outer-/)
-      // Poll: the LDS lists a pod as soon as it has an IP, but its DNAT
-      // rules also need Calico's per-workload route, which lands a beat
-      // later — so the two are not observable in the same instant.
-      const trioBefore = await waitForTrioPorts(vcNs, syncedPod)
-      expect(trioBefore).toHaveLength(3)
-
-      // Rule 2: a validated claim appears — publishing it IS the opt-in
-      // signal — so the pod moves to the claimed proxy's cluster.
-      await publishClaims({
-        [vcNs]: JSON.stringify({
-          vcluster: vcName,
-          claims: [{ install: installHash, proxyPodIp: proxyIp, sources: [syncedIp] }],
-        }),
-      })
-      const innerCluster = await waitForCluster(syncedIp, outerCluster)
-      expect(innerCluster, 'the claim did not flip the pod\'s target').toMatch(/^yaac-inner-/)
-      // The claimed target is the proxy POD's IP, never a ClusterIP.
-      expect(await cdsAddresses()).toContain(proxyIp)
-
-      // The ports did NOT move with the target. Every target shares one
-      // trio precisely so a flip cannot strand a flow whose conntrack
-      // entry already pins the old destination.
-      expect(await trioPortsFor(vcNs, syncedPod)).toEqual(trioBefore)
-
-      // The claimed proxy itself stays on the outer proxy: that is what
-      // makes the chain loop-free.
-      expect(await clusterFor(proxyIp)).toBe(outerCluster)
-
-      // Back to rule 3 when the claim is withdrawn.
-      await publishClaims({})
-      expect(await waitForCluster(syncedIp, innerCluster)).toBe(outerCluster)
-    } finally {
-      await publishClaims({}).catch(() => { /* ok */ })
-      await kubectlWithRetry([
-        'delete', 'namespace', vcNs, '--ignore-not-found', '--wait=false',
-      ]).catch(() => { /* ok */ })
-    }
-  }, 600_000)
-
-  it('refuses a claim that names an address outside the pod CIDRs', async () => {
-    // The bypass this guards, end to end on the real dataplane: a tenant is
-    // cluster-admin inside its vcluster, so it can create a `yaac-proxy`
-    // Service whose hand-written endpoints name any address on the internet.
-    // Honouring such a target would have netd's Envoy dial it FROM THE NODE
-    // netns, where kube-proxy resolves it and no NetworkPolicy applies — a
-    // full egress tunnel with no allowlist. Only pod IPs the host itself
-    // reports are eligible, so every variant below must change nothing.
-    const vcNs = `${k8sNamespace()}-vc-evil-${suffix}`
-    const vcName = `yvc-evil-${suffix}`
-    const syncedPod = `yaac-netd-evil-${suffix}`
-    const EXFIL_IP = '203.0.113.7'
-
-    try {
-      await kubectlApply({
-        apiVersion: 'v1', kind: 'Namespace',
-        metadata: { name: vcNs, labels: { 'yaac.test': 'true' } },
-      })
-      const syncedIp = await startSyncedPod(syncedPod, vcNs, vcName)
-      const outerCluster = await waitForCluster(syncedIp, null)
-      expect(outerCluster).toMatch(/^yaac-outer-/)
-
-      // A tenant-shaped Service in the vcluster namespace, named and
-      // labelled exactly as a synced inner proxy would be, with endpoints
-      // pointing off-cluster. Nothing reads Services for the redirect any
-      // more, so it must be inert.
-      const evilSvc = `yaac-proxy-x-inner-x-${vcName}`
-      await kubectlApply({
-        apiVersion: 'v1',
-        kind: 'Service',
-        metadata: {
-          name: evilSvc,
-          namespace: vcNs,
-          labels: {
-            'vcluster.loft.sh/managed-by': vcName,
-            'yaac.data-dir-hash': 'evil',
-            'yaac.test': 'true',
-          },
-        },
-        spec: { type: 'ClusterIP', ports: [{ port: 10256 }] },
-      })
-      await kubectlApply({
-        apiVersion: 'discovery.k8s.io/v1',
-        kind: 'EndpointSlice',
-        metadata: {
-          name: `${evilSvc}-exfil`,
-          namespace: vcNs,
-          labels: { 'kubernetes.io/service-name': evilSvc, 'yaac.test': 'true' },
-        },
-        addressType: 'IPv4',
-        ports: [{ port: 10256 }],
-        endpoints: [{ addresses: [EXFIL_IP] }],
-      })
-      const evilClusterIp = (await kubectlGetJson<{ spec?: { clusterIP?: string } }>(
-        ['get', 'service', evilSvc, '-n', vcNs],
-      ))?.spec?.clusterIP
-      expect(evilClusterIp).toBeTruthy()
-
-      // Claims naming, in turn: the off-cluster address directly, that
-      // Service's ClusterIP, and an unallocated address inside the pod CIDR.
-      for (const target of [EXFIL_IP, evilClusterIp!, '10.244.255.254']) {
-        await publishClaims({
-          [vcNs]: JSON.stringify({
-            vcluster: vcName,
-            claims: [{ install: 'evil', proxyPodIp: target, sources: [syncedIp] }],
-          }),
-        })
-        // Give netd a full pass to (not) act on it.
-        await new Promise((r) => setTimeout(r, 5000))
-        expect(await clusterFor(syncedIp), `netd honoured a claim for ${target}`)
-          .toBe(outerCluster)
-        const addresses = await cdsAddresses()
-        expect(addresses).not.toContain(target)
-        expect(addresses).not.toContain(EXFIL_IP)
-      }
-    } finally {
-      await publishClaims({}).catch(() => { /* ok */ })
-      await kubectlWithRetry([
-        'delete', 'namespace', vcNs, '--ignore-not-found', '--wait=false',
-      ]).catch(() => { /* ok */ })
-    }
-  }, 600_000)
-
-  it('never claims a synced pod in another install\'s vcluster namespace', async () => {
+  it('never redirects a worktree pod belonging to another install', async () => {
     // netd watches EVERY namespace, and several installs share a node (the
     // real `yaac` one plus this e2e run's). Unscoped, each install's netd
-    // DNATs the other's synced pods at its own proxy; both jumps hang off
-    // nat PREROUTING by append, so the first-appended chain wins and the
+    // DNATs the other's pods at its own proxy; both jumps hang off nat
+    // PREROUTING by append, so the first-appended chain wins and the
     // loser's pods reach a proxy that cannot resolve them — silent, total
     // egress loss, decided by restart order.
     //
-    // Both pods are created up front and the assertion waits for OURS to be
-    // programmed, so one reconcile pass has demonstrably seen both. A bare
-    // "no rules appeared" check could otherwise pass by running early.
-    const ownNs = `${k8sNamespace()}-vc-own-${suffix}`
-    const foreignNs = `yaac-sibling-${suffix}-vc-demo`
-    const ownPod = `yaac-netd-own-${suffix}`
+    // Both pods exist before the assertion and OURS is waited for, so one
+    // reconcile pass has demonstrably seen both. A bare "no rules appeared"
+    // check could otherwise pass by running early.
+    const foreignNs = `yaac-sibling-${suffix}`
     const foreignPod = `yaac-netd-foreign-${suffix}`
 
-    const image = await resolveTestBaseImageRef()
-    const syncedPodManifest = (name: string, namespace: string): Record<string, unknown> => ({
-      apiVersion: 'v1',
-      kind: 'Pod',
-      metadata: {
-        name,
-        namespace,
-        labels: { 'vcluster.loft.sh/managed-by': `yvc-${suffix}`, 'yaac.test': 'true' },
-      },
-      spec: {
-        restartPolicy: 'Never',
-        automountServiceAccountToken: false,
-        enableServiceLinks: false,
-        containers: [{
-          name: 'synced',
-          image,
-          imagePullPolicy: 'IfNotPresent',
-        }],
-      },
-    })
-    const rulesMentioning = async (comment: string): Promise<string[]> => {
-      return (await redirectChainRules()).filter((l) => l.includes(comment))
-    }
-    const waitForRunning = async (name: string, namespace: string): Promise<void> => {
-      interface RawPod { status?: { phase?: string } }
-      const deadline = Date.now() + 120_000
-      for (;;) {
-        const p = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', namespace])
-        if (p?.status?.phase === 'Running') return
-        if (Date.now() >= deadline) throw new Error(`${namespace}/${name} never ran`)
-        await new Promise((r) => setTimeout(r, 1000))
-      }
-    }
+    const rulesMentioning = async (comment: string): Promise<string[]> =>
+      (await redirectChainRules()).filter((l) => l.includes(comment))
 
     try {
-      for (const ns of [ownNs, foreignNs]) {
-        await kubectlApply({
-          apiVersion: 'v1', kind: 'Namespace',
-          metadata: { name: ns, labels: { 'yaac.test': 'true' } },
-        })
-      }
-      await kubectlApply(syncedPodManifest(ownPod, ownNs))
-      await kubectlApply(syncedPodManifest(foreignPod, foreignNs))
-      await waitForRunning(ownPod, ownNs)
-      await waitForRunning(foreignPod, foreignNs)
+      await kubectlApply({
+        apiVersion: 'v1', kind: 'Namespace',
+        metadata: { name: foreignNs, labels: { 'yaac.test': 'true' } },
+      })
+      await kubectlApply({
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: foreignPod,
+          namespace: foreignNs,
+          labels: { ...worktreeIdLabels(`netd-foreign-${suffix}`), 'yaac.test': 'true' },
+        },
+        spec: {
+          restartPolicy: 'Never',
+          automountServiceAccountToken: false,
+          enableServiceLinks: false,
+          containers: [{
+            name: 'session',
+            image: await resolveTestBaseImageRef(),
+            imagePullPolicy: 'IfNotPresent',
+          }],
+        },
+      })
+      await waitForPodRunning(foreignPod, 120_000, foreignNs)
 
       // Each pod is judged by the netd on ITS OWN node: these two can land
       // on different nodes, and netd only ever programs local pods, so a
       // single instance would show one of them missing for the mundane
       // reason that it is somewhere else.
-      await focusNetdOnPod(ownPod, ownNs)
-      const deadline = Date.now() + 90_000
-      let ours: string[] = []
-      while (Date.now() < deadline) {
-        ours = await rulesMentioning(`yaac:${ownNs}/${ownPod}`)
-        if (ours.length === 3) break
-        await new Promise((r) => setTimeout(r, 2000))
-      }
-      expect(ours, 'our own vcluster\'s synced pod must still be redirected').toHaveLength(3)
+      await focusNetdOnPod(podA)
+      expect(
+        await waitForTrioPorts(k8sNamespace(), podA),
+        'our own install\'s worktree pod must still be redirected',
+      ).toHaveLength(3)
       await focusNetdOnPod(foreignPod, foreignNs)
       expect(
         await rulesMentioning(`yaac:${foreignNs}/${foreignPod}`),
-        'netd claimed a sibling install\'s synced pod',
+        'netd claimed a sibling install\'s worktree pod',
       ).toEqual([])
     } finally {
       await kubectlWithRetry([
-        'delete', 'namespace', ownNs, foreignNs, '--ignore-not-found', '--wait=false',
+        'delete', 'namespace', foreignNs, '--ignore-not-found', '--wait=false',
       ]).catch(() => { /* ok */ })
     }
   }, 600_000)

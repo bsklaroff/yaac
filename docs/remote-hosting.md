@@ -142,9 +142,8 @@ Semantics to keep in mind:
   reach it; the conclusion holds for the reason the bullet above gives — a
   local process is already trusted, and an unsandboxed worktree agent can read
   the outer install's data dir regardless, so the token never defended against
-  it. The worktree id is what marks this, rather than the vcluster preset's
-  `YAAC_NESTED`, because the reasoning holds for every worktree and
-  `createWorktree` stamps the id on all of them under both drivers.
+  it. The worktree id is what marks this, and `createWorktree` stamps it on
+  every worktree under both drivers.
   `YAAC_REQUIRE_AUTH=1` forces it on if you want the inner server
   independently gated.
 - **Beware a fronted server started from inside a worktree.** Because the

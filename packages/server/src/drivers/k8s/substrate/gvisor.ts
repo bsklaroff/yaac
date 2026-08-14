@@ -4,13 +4,13 @@ import type { PodToleration } from './taints'
 /**
  * gVisor (runsc) is the runtime for every pod that hosts UNTRUSTED code:
  * worktree pods (agents run arbitrary commands; in-container root via the
- * image's passwordless sudo is a feature) and vcluster-synced tenant pods.
+ * image's passwordless sudo is a feature).
  * The sentry is the containment layer for in-container root, which drops
  * the idmapped-mount prerequisite that ruled shared filesystems (NFS) out
  * and takes host-kernel 0-days off the table for those workloads.
  *
  * Trusted yaac infrastructure — the proxy, project registries, node-write
- * pods, vcluster control planes, and the installer below — runs on runc,
+ * pods, and the installer below — runs on runc,
  * like kube-system. It only runs yaac-shipped code, so the sentry buys no
  * containment there, and its cost is real: each sandbox is a systrap sentry
  * + gofer (hundreds of threads, heavy sys-time), and a fleet of them
@@ -74,22 +74,16 @@ export function gvisorNodeLabels(): Record<string, string> {
  * pod-spec fragment — the single encoding of which sandbox tier such a pod
  * runs on, used by the worktree manifest builder and by the checks that
  * compare against what it would stamp:
- *  - `inner`: the pod is created by an inner (nested) yaac against its
- *    vcluster, which has no RuntimeClass objects — stamp nothing; the
- *    vcluster syncer sets the host-side runtime
- *    (sync.toHost.pods.runtimeClassName in k8s/vcluster/values.yaml).
  *  - `nested`: the pod hosts the in-sandbox container engine — the
  *    gvisor-nested tier (raw/packet sockets).
  *  - otherwise: the default gvisor tier.
  * Either way there is no user namespace: the sentry is the containment.
- * Trusted infra pods (proxy, registries, node-write, vcluster control
- * planes) don't call this — they stamp nothing and run on runc (see the
- * module doc).
+ * Trusted infra pods (proxy, registries, node-write) don't call this —
+ * they stamp nothing and run on runc (see the module doc).
  */
 export function runtimeClassSpec(
-  opts: { inner?: boolean; nested?: boolean },
+  opts: { nested?: boolean } = {},
 ): { runtimeClassName?: string } {
-  if (opts.inner) return {}
   return {
     runtimeClassName: opts.nested ? RUNTIME_CLASS_GVISOR_NESTED : RUNTIME_CLASS_GVISOR,
   }
@@ -275,7 +269,7 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
  * `scheduling.tolerations` rides the same merge, and is how a dedicated
  * worktree pool works at all. The pool is tainted so nothing else drifts
  * onto it; declaring that taint's toleration HERE — once — reaches every
- * pod that names the class: worktree pods, builder pods, vcluster-synced
+ * pod that names the class: worktree pods, builder pods,
  * tenant pods, and cluster check's pinned probes (which bypass the
  * scheduler, but are still admitted by kubelet, and a `NoExecute` pool taint
  * would evict them). Nothing per-pod has to know the pool exists. Empty by

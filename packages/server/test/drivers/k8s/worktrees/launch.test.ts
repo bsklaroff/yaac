@@ -41,24 +41,14 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   resolveProxyImageTag: vi.fn().mockResolvedValue('proxy:tag'),
 }))
 
-// The cluster half is a whole subprocess tree per call (vcluster boots,
-// registry pods, node writes) — its boundary is the barrel.
+// The cluster half is a whole subprocess tree per call (registry pods,
+// node writes) — its boundary is the barrel.
 const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
 const mockEnsureProjectRegistry = vi.hoisted(() => vi.fn())
-const mockEnsureActivator = vi.hoisted(() => vi.fn())
-const mockEnsureVclusterImages = vi.hoisted(() => vi.fn())
-const mockEnsureVcluster = vi.hoisted(() => vi.fn())
-const mockWaitKubeconfig = vi.hoisted(() => vi.fn())
-const mockSleepVcluster = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   proxyServiceClusterIp: mockProxyClusterIp,
   ensureProjectRegistry: mockEnsureProjectRegistry,
-  ensureActivator: mockEnsureActivator,
-  ensureVclusterImages: mockEnsureVclusterImages,
-  ensureWorktreeVcluster: mockEnsureVcluster,
-  waitForVclusterKubeconfig: mockWaitKubeconfig,
-  sleepVcluster: mockSleepVcluster,
 }))
 
 // The node image store is written by cleanup/write pods of its own.
@@ -89,7 +79,6 @@ const INTENT = {
   config: {},
   remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
-  virtualCluster: false,
   proxySecrets: {},
 }
 
@@ -155,8 +144,6 @@ beforeEach(() => {
   mockWriteProxySecrets.mockResolvedValue(undefined)
   mockRegisterWorktree.mockResolvedValue(undefined)
   mockStoreMount.mockResolvedValue(undefined)
-  mockEnsureVcluster.mockResolvedValue({ freshlyCreated: false })
-  mockWaitKubeconfig.mockResolvedValue('apiVersion: v1\nkind: Config\n')
 })
 
 describe('prepareWorkspaceSubstrate', () => {
@@ -197,7 +184,6 @@ describe('prepareWorkspaceSubstrate', () => {
 
     expect(mockEnsureProjectRegistry).not.toHaveBeenCalled()
     expect(mockStoreMount).not.toHaveBeenCalled()
-    expect(mockEnsureActivator).not.toHaveBeenCalled()
   })
 
   it('gives a nested workspace the project registry and this node\'s image store', async () => {
@@ -228,34 +214,6 @@ describe('prepareWorkspaceSubstrate', () => {
     expect(podLabels['yaac.nested']).toBe('true')
   })
 
-  it('sleeps a virtual cluster it just booted, and wires the pod at it', async () => {
-    mockEnsureVcluster.mockResolvedValue({ freshlyCreated: true })
-
-    const substrate = await prepareWorkspaceSubstrate({
-      ...INTENT, nestedContainers: true, virtualCluster: true,
-    })
-    await launchWorkspace(specOf(substrate, { nestedContainers: true }))
-
-    expect(mockEnsureActivator).toHaveBeenCalled()
-    expect(mockSleepVcluster).toHaveBeenCalled()
-    const env = containerEnv()
-    expect(env.KUBECONFIG).toBe('/home/yaac/.kube/config')
-    expect(env.YAAC_NESTED).toBe('1')
-    const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
-    expect(mounts).toContainEqual(expect.objectContaining({ mountPath: '/home/yaac/.kube' }))
-  })
-
-  it('never re-sleeps a virtual cluster it found already running', async () => {
-    // Re-sleeping an existing one would discard the state.db a resumed
-    // workspace comes back to.
-    mockEnsureVcluster.mockResolvedValue({ freshlyCreated: false })
-
-    await prepareWorkspaceSubstrate({
-      ...INTENT, nestedContainers: true, virtualCluster: true,
-    })
-
-    expect(mockSleepVcluster).not.toHaveBeenCalled()
-  })
 })
 
 describe('launchWorkspace', () => {

@@ -704,15 +704,6 @@ describe('runClusterSetup', () => {
     expect(deps.ensureRegistry).not.toHaveBeenCalled()
   })
 
-  it('refuses to run inside a nested yaac session', async () => {
-    vi.stubEnv('YAAC_NESTED', '1')
-    const deps = makeDeps()
-    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
-    expect((err as Error).message).toContain('nested')
-    expect(deps.run).not.toHaveBeenCalled()
-  })
-
   it('refuses a podman 6 / kind <= v0.32.0 pairing, pointing at the tapped build', async () => {
     const deps = makeDeps({
       run: vi.fn((file: string, args: string[]) => {

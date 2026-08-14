@@ -28,13 +28,10 @@ vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
 }))
 vi.mock('#drivers/k8s/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
 vi.mock('#drivers/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
-vi.mock('#drivers/k8s/egress/vcluster-attribution', () => ({ reconcileVclusterAttribution: vi.fn() }))
-vi.mock('#drivers/k8s/cluster/vcluster-reconcile', () => ({ reconcileVclusters: vi.fn() }))
 vi.mock('#drivers/k8s/cluster/project-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof projectRegistryModule>()),
   reconcileProjectRegistryGc: vi.fn(),
 }))
-vi.mock('#drivers/k8s/cluster/redirect-claim-reconcile', () => ({ reconcileRedirectClaims: vi.fn() }))
 vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
   ...(await importOriginal<typeof titleGenerationModule>()),
   reconcileGeneratedTitles: vi.fn(),
@@ -60,10 +57,7 @@ import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
 import { reconcileHostImageGc } from '#drivers/k8s/image-engine/image-gc'
 import { reconcileProxySshKeys } from '#drivers/k8s/egress/proxy-reconcile'
-import { reconcileVclusterAttribution } from '#drivers/k8s/egress/vcluster-attribution'
-import { reconcileVclusters } from '#drivers/k8s/cluster/vcluster-reconcile'
 import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registry'
-import { reconcileRedirectClaims } from '#drivers/k8s/cluster/redirect-claim-reconcile'
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
 
 const ALL_STEP_FNS = [
@@ -71,8 +65,7 @@ const ALL_STEP_FNS = [
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
-  reconcileProxySshKeys, reconcileVclusters, reconcileVclusterAttribution,
-  reconcileRedirectClaims, reconcileHostImageGc, reconcileBuildCacheGc,
+  reconcileProxySshKeys, reconcileHostImageGc, reconcileBuildCacheGc,
   gcOrphanEphemeralModuleDirs, reconcileGeneratedTitles,
 ] as const
 
@@ -147,7 +140,7 @@ describe('startReconciler', () => {
     const runs: StepRuns = []
     const h = start([
       makeStep(runs, 'pods-a', ['worktree-pods']),
-      makeStep(runs, 'vc', ['vcluster-namespaces']),
+      makeStep(runs, 'other', ['proxy-reconnect']),
       makeStep(runs, 'pods-b', ['worktree-pods', 'status-streams']),
     ])
     await flush()
@@ -350,12 +343,9 @@ describe('defaultReconcileSteps', () => {
   })
 
   // A stream reattach is the one edge that says the proxy pod may have been
-  // replaced — which is what both proxy heals were previously polling for.
-  it('runs only the proxy heals on a stream reattach', async () => {
-    await expectOnly(
-      ['proxy-reconnect'],
-      [reconcileProxySshKeys, reconcileVclusterAttribution],
-    )
+  // replaced — which is what the proxy heal was previously polling for.
+  it('runs only the proxy heal on a stream reattach', async () => {
+    await expectOnly(['proxy-reconnect'], [reconcileProxySshKeys])
   })
 
   // The conversation sweep is the only substrate step that reads the
@@ -370,7 +360,7 @@ describe('defaultReconcileSteps', () => {
     // And nothing else — asserted over every step, not just the destructive
     // ones, so a future edit that hangs another step off `live-agents` fails
     // here rather than shipping. A set change says nothing about pods, and
-    // the reaper and the vcluster GC both delete.
+    // the reaper deletes.
     for (const fn of ALL_STEP_FNS) {
       if (fn === reconcileAgentSessions || fn === reconcileGeneratedTitles) continue
       expect(fn).not.toHaveBeenCalled()
@@ -417,8 +407,7 @@ describe('defaultReconcileSteps', () => {
     // which only holds while the REAL runtime is installed. Swap the
     // beforeEach to the fake — whose `reconcileSteps()` returns empty
     // groups — and the set above quietly shrinks to the mediator steps
-    // while still passing. So assert the runtime's own edges are in it.
-    expect(declared).toContain('vcluster-namespaces')
+    // while still passing. So assert the runtime's own edge is in it.
     expect(declared).toContain('proxy-reconnect')
   })
 

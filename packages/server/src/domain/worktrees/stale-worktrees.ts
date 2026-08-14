@@ -16,7 +16,7 @@ import type { StaleWorktreeInfo } from '@yaac/shared/types'
 /**
  * How long a recorded worktree must be CONTINUOUSLY observed with no pod
  * before the reaper records it as dead. Must clear the slowest legitimate
- * create — a cold image build plus a vcluster boot — since the row is
+ * create — a cold image build and pod start — since the row is
  * written before any of that starts. In-process creates are exempt via the
  * provisioning registry, so this only bounds the crash case.
  */

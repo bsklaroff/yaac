@@ -165,8 +165,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
     (slug: string, wt: string) => `/tmp/${slug}/meta/${wt}.session-starts.jsonl`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   worktreeStateDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
-  worktreeVclusterDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/vcluster`),
-  nestedYaacDataDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/nested-yaac`),
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
   PACKAGE_ROOT: '/tmp/yaac-package',
@@ -737,20 +735,6 @@ describe('createWorktree', () => {
     await createWorktree('demo', { tool: 'claude', worktreeId: 'abcd1235' })
     expect(appliedJobManifest().spec.template.spec.containers[0].env)
       .toContainEqual({ name: 'OPENAI_API_KEY', value: 'test-placeholder-key' })
-  })
-
-  it('refuses vcluster-in-vcluster: virtualCluster under YAAC_NESTED=1', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      virtualCluster: true,
-      nestedContainers: true,
-    })
-    process.env.YAAC_NESTED = '1'
-    try {
-      await expect(createWorktree('demo', { tool: 'claude' }))
-        .rejects.toThrow(/vcluster-in-vcluster/)
-    } finally {
-      delete process.env.YAAC_NESTED
-    }
   })
 
   it('applies a Job manifest with session labels, the registry image ref, and shared mounts', async () => {

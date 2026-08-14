@@ -6,22 +6,11 @@ import {
   type NetdConfig,
   type ReconcileDeps,
   type ReconcileMemo,
-  loadClaimConfig,
   loadConfig,
-  netdMode,
-  publishClaimOnce,
   reconcileOnce,
-  type ClaimMemo,
-  type ClaimReconcileDeps,
-  type NetdClaimConfig,
 } from 'yaac-netd/netd'
 import { ListenerRejectedError } from 'yaac-netd/envoy-admin'
 import { redirectChainName } from 'yaac-netd/rules'
-import {
-  CLAIMS_CONFIGMAP_NAME,
-  renderNamespaceClaims,
-  type NetdConfigMap,
-} from 'yaac-netd/claims'
 import type { NetdPod, NetdService } from 'yaac-netd/targets'
 
 const ENV_KEYS = [
@@ -116,64 +105,6 @@ describe('loadConfig', () => {
   })
 })
 
-describe('netdMode', () => {
-  let saved: string | undefined
-
-  beforeEach(() => { saved = process.env.NETD_MODE })
-  afterEach(() => {
-    if (saved === undefined) delete process.env.NETD_MODE
-    else process.env.NETD_MODE = saved
-  })
-
-  it('selects claim mode only on the exact opt-in', () => {
-    process.env.NETD_MODE = 'claim'
-    expect(netdMode()).toBe('claim')
-  })
-
-  it('defaults to host mode for anything else', () => {
-    // Host mode is the one that programs the node, so an unset or
-    // misspelled value must not silently produce a netd that programs
-    // nothing while reporting Ready.
-    delete process.env.NETD_MODE
-    expect(netdMode()).toBe('host')
-    process.env.NETD_MODE = 'Claim'
-    expect(netdMode()).toBe('host')
-  })
-})
-
-describe('loadClaimConfig', () => {
-  const KEYS = ['YAAC_NAMESPACE', 'YAAC_DATA_DIR_HASH']
-  let saved: Record<string, string | undefined> = {}
-
-  beforeEach(() => {
-    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]))
-    process.env.YAAC_NAMESPACE = 'yaac-inner'
-    process.env.YAAC_DATA_DIR_HASH = 'abc123'
-  })
-
-  afterEach(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-  })
-
-  it('reads the inner install identity a claim is signed with', () => {
-    expect(loadClaimConfig()).toEqual({ installNamespace: 'yaac-inner', installHash: 'abc123' })
-  })
-
-  it('refuses to start without either half of the identity', () => {
-    // A claim naming the wrong install (or an empty one) is one the host
-    // netd would reject anyway; failing here makes that a startup error
-    // instead of a silently ignored claim.
-    delete process.env.YAAC_DATA_DIR_HASH
-    expect(() => loadClaimConfig()).toThrow(/YAAC_DATA_DIR_HASH is required/)
-    process.env.YAAC_DATA_DIR_HASH = 'abc123'
-    delete process.env.YAAC_NAMESPACE
-    expect(() => loadClaimConfig()).toThrow(/YAAC_NAMESPACE is required/)
-  })
-})
-
 const CONFIG: NetdConfig = {
   installNamespace: 'yaac',
   nodeName: 'node-1',
@@ -200,7 +131,6 @@ interface Harness {
   written: Map<string, string>
   confirmed: ConfirmListenersInput[]
   setPods: (pods: NetdPod[]) => void
-  setClaims: (data: Record<string, string>) => void
   setConfirm: (fn: (input: ConfirmListenersInput) => Promise<void>) => void
 }
 
@@ -209,7 +139,6 @@ function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
   const written = new Map<string, string>()
   const confirmed: ConfirmListenersInput[] = []
   let pods: NetdPod[] = [SESSION_POD]
-  let configMaps: NetdConfigMap[] = []
   let confirm: (input: ConfirmListenersInput) => Promise<void> = () => Promise.resolve()
 
   const deps: ReconcileDeps = {
@@ -218,7 +147,6 @@ function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
     chain: redirectChainName(CONFIG.installNamespace),
     pods: () => pods,
     services: () => [PROXY_SVC],
-    configMaps: () => configMaps,
     routes: () => Promise.resolve('10.244.0.9 dev calia1 scope link\n'),
     trio: () => Promise.resolve({ https: 15100, http: 15101, tunnel: 15102 }),
     confirmListeners: (input) => {
@@ -243,9 +171,6 @@ function harness(overrides: Partial<ReconcileDeps> = {}): Harness {
     written,
     confirmed,
     setPods: (next) => { pods = next },
-    setClaims: (data) => {
-      configMaps = [{ name: CLAIMS_CONFIGMAP_NAME, namespace: CONFIG.installNamespace, data }]
-    },
     setConfirm: (fn) => { confirm = fn },
   }
 }
@@ -341,13 +266,13 @@ describe('reconcileOnce', () => {
     expect(h.written.get('chain')).not.toContain('DNAT')
   })
 
-  it('points every pod at the one install trio, whatever its target', async () => {
+  it('points every worktree pod at the one install trio', async () => {
     const h = harness()
     h.setPods([SESSION_POD, {
-      name: 'synced',
-      namespace: 'yaac-vc-demo',
+      name: 'sess-2',
+      namespace: 'yaac',
       podIp: '10.244.0.20',
-      labels: { 'vcluster.loft.sh/managed-by': 'yvc-demo' },
+      labels: { 'yaac.worktree-id': 's2' },
     }])
     h.deps.routes = () => Promise.resolve(
       '10.244.0.9 dev calia1 scope link\n10.244.0.20 dev calib2 scope link\n',
@@ -356,131 +281,5 @@ describe('reconcileOnce', () => {
     const chain = h.written.get('chain')!
     expect(chain).toContain('10.89.0.7:15100')
     expect(chain.match(/--to-destination 10\.89\.0\.7:15100/g)).toHaveLength(2)
-  })
-})
-
-describe('reconcileOnce with redirect claims', () => {
-  const VC_NS = 'yaac-vc-demo'
-  const INNER_PROXY: NetdPod = {
-    name: 'inner-proxy', namespace: VC_NS, podIp: '10.244.0.31',
-    labels: { 'vcluster.loft.sh/managed-by': 'yvc-demo', app: 'yaac-proxy' },
-  }
-  const INNER_SESS: NetdPod = {
-    name: 'inner-sess', namespace: VC_NS, podIp: '10.244.0.44',
-    labels: { 'vcluster.loft.sh/managed-by': 'yvc-demo' },
-  }
-  const ROUTES = '10.244.0.9 dev calia1 scope link\n'
-    + '10.244.0.31 dev calib2 scope link\n10.244.0.44 dev calic3 scope link\n'
-
-  it('renders an Envoy cluster on the claimed proxy POD IP, not a ClusterIP', async () => {
-    const h = harness({ routes: () => Promise.resolve(ROUTES) })
-    h.setPods([SESSION_POD, INNER_PROXY, INNER_SESS])
-    h.setClaims({
-      [VC_NS]: renderNamespaceClaims({
-        vcluster: 'yvc-demo',
-        claims: [{ install: 'h1', proxyPodIp: '10.244.0.31', sources: ['10.244.0.44'] }],
-      }),
-    })
-    await reconcileOnce(h.deps, h.memo)
-    const cds = h.written.get(CDS_PATH)!
-    expect(cds).toContain('10.244.0.31')
-    // Target keys are sanitized into Envoy resource names (resourceName).
-    expect(cds).toContain(`yaac-inner-${VC_NS}-h1-https`)
-    // Both targets are served: the claimed inner proxy and the outer one
-    // the claimed proxy's own egress rides (rule 3).
-    expect(cds).toContain('10.96.0.50')
-  })
-
-  it('ignores a claim naming an address outside the pod CIDRs', async () => {
-    // The bypass this guards: a tenant-authored target that kube-proxy (or
-    // anything else) would dereference off-cluster from the node netns.
-    const h = harness({ routes: () => Promise.resolve(ROUTES) })
-    h.setPods([SESSION_POD, INNER_PROXY, INNER_SESS])
-    h.setClaims({
-      [VC_NS]: renderNamespaceClaims({
-        vcluster: 'yvc-demo',
-        claims: [{ install: 'evil', proxyPodIp: '203.0.113.7', sources: ['10.244.0.44'] }],
-      }),
-    })
-    await reconcileOnce(h.deps, h.memo)
-    const cds = h.written.get(CDS_PATH)!
-    expect(cds).not.toContain('203.0.113.7')
-    // The claim is dropped, so the pod lands on the outer proxy instead.
-    expect(cds).toContain('10.96.0.50')
-  })
-
-  it('leaves every synced pod on the outer proxy when no claim exists', async () => {
-    const h = harness({ routes: () => Promise.resolve(ROUTES) })
-    h.setPods([SESSION_POD, INNER_PROXY, INNER_SESS])
-    await reconcileOnce(h.deps, h.memo)
-    expect(h.written.get(CDS_PATH)).not.toContain('10.244.0.31')
-  })
-})
-
-describe('publishClaimOnce', () => {
-  const CLAIM_CONFIG: NetdClaimConfig = { installNamespace: 'yaac', installHash: 'h1' }
-  const PROXY_POD: NetdPod = {
-    name: 'yaac-proxy-abc', namespace: 'yaac', podIp: '10.244.0.31', labels: { app: 'yaac-proxy' },
-  }
-
-  function claimHarness(pods: NetdPod[]): {
-    deps: ClaimReconcileDeps
-    memo: ClaimMemo
-    published: string[]
-  } {
-    const published: string[] = []
-    return {
-      deps: {
-        config: CLAIM_CONFIG,
-        pods: () => pods,
-        publish: (document) => { published.push(document); return Promise.resolve() },
-        log: () => { /* quiet */ },
-      },
-      memo: {},
-      published,
-    }
-  }
-
-  it('claims this install\'s worktree pods for its own proxy pod IP', async () => {
-    const h = claimHarness([PROXY_POD, SESSION_POD])
-    const changed = await publishClaimOnce(h.deps, h.memo)
-    expect(JSON.parse(h.published[0])).toEqual({
-      install: 'h1', proxyPodIp: '10.244.0.31', sources: ['10.244.0.9'],
-    })
-    expect(changed[0]).toContain('1 pods -> 10.244.0.31')
-  })
-
-  it('never claims the proxy pod itself', async () => {
-    const h = claimHarness([PROXY_POD, SESSION_POD])
-    await publishClaimOnce(h.deps, h.memo)
-    expect((JSON.parse(h.published[0]) as { sources: string[] }).sources)
-      .not.toContain('10.244.0.31')
-  })
-
-  it('retracts (empty document) when no proxy pod is up', async () => {
-    const h = claimHarness([SESSION_POD])
-    await publishClaimOnce(h.deps, h.memo)
-    expect(h.published).toEqual([''])
-  })
-
-  it('retracts when the install has no worktree pods', async () => {
-    const h = claimHarness([PROXY_POD])
-    await publishClaimOnce(h.deps, h.memo)
-    expect(h.published).toEqual([''])
-  })
-
-  it('writes nothing when the claim is unchanged', async () => {
-    const h = claimHarness([PROXY_POD, SESSION_POD])
-    await publishClaimOnce(h.deps, h.memo)
-    const changed = await publishClaimOnce(h.deps, h.memo)
-    expect(changed).toEqual([])
-    expect(h.published.length).toBe(1)
-  })
-
-  it('does not remember a failed publish', async () => {
-    const h = claimHarness([PROXY_POD, SESSION_POD])
-    h.deps.publish = () => Promise.reject(new Error('conflict'))
-    await expect(publishClaimOnce(h.deps, h.memo)).rejects.toThrow('conflict')
-    expect(h.memo.document).toBeUndefined()
   })
 })

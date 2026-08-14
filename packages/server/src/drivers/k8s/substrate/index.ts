@@ -19,15 +19,7 @@
 // cache and the pod-readiness watch, which is where they are covered.
 
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
-export { VCLUSTER_DELTA_SOURCES } from './cluster-cache'
-export type { DeltaSource, VclusterDeltaSource } from './cluster-cache'
-export {
-  anyWorktreeDirsExist,
-  armDeferredClusterBoot,
-  awaitDeferredClusterBoot,
-  isDeferredClusterBootPending,
-  triggerDeferredClusterBoot,
-} from './deferred-boot'
+export type { DeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export { ExecTunnel } from './exec-tunnel'
 export {
@@ -52,7 +44,6 @@ export {
   kubectlGetJson,
   kubectlWithRetry,
 } from './kubectl'
-export { ensurePinnedBinary } from './pinned-binary'
 export { k8sWorkspacePaths } from './workspace-paths'
 export { invalidatePortForward, resolvePortForward } from './port-forward'
 export type { ForwardAddr, PortForwardSpec } from './port-forward'
@@ -87,8 +78,6 @@ export {
   LABEL_WORKTREE_ID,
   LABEL_MODE,
   LABEL_TOOL,
-  LABEL_VCLUSTER_MANAGED_BY,
-  VCLUSTER_API_PORT,
   findWorktreePod,
   isNested,
   isPrewarmed,
@@ -104,16 +93,12 @@ export {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
-  INNER_PROXY_INGRESS_NP_NAME,
-  INNER_WORKTREE_INGRESS_LOCK_NP_NAME,
   LABEL_ROLE,
-  LABEL_VCLUSTER_NAMESPACE,
   NETD_APP_NAME,
   NETD_LISTENER_PORT_BASE,
   NETD_LISTENER_PORT_END,
   NETD_LISTENER_SLOTS,
   NETD_SA_NAME,
-  OUTER_CA_CONFIGMAP_NAME,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -122,7 +107,6 @@ export {
   PROXY_SA_NAME,
   RELAY_PORT,
   ROLE_BUILDER,
-  ROLE_INNER_PROXY,
   WORKTREE_EGRESS_NP_NAME,
   WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
@@ -131,7 +115,6 @@ export {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
-  VCLUSTER_EGRESS_FLOOR_NP_NAME,
 } from './proxy-constants'
 export {
   RelayExecError,
@@ -150,10 +133,3 @@ export { formatTaint, untoleratedTaints } from './taints'
 export type { NodeTaint, PodToleration } from './taints'
 export { createTickSnapshot } from './tick-snapshot'
 export type { TickSnapshot } from './tick-snapshot'
-export {
-  LABEL_VCLUSTER,
-  LABEL_VCLUSTER_DATA_DIR_HASH,
-  LABEL_VCLUSTER_SESSION_ID,
-  listVclusterNamespaces,
-} from './vcluster-objects'
-export type { VclusterPod } from './vcluster-objects'

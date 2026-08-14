@@ -108,9 +108,6 @@ export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
  * rootful engine delegates the full cgroup2 root + BPF filesystem the
  * calico-node DaemonSet needs to program the node's netfilter — under rootless
  * podman that DaemonSet never goes Ready and `yaac cluster setup` hangs.
- * A nested (in-pod, `YAAC_NESTED`) yaac drives the worktree's rootful
- * in-sandbox engine remotely — the image's CONTAINER_HOST points every
- * podman call at ROOTFUL_PODMAN_SOCKET.
  */
 export function usesRootfulPodman(): boolean {
   return process.platform !== 'darwin'

@@ -29,11 +29,6 @@ import {
   listActiveWorktrees,
   _clearListActiveInflightForTests,
 } from '#domain/worktrees/list'
-import {
-  _resetDeferredClusterBootForTests,
-  armDeferredClusterBoot,
-  awaitDeferredClusterBoot,
-} from '#drivers/k8s/substrate/deferred-boot'
 import { registerWorktreeForwarders, stopWorktreeForwarders } from '#drivers/k8s/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
@@ -59,35 +54,18 @@ describe('listActiveWorktrees', () => {
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     _clearTerminatingForTests()
-    _resetDeferredClusterBootForTests()
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
     _clearTerminatingForTests()
-    _resetDeferredClusterBootForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
   it('throws NOT_FOUND when the project filter points at an unknown slug', async () => {
     await expect(listActiveWorktrees('does-not-exist')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
-  it('answers empty without a cluster call while the deferred boot is pending', async () => {
-    const boot = vi.fn().mockResolvedValue(undefined)
-    armDeferredClusterBoot(boot)
-
-    const result = await listActiveWorktrees()
-    expect(result.worktrees).toEqual([])
-    expect(result.stale).toEqual([])
-    expect(mockListPods).not.toHaveBeenCalled()
-
-    // The short-circuit still fires the attach (a web-app connect must
-    // wake the cluster) — it just doesn't wait for it.
-    await awaitDeferredClusterBoot()
-    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('renders a stopping pod as a non-interactive stopping row, not stale', async () => {

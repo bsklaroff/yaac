@@ -33,10 +33,9 @@ delete process.env.GIT_WORK_TREE
 // failing inside a worktree. Nothing else reads it (the zsh prompt in
 // Dockerfile.default is in-image), so no test loses anything.
 //
-// Note this one is stripped suite-WIDE, not just for unit runs the way the
-// rest of the worktree preset is (YAAC_NESTED and friends, in unit-setup —
-// "E2e keeps the nested env" in vitest.config.ts's header). It belongs with
-// the posture vars instead because it IS one now: e2e servers bind loopback
+// Note this one is stripped suite-WIDE, not just for unit runs the way
+// YAAC_DATA_DIR is (unit-setup). It belongs with
+// the posture vars instead because it IS one: e2e servers bind loopback
 // and would reach the same answer either way, but the var's only reader is
 // the credential gate, so leaving it to e2e would leave the posture under
 // test depending on where the suite runs.

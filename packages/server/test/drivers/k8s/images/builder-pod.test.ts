@@ -30,13 +30,17 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
   resetClusterCidrCache: vi.fn(),
 }))
 
-// Only vapAvailable is consumed from the (heavy) vcluster module.
+// The guard's own VAP probe, faked so the builder path under test is not
+// gated on an apiserver.
 const mockVapAvailable = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
+vi.mock('#drivers/k8s/cluster/proxy-apply', async (importOriginal) => ({
+  ...(await importOriginal<typeof proxyApplyModule>()),
+  vapAvailable: mockVapAvailable,
+}))
+import type * as proxyApplyModule from '#drivers/k8s/cluster/proxy-apply'
 
 const mockImageExists = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({

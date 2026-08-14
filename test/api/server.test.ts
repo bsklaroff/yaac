@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
+import { worktreeDriver } from '@yaac/server/drivers/driver'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -25,10 +26,19 @@ describe('buildApp', () => {
     // credential-optional by default, so it reports authRequired: false.
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    // `driver` is 'k8s' here: this project's setup registers the real one
-    // (cluster-setup.ts), standing in for the composition root.
-    expect(await res.json())
-      .toEqual({ ok: true, buildId: 'abc123', ready: true, authRequired: false, driver: 'k8s' })
+    // `driver` echoes whichever runtime the project's setup registered as
+    // its stand-in for the composition root — k8s under `api-k8s`,
+    // containerless under `api-containerless`. Asserted against the registry
+    // rather than a literal so this pins the ROUTE's contract (it reports
+    // the registered driver) instead of pinning which project ran it, and
+    // stays exhaustive either way.
+    expect(await res.json()).toEqual({
+      ok: true,
+      buildId: 'abc123',
+      ready: true,
+      authRequired: false,
+      driver: worktreeDriver().kind,
+    })
   })
 
   it('GET /project/list requires bearer auth', async () => {

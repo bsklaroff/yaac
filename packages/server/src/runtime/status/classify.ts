@@ -43,7 +43,7 @@ export async function classifyWorkspaces(
       if (liveness === 'unknown') {
         // Inconclusive probe on a still-running pod — keep it. Reaping
         // here on a transient kubectl-exec failure would destroy a
-        // healthy worktree (Job + vcluster, no recovery). It stays in the
+        // healthy worktree (Job and all, no recovery). It stays in the
         // running bucket; a genuinely dead pod is still caught later by
         // the pod-phase (running=false) and orphan-Job paths.
         running.push(p)

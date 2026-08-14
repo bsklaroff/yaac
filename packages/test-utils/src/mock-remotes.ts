@@ -31,10 +31,8 @@ const execFileAsync = promisify(execFile)
  * Test traffic flows the same path, but the proxy's upstreamRedirects map
  * swaps the final hop to `{host: mock.host, port: mock.port}` — the mock
  * Service's ClusterIP (plain HTTP — mocks don't speak TLS). The IP, not the
- * Service DNS name, on purpose: an IP literal needs no resolution, so the
- * same registration works for a host proxy (which could resolve the name)
- * AND a nested worktree's inner proxy (which sinkholes every DNS name by
- * design and could not). The IP is stable for the Service's lifetime.
+ * Service DNS name, on purpose: an IP literal needs no resolution at all.
+ * The IP is stable for the Service's lifetime.
  */
 
 const MOCK_LLM_PORT = 9100

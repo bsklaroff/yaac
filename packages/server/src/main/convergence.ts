@@ -37,10 +37,9 @@ function fireChange(source: ReconcileTrigger): void {
  * Attach: start the driver, and wire what it reports into the machinery.
  *
  * `onAttached` fires once really attached, which is not necessarily before
- * this resolves — a driver may defer attaching until first use (the k8s one
- * does, inside a nested yaac, so a born-at-zero vcluster stays asleep). The
+ * this resolves — a driver may defer attaching until first use. The
  * reconcile loop starts from that callback rather than from the return, so
- * a sleeping substrate is not woken by the loop's first pass.
+ * a substrate that defers is not woken by the loop's first pass.
  */
 export async function attachConvergence(opts: {
   onAttached: () => void

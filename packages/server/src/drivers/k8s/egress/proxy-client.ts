@@ -27,7 +27,7 @@ import {
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { proxySshEntries } from './credential-providers'
 import { serverLog } from '#log'
-import { env, testEnv } from '@yaac/shared/env'
+import { testEnv } from '@yaac/shared/env'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -295,30 +295,6 @@ export class ProxyClient {
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to register session: ${res.status} ${text}`)
-    }
-  }
-
-  /**
-   * Push the full `{ podIP: outerWorktreeId }` attribution map for every managed
-   * vcluster's pods (yaac-in-yaac). The outer proxy can't resolve these
-   * cross-namespace source pods to a worktree itself, so chained egress (an inner
-   * proxy's upstream dials, and synced pods before an inner yaac opts in) would
-   * otherwise fail closed. Full-replace each call — the server sends the
-   * complete current set each background tick, so a torn-down pod's IP is
-   * evicted on the next push.
-   */
-  async registerVclusterAttribution(podWorktrees: Record<string, string>): Promise<void> {
-    const res = await tunnelFetch(`${this.baseUrl}/vcluster-attribution`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.requireAuthSecret()}`,
-      },
-      body: JSON.stringify(podWorktrees),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to register vcluster attribution: ${res.status} ${text}`)
     }
   }
 
@@ -658,9 +634,7 @@ export class ProxyClient {
     this.authSecret = await ensureProxyAuthSecret()
 
     const imageRef = await this.ensureProxyImage()
-    // Nested (inner) yaac: the proxy runs in a vcluster — unpinned Service +
-    // the inner-proxy role label (see ensureProxyResources).
-    await ensureProxyResources(imageRef, { nested: env.nested })
+    await ensureProxyResources(imageRef)
 
     await this.forward.ensure()
     await this.waitForHealthy()

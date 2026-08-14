@@ -46,10 +46,7 @@ export function setHermeticScratch(on: boolean): void {
  *
  * {@link ambientDataDir} rather than `getDataDir()` because this is called
  * BEFORE any data dir exists — each test's data dir is created *under* this
- * base, so the override would be circular. Inside a nested yaac worktree it
- * resolves to `$YAAC_DATA_DIR` (node-shared virtiofs, removed with the
- * worktree dir on cleanup), the only path that works there: the pod's
- * `/tmp` and `$HOME` are overlay filesystems the node cannot see.
+ * base, so the override would be circular.
  */
 export function testTmpBase(): string {
   if (hermeticScratch) return os.tmpdir()

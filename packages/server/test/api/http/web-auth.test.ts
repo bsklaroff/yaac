@@ -201,12 +201,7 @@ describe('isCredentialOptional', () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '')
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    // A plain worktree, carrying no vcluster preset: YAAC_NESTED is what the
-    // preset would add, and the exemption must not wait for it.
     vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
-    expect(isCredentialOptional()).toBe(true)
-    // The vcluster case is the same answer by the same route.
-    vi.stubEnv('YAAC_NESTED', '1')
     expect(isCredentialOptional()).toBe(true)
   })
 
@@ -221,8 +216,7 @@ describe('isCredentialOptional', () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
     vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
     expect(isCredentialOptional()).toBe(false)
-    vi.unstubAllEnvs()
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     expect(isCredentialOptional()).toBe(false)
   })
 })

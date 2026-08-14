@@ -57,36 +57,12 @@ interface RelayAddr {
  *  under (see port-forward.ts). */
 const RELAY_FORWARD_KEY = 'stream-relay'
 
-let cachedAddr: RelayAddr | null = null
 let cachedSecret: string | null = null
 
-/** Drop the cached relay address so the next dial re-resolves it (an inner
- *  proxy pod replacement moves the target IP; a dead port-forward child
- *  gets respawned). */
+/** Drop the cached relay address so the next dial re-resolves it (a dead
+ *  port-forward child gets respawned). */
 export function invalidateRelayAddr(): void {
-  cachedAddr = null
   invalidatePortForward(RELAY_FORWARD_KEY)
-}
-
-/**
- * Drop a cached address that has nothing shared standing behind it — the
- * nested inner-proxy pod IP, whose re-resolution is one apiserver read and
- * disturbs no live stream. That makes it safe on evidence too weak to
- * justify `invalidateRelayAddr`, which is the point: a dial timeout is no
- * verdict on a transport, but an inner proxy pod that got replaced leaves
- * an IP that blackholes every dial, and nothing else mid-run would ever
- * look again. A live port-forward child is left strictly alone — the whole
- * reason timeouts stopped recycling is that respawning it drops every
- * stream riding it.
- *
- * That last part is now structural rather than a runtime check: `cachedAddr`
- * holds ONLY the nested pod IP, since the top-level path delegates its
- * address to the shared port-forward registry and never memoizes anything
- * here. So clearing it cannot reach a port-forward child — which is exactly
- * the guarantee the old `portForwardChild === null` test was making.
- */
-function invalidateResolvedPodAddr(): void {
-  cachedAddr = null
 }
 
 /** Test-only: reset all module caches. */
@@ -119,43 +95,19 @@ function startRelayPortForward(): Promise<RelayAddr> {
   })
 }
 
-/** Single-flight guard so concurrent dials share one resolution (and
- *  never race two port-forward children into existence). */
-let resolveInflight: Promise<RelayAddr> | null = null
-
 /**
- * Where this install's relay listens, cached per resolution:
+ * Where this install's relay listens:
  *  1. `YAAC_RELAY_ADDR` — explicit override (a host with a direct TCP
  *     route to the proxy pod).
- *  2. Nested: the inner proxy's pod IP (a host pod IP by syncer
- *     write-back), read from the vcluster apiserver. The dial is admitted
- *     by the existing all-ports synced-pod egress rule.
- *  3. Top-level: the local listener of a long-lived kubectl port-forward
- *     into the proxy (see startRelayPortForward).
+ *  2. The local listener of a long-lived kubectl port-forward into the
+ *     proxy (see startRelayPortForward).
+ *
+ * The shared port-forward registry owns both the cache and the child's
+ * lifetime, so a child that dies is respawned on the next dial rather than
+ * leaving a stale address memoized here.
  */
 export async function resolveRelayAddr(): Promise<RelayAddr> {
-  const override = env.relayAddr
-  if (override) return override
-  // Top-level: the shared port-forward registry owns both the cache and
-  // the child's lifetime, so a child that dies is respawned on the next
-  // dial rather than leaving a stale address memoized here.
-  if (!env.nested) return startRelayPortForward()
-  if (cachedAddr) return cachedAddr
-  if (resolveInflight) return resolveInflight
-  resolveInflight = (async () => {
-    interface RawPods { items: Array<{ status?: { podIP?: string; phase?: string } }> }
-    const list = await kubectlGetJson<RawPods>([
-      'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
-    ])
-    const ip = list?.items.find((p) => p.status?.phase === 'Running')?.status?.podIP
-      ?? list?.items[0]?.status?.podIP
-    if (!ip) throw new Error('stream relay: no inner proxy pod IP yet')
-    cachedAddr = { host: ip, port: RELAY_PORT }
-    return cachedAddr
-  })().finally(() => {
-    resolveInflight = null
-  })
-  return resolveInflight
+  return env.relayAddr ?? startRelayPortForward()
 }
 
 /**
@@ -259,12 +211,9 @@ export async function relayDial(
       if (transportDead) invalidateRelayAddr()
       reject(new RelayDialError(`stream relay dial (${worktreeId.slice(0, 8)}...): ${reason}`))
     }
-    const timer = setTimeout(() => {
-      // Too weak to condemn the shared transport, strong enough to re-read
-      // an address that costs nothing to re-read (see the function).
-      invalidateResolvedPodAddr()
-      fail(`timeout after ${timeoutMs}ms`, false)
-    }, timeoutMs)
+    // A dial timeout is too weak to condemn the shared transport: a
+    // port-forward respawn drops every stream riding it.
+    const timer = setTimeout(() => fail(`timeout after ${timeoutMs}ms`, false), timeoutMs)
 
     socket.on('error', (err: Error) => fail(err.message))
     socket.on('close', () => fail('connection closed during handshake'))

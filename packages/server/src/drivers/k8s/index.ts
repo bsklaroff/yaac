@@ -23,7 +23,6 @@ import {
   readGitAuthFailures,
   registerWorkspace,
 } from '#drivers/k8s/egress'
-import { getVclusterStatus } from '#drivers/k8s/cluster'
 import {
   prepareWorkspaceImage,
   retryImageBuild,
@@ -127,7 +126,6 @@ export function createK8sDriver(): WorktreeDriver {
     allGitAuthFailures: () => readAllGitAuthFailures(),
     forwardedPorts: (workspaceId) => Promise.resolve(getWorktreePorts(workspaceId)),
     unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
-    virtualClusterStatus: (workspaceId) => getVclusterStatus(workspaceId),
     allowHost: (target, host, opts) => allowWorktreeHost(target, host, opts),
     forwardPort: (target, port, opts) => forwardWorktreePort(target, port, opts),
     dismissPort: (workspaceId, port) => dismissWorktreePort(workspaceId, port),

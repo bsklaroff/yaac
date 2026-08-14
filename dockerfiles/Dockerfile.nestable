@@ -36,14 +36,6 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# kubectl — for virtualCluster sessions (KUBECONFIG points at the
-# session's vcluster) and yaac-in-yaac. Pinned; lives in this layer
-# rather than tools so non-nested sessions stay untouched.
-RUN ARCH="$(dpkg --print-architecture)" && \
-    curl -fsSL "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
-      -o /usr/local/bin/kubectl && \
-    chmod +x /usr/local/bin/kubectl
-
 # Rootful-in-sandbox podman: the engine runs as REAL root inside the gVisor
 # sentry — the upstream-tested docker-in-gvisor shape
 # (https://gvisor.dev/docs/tutorials/docker-in-gvisor/). In-sandbox root is a
@@ -159,9 +151,8 @@ EOF
 # the thing that survives a node dying — this only makes the project's warm
 # layers visible to a fresh session's engine with no pull and no graphroot
 # spend, shared by every session on the node. The directory is baked in
-# EMPTY so a session with no generation to mount (a cold node, an inner
-# yaac whose vcluster denies the hostPath) still starts: containers/storage
-# treats an empty additional store as no images.
+# EMPTY so a session with no generation to mount (a cold node) still
+# starts: containers/storage treats an empty additional store as no images.
 RUN mkdir -p /var/lib/containers /var/lib/shared-images
 RUN cat <<'EOF' > /etc/containers/storage.conf
 [storage]

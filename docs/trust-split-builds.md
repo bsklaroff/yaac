@@ -36,9 +36,6 @@ them exclusively to the yaac-shipped Dockerfiles, regardless of file
 content. Untrusted layers build against their host-built, registry-pushed
 parent, so the sandbox only ever executes the untrusted suffix of a chain.
 
-Nested yaac installs (`YAAC_NESTED=1`) are the one exception: they build
-on their in-pod engine, already sandboxed by the outer worktree.
-
 ## Why sandbox only the untrusted layers
 
 The dominant cost of building under runsc is `RUN`-step process creation

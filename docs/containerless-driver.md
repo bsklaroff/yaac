@@ -294,8 +294,8 @@ answer under both drivers on one line.
   build feed are hidden in the webapp.
 - **Egress mediation.** No blocked hosts, no git-auth failure reports, no
   allowlist. A worktree reaches whatever the user running the server can.
-- **Nested containers and virtual clusters.** Both ask for a container to put
-  a container in. A project config requesting either is rejected at create.
+- **Nested containers.** `nestedContainers` asks for a container to put a
+  container in. A project config requesting it is rejected at create.
 - **The prewarmed spare pool.** A spare amortizes an image pull and a pod
   boot; a tmux server in an existing checkout costs neither.
 - **Per-worktree module caching.** See the mount note above.

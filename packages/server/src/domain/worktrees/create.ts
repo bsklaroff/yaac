@@ -7,7 +7,7 @@ import type { ReservedPort } from '#lib/port'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { buildStatusRight } from '#lib/status-right'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
-import { env as yaacEnv, testEnv } from '@yaac/shared/env'
+import { testEnv } from '@yaac/shared/env'
 import { worktreeDriver } from '#drivers/driver'
 import type {
   RuntimeHandle,
@@ -698,37 +698,20 @@ export async function createWorktree(
   }
 
   // nestedContainers shapes the image chain (nestable layer), the pod
-  // spec (nested branch), the proxy allowlist (registry hosts), and the
-  // in-pod engine start + readiness gate. virtualCluster (config
-  // only) additionally stands up the per-project push registry and a
-  // per-worktree vcluster, and implies nestedContainers — the in-pod
-  // podman is the worktree's only build engine. The config parser already
-  // normalizes `virtualCluster: true` to set `nestedContainers: true`
-  // (and rejects an explicit `nestedContainers: false` alongside it).
-  const virtualCluster = config.virtualCluster === true
-  const nestedContainers = config.nestedContainers === true || virtualCluster
+  // spec (nested branch), the proxy allowlist (registry hosts), the
+  // per-project push registry, and the in-pod engine start + readiness
+  // gate.
+  const nestedContainers = config.nestedContainers === true
 
-  // Both keys ask for a container to put a container in, so neither means
-  // anything without the first one. Rejected here rather than degraded:
+  // The key asks for a container to put a container in, so it means
+  // nothing without the first one. Rejected here rather than degraded:
   // a project whose config says it needs its own engine gets a worktree
   // that silently lacks one otherwise, and the failure surfaces much later
   // as a build command that cannot find docker.
-  if (runtime.kind === 'containerless' && (virtualCluster || nestedContainers)) {
-    const key = virtualCluster ? 'virtualCluster' : 'nestedContainers'
+  if (runtime.kind === 'containerless' && nestedContainers) {
     throw new ServerError(
       'VALIDATION',
-      `${key} needs a container runtime; this server runs worktrees on the host.`,
-    )
-  }
-
-  // Recursion cap: an inner yaac (running inside a vcluster worktree)
-  // must not stand up vcluster-in-vcluster — the depth buys nothing
-  // (synced pods already run on the host node) and the inner cluster
-  // lacks the infrastructure (no kind node of its own).
-  if (virtualCluster && yaacEnv.nested) {
-    throw new ServerError(
-      'VALIDATION',
-      'virtualCluster is not supported inside a nested yaac (no vcluster-in-vcluster).',
+      'nestedContainers needs a container runtime; this server runs worktrees on the host.',
     )
   }
 
@@ -884,7 +867,7 @@ export async function createWorktree(
   // ── Concurrent provisioning ─────────────────────────────────────────
   // The independent legs of provisioning run concurrently: image
   // ensure+push (podman + registry), fetch + worktree checkout (network +
-  // disk), cluster-side ensures (proxy, vcluster, proxy registration), and
+  // disk), cluster-side ensures (proxy, registry, proxy registration), and
   // host-side fs prep. The worktree leg deliberately outlives the join
   // below — launchWithSetup joins it after pod-Ready, so the checkout
   // also overlaps the pod's image pull and gVisor boot.
@@ -961,10 +944,9 @@ export async function createWorktree(
   // worktree leg into an unhandled rejection.
   worktreeTask.catch(() => { /* awaited later */ })
 
-  // The substrate half: the egress registration, the image plumbing the
-  // in-pod engine pulls through, and — for a virtualCluster project — the
-  // worktree's own nested cluster. Started here so its cold start overlaps
-  // the image build, the checkout and the fs prep; what it stands up
+  // The substrate half: the egress registration and the image plumbing
+  // the in-pod engine pulls through. Started here so its cold start
+  // overlaps the image build, the checkout and the fs prep; what it stands up
   // belongs to the WORKTREE, so the retry loop below reuses it rather than
   // preparing again per attempt.
   const substrateTask = runtime.prepareSubstrate({
@@ -974,7 +956,6 @@ export async function createWorktree(
     config,
     remoteUrl,
     nestedContainers,
-    virtualCluster,
     proxySecrets: resolveProxySecrets(config),
     onProgress: (m) => emit(m, options),
   })

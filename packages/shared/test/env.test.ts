@@ -82,25 +82,6 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('k8sRegistry', () => {
-    it('is undefined when unset — the server names its own in-cluster registry', () => {
-      vi.stubEnv('YAAC_K8S_REGISTRY', undefined)
-      expect(env.k8sRegistry).toBeUndefined()
-    })
-
-    it('treats an empty value as unset', () => {
-      // The unit-test setup strips this var by deleting it; an empty
-      // string must not read as "an externally managed registry at ''".
-      vi.stubEnv('YAAC_K8S_REGISTRY', '   ')
-      expect(env.k8sRegistry).toBeUndefined()
-    })
-
-    it('returns the override when set', () => {
-      vi.stubEnv('YAAC_K8S_REGISTRY', 'registry.local:5000')
-      expect(env.k8sRegistry).toBe('registry.local:5000')
-    })
-  })
-
   describe('kindCluster', () => {
     it('defaults to yaac when unset', () => {
       vi.stubEnv('YAAC_KIND_CLUSTER', undefined)
@@ -175,17 +156,6 @@ describe('env (configuration)', () => {
         vi.stubEnv('YAAC_AUTO_TITLES', v)
         expect(env.autoTitles).toBe(true)
       }
-    })
-  })
-
-  describe('nested', () => {
-    it('is true only when YAAC_NESTED is exactly "1"', () => {
-      vi.stubEnv('YAAC_NESTED', '1')
-      expect(env.nested).toBe(true)
-      vi.stubEnv('YAAC_NESTED', '0')
-      expect(env.nested).toBe(false)
-      vi.stubEnv('YAAC_NESTED', undefined)
-      expect(env.nested).toBe(false)
     })
   })
 

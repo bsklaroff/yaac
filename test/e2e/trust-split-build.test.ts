@@ -9,7 +9,6 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_IMAGE_PREFIX,
-  IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { projectBuildDir, userBuildDir } from '@yaac/server/lib/build-dirs'
 import { writeBuildFile } from '@yaac/server/domain/projects/build-files'
@@ -50,10 +49,6 @@ import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/imag
  * distinct pods via --cache-from/--cache-to registry cache images. The
  * final product is then run as a pod, proving node containerd can pull the
  * cross-repo-mounted manifest.
- *
- * Skipped nested: a nested install always routes builds to its (already
- * sandboxed) in-pod engine, and the podman `kind` network the registry
- * Service targets does not exist inside a session pod.
  */
 
 const PROJECT_SLUG = 'trust-split-e2e'
@@ -107,7 +102,7 @@ function buildLogFor(tag: string): string {
   return getImageBuildLog(entry!.id) ?? ''
 }
 
-describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
+describe('trust-split builds', () => {
   beforeAll(async () => {
     await requirePodman()
     await requireCluster()
@@ -159,9 +154,8 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
   it('reserves yaac.role=builder — a pod-creating ServiceAccount cannot fake it', async () => {
     await ensureBuilderRoleGuard()
 
-    // A ServiceAccount WITH pod-create RBAC in this namespace — the exact
-    // shape of a vcluster syncer, the only pod-create path a session can
-    // reach. RBAC must not be what blocks the fake below.
+    // A ServiceAccount WITH pod-create RBAC in this namespace: the guard,
+    // not RBAC, must be what blocks the fake below.
     const ns = k8sNamespace()
     const faker = `system:serviceaccount:${ns}:faker`
     await kubectlApply({

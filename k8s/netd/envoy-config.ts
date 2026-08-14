@@ -11,8 +11,8 @@
  * target per leg. A connection's target is chosen by its SOURCE, not by
  * the port it arrived on:
  *
- *   listener :H ──source 10.244.0.9/32 ──▶ cluster outer  ──PP2──▶ ip:10256
- *              └─source 10.244.0.14/32 ──▶ cluster inner/… ──PP2──▶ ip:10256
+ *   listener :H ──source 10.244.0.9/32 ──▶ cluster outer ──PP2──▶ ip:10256
+ *              └─source 10.244.0.14/32 ─▶ cluster outer ──PP2──▶ ip:10256
  *
  * Four things are load-bearing:
  *
@@ -43,10 +43,8 @@
  *   cross-install misrouting. Disabled, the loser fails to bind, netd's
  *   listener gate sees the rejection, and it re-probes for a free trio.
  *
- * Clusters are plain STATIC endpoints on the target proxy's address, which
- * Envoy dials from the node root netns. For the OUTER proxy that address is
- * a ClusterIP (kube-proxy's DNAT applies normally); for a CLAIMED inner
- * proxy it is a pod IP, deliberately — see the invariant in targets.ts.
+ * Clusters are plain STATIC endpoints on the proxy's ClusterIP, which Envoy
+ * dials from the node root netns (kube-proxy's DNAT applies normally).
  */
 
 import type { EgressTarget, PodTarget } from 'yaac-netd/targets'

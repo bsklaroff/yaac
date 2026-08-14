@@ -136,14 +136,13 @@ cmd_dump() {
   # projects/*/sessions goes too. It is per-session state yaac's own cleanup
   # and orphan GC remove wholesale, and the pod it belonged to does not
   # survive a restore anyway: the tmux socket is dead without its kernel,
-  # the vcluster kubeconfig is rewritten from the syncer secret, and the
-  # staged skills/bin are re-copied on the next create. Worktrees are NOT
-  # in here — they are the sibling projects/*/worktrees, always kept.
+  # and the staged skills/bin are re-copied on the next create. Worktrees
+  # are NOT in here — they are the sibling projects/*/worktrees, always
+  # kept.
   #
-  # The one thing this does lose is the yaac-in-yaac data dirs
-  # (sessions/<id>/nested-yaac): an inner install's DB, credentials and
-  # worktrees. Back a nested install up from inside the session if you need
-  # its state.
+  # An inner yaac running in a worktree keeps its own data dir under that
+  # worktree's checkout, so back it up from inside the worktree if you
+  # need its state.
   #
   # cache/ and models/ are re-fetched rather than carried: the Calico
   # manifest by `yaac cluster setup` (checksum-verified), and the ~333MB

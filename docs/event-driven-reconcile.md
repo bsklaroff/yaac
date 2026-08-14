@@ -12,8 +12,7 @@ instead — see docs/stream-relay.md.
 `client.ts` holds lazy `KubeConfig`/`CoreV1Api`/`BatchV1Api` singletons.
 `loadFromDefault()` resolves the same kubeconfig kubectl does (`KUBECONFIG`
 env included), so the typed client and the kubectl write/exec paths always
-address the same cluster — nested yaac's default context points at the
-worktree's vcluster apiserver and needs nothing extra.
+address the same cluster.
 
 `informer-cache.ts` wraps one client-node informer per resource kind into
 an `InformerCache<T>`: a mapped in-memory cache with `onChange`
@@ -41,28 +40,26 @@ treat absence in the cache as absence in the cluster.
 `cluster-cache.ts` is the registry of every informer the server runs,
 exposed to the rest of the server as a set-active singleton (the display
 path and reconcile steps read it; unit tests leave it null and fall back
-to one-shot kubectl lists). Fixed informers: worktree pods (the
-`worktreePodSelector` set), worktree Jobs, and vcluster namespaces. From
-the namespaces cache it derives a dynamic pods+services informer pair per
-live vcluster namespace — pods unselected (attribution needs every pod
-IP), services selected by `vcluster.loft.sh/managed-by`. Deltas fan out
-via `onDelta(source)` with sources `worktree-pods` / `worktree-jobs` /
-`vcluster-namespaces` / `vcluster-pods` / `vcluster-services`.
+to one-shot kubectl lists). It runs exactly two install-scoped informers —
+worktree pods (the `worktreePodSelector` set) and worktree Jobs — and
+deltas fan out via `onDelta(source)` with sources `worktree-pods` /
+`worktree-jobs`.
 
 `tick-snapshot.ts` keeps the per-pass point-in-time view: each getter
 memoizes once per snapshot and answers from the active ClusterCache when
 that source is healthy, else falls back to a live kubectl list. The
-fallback is the destructive-step safety rule — the stale reaper and
-vcluster GC never act on a cache known to be degraded, and both are
-age-gated far beyond any watch lag.
+fallback is the destructive-step safety rule — the stale reaper never
+acts on a cache known to be degraded, and its sweeps are age-gated far
+beyond any watch lag.
 
 ## Reconciler (`packages/server/src/main/reconciler.ts`)
 
 Steps subscribe to triggers; three lanes feed one serialized executor:
 
 - **deltas** — informer events mark their sources dirty; a pass runs
-  after a 250ms debounce so event storms coalesce. This is what makes
-  vcluster attribution land within milliseconds of the pod appearing.
+  after a 250ms debounce so event storms coalesce. This is what makes a
+  worktree's rows catch up within milliseconds of its pod appearing or
+  going.
   One source in this lane is not an informer: `live-agents`, marked when a
   worktree's set of running conversations changes (one appeared, one went,
   or one learned its id). An `acp` conversation's id comes out of an in-pod

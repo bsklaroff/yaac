@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // The fallback listings are one-shot kubectl calls, so the child process is
-// the boundary: the session-pod and vcluster object layers (their selectors,
-// schemas and mappers) run for real behind it.
+// the boundary: the session-pod object layer (its selectors, schemas and
+// mappers) runs for real behind it.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
@@ -23,10 +23,8 @@ import {
   setActiveClusterCache,
   type ClusterCache,
   type PodInfo,
-  type VclusterPod,
 } from '#drivers/k8s/substrate'
 
-const VC = { namespace: 'test-ns-vc-abcd1234', name: 'yvc-abcd1234' }
 const SID = '0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9'
 
 /** Raw kubectl payloads, keyed by the resource in the argv. */
@@ -54,10 +52,6 @@ function healthyCache(): ClusterCache {
     healthy: () => true,
     worktreePods: () => [{ podName: 'cached' } as PodInfo],
     worktreeJobs: () => [],
-    vclusterNamespaces: () => [],
-    vclusterPods: () => [{ name: 'vp', podIP: '10.0.0.9', labels: {} }],
-    vclusterServices: () => [{ name: 'yaac-proxy', labels: {} }],
-    vclusterConfigMaps: () => [{ name: 'yaac-redirect-claim-x-yaac-x-vc', data: {} }],
   } as unknown as ClusterCache
 }
 
@@ -71,9 +65,6 @@ beforeEach(() => {
     Promise.resolve({ stdout: JSON.stringify(payloads[kindOf(args)] ?? { items: [] }), stderr: '' }))
   payloads['pods'] = { items: [rawPod('yaac-demo-p1')] }
   payloads['jobs'] = { items: [] }
-  payloads['namespaces'] = { items: [] }
-  payloads['services'] = { items: [] }
-  payloads['configmaps'] = { items: [] }
 })
 
 afterEach(() => {
@@ -100,79 +91,12 @@ describe('createTickSnapshot', () => {
     expect(await snap.pods()).toBe(pods)
     await snap.jobs()
     await snap.jobs()
-    await snap.vclusters()
-    await snap.vclusters()
-    await snap.vclusterPods(VC.namespace)
-    await snap.vclusterPods(VC.namespace)
-    await snap.vclusterServices(VC)
-    await snap.vclusterServices(VC)
-    await snap.vclusterConfigMaps(VC.namespace)
-    await snap.vclusterConfigMaps(VC.namespace)
-    expect(execFileMock).toHaveBeenCalledTimes(6)
-    // Each fallback is scoped the way its own object layer scopes it: the
-    // install-wide lists by data-dir-hash, the vcluster ones by namespace.
+    expect(execFileMock).toHaveBeenCalledTimes(2)
+    // Each fallback is scoped the way its own object layer scopes it —
+    // install-wide, by data-dir-hash.
     const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
     expect(argv.find((c) => c.startsWith('get pods -n test-ns')))
       .toMatch(/-l yaac\.data-dir-hash=[0-9a-f]{16},yaac\.worktree-id/)
-    expect(argv).toContain(`get pods -n ${VC.namespace} -o json`)
-    expect(argv).toContain(`get services -n ${VC.namespace} -l vcluster.loft.sh/managed-by=${VC.name} -o json`)
-    expect(argv).toContain(`get configmaps -n ${VC.namespace} -o json`)
-  })
-
-  it('maps the vcluster object layer, dropping rows it cannot map', async () => {
-    payloads['namespaces'] = {
-      items: [
-        {
-          metadata: {
-            name: VC.namespace,
-            creationTimestamp: '2026-06-15T00:00:00Z',
-            labels: {
-              'yaac.vcluster': VC.name,
-              'yaac.vcluster-session-id': SID,
-              'yaac.vcluster-data-dir-hash': 'ddh16',
-            },
-          },
-        },
-        // Not a yaac vcluster (no ownership labels) → skipped, not fatal.
-        { metadata: { name: 'kube-system', creationTimestamp: '', labels: {} } },
-      ],
-    }
-    payloads['pods'] = {
-      items: [
-        { metadata: { name: 'syncer-0' }, status: { podIP: '10.1.2.3' } },
-        { metadata: { name: 'pending-0' } }, // no IP yet — still a row
-        {}, // malformed → dropped
-      ],
-    }
-    payloads['services'] = {
-      items: [{ metadata: { name: 'yaac-proxy-x-yaac-x-yvc', labels: { 'yaac.role': 'inner-proxy' } } }, {}],
-    }
-    payloads['configmaps'] = {
-      items: [{ metadata: { name: 'claims' }, data: { claims: 'a,b' } }, { metadata: {} }],
-    }
-
-    const snap = createTickSnapshot()
-    expect(await snap.vclusters()).toEqual([{
-      name: VC.name, worktreeId: SID, namespace: VC.namespace,
-      creationTimestamp: '2026-06-15T00:00:00Z',
-    }])
-    expect(await snap.vclusterPods(VC.namespace)).toEqual([
-      { name: 'syncer-0', podIP: '10.1.2.3', labels: {} },
-      { name: 'pending-0', labels: {} },
-    ])
-    expect(await snap.vclusterServices(VC))
-      .toEqual([{ name: 'yaac-proxy-x-yaac-x-yvc', labels: { 'yaac.role': 'inner-proxy' } }])
-    expect(await snap.vclusterConfigMaps(VC.namespace))
-      .toEqual([{ name: 'claims', data: { claims: 'a,b' } }])
-  })
-
-  it('memoizes vcluster getters per namespace, not globally', async () => {
-    const snap = createTickSnapshot()
-    await snap.vclusterPods('ns-a')
-    await snap.vclusterPods('ns-b')
-    const argv = execFileMock.mock.calls.map(([, args]) => args.join(' '))
-    expect(argv).toContain('get pods -n ns-a -o json')
-    expect(argv).toContain('get pods -n ns-b -o json')
   })
 
   it('separate snapshots list independently', async () => {
@@ -182,16 +106,12 @@ describe('createTickSnapshot', () => {
   })
 
   it('reads an absent namespace as empty rather than an error', async () => {
-    // A vcluster torn down mid-pass: kubectl 404s, the object layer returns
-    // no rows, and the step sees an empty namespace instead of throwing.
+    // A namespace torn down mid-pass: kubectl 404s, the object layer
+    // returns no rows, and the step sees empty instead of throwing.
     execFileMock.mockRejectedValue(
       Object.assign(new Error('kubectl failed'), { stderr: 'Error from server (NotFound)' }),
     )
     const snap = createTickSnapshot()
-    expect(await snap.vclusterPods(VC.namespace)).toEqual([])
-    expect(await snap.vclusterServices(VC)).toEqual([])
-    expect(await snap.vclusterConfigMaps(VC.namespace)).toEqual([])
-    expect(await snap.vclusters()).toEqual([])
     expect(await snap.pods()).toEqual([])
     expect(await snap.jobs()).toEqual([])
   })
@@ -208,11 +128,6 @@ describe('createTickSnapshot', () => {
     setActiveClusterCache(healthyCache())
     const snap = createTickSnapshot()
     expect((await snap.pods()).map((p) => p.podName)).toEqual(['cached'])
-    expect(await snap.vclusterPods(VC.namespace))
-      .toEqual([{ name: 'vp', podIP: '10.0.0.9', labels: {} } as VclusterPod])
-    expect(await snap.vclusterServices(VC)).toEqual([{ name: 'yaac-proxy', labels: {} }])
-    expect(await snap.vclusterConfigMaps(VC.namespace))
-      .toEqual([{ name: 'yaac-redirect-claim-x-yaac-x-vc', data: {} }])
     expect(execFileMock).not.toHaveBeenCalled()
   })
 
@@ -221,17 +136,10 @@ describe('createTickSnapshot', () => {
     // mistaken for "this object no longer exists".
     const cache = healthyCache()
     vi.spyOn(cache, 'healthy').mockReturnValue(false)
-    vi.spyOn(cache, 'vclusterPods').mockReturnValue(null)
-    vi.spyOn(cache, 'vclusterServices').mockReturnValue(null)
-    vi.spyOn(cache, 'vclusterConfigMaps').mockReturnValue(null)
     setActiveClusterCache(cache)
     const snap = createTickSnapshot()
     expect((await snap.pods()).map((p) => p.podName)).toEqual(['yaac-demo-p1'])
     await snap.jobs()
-    await snap.vclusters()
-    await snap.vclusterPods(VC.namespace)
-    await snap.vclusterServices(VC)
-    await snap.vclusterConfigMaps(VC.namespace)
-    expect(execFileMock).toHaveBeenCalledTimes(6)
+    expect(execFileMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -38,7 +38,7 @@ import {
 import { parsePp2Header } from './pp2'
 import { readJsonOrNull, writeJsonAtomic } from './state-files'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
+import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, startPodWatch } from './pod-watch'
 import {
   LEGACY_SPAWN_PATH,
   MAMA_MAGIC_HOST,
@@ -94,15 +94,9 @@ const SSH_AGENT_PORT = process.env.SSH_AGENT_PORT
 // Sinkhole answer for EXTERNAL names: decorative — netd redirects egress by
 // port (443/80) and the proxy routes by SNI/Host, never by the dialed address.
 const DNS_SINKHOLE_IPV4 = '198.18.0.1'
-// Split-horizon DNS, top-level proxy only: forward `.cluster.local` names to
-// the real cluster CoreDNS so pods learn live in-cluster ClusterIPs (what lets
-// yaac stop pinning them). OFF for the nested (inner) proxy, which by design
-// resolves NOTHING for real: its resolver is its own loopback stub (it has no
-// route to the vcluster CoreDNS — see buildProxyDeploymentManifest's nested
-// dnsConfig), it sinkholes every name, and its upstream dials chain to the
-// outer proxy which resolves for real. Forwarding there would loop straight
-// back into its own stub, and inner worktrees have no in-cluster Service to
-// resolve anyway (no inner registry — vcluster-in-vcluster is rejected).
+// Split-horizon DNS: forward `.cluster.local` names to the real cluster
+// CoreDNS so pods learn live in-cluster ClusterIPs (what lets yaac stop
+// pinning them).
 const DNS_FORWARD_INTERNAL = process.env.DNS_FORWARD_INTERNAL === '1'
 
 /**
@@ -129,36 +123,12 @@ async function resolveInternalA(name: string): Promise<string | null> {
 // worktree from the source pod IP in the Envoy-stamped PROXY header.
 const podIndex = new PodWorktreeIndex()
 
-// podIP → OUTER worktreeId for a vcluster's chained egress (yaac-in-yaac). The
-// host server pushes this via PUT /vcluster-attribution: those source pods live
-// in another namespace the pod-watch SA can't resolve to the owning worktree, so
-// the server — which knows the mapping — supplies it. Full-replace each push.
-const vclusterPodWorktree = new Map<string, string>()
-// Last-applied attribution content, so the every-tick re-push logs only on change.
-let lastVclusterAttributionKey = ''
-
-interface ResolvedWorktree {
-  worktreeId: string
-  /**
-   * True when the source IP was attributed via the server-pushed vcluster
-   * map rather than a directly-watched worktree pod. Spawn requests key on
-   * this: nested workloads must spawn against their own (inner) yaac, so
-   * the outer proxy refuses them.
-   */
-  viaVclusterAttribution: boolean
-}
-
-async function resolveWorktree(ip: string): Promise<ResolvedWorktree | undefined> {
+async function resolveWorktree(ip: string): Promise<string | undefined> {
   const cached = podIndex.resolve(ip)
-  if (cached) return { worktreeId: cached, viaVclusterAttribution: false }
-  // Server-supplied attribution for a vcluster's chained egress (the pod-watch
-  // can't see those cross-namespace source pods).
-  const vc = vclusterPodWorktree.get(ip)
-  if (vc) return { worktreeId: vc, viaVclusterAttribution: true }
+  if (cached) return cached
   // Cache-miss fallback: a new pod's first packet can beat its watch event.
   try {
-    const fetched = await fetchWorktreeByPodIp(podIndex, ip)
-    return fetched ? { worktreeId: fetched, viaVclusterAttribution: false } : undefined
+    return await fetchWorktreeByPodIp(podIndex, ip) ?? undefined
   } catch { return undefined }
 }
 
@@ -320,10 +290,9 @@ function loadOrGenerateCA(): CA {
     const cert = forge.pki.certificateFromPem(certPem)
     // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
     // subjectKeyIdentifier, so a verifier holding another identically-named
-    // "yaac Proxy CA" (e.g. the outer proxy's CA, folded into a nested
-    // worktree's combined trust bundle) can't tell which one signed a leaf and
-    // hard-fails on the wrong key. Regenerate it so new leaves get a matching
-    // AKI. See getLeafCert.
+    // "yaac Proxy CA" can't tell which one signed a leaf and hard-fails on
+    // the wrong key. Regenerate it so new leaves get a matching AKI. See
+    // getLeafCert.
     if (cert.getExtension('subjectKeyIdentifier')) {
       console.log('[proxy] Loaded existing CA from disk')
       return { key, cert, pem: certPem }
@@ -391,9 +360,8 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
     { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
     { name: 'extKeyUsage', serverAuth: true },
     // AKI = the issuing CA's SKI, so a verifier holding several same-named
-    // "yaac Proxy CA" roots (a nested worktree's combined bundle carries both
-    // the inner and outer proxy CAs) selects the CA that actually signed this
-    // leaf instead of trying them in name order and hard-failing on the wrong
+    // "yaac Proxy CA" roots selects the CA that actually signed this leaf
+    // instead of trying them in name order and hard-failing on the wrong
     // key (OpenSSL does not retry the other candidate). See loadOrGenerateCA.
     {
       name: 'authorityKeyIdentifier',
@@ -2254,34 +2222,6 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // yaac-in-yaac attribution: the host server pushes a full `{ podIP:
-  // outerWorktreeId }` map for every managed vcluster's pods, so chained egress
-  // (the inner proxy's upstream dials + pre-opt-in synced pods) is attributed to
-  // the owning OUTER worktree and judged against its allowlist. Not persisted —
-  // pod IPs are ephemeral and the server re-pushes every tick; a replaced proxy
-  // fail-closes on this traffic until the next push.
-  if (req.method === 'PUT' && req.url === '/vcluster-attribution') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      const map = parseVclusterAttribution(body)
-      if (!map) { res.writeHead(400); res.end('Invalid body: need {podIP: worktreeId}'); return }
-      const key = [...map.entries()].map(([ip, sid]) => `${ip}=${sid}`).sort().join(',')
-      vclusterPodWorktree.clear()
-      for (const [ip, sid] of map) vclusterPodWorktree.set(ip, sid)
-      // The server re-pushes every tick (so the map survives a proxy restart);
-      // only log when it actually changes, to keep the log quiet at steady state.
-      if (key !== lastVclusterAttributionKey) {
-        lastVclusterAttributionKey = key
-        console.log(`[proxy] vcluster attribution updated (${map.size} pod IP(s))`)
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true }))
-    })
-    return
-  }
-
   // List registered worktree ids. Diagnostic surface — e2e tests use it
   // to assert a replaced pod reloaded its registrations from /data.
   if (req.method === 'GET' && req.url === '/worktrees') {
@@ -2676,7 +2616,7 @@ const PP2_TIMEOUT_MS = 10_000
 function resolveWorktreeBySourceIp(
   socket: net.Socket,
   label: string,
-  next: (worktreeId: string, leftover: Buffer, viaVclusterAttribution: boolean) => void,
+  next: (worktreeId: string, leftover: Buffer) => void,
 ): void {
   socket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
@@ -2711,9 +2651,9 @@ function resolveWorktreeBySourceIp(
     let leftover = buf.subarray(res.bytesConsumed)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
-    void resolveWorktree(srcIp).then((resolved) => {
+    void resolveWorktree(srcIp).then((worktreeId) => {
       socket.removeListener('data', buffer)
-      if (!resolved) {
+      if (!worktreeId) {
         console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known worktree pod`)
         socket.destroy()
         return
@@ -2721,7 +2661,7 @@ function resolveWorktreeBySourceIp(
       // Hand the post-header bytes to `next` directly (the HTTPS peeker / HTTP
       // path each unshift once at dispatch; a second unshift would not
       // reliably re-emit to a freshly-added 'data' listener).
-      next(resolved.worktreeId, leftover, resolved.viaVclusterAttribution)
+      next(worktreeId, leftover)
     })
   }
   socket.on('data', onData)
@@ -2790,7 +2730,7 @@ const transparentHttpsServer = net.createServer((socket) => {
 // Origin-form HTTP after the PP2 preamble: feed the post-header stream
 // into an internal http.Server (the `emit('connection')` pattern handleMitm
 // already uses) and carry the verified worktree id on the socket.
-type IdentifiedSocket = net.Socket & { yaacWorktreeId?: string; yaacVclusterAttributed?: boolean }
+type IdentifiedSocket = net.Socket & { yaacWorktreeId?: string }
 
 // In-worktree yaac-mama requests (see mama-queue.ts). Held responses expire
 // on a coarse sweep — precision doesn't matter, only that abandoned requests
@@ -2814,7 +2754,6 @@ function handleMamaRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   worktreeId: string,
-  viaVclusterAttribution: boolean,
 ): void {
   const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
   const legacy = url.pathname === LEGACY_SPAWN_PATH
@@ -2832,10 +2771,6 @@ function handleMamaRequest(
   }
   if (url.pathname !== MAMA_PATH && !legacy) { respond(404, 'Not found'); return }
   if (req.method !== 'POST') { respond(405, 'Method not allowed'); return }
-  if (viaVclusterAttribution) {
-    respond(403, 'yaac-mama is not available to nested workloads via the outer proxy')
-    return
-  }
   const chunks: Buffer[] = []
   let received = 0
   let overflow = false
@@ -2914,17 +2849,12 @@ function handleToolsRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   worktreeId: string,
-  viaVclusterAttribution: boolean,
 ): void {
   const respond = (status: number, contentType: string, body: string): void => {
     res.writeHead(status, { 'Content-Type': contentType })
     res.end(body)
   }
   if (req.method !== 'GET') { respond(405, 'text/plain; charset=utf-8', 'Method not allowed'); return }
-  if (viaVclusterAttribution) {
-    respond(403, 'text/plain; charset=utf-8', 'tools is not available to nested workloads via the outer proxy')
-    return
-  }
   const url = new URL(req.url ?? '/', `http://${MAMA_MAGIC_HOST}`)
   const includeModels = url.searchParams.get('models') === '1'
   const asJson = url.searchParams.get('json') === '1'
@@ -2962,10 +2892,10 @@ const internalHttpServer = http.createServer((req, res) => {
   if (target.hostname === MAMA_MAGIC_HOST) {
     const pathname = (req.url ?? '/').split('?', 1)[0]
     if (pathname === '/tools') {
-      handleToolsRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
+      handleToolsRequest(req, res, worktreeId)
       return
     }
-    handleMamaRequest(req, res, worktreeId, socket.yaacVclusterAttributed === true)
+    handleMamaRequest(req, res, worktreeId)
     return
   }
   forwardPlainHttp(req, res, worktreeId, {
@@ -2976,9 +2906,8 @@ const internalHttpServer = http.createServer((req, res) => {
 })
 
 const transparentHttpServer = net.createServer((socket) => {
-  resolveWorktreeBySourceIp(socket, 'HTTP', (worktreeId, leftover, viaVclusterAttribution) => {
+  resolveWorktreeBySourceIp(socket, 'HTTP', (worktreeId, leftover) => {
     ;(socket as IdentifiedSocket).yaacWorktreeId = worktreeId
-    ;(socket as IdentifiedSocket).yaacVclusterAttributed = viaVclusterAttribution
     if (leftover.length > 0) socket.unshift(leftover)
     internalHttpServer.emit('connection', socket)
   })
@@ -3071,9 +3000,7 @@ for (const [srv, portStr, label] of [
 // worktree's probe must not masquerade as one — and nothing before the
 // splice may hang instead, which is what the pre-splice deadline below
 // enforces. Only a bad auth line closes silently (no oracle for
-// unauthenticated peers). An inner (vcluster) proxy runs this
-// same code against its own apiserver, whose synced pods carry host pod
-// IPs (syncer write-back), so nested streams need no extra branch.
+// unauthenticated peers).
 
 const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
 /**

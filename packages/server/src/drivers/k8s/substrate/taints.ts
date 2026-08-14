@@ -15,7 +15,7 @@
  * stamps them per-pod. `RuntimeClass.scheduling.tolerations` is merged by
  * the RuntimeClass admission controller into every pod naming the class, so
  * declaring the pool's toleration once on `gvisor` reaches worktree pods,
- * builder pods, vcluster-synced pods and cluster check's own pinned probes
+ * builder pods and cluster check's own pinned probes
  * alike (those bypass the scheduler, but kubelet still admits them, and a
  * `NoExecute` taint evicts what it does not tolerate).
  *

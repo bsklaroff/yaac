@@ -29,11 +29,7 @@ disk, or they belong to someone else's protocol, so they keep their spelling and
 the code around them explains why.
 
 **Not the cluster objects.** The PriorityClass, the NetworkPolicies, the pod's
-container and the pod and Job label keys are worktree-named. One key is not,
-and it is a rename still owed rather than a spelling this repo means to keep:
-`yaac.vcluster-session-id`, which `vclusterLabels` stamps on a vcluster's
-namespace and on everything it owns. docs/legacy-compat-shims.md carries what
-that rename costs and how to make it without leaking namespaces.
+container and the pod and Job label keys are all worktree-named.
 
 **The on-disk layout.** A worktree's state tree lives under
 `projects/<slug>/sessions/<id>`. The helpers naming it moved

@@ -9,11 +9,8 @@ import {
   PODS_PATH,
   clusterInformerFactory,
   loadInClusterConfig,
-  mapConfigMap,
   mapPod,
   mapService,
-  namespacedConfigMapsPath,
-  namespacedPodsPath,
   namespacedServicesPath,
   startResourceWatch,
   type InformerLike,
@@ -96,7 +93,11 @@ describe('mapService', () => {
     })
   })
 
-  it('keeps headless Services — selectInnerProxies is what rejects "None"', () => {
+  it('keeps a headless Service verbatim rather than judging it', () => {
+    // The mapper validates shape, not usefulness. Nothing downstream
+    // rejects `None` either — it does not have to: the only Service netd
+    // consumes is the yaac-authored `yaac-proxy`, which always has a real
+    // ClusterIP.
     expect(mapService({ metadata: { name: 's', namespace: 'n' }, spec: { clusterIP: 'None' } }))
       .toMatchObject({ clusterIp: 'None' })
   })
@@ -269,36 +270,10 @@ describe('loadInClusterConfig', () => {
   })
 })
 
-describe('mapConfigMap', () => {
-  it('maps the identity and data', () => {
-    expect(mapConfigMap({
-      metadata: { name: 'yaac-redirect-claims', namespace: 'yaac' },
-      data: { 'yaac-vc-a': '{}' },
-    })).toEqual({
-      name: 'yaac-redirect-claims', namespace: 'yaac', data: { 'yaac-vc-a': '{}' },
-    })
-  })
-
-  it('maps a data-less ConfigMap to empty data, not to null', () => {
-    // That is how the server retracts every claim at once; it must reach
-    // reconcile as "no claims" rather than as "no document".
-    expect(mapConfigMap({ metadata: { name: 'c', namespace: 'yaac' } }))
-      .toEqual({ name: 'c', namespace: 'yaac', data: {} })
-  })
-
-  it('drops a ConfigMap with no identity', () => {
-    expect(mapConfigMap({ metadata: { name: 'c' } })).toBeNull()
-    expect(mapConfigMap({})).toBeNull()
-  })
-})
-
-describe('namespaced watch paths', () => {
-  it('scope the watch to one namespace', () => {
-    // Host mode reads Services and claims from its OWN namespace only, and
-    // claim mode reads pods from its own — that scoping is what keeps netd's
-    // cluster-wide read down to pods.
-    expect(namespacedPodsPath('yaac')).toBe('/api/v1/namespaces/yaac/pods')
+describe('namespacedServicesPath', () => {
+  it('scopes the Services watch to one namespace', () => {
+    // netd reads Services from its OWN namespace only — that scoping is
+    // what keeps netd's cluster-wide read down to pods.
     expect(namespacedServicesPath('yaac')).toBe('/api/v1/namespaces/yaac/services')
-    expect(namespacedConfigMapsPath('yaac')).toBe('/api/v1/namespaces/yaac/configmaps')
   })
 })

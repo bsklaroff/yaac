@@ -8,7 +8,6 @@ import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTa
 import { podUid } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/drivers/k8s/cluster/project-registry'
-import { ensureVclusterImages } from '@yaac/server/drivers/k8s/cluster/vcluster'
 import { ensureBuilderImage } from '@yaac/server/drivers/k8s/images/builder-pod'
 import { ensureEnvoyImage } from '@yaac/server/drivers/k8s/cluster/netd'
 import { ensureGvisorInstallerImage } from '@yaac/server/drivers/k8s/cluster/gvisor-installer'
@@ -236,11 +235,10 @@ export async function setup(): Promise<void> {
     for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
-    // Per-project registry image (registry:2, digest-pinned mirror),
-    // the vcluster image set, and the sandboxed builder pods' podman
-    // image — pull-or-skip, then push, same as above.
+    // Per-project registry image (registry:2, digest-pinned mirror) and
+    // the sandboxed builder pods' podman image — pull-or-skip, then push,
+    // same as above.
     await ensureRegistryImage(false)
-    await ensureVclusterImages(false)
     await ensureBuilderImage(false)
     await ensureEnvoyImage(false)
     // The gVisor installer's image (digest-pinned upstream curl). No e2e

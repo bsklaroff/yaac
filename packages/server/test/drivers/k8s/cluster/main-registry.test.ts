@@ -222,7 +222,7 @@ describe('ensureMainRegistry', () => {
     })
     // No storageClassName: it must bind through whatever the cluster's
     // default class is (kind's `standard`, a provider's block class, the
-    // host default a vcluster's synced claim sees). Naming one would break
+    // provider's default block class). Naming one would break
     // every cluster that does not ship it.
     expect(pvc.spec).not.toHaveProperty('storageClassName')
 
@@ -331,48 +331,6 @@ describe('ensureMainRegistry', () => {
     // restart may have dropped, so it must not short-circuit.
     expect(applied().map((m) => m.kind)).toContain('Deployment')
     expect(applied().map((m) => m.kind)).toContain('Pod')
-  })
-
-  it('is a no-op when an EXTERNAL registry answers, whatever the local cluster holds', async () => {
-    // The claim gate reads `deployment/yaac-registry` in the LOCAL cluster,
-    // which for an external registry is someone else's storage and, in a
-    // nested yaac, a vcluster that has no such object at all. Asking would
-    // answer "not converted" forever and drop a healthy install into the
-    // throw below, whose "not answering" message would be flatly untrue —
-    // noise on every nested boot, and fatal to builder-pod provisioning on a
-    // non-nested install pointed at an external registry.
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'outer-registry:5000')
-    mockReachable.mockResolvedValue(true)
-    serveCluster({ storage: 'absent' })
-    try {
-      await expect(ensureMainRegistry()).resolves.toBeUndefined()
-      expect(mockApply).not.toHaveBeenCalled()
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
-
-  it('refuses to create anything when the registry is externally managed', async () => {
-    // The guard is YAAC_K8S_REGISTRY, not YAAC_NESTED: installing here
-    // would write a node hosts.toml under the EXTERNAL host's certs.d dir
-    // and hijack node-side resolution of someone else's registry.
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'someone-elses-registry:5000')
-    try {
-      await expect(ensureMainRegistry()).rejects.toThrow(/externally managed/)
-      expect(mockApply).not.toHaveBeenCalled()
-    } finally {
-      vi.unstubAllEnvs()
-    }
-  })
-
-  it('names nesting in the message when that is why the registry is external', async () => {
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
-    vi.stubEnv('YAAC_NESTED', '1')
-    try {
-      await expect(ensureMainRegistry()).rejects.toThrow(/outer per-project registry/)
-    } finally {
-      vi.unstubAllEnvs()
-    }
   })
 
   it('fails when the Service has no ClusterIP to point the node at', async () => {

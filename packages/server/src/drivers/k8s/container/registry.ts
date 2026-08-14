@@ -1,5 +1,4 @@
 import { serverLog } from '#log'
-import { env } from '@yaac/shared/env'
 import { invalidatePortForward, resolvePortForward } from '#drivers/k8s/substrate'
 import { runTrackedPodman } from './host-procs'
 import { usesRootfulPodman } from './runtime'
@@ -16,12 +15,10 @@ import { usesRootfulPodman } from './runtime'
  *  - `registryHost()` is the CLUSTER address, and the only one that ever
  *    appears in an image ref. Pods and node containerd resolve it; the
  *    server never dials it.
- *  - `registryEndpoint()` is where THIS PROCESS reaches the same registry.
- *    Top-level that is a long-lived `kubectl port-forward` (the same
- *    mechanism the stream relay uses), which assumes nothing about host↔pod
- *    networking beyond the apiserver access every other call already needs.
- *    Nested, it is the outer per-project registry, which the inner server —
- *    itself a pod — dials directly.
+ *  - `registryEndpoint()` is where THIS PROCESS reaches the same registry:
+ *    a long-lived `kubectl port-forward` (the same mechanism the stream
+ *    relay uses), which assumes nothing about host↔pod networking beyond
+ *    the apiserver access every other call already needs.
  *  - `podmanRegistryEndpoint()` is where the PODMAN ENGINE reaches it. On
  *    Linux that is the same loopback the server uses, because podman runs in
  *    this process's network namespace. On macOS it is NOT: podman runs inside
@@ -82,13 +79,9 @@ const PODMAN_VM_HOST_ALIAS = 'host.containers.internal'
  * it through the proxy's split-horizon DNS, which forwards only
  * `.cluster.local` to CoreDNS. Node containerd never resolves it at all —
  * it matches the string against the hosts.toml `#drivers/k8s/cluster` writes.
- *
- * `YAAC_K8S_REGISTRY` overrides it wholesale; a nested yaac is the one
- * production setter (the outer install's per-project registry).
  */
 export function registryHost(): string {
-  return env.k8sRegistry
-    ?? `${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:${REGISTRY_SERVICE_PORT}`
+  return `${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:${REGISTRY_SERVICE_PORT}`
 }
 
 /** Full in-cluster image ref for a locally built `repo:tag`. */
@@ -97,16 +90,13 @@ export function registryRef(tag: string): string {
 }
 
 /**
- * Where THIS process reaches the registry. Externally-managed registries
- * (nested yaac) are dialed at their configured address; otherwise this is
- * the local end of a long-lived port-forward into the registry Deployment,
- * spawned on first use and shared by every push and HEAD of this server
- * run. Throws when the forward cannot be established — which is what an
- * absent registry Deployment looks like from here.
+ * Where THIS process reaches the registry: the local end of a long-lived
+ * port-forward into the registry Deployment, spawned on first use and
+ * shared by every push and HEAD of this server run. Throws when the
+ * forward cannot be established — which is what an absent registry
+ * Deployment looks like from here.
  */
 export async function registryEndpoint(): Promise<string> {
-  const external = env.k8sRegistry
-  if (external) return external
   const { host, port } = await registryForward()
   return `${host}:${port}`
 }
@@ -129,16 +119,13 @@ async function registryForward(): Promise<{ host: string; port: number }> {
  * Where the podman engine reaches the registry — the address that goes into
  * a `podman push` target, which is NOT always the one this process dials.
  *
- * An externally managed registry (nested yaac) is a cluster address both
- * halves reach, and on Linux podman shares this process's netns, so in both
- * cases the two endpoints coincide. Under podman machine they do not: the
- * forward's listener belongs to the host, so the VM has to come back out to
- * it by name. The forward's PORT still applies — it is a host port, and
- * gvproxy maps the alias to the host loopback it is bound on.
+ * On Linux podman shares this process's netns, so the two endpoints
+ * coincide. Under podman machine they do not: the forward's listener
+ * belongs to the host, so the VM has to come back out to it by name. The
+ * forward's PORT still applies — it is a host port, and gvproxy maps the
+ * alias to the host loopback it is bound on.
  */
 async function podmanRegistryEndpoint(): Promise<string> {
-  const external = env.k8sRegistry
-  if (external) return external
   const { host, port } = await registryForward()
   if (usesRootfulPodman()) return `${host}:${port}`
   return `${PODMAN_VM_HOST_ALIAS}:${port}`

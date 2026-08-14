@@ -4,7 +4,28 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster', 'referenceBranch'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'referenceBranch'])
+
+/**
+ * Keys yaac used to honor, mapped to what to tell the author now. A
+ * retired key is not an unknown key: the generic "unknown field" warning
+ * reads like a typo, and would leave someone whose worktrees silently
+ * stopped getting a feature with nothing to search for.
+ */
+const RETIRED_KEYS: Record<string, (obj: Record<string, unknown>) => string> = {
+  virtualCluster: (obj) => {
+    const head = 'yaac-config.json: "virtualCluster" is no longer supported — '
+      + 'per-worktree virtual clusters were removed. '
+    // Only claim the implication where it actually fired. Saying it for
+    // `virtualCluster: false`, or where an explicit `nestedContainers`
+    // already won, would describe the one thing the parser did NOT do.
+    return obj.virtualCluster === true && obj.nestedContainers === undefined
+      ? head + 'It still implies "nestedContainers": true, as it always did; '
+        + 'set that explicitly and delete this key.'
+      : head + 'Delete the key — "nestedContainers" is what gives a worktree '
+        + 'its own container engine.'
+  },
+}
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -164,7 +185,10 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
-    if (!KNOWN_KEYS.has(key)) {
+    const retired = RETIRED_KEYS[key]
+    if (retired !== undefined) {
+      console.warn(retired(obj))
+    } else if (!KNOWN_KEYS.has(key)) {
       console.warn(`yaac-config.json: unknown field "${key}"`)
     }
   }
@@ -331,25 +355,14 @@ export function parseProjectConfig(raw: string): YaacConfig {
     config.nestedContainers = obj.nestedContainers
   }
 
-  if (obj.virtualCluster !== undefined) {
-    if (typeof obj.virtualCluster !== 'boolean') {
-      throw new Error('yaac-config.json: virtualCluster must be a boolean')
-    }
-    config.virtualCluster = obj.virtualCluster
-  }
-
-  // virtualCluster implies nestedContainers: the in-pod podman is the
-  // worktree's only build engine, so a vcluster worktree without it could
-  // never build images for its own pods. An explicit opt-out alongside
-  // virtualCluster is a contradiction — reject it rather than silently
-  // picking a side.
-  if (config.virtualCluster) {
-    if (obj.nestedContainers === false) {
-      throw new Error(
-        'yaac-config.json: virtualCluster requires nestedContainers — '
-        + 'remove "nestedContainers": false or disable virtualCluster',
-      )
-    }
+  // The retired `virtualCluster` always implied `nestedContainers`, and the
+  // in-pod engine it implied still exists. Honoring the implication is what
+  // keeps an unedited config from silently losing its engine — a loss that
+  // would surface much later, as `docker: not found` inside the worktree,
+  // far from the config that caused it (docs/legacy-compat-shims.md). An
+  // explicit `nestedContainers: false` still wins: it is the newer key and
+  // the author said it outright.
+  if (obj.virtualCluster === true && obj.nestedContainers === undefined) {
     config.nestedContainers = true
   }
 

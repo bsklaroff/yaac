@@ -36,7 +36,7 @@ export async function purgeProjectBytes(slug: string): Promise<void> {
   }
 
   // Everything the runtime holds for the project beyond its worktrees —
-  // the push registry a virtualCluster worktree pushes to, and the
+  // the push registry a nestedContainers worktree pushes to, and the
   // node-local image stores. A separate pass from the rm below because
   // those bytes live outside the project tree, ROOT-owned, precisely
   // because the server's own uid could not remove them.

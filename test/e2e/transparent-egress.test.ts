@@ -12,7 +12,6 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_PROXY_CONFIG,
-  IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
@@ -232,10 +231,8 @@ async function startWorktreePod(name: string, worktreeId: string, proxyHost: str
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       // Mirror real session pods: the default gvisor tier, so the redirect
-      // and source-IP identity are verified against netstack egress
-      // (runtimeClassSpec stamps nothing on a nested run — a vcluster has
-      // no RuntimeClasses).
-      ...runtimeClassSpec({ inner: IS_NESTED_YAAC }),
+      // and source-IP identity are verified against netstack egress.
+      ...runtimeClassSpec(),
       dnsPolicy: 'None',
       dnsConfig: { nameservers: [proxyHost] },
       containers: [{
@@ -328,10 +325,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     try { await client.stop() } catch { /* ok */ }
   })
 
-  // Positive egress and per-inner-session source-IP attribution require the
-  // inner redirect, which is programmed host-side in a nested session.
-  // The fail-closed and forgery-lock legs still hold and run there.
-  it.skipIf(IS_NESTED_YAAC)('reaches an allowed host through SNI MITM with the mounted CA', async () => {
+  it('reaches an allowed host through SNI MITM with the mounted CA', async () => {
     // --resolve pins the never-routable IP: only the netd redirect can
     // deliver it. --cacert proves the proxy MITM'd with a leaf the mounted
     // yaac CA signs for api.anthropic.com. Identity is podA's source IP.
@@ -355,7 +349,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(r.exit).not.toBe(0)
   }, 60_000)
 
-  it.skipIf(IS_NESTED_YAAC)('judges concurrent sessions by their own source IP', async () => {
+  it('judges concurrent sessions by their own source IP', async () => {
     // podB's source IP maps to session B, whose allowlist has no MITM_HOST —
     // so the proxy denies it even though podA may reach it.
     const fromB = await curlInPod(
@@ -369,7 +363,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(fromA.exit).not.toBe(0)
   }, 60_000)
 
-  it.skipIf(IS_NESTED_YAAC)('allowHost widens a live session so a blocked host becomes reachable', async () => {
+  it('allowHost widens a live session so a blocked host becomes reachable', async () => {
     // Session B's allowlist is [tlsHost] only, so the HTTP echo is blocked.
     // A transparent-HTTP block is an in-band 403 (forwardPlainHttp), not a
     // socket reset — curl without -f exits 0 on it, so assert on the body.
@@ -392,7 +386,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(echoed.headers.host).toBe(echoHost)
   }, 120_000)
 
-  it.skipIf(IS_NESTED_YAAC)('forwards transparent HTTP (port 80) via the Host header', async () => {
+  it('forwards transparent HTTP (port 80) via the Host header', async () => {
     const r = await curlInPod(
       podA, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/hello?x=1"`,
     )
@@ -405,7 +399,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(echoed.headers.host).toBe(echoHost)
   }, 60_000)
 
-  it.skipIf(IS_NESTED_YAAC)('tunnels an explicit CONNECT through the redirected SSH sentinel', async () => {
+  it('tunnels an explicit CONNECT through the redirected SSH sentinel', async () => {
     // `curl --proxy http://<sentinel>:<tunnel-port>` sends the same CONNECT
     // git's ncat ProxyCommand does. netd redirects the sentinel through
     // Envoy to the proxy tunnel listener, which reads CONNECT host:port and
@@ -419,7 +413,7 @@ describe('node-level transparent egress (source-IP identity)', () => {
     expect(r.out).toContain('TUNNEL_OK')
   }, 120_000)
 
-  it.skipIf(IS_NESTED_YAAC)('split-horizon DNS: external → sinkhole, internal .svc → live ClusterIP', async () => {
+  it('split-horizon DNS: external → sinkhole, internal .svc → live ClusterIP', async () => {
     // External name: sinkholed. The answer is decorative — egress is port-
     // redirected and the proxy routes by SNI/Host, never by the dialed IP.
     const ext = await execInPod(podA, [

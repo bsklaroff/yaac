@@ -1,22 +1,18 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import net from 'node:net'
 import path from 'node:path'
 import {
   GVISOR_NODE_LABEL,
-  LABEL_VCLUSTER_MANAGED_BY,
   LABEL_WORKTREE_ID,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   PROXY_APP_NAME,
-  RELAY_PORT,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
   buildPriorityClassManifests,
   execFileAsync,
   formatTaint,
-  isDeferredClusterBootPending,
   k8sNamespace,
   kubectlApply,
   runPodToCompletion,
@@ -33,7 +29,7 @@ import {
 import { nodeIpBlocks } from './cluster-cidrs'
 import { assessVethSource, cniVethPrefix, probeWorkloadVeths } from './cni-adopt'
 import { ensureNamespace } from './proxy-apply'
-import { vapAvailable } from './vcluster'
+import { vapAvailable } from './proxy-apply'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -43,7 +39,6 @@ import {
   registryReachable,
 } from '#drivers/k8s/container'
 import { sharedRoot } from '@yaac/shared/paths'
-import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
 // consumers can name the shape without importing the check suite.
 import type { CheckResult } from '@yaac/shared/types'
@@ -143,8 +138,7 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      pull from the registry (registry-nodes), and the shared data dir is
  *      the same bytes the server sees (volume-nodes)
  *   9. datapath: calico-node is Ready (NetworkPolicy is enforced at all)
- *      and yaac-netd is Ready (worktree egress has a redirect). Nested, this
- *      becomes "the claim-mode netd is publishing" — the inner install's own
+ *      and yaac-netd is Ready (worktree egress has a redirect).
  *      half of the same guarantee, warn-level until it is deployed
  *   9b. veth-source: the pod → veth binding the redirect keys on actually
  *      resolves on every node, for the configured prefix. Not covered by
@@ -155,37 +149,15 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
  *      engine (nestedContainers; suid/file-caps are covered by the e2e)
- *  11. runtime-stamp (warn-only): every UNTRUSTED pod — worktree pods
- *      (yaac.worktree-id label) and vcluster-synced tenant pods (the
- *      syncer's managed-by label) — carries a gvisor-tier
- *      runtimeClassName. Trusted infra (proxy, registries, node-write,
- *      vcluster control planes) deliberately stamps none and runs on runc.
+ *  11. runtime-stamp (warn-only): every UNTRUSTED pod — the worktree pods,
+ *      by their yaac.worktree-id label — carries a gvisor-tier
+ *      runtimeClassName. Trusted infra (proxy, registries, node-write)
+ *      deliberately stamps none and runs on runc.
  */
 export async function runClusterCheck(
 ): Promise<{ ok: boolean; results: CheckResult[] }> {
   const results: CheckResult[] = []
   const add = (r: CheckResult): void => { results.push(r) }
-
-  // A nested server whose deferred cluster attach hasn't fired yet fronts an
-  // intentionally-asleep (scale-to-zero) vcluster and has no worktrees by
-  // construction (worktree create awaits the attach — see
-  // deferred-boot in #drivers/k8s/substrate). Probing it here would either WAKE it — the
-  // very thing the deferral exists to prevent — or time out and surface as a
-  // spurious "API server unreachable", which flips the web app's cluster gate
-  // to the setup screen and blanks the workspace. Report ready without
-  // probing; the real attach fires (and the caches push a fresh snapshot) when
-  // the user actually creates a worktree. The CLI's `yaac cluster check` runs
-  // in its own process where nothing is ever armed, so this never masks a real
-  // failure there. Mirrors the same guard in worktrees/list + projects/list.
-  if (isDeferredClusterBootPending()) {
-    return {
-      ok: true,
-      results: [{
-        name: 'cluster', status: 'pass',
-        detail: 'vcluster asleep (scale-to-zero) — wakes on first session',
-      }],
-    }
-  }
 
   // 1. kubectl present
   try {
@@ -199,15 +171,9 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
 
-  // 2. cluster reachable. Nested, this first touch may be WAKING a
-  // scaled-to-zero vcluster: the activator holds the TLS handshake while
-  // the control plane boots (docs/vcluster-scale-to-zero.md), which
-  // client-go's ~32s discovery timeout rides out — so give kubectl the
-  // same headroom instead of killing it mid-wake at 10s.
+  // 2. cluster reachable.
   try {
-    await execFileAsync('kubectl', ['version', '--output', 'json'], {
-      timeout: env.nested ? 60_000 : 10_000,
-    })
+    await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
   } catch (err) {
     add({
@@ -223,10 +189,9 @@ export async function runClusterCheck(
   // tolerations as much as the node's taints, and those live on the gvisor
   // RuntimeClass (the admission controller merges them into every pod naming
   // it), so the class is read here and handed down to the sweep rather than
-  // re-read there. A cluster with no such class — a fresh install, or an
-  // inner yaac against its vcluster, where the syncer sets the host-side
-  // runtime — yields no tolerations, which is the honest answer for pods
-  // that stamp no class.
+  // re-read there. A cluster with no such class — a fresh install — yields
+  // no tolerations, which is the honest answer for pods that stamp no
+  // class.
   const gvisorScheduling = await gvisorRuntimeClass()
   let nodes: ClusterNode[] = []
   try {
@@ -306,41 +271,6 @@ export async function runClusterCheck(
     skipFrom('probe', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  // Inner yaac (a vcluster worktree, YAAC_NESTED=1): most remaining gates
-  // probe machinery that deliberately does not exist inside a vcluster, so
-  // they self-skip. The egress gate is among them: an inner worktree's egress
-  // default-deny is enforced HOST-side (the host programs the redirect this
-  // install claims — see docs/nested-containers.md), so it cannot be probed
-  // in here; the OUTER cluster-check verifies it. vap has no in-vcluster
-  // equivalent; vcluster-in-vcluster is refused. datapath is the exception —
-  // this install owns half of it (its claim) and that half is checkable.
-  if (env.nested) {
-    add(await runEndToEndProbe())
-    if (results.some((r) => r.status === 'fail')) {
-      skipFrom('egress', 'skipped — fix the failures above first')
-      return { ok: false, results }
-    }
-    add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
-    // datapath IS checkable nested, in the inner install's own terms: its
-    // claim-mode netd must be publishing, or the host has nothing to program
-    // and inner worktrees fall back to the outer proxy's allowlist alone.
-    add(await runClaimDatapathCheck())
-    // A vcluster has no nodes, so there is no routing table in here to read
-    // — the HOST install's check owns this verdict for the whole node.
-    add({
-      name: 'veth-source', status: 'skip',
-      detail: 'skipped — nested yaac (the host cluster owns the pod → veth source)',
-    })
-    for (const name of [...MULTI_NODE_GATES, 'nested-mount', 'vap', 'runtime-stamp']) {
-      add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
-    }
-    // The stream relay IS checkable nested: the inner proxy's pod IP must
-    // be dialable on the relay port (requires the outer yaac to project
-    // the inner ingress rules — an outdated host yaac breaks this).
-    add(await runNestedRelayCheck())
-    return { ok: !results.some((r) => r.status === 'fail'), results }
-  }
-
   // 8. The three pod-based probes, CONCURRENTLY. Each starts its own
   // gVisor sandbox, and serially they were most of the check's wall time
   // (~19s of a 71s `cluster setup`). They share nothing: distinct pod
@@ -387,9 +317,8 @@ export async function runClusterCheck(
   // above, alongside the other pod probes.
   add(nestedMountResult)
 
-  // 10b. ValidatingAdmissionPolicy availability (warn-only: only
-  // virtualCluster worktrees need it — the synced-pod guard refuses
-  // vcluster creation without it, fail-closed)
+  // 10b. ValidatingAdmissionPolicy availability: the builder-pod guard
+  // refuses to apply without it, fail-closed, so no image can be built.
   add(await runVapAvailabilityCheck())
 
   // 11. runtime-stamp sweep (warn-only): every untrusted pod must carry a
@@ -539,12 +468,6 @@ const NODE_FIXUPS_FIX =
  * podman container self-skips.
  */
 async function runNodeFixupsCheck(): Promise<CheckResult> {
-  if (env.nested) {
-    return {
-      name: 'node-fixups', status: 'skip',
-      detail: 'skipped — nested yaac (no podman-hosted node in here)',
-    }
-  }
   try {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
@@ -728,12 +651,6 @@ async function runPriorityClassCheck(): Promise<CheckResult> {
  * a multi-node readiness question, not this gate's.
  */
 async function runGvisorRuntimeCheck(): Promise<CheckResult> {
-  if (env.nested) {
-    return {
-      name: 'gvisor', status: 'skip',
-      detail: 'skipped — nested yaac (the host cluster owns the runtime)',
-    }
-  }
   try {
     const { stdout } = await execFileAsync('kubectl', [
       'get', 'runtimeclass', '-o', 'jsonpath={.items[*].metadata.name}',
@@ -817,17 +734,13 @@ async function runGvisorRuntimeCheck(): Promise<CheckResult> {
 
 /**
  * Sandbox invariant sweep (warn-only): every pod hosting UNTRUSTED code
- * carries a gvisor-tier runtimeClassName. That's worktree pods (the
- * yaac.worktree-id label — stamped by the session builder, and propagated
- * verbatim for an inner yaac's synced worktrees) and vcluster-synced tenant
- * pods (the syncer's managed-by label, which a tenant cannot suppress).
- * Trusted infra — proxy, registries, node-write pods, vcluster control
- * planes — deliberately stamps no runtime and runs on runc, so it is NOT
- * flagged. An unsandboxed match is either from a gVisor-less yaac era or
- * from a builder/values knob that lost the stamp. Warn rather than fail —
- * such pods still run, just without the sentry. Sweeps the install
- * namespace AND its per-vcluster child namespaces (`<ns>-vc-*`), where the
- * synced pods live.
+ * carries a gvisor-tier runtimeClassName. That's the worktree pods, found
+ * by the yaac.worktree-id label the session builder stamps. Trusted infra
+ * — proxy, registries, node-write pods — deliberately stamps no runtime
+ * and runs on runc, so it is NOT flagged. An unsandboxed match is either
+ * from a gVisor-less yaac era or from a builder/values knob that lost the
+ * stamp. Warn rather than fail — such pods still run, just without the
+ * sentry.
  */
 async function runRuntimeStampSweep(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -840,14 +753,9 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
         spec?: { runtimeClassName?: string }
       }>
     }).items
-    const inScope = (podNs: string | undefined): boolean =>
-      podNs === ns || (podNs?.startsWith(`${ns}-vc-`) ?? false)
-    const untrusted = (labels: Record<string, string> | undefined): boolean =>
-      !!labels
-      && (LABEL_WORKTREE_ID in labels || LABEL_VCLUSTER_MANAGED_BY in labels)
     const strays = items
-      .filter((p) => inScope(p.metadata?.namespace)
-        && untrusted(p.metadata?.labels)
+      .filter((p) => p.metadata?.namespace === ns
+        && !!p.metadata.labels && LABEL_WORKTREE_ID in p.metadata.labels
         && !sandboxed.has(p.spec?.runtimeClassName ?? ''))
       .map((p) => `${p.metadata?.namespace ?? '?'}/${p.metadata?.name ?? '<unnamed>'}`)
     if (strays.length > 0) {
@@ -858,12 +766,12 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
           + (strays.length > 5 ? ` (+${strays.length - 5} more)` : ''),
         fix: 'These pods predate the gVisor migration (or bypassed the yaac '
           + 'builders). They keep running unsandboxed on the default '
-          + 'runtime; recreate old sessions/vclusters to converge.',
+          + 'runtime; recreate old sessions to converge.',
       }
     }
     return {
       name: 'runtime-stamp', status: 'pass',
-      detail: `every untrusted pod in "${ns}" and its vcluster namespaces is gvisor-sandboxed`,
+      detail: `every untrusted pod in "${ns}" is gvisor-sandboxed`,
     }
   } catch (err) {
     return {
@@ -906,8 +814,8 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         // Mirror the worktree-pod containment (see buildPodJobManifest):
         // a host pod carries the gvisor RuntimeClass (no userns), so the
         // probe proves hostPath reads/writes work through the gofer at the
-        // worktree uid. runtimeClassSpec stamps nothing for an inner yaac.
-        ...runtimeClassSpec({ inner: env.nested }),
+        // worktree uid.
+        ...runtimeClassSpec(),
         securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
         containers: [{
           name: 'probe',
@@ -1606,53 +1514,6 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
 }
 
 /**
- * The nested datapath gate: this install's claim-mode netd must be
- * publishing what it wants redirected (features/cluster/redirect-claims.ts).
- *
- * There is no Calico half and no chain to inspect in here — a vcluster has
- * no nodes. What can go wrong is the claim: without one the host leaves this
- * install's worktree pods on the OUTER proxy, so they still reach the internet
- * but under the outer allowlist alone rather than inner ∩ outer. That is a
- * containment weakening a nested user cannot see from inside a worktree, so it
- * is reported rather than skipped.
- *
- * Absent is a WARN, not a fail: netd deploys with the proxy on first worktree
- * create, so a preflight in a fresh nested install legitimately finds
- * nothing. Deployed-but-unready is a FAIL — that is the silent case, where
- * the install believes it governs its worktrees and does not.
- */
-async function runClaimDatapathCheck(): Promise<CheckResult> {
-  const { stdout: netd } = await execFileAsync('kubectl', [
-    'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
-    '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
-  ]).catch(() => ({ stdout: '' }))
-  if (!netd.trim()) {
-    return {
-      name: 'datapath', status: 'warn',
-      detail: `${NETD_APP_NAME} (claim mode) is not deployed yet — it lands with `
-        + 'the inner proxy on first session create',
-      fix: 'Until then this install claims nothing, so any pod it schedules is '
-        + 'redirected to the OUTER proxy and governed by the outer allowlist alone.',
-    }
-  }
-  const [ready, wanted] = netd.trim().split('/').map(Number)
-  if (!(ready > 0) || ready !== wanted) {
-    return {
-      name: 'datapath', status: 'fail',
-      detail: `${NETD_APP_NAME} (claim mode) is ${netd.trim()} ready — this install's `
-        + 'sessions are redirected to the OUTER proxy, not this one',
-      fix: 'The claim-mode netd publishes which pods this install wants '
-        + 'redirected to its own proxy. Inspect with '
-        + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME}\`.`,
-    }
-  }
-  return {
-    name: 'datapath', status: 'pass',
-    detail: `${NETD_APP_NAME} (claim mode) ready — this install's redirect is claimed`,
-  }
-}
-
-/**
  * `container: reason` for every not-ready netd container, from
  * `kubectl get pods -o json`. Unparseable input yields nothing — this only
  * ever enriches a failure that has already been decided.
@@ -1865,71 +1726,26 @@ const NESTED_MOUNT_FIX =
   + 'handlers.'
 
 /**
- * Warn-only gate for virtualCluster worktrees: the synced-pod guard is a
- * ValidatingAdmissionPolicy, and vcluster creation refuses to proceed
- * without the API (fail-closed, no opt-out). Probes via `vapAvailable` —
- * the exact gate worktree-create applies — so check and gate cannot drift.
+ * The builder-pod guard is a ValidatingAdmissionPolicy, and
+ * `ensureBuilderRoleGuard` refuses to apply without the API (fail-closed,
+ * no opt-out) — so an install that lacks it cannot build an image at all.
+ * Probes via `vapAvailable`, the exact gate the guard applies, so check
+ * and gate cannot drift.
  */
 async function runVapAvailabilityCheck(): Promise<CheckResult> {
   if (await vapAvailable()) {
     return {
       name: 'vap', status: 'pass',
-      detail: 'ValidatingAdmissionPolicy API available (vcluster synced-pod guard)',
+      detail: 'ValidatingAdmissionPolicy API available (builder-pod guard)',
     }
   }
   return {
-    name: 'vap', status: 'warn',
+    name: 'vap', status: 'fail',
     detail: 'ValidatingAdmissionPolicy API unavailable',
-    fix: 'Only virtualCluster sessions are affected — their synced-pod '
-      + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
-      + '1.30, enabled by default). vcluster creation fails closed '
-      + 'without it.',
-  }
-}
-
-/**
- * Nested: the relay is the inner proxy's pod IP on RELAY_PORT (a host pod
- * IP by syncer write-back). A dialable listener proves the inner proxy is
- * up AND the outer yaac projected the inner ingress rules (an outdated
- * host yaac drops the dial).
- */
-async function runNestedRelayCheck(): Promise<CheckResult> {
-  let ip: string | undefined
-  try {
-    const { stdout } = await execFileAsync('kubectl', [
-      'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`, '-o', 'json',
-    ])
-    const list = JSON.parse(stdout) as { items?: Array<{ status?: { podIP?: string; phase?: string } }> }
-    ip = list.items?.find((p) => p.status?.phase === 'Running')?.status?.podIP
-      ?? list.items?.[0]?.status?.podIP
-  } catch (err) {
-    return {
-      name: 'relay', status: 'warn',
-      detail: `could not list the inner proxy pod (${truncate(err)}) — relay unverified`,
-    }
-  }
-  if (!ip) {
-    return {
-      name: 'relay', status: 'warn',
-      detail: 'inner proxy not deployed yet — relay unverified',
-      fix: 'The inner proxy deploys on first session create; re-check afterwards.',
-    }
-  }
-  const dialable = await new Promise<boolean>((resolve) => {
-    const sock = net.connect({ host: ip, port: RELAY_PORT, timeout: 3_000 })
-    sock.on('connect', () => { sock.destroy(); resolve(true) })
-    sock.on('timeout', () => { sock.destroy(); resolve(false) })
-    sock.on('error', () => resolve(false))
-  })
-  if (dialable) {
-    return { name: 'relay', status: 'pass', detail: `inner proxy relay dialable at ${ip}:${RELAY_PORT}` }
-  }
-  return {
-    name: 'relay', status: 'fail',
-    detail: `inner proxy relay not dialable at ${ip}:${RELAY_PORT}`,
-    fix: 'The OUTER yaac must be new enough to project the inner relay '
-      + 'ingress rules (the same ordering contract as inner egress) — '
-      + 'upgrade the host yaac, then recreate this session.',
+    fix: 'Sandboxed image builds reserve their pod label with a '
+      + 'ValidatingAdmissionPolicy (kubernetes >= 1.30, enabled by '
+      + 'default) and fail closed without it, so no worktree image can '
+      + 'be built. Recreate the cluster with `yaac cluster setup`.',
   }
 }
 

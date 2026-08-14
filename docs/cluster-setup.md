@@ -106,10 +106,6 @@ drop-in (`sudo systemctl edit podman.socket`) setting `SocketMode=0660` and
 `SocketGroup=` to a group you belong to. `yaac cluster setup` prints these same
 steps if the rootful socket isn't reachable.
 
-> **Nested (in-pod) worktrees are exempt:** inside a yaac worktree
-> (`YAAC_NESTED=1`) the in-pod podman is rootless on its own per-uid socket, so
-> the rootful default does not apply there.
-
 ## Linux: VPN and firewall interference
 
 Two host-level blockers that both present as "container is up but its
@@ -216,11 +212,10 @@ only kind's provider breaks.
    privilege is accepted and where a dedicated worktrees node pool fits.
 
    Every pod hosting untrusted code carries a RuntimeClass explicitly:
-   plain worktrees run on `gvisor`, nested-containers worktrees run the
-   rootful in-pod engine on `gvisor-nested`, and vcluster-synced tenant
-   pods are stamped `gvisor` by the syncer. Trusted yaac infra (the proxy,
-   registries, node-write pods, vcluster control planes) runs on runc — a
-   sentry per infra pod starves the node for no containment gain.
+   plain worktrees run on `gvisor`, and nested-containers worktrees run the
+   rootful in-pod engine on `gvisor-nested`. Trusted yaac infra (the proxy,
+   registries, node-write pods) runs on runc — a sentry per infra pod
+   starves the node for no containment gain.
 5. **PriorityClasses** — `yaac-infra` (1000000) > `yaac-builder` (100000) >
    `yaac-worktree` (1000). The proxy and per-project registries take the
    infra tier, ephemeral image builders the builder tier, worktree pods the
@@ -235,13 +230,8 @@ only kind's provider breaks.
    own scheduling with a worktree's life — a build that waits costs a worktree
    create some latency instead.
 
-   Two deliberate omissions. netd stays on `system-node-critical` — it is
-   node infrastructure, like kube-proxy. Per-worktree **vcluster control
-   planes** stamp nothing and so sit at 0, *below* worktrees: they are
-   Deployment-managed and come back, and a worktree does not. Worktrees
-   created by a *nested* yaac against their vcluster also stamp nothing —
-   the syncer drops the class name host-side but copies `preemptionPolicy`,
-   and the host rejects that pod outright.
+   One deliberate omission: netd stays on `system-node-critical` — it is
+   node infrastructure, like kube-proxy.
 
    `yaac cluster check` verifies the classes, and the yaac server re-applies
    them at every start, so an existing cluster picks them up on upgrade.
@@ -372,13 +362,12 @@ adoption. It has its own gate (`veth-source`) rather than living inside
 is Envoy's config ack, which goes green with zero pod → veth mappings. A
 node pool added after adoption is the case that matters.
 
-The namespaces yaac creates — the install namespace, the registry namespace,
-and each per-worktree vcluster namespace — are labelled for the `privileged`
-Pod Security Standard. Inert on kind, load-bearing on an adopted cluster
-whose default is `baseline` or `restricted`: netd is `hostNetwork` with
-`NET_ADMIN`/`NET_RAW`, the node-write pods hostPath-mount `certs.d`, and
-synced tenant pods are shaped by the vcluster's own guard. PSS is
-namespace-scoped, so this relaxes nothing outside them.
+The namespaces yaac creates — the install namespace and the registry
+namespace — are labelled for the `privileged` Pod Security Standard. Inert
+on kind, load-bearing on an adopted cluster whose default is `baseline` or
+`restricted`: netd is `hostNetwork` with `NET_ADMIN`/`NET_RAW`, and the
+node-write pods hostPath-mount `certs.d`. PSS is namespace-scoped, so this
+relaxes nothing outside them.
 
 Three knobs exist for what a foreign cluster does not publish:
 
@@ -412,7 +401,7 @@ Calico's kube-proxy pods are found under either `k8s-app=kube-proxy`
 
 Out of scope, deliberately: Cilium in any configuration, and installing
 policy for anyone else's workloads — every yaac policy selects only its own
-pods and its own vcluster namespaces.
+pods.
 
 ## Node fixups vanish on restart
 
@@ -457,25 +446,23 @@ bounds that burst without becoming a CFS quota that throttles an interactive
 agent on an idle node. Ordinary worktree work never approaches it.
 
 The practical effect is a ceiling on concurrent worktrees, whichever of cpu or
-memory runs out first — roughly `cores × 4` and `GB ÷ 1` respectively (each
-worktree's vcluster control plane, on a `virtualCluster` project, reserves on
-top of that). At 4 GB per core the two ceilings coincide; above that, cpu
-binds first, and a worktree that no longer fits sits `Pending` with an
-`Insufficient cpu` event rather than failing outright.
+memory runs out first — roughly `cores × 4` and `GB ÷ 1` respectively. At
+4 GB per core the two ceilings coincide; above that, cpu binds first, and a
+worktree that no longer fits sits `Pending` with an `Insufficient cpu`
+event rather than failing outright.
 
 ## Runtimes and uids
 
 Worktree containment is the **gVisor sentry**: every pod running untrusted
-code (worktrees, vcluster-synced tenant pods, the check's probe pods) runs
-under the `gvisor` RuntimeClass, where in-container root — the image grants
+code (worktrees, the check's probe pods) runs under the `gvisor`
+RuntimeClass, where in-container root — the image grants
 passwordless sudo so agents can `apt-get install` mid-worktree — is a sandbox
 fiction with no host authority, and no user namespace is used.
 Nested-containers worktrees run their in-pod container engine as **real root
 inside the sentry** on the `gvisor-nested` RuntimeClass (the sentry is the
-containment). Trusted yaac infra (proxy, registries, node-write pods,
-vcluster control planes) runs unsandboxed on runc: it only executes
-yaac-shipped code, and the sentries' CPU cost is what matters at fleet
-scale.
+containment). Trusted yaac infra (proxy, registries, node-write pods) runs
+unsandboxed on runc: it only executes yaac-shipped code, and the sentries'
+CPU cost is what matters at fleet scale.
 
 Under gVisor there is no user namespace and no idmap, so hostPath files are
 presented at their real node-side uids (the gofer preserves them), and the
@@ -495,9 +482,9 @@ label they schedule on, and that a
 `gvisor`-class pod really runs inside the sentry, then runs an end-to-end
 probe pod — on the gvisor tier, like worktree pods — that exercises all of
 the wiring above, including a hostPath **write** at the worktree uid. It
-ends with a sweep warning about any untrusted pod (worktree-labeled or
-vcluster-synced) running without a gvisor-tier `runtimeClassName` (pods
-predating the gVisor migration). Run it whenever worktrees fail to start.
+ends with a sweep warning about any untrusted (worktree-labeled) pod running
+without a gvisor-tier `runtimeClassName`. Run it whenever worktrees fail to
+start.
 
 Two gates cover the redirect, and they fail differently on purpose.
 `datapath` says calico-node and netd are Ready — policy is enforced and a
@@ -523,8 +510,8 @@ silently verify nothing.
 
 That is also how a **dedicated worktrees node pool** works: taint the pool so
 other workloads stay off it, declare the matching toleration once on the
-RuntimeClass, and worktree pods, builder pods, vcluster-synced pods and this
-check's own pinned probes all inherit it — the probes included because they
+RuntimeClass, and worktree pods, builder pods and this check's own pinned
+probes all inherit it — the probes included because they
 bypass the scheduler but are still admitted by kubelet, and a `NoExecute`
 pool taint would evict one that tolerated nothing. Scope the toleration to
 the pool's own key; a bare `{operator: Exists}` tolerates every taint on
@@ -604,12 +591,10 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
 The teardown counterpart to `setup`, and one `kind delete` is the whole of
-it: everything yaac deploys lives inside the cluster — Calico, netd, every
-vcluster, the main and per-project registries — and so does their
-node-local storage on every node, including every pushed image. Running worktree pods
+it: everything yaac deploys lives inside the cluster — Calico, netd, the
+main and per-project registries — and so does their node-local storage on
+every node, including every pushed image. Running worktree pods
 stop, but nothing under the yaac data dir is touched: on-disk worktrees and
 worktrees survive, and a later `yaac cluster setup` recreates the cluster and
 re-pushes images on demand. It leaves the podman machine and its shared image
-store alone (that's the build engine, not the cluster), and refuses to run
-inside a nested yaac worktree — there the cluster belongs to the outer
-install.
+store alone (that's the build engine, not the cluster).

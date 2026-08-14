@@ -5,8 +5,7 @@ import { BatchV1Api, CoreV1Api, KubeConfig } from '@kubernetes/client-node'
  * writes and exec stay on kubectl, see docs/event-driven-reconcile.md).
  * `loadFromDefault()` resolves the same kubeconfig kubectl does (KUBECONFIG
  * env included), so the client and the kubectl paths always talk to the
- * same cluster — including nested yaac, where the default context points at
- * the worktree's vcluster apiserver.
+ * same cluster.
  */
 let kubeConfig: KubeConfig | null = null
 let coreApi: CoreV1Api | null = null

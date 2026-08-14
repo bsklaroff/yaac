@@ -96,7 +96,7 @@ describe('renderRedirectRules', () => {
       { pod: { name: 'a', namespace: 'yaac', podIp: '10.244.0.9', labels: {} },
         target: { key: 'outer/yaac', ip: '10.96.0.50' } },
       { pod: { name: 'b', namespace: 'yaac', podIp: '10.244.0.10', labels: {} },
-        target: { key: 'inner/yaac-vc-a/h1', ip: '10.96.0.77' } },
+        target: { key: 'outer/yaac-test-r1', ip: '10.96.0.77' } },
     ]
     const rules = dnatRules({
       selected,

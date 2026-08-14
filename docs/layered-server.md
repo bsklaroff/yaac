@@ -215,21 +215,20 @@ speak alone.
   The lifecycle is the driver's own: `start(sinks, deps)` attaches and
   begins watching, `stop()` takes everything push-fed down before the
   reconcile drain, `release()` lets go of what was borrowed from the host
-  after it. Resolving `start` does not mean attached — the k8s driver
-  defers the whole thing until first use inside a nested yaac, so a
-  born-at-zero virtual cluster is not woken by the server living in it;
-  `sinks.attached` is the edge that means it, and the reconcile loop
-  starts from there. `sinks.recover` fires earlier still, while the
-  substrate is usable and nothing is watching, which is when the forwarder
-  restore runs. The two directions are separate types on purpose:
+  after it. Resolving `start` does not mean attached — a driver may defer
+  the whole thing until first use; `sinks.attached` is the edge that means
+  it, and the reconcile loop starts from there. `sinks.recover` fires
+  earlier still, while the substrate is usable and nothing is watching,
+  which is when the forwarder restore runs. The two directions are
+  separate types on purpose:
   `DriverSinks` is where a driver reports, `DriverDeps` is what it is
   handed (the SSH identity reader it re-reads on its own schedule).
 
   Two verbs are worth reading for their split. The launch: `prepareSubstrate`
   runs ONCE per create and stands up what belongs to the WORKSPACE (its
-  egress registration, the project registry, a virtual cluster with its own
-  state), answering with an opaque receipt; `launch` runs per ATTEMPT and
-  applies a unit and nothing else. That is what makes a retry cheap and
+  egress registration, the project registry), answering with an opaque
+  receipt; `launch` runs per ATTEMPT and applies a unit and nothing else.
+  That is what makes a retry cheap and
   safe — a failed attempt leaves only a unit, and `destroy`'s `unitOnly`
   takes exactly that down while leaving what the next attempt reuses. And
   `list`: `preferCache` asks for the driver's push-fed view, which the
@@ -355,10 +354,9 @@ upstream (the proxy MITMs the git exchange, so pods never hold the
 credential and only it sees the rejection), and an in-worktree
 `yaac-mama` command landing in its queue.
 
-The proxy cannot dial the server — it is an in-cluster pod, the server is
-a host process with no in-cluster address, and nested the server sits
-inside a pod of the *outer* cluster. So the signal rides the connection
-the server already holds: one long-lived `GET /events` over the control
+The proxy cannot dial the server — it is an in-cluster pod and the server
+is a host process with no in-cluster address. So the signal rides the
+connection the server already holds: one long-lived `GET /events` over the control
 tunnel, NDJSON, consumed by `ProxyEventStream` in `#drivers/k8s/egress`.
 
 The events carry no state. `/data/blocked-hosts.json` and
@@ -367,8 +365,7 @@ replaced proxy comes back knowing this state — and the spawn queue keeps
 its own claim protocol. Every event means only "look again", and a
 reconnect re-fires all of them, so a dropped stream costs latency, never
 a lost update. That reconnect is also the only edge that says the proxy
-pod may have been replaced, which is what the ssh-agent heal and the
-vcluster-attribution re-push hang off.
+pod may have been replaced, which is what the ssh-agent heal hangs off.
 
 ## Naming
 

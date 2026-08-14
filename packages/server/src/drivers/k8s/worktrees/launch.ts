@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_MODE,
@@ -7,7 +5,6 @@ import {
   LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_TOOL,
-  awaitDeferredClusterBoot,
   buildPodJobManifest,
   dataDirHash,
   ensurePriorityClasses,
@@ -19,27 +16,17 @@ import {
   type PodMount,
 } from '#drivers/k8s/substrate'
 import {
-  ensureActivator,
   ensureProjectRegistry,
-  ensureVclusterImages,
-  ensureWorktreeVcluster,
   projectRegistryConfDropIn,
-  projectRegistryHost,
   proxyServiceClusterIp,
-  sleepVcluster,
-  vclusterName,
-  waitForVclusterKubeconfig,
 } from '#drivers/k8s/cluster'
 import {
   proxyClient,
   registerWorkspace,
-  resolveProxyImageTag,
   writeProxySecrets,
   workspaceSshTransport,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
-import { env as yaacEnv, testEnv } from '@yaac/shared/env'
-import { nestedYaacDataDir, worktreeVclusterDir } from '@yaac/shared/project-paths'
 import type {
   RuntimeHandle,
   SubstrateIntent,
@@ -53,10 +40,9 @@ import type {
  *
  * Split in two because the halves have different lifetimes, and the split
  * is what makes a retry safe. `prepareWorkspaceSubstrate` runs ONCE per
- * create — its products (a proxy registration, a project registry, a
- * virtual cluster with its own state) belong to the workspace, not to an
- * attempt at launching it, and re-running it would re-touch a cluster the
- * workspace is already using. `launchWorkspace` is per attempt: it applies
+ * create — its products (a proxy registration, a project registry) belong
+ * to the workspace, not to an attempt at launching it, and re-running it
+ * would re-touch a cluster the workspace is already using. `launchWorkspace` is per attempt: it applies
  * a Job and nothing else, so a failed attempt leaves nothing but a Job to
  * delete (`destroyWorkspace` with `unitOnly`).
  *
@@ -78,9 +64,6 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   streamToken: string
   /** Read-only lower of this node's image store, when the project has one. */
   storeMounts: PodMount[]
-  /** The kubeconfig and nested-data mounts a virtual cluster implies. */
-  vclusterMounts: PodMount[]
-  vclusterEnv: string[]
   /** The project has its own push registry, so the in-pod engine needs its
    *  registries.conf drop-in. */
   projectRegistry: boolean
@@ -105,28 +88,14 @@ function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
 }
 
 /**
- * Stand up everything a workspace needs around it: its egress
- * registration, the image plumbing its engine will pull through, and — for
- * a `virtualCluster` project — its own nested cluster.
- *
- * Ordering inside is load-bearing in two places. The deferred cluster boot
- * is awaited first because everything below applies into the namespace it
- * ensures. And the vcluster is CREATED early but its kubeconfig awaited
- * last, so its cold start overlaps the caller's own legs (an image build, a
- * checkout) instead of serializing behind them.
+ * Stand up everything a workspace needs around it: its egress registration
+ * and the image plumbing its engine will pull through.
  */
 export async function prepareWorkspaceSubstrate(
   intent: SubstrateIntent,
 ): Promise<WorkspaceSubstrate> {
   const { projectSlug, workspaceId, config } = intent
   const emit = (m: string): void => intent.onProgress?.(m)
-
-  // A nested server defers its boot-time cluster attach so it doesn't wake
-  // its own born-at-zero vcluster; the first workspace is the "cluster is
-  // really needed now" signal. Awaited so the namespace ensure inside it
-  // lands before anything below applies into it. Immediate no-op on the
-  // outer server (nothing is ever armed).
-  await awaitDeferredClusterBoot()
 
   // The proxy is always required — it reads the host-mounted credentials
   // dir directly and injects GitHub / Claude / Codex tokens into outbound
@@ -136,15 +105,9 @@ export async function prepareWorkspaceSubstrate(
   await proxyClient.ensureRunning()
 
   // Every nested workspace gets the per-project push registry: it is the
-  // image source for vcluster synced pods and yaac-in-yaac, AND the bus the
-  // in-pod engine's cross-worktree image cache rides (salvage pushes, the
-  // next workspace pulls — see image-promoter.ts). Never inside an INNER
-  // yaac: the ensure's node-write pods hostPath-mount the node's containerd
-  // `certs.d`, and its vcluster's pod guard denies any hostPath outside the
-  // workspace's own data dir, so the ensure could not finish. Those
-  // workspaces run without a cross-worktree image cache (image-promoter
-  // self-gates too).
-  const projectRegistry = intent.nestedContainers && !yaacEnv.nested
+  // bus the in-pod engine's cross-worktree image cache rides (salvage
+  // pushes, the next workspace pulls — see image-promoter.ts).
+  const projectRegistry = intent.nestedContainers
   const storeMounts: PodMount[] = []
   if (projectRegistry) {
     emit('Ensuring project registry...')
@@ -167,28 +130,6 @@ export async function prepareWorkspaceSubstrate(
     void ensureNodeImageStore(projectSlug)
   }
 
-  // virtualCluster workspaces additionally get their own virtual cluster,
-  // created here so its cold start overlaps the caller's other legs; the
-  // kubeconfig is awaited at the end, just before the mounts are assembled.
-  let vclusterFreshlyCreated = false
-  if (intent.virtualCluster) {
-    // The wake activator that serves this (and every) vcluster's
-    // scale-to-zero — before the vcluster so its pod IP is available to the
-    // sleep step below. Runs the proxy image the ensureRunning() above just
-    // built and pushed.
-    emit('Ensuring vcluster activator...')
-    await ensureActivator(await resolveProxyImageTag(testEnv.proxyImage))
-
-    emit('Creating virtual cluster...')
-    await ensureVclusterImages()
-    const { freshlyCreated } = await ensureWorktreeVcluster({
-      worktreeId: workspaceId,
-      allowedHostPathPrefix: nestedYaacDataDir(projectSlug, workspaceId),
-      onProgress: emit,
-    })
-    vclusterFreshlyCreated = freshlyCreated
-  }
-
   // Egress: the workspace pod's outbound 443/80 is redirected to the proxy
   // at the node level by netd's per-pod DNAT rules (k8s/netd) — no per-pod
   // sidecar. The pod also points its resolver at the proxy (DNS stub) and
@@ -196,9 +137,8 @@ export async function prepareWorkspaceSubstrate(
   // NetworkPolicy. The proxy identifies the workspace by the source pod IP
   // it watches, so nothing per-workspace needs injecting here.
   //
-  // The proxy Service ClusterIP is allocator-assigned (no longer pinned) —
-  // for both the outer and the vcluster-allocated inner proxy — so read it
-  // live. Stable for the cluster's lifetime: the Service is never
+  // The proxy Service ClusterIP is allocator-assigned (no longer pinned), so
+  // read it live. Stable for the cluster's lifetime: the Service is never
   // deleted/recreated.
   const proxyHost = await proxyServiceClusterIp()
 
@@ -225,67 +165,11 @@ export async function prepareWorkspaceSubstrate(
     proxySecretNames: Object.keys(intent.proxySecrets),
   })
 
-  // vcluster kubeconfig: wait for the syncer to publish it (the cold start
-  // has been running since the ensure above), write it under the worktree
-  // dir, and dir-mount it at ~/.kube. Speaks to the pinned VIP:8443 (IP
-  // SAN) — no DNS involved.
-  const vclusterMounts: PodMount[] = []
-  const vclusterEnv: string[] = []
-  if (intent.virtualCluster) {
-    emit('Waiting for the virtual cluster API...')
-    const kubeconfig = await waitForVclusterKubeconfig(vclusterName(workspaceId))
-    const vcDir = worktreeVclusterDir(projectSlug, workspaceId)
-    await fs.mkdir(vcDir, { recursive: true })
-    await fs.writeFile(path.join(vcDir, 'config'), kubeconfig, { mode: 0o600 })
-    // SHARED: the server writes (and heals) the kubeconfig, the pod reads it.
-    vclusterMounts.push({
-      source: { kind: 'hostPath', path: vcDir },
-      mountPath: '/home/yaac/.kube',
-    })
-    vclusterEnv.push('KUBECONFIG=/home/yaac/.kube/config')
-
-    // Born-at-zero: with the kubeconfig captured, the freshly-booted (never
-    // used) control plane is scaled to 0 — the activator wakes it on the
-    // workspace's first API touch. Only a vcluster THIS create booted may be
-    // slept: re-sleeping an existing one would discard its state.db.
-    // Best-effort — a failed sleep just leaves the vcluster running.
-    if (vclusterFreshlyCreated) {
-      emit('Scaling idle virtual cluster to zero...')
-      try {
-        await sleepVcluster(vclusterName(workspaceId), workspaceId)
-      } catch (err) {
-        console.warn(`vcluster sleep (${workspaceId}): ${(err as Error).message}`)
-      }
-    }
-
-    // yaac-in-yaac preset: the nested data dir is mounted at the IDENTICAL
-    // absolute path in the pod, because inner synced-pod hostPaths resolve
-    // on the NODE (which sees the host path via the kind $HOME extraMount).
-    // It is also the VAP guard's only allowed hostPath prefix for this
-    // workspace's synced pods. The registry env points the inner server's
-    // pushes at the project's registry (resolvable in-pod via the proxy's
-    // split-horizon DNS, on the node via hosts.toml) — no repo-path prefix,
-    // that registry is already scoped.
-    const nestedDataDir = nestedYaacDataDir(projectSlug, workspaceId)
-    await fs.mkdir(nestedDataDir, { recursive: true })
-    // SHARED, and a hostPath the NODE must resolve too: the inner yaac's
-    // synced pods carry hostPaths under this dir (see nestedYaacDataDir).
-    vclusterMounts.push({
-      source: { kind: 'hostPath', path: nestedDataDir },
-      mountPath: nestedDataDir,
-    })
-    vclusterEnv.push(`YAAC_DATA_DIR=${nestedDataDir}`)
-    vclusterEnv.push('YAAC_NESTED=1')
-    vclusterEnv.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
-  }
-
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
     proxyHost,
     streamToken,
     storeMounts,
-    vclusterMounts,
-    vclusterEnv,
     projectRegistry,
   }
   return receipt
@@ -295,8 +179,8 @@ export async function prepareWorkspaceSubstrate(
  * Apply the workspace's Job, and answer with the handle that addresses it.
  *
  * Everything the caller could not have named is added here: the transport
- * token, CA trust, the registries.conf drop-in a nested engine needs, the
- * kubeconfig wiring of a virtual cluster, and the SSH transport. The
+ * token, CA trust, the registries.conf drop-in a nested engine needs, and
+ * the SSH transport. The
  * caller's own env and mounts go first so its values are the ones a reader
  * sees at the head of the list — and they are COPIED, never appended to,
  * because the same spec is relaunched after a failed attempt and a second
@@ -328,18 +212,15 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // The per-project registries.conf drop-in, written by the in-pod init
     // script (sudo) before the engine starts. Base64 keeps the TOML free of
     // env-value quoting concerns. Every nested workspace needs it: the
-    // registry is plain HTTP, and the image cache pushes/pulls through it
-    // even when there is no vcluster.
+    // registry is plain HTTP, and the image cache pushes/pulls through it.
     const conf = Buffer.from(projectRegistryConfDropIn(spec.projectSlug), 'utf8')
       .toString('base64')
     env.push(`YAAC_REGISTRY_CONF_B64=${conf}`)
   }
-  env.push(...substrate.vclusterEnv)
 
   const mounts: PodMount[] = [...spec.mounts]
   // NODE-LOCAL, read-only: this node's image store generation.
   mounts.push(...substrate.storeMounts)
-  mounts.push(...substrate.vclusterMounts)
   if (spec.ssh) {
     const ssh = workspaceSshTransport(spec.ssh.knownHostsFile, substrate.proxyHost)
     mounts.push(...ssh.mounts)
@@ -380,11 +261,6 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ephemeralStorageLimitBytes: spec.resources.ephemeralStorageLimitBytes,
     proxyHost: substrate.proxyHost,
     nested: spec.nestedContainers,
-    // Inside a nested (inner) yaac no runtimeClassName is stamped — the
-    // vcluster has no RuntimeClass objects, and the syncer sets the synced
-    // pod's host runtime. Host pods get gvisor (pod-spec maps nested to the
-    // gvisor-nested handler).
-    innerYaac: yaacEnv.nested,
     // In-pod setup (git identity, tmux server + options, streamd, the
     // nested engine) runs as the container's postStart hook, so the kubelet
     // holds Ready until it's done and no per-command exec round trips are

@@ -63,7 +63,7 @@
  *   later sweep finds nothing to retire and would never reach the restart.
  */
 import { mainRegistryExec, restartMainRegistry } from '#drivers/k8s/cluster'
-import { env, testEnv } from '@yaac/shared/env'
+import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { imageWorkInFlight } from './build-coordinator'
@@ -318,13 +318,11 @@ export function _buildCacheGcSettledForTests(): Promise<void> {
  * Gated to the default install like the host image GC — e2e servers share
  * this registry (it lives in the default namespace precisely so they do),
  * and one collecting mid-run could pull a blob out from under another
- * run's push. Nested installs push to the OUTER install's per-project
- * registry, which is not theirs to collect (and has no Deployment here to
- * exec into). Never two passes at once: a pass ends by restarting the
+ * run's push. Never two passes at once: a pass ends by restarting the
  * registry.
  */
 function sweepDue(nowMs: number): boolean {
-  if (testEnv.k8sNamespace !== 'yaac' || env.nested) return false
+  if (testEnv.k8sNamespace !== 'yaac') return false
   if (inFlightPass) return false
   return nowMs - lastSweepMs >= BUILD_CACHE_GC_INTERVAL_MS
 }

@@ -78,9 +78,9 @@ export function isLoopbackOnlyDeployment(): boolean {
  *     Under k8s the only path in is the outer server's port-forward, already
  *     tailnet-gated like any forwarded port; under containerless the inner
  *     server binds host loopback, which this model already trusts. Keyed on
- *     the worktree id rather than `YAAC_NESTED` because that flag marks only
- *     the vcluster preset, while the reasoning holds for every worktree; the
- *     id is stamped on all of them. The cost is that a server someone
+ *     the worktree id because the reasoning holds for every worktree and
+ *     `createWorktree` stamps it on all of them, under both drivers. The
+ *     cost is that a server someone
  *     deliberately fronts, but starts from a shell inside a worktree, also
  *     skips the gate — `YAAC_REQUIRE_AUTH=1` is the answer there
  *     (docs/remote-hosting.md).

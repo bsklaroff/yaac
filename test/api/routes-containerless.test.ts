@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { setWorktreeDriver, worktreeDriver } from '@yaac/server/drivers/driver'
-import { createContainerlessDriver } from '@yaac/server/drivers/containerless'
+import { describe, it, expect } from 'vitest'
+import { worktreeDriver } from '@yaac/server/drivers/driver'
 import { buildApp } from '@yaac/server/main/server'
 import {
   ROUTE_MATRIX,
@@ -14,28 +13,15 @@ import {
  * Every route, against a containerless server.
  *
  * The twin of `routes-k8s.test.ts`, over the SAME table — see
- * `route-matrix.ts` for why the two share one. What this file adds is the
- * driver: it registers the containerless one in place of the real k8s driver
- * the api project's setup installs, which is safe to do in-process because
- * the registry is a module-level singleton and nothing here launches
- * anything.
+ * `route-matrix.ts` for why the two share one.
  *
- * Registering the real containerless driver rather than a fake is the point.
- * A fake would answer whatever it was told to; this exercises the actual
- * assembly — including every verb that degrades to empty and every route
- * that refuses because this substrate has no such feature.
+ * No driver is installed here: this file's own project registers the real
+ * containerless one at module scope, standing in for the composition root.
+ * The REAL driver rather than a fake is the point — a fake would answer
+ * whatever it was told to, while this exercises the actual assembly,
+ * including every verb that degrades to empty and every route that refuses
+ * because this substrate has no such feature.
  */
-
-let previous: ReturnType<typeof worktreeDriver> | null = null
-
-beforeAll(() => {
-  previous = worktreeDriver()
-  setWorktreeDriver(createContainerlessDriver())
-})
-
-afterAll(() => {
-  setWorktreeDriver(previous)
-})
 
 const app = (): ReturnType<typeof buildApp> => buildApp({ secret: 'shh', buildId: 'matrix' })
 
@@ -54,6 +40,9 @@ describe('every route, containerless', () => {
     assertMatrixCoversEveryRoute()
   })
 
+  // The project's setup file is what installed it, so this is also the
+  // check that the split did not leave this file running against the k8s
+  // driver its twin uses.
   it('runs against the containerless driver', () => {
     expect(worktreeDriver().kind).toBe('containerless')
   })

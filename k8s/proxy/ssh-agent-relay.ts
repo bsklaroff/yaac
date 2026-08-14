@@ -19,10 +19,7 @@
  *  2. The source pod IP must resolve to a worktree through the proxy's
  *     pod-watch — the same identity the transparent listeners trust, and one
  *     a sandboxed workload cannot forge (Calico policies the workload
- *     endpoint's source address). A source attributed only through the
- *     server-pushed vcluster map is refused: a nested install forwards its
- *     OWN inner proxy's agent to its worktrees, and this agent holds keys
- *     that install never uploaded.
+ *     endpoint's source address).
  *  3. That worktree's registered remote must be an SSH one — exactly the
  *     condition under which the server provisions SSH_AUTH_SOCK in the pod.
  *     It is read from the registration the proxy already holds, so nothing
@@ -67,13 +64,6 @@ const DEFAULT_MAX_CONNECTIONS = 64
  *  is abandoned. */
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
-/** What the proxy's pod-watch resolved a source IP to. */
-export interface AgentPeerWorktree {
-  worktreeId: string
-  /** Attributed via the server-pushed vcluster map, not a watched pod. */
-  viaVclusterAttribution: boolean
-}
-
 export type AgentGateVerdict =
   | { ok: true; worktreeId: string }
   | { ok: false; reason: string }
@@ -84,17 +74,14 @@ export type AgentGateVerdict =
  * testable without a socket; the listener below is the only caller.
  */
 export function sshAgentGate(
-  worktree: AgentPeerWorktree | undefined,
+  worktreeId: string | undefined,
   repoUrl: string | undefined,
 ): AgentGateVerdict {
-  if (!worktree) return { ok: false, reason: 'source is not a known worktree pod' }
-  if (worktree.viaVclusterAttribution) {
-    return { ok: false, reason: 'nested workloads use their own install\'s agent' }
-  }
+  if (!worktreeId) return { ok: false, reason: 'source is not a known worktree pod' }
   if (!isSshRemote(repoUrl)) {
     return { ok: false, reason: 'worktree has no SSH remote registered' }
   }
-  return { ok: true, worktreeId: worktree.worktreeId }
+  return { ok: true, worktreeId }
 }
 
 /**
@@ -114,7 +101,7 @@ export interface SshAgentServerDeps {
   /** Filesystem path of the pod-local ssh-agent socket. */
   agentSock: string
   /** Source IP → worktree, via the proxy's pod-watch index. */
-  resolveWorktree: (ip: string) => Promise<AgentPeerWorktree | undefined>
+  resolveWorktree: (ip: string) => Promise<string | undefined>
   /** The repo URL a worktree is registered with, if any. */
   repoUrlFor: (worktreeId: string) => string | undefined
   log?: (message: string) => void
@@ -196,10 +183,7 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
     })
     void (async () => {
       const resolved = peer ? await deps.resolveWorktree(peer) : undefined
-      const verdict = sshAgentGate(
-        resolved,
-        resolved ? deps.repoUrlFor(resolved.worktreeId) : undefined,
-      )
+      const verdict = sshAgentGate(resolved, resolved ? deps.repoUrlFor(resolved) : undefined)
       if (!verdict.ok) {
         log(`[proxy] BLOCKED ssh-agent from ${peer || '(unknown)'}: ${verdict.reason}`)
         socket.destroy()

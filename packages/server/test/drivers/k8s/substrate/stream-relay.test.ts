@@ -46,7 +46,6 @@ import {
   podExec,
   podStreamToken,
   waitForStreamd,
-  RELAY_PORT,
 } from '#drivers/k8s/substrate'
 // Internals: the dial-failure type the relay throws, the cache reset, and
 // the exec/boot seam waitForStreamd takes.
@@ -71,11 +70,6 @@ function serveKubectl(): void {
     stderr: '',
   }))
 }
-
-/** How many times the relay address has been resolved from the cluster —
- *  the observable for "was the nested pod address re-read?". */
-const podLists = (): number =>
-  execFileMock.mock.calls.filter(([, args]) => args[1] === 'pods').length
 
 interface FakeChild {
   stdout: EventEmitter & { unref: ReturnType<typeof vi.fn> }
@@ -274,24 +268,6 @@ describe('relayDial', () => {
     await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
       .rejects.toBeInstanceOf(RelayDialError)
     expect(child.kill).toHaveBeenCalled()
-  })
-
-  it('re-resolves a nested pod address when a dial times out', async () => {
-    // Nested there is no shared child behind the address, just the inner
-    // proxy's pod IP — so the same timeout that must not touch a
-    // port-forward can still re-read this. An inner proxy pod that was
-    // replaced leaves an IP that blackholes every dial, and nothing else
-    // mid-run would ever look again.
-    vi.stubEnv('YAAC_NESTED', '1')
-    podsPayload = { items: [{ status: { phase: 'Running', podIP: '127.0.0.1' } }] }
-    let dials = 0
-    relay = await startFakeRelay((r) => { if (++dials > 1) okThen(r) }, RELAY_PORT)
-
-    await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 200 }))
-      .rejects.toThrow(/timeout after 200ms/)
-    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-
-    expect(podLists()).toBe(2)
   })
 })
 
@@ -644,32 +620,20 @@ describe('bootStreamd', () => {
 })
 
 describe('invalidateRelayAddr', () => {
-  it('drops the cached inner-proxy address so the next dial re-resolves it', async () => {
-    // Nested: the relay is the inner proxy's pod IP on the fixed relay port,
-    // read from the vcluster apiserver and cached until invalidated.
-    vi.stubEnv('YAAC_NESTED', '1')
-    podsPayload = {
-      items: [
-        { status: { phase: 'Pending', podIP: '198.51.100.9' } },
-        { status: { phase: 'Running', podIP: '127.0.0.1' } },
-      ],
-    }
-    relay = await startFakeRelay((r) => okThen(r), RELAY_PORT)
+  it('drops the port-forward child so the next dial re-establishes it', async () => {
+    // The address has nothing memoized behind it any more — the shared
+    // port-forward registry owns both the cache and the child's lifetime,
+    // so invalidating is what makes the next dial respawn.
+    relay = await startFakeRelay((r) => okThen(r))
+    spawnMock.mockImplementation(() => fakePortForward(relay!.port))
 
     ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(podLists()).toBe(1)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
     ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(podLists()).toBe(1)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
 
     invalidateRelayAddr()
     ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(podLists()).toBe(2)
-  })
-
-  it('surfaces a nested proxy with no pod IP yet as a dial failure', async () => {
-    vi.stubEnv('YAAC_NESTED', '1')
-    podsPayload = { items: [{ status: { phase: 'Pending' } }] }
-    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
-      .rejects.toThrow(/no inner proxy pod IP yet/)
+    expect(spawnMock).toHaveBeenCalledTimes(2)
   })
 })

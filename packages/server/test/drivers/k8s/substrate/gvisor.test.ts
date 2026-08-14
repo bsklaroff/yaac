@@ -52,10 +52,6 @@ describe('runtimeClassSpec', () => {
       .toEqual({ runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED })
   })
 
-  it('stamps nothing for inner-yaac pods (the vcluster syncer sets the host runtime)', () => {
-    expect(runtimeClassSpec({ inner: true })).toEqual({})
-    expect(runtimeClassSpec({ inner: true, nested: true })).toEqual({})
-  })
 })
 
 describe('buildRuntimeClassManifests', () => {
@@ -92,7 +88,7 @@ describe('buildRuntimeClassManifests', () => {
 
   it('carries a sessions-pool toleration onto both classes when one is declared', () => {
     // The one declaration point for a dedicated sessions pool: admission
-    // merges this into session pods, builder pods, vcluster-synced pods and
+    // merges this into session pods, builder pods and
     // cluster check's pinned probes alike, so nothing per-pod knows the pool
     // exists. NoExecute as well as NoSchedule, since a pool taint is
     // typically both (keep others off, evict what drifted on).

@@ -19,7 +19,7 @@ vi.mock('node:readline/promises', () => ({
   },
 }))
 
-import { ClusterDeleteError, runClusterDelete } from '#drivers/k8s/cluster'
+import { runClusterDelete } from '#drivers/k8s/cluster'
 import { execFileAsync } from '#drivers/k8s/substrate/kubectl'
 
 const mockRun = vi.mocked(execFileAsync)
@@ -50,9 +50,6 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     logs.push(args.map(String).join(' '))
   })
-  // The dev/test env may itself be a nested yaac session — force the
-  // non-nested branch for every case except the nested-guard test.
-  vi.stubEnv('YAAC_NESTED', '')
   // A TTY, so the confirmation gate actually prompts.
   Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
 })
@@ -63,14 +60,6 @@ afterEach(() => {
 })
 
 describe('runClusterDelete', () => {
-  it('refuses to run inside a nested yaac session', async () => {
-    vi.stubEnv('YAAC_NESTED', '1')
-    await expect(runClusterDelete({ yes: true })).rejects.toBeInstanceOf(ClusterDeleteError)
-    await expect(runClusterDelete({ yes: true })).rejects.toThrow(/nested yaac session/)
-    // Nothing touched before the guard.
-    expect(mockRun).not.toHaveBeenCalled()
-  })
-
   it('deletes the cluster on the --yes happy path', async () => {
     await runClusterDelete({ yes: true })
 

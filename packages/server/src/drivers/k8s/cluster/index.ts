@@ -5,9 +5,9 @@
 //
 // This feature owns the *substrate*: the local kind/podman cluster and the
 // datapath the server hangs off it — the shared egress proxy, netd's
-// redirect layer, the main and per-project registries, and the per-worktree
-// vclusters with their sleep activators. Three kinds of consumer enter here: `yaac cluster
-// check/setup/delete` (before any server exists), worktree create and its
+// redirect layer, and the main and per-project registries. Three kinds of
+// consumer enter here: `yaac cluster check/setup/delete` (before any
+// server exists), worktree create and its
 // reconcilers (which stand a worktree's slice of that datapath up and tear it
 // down), and the image builders (which need the builder pod's admission
 // guard and its route to the registry).
@@ -17,9 +17,9 @@
 // internal — netd's manifest set and the cluster CIDR probes are covered
 // through the entry points below, not directly.
 //
-// Three things this feature uses heavily are deliberately NOT part of its
+// Two things this feature uses heavily are deliberately NOT part of its
 // interface, because their consumers want them without any cluster
-// machinery — routing any of them through this barrel would drag cluster
+// machinery — routing either of them through this barrel would drag cluster
 // check and setup into the image builder and the informer cache.
 //
 //  - The datapath's *names and ports* are a zero-import constant vocabulary
@@ -30,23 +30,11 @@
 //    image builders, the proxy client and server start use, and it needs
 //    none of this feature's machinery, so it lives in `#drivers/k8s/container`
 //    beside the container runtime. Only the registry WORKLOAD is here.
-//  - The vcluster *object layer* — the shapes a vcluster namespace
-//    publishes, their mappers, and the one-shot lists — is what the informer
-//    registry and the reconcile snapshot read, and it is the same job
-//    `pods.ts` does for worktree pods, so it lives in
-//    `#drivers/k8s/substrate`. What stays here is the vcluster
-//    *lifecycle*: provisioning, sleep/wake, status and teardown.
 
-export {
-  buildVclusterSleepEndpointSliceManifest,
-  ensureActivator,
-  getActivatorPodIp,
-  vclusterSleepSliceName,
-} from './activator'
 export { formatCheckResult, runClusterCheck } from './check'
-export { reconcileRedirectClaims } from './redirect-claim-reconcile'
 export { ClusterDeleteError, runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
+export { sweepLegacyVclusterState } from './legacy-vcluster-sweep'
 export { buildEgressWorldDenyNpManifest } from './policy-manifests'
 export {
   PROJECT_REGISTRY_PORT,
@@ -72,29 +60,8 @@ export {
   buildBuilderRoleGuardPolicyManifest,
 } from './proxy-manifests'
 export {
-  CLAIM_KEY,
-  buildRedirectClaimsConfigMapManifest,
-  isClaimConfigMapName,
-  renderNamespaceClaims,
-  validateVclusterClaims,
-} from './redirect-claims'
-export {
   ensureMainRegistry,
   mainRegistryExec,
   restartMainRegistry,
 } from './main-registry'
 export { ClusterSetupError, runClusterSetup } from './setup'
-export {
-  VCLUSTER_ORPHAN_GRACE_MS,
-  buildVclusterCleanupShellCommand,
-  ensureWorktreeVcluster,
-  ensureVclusterImages,
-  getVclusterStatus,
-  removeWorktreeVcluster,
-  sleepVcluster,
-  vapAvailable,
-  vclusterLabels,
-  vclusterName,
-  waitForVclusterKubeconfig,
-} from './vcluster'
-export { reconcileVclusters } from './vcluster-reconcile'

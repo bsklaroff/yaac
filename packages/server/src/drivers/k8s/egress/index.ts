@@ -43,4 +43,3 @@ export {
   configureProxyCredentials,
   type ProxyCredentialSources,
 } from './credential-providers'
-export { reconcileVclusterAttribution } from './vcluster-attribution'

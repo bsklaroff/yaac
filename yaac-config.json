@@ -2,12 +2,11 @@
   "portForward": [
     { "containerPort": 8787, "hostPortStart": 9787 }
   ],
-  "virtualCluster": true,
   "initCommands": [
     "pnpm install",
     "pnpm build",
     "npm install -g .",
-    "yaac server start",
+    "yaac server start --driver containerless",
     "yaac auth fake claude-oauth",
     "yaac auth fake github",
     "yaac project add https://github.com/bsklaroff/yaac.git"

@@ -367,7 +367,7 @@ export function assessCniAdoption(facts: CniFacts): CniAssessment {
 
   notes.push(`workload veth prefix: ${facts.vethPrefix}*`)
   notes.push(
-    'install, registry and vcluster namespaces labelled for the privileged Pod Security '
+    'install and registry namespaces labelled for the privileged Pod Security '
     + 'Standard (netd is hostNetwork with NET_ADMIN/NET_RAW, which baseline forbids) — '
     + 'namespace-scoped, so this relaxes nothing outside the namespaces yaac creates',
   )

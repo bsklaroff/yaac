@@ -3,8 +3,8 @@ export const PROXY_APP_NAME = 'yaac-proxy'
 /**
  * DaemonSet/ServiceAccount name and pod selector label of netd, the
  * redirect layer (features/cluster/netd.ts). Defined here with the other
- * datapath names so the claim bridge (redirect-claims.ts) can select on it
- * without importing the manifest builders.
+ * datapath names so a caller can select on it without importing the
+ * manifest builders.
  */
 export const NETD_APP_NAME = 'yaac-netd'
 export const NETD_SA_NAME = 'yaac-netd'
@@ -66,11 +66,9 @@ export const SSH_AGENT_PORT = 10261
  * Relay listener: the proxy's authenticated CONNECT into worktree pods'
  * streamd (docs/stream-relay.md). The server dials it, sends one auth
  * line ({token: proxyAuthSecret, worktreeId}), and the proxy splices the
- * rest of the stream to `podIP:POD_STREAM_PORT`. Present in every proxy,
- * outer and inner (same image); only the addressing differs — a
- * top-level server reaches it through one long-lived kubectl
- * port-forward to the proxy Deployment (see stream-relay.ts), a nested
- * server dials the inner proxy's pod IP on this port directly.
+ * rest of the stream to `podIP:POD_STREAM_PORT`. The server reaches it
+ * through one long-lived kubectl port-forward to the proxy Deployment
+ * (see stream-relay.ts).
  */
 export const RELAY_PORT = 10260
 /**
@@ -106,28 +104,8 @@ export const WORKTREE_EGRESS_NP_NAME = 'yaac-worktree-egress'
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
 /** NetworkPolicy locking worktree-pod ingress to the proxy's relay dials. */
 export const WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-worktree-ingress-lock'
-/** Per-vcluster NetworkPolicy: the synced-pod egress floor. */
-export const VCLUSTER_EGRESS_FLOOR_NP_NAME = 'yaac-vcluster-egress-floor'
-/** Per-vcluster NetworkPolicy: inner-proxy ingress. */
-export const INNER_PROXY_INGRESS_NP_NAME = 'yaac-inner-proxy-ingress'
-/** Per-vcluster NetworkPolicy: synced worktree-pod ingress lock. */
-export const INNER_WORKTREE_INGRESS_LOCK_NP_NAME = 'yaac-inner-worktree-ingress-lock'
-/**
- * Label the server stamps on every vcluster namespace. Plain NetworkPolicy
- * selects peer namespaces by label, so cross-namespace rules (a
- * vcluster's pods reaching the outer proxy's DNS stub, the proxy
- * admitting their chained egress) key on this rather than on a name
- * pattern.
- */
-export const LABEL_VCLUSTER_NAMESPACE = 'yaac.vcluster-namespace'
-
-/**
- * Role label + value the inner proxy pod carries so netd's target
- * selection can exclude it (loop-free): the inner proxy is NOT redirected
- * to itself, so its own upstream dials fall through to the outer proxy.
- */
+/** Role label pods carry so policy and sweeps can select on what they are. */
 export const LABEL_ROLE = 'yaac.role'
-export const ROLE_INNER_PROXY = 'inner-proxy'
 /**
  * Role of the ephemeral runsc builder pods that execute untrusted image
  * layers (docs/trust-split-builds.md). Referenced by the world-deny
@@ -135,19 +113,6 @@ export const ROLE_INNER_PROXY = 'inner-proxy'
  * builder-pod.ts) so the policy builder needs no import from features/images.
  */
 export const ROLE_BUILDER = 'builder'
-/**
- * Nested (inner) proxy only. The inner proxy's chained upstream dial
- * (inner worktree -> inner proxy -> OUTER proxy -> internet) terminates TLS at
- * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
- * The stock proxy dials upstream with Node's default trust store, so without
- * the outer CA that dial fails with "self-signed certificate in certificate
- * chain" and the inner worktree has no internet. The server projects the outer
- * CA into the vcluster as this ConfigMap; the inner proxy mounts it and points
- * NODE_EXTRA_CA_CERTS at it (additive trust — the real roots still apply). The
- * inner yaac reads the outer CA from its own worktree-pod trust mount
- * (pod-spec CA_CERT_PATH).
- */
-export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 
 /** ServiceAccount the proxy uses to watch pods (source-IP -> worktree). */
 export const PROXY_SA_NAME = 'yaac-proxy'
