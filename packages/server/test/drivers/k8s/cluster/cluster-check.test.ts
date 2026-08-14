@@ -34,10 +34,6 @@ import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import {
-  armDeferredClusterBoot,
-  _resetDeferredClusterBootForTests,
-} from '#drivers/k8s/substrate/deferred-boot'
 import { podUid } from '#drivers/k8s/substrate'
 import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
@@ -48,7 +44,7 @@ const mockRun = vi.mocked(execFileAsync)
 const mockApply = vi.mocked(kubectlApply)
 const mockPush = vi.mocked(pushImageToRegistry)
 const mockReachable = vi.mocked(registryReachable)
-// The vap check probes through vapAvailable() (vcluster.ts), which runs on
+// The vap check probes through vapAvailable() (proxy-apply.ts), which runs on
 // kubectlWithRetry rather than deps.run.
 const mockRetry = vi.mocked(kubectlWithRetry)
 
@@ -389,23 +385,6 @@ describe('runClusterCheck', () => {
 
   afterEach(async () => {
     await cleanupTempDir(tmpDir)
-    _resetDeferredClusterBootForTests()
-  })
-
-  it('reports ready without probing while a deferred cluster attach is pending', async () => {
-    // A nested server that armed its cluster boot fronts an asleep
-    // (scale-to-zero) vcluster — the check must not wake it or time out.
-    armDeferredClusterBoot(async () => { /* never fired in this test */ })
-    const deps = stage()
-
-    const { ok, results } = await runClusterCheck()
-
-    expect(ok).toBe(true)
-    expect(results.map((r) => [r.name, r.status])).toEqual([['cluster', 'pass']])
-    // No probing: not a single kubectl/podman call, no probe pod applied.
-    expect(deps.run).not.toHaveBeenCalled()
-    expect(deps.apply).not.toHaveBeenCalled()
-    expect(deps.pushImage).not.toHaveBeenCalled()
   })
 
   it('passes every check on a healthy single-node cluster', async () => {
@@ -483,80 +462,6 @@ describe('runClusterCheck', () => {
     await expect(
       fs.access(path.join(getDataDir(), '.cluster-check-write')),
     ).rejects.toThrow()
-  })
-
-  it('skips the egress-layer and vcluster gates inside a nested yaac', async () => {
-    process.env.YAAC_NESTED = '1'
-    try {
-      stage()
-      const { ok, results } = await runClusterCheck()
-      expect(ok).toBe(true)
-      // The shared-machinery checks still run for real (inner registry,
-      // inner namespace, inner probe).
-      expect(byName(results, 'probe')?.status).toBe('pass')
-      // egress is enforced host-side for a vcluster's synced pods (not
-      // probeable from in here), so it self-skips along with the rest.
-      // node-fixups likewise: there is no podman-hosted node in here, and
-      // the gvisor runtime is the host cluster's concern.
-      for (const name of ['node-fixups', 'gvisor', 'egress', 'nested-mount', 'vap', 'runtime-stamp']) {
-        expect(byName(results, name)?.status).toBe('skip')
-      }
-      // datapath IS checked nested, in this install's own terms: its
-      // claim-mode netd must be publishing, or the host leaves its sessions
-      // on the outer proxy's allowlist alone.
-      expect(byName(results, 'datapath')?.status).toBe('pass')
-      expect(byName(results, 'datapath')?.detail).toContain('claim mode')
-      // The relay IS probed nested (the inner proxy's pod IP): with no
-      // inner proxy pod in the fake listing it degrades to a warn, never
-      // a fail.
-      expect(byName(results, 'relay')?.status).toBe('warn')
-    } finally {
-      delete process.env.YAAC_NESTED
-    }
-  })
-
-  it('warns rather than fails when the nested claim-mode netd is not deployed yet', async () => {
-    // A preflight in a fresh nested install finds nothing: netd lands with
-    // the inner proxy on first session create.
-    process.env.YAAC_NESTED = '1'
-    try {
-      const run = happyRun()
-      run.mockImplementation(async (file: string, args: string[]) => {
-        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
-          && args[2] === 'yaac-netd') {
-          throw new Error('daemonsets.apps "yaac-netd" not found')
-        }
-        return happyResponses(file, args)
-      })
-      stage({ run })
-      const { ok, results } = await runClusterCheck()
-      expect(ok).toBe(true)
-      expect(byName(results, 'datapath')?.status).toBe('warn')
-    } finally {
-      delete process.env.YAAC_NESTED
-    }
-  })
-
-  it('fails the nested datapath gate when a deployed claim-mode netd is not ready', async () => {
-    process.env.YAAC_NESTED = '1'
-    try {
-      const run = happyRun()
-      run.mockImplementation(async (file: string, args: string[]) => {
-        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
-          && args[2] === 'yaac-netd') {
-          return { stdout: '0/1', stderr: '' }
-        }
-        return happyResponses(file, args)
-      })
-      stage({ run })
-      const { ok, results } = await runClusterCheck()
-      expect(ok).toBe(false)
-      const datapath = byName(results, 'datapath')
-      expect(datapath?.status).toBe('fail')
-      expect(datapath?.detail).toContain('OUTER proxy')
-    } finally {
-      delete process.env.YAAC_NESTED
-    }
   })
 
   it('warns rather than crashing when the node list cannot be read', async () => {
@@ -1118,18 +1023,6 @@ describe('runClusterCheck', () => {
                 },
                 spec: {},
               },
-              // The vcluster child namespaces are in scope — synced tenant
-              // pods (syncer-labeled) rely on the values.yaml knob for
-              // their stamp, i.e. the likeliest invariant violation.
-              {
-                metadata: {
-                  name: 'coredns-tenant', namespace: 'test-ns-vc-abcd1234',
-                  labels: { 'vcluster.loft.sh/managed-by': 'yvc-abcd1234' },
-                },
-                spec: {},
-              },
-              // The vcluster control plane is trusted infra: unstamped, unlabeled, unflagged.
-              { metadata: { name: 'yvc-abcd1234-0', namespace: 'test-ns-vc-abcd1234' }, spec: {} },
               // Other namespaces are not yaac's to police.
               { metadata: { name: 'coredns-xyz', namespace: 'kube-system' }, spec: {} },
             ],
@@ -1144,9 +1037,7 @@ describe('runClusterCheck', () => {
     const stamp = byName(results, 'runtime-stamp')
     expect(stamp).toMatchObject({ status: 'warn' })
     expect(stamp?.detail).toContain('test-ns/yaac-old-session')
-    expect(stamp?.detail).toContain('test-ns-vc-abcd1234/coredns-tenant')
     expect(stamp?.detail).not.toContain('yaac-proxy-abc')
-    expect(stamp?.detail).not.toContain('yvc-abcd1234-0')
     expect(stamp?.detail).not.toContain('kube-system')
     expect(ok).toBe(true) // warn-only: unsandboxed pods keep running
   })
@@ -1427,17 +1318,19 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
   })
 
-  it('warns (without failing) on vap when the ValidatingAdmissionPolicy API is unavailable', async () => {
-    // The check gates on vapAvailable() — the exact probe session-create
-    // applies — so it is stubbed at the kubectl layer, not deps.run.
+  it('fails on vap when the ValidatingAdmissionPolicy API is unavailable', async () => {
+    // The check gates on vapAvailable() — the exact probe the builder-pod
+    // guard applies — so it is stubbed at the kubectl layer, not deps.run.
     mockRetry.mockRejectedValue(new Error("the server doesn't have a resource type"))
     stage()
     const { ok, results } = await runClusterCheck()
     const vap = byName(results, 'vap')
-    expect(vap).toMatchObject({ status: 'warn' })
+    expect(vap).toMatchObject({ status: 'fail' })
     expect(vap?.detail).toContain('ValidatingAdmissionPolicy API unavailable')
-    expect(vap?.fix).toContain('virtualCluster')
-    expect(ok).toBe(true) // warn-only — only virtualCluster sessions are affected
+    expect(vap?.fix).toContain('image builds')
+    // Fail, not warn: the guard refuses to apply without the API, so no
+    // worktree image can be built at all.
+    expect(ok).toBe(false)
   })
 
   it('fails the registry check with repair instructions when nothing answers', async () => {

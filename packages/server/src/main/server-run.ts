@@ -484,9 +484,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Attach to the substrate. Everything convergence-owning starts there —
   // informer caches, status watchers, the port detector — and the
   // reconcile loop starts from `onAttached` rather than from the return,
-  // because a nested server defers the whole attach until first use to
-  // keep its born-at-zero vcluster asleep, and a loop running against a
-  // sleeping vcluster is exactly what would wake it.
+  // because a driver may defer the whole attach until first use and a
+  // loop's first pass would defeat that.
   await attachConvergence({
     onAttached: () => {
       // Started before the startup GCs drain (they run detached), so the

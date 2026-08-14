@@ -17,16 +17,10 @@
  * Full design and rationale: docs/worktree-egress.md.
  *
  * Reconcile is a pure function of cluster state: pods + Services + the
- * server's redirect claims + the node's Calico routes → desired chain +
- * Envoy documents. Every pass recomputes everything and writes only on
- * change, so there is no incremental state to drift and GC is implicit — a
- * deleted pod simply stops appearing in the rendering.
- *
- * The same binary runs in two modes (netdMode). `host` is the above.
- * `claim` runs INSIDE a nested install's vcluster and only publishes what
- * that install wants redirected, for the host to validate and program —
- * an inner yaac owns its redirect decision without owning a node's
- * netfilter (claims.ts, docs/nested-containers.md).
+ * node's Calico routes → desired chain + Envoy documents. Every pass
+ * recomputes everything and writes only on change, so there is no
+ * incremental state to drift and GC is implicit — a deleted pod simply
+ * stops appearing in the rendering.
  *
  * Two ordering rules the pass must never break, both learned the hard way:
  *
@@ -49,23 +43,11 @@ import {
   PODS_PATH,
   clusterInformerFactory,
   loadInClusterConfig,
-  mapConfigMap,
   mapPod,
   mapService,
-  namespacedConfigMapsPath,
-  namespacedPodsPath,
   namespacedServicesPath,
   startResourceWatch,
 } from 'yaac-netd/k8s-watch'
-import {
-  CLAIMS_CONFIGMAP_NAME,
-  CLAIM_KEY,
-  INNER_CLAIM_CONFIGMAP_NAME,
-  NETD_APP_NAME,
-  parseClaimsConfigMap,
-  renderInnerClaimDocument,
-  type NetdConfigMap,
-} from 'yaac-netd/claims'
 import {
   applyRestore,
   defaultRunner,
@@ -78,7 +60,6 @@ import {
 import { normalizeVethPrefix, parsePodVeths } from 'yaac-netd/routes'
 import {
   distinctTargets,
-  selectClaimProxyPodIp,
   selectTargets,
   type NetdPod,
   type NetdService,
@@ -112,38 +93,17 @@ export const BOOTSTRAP_PATH = path.join(ENVOY_DIR, 'bootstrap.yaml')
 export const ENVOY_ADMIN_PATH = path.join(ENVOY_DIR, 'admin.sock')
 /** The chosen listener slot, surviving a netd container restart. */
 export const TRIO_STATE_PATH = path.join(ENVOY_DIR, 'trio.slot')
-/**
- * Where the readiness marker lives. Host mode keeps it beside the Envoy
- * config it also owns; claim mode has no Envoy, so its DaemonSet points
- * this at a plain emptyDir.
- */
-const STATE_DIR = process.env.NETD_STATE_DIR ?? ENVOY_DIR
+/** Where the readiness marker lives, beside the Envoy config netd owns. */
+const STATE_DIR = ENVOY_DIR
 /**
  * Readiness marker, written after a reconcile that actually reached the
  * dataplane and removed the moment one fails. The DaemonSet's readiness
  * probe reads it, so "netd is Ready" means "the redirect is programmed and
  * Envoy is serving it" rather than merely "the process is alive" — without
  * it a netd whose every reconcile errors still reports Ready, and `cluster
- * check`'s datapath gate passes on a cluster with no working egress. In
- * claim mode it means "my claim is published", which is the same promise at
- * the inner install's own layer.
+ * check`'s datapath gate passes on a cluster with no working egress.
  */
 export const READY_PATH = path.join(STATE_DIR, '.ready')
-
-/**
- * Which half of the split netd is running (see claims.ts):
- *
- *  - `host` (default): program this node's redirect. Needs the node, its
- *    netfilter, and a co-located Envoy.
- *  - `claim`: publish what THIS install wants redirected, for the host to
- *    validate and program. Runs inside a vcluster as an ordinary sandboxed
- *    pod — no hostNetwork, no capabilities, no Envoy.
- */
-export type NetdMode = 'host' | 'claim'
-
-export function netdMode(): NetdMode {
-  return process.env.NETD_MODE === 'claim' ? 'claim' : 'host'
-}
 
 /** How long a pass waits for Envoy to acknowledge a config it just wrote. */
 const LISTENER_GATE_ATTEMPTS = 60
@@ -239,8 +199,6 @@ export interface ReconcileDeps {
   chain: string
   pods: () => NetdPod[]
   services: () => NetdService[]
-  /** ConfigMaps in netd's OWN namespace — the server's redirect claims. */
-  configMaps: () => NetdConfigMap[]
   routes: () => Promise<string>
   /** This install's listener trio, probed and persisted on first call. */
   trio: () => Promise<ListenerTrio>
@@ -284,22 +242,15 @@ export async function reconcileOnce(
   const pods = deps.pods()
   const services = deps.services()
 
-  // The outer proxy's ClusterIP — the destination every worktree pod's
-  // egress is redirected to, and the fallback for vcluster-synced pods.
+  // The proxy's ClusterIP — the destination every worktree pod's egress is
+  // redirected to.
   const outerProxy = services.find(
     (s) => s.namespace === config.installNamespace && s.name === 'yaac-proxy',
-  )
-  // The server-authored claims document (see claims.ts). Absent means no
-  // install has claimed anything, which leaves every synced pod on rule 3.
-  const claimsCm = deps.configMaps().find(
-    (cm) => cm.namespace === config.installNamespace && cm.name === CLAIMS_CONFIGMAP_NAME,
   )
   const selected = selectTargets({
     pods,
     installNamespace: config.installNamespace,
     outerProxyClusterIp: outerProxy?.clusterIp ?? null,
-    claims: parseClaimsConfigMap(claimsCm?.data),
-    podCidrs: config.podCidrs,
   })
   const targets = distinctTargets(selected)
   const chains = groupChains(selected)
@@ -365,192 +316,6 @@ export async function reconcileOnce(
   return changed
 }
 
-/** Claim-mode config: no node, no CIDRs, no ports — just an identity. */
-export interface NetdClaimConfig {
-  /** This (inner) install's namespace inside its own cluster. */
-  installNamespace: string
-  /** This install's data-dir hash — the claim's `install` field. */
-  installHash: string
-}
-
-export function loadClaimConfig(): NetdClaimConfig {
-  const required = (name: string): string => {
-    const value = process.env[name]
-    if (!value) throw new Error(`netd: ${name} is required`)
-    return value
-  }
-  return {
-    installNamespace: required('YAAC_NAMESPACE'),
-    installHash: required('YAAC_DATA_DIR_HASH'),
-  }
-}
-
-export interface ClaimReconcileDeps {
-  config: NetdClaimConfig
-  /** Pods in this install's own namespace. */
-  pods: () => NetdPod[]
-  /** Write the claim document into this install's claim ConfigMap. */
-  publish: (document: string) => Promise<void>
-  log: (message: string) => void
-}
-
-/** The last-published document, so an unchanged pass writes nothing. */
-export interface ClaimMemo {
-  document?: string
-}
-
-/**
- * One claim-mode pass: compute what this install wants redirected and
- * publish it.
- *
- * The selection is `selectTargets` — the same rule 1 a top-level netd runs
- * over the same labels — so an inner install's notion of "which pods get
- * redirected" cannot drift from the host's. Rules 2 and 3 are inert here:
- * no pod inside a vcluster carries the syncer's `managed-by` label (it is
- * stamped on the HOST copy), so there is nothing for them to match, and the
- * claims/podCidrs inputs they consume are left empty.
- *
- * An install with no proxy pod up, or no worktree pods, publishes the empty
- * document — an explicit retraction, which drops its pods back to the outer
- * proxy on the host's next pass rather than leaving them aimed at an address
- * that no longer serves.
- */
-export async function publishClaimOnce(
-  deps: ClaimReconcileDeps,
-  memo: ClaimMemo,
-): Promise<string[]> {
-  const pods = deps.pods()
-  const proxyPodIp = selectClaimProxyPodIp(pods, deps.config.installNamespace)
-  const sources = proxyPodIp === null ? [] : selectTargets({
-    pods,
-    installNamespace: deps.config.installNamespace,
-    outerProxyClusterIp: proxyPodIp,
-  }).map((selected) => selected.pod.podIp)
-  const document = proxyPodIp === null || sources.length === 0
-    ? ''
-    : renderInnerClaimDocument({ install: deps.config.installHash, proxyPodIp, sources })
-  if (memo.document === document) return []
-  await deps.publish(document)
-  memo.document = document
-  return [document === ''
-    ? 'claim(retracted)'
-    : `claim(${sources.length} pods -> ${proxyPodIp})`]
-}
-
-/**
- * Upsert this install's claim ConfigMap. Read-then-write rather than a
- * patch: the document is a single key netd owns outright, and an
- * unconditional replace cannot lose a concurrent edit that matters (a
- * second writer of this object would be a second netd for the same
- * install, which the DaemonSet does not create).
- */
-async function publishClaimConfigMap(
-  api: CoreV1Api,
-  namespace: string,
-  document: string,
-): Promise<void> {
-  const body = {
-    metadata: {
-      name: INNER_CLAIM_CONFIGMAP_NAME,
-      namespace,
-      // Cosmetic (triage): the server picks the synced copy out by name,
-      // not by label. What makes the syncer copy this object to the host at
-      // all is the claim-mode pod referencing it as a volume.
-      labels: { app: NETD_APP_NAME },
-    },
-    data: { [CLAIM_KEY]: document },
-  }
-  const existing = await api
-    .readNamespacedConfigMap({ name: INNER_CLAIM_CONFIGMAP_NAME, namespace })
-    .catch(() => null)
-  if (!existing) {
-    await api.createNamespacedConfigMap({ namespace, body })
-    return
-  }
-  await api.replaceNamespacedConfigMap({ name: INNER_CLAIM_CONFIGMAP_NAME, namespace, body })
-}
-
-/**
- * Run claim-mode netd until signalled. Same debounced-watch shape as host
- * mode, minus everything that touches a node.
- */
-export async function runClaimMode(): Promise<void> {
-  const config = loadClaimConfig()
-  log(`[netd] mode=claim ns=${config.installNamespace} install=${config.installHash}`)
-  await fs.mkdir(STATE_DIR, { recursive: true })
-  await fs.rm(READY_PATH, { force: true })
-
-  const kubeConfig = loadInClusterConfig()
-  const coreApi = kubeConfig.makeApiClient(CoreV1Api)
-  const makeInformerFn = clusterInformerFactory(kubeConfig)
-  const memo: ClaimMemo = {}
-  const deps: ClaimReconcileDeps = {
-    config,
-    pods: () => podWatch.list(),
-    publish: (document) => publishClaimConfigMap(coreApi, config.installNamespace, document),
-    log,
-  }
-
-  let running = false
-  let pending = false
-  let retryTimer: NodeJS.Timeout | null = null
-  const reconcile = async (): Promise<void> => {
-    if (running) {
-      pending = true
-      return
-    }
-    running = true
-    try {
-      const changed = await publishClaimOnce(deps, memo)
-      if (changed.length > 0) log(`[netd] published ${changed.join(' ')}`)
-      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
-      await fs.writeFile(READY_PATH, 'ok')
-    } catch (err) {
-      log(`[netd] claim publish failed: ${String(err)}`)
-      // The memo describes what netd published, not what the apiserver
-      // kept — a failed write must not be remembered as done.
-      memo.document = undefined
-      await fs.rm(READY_PATH, { force: true }).catch(() => { /* best-effort */ })
-      if (!retryTimer) {
-        retryTimer = setTimeout(() => { retryTimer = null; void reconcile() }, RETRY_DELAY_MS)
-      }
-    } finally {
-      running = false
-      if (pending) {
-        pending = false
-        void reconcile()
-      }
-    }
-  }
-
-  let debounce: NodeJS.Timeout | null = null
-  const onChange = (): void => {
-    if (debounce) clearTimeout(debounce)
-    debounce = setTimeout(() => { debounce = null; void reconcile() }, 200)
-  }
-
-  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-    // Nothing to tear down: the claim outlives this pod by design, and the
-    // host drops it the moment the proxy pod it names goes away.
-    process.on(sig, () => { process.exit(0) })
-  }
-
-  const podWatch = startResourceWatch<NetdPod>({
-    path: namespacedPodsPath(config.installNamespace),
-    listFn: () => coreApi.listNamespacedPod({ namespace: config.installNamespace }),
-    map: mapPod,
-    onChange,
-    log,
-    makeInformerFn,
-  })
-  podWatch.start()
-  // Re-publish periodically as well: the memo would otherwise hide a claim
-  // an outside actor deleted from the apiserver.
-  setInterval(() => { memo.document = undefined; void reconcile() }, 30_000)
-  await reconcile()
-  await new Promise(() => { /* run until signalled */ })
-}
-
 /**
  * Run netd until the process is signalled. Watches drive a debounced
  * reconcile; a periodic tick re-runs it in resync mode, which is what
@@ -601,7 +366,6 @@ export async function runHostMode(): Promise<void> {
     chain,
     pods: () => podWatch.list(),
     services: () => serviceWatch.list(),
-    configMaps: () => claimWatch.list(),
     routes: () => readIpRoutes(),
     trio: () => allocator.resolve(),
     confirmListeners: (expected) => waitForListeners({
@@ -685,10 +449,9 @@ export async function runHostMode(): Promise<void> {
     log,
     makeInformerFn,
   })
-  // Services and claims come from netd's OWN namespace only: the outer
-  // proxy's ClusterIP and the server-authored claims document both live
-  // there, and nothing else may influence the selection. That scoping is
-  // what keeps netd's cluster-wide read down to pods.
+  // Services come from netd's OWN namespace only: the proxy's ClusterIP
+  // lives there, and nothing else may influence the selection. That
+  // scoping is what keeps netd's cluster-wide read down to pods.
   const serviceWatch = startResourceWatch<NetdService>({
     path: namespacedServicesPath(config.installNamespace),
     listFn: () => coreApi.listNamespacedService({ namespace: config.installNamespace }),
@@ -697,28 +460,14 @@ export async function runHostMode(): Promise<void> {
     log,
     makeInformerFn,
   })
-  const claimWatch = startResourceWatch<NetdConfigMap>({
-    path: namespacedConfigMapsPath(config.installNamespace),
-    listFn: () => coreApi.listNamespacedConfigMap({ namespace: config.installNamespace }),
-    map: mapConfigMap,
-    onChange,
-    log,
-    makeInformerFn,
-  })
   podWatch.start()
   serviceWatch.start()
-  claimWatch.start()
   setInterval(() => { void reconcile({ resync: true }) }, 30_000)
   await reconcile()
   await new Promise(() => { /* run until signalled */ })
 }
 
-/** Run whichever half of netd this pod is (see netdMode). */
 export async function main(): Promise<void> {
-  if (netdMode() === 'claim') {
-    await runClaimMode()
-    return
-  }
   await runHostMode()
 }
 

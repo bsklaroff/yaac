@@ -17,10 +17,6 @@
  * always `project` (layered or standalone) and `Dockerfile.user` always
  * `user`, regardless of their content.
  *
- * The one exception is a nested install (`YAAC_NESTED=1`): its engine is
- * the worktree's in-pod podman, which IS the outer sandbox — an inner
- * builder pod would be a vcluster pod, unvalidated and strictly worse.
- *
  * The seam is build/imageExists. Pushes are deliberately NOT routed
  * per layer: host products push through `pushImageShared` (which
  * coalesces + HEAD-skips), while a cluster-pod build's delta push is an
@@ -29,7 +25,6 @@
  */
 import { imageExists, registryHasTag } from '#drivers/k8s/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
-import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
 import { buildImage, type ImageLayer } from '#drivers/k8s/image-engine'
 
@@ -44,12 +39,10 @@ export function isTrustedLayer(name: ImageLayerName): boolean {
 
 /**
  * Which engine realizes a layer: whitelisted trusted layers on host
- * podman; everything else in a runsc builder pod (except nested installs,
- * whose in-pod engine is already the outer worktree's sandbox).
+ * podman; everything else in a runsc builder pod.
  */
 export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
-  if (isTrustedLayer(name) || env.nested) return 'host-podman'
-  return 'cluster-pod'
+  return isTrustedLayer(name) ? 'host-podman' : 'cluster-pod'
 }
 
 export interface EngineBuildContext {

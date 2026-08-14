@@ -8,7 +8,6 @@ import {
   createSshAgentServer,
   isSshRemote,
   sshAgentGate,
-  type AgentPeerWorktree,
 } from 'yaac-proxy-sidecar/ssh-agent-relay'
 
 /**
@@ -86,7 +85,7 @@ interface Harness {
 
 async function startListener(opts: {
   agentSock: string
-  worktree?: AgentPeerWorktree
+  worktree?: string
   repoUrl?: string
   maxConnections?: number
   idleTimeoutMs?: number
@@ -131,12 +130,12 @@ function ask(port: number, payload: Buffer | Buffer[]): Promise<Buffer> {
   })
 }
 
-const SESSION: AgentPeerWorktree = { worktreeId: 'sess-1234abcd', viaVclusterAttribution: false }
+const SESSION = 'sess-1234abcd'
 
 describe('sshAgentGate', () => {
   it('admits a watched worktree pod whose registered remote is SSH', () => {
     expect(sshAgentGate(SESSION, 'git@github.com:acme/app.git'))
-      .toEqual({ ok: true, worktreeId: SESSION.worktreeId })
+      .toEqual({ ok: true, worktreeId: SESSION })
     expect(sshAgentGate(SESSION, 'ssh://git@example.com:2222/acme/app.git').ok).toBe(true)
   })
 
@@ -144,11 +143,6 @@ describe('sshAgentGate', () => {
     // Nothing else authenticates the connection, so a source the proxy
     // cannot place must never reach the agent.
     expect(sshAgentGate(undefined, 'git@github.com:acme/app.git').ok).toBe(false)
-  })
-
-  it('refuses a vcluster-attributed source: nested installs have their own agent', () => {
-    const nested: AgentPeerWorktree = { worktreeId: 'sess-1234abcd', viaVclusterAttribution: true }
-    expect(sshAgentGate(nested, 'git@github.com:acme/app.git').ok).toBe(false)
   })
 
   it('refuses a worktree with no SSH remote — the same condition the server provisions on', () => {

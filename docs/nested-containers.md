@@ -1,23 +1,17 @@
 # Nested containers on the Kubernetes backend
 
-How in-pod podman, the combined CA bundle, per-project push registries,
-per-worktree vclusters, and yaac-in-yaac work on yaac's Kubernetes backend.
-This is a current-state reference for the shipped subsystem.
+How in-pod podman, the combined CA bundle, and the per-project push
+registries work on yaac's Kubernetes backend. This is a current-state
+reference for the shipped subsystem.
 
-Two opt-in capabilities are layered here:
+One opt-in capability is layered here: **`nestedContainers`** — an in-pod
+rootful podman (real root inside the gVisor sentry, the upstream
+docker-in-gvisor shape) so `docker build` / `docker run` / `docker compose
+up --build` work inside a worktree exactly as a project README instructs
+(the `docker` CLI talks to podman's Docker-API socket). Non-nested
+worktrees are byte-for-byte unchanged.
 
-- **`nestedContainers`** — an in-pod rootful podman (real root inside the
-  gVisor sentry, the upstream docker-in-gvisor shape) so `docker build` /
-  `docker run` / `docker compose up --build` work inside a worktree exactly
-  as a project README instructs (the `docker` CLI talks to podman's
-  Docker-API socket). Non-nested worktrees are byte-for-byte unchanged.
-- **`virtualCluster`** — each worktree also gets its own vcluster plus a
-  per-project push registry. Implies `nestedContainers` (the in-pod podman
-  is the worktree's only build engine).
-
-Both are config-only, set in `yaac-config.json`; there is no `--vcluster`
-CLI flag. `virtualCluster: true` forces `nestedContainers: true`, and an
-explicit `virtualCluster: true, nestedContainers: false` is a parse error.
+It is config-only, set in `yaac-config.json`; there is no CLI flag.
 
 ## Image layer
 
@@ -79,9 +73,7 @@ worktrees. The registry is the source of truth and the only thing that
 travels between nodes; the node store below is a cache of it, so a worktree
 landing on a cold node just runs cold rather than being tied to the node
 its predecessor ran on. Every nested worktree therefore ensures the
-per-project registry, not just `virtualCluster` ones — an inner yaac is the
-exception (its vcluster denies the node hostPath the registry's
-`hosts.toml` writer pods need), and its worktrees run uncached.
+per-project registry.
 
 The push runs **inside the sandbox**, and the constraint it respects is
 that no layer may be extracted file-by-file through the gVisor gofer
@@ -294,7 +286,7 @@ promise to whoever pulls it.
 
 Retention is age-based, not liveness-based: a worktree pinned to a
 generation that has since been passed by `REGISTRY_GENERATIONS_KEPT` newer
-ones loses pullability, and its vcluster's synced pods would
+ones loses pullability, and a pod naming a retired tag would
 ImagePullBackOff on a restart. The budget is sized to make that rare — it
 is the width of the concurrently-live fleet, not a rebuild depth — but
 closing it properly would mean checking the tags live worktrees actually
@@ -392,18 +384,17 @@ store nor any CA env var, and need their own per-tool import.
 
 ## Per-project push registries
 
-A plain `registry:2` per project serves as the push-and-serve image source
-for vcluster synced pods and yaac-in-yaac. It has no upstream egress —
-nested `docker pull` goes through the MITM proxy, not this registry.
+A plain `registry:2` per project serves as the push-and-serve bus for the
+cross-worktree image cache: a worktree's built layers are salvaged and
+pushed there at teardown, and the next worktree pulls them. It has no
+upstream egress — nested `docker pull` goes through the MITM proxy, not
+this registry.
 
 - Plain HTTP on **:5000**, blobs on a per-project RWO PVC, plain root
   (trusted infra, like the proxy). The `registry:2` image is digest-pinned
   and mirrored into the yaac registry.
-- Ensured for every **nested** worktree (it also carries their cross-worktree
-  image cache), not only `virtualCluster` ones — except inside an inner
-  yaac, whose vcluster pod guard denies the node hostPath the `hosts.toml`
-  writer pods mount, so the ensure could not finish; those worktrees simply
-  run without a cross-worktree cache.
+- Ensured for every **nested** worktree — it is what carries their
+  cross-worktree image cache.
 - **Per project, not shared**, because `registry:2` has no path ACLs: a
   shared writable registry would let one project overwrite another's tags.
 - Three policies: a worktrees→registry allow k8s NetworkPolicy (podSelector
@@ -413,19 +404,19 @@ nested `docker pull` goes through the MITM proxy, not this registry.
   ingress to same-project worktrees plus the host/remote-node entities.
 - Node containerd reaches it via a `hosts.toml` under
   `/etc/containerd/certs.d/` (see Service addressing below).
-- Lifecycle: created from worktree-create when `virtualCluster` is on,
-  removed on project removal, orphan-GC'd at server start.
+- Lifecycle: created from worktree-create for a `nestedContainers`
+  worktree, removed on project removal, orphan-GC'd at server start.
 
 ### Service addressing
 
-The proxy, per-project registry, and vcluster API Services all use
+The proxy and per-project registry Services both use
 **allocator-assigned ClusterIPs**. They are stable because the Services
 are never deleted or recreated: `kubectl apply` reconciles drift in place,
 so the immutable ClusterIP is allocated once and never migrates. The
 server reads the live IP whenever it needs one (at pod-create, and when
 writing the node `hosts.toml`).
 
-- **In-cluster clients** (worktree pods, synced pods) reach these Services
+- **In-cluster clients** (worktree pods) reach these Services
   by their service-DNS names, resolved through the proxy's split-horizon
   DNS: the proxy forwards `*.cluster.local` to cluster CoreDNS and
   sinkholes bare `.svc` to avoid a DNS-exfil channel. No `hostAliases`,
@@ -434,171 +425,6 @@ writing the node `hosts.toml`).
   directly: the registry's `hosts.toml` maps its service-DNS host to the
   live ClusterIP, rewritten on every ensure (read per-pull, no containerd
   restart) so it always tracks the allocator-assigned IP.
-
-## Per-worktree vclusters (`virtualCluster`)
-
-An OSS vcluster (k8s distro, embedded SQLite on an emptyDir, no PVC) per
-worktree:
-
-- **Render**: `helm template` against a vendored, pinned chart tarball
-  (`k8s/vcluster/`) with per-worktree `--set` overrides; helm is fetched on
-  demand. The API Service exposes the API on **8443**, reached by its
-  service-DNS name (see Service addressing); the serving-cert SAN and the
-  exported kubeconfig use that name, so the ClusterIP need not be pinned.
-  `defaultImageRegistry` points at the yaac registry; vcluster images are
-  digest-pinned and mirrored. Every synced pod is stamped with
-  `yaac.worktree-id` so the egress backstop confines it for free.
-- **VAP guard** (synced-pod containment): a ValidatingAdmissionPolicy +
-  per-worktree binding restricts hostPath volumes to the worktree's
-  nested-yaac dir and denies hostNetwork/hostPID/hostIPC/hostPorts/
-  privileged; added capabilities are allowed only behind the gVisor sentry
-  tier (except `NET_BIND_SERVICE`). It is applied **before** the syncer
-  exists (so the first synced
-  pod, CoreDNS, is already covered) and fails closed when the VAP API is
-  missing.
-- **Policies**: a per-worktree NetworkPolicy admitting the worktree pod to
-  the vcluster API and intra-worktree traffic, plus a NetworkPolicy
-  locking the control-plane pod's egress (it holds host-API creds).
-- **Wiring**: created from worktree-create; the kubeconfig is polled out of
-  the `vc-<name>` Secret and dir-mounted at `~/.kube`. Orphan GC +
-  kubeconfig heal run as a background-loop tick; `WorktreeDetail` carries a
-  `virtualCluster` status block. The tmux-keyed reaper is untouched, so a
-  vcluster pod OOM never kills the worktree.
-
-## yaac-in-yaac
-
-A `virtualCluster` worktree can run an **inner yaac** (`YAAC_NESTED=1`)
-against its vcluster, creating inner worktrees with their own proxy and
-allowlist. worktree-create mounts the nested-yaac data dir at the identical
-absolute path in the pod (so inner synced-pod hostPaths resolve and match
-the VAP allowlist prefix) and sets `YAAC_NESTED=1` plus the registry
-override. The recursion cap rejects `virtualCluster && YAAC_NESTED` — no
-vcluster-in-vcluster, so there is exactly one nesting level.
-
-### Inner egress: the inner install claims, the host programs
-
-Each inner worktree's egress is **transparently** redirected to the inner
-proxy, and chains through the outer proxy for anything the inner allowlist
-doesn't specially handle. Allowlists compose by intersection (inner ∩
-outer), fail-closed at both layers. "Transparent" means the inner yaac runs
-the **same** code path as a top-level yaac (one API target, its vcluster)
-with **no host-cluster credentials in the worktree pod**.
-
-The redirect itself is netfilter on a node, which a vcluster does not have
-and whose tenant must never be given authority over. So the decision and the
-enforcement are split, and the inner install owns the decision:
-
-- The inner install applies the **same netd DaemonSet** the outer one does,
-  in **claim mode**: one unprivileged container (no `hostNetwork`, no
-  capabilities, no Envoy) that runs the same rule-1 selection over its own
-  API and writes the result to a ConfigMap in its own namespace. Its
-  readiness means "my claim is published", so `cluster check`'s `datapath`
-  row means something inside a vcluster too.
-- The **vcluster syncer** copies that ConfigMap to the host namespace — the
-  claim-mode pod references it as a volume, which is what makes a
-  `configMaps.all: false` syncer copy it. Nothing reads the mount. No
-  component ever dials a vcluster's API for this, so the bridge cannot wake
-  a sleeping vcluster.
-- The **outer server** validates each claim against the host's own pod list
-  and republishes the survivors as `yaac-redirect-claims` in the install
-  namespace. netd's rule-2 input is therefore an outer-authored object: a
-  privileged daemon never parses tenant data.
-- The **host netd** re-validates and programs. It picks one egress target
-  per pod, recomputed on every relevant event:
-
-1. A worktree pod in the install namespace → that install's **outer** proxy.
-2. A vcluster-synced pod whose pod IP a validated claim names → the claiming
-   install's proxy **pod**.
-3. Any other synced pod — including a claimed proxy itself, and every pod no
-   claim names → the vcluster's owning install's **outer** proxy.
-
-Rules 2 and 3 are scoped to vcluster namespaces the install owns (the server
-names them `<install namespace>-vc-<vcluster>`). netd sees every namespace,
-and several installs share a node, so an unscoped netd would redirect a
-sibling install's synced pods at its own proxy.
-
-Rule 3 is what gives synced pods working, allowlisted egress from the moment
-they exist (before any inner yaac), and what makes chaining loop-free: a
-claimed proxy is never a source, so its own upstream dials ride rule 3 to
-the outer proxy. Publishing a claim IS an install's opt-in signal —
-publishing flips its pods to rule 2, withdrawing it (or losing the proxy pod
-the claim names) reverts them on netd's next pass.
-
-Several inner installs can share one vcluster (the ambient nested server
-plus any per-run e2e servers). Each runs its own claim-mode netd in its own
-namespace and publishes its own claim, identified by the `install` field
-(its data-dir hash); when two claims name the same pod, the lowest hash wins
-so the rendering never flaps.
-
-Data path for an inner-worktree pod's outbound request:
-
-1. netd's per-pod DNAT rule sends it to the install's node-local Envoy
-   listener trio, where a filter chain matching the pod's source IP picks
-   the **inner** proxy's cluster (rule 2 above).
-2. Envoy recovers the original destination, stamps PROXY-protocol-v2 with
-   the pod's real source IP, and forwards to the claimed inner proxy pod.
-   The inner proxy resolves that IP to an inner worktree via its stock
-   pod-watch on the vcluster API (a vcluster pod's `status.podIP` is its
-   host IP) → inner allowlist → MITM/judge.
-3. The inner proxy dials the upstream. Its own egress rides rule 3 →
-   **outer proxy** → outer allowlist → internet. The inner proxy trusts
-   the outer CA via a projected ConfigMap.
-4. Net: inner ∩ outer, fail-closed at both layers, no proxy code change.
-
-The vcluster namespace still carries its own **NetworkPolicy** objects,
-applied by the outer server at vcluster-creation time: the synced-pod
-egress floor (the unforgeable containment boundary), the inner-proxy
-ingress lock, and the synced worktree-pod ingress lock. These are static —
-they name only the vcluster and its owning worktree — so they ship with the
-namespace rather than being reconciled per pass. A claim-mode netd needs no
-policy object of its own: the egress floor already admits the vcluster API.
-
-### Why claims, not a privileged inner netd
-
-A netd that programs netfilter needs the node: `hostNetwork`, `NET_ADMIN`,
-the node's route table. A synced pod asking for any of that is denied by the
-vcluster's own ValidatingAdmissionPolicy, and must be — a netd driven by an
-API whose tenant is cluster-admin could be told a sibling worktree's pod IP
-(pod `status` is writable inside a vcluster) and would DNAT that worktree's
-veth. Claim mode asks for nothing the guard would have to except.
-
-Choosing exactly one target per pod also means there is no precedence to
-reason about: the selection IS the decision, evaluated in ordinary code that
-unit tests can pin, and adding a nesting level would change nothing. And an
-inner yaac still applies **no** datapath object to the host — its claim is a
-core-API ConfigMap, so its vcluster needs no CRD schemas of any kind.
-
-### Trust model
-
-- The inner yaac/worktree pod holds **no host credential**
-  (`automountServiceAccountToken: false`, vcluster-only kubeconfig); it can
-  only write to its vcluster. Tenant-authored NetworkPolicies inside the
-  vcluster stay unsynced, so they never reach the host.
-- **netd is not a policy engine.** It programs only the redirect, and its
-  rules can only ever *add* reachability toward a proxy. Every allow/deny
-  is a plain NetworkPolicy enforced by Calico's Felix, authored solely by
-  the outer server from its own trusted builders.
-- The synced-pod egress floor is the containment boundary, and it selects
-  on the syncer-stamped `managed-by` label a tenant can neither forge nor
-  shed. It admits only the node's netd listener range, the vcluster API,
-  sibling synced pods, and the outer DNS stub — never raw world.
-- **A claim is not authenticated, it is confined.** Inside one worktree the
-  inner yaac and the agent code are the same trust domain, so no claim can
-  be attributed to "the real inner yaac"; the claim document is
-  tenant-writable and treated as such. What makes that harmless is the
-  invariant both the server and netd enforce: a claim may only name pod IPs
-  the HOST reports for that one vcluster's synced pods, which host IPAM
-  assigns and a tenant cannot mint. The worst a forged claim achieves is
-  aiming the tenant's own pods at the tenant's own pod, whose egress still
-  rides rule 3 to the outer proxy under the outer allowlist.
-- **Never a ClusterIP.** A claim naming a Service VIP would be dereferenced
-  by kube-proxy from the node's host netns, where a tenant-authored
-  Endpoints object can name any address on the internet and no
-  NetworkPolicy applies — an egress tunnel with no allowlist. Targets are
-  pod IPs, checked against the cluster pod CIDRs and against the live pod
-  list, for exactly this reason.
-- Bounded by construction: at most 64 claims per vcluster and 512 sources
-  per claim, so a tenant-writable document cannot amplify netd's rule count.
 
 ## Egress integration
 
@@ -611,21 +437,13 @@ off a pod-watch. Nested containers share the worktree pod's netns, so their
 `docker pull`/build traffic rides the same path with zero extra wiring;
 the proxy auto-appends the upstream registry + CDN hosts (docker.io,
 ghcr.io, quay.io and their CDNs) to the allowlist for nested worktrees, and
-anything else is denied fail-closed. A vcluster's synced pods are confined by their
-namespace's own synced-pod egress floor (they carry the syncer's
-`managed-by` label, which no tenant can shed). In-cluster destinations (registry :5000, vcluster API :8443) are
-reached by their service-DNS names (Service addressing above) and admitted
-by the per-project / per-worktree NetworkPolicies.
+anything else is denied fail-closed. The in-cluster destination that
+matters (the project registry on :5000) is reached by its service-DNS name
+(Service addressing above) and admitted by the per-project NetworkPolicy.
 
 ## cluster-check probes
 
-`yaac cluster check` gains a warn-level `nested-mount` probe (in-sandbox
-root runs `mount -t tmpfs` under the real nested containment — the sentry
-prerequisite for the rootful engine) and a `vap` row, on top of the
-`gvisor` gate and `runtime-stamp` sweep. Nested (`YAAC_NESTED=1`)
-cluster-check skips the host-only gates — except `datapath`, which becomes
-the inner install's own half of it: its claim-mode netd must be publishing.
-That is warn-level while nothing is deployed (netd lands with the inner
-proxy on first worktree create) and a failure once a deployed one is not
-Ready, which is the silent case — the install believes it governs its
-worktrees' egress and does not.
+`yaac cluster check` gains a warn-level `nested-mount` probe: in-sandbox
+root runs `mount -t tmpfs` under the real nested containment, the sentry
+prerequisite for the rootful engine. It sits alongside the `gvisor` gate
+and the `runtime-stamp` sweep, which apply to every worktree.

@@ -22,13 +22,11 @@ import {
 } from '#domain/worktrees/detail'
 import { ServerError } from '@yaac/shared/errors'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
-import type { VirtualClusterStatus } from '#drivers/contract'
 import type { WorktreeChanges } from '@yaac/shared/types'
 
 // Every helper here resolves the workspace through the runtime first.
 const mockFind = vi.fn()
 const mockBlockedHosts = vi.fn<(workspaceId: string) => Promise<string[]>>()
-const mockVcluster = vi.fn<(workspaceId: string) => Promise<VirtualClusterStatus | null>>()
 
 describe('session detail helpers', () => {
   let tmpDir: string
@@ -36,11 +34,9 @@ describe('session detail helpers', () => {
   beforeEach(async () => {
     mockFind.mockReset().mockResolvedValue(undefined)
     mockBlockedHosts.mockReset().mockResolvedValue([])
-    mockVcluster.mockReset().mockResolvedValue(null)
     installFakeWorktreeDriver({
       find: mockFind,
       blockedHosts: mockBlockedHosts,
-      virtualClusterStatus: mockVcluster,
     })
     tmpDir = await createTempDataDir()
     // The default above is a runtime running nothing: every helper here
@@ -64,7 +60,6 @@ describe('session detail helpers', () => {
   it('getWorktreeDetail reports what the runtime says about the workspace', async () => {
     mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1', projectSlug: 'demo' }))
     mockBlockedHosts.mockResolvedValue(['evil.example', 'blocked.example'])
-    mockVcluster.mockResolvedValue({ name: 'yvc-w1', ready: true, phase: 'ready' })
 
     const detail = await getWorktreeDetail('w1')
 
@@ -73,26 +68,7 @@ describe('session detail helpers', () => {
       worktreeId: 'w1',
       projectSlug: 'demo',
       blockedHostsCount: 2,
-      virtualCluster: { name: 'yvc-w1', ready: true, phase: 'ready' },
     })
-  })
-
-  // A workspace with no nested cluster is the common case, and the key is
-  // omitted rather than sent as null — the wire shape the webapp reads.
-  it('getWorktreeDetail omits the nested cluster when there is none', async () => {
-    mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1' }))
-    expect(await getWorktreeDetail('w1')).not.toHaveProperty('virtualCluster')
-  })
-
-  // Detail has to render even when that one extra read hiccups: it is a
-  // display surface, and a blank nested-cluster block beats an error page.
-  it('getWorktreeDetail still renders when the nested-cluster read fails', async () => {
-    mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1' }))
-    mockVcluster.mockRejectedValue(new Error('apiserver down'))
-
-    const detail = await getWorktreeDetail('w1')
-    expect(detail.worktreeId).toBe('w1')
-    expect(detail.virtualCluster).toBeUndefined()
   })
 
   it('getWorktreeBlockedHosts relays the runtime’s list', async () => {

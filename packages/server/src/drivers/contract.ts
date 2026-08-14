@@ -141,29 +141,6 @@ export interface RuntimeSnapshot {
 }
 
 /**
- * What the runtime is doing for one workspace's nested cluster, when it
- * runs one at all.
- *
- * Product vocabulary rather than substrate vocabulary — the config key is
- * `virtualCluster`, and nothing here says how a driver realizes one. It is
- * observation, not durable state: a runtime that runs no nested clusters
- * answers `null` for every workspace, exactly as one with no blocked hosts
- * answers an empty list.
- */
-export interface VirtualClusterStatus {
-  name: string
-  ready: boolean
-  /**
-   * asleep: scaled to zero, its API intercepted by an activator that wakes
-   * it on first touch. waking: started but not yet serving — covers both
-   * the create-time boot and an activator-triggered wake, so a wake that
-   * never completes surfaces as a persistent `waking` rather than a hang.
-   * ready: serving.
-   */
-  phase: 'asleep' | 'waking' | 'ready'
-}
-
-/**
  * What the egress path must be told about a workspace before it may reach
  * anything: decisions only.
  *
@@ -263,12 +240,12 @@ export interface ReservedHostPort extends PortMapping {
 
 /**
  * What a workspace needs standing up around it before it can be launched:
- * the egress registration, the image plumbing, and any nested cluster.
+ * the egress registration and the image plumbing.
  *
- * Decisions only. Whether the workspace runs nested containers or a
- * virtual cluster comes from its config, and which config, tool and remote
- * apply comes from rows and disk — all the caller's. Everything about how
- * those become registries, policies and clusters is the runtime's.
+ * Decisions only. Whether the workspace runs nested containers comes from
+ * its config, and which config, tool and remote apply comes from rows and
+ * disk — all the caller's. Everything about how those become registries
+ * and policies is the runtime's.
  */
 export interface SubstrateIntent {
   projectSlug: string
@@ -278,7 +255,6 @@ export interface SubstrateIntent {
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   nestedContainers: boolean
-  virtualCluster: boolean
   /**
    * The config's proxied env-var secrets, resolved to values, for the
    * runtime to put where its egress path resolves them from.
@@ -438,10 +414,9 @@ export interface StreamPty {
  * longer be inferred and has to be probed).
  *
  * The open tail carries a runtime's OWN sources — the ones only its own
- * steps declare and only it can raise, like the vcluster informers and
- * what the egress proxy reports over its event stream — so a driver can
- * watch things the layers above have no vocabulary for without every one
- * of them learning the word.
+ * steps declare and only it can raise, like what the egress proxy reports
+ * over its event stream — so a driver can watch things the layers above
+ * have no vocabulary for without every one of them learning the word.
  *
  * There is no poll: every source has an edge, and the resync is what makes
  * losing one cost latency rather than correctness.
@@ -683,9 +658,7 @@ export interface WorktreeDriver {
    * needs, its caches and watches, its own upkeep of the host.
    *
    * Resolving does NOT mean attached — a driver may defer the whole thing
-   * until first use, which is exactly what the k8s driver does inside a
-   * nested yaac so a born-at-zero virtual cluster is not woken by the
-   * server that lives in it. `sinks.attached` is the edge that means it;
+   * until first use. `sinks.attached` is the edge that means it;
    * `sinks.recover` fires first, while the substrate is usable and nothing
    * is watching yet.
    *
@@ -768,9 +741,6 @@ export interface WorktreeDriver {
    *  one before doing anything durable about it. `forwardPort` re-checks
    *  regardless: this answers a question, it does not reserve anything. */
   unforwardedPorts(workspaceId: string): Promise<number[]>
-  /** The workspace's nested cluster, or `null` when it runs none. */
-  virtualClusterStatus(workspaceId: string): Promise<VirtualClusterStatus | null>
-
   /**
    * Every image build this runtime has run or is running, for display.
    *

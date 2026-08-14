@@ -161,7 +161,7 @@ export class ProxyEventStream {
       this.onChange('mama-requests')
       // A reattach is also the only edge that says "the proxy pod may have
       // been replaced" — which is exactly what the ssh-agent heal and the
-      // vcluster attribution re-push are waiting for.
+      // ssh-key heal is waiting for.
       this.onChange('proxy-reconnect')
 
       await this.consume(res, controller)

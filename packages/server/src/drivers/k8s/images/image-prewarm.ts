@@ -9,10 +9,8 @@
  * two projects needing the same base wait on one build, then their distinct
  * downstream layers build in parallel.
  *
- * Runs in nested yaac worktrees too — in-pod podman builds are slower, but
- * that's exactly when proactive building pays off (editing dockerfiles from
- * inside a yaac-in-yaac dev worktree is the hot path), and the coordinator's
- * single-flight dedup means a worktree create just joins the sweep's build.
+ * The coordinator's single-flight dedup means a worktree create just joins
+ * the sweep's build rather than starting a second one.
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
@@ -65,7 +63,7 @@ export async function prewarmProjectImage(
   projectSlug: string,
   config: YaacConfig,
 ): Promise<void> {
-  const nestedContainers = config.nestedContainers === true || config.virtualCluster === true
+  const nestedContainers = config.nestedContainers === true
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
   const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)

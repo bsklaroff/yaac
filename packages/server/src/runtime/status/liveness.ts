@@ -7,7 +7,7 @@
  *
  * Neither probe may conclude "dead" from a transport failure. A destructive
  * caller (the stale reaper) acts on the verdict, and a cluster blip that read
- * as death would reap a healthy worktree — Job, vcluster and all — with no
+ * as death would reap a healthy worktree — Job and all — with no
  * recovery. That is why both return a tri-state with an explicit `unknown`.
  */
 import { WorkspaceExecError, type RuntimeHandle } from '#drivers/contract'
@@ -35,7 +35,7 @@ export type ProbeTarget = Pick<RuntimeHandle, 'projectSlug' | 'workspaceId' | 'j
  *              failed with a transport/API error). The worktree may well
  *              be alive; destructive callers (the stale-worktree reaper)
  *              MUST NOT treat this as dead, or a transient VM/cluster blip
- *              reaps a healthy worktree (Job + vcluster, no recovery).
+ *              reaps a healthy worktree (Job and all, no recovery).
  */
 export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
 

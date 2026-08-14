@@ -8,7 +8,6 @@ import fs from 'node:fs/promises'
 // real proxy manifests, the real policy set, the real cluster-CIDR probes,
 // and the real netd (which is internal to the folder and covered only here
 // and through cluster setup).
-const mockVapAvailable = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
@@ -43,7 +42,6 @@ vi.mock('#drivers/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(true),
 }))
 
-vi.mock('#drivers/k8s/cluster/vcluster', () => ({ vapAvailable: mockVapAvailable }))
 // netd's image is produced by the host build engine — cluster setup builds it
 // before there is a cluster to build it in.
 vi.mock('#drivers/k8s/image-engine', () => ({
@@ -68,11 +66,9 @@ import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
   DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
-  LABEL_ROLE,
   NETD_APP_NAME,
   NETD_LISTENER_PORT_BASE,
   NETD_LISTENER_PORT_END,
-  OUTER_CA_CONFIGMAP_NAME,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -80,7 +76,6 @@ import {
   PROXY_PORT,
   PROXY_SA_NAME,
   RELAY_PORT,
-  ROLE_INNER_PROXY,
   WORKTREE_EGRESS_NP_NAME,
   WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
@@ -93,7 +88,6 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/sub
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
 import { buildImage, failImageBuild, registerImageBuild } from '#drivers/k8s/image-engine'
-import { CA_CERT_PATH } from '#drivers/k8s/substrate/pod-spec'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
@@ -165,7 +159,6 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   vi.clearAllMocks()
   mockApply.mockResolvedValue(undefined)
-  mockVapAvailable.mockResolvedValue(true)
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
   mockImageExists.mockResolvedValue(true)
   mockHasTag.mockResolvedValue(true)
@@ -229,7 +222,7 @@ describe('ensureProxyAuthSecret', () => {
 })
 
 describe('proxyServiceClusterIp', () => {
-  it('returns the live (vcluster-allocated) ClusterIP of the proxy Service', async () => {
+  it('returns the live (allocator-assigned) ClusterIP of the proxy Service', async () => {
     mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
     expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
   })
@@ -432,7 +425,7 @@ describe('ensureProxyResources', () => {
     // ssh-agent forwarding: session pods dial the proxy directly, and that
     // pod-facing port is admitted for the SESSION selector only — never
     // from the node CIDRs (which would let anything on the host in) and
-    // never from vcluster-synced pods (a nested install has its own agent).
+    // never from anything else.
     const agentEgress = egress.egress.find((r) =>
       (r.ports ?? []).some((p) => p.port === SSH_AGENT_PORT))
     expect(JSON.stringify(agentEgress?.to)).toContain(PROXY_APP_NAME)
@@ -642,65 +635,6 @@ describe('ensureProxyResources', () => {
       .toBe(false)
   })
 
-  it('nested: projects the outer CA, marks the pod inner-proxy, and runs netd in claim mode', async () => {
-    stageClusterReads()
-    // mockRestore() also clears the call record, so assert before restoring.
-    const readSpy = vi.spyOn(fs, 'readFile').mockResolvedValue('OUTER-CA-PEM')
-    await ensureProxyResources('img', { nested: true })
-
-    // The outer CA is read from the inner yaac's own session-pod trust mount.
-    expect(readSpy).toHaveBeenCalledWith(CA_CERT_PATH, 'utf8')
-    expect(byName(OUTER_CA_CONFIGMAP_NAME)).toEqual({
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
-      data: { 'proxy-ca.pem': 'OUTER-CA-PEM' },
-    })
-    // Applied before the Deployment so the configMap mount resolves on first
-    // schedule (a missing source would keep the pod ContainerCreating).
-    expect(kinds().indexOf('ConfigMap')).toBeLessThan(kinds().indexOf('Deployment'))
-
-    const dep = applied().find((m) => m.kind === 'Deployment') as unknown as {
-      spec: { template: {
-        metadata: { labels: Record<string, string> }
-        spec: {
-          dnsPolicy?: string
-          dnsConfig?: { nameservers: string[] }
-          runtimeClassName?: string
-          volumes: Array<Record<string, unknown>>
-          containers: Array<{
-            env: Array<Record<string, unknown>>
-            volumeMounts: Array<Record<string, unknown>>
-          }>
-        }
-      } }
-    }
-    // yaac.role=inner-proxy is what keeps netd from redirecting the inner
-    // proxy into itself — its upstream dial must fall through to the outer.
-    expect(dep.spec.template.metadata.labels[LABEL_ROLE]).toBe(ROLE_INNER_PROXY)
-    // Still runc, and it resolves DNS via its own loopback stub rather than
-    // the vcluster's CoreDNS.
-    expect(dep.spec.template.spec.runtimeClassName).toBeUndefined()
-    expect(dep.spec.template.spec.dnsPolicy).toBe('None')
-    expect(dep.spec.template.spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] })
-    // Without the outer CA the chained upstream dial fails closed with
-    // "self-signed certificate in certificate chain".
-    expect(dep.spec.template.spec.containers[0].env)
-      .toContainEqual({ name: 'NODE_EXTRA_CA_CERTS', value: '/etc/yaac/outer-ca/proxy-ca.pem' })
-    expect(dep.spec.template.spec.volumes)
-      .toContainEqual({ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } })
-
-    // Claim-mode netd: the inner install publishes what it wants redirected
-    // through a ConfigMap and the host validates and programs it. No Envoy
-    // is mirrored and no pod CIDRs are read — it programs nothing itself.
-    const claimCm = applied().filter((m) => m.kind === 'ConfigMap')
-      .find((m) => m.metadata.name !== OUTER_CA_CONFIGMAP_NAME)
-    expect(claimCm).toBeDefined()
-    expect(kinds()).toContain('DaemonSet')
-    expect(kinds()).not.toContain('ClusterRole')
-    expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
-    readSpy.mockRestore()
-  })
 })
 
 describe('ensureCaConfigMap', () => {
@@ -745,7 +679,12 @@ describe('ensureBuilderRoleGuard', () => {
   })
 
   it('throws with a setup pointer when the VAP API is missing', async () => {
-    mockVapAvailable.mockResolvedValue(false)
+    // Probed at the kubectl boundary, the way `vapAvailable` probes it: an
+    // apiserver with no such resource type answers with an error.
+    mockRetry.mockImplementation((args: string[]) =>
+      args.includes('validatingadmissionpolicies')
+        ? Promise.reject(new Error("the server doesn't have a resource type"))
+        : Promise.resolve({ stdout: '', stderr: '' }))
     await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster setup/)
     expect(mockApply).not.toHaveBeenCalled()
   })

@@ -17,7 +17,6 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import {
-  IS_NESTED_YAAC,
   requirePodman,
   requireCluster,
   execInJob,
@@ -984,15 +983,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])
     }, 120_000)
 
-    it.skipIf(IS_NESTED_YAAC)('holds its streams with zero kubectl execs into session pods', async () => {
+    it('holds its streams with zero kubectl execs into session pods', async () => {
       // The stream relay's measurable claim: in steady state — status
       // watcher stream live, forward listeners registered, terminals just
       // exercised — the server holds NO kubectl exec into any session pod.
       // The long-lived `kubectl port-forward` children and the control
       // API's socat execs into the PROXY deployment are expected and
-      // excluded by the job/ filter. (Skipped nested: the inner server dials
-      // the inner proxy's pod IP — no port-forward child — and the base
-      // image has no ps.)
+      // excluded by the job/ filter.
       const { stdout } = await execFileAsync('ps', ['-A', '-o', 'ppid=,command='])
       const serverPid = String(server!.lock.pid)
       const children = stdout.split('\n')
@@ -1016,7 +1013,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(forwards).toHaveLength(2)
     })
 
-    it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
+    it('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
       const ns = k8sNamespace()
       const { stdout: ipOut } = await kubectlWithRetry([
         'get', 'pods', '-n', ns, '-l', `yaac.worktree-id=${worktreeId}`,

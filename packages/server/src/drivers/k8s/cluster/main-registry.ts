@@ -4,7 +4,7 @@
  * This is the one image bus (docs/trust-split-builds.md): host-side
  * `podman build` pushes trusted layers into it, sandboxed builder pods pull
  * their parents from it and push their products back, node containerd pulls
- * every worktree image from it, and the vcluster chart's images are named
+ * every worktree image from it, and the mirrored upstream images are named
  * through it. It is deliberately the SAME topology as the per-project
  * registries (project-registry.ts) rather than a second pattern:
  * digest-pinned `registry:2`, a Recreate Deployment, a selector-backed
@@ -89,7 +89,6 @@ import {
   registryReachable,
 } from '#drivers/k8s/container'
 import { LABEL_REGISTRY_DATA_DIR_HASH, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
-import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
 /** `app` label on every object of the main registry. Distinct from the
@@ -140,10 +139,8 @@ export const MAIN_REGISTRY_STORAGE_SIZE = '100Gi'
  * The blob store's claim. Deliberately names NO `storageClassName`, so it
  * binds through whatever the cluster's default class is: kind's
  * `standard` (rancher local-path) locally, the provider's default block
- * class on a stock cluster, and — inside a vcluster, where storage classes
- * are not synced in from the host — the host default the syncer's PVC
- * binds against. Naming a class here would break every cluster that does
- * not happen to ship it.
+ * class on a stock cluster. Naming a class here would break every cluster
+ * that does not happen to ship it.
  *
  * Never deleted: it outlives Deployment rollouts by design, and the store
  * is only meant to die with the cluster (where it costs re-pushes, which is
@@ -481,35 +478,10 @@ export interface EnsureMainRegistryOptions {
 /**
  * Idempotently stand the registry up (PVC + Deployment + Service + ingress
  * lock + node hosts.toml) and wait until this process can reach it.
- *
- * Refuses to create anything when the registry is EXTERNALLY managed —
- * `YAAC_K8S_REGISTRY` set, of which a nested yaac (pointed at the outer
- * install's per-project registry) is the production case. The guard is on
- * the variable rather than on `YAAC_NESTED` because the damage is not
- * nesting-specific: `registryHost()` is the external host, so an install
- * here would write a node hosts.toml at
- * `/etc/containerd/certs.d/<external-host>` aiming that host's pulls at a
- * local ClusterIP — silently hijacking node-side resolution of someone
- * else's registry.
  */
 export async function ensureMainRegistry(opts: EnsureMainRegistryOptions = {}): Promise<void> {
-  const external = env.k8sRegistry
   if (!opts.force && await registryReachable()) {
-    // An EXTERNAL registry's storage is not this install's to convert, and
-    // the Deployment the claim check reads lives in a cluster that has no
-    // such object — a nested yaac's own vcluster. Asking would answer "not
-    // converted" forever and drop a healthy install into the throw below,
-    // whose message ("not answering") would be flatly untrue.
-    if (external || await mainRegistryStorageIsClaim()) return
-  }
-
-  if (external) {
-    throw new Error(
-      `Registry ${external} is not answering. It is externally managed `
-      + '(YAAC_K8S_REGISTRY is set'
-      + (env.nested ? '; nested yaac uses the outer per-project registry' : '')
-      + ') — yaac will not stand up a replacement for it.',
-    )
+    if (await mainRegistryStorageIsClaim()) return
   }
 
   serverLog(`[registry] ensuring the in-cluster registry ${registryHost()}`)

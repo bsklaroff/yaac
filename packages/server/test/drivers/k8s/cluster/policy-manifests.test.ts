@@ -19,8 +19,8 @@ interface Spec {
 // The only policy builder outside the folder needs: the image feature
 // re-applies the install-wide world-deny after a builder pod exits. Every
 // other manifest in policy-manifests.ts is internal and asserted where it is
-// applied — the session/proxy set through `ensureProxyResources`, the
-// per-vcluster set through `ensureWorktreeVcluster`.
+// applied — the session/proxy set through `ensureProxyResources`.
+
 describe('buildEgressWorldDenyNpManifest', () => {
   const np = buildEgressWorldDenyNpManifest()
   const spec = np.spec as Spec

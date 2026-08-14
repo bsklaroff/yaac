@@ -142,8 +142,7 @@ range:
 Neither reaches anything outside the cluster, and neither is a way around
 the allowlist — git-over-SSH still tunnels through the proxy's transparent
 tunnel listener like any other egress. The agent port is admitted from the
-worktree selector alone: not from the node CIDRs, and not from
-vcluster-synced pods, whose install forwards its own inner proxy's agent.
+worktree selector alone, not from the node CIDRs.
 The proxy re-checks each connection's source pod IP against its pod-watch
 and refuses one it cannot place, or one whose worktree registered a
 non-SSH remote — the same condition under which the server provisions
@@ -155,48 +154,21 @@ worktree are co-scheduled.
 
 ## Egress target selection
 
-netd picks exactly **one** target per pod, recomputed on every relevant
-watch event, so there is no precedence to reason about:
+netd has exactly **one** rule, recomputed on every relevant watch event, so
+there is no precedence to reason about: a worktree pod (`yaac.worktree-id`)
+in **this install's own namespace** is redirected to this install's proxy.
+Nothing else on the node is redirected at all.
 
-1. A worktree pod in the install namespace → that install's **outer** proxy.
-2. A vcluster-synced pod whose pod IP a **validated redirect claim** names →
-   the claiming install's proxy **pod**. This is the yaac-in-yaac override:
-   the claim is published by the inner install's own netd and validated by
-   the outer server (`docs/nested-containers.md`).
-3. Any other synced pod — including a claimed proxy itself → the
-   vcluster's owning install's **outer** proxy.
+The scoping to netd's own namespace is what keeps installs sharing a node
+out of each other's traffic — netd watches pods everywhere, but only the
+install it serves can produce a target, so the first-appended PREROUTING
+jump never decides whose pods go where.
 
-Rules 2 and 3 apply only in vcluster namespaces **this install owns**
-(`<install namespace>-vc-<vcluster>`, the server's naming convention).
-netd watches every namespace, so without that scoping each of the installs
-sharing a node would claim the others' synced pods and DNAT them at its
-own proxy; the first-appended PREROUTING jump would win, and the loser's
-pods would reach a proxy that cannot resolve them.
-
-Rule 3 gives synced pods working, allowlisted egress before any inner yaac
-exists, and makes chaining loop-free (a claimed proxy is never redirected to
-itself, so its own upstream dials ride rule 3 to the outer proxy).
-
-One invariant is what makes rule 2 safe to expose to a tenant at all:
-
-> Every address a claim can steer traffic **to** is the `status.podIP` of a
-> pod the **host** apiserver reports in a vcluster namespace this install
-> owns, and lies inside the cluster's pod CIDRs.
-
-Pod IPs come from host IPAM and are reported in host pod status, so a
-vcluster tenant cannot mint one: the worst a forged claim achieves is aiming
-its own pods at its own pod, whose egress still rides rule 3 to the outer
-proxy under the outer allowlist. A **ClusterIP** would not be safe here —
-kube-proxy dereferences it from the node's host netns, where a
-tenant-authored Endpoints object can name any address on the internet and no
-NetworkPolicy applies. netd enforces the invariant itself rather than
-trusting the server's validation; raw world stays denied by NetworkPolicy,
-not by this selection.
-
-netd's own reads follow from that split: **pods** cluster-wide (a pod's veth
-is what it programs), and Services plus the claims ConfigMap in its **own**
-namespace only, since both are yaac-authored objects there and a tenant can
-write neither.
+The target address is the proxy **Service's ClusterIP**, read from netd's
+own install namespace. That is the security line: netd reads **pods**
+cluster-wide (a pod's veth is what it programs) but **Services** only in
+its own namespace, where every object is yaac-authored and no worktree can
+write one.
 
 Which target a flow reaches is decided **inside Envoy**, by matching the
 connection's source pod IP against a filter chain
@@ -282,8 +254,7 @@ NetworkPolicy matches the post-DNAT destination.
 The restriction is what keeps managed-cloud ports cheap: GKE Dataplane V1
 and AKS enforce plain NP through provider-managed Calicos where Calico
 CRDs are unsupported, so anything CRD-shaped would fork the policy model
-per provider. It also means a nested yaac registers no policy CRDs into
-its vcluster — plain NetworkPolicy is a core API every vcluster serves.
+per provider.
 
 ## Operational notes
 
@@ -347,9 +318,4 @@ its vcluster — plain NetworkPolicy is a core API every vcluster serves.
 - **Triage.** `kubectl -n <ns> logs ds/yaac-netd -c netd` for target
   selection, rule application, and the chain name; then
   `iptables-legacy -t nat -S <chain>` on the node for what is actually
-  programmed (`-S PREROUTING` shows which chain this install jumps to). For
-  a yaac-in-yaac question, `kubectl -n <ns> get cm yaac-redirect-claims -o
-  yaml` is the whole answer to "what has the host been asked to redirect" —
-  it is rewritten in full every time the claim set changes, so an absent
-  entry means nobody claimed that vcluster's pods (or nothing they claimed
-  survived validation) and they are on the outer proxy.
+  programmed (`-S PREROUTING` shows which chain this install jumps to).

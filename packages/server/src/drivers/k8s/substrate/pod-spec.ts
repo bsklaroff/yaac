@@ -308,14 +308,6 @@ export interface PodJobParams {
    * worktree-create's retry loop surfaces.
    */
   postStartExec?: string[]
-  /**
-   * True for a pod created by an inner (nested) yaac against its vcluster,
-   * which has no RuntimeClass objects — so no `runtimeClassName` is stamped
-   * and the vcluster syncer sets the host-side runtime. A host pod (the
-   * default) is stamped `gvisor`, or `gvisor-nested` when `nested` is set.
-   * Either way there is no user namespace: the sentry is the containment.
-   */
-  innerYaac?: boolean
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -401,9 +393,8 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
           // The bottom scheduling tier: a full node sheds a worktree before
-          // it sheds the proxy every worktree's network runs through. Inner
-          // (vcluster) pods stamp none — see priorityClassSpec.
-          ...priorityClassSpec({ inner: p.innerYaac }),
+          // it sheds the proxy every worktree's network runs through.
+          ...priorityClassSpec(),
           // Worktree pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
@@ -419,12 +410,12 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           // passwordless sudo, a feature — agents install packages
           // mid-worktree) is the sentry: in-sandbox root is a fiction with no
           // host authority. No user namespace anywhere — see runtimeClassSpec
-          // for the tier policy (gvisor / gvisor-nested / inner stamps none).
-          ...runtimeClassSpec({ inner: p.innerYaac, nested: !!p.nested }),
+          // for the tier policy (gvisor / gvisor-nested).
+          ...runtimeClassSpec({ nested: !!p.nested }),
           // DNS: worktree pods resolve against the proxy's UDP/53 stub, which is
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
-          // its vcluster API), while external names get a sinkhole IP since
+          // the project registry), while external names get a sinkhole IP since
           // egress is port-redirected on the node by netd (no per-pod
           // sidecar) and the proxy routes by SNI/Host. dnsPolicy None makes
           // this resolver the only one.

@@ -12,7 +12,6 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
-  dataDirHash,
   k8sNamespace,
   kubectlApply,
   kubectlWithRetry,
@@ -24,10 +23,6 @@ import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import { clusterPodCidrs } from './cluster-cidrs'
 import { cniVethPrefix } from './cni-adopt'
-import {
-  INNER_CLAIM_CM_NAME,
-  buildInnerClaimConfigMapManifest,
-} from './redirect-claims'
 
 const execFileAsync = promisify(execFile)
 
@@ -49,16 +44,11 @@ const execFileAsync = promisify(execFile)
  * reason something is permitted — and a netd that is down, late, or wrong
  * costs worktrees their egress rather than opening it (their NetworkPolicy
  * admits the node's listener ports and nothing world-ward).
- *
- * A NESTED install applies the same DaemonSet in **claim mode** into its own
- * vcluster: one unprivileged container that publishes what that install wants
- * redirected, for the host to validate and program. See
- * buildNetdClaimDaemonSetManifest and features/cluster/redirect-claims.ts.
  */
 
 /**
  * Envoy, digest-pinned and mirrored into the local registry like
- * `registry:2` and the vcluster image set — the node then pulls it with no
+ * `registry:2` — the node then pulls it with no
  * upstream egress, which also keeps `cluster setup` working on a flaky or
  * offline network.
  *
@@ -172,10 +162,9 @@ export function buildNetdServiceAccountManifest(): Record<string, unknown> {
 
 /**
  * Cluster-scoped read-only access to PODS, and nothing else — netd must see
- * worktree pods in the install namespace and synced pods in every vcluster
- * namespace, because a pod's veth is what it programs. Everything else it
- * reads (the proxy Service, the redirect claims) lives in its own namespace
- * and comes from the Role below.
+ * every worktree pod, because a pod's veth is what it programs. Everything
+ * else it reads (the proxy Service) lives in its own namespace and comes
+ * from the Role below.
  *
  * Read-only: netd never writes to the API, so a compromised netd cannot
  * mutate cluster state (its privilege is on the node's netfilter).
@@ -190,15 +179,12 @@ export function buildNetdClusterRoleManifest(): Record<string, unknown> {
 }
 
 /**
- * Namespaced read of the two objects that steer the selection: the proxy
- * Service (the outer target's ClusterIP) and the redirect-claims ConfigMap
- * the server publishes. Both are yaac-authored objects in the install
- * namespace, which is what makes netd's rule-2 input trusted — a tenant can
- * write neither.
+ * Namespaced read of the object that steers the selection: the proxy
+ * Service, whose ClusterIP is the redirect target.
  *
  * `list`/`watch` cannot be narrowed to one name (RBAC `resourceNames` does
- * not apply to them), so this is every ConfigMap in the install namespace.
- * That namespace holds only yaac's own objects.
+ * not apply to them), so this is every Service in the install namespace.
+ * That namespace holds only yaac's own objects. Read-only.
  */
 export function buildNetdRoleManifest(): Record<string, unknown> {
   return {
@@ -207,7 +193,7 @@ export function buildNetdRoleManifest(): Record<string, unknown> {
     metadata: { name: NETD_SA_NAME, namespace: k8sNamespace(), labels: { app: NETD_APP_NAME } },
     rules: [{
       apiGroups: [''],
-      resources: ['services', 'configmaps'],
+      resources: ['services'],
       verbs: ['get', 'list', 'watch'],
     }],
   }
@@ -220,29 +206,6 @@ export function buildNetdRoleBindingManifest(): Record<string, unknown> {
     metadata: { name: NETD_SA_NAME, namespace: k8sNamespace(), labels: { app: NETD_APP_NAME } },
     roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: NETD_SA_NAME },
     subjects: [{ kind: 'ServiceAccount', name: NETD_SA_NAME, namespace: k8sNamespace() }],
-  }
-}
-
-/**
- * Claim-mode RBAC, applied by a NESTED install inside its own vcluster: read
- * its own namespace's pods (the selection's input) and own the claim
- * ConfigMap (its output). No cluster-scoped rule of any kind — a claim-mode
- * netd has no business outside its own namespace, and inside a vcluster
- * there is nothing else for it to see.
- */
-export function buildNetdClaimRoleManifest(): Record<string, unknown> {
-  return {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'Role',
-    metadata: { name: NETD_SA_NAME, namespace: k8sNamespace(), labels: { app: NETD_APP_NAME } },
-    rules: [
-      { apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] },
-      {
-        apiGroups: [''],
-        resources: ['configmaps'],
-        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch'],
-      },
-    ],
   }
 }
 
@@ -413,116 +376,13 @@ export function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<s
   }
 }
 
-/** Where claim mode keeps its readiness marker (a plain emptyDir). */
-const CLAIM_STATE_DIR = '/var/run/yaac-netd'
-
-export interface NetdClaimDaemonSetOptions {
-  netdImage: string
-  /** This install's data-dir hash — the claim's `install` field. */
-  installHash: string
-}
-
-/**
- * The claim-mode DaemonSet a NESTED install applies into its own vcluster.
- *
- * Same image and same DaemonSet as the host's, minus everything that touches
- * a node: no `hostNetwork`, no capabilities, no Envoy container, no pod
- * CIDRs, no node identity. It reads its own namespace's pods and writes one
- * ConfigMap, and the host validates what it writes (redirect-claims.ts).
- *
- * That shape is what lets it exist at all. A synced pod asking for
- * `hostNetwork` or added capabilities is denied by the vcluster's own
- * ValidatingAdmissionPolicy (buildVclusterPodGuardPolicyManifest), and it
- * should be: a netd with real host authority, driven by an API whose tenant
- * is cluster-admin, could DNAT a sibling worktree's veth. So claim mode asks
- * for nothing the guard would have to make an exception for, and needs no
- * new NetworkPolicy either — the synced-pod egress floor already admits the
- * vcluster API.
- *
- * A DaemonSet rather than a Deployment because running the same object the
- * outer install runs is the point; a vcluster's node count is one, so the
- * shape costs nothing.
- */
-export function buildNetdClaimDaemonSetManifest(
-  opts: NetdClaimDaemonSetOptions,
-): Record<string, unknown> {
-  return {
-    apiVersion: 'apps/v1',
-    kind: 'DaemonSet',
-    metadata: {
-      name: NETD_APP_NAME,
-      namespace: k8sNamespace(),
-      labels: { app: NETD_APP_NAME },
-    },
-    spec: {
-      selector: { matchLabels: { app: NETD_APP_NAME } },
-      template: {
-        metadata: { labels: { app: NETD_APP_NAME } },
-        spec: {
-          serviceAccountName: NETD_SA_NAME,
-          automountServiceAccountToken: true,
-          enableServiceLinks: false,
-          // Must run wherever the vcluster's pods can run; no priority class
-          // (the host's system-node-critical is not a vcluster object).
-          tolerations: [{ operator: 'Exists' }],
-          containers: [
-            {
-              name: 'netd',
-              image: opts.netdImage,
-              imagePullPolicy: 'IfNotPresent',
-              securityContext: {
-                seccompProfile: { type: 'RuntimeDefault' },
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
-              },
-              env: [
-                { name: 'NETD_MODE', value: 'claim' },
-                { name: 'YAAC_NAMESPACE', value: k8sNamespace() },
-                { name: 'YAAC_DATA_DIR_HASH', value: opts.installHash },
-                { name: 'NETD_STATE_DIR', value: CLAIM_STATE_DIR },
-              ],
-              // Ready means "my claim is published" — the inner layer's
-              // version of the host's "the redirect is programmed", so the
-              // rollout gate in ensureProxyResources still means something.
-              readinessProbe: {
-                exec: { command: ['test', '-f', `${CLAIM_STATE_DIR}/.ready`] },
-                periodSeconds: 5,
-                failureThreshold: 3,
-              },
-              volumeMounts: [
-                { name: 'state', mountPath: CLAIM_STATE_DIR },
-                // Nothing reads this mount. It exists because a
-                // `configMaps.all: false` syncer copies only the configmaps a
-                // synced pod USES, and the host has to see the claim.
-                { name: 'claim', mountPath: '/etc/yaac/claim', readOnly: true },
-              ],
-            },
-          ],
-          volumes: [
-            { name: 'state', emptyDir: {} },
-            {
-              name: 'claim',
-              configMap: { name: INNER_CLAIM_CM_NAME, optional: true },
-            },
-          ],
-        },
-      },
-    },
-  }
-}
-
 /**
  * Stand up (or converge) netd.
  *
  * Called from `ensureProxyResources`, so the redirect layer exists before any
- * worktree pod can be scheduled. Both modes run the same builder set; which
- * one applies is the only nesting-aware branch in the redirect layer.
+ * worktree pod can be scheduled.
  */
-export async function ensureNetd(opts: { nested?: boolean } = {}): Promise<void> {
-  if (opts.nested) {
-    await ensureClaimNetd()
-    return
-  }
+export async function ensureNetd(): Promise<void> {
   const [netdImage, envoyImage, podCidrs] = await Promise.all([
     ensureNetdImage(),
     ensureEnvoyImage(),
@@ -535,30 +395,6 @@ export async function ensureNetd(opts: { nested?: boolean } = {}): Promise<void>
   await kubectlApply(buildNetdRoleBindingManifest())
   await kubectlApply(buildNetdDaemonSetManifest({
     netdImage, envoyImage, podCidrs, vethPrefix: cniVethPrefix(),
-  }))
-  await kubectlWithRetry([
-    'rollout', 'status', `daemonset/${NETD_APP_NAME}`,
-    '-n', k8sNamespace(), '--timeout=180s',
-  ], { timeout: 190_000, maxAttempts: 2 })
-}
-
-/**
- * The nested half: a claim-mode netd inside this install's own vcluster.
- *
- * No Envoy image is mirrored (claim mode never runs one) and no pod CIDRs are
- * read (it programs nothing). The claim ConfigMap is created before the
- * DaemonSet so the volume reference resolves on first schedule; it carries no
- * `data`, so re-applying it never clobbers a published claim.
- */
-export async function ensureClaimNetd(): Promise<void> {
-  const netdImage = await ensureNetdImage()
-  await kubectlApply(buildNetdServiceAccountManifest())
-  await kubectlApply(buildNetdClaimRoleManifest())
-  await kubectlApply(buildNetdRoleBindingManifest())
-  await kubectlApply(buildInnerClaimConfigMapManifest())
-  await kubectlApply(buildNetdClaimDaemonSetManifest({
-    netdImage,
-    installHash: dataDirHash(),
   }))
   await kubectlWithRetry([
     'rollout', 'status', `daemonset/${NETD_APP_NAME}`,

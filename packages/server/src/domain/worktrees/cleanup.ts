@@ -169,9 +169,9 @@ export async function cleanupWorktree(params: {
   // Every removal below is gated on the verdict, for the same reason the
   // CHECKOUT removal callers chain off it is: these are mount sources — the
   // ephemeral-modules dir backing `/workspace/node_modules`, and the
-  // per-worktree dirs holding the vcluster kubeconfig, nested-yaac data and
-  // the staged skills / worktree bin. A workspace the runtime could not
-  // confirm gone may still be running on them.
+  // per-worktree dirs holding the staged skills and worktree bin. A
+  // workspace the runtime could not confirm gone may still be running on
+  // them.
   //
   // `false` covers two cases and the worse one is not the obvious one. A
   // delete that timed out leaves a workspace in its grace period, and
@@ -461,8 +461,8 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
     await gcOrphanSpares(slug, liveWorktreeIds, sweepStartedAtMs)
 
     // Per-session dirs live under `<slug>/sessions/<sid>` on both roots —
-    // shared (vcluster kubeconfig, nested-yaac data, staged skills) and
-    // node-local; `projectWorktreeStateRoots` owns that pairing and collapses to one
+    // shared (the staged skills) and node-local;
+    // `projectWorktreeStateRoots` owns that pairing and collapses to one
     // entry today. The `worktrees/` dir is unique to
     // this feature, so a flat readdir gives the worktree id list directly.
     for (const worktreesRoot of projectWorktreeStateRoots(slug)) {

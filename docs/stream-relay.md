@@ -24,15 +24,8 @@ browser ── WS ── server ──(A)── proxy pod ──(B)── worktr
                              relay listener :10260   streamd :10300
                              (auth + splice)         (pty/ctrl/exec/tcp)
 
-top-level:  server = host process,   proxy via one kubectl port-forward
-nested:     server = worktree pod,    proxy = inner proxy (pod-IP dial)
+server = host process, proxy reached via one kubectl port-forward
 ```
-
-Same three components on both levels; only hop A's addressing differs.
-The inner proxy runs the same image and code as the outer one, so nested
-worktrees get the relay with no extra branch: its pod-watch runs against
-the vcluster apiserver, whose synced pods carry **host** pod IPs (syncer
-write-back), so the same resolve-and-dial serves inner worktree pods.
 
 ### streamd (`dockerfiles/streamd/`)
 
@@ -112,10 +105,7 @@ Address resolution, cached per run and re-resolved on transport failure:
 1. `YAAC_RELAY_ADDR` — explicit override for hosts with a direct TCP
    route to the proxy pod (e.g. a server running on the cluster node),
    which skips the port-forward hop entirely.
-2. Nested: the inner proxy's pod IP (from the vcluster apiserver), port
-   10260 — plain pod-to-pod traffic admitted by the existing all-ports
-   synced-pod egress rule.
-3. Top-level: the local listener of ONE long-lived `kubectl
+2. Otherwise: the local listener of ONE long-lived `kubectl
    port-forward` to the proxy Deployment, respawned on death. This
    deliberately keeps the proxy↔host hop on the apiserver: SPDY
    multiplexes every stream over the one connection (a new stream is a
@@ -141,13 +131,6 @@ fails its own caller and leaves everyone else's streams alone. For the
 same reason a caller's command budget is floored before the dial
 deadline is derived from it: how fast one probe wants an answer is not a
 statement about the transport every worktree shares.
-
-A nested address is the exception, because nothing shared stands behind
-it: re-resolving the inner proxy's pod IP is one apiserver read and
-disturbs no live stream, so a timeout does drop that one. It has to — a
-replaced inner proxy pod leaves an IP that blackholes every dial, and
-that is a timeout, not an error. Wedging until the next server restart
-is the alternative.
 
 Adapters give each consumer the surface it already used, so the
 respawn/backoff, `bridge()`, forwarder-registry, and frontend WS logic
@@ -185,15 +168,6 @@ default-allow by omission):
 - Worktree ingress lock (`buildWorktreeIngressLockNpManifest`): worktree
   pods accept only `app=yaac-proxy` on 10300, default-denying all other
   ingress.
-- Nested, applied by the OUTER server into the vcluster's host
-  namespace (the inner install has no host RBAC): the inner proxy accepts
-  the relay port from its OWNING worktree pod only
-  (`buildInnerProxyIngressNpManifest`), and synced worktree pods accept
-  10300 from their vcluster's inner proxies only
-  (`buildInnerWorktreeIngressLockNpManifest`). As with inner egress, a
-  nested install only streams when the outer yaac is new enough to
-  project these rules; `yaac cluster check` inside the worktree is the
-  diagnostic (its `relay` check dials the inner proxy).
 
 ## Compatibility edges
 

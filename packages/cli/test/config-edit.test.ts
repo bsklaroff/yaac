@@ -113,15 +113,16 @@ describe('configEditProject', () => {
   })
 
   it('a server validation failure keeps the scratch file too', async () => {
-    editorWrites('{ "virtualCluster": true, "nestedContainers": false }')
-    configPut.mockRejectedValue(new ServerError('VALIDATION', 'virtualCluster requires nestedContainers'))
+    editorWrites('{ "nestedContainers": "yes" }')
+    configPut.mockRejectedValue(
+      new ServerError('VALIDATION', 'nestedContainers must be a boolean'))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     await configEditProject('demo')
 
     expect(process.exitCode).toBe(1)
     const messages = errorSpy.mock.calls.map((c) => String(c[0]))
-    expect(messages.some((m) => /virtualCluster requires nestedContainers/.test(m))).toBe(true)
+    expect(messages.some((m) => /nestedContainers must be a boolean/.test(m))).toBe(true)
     expect(messages.some((m) => m.startsWith('Your edits are kept at '))).toBe(true)
     errorSpy.mockRestore()
   })

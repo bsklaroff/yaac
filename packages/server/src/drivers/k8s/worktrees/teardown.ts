@@ -2,13 +2,7 @@ import { k8sNamespace, kubectlWithRetry } from '#drivers/k8s/substrate'
 import { proxyClient } from '#drivers/k8s/egress'
 import { stopWorktreeForwarders } from '#drivers/k8s/forwarders'
 import { removeNodeImageStore, salvageWorktreeImages } from '#drivers/k8s/images'
-import {
-  buildVclusterCleanupShellCommand,
-  getVclusterStatus,
-  removeProjectRegistry,
-  removeWorktreeVcluster,
-  vclusterName,
-} from '#drivers/k8s/cluster'
+import { removeProjectRegistry } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'
 
 /**
@@ -98,30 +92,18 @@ const UNIT_DELETE_TIMEOUT = '30s'
  *    still running — and still writing into /workspace — for its whole
  *    grace period. The pod's terminationGracePeriodSeconds covers the
  *    graceful stop, so no separate stop step is needed.
- * 4. Remove the vcluster last, gated on one cheap status probe so a
- *    workspace that never had one pays a single read. After the delete, and
- *    best-effort: the vcluster reconcile sweeps whatever this misses.
  *
  * Resolves `false` when step 3 could not confirm the pod was gone — a
  * timeout, or a delete that failed outright. That verdict is what a caller
  * about to remove the workspace's files gates on; the leftover Job is swept
  * by the stale reaper, which resumes the (idempotent) teardown.
  *
- * `unitOnly` keeps steps 1 and 4, and what it protects is RECEIPT
- * COHERENCE for a caller that is about to launch again. A create prepares
- * its substrate once and reuses that receipt across attempts, so the
- * registration and the vcluster it names have to outlive any one attempt:
- * deregistering would leave the next attempt reaching nothing, and removing
- * the vcluster would invalidate the kubeconfig already written to disk for
- * it. Step 3 is the whole of it, and step 3 is exactly what a failed
- * attempt left behind.
- *
- * It is NOT a way to preserve a workspace's nested-cluster state. Nothing
- * here does: every stop and restart takes the full path, and what a
- * `unitOnly` give-up leaves standing is collected by the vcluster orphan
- * sweep once it ages past its grace window, since no pod or Job names it
- * any more. A resumed workspace gets a freshly prepared substrate. Do not
- * "improve" a stop path to keep state that the sweep will collect anyway.
+ * `unitOnly` skips step 1, and what it protects is RECEIPT COHERENCE for a
+ * caller that is about to launch again. A create prepares its substrate
+ * once and reuses that receipt across attempts, so the registration has to
+ * outlive any one attempt: deregistering would leave the next attempt
+ * reaching nothing. Step 3 is the whole of it, and step 3 is exactly what a
+ * failed attempt left behind.
  */
 export async function destroyWorkspace(
   target: TeardownTarget,
@@ -142,18 +124,6 @@ export async function destroyWorkspace(
     unitGone = false
   }
 
-  if (opts.unitOnly) return unitGone
-
-  try {
-    if (await getVclusterStatus(target.workspaceId)) {
-      await removeWorktreeVcluster(vclusterName(target.workspaceId))
-    }
-  } catch (err) {
-    console.warn(
-      `vcluster cleanup for ${target.workspaceId} failed: ${(err as Error).message}`,
-    )
-  }
-
   return unitGone
 }
 
@@ -163,9 +133,7 @@ export async function destroyWorkspace(
  *
  * Every line is idempotent and error-tolerant, which is what lets a
  * teardown be resumed by simply re-issuing the whole script — the reaper
- * does exactly that for a delete whose in-memory mark was lost. The
- * vcluster half is pure label-selector deletes, so a workspace that never
- * had one no-ops rather than branching.
+ * does exactly that for a delete whose in-memory mark was lost.
  *
  * Deliberately NOT the whole of a teardown: the caller appends the
  * removals it owns, and must have awaited `deregisterWorkspace` and
@@ -173,11 +141,8 @@ export async function destroyWorkspace(
  * salvage in particular has to reach into a pod this command destroys.
  */
 export function detachedTeardownCommand(target: TeardownTarget): string {
-  return [
-    `kubectl delete job ${target.unitName} -n ${k8sNamespace()}`
-    + ' --ignore-not-found 2>/dev/null || true',
-    buildVclusterCleanupShellCommand(vclusterName(target.workspaceId)),
-  ].join('; ')
+  return `kubectl delete job ${target.unitName} -n ${k8sNamespace()}`
+    + ' --ignore-not-found 2>/dev/null || true'
 }
 
 /**

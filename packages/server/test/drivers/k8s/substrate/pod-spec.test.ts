@@ -146,14 +146,6 @@ describe('buildPodJobManifest', () => {
     expect(spec.hostUsers).toBeUndefined()
   })
 
-  it('inner yaac: stamps no RuntimeClass and no userns', () => {
-    // Inside a vcluster there are no RuntimeClass objects; the host syncer
-    // sets the runtime. No userns of its own (incompatible with gvisor).
-    const spec = build({ innerYaac: true }).spec.template.spec
-    expect(spec.runtimeClassName).toBeUndefined()
-    expect(spec.hostUsers).toBeUndefined()
-  })
-
   it('defaults terminationGracePeriodSeconds to 5 and honors an override', () => {
     expect(build().spec.template.spec.terminationGracePeriodSeconds).toBe(5)
     expect(
@@ -187,15 +179,10 @@ describe('buildPodJobManifest', () => {
       .toBeGreaterThan(Number(c.resources.requests.cpu.replace('m', '')))
   })
 
-  it('puts host session pods on the low-priority tier and inner ones on none', () => {
+  it('puts session pods on the low-priority tier', () => {
     // Infra (proxy, registries, builders) outranks this, so a full node
     // sheds a session rather than the network every session depends on.
     expect(build().spec.template.spec.priorityClassName).toBe('yaac-worktree')
-    // Inner (vcluster) pods stamp nothing, like runtimeClassName: the
-    // syncer drops the class name host-side but copies preemptionPolicy,
-    // and the host's priority admission plugin rejects that combination —
-    // a pod that never syncs is a session that never starts.
-    expect(build({ innerYaac: true }).spec.template.spec.priorityClassName).toBeUndefined()
   })
 
   it('parses env entries, preserving equals signs inside values', () => {
@@ -394,12 +381,6 @@ describe('buildPodJobManifest', () => {
     it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
       const spec = build({ nested }).spec.template.spec
       expect(spec.runtimeClassName).toBe('gvisor-nested')
-      expect(spec.hostUsers).toBeUndefined()
-    })
-
-    it('inner-yaac nested: no RuntimeClass, no userns', () => {
-      const spec = build({ nested, innerYaac: true }).spec.template.spec
-      expect(spec.runtimeClassName).toBeUndefined()
       expect(spec.hostUsers).toBeUndefined()
     })
 

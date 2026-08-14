@@ -30,13 +30,9 @@ const mockRemoveStore = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageWorktreeImages: mockSalvage }))
 vi.mock('#drivers/k8s/images/store-writer', () => ({ removeNodeImageStore: mockRemoveStore }))
 
-const mockVclusterStatus = vi.hoisted(() => vi.fn())
-const mockRemoveVcluster = vi.hoisted(() => vi.fn())
 const mockRemoveRegistry = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
-  getVclusterStatus: mockVclusterStatus,
-  removeWorktreeVcluster: mockRemoveVcluster,
   removeProjectRegistry: mockRemoveRegistry,
 }))
 
@@ -48,7 +44,6 @@ import {
   detachedTeardownCommand,
   salvageWorkspaceImages,
 } from '#drivers/k8s/worktrees/teardown'
-import { vclusterName } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'
 
 const TARGET: TeardownTarget = {
@@ -69,8 +64,6 @@ beforeEach(() => {
   mockStopForwarders.mockReset()
   mockSalvage.mockReset().mockResolvedValue(true)
   mockRemoveStore.mockReset().mockResolvedValue(undefined)
-  mockVclusterStatus.mockReset().mockResolvedValue(null)
-  mockRemoveVcluster.mockReset().mockResolvedValue(undefined)
   mockRemoveRegistry.mockReset().mockResolvedValue(undefined)
 })
 
@@ -148,27 +141,6 @@ describe('destroyWorkspace', () => {
     await expect(destroyWorkspace(TARGET)).resolves.toBe(false)
   })
 
-  // One cheap probe gates the label-selector deletes, so a workspace that
-  // never had a nested cluster pays a single read rather than a sweep.
-  it('removes the nested cluster only when the workspace has one', async () => {
-    await destroyWorkspace(TARGET)
-    expect(mockRemoveVcluster).not.toHaveBeenCalled()
-
-    mockVclusterStatus.mockResolvedValue({ name: 'yvc-s1', ready: true, phase: 'ready' })
-    await destroyWorkspace(TARGET)
-    expect(mockRemoveVcluster).toHaveBeenCalledWith(vclusterName('s1'))
-    // After the unit is gone: its pods are what the nested cluster serves.
-    expect(mockKubectl.mock.invocationCallOrder[0])
-      .toBeLessThan(mockRemoveVcluster.mock.invocationCallOrder[0])
-  })
-
-  // The reconcile sweep collects a nested cluster this misses; a teardown
-  // that threw here would leave the caller's own bookkeeping half done.
-  it('survives a nested-cluster probe that fails, still reporting the unit gone', async () => {
-    mockVclusterStatus.mockRejectedValue(new Error('apiserver down'))
-    await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
-  })
-
   it('skips the salvage when the caller is about to destroy where it would go', async () => {
     await destroyWorkspace(TARGET, { salvageImages: false })
     expect(mockSalvage).not.toHaveBeenCalled()
@@ -192,17 +164,6 @@ describe('destroyWorkspace', () => {
       expect(mockStopForwarders).not.toHaveBeenCalled()
     })
 
-    it('leaves the nested cluster standing for the next attempt', async () => {
-      // The caller prepared its substrate once and is about to launch
-      // again against the same receipt — including a kubeconfig already
-      // written to disk for this vcluster.
-      mockVclusterStatus.mockResolvedValue({ name: 'vc-s1', ready: true, phase: 'ready' })
-
-      await destroyWorkspace(TARGET, { salvageImages: false, unitOnly: true })
-
-      expect(mockRemoveVcluster).not.toHaveBeenCalled()
-    })
-
     it('still reports a unit it could not confirm gone', async () => {
       // The verdict is what gates removing the checkout, so it means the
       // same thing whichever shape the teardown took.
@@ -215,20 +176,14 @@ describe('destroyWorkspace', () => {
   })
 
 describe('detachedTeardownCommand', () => {
-  it('deletes the unit and sweeps the nested cluster', () => {
-    const script = detachedTeardownCommand(TARGET)
-    expect(script).toContain('kubectl delete job yaac-proj-s1')
-    // Pure label-selector deletes, so a workspace with no nested cluster
-    // no-ops rather than needing a branch the shell cannot take.
-    expect(script).toContain(vclusterName('s1'))
+  it('deletes the unit', () => {
+    expect(detachedTeardownCommand(TARGET)).toContain('kubectl delete job yaac-proj-s1')
   })
 
   // The whole script is re-issued to resume an interrupted teardown (the
   // reaper does exactly that), so every line has to tolerate having run.
   it('every command is idempotent and cannot fail the script', () => {
-    const lines = detachedTeardownCommand(TARGET).split('; ')
-    expect(lines.length).toBeGreaterThan(1)
-    for (const line of lines) {
+    for (const line of detachedTeardownCommand(TARGET).split('; ')) {
       expect(line).toContain('--ignore-not-found')
       expect(line).toContain('|| true')
     }

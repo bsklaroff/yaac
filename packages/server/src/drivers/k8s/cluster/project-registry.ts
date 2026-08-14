@@ -828,8 +828,8 @@ const registryEnsureMutex = createKeyedMutex()
 /**
  * Idempotently stand up the project's registry (PVC + Deployment + Service
  * + the network policies + node hosts.toml) and wait for it to serve. Called from
- * worktree-create only for `virtualCluster` worktrees — nested-only worktrees
- * need no registry. The Service's ClusterIP is allocator-assigned and never
+ * worktree-create for every `nestedContainers` worktree — it is the bus the
+ * cross-worktree image cache rides. The Service's ClusterIP is allocator-assigned and never
  * deleted, so `apply` is a no-op on it after first creation (the pin and its
  * immutable-field migration are gone).
  *
@@ -890,9 +890,8 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   // Node-side residue exists only if the registry itself ever did (the
   // hosts.toml dir is written by the hosts writer). Probe before deleting
   // and skip the cleanup pods for registry-less projects: their cleanup pod
-  // can't even start — the mirror image was never pushed, and a nested
-  // worktree's vcluster pod guard denies the node hostPath mount — so each
-  // one would sit Pending for runNodeWritePod's full 60s deadline, stalling
+  // can't even start — the mirror image was never pushed — so each one
+  // would sit Pending for runNodeWritePod's full 60s deadline, stalling
   // every project remove.
   const existing = await kubectlGetJson<{ items?: unknown[] }>([
     'get', 'deployment,service', '-l', selector, '-n', k8sNamespace(),

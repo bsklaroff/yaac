@@ -277,28 +277,6 @@ describe('yaac config (real CLI + real server)', () => {
     expect(nested.status).toBe(200)
   })
 
-  it('accepts virtualCluster but rejects it alongside nestedContainers: false', async () => {
-    await seedProject('demo-vcluster')
-
-    const client = makeServerApiClient(server)
-
-    const vcluster = await client.project[':slug'].config.$put({
-      param: { slug: 'demo-vcluster' },
-      json: { config: { virtualCluster: true } },
-    })
-    expect(vcluster.status).toBe(200)
-
-    // virtualCluster implies nestedContainers — the explicit opt-out is a
-    // contradiction the parser rejects.
-    const conflict = await client.project[':slug'].config.$put({
-      param: { slug: 'demo-vcluster' },
-      json: { config: { virtualCluster: true, nestedContainers: false } },
-    })
-    expect(conflict.status).not.toBe(200)
-    const body = await conflict.text()
-    expect(body).toMatch(/virtualCluster requires nestedContainers/)
-  })
-
   it('config edit fails with a clear error for an unknown project slug', async () => {
     const editor = await writeStubEditor('should-not-run', 'unused')
     const { exitCode, stderr } = await runYaac(

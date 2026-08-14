@@ -118,14 +118,6 @@ function rawPod(name: string, project = 'proj'): unknown {
   }
 }
 
-const rawVclusterNs = {
-  metadata: {
-    name: 'yvc-ns1',
-    labels: { 'yaac.vcluster': 'yvc-abc', 'yaac.vcluster-session-id': 'sid-1' },
-    creationTimestamp: '2026-07-21T00:00:00Z',
-  },
-}
-
 const listOf = (...items: unknown[]): Promise<KubernetesListObject<KubernetesObject>> =>
   Promise.resolve({ items } as unknown as KubernetesListObject<KubernetesObject>)
 
@@ -182,7 +174,7 @@ afterEach(async () => {
 describe('ClusterCache', () => {
   const ns = k8sNamespace()
 
-  it('starts the three install-scoped informers and seeds them off the typed client', async () => {
+  it('starts the two install-scoped informers and seeds them off the typed client', async () => {
     // The list path yields deserialized class instances — Date timestamps,
     // where the watch path delivers ISO strings. Both must map.
     const created = new Date('2026-07-21T00:00:00Z')
@@ -199,23 +191,16 @@ describe('ClusterCache', () => {
       },
       status: {},
     }))
-    listNamespaceMock.mockImplementation(() => listOf({
-      ...(rawVclusterNs as object),
-      metadata: { ...rawVclusterNs.metadata, creationTimestamp: created },
-    }))
     const { cache, informers } = makeCache()
     cache.start()
     await flush()
 
     const pods = informers.get(`/api/v1/namespaces/${ns}/pods`)
     const jobs = informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)
-    const namespaces = informers.get('/api/v1/namespaces')
     expect(pods?.informer.startCalls).toBe(1)
     expect(pods?.selector).toContain('yaac.worktree-id')
     expect(jobs?.informer.startCalls).toBe(1)
     expect(jobs?.selector).toContain('yaac.data-dir-hash')
-    expect(namespaces?.informer.startCalls).toBe(1)
-    expect(namespaces?.selector).toContain('yaac.vcluster')
 
     // The seed list goes through the memoized CoreV1Api/BatchV1Api clients,
     // scoped to the install namespace and the same selector as the watch.
@@ -233,10 +218,6 @@ describe('ClusterCache', () => {
     expect(cache.worktreeJobs()).toEqual([{
       jobName: 'yaac-alpha-p1', worktreeId: 'sid-p1', projectSlug: 'alpha',
       createdAtMs: created.getTime(),
-    }])
-    expect(cache.vclusterNamespaces()).toEqual([{
-      name: 'yvc-abc', worktreeId: 'sid-1', namespace: 'yvc-ns1',
-      creationTimestamp: created.toISOString(),
     }])
     cache.stop()
   })
@@ -279,100 +260,16 @@ describe('ClusterCache', () => {
     cache.stop()
   })
 
-  it('creates and tears down per-vcluster-namespace informers', async () => {
-    const { cache, informers, deltas } = makeCache()
-    cache.start()
-    await flush()
-    const namespaces = informers.get('/api/v1/namespaces')!.informer
-
-    namespaces.emit('add', rawVclusterNs)
-    const vcPods = informers.get('/api/v1/namespaces/yvc-ns1/pods')
-    const vcServices = informers.get('/api/v1/namespaces/yvc-ns1/services')
-    const vcConfigMaps = informers.get('/api/v1/namespaces/yvc-ns1/configmaps')
-    expect(vcPods?.informer.startCalls).toBe(1)
-    expect(vcPods?.selector).toBeUndefined()
-    expect(vcServices?.informer.startCalls).toBe(1)
-    expect(vcServices?.selector).toBe('vcluster.loft.sh/managed-by=yvc-abc')
-    // Claim ConfigMaps are picked out by name, so that informer runs unselected.
-    expect(vcConfigMaps?.informer.startCalls).toBe(1)
-    expect(vcConfigMaps?.selector).toBeUndefined()
-    expect(deltas).toContain('vcluster-namespaces')
-
-    namespaces.emit('delete', rawVclusterNs)
-    expect(vcPods?.informer.stopCalls).toBe(1)
-    expect(vcServices?.informer.stopCalls).toBe(1)
-    expect(vcConfigMaps?.informer.stopCalls).toBe(1)
-    expect(cache.vclusterPods('yvc-ns1')).toBeNull()
-    cache.stop()
-  })
-
-  it('serves vcluster objects only from a healthy informer', async () => {
-    const { cache, informers, deltas } = makeCache()
-    cache.start()
-    await flush()
-    informers.get('/api/v1/namespaces')!.informer.emit('add', rawVclusterNs)
-    await flush() // let the dynamic caches seed from their (empty) lists
-    const vcPods = informers.get('/api/v1/namespaces/yvc-ns1/pods')!.informer
-    const vcServices = informers.get('/api/v1/namespaces/yvc-ns1/services')!.informer
-    const vcConfigMaps = informers.get('/api/v1/namespaces/yvc-ns1/configmaps')!.informer
-
-    // Seeded but not yet connected → unhealthy → callers must list live.
-    expect(cache.vclusterPods('yvc-ns1')).toBeNull()
-    expect(cache.vclusterServices('yvc-ns1')).toBeNull()
-    expect(cache.vclusterConfigMaps('yvc-ns1')).toBeNull()
-    // Unknown namespace: never cached at all.
-    expect(cache.vclusterPods('nope')).toBeNull()
-
-    vcPods.emit('connect')
-    vcPods.emit('add', { metadata: { name: 'syncer-0' }, status: { podIP: '10.1.2.3' } })
-    vcServices.emit('connect')
-    vcServices.emit('add', { metadata: { name: 'yaac-proxy-x-yaac-x-yvc' } })
-    vcConfigMaps.emit('connect')
-    vcConfigMaps.emit('add', { metadata: { name: 'claims' }, data: { claims: 'a,b' } })
-    expect(deltas).toContain('vcluster-pods')
-    expect(deltas).toContain('vcluster-services')
-    expect(deltas).toContain('vcluster-configmaps')
-    expect(cache.vclusterPods('yvc-ns1')).toEqual([{ labels: {}, name: 'syncer-0', podIP: '10.1.2.3' }])
-    expect(cache.vclusterServices('yvc-ns1'))
-      .toEqual([{ labels: {}, name: 'yaac-proxy-x-yaac-x-yvc' }])
-    expect(cache.vclusterConfigMaps('yvc-ns1'))
-      .toEqual([{ name: 'claims', data: { claims: 'a,b' } }])
-    cache.stop()
-  })
-
-  it('keeps the namespaces cache when one vcluster\'s informers cannot be created', async () => {
-    const informers = new Map<string, FakeInformer>()
-    const log: string[] = []
-    const cache = new ClusterCache({
-      makeInformerFn: (p) => {
-        if (p.includes('yvc-ns1')) throw new Error('informer factory failed')
-        const informer = new FakeInformer()
-        informers.set(p, informer)
-        return informer
-      },
-      relistIntervalMs: 3_600_000,
-      log: (msg) => log.push(msg),
-    })
-    cache.start()
-    await flush()
-    informers.get('/api/v1/namespaces')!.emit('add', rawVclusterNs)
-
-    expect(cache.vclusterNamespaces().map((v) => v.namespace)).toEqual(['yvc-ns1'])
-    expect(cache.vclusterPods('yvc-ns1')).toBeNull()
-    expect(log.some((l) => l.includes('change listener failed'))).toBe(true)
-    cache.stop()
-  })
-
   it('healthy() tracks the underlying informer state', async () => {
     const { cache, informers } = makeCache()
     cache.start()
-    await flush() // seeds all three from their (empty) lists
+    await flush() // seeds both from their (empty) lists
     expect(cache.healthy('worktree-pods')).toBe(false)
     informers.get(`/api/v1/namespaces/${ns}/pods`)!.informer.emit('connect')
     expect(cache.healthy('worktree-pods')).toBe(true)
     expect(cache.healthy('worktree-jobs')).toBe(false)
-    informers.get('/api/v1/namespaces')!.informer.emit('connect')
-    expect(cache.healthy('vcluster-namespaces')).toBe(true)
+    informers.get(`/apis/batch/v1/namespaces/${ns}/jobs`)!.informer.emit('connect')
+    expect(cache.healthy('worktree-jobs')).toBe(true)
     cache.stop()
     expect(cache.healthy('worktree-pods')).toBe(false)
   })

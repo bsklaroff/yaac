@@ -50,20 +50,6 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
 
 /**
- * True when the e2e suite runs inside a nested yaac worktree. Several
- * capabilities simply don't exist in a vcluster-backed inner worktree and
- * cannot be exercised from in here, so the tests that depend on them are
- * `skipIf`'d on this flag:
- *  - node datapath assertions made from inside the cluster (egress is
- *    enforced host-side for a nested worktree — `yaac cluster check` reports
- *    `egress: skipped`) — transparent-egress, netd-datapath;
- *  - vcluster-in-vcluster (`createWorktree` refuses it outright);
- *  - the podman `kind` network (the inner podman has no host network
- *    topology).
- */
-export const IS_NESTED_YAAC = process.env.YAAC_NESTED === '1'
-
-/**
  * Point the current test process at the per-run test namespace, so that
  * src helpers (listWorktreePods, containerExec, ProxyClient, ...) target
  * the same namespace a server spawned with `createYaacTestEnv().env`

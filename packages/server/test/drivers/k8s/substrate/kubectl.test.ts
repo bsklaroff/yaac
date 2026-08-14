@@ -279,7 +279,7 @@ describe('execFileAsync', () => {
   })
 
   // The bare promisified runner the setup/delete paths use for non-kubectl
-  // binaries (kind, podman, vcluster) — no namespace, no retries.
+  // binaries (kind, podman) — no namespace, no retries.
   it('runs a binary with its argv and resolves stdout/stderr', async () => {
     execFileMock.mockResolvedValue({ stdout: 'kind v0.30.0', stderr: '' })
     await expect(execFileAsync('kind', ['version'])).resolves.toEqual({

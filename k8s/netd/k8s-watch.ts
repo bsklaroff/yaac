@@ -20,23 +20,15 @@
  * the server's InformerCache: on any non-410 error — a failed initial list
  * included — it emits `error` and STOPS. Restart-with-backoff is ours.
  *
- * Host-mode netd watches pods in ALL namespaces, unlike the proxy: it must
- * see worktree pods in the install namespace and synced pods in every
- * vcluster namespace, since a pod's veth is what it programs. Services and
- * the redirect-claim ConfigMap it reads only in its OWN namespace — the
- * outer proxy's ClusterIP and the server-authored claims both live there —
- * so its cluster-scoped RBAC is pods alone.
- *
- * Claim-mode netd (inside a vcluster, see claims.ts) watches pods in its own
- * namespace only, and writes one ConfigMap there.
+ * netd watches pods in ALL namespaces, unlike the proxy, since a pod's
+ * veth is what it programs. Services it reads only in its OWN namespace —
+ * the proxy's ClusterIP lives there — so its cluster-scoped RBAC is pods
+ * alone.
  *
  * There is no periodic resync, so a delete event lost while the watch was
- * down survives until the next restart re-lists. That gap is fail-closed
- * both ways: a ghost POD renders no rules (renderRedirectRules needs a live
- * veth from the node's route table, which a departed pod no longer has), and
- * a stale CLAIM cannot outlive its proxy pod — validation drops any claim
- * whose target is not a live synced pod IP, so the pods fall back to the
- * outer proxy rather than onto a dead address.
+ * down survives until the next restart re-lists. That gap is fail-closed:
+ * a ghost pod renders no rules, since renderRedirectRules needs a live veth
+ * from the node's route table and a departed pod no longer has one.
  */
 
 import {
@@ -47,7 +39,6 @@ import {
   type KubernetesObject,
   type ObjectCache,
 } from '@kubernetes/client-node'
-import type { NetdConfigMap } from 'yaac-netd/claims'
 import type { NetdPod, NetdService } from 'yaac-netd/targets'
 
 interface RawPod {
@@ -58,11 +49,6 @@ interface RawPod {
 interface RawService {
   metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }
   spec?: { clusterIP?: string }
-}
-
-interface RawConfigMap {
-  metadata?: { name?: string; namespace?: string }
-  data?: Record<string, string>
 }
 
 /**
@@ -89,20 +75,6 @@ export function mapService(raw: unknown): NetdService | null {
   const clusterIp = svc.spec?.clusterIP
   if (!name || !namespace || !clusterIp) return null
   return { name, namespace, clusterIp, labels: svc.metadata?.labels ?? {} }
-}
-
-/**
- * Map one API ConfigMap object to netd's shape; null when unusable. A
- * data-less ConfigMap maps to an empty record rather than being dropped:
- * that is how the server retracts every claim at once, and it must reach
- * the reconcile as "no claims" instead of as "no document".
- */
-export function mapConfigMap(raw: unknown): NetdConfigMap | null {
-  const cm = raw as RawConfigMap
-  const name = cm.metadata?.name
-  const namespace = cm.metadata?.namespace
-  if (!name || !namespace) return null
-  return { name, namespace, data: cm.data ?? {} }
 }
 
 /** The informer surface this module drives — lets tests inject a fake. */
@@ -209,16 +181,9 @@ export function startResourceWatch<T>(deps: ResourceWatchDeps<T>): ResourceWatch
 /** All-namespace pods — host mode's veth-bearing population. */
 export const PODS_PATH = '/api/v1/pods'
 
-/** Namespaced watch paths. The informer's path is its resync identity, so
+/** Namespaced watch path. The informer's path is its resync identity, so
  *  it must cover exactly the same scope as the list function beside it. */
-export function namespacedPodsPath(namespace: string): string {
-  return `/api/v1/namespaces/${namespace}/pods`
-}
-
 export function namespacedServicesPath(namespace: string): string {
   return `/api/v1/namespaces/${namespace}/services`
 }
 
-export function namespacedConfigMapsPath(namespace: string): string {
-  return `/api/v1/namespaces/${namespace}/configmaps`
-}

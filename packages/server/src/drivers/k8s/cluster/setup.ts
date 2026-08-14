@@ -12,7 +12,7 @@ import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-install
 import { ensureNetd } from './netd'
 import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
-import { ClusterSetupError, MAX_KIND_NODES, assertNotNested, resolveNodeCount } from './arg-guards'
+import { ClusterSetupError, MAX_KIND_NODES, resolveNodeCount } from './arg-guards'
 import {
   assessCniAdoption,
   assessVethSource,
@@ -324,7 +324,6 @@ export async function runClusterSetup(
   opts: ClusterSetupOptions = {},
   deps: ClusterSetupDeps = defaultDeps(),
 ): Promise<boolean> {
-  assertNotNested('setup')
 
   const nodeCount = resolveNodeCount(opts)
 

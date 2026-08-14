@@ -7,10 +7,9 @@ import { serverLog } from '#log'
  *
  * Plain NetworkPolicy can name pods and namespaces by label, but it has
  * no way to say "the node's network namespace" or "the apiserver" — its
- * only non-selector peer is `ipBlock`. Both matter here: netd's Envoy
- * delivers redirected egress from the host netns, and the vcluster
- * control plane must reach the host API. So those become concrete
- * addresses, resolved at apply time. Keeping the resolution in one module
+ * only non-selector peer is `ipBlock`. That matters here: netd's Envoy
+ * delivers redirected egress from the host netns, so the node's addresses
+ * become concrete ones, resolved at apply time. Keeping the resolution in one module
  * (rather than inline in each ensure function) is what stops the policies
  * from disagreeing about what "the node" is.
  *
@@ -38,10 +37,6 @@ const CALICO_TUNNEL_ANNOTATIONS = [
   'projectcalico.org/IPv4VXLANTunnelAddr',
   'projectcalico.org/IPv4WireguardInterfaceAddr',
 ] as const
-
-interface RawEndpoints {
-  subsets?: Array<{ addresses?: Array<{ ip?: string }> }>
-}
 
 interface RawPodCidrNodeList {
   items?: Array<{ spec?: { podCIDR?: string; podCIDRs?: string[] } }>
@@ -97,35 +92,6 @@ export async function nodeIpBlocks(): Promise<string[]> {
     )
   }
   nodeCidrCache = unique
-  return unique
-}
-
-/**
- * The host apiserver's real endpoint addresses as `/32`s, used by the
- * vcluster control-plane and activator policies.
- *
- * Read from the `kubernetes` Endpoints in `default` rather than the
- * Service ClusterIP: NetworkPolicy is evaluated on the post-DNAT
- * destination, so a rule naming the VIP would never match. On kind that
- * endpoint is the node address itself, which is why this can return the
- * same value as `nodeIpBlocks()` — correct, not redundant.
- */
-export async function apiserverIpBlocks(): Promise<string[]> {
-  const endpoints = await kubectlGetJson<RawEndpoints>([
-    'get', 'endpoints', 'kubernetes', '-n', 'default',
-  ])
-  const cidrs = (endpoints?.subsets ?? [])
-    .flatMap((s) => s.addresses ?? [])
-    .map((a) => a.ip)
-    .filter((ip): ip is string => !!ip)
-    .map((ip) => `${ip}/32`)
-  const unique = [...new Set(cidrs)].sort()
-  if (unique.length === 0) {
-    // Fall back to the node set: on every backend yaac supports the
-    // apiserver is reachable at a node address, and an empty list would
-    // strand the vcluster control plane with no path to the host API.
-    return nodeIpBlocks()
-  }
   return unique
 }
 

@@ -49,9 +49,8 @@ describe('reconcileImagePrewarm', () => {
     vi.resetAllMocks()
     _resetImagePrewarmForTests()
     clearAllImageBuildsForTests()
-    // This suite may itself run inside a nested yaac session or an e2e
-    // harness — neutralize the ambient gates explicitly.
-    vi.stubEnv('YAAC_NESTED', undefined)
+    // This suite may itself run inside an e2e harness — neutralize the
+    // ambient gates explicitly.
     vi.stubEnv('YAAC_IMAGE_PREWARM', undefined)
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', undefined)
     vi.stubEnv('YAAC_IMAGE_PREFIX', undefined)
@@ -64,14 +63,6 @@ describe('reconcileImagePrewarm', () => {
     vi.unstubAllEnvs()
     clearAllImageBuildsForTests()
     _resetWorktreeListChangedForTests()
-  })
-
-  it('runs inside a nested yaac session (in-pod dockerfile edits are the hot path)', async () => {
-    vi.stubEnv('YAAC_NESTED', '1')
-    reconcileImagePrewarm(['p'], mockResolveConfig)
-    await flush()
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      'p', undefined, false, false, { reason: 'prewarm' })
   })
 
   it('is a no-op when YAAC_IMAGE_PREWARM=0', async () => {
@@ -106,14 +97,6 @@ describe('reconcileImagePrewarm', () => {
       'final-plain:x', { projectSlug: 'plain', reason: 'prewarm' })
     expect(mockPush).toHaveBeenCalledWith(
       'final-nested:x', { projectSlug: 'nested', reason: 'prewarm' })
-  })
-
-  it('virtualCluster implies the nestable layer', async () => {
-    mockResolveConfig.mockResolvedValue({ virtualCluster: true })
-    reconcileImagePrewarm(['vc'], mockResolveConfig)
-    await flush()
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      'vc', undefined, false, true, { reason: 'prewarm' })
   })
 
   it('skips a project whose prewarm is still in flight, then resumes', async () => {

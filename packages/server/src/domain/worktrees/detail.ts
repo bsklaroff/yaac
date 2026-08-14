@@ -6,7 +6,7 @@ import { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { worktreeDriver } from '#drivers/driver'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
-import type { RuntimeHandle, VirtualClusterStatus } from '#drivers/contract'
+import type { RuntimeHandle } from '#drivers/contract'
 import type { AgentTool, GitAuthFailure, WorktreeChanges } from '@yaac/shared/types'
 
 export interface WorktreeDetail {
@@ -22,8 +22,6 @@ export interface WorktreeDetail {
   gitAuthFailures: GitAuthFailure[]
   /** ISO timestamp of pod creation. */
   createdAt: string
-  /** Present only for virtualCluster worktrees. */
-  virtualCluster?: VirtualClusterStatus
 }
 
 async function findWorktree(idOrName: string): Promise<RuntimeHandle> {
@@ -41,9 +39,6 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
   const gitAuthFailures = match.projectSlug
     ? await runtime.gitAuthFailures(match.projectSlug)
     : []
-  // Best-effort: detail must render even when the lookup hiccups (it is one
-  // extra runtime read; null for a worktree with no nested cluster).
-  const vcluster = await runtime.virtualClusterStatus(match.workspaceId).catch(() => null)
   return {
     worktreeId: match.workspaceId,
     projectSlug: match.projectSlug,
@@ -54,7 +49,6 @@ export async function getWorktreeDetail(idOrName: string): Promise<WorktreeDetai
     blockedHostsCount: blocked.length,
     gitAuthFailures,
     createdAt: new Date(match.createdAtMs).toISOString(),
-    ...(vcluster ? { virtualCluster: vcluster } : {}),
   }
 }
 

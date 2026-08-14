@@ -119,9 +119,8 @@ export function createContainerlessDriver(): WorktreeDriver {
     dismissPort: () => false,
     startForwarders: () => { /* the workspace already holds its own ports */ },
 
-    // No nested clusters, and no images: the whole build feed degrades to
-    // "nothing to show" rather than to an error.
-    virtualClusterStatus: () => Promise.resolve(null),
+    // No images: the whole build feed degrades to "nothing to show"
+    // rather than to an error.
     listImageBuilds: () => [],
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,

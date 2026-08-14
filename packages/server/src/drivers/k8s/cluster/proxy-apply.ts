@@ -2,7 +2,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import {
   CA_BUNDLE_KEY,
-  CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
   k8sNamespace,
@@ -19,7 +18,6 @@ import { credentialsDir, proxyDataHostDir } from '@yaac/shared/project-paths'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
-  buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
   buildProxyRoleBindingManifest,
   buildProxyRoleManifest,
@@ -33,8 +31,20 @@ import {
   buildWorktreeIngressLockNpManifest,
 } from './policy-manifests'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { vapAvailable } from './vcluster'
 import { ensureNetd } from './netd'
+
+/** True when the cluster serves the ValidatingAdmissionPolicy API. */
+export async function vapAvailable(): Promise<boolean> {
+  try {
+    await kubectlWithRetry(
+      ['get', 'validatingadmissionpolicies', '-o', 'name'],
+      { maxAttempts: 1, timeout: 15_000 },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * The install namespace, labelled for the `privileged` Pod Security
@@ -81,9 +91,7 @@ let cachedProxyClusterIp: string | null = null
 /**
  * The live ClusterIP of the proxy Service — read at pod-create as the worktree
  * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
- * pinned) for both the top-level and the vcluster-allocated inner proxy; stable
- * because the Service is never deleted/recreated. (The spike confirmed synced
- * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync.)
+ * pinned), and stable because the Service is never deleted/recreated.
  * That stability is why the first read is cached for the process — it saves a
  * kubectl child per worktree create.
  */
@@ -107,29 +115,11 @@ export function resetProxyClusterIpCache(): void {
   cachedProxyClusterIp = null
 }
 
-export async function ensureProxyResources(
-  imageRef: string,
-  opts: { nested?: boolean } = {},
-): Promise<void> {
+export async function ensureProxyResources(imageRef: string): Promise<void> {
   // Pre-create the credentials dir with tight permissions before any pod
   // mounts it — DirectoryOrCreate would make it root-owned 0755.
   await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
   await fs.mkdir(proxyDataHostDir(), { recursive: true })
-
-  // Nested (inner) yaac: NetworkPolicy is a core API every vcluster
-  // already serves, so an inner install's policies apply with no CRD
-  // registration step of any kind.
-  if (opts.nested) {
-    // Project the OUTER proxy's CA into the vcluster so the inner proxy's
-    // chained upstream dial (inner proxy → outer proxy) trusts the outer MITM
-    // leaf — without it every inner-worktree HTTPS request fails closed with
-    // "self-signed certificate in certificate chain". The inner yaac reads the
-    // outer CA from its own worktree-pod trust mount (it already trusts it to
-    // reach its own upstream). Applied before the Deployment so the mount
-    // resolves on first schedule.
-    const outerCaPem = await fs.readFile(CA_CERT_PATH, 'utf8')
-    await kubectlApply(buildOuterProxyCaConfigMapManifest(outerCaPem))
-  }
 
   // SA + RBAC before the Deployment, which references the SA so the proxy
   // can watch pods (source-IP → worktree). The Service's ClusterIP is
@@ -138,7 +128,7 @@ export async function ensureProxyResources(
   await kubectlApply(buildProxyServiceAccountManifest())
   await kubectlApply(buildProxyRoleManifest())
   await kubectlApply(buildProxyRoleBindingManifest())
-  await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
+  await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
   // worktree pod can be scheduled (worktrees require ensureRunning()).
@@ -153,10 +143,8 @@ export async function ensureProxyResources(
   await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
   // World-egress default-deny over non-worktree, non-builder pods.
   await kubectlApply(buildEgressWorldDenyNpManifest())
-  // The redirect layer. A nested install runs netd in CLAIM mode: its
-  // vcluster has no nodes, so it publishes what it wants redirected and the
-  // host validates and programs it (docs/nested-containers.md).
-  await ensureNetd({ nested: opts.nested ?? false })
+  // The redirect layer.
+  await ensureNetd()
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
     '-n', k8sNamespace(),
@@ -194,9 +182,9 @@ export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Pro
 
 /**
  * Cluster-wide admission guard reserving the `yaac.role=builder` label:
- * no ServiceAccount (the only identity untrusted code can hold — e.g. a
- * vcluster syncer materializing a worktree's pods) may create or update a
- * pod carrying it, and carriers must run under the gvisor RuntimeClass.
+ * no ServiceAccount (the only identity untrusted code can hold) may create
+ * or update a pod carrying it, and carriers must run under the gvisor
+ * RuntimeClass.
  * Fail-closed: the label excludes its pods from the world-deny egress
  * policy, so builders must not run on a cluster that cannot enforce the
  * reservation. Applied idempotently by `yaac cluster setup` and again by

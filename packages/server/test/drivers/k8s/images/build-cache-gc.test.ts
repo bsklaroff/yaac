@@ -239,16 +239,8 @@ describe('reconcileBuildCacheGc', () => {
     expect(restarted()).toBe(true)
   })
 
-  it('is a no-op on test-isolated installs and inside a nested yaac', async () => {
+  it('is a no-op on test-isolated installs', async () => {
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
-    await runPass()
-    expect(mockRegistryExec).not.toHaveBeenCalled()
-
-    // Nested installs push to the OUTER install's per-project registry:
-    // not theirs to collect, and no Deployment of theirs to exec into.
-    vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac')
-    vi.stubEnv('YAAC_NESTED', '1')
-    _resetBuildCacheGcForTests()
     await runPass()
     expect(mockRegistryExec).not.toHaveBeenCalled()
   })

@@ -3,7 +3,6 @@ import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/cli'
-import { IS_NESTED_YAAC } from '@yaac/test-utils/setup'
 
 /**
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no
@@ -11,8 +10,8 @@ import { IS_NESTED_YAAC } from '@yaac/test-utils/setup'
  * (and its `-y/--yes` option). All three are host-side commands — they talk to
  * kubectl/podman/kind/the registry directly, never to the server — so no
  * server is spawned anywhere in this file and every case runs without a
- * cluster: we sabotage the environment (PATH stripping, bogus KUBECONFIG,
- * nested flag) and assert the diagnostic output + exit code.
+ * cluster: we sabotage the environment (PATH stripping, a bogus KUBECONFIG)
+ * and assert the diagnostic output + exit code.
  *
  * The happy paths are excluded by design: `check`'s all-green run needs a
  * fully wired kind cluster, and `setup`/`delete`'s full runs are
@@ -95,22 +94,8 @@ describe('yaac cluster check (real CLI)', () => {
 })
 
 describe('yaac cluster setup (real CLI)', () => {
-  it('refuses to run inside a nested yaac session', async () => {
-    const { stderr, exitCode } = await runYaac(
-      { ...testEnv.env, YAAC_NESTED: '1' },
-      'cluster', 'setup',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/nested yaac session/)
-    expect(stderr).toMatch(/outer yaac/)
-  }, 30_000)
-
   it('fails with a complete shopping list when podman and kind are missing', async () => {
-    // Drop the nested flag so the missing-binaries preflight (not the
-    // nested guard) is what's under test when this suite itself runs
-    // inside a nested session.
     const env: NodeJS.ProcessEnv = { ...testEnv.env, PATH: stripFromPath('podman', 'kind') }
-    delete env.YAAC_NESTED
 
     const { stderr, exitCode } = await runYaac(env, 'cluster', 'setup')
     expect(exitCode).toBe(1)
@@ -128,7 +113,6 @@ describe('yaac cluster setup (real CLI)', () => {
     // The node count is fixed when the cluster is created; --repair fixes
     // up the nodes that exist, so the combination cannot mean anything.
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
-    delete env.YAAC_NESTED
 
     const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', '3', '--repair')
     expect(exitCode).toBe(1)
@@ -140,7 +124,6 @@ describe('yaac cluster setup (real CLI)', () => {
 
   it('rejects a --nodes value outside the supported range', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
-    delete env.YAAC_NESTED
 
     for (const value of ['0', '99', 'three']) {
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', value)
@@ -159,7 +142,6 @@ describe('yaac cluster setup (real CLI)', () => {
   // they need no podman, no kind, and no cluster.
   it('rejects --adopt-cni together with --repair or --nodes', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
-    delete env.YAAC_NESTED
 
     // --repair fixes up a kind cluster yaac built; --adopt-cni installs
     // into one it did not, and is itself idempotent.
@@ -175,24 +157,13 @@ describe('yaac cluster setup (real CLI)', () => {
     expect(nodes.stdout).not.toMatch(/Recreating kind cluster/)
   }, 60_000)
 
-  it('refuses to run --adopt-cni inside a nested yaac session', async () => {
-    // Same guard as the other modes: the cluster is the outer yaac's.
-    const { stderr, exitCode } = await runYaac(
-      { ...testEnv.env, YAAC_NESTED: '1' },
-      'cluster', 'setup', '--adopt-cni',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/nested yaac session/)
-  }, 30_000)
-
   // The CNI gate itself, driven against a cluster that answers nothing: a
   // KUBECONFIG pointing at a nonexistent file makes every `kubectl get` in
   // the gate fail. It must refuse — and refuse BEFORE anything is applied,
   // since an unverifiable adoption must cost the user the diagnosis and
   // nothing else. Needs podman (adopt mode still builds images with it) but
-  // deliberately NOT kind: not needing kind is part of the mode — which is
-  // also why this one runs nested, unlike the two cluster-touching cases
-  // below. Nothing here reaches the cluster: the gate refuses first.
+  // deliberately NOT kind: not needing kind is part of the mode. Nothing
+  // here reaches the cluster — the gate refuses first.
   it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
     '--adopt-cni refuses a cluster it cannot read, without claiming what it found',
     async () => {
@@ -200,7 +171,6 @@ describe('yaac cluster setup (real CLI)', () => {
         ...testEnv.env,
         KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig'),
       }
-      delete env.YAAC_NESTED
 
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
       expect(exitCode).toBe(1)
@@ -241,7 +211,6 @@ describe('yaac cluster setup (real CLI)', () => {
         // configured, and those pods' 443/80 would go into the proxy.
         YAAC_POD_CIDRS: '172.31.0.0/16, 172.31/16, 10.0.0.0/33',
       }
-      delete env.YAAC_NESTED
 
       const { stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
       expect(exitCode).toBe(1)
@@ -255,10 +224,10 @@ describe('yaac cluster setup (real CLI)', () => {
   )
 
   // Needs a real, working podman+kind pair (`kind get clusters` must
-  // succeed), so: not in a nested session (no kind in there), and not on a
-  // host missing either binary. Linux-only: on macOS the machine-bootstrap
-  // step runs first and could touch real machine state.
-  it.skipIf(IS_NESTED_YAAC || process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
+  // succeed), so not on a host missing either binary. Linux-only: on macOS
+  // the machine-bootstrap step runs first and could touch real machine
+  // state.
+  it.skipIf(process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
     '--repair fails fast when the target kind cluster does not exist',
     async () => {
       const env: NodeJS.ProcessEnv = {
@@ -267,7 +236,6 @@ describe('yaac cluster setup (real CLI)', () => {
         // enumeration BEFORE ensuring the registry or touching any node.
         YAAC_KIND_CLUSTER: `yaac-e2e-absent-${crypto.randomBytes(4).toString('hex')}`,
       }
-      delete env.YAAC_NESTED
 
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--repair')
       expect(exitCode).toBe(1)
@@ -281,34 +249,14 @@ describe('yaac cluster setup (real CLI)', () => {
 })
 
 describe('yaac cluster delete (real CLI)', () => {
-  it('refuses to run inside a nested yaac session', async () => {
-    const { stderr, exitCode } = await runYaac(
-      { ...testEnv.env, YAAC_NESTED: '1' },
-      'cluster', 'delete',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/nested yaac session/)
-    expect(stderr).toMatch(/outer yaac/)
-  }, 30_000)
-
-  it('accepts -y/--yes but the nested guard still refuses before any mutation', async () => {
-    const { stderr, exitCode } = await runYaac(
-      { ...testEnv.env, YAAC_NESTED: '1' },
-      'cluster', 'delete', '--yes',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/nested yaac session/)
-  }, 30_000)
-
-  // Needs a real kind/podman pair (`kind get clusters` must succeed) and must
-  // NOT be nested (the nested guard fires first). Without --yes and with no
-  // TTY, the confirmation gate returns false, so the command aborts BEFORE
-  // deleting the cluster or the registry — safe to run against the dev host.
-  it.skipIf(IS_NESTED_YAAC || process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
+  // Needs a real kind/podman pair (`kind get clusters` must succeed).
+  // Without --yes and with no TTY, the confirmation gate returns false, so
+  // the command aborts BEFORE deleting the cluster or the registry — safe
+  // to run against the dev host.
+  it.skipIf(process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
     'aborts without deleting when not confirmed (no --yes, non-interactive)',
     async () => {
       const env: NodeJS.ProcessEnv = { ...testEnv.env }
-      delete env.YAAC_NESTED
 
       const { stdout, exitCode } = await runYaac(env, 'cluster', 'delete')
       expect(exitCode).toBe(0)

@@ -37,7 +37,7 @@ const pod = (name: string, podIp: string, key: string): PodTarget => ({
 
 describe('resourceName', () => {
   it('sanitizes a target key into an Envoy-safe cluster name', () => {
-    expect(resourceName('inner/yaac-vc-abc/hash1', 'https')).toBe('yaac-inner-yaac-vc-abc-hash1-https')
+    expect(resourceName('outer/yaac-test-abc123', 'https')).toBe('yaac-outer-yaac-test-abc123-https')
   })
 
   it('collapses separators and never leaves a leading or trailing dash', () => {
@@ -63,8 +63,8 @@ describe('groupChains', () => {
   it('is byte-stable regardless of selection order', () => {
     // The no-op-write memo and the version stamp the listener gate waits
     // on both depend on this.
-    const a = groupChains([pod('a', '10.244.0.9', 'outer/yaac'), pod('b', '10.244.0.10', 'inner/x/h')])
-    const b = groupChains([pod('b', '10.244.0.10', 'inner/x/h'), pod('a', '10.244.0.9', 'outer/yaac')])
+    const a = groupChains([pod('a', '10.244.0.9', 'outer/yaac'), pod('b', '10.244.0.10', 'outer/yaac-test-r1')])
+    const b = groupChains([pod('b', '10.244.0.10', 'outer/yaac-test-r1'), pod('a', '10.244.0.9', 'outer/yaac')])
     expect(JSON.stringify(a)).toBe(JSON.stringify(b))
   })
 
@@ -90,14 +90,16 @@ describe('renderLds', () => {
   it('routes to a target by SOURCE pod IP, not by listener port', () => {
     // This is what lets every target share one trio, so a target coming or
     // going never moves a port out from under a live flow.
+    // Two install namespaces on one node — the renderers are generic over
+    // targets, and this is the shape selection actually produces.
     const chains: FilterChainSpec[] = [
-      { targetKey: 'inner/yaac-vc-a/h1', podIps: ['10.244.0.20'] },
+      { targetKey: 'outer/yaac-test-r1', podIps: ['10.244.0.20'] },
       { targetKey: 'outer/yaac', podIps: ['10.244.0.9', '10.244.0.10'] },
     ]
     const https = resources(renderLds({ ...LDS, chains }))[0]
     expect(portOf(https)).toBe(15100)
     expect(chainsOf(https).map((c) => c.filters[0].typed_config.cluster)).toEqual([
-      'yaac-inner-yaac-vc-a-h1-https', 'yaac-outer-yaac-https',
+      'yaac-outer-yaac-test-r1-https', 'yaac-outer-yaac-https',
     ])
     expect(chainsOf(https)[1].filter_chain_match.source_prefix_ranges).toEqual([
       { address_prefix: '10.244.0.9', prefix_len: 32 },
@@ -182,7 +184,7 @@ describe('renderCds', () => {
   it('renders a distinct cluster per target', () => {
     const targets: EgressTarget[] = [
       { key: 'outer/yaac', ip: '10.96.0.50' },
-      { key: 'inner/vc/h', ip: '10.96.0.77' },
+      { key: 'outer/yaac-test-r1', ip: '10.96.0.77' },
     ]
     const list = resources(renderCds({ ...CDS, targets }))
     expect(list).toHaveLength(6)

@@ -17,8 +17,6 @@ COPY transparent.ts /app/transparent.ts
 COPY pp2.ts /app/pp2.ts
 COPY pod-watch.ts /app/pod-watch.ts
 COPY dns-stub.ts /app/dns-stub.ts
-COPY activator.ts /app/activator.ts
-COPY activator-main.ts /app/activator-main.ts
 COPY secure-compare.ts /app/secure-compare.ts
 COPY state-files.ts /app/state-files.ts
 COPY mama-queue.ts /app/mama-queue.ts

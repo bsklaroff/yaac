@@ -70,7 +70,7 @@ import { stringHash, type ImageLayer } from '#drivers/k8s/image-engine'
 
 /**
  * Digest-pinned upstream image the builder pods run — podman + coreutils,
- * mirrored into the local registry like the vcluster image set (the digest
+ * mirrored into the local registry like the other pinned upstreams (the digest
  * IS the pin; no content-hash tag). Pinned near the worktree engines'
  * podman major so store metadata stays compatible. Never the worktree's own
  * image: its binaries are user-customizable and must not run yaac-driven
@@ -173,7 +173,7 @@ export function buildCacheRepo(projectSlug: string): string {
 
 /** Ensure the pinned builder image is present in the local registry,
  *  mirroring it from upstream on first use (same convention as
- *  ensureVclusterImages — the digest is the pin). */
+ *  the other pinned upstreams — the digest is the pin). */
 export async function ensureBuilderImage(
   requirePrebuilt = testEnv.requirePrebuiltImages,
 ): Promise<string> {

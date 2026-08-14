@@ -105,7 +105,6 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cluster'
 import { ensureBuilderImage } from './builder-pod'
 import { imageStoreDir } from '@yaac/shared/project-paths'
-import { env as yaacEnv } from '@yaac/shared/env'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
 
@@ -157,17 +156,6 @@ export const STORE_REFRESH_RETRY_MS = 5 * 60_000
 /** Deadline for the one-shot removal pod (an `rm -rf` of one directory). */
 export const STORE_REMOVE_TIMEOUT_MS = 60_000
 
-/**
- * Whether this install can host a node image store at all. An INNER yaac
- * runs against its vcluster, whose synced-pod admission policy refuses the
- * node hostPath both the writer and the consuming worktree would need —
- * the same condition that leaves it without a project registry to
- * materialize a store FROM. Its worktrees simply run with a cold engine.
- */
-function storeAvailable(): boolean {
-  return !yaacEnv.nested
-}
-
 function storeLabels(projectSlug: string): Record<string, string> {
   return {
     app: IMAGE_STORE_APP_LABEL,
@@ -201,7 +189,6 @@ const GENERATION_DIR = /^gen-\d{14}-[0-9a-f]{8}$/
  * the pre-store behavior.
  */
 export async function listStoreGenerations(projectSlug: string): Promise<string[]> {
-  if (!storeAvailable()) return []
   const parent = imageStoreDir(projectSlug)
   const names = await fs.readdir(parent).catch(() => [] as string[])
   const complete: string[] = []
@@ -733,7 +720,6 @@ export async function ensureNodeImageStore(
   projectSlug: string,
   opts: EnsureStoreOptions = {},
 ): Promise<boolean> {
-  if (!storeAvailable()) return false
   const now = opts.nowMs ?? Date.now()
   const last = lastRefreshMs.get(projectSlug)
   if (!opts.force && last !== undefined && now - last < STORE_REFRESH_INTERVAL_MS) return false
@@ -807,7 +793,6 @@ async function writeOneStore(projectSlug: string): Promise<boolean> {
  * {@link STORE_REFRESH_INTERVAL_MS}.
  */
 export function reconcileNodeImageStores(projectSlugs: string[]): void {
-  if (!storeAvailable()) return
   for (const slug of projectSlugs) {
     void ensureNodeImageStore(slug)
   }
@@ -819,7 +804,6 @@ export function reconcileNodeImageStores(projectSlugs: string[]): void {
  * node it lived on.
  */
 export async function removeNodeImageStore(projectSlug: string): Promise<void> {
-  if (!storeAvailable()) return
   const imageRef = await ensureBuilderImage().catch(() => null)
   if (!imageRef) return
   const runId = crypto.randomBytes(4).toString('hex')

@@ -4,7 +4,6 @@ import {
   PodWorktreeIndex,
   _resetInClusterClientForTests,
   inClusterClient,
-  parseVclusterAttribution,
   podWorktreeId,
 } from 'yaac-proxy-sidecar/pod-watch'
 import type { WatchedPod } from 'yaac-proxy-sidecar/pod-watch'
@@ -100,30 +99,6 @@ describe('PodWorktreeIndex', () => {
     idx.replaceAll([pod('10.0.0.2', 'sess-b')])
     expect(idx.resolveIp('sess-a')).toBeUndefined()
     expect(idx.resolveIp('sess-b')).toBe('10.0.0.2')
-  })
-})
-
-describe('parseVclusterAttribution', () => {
-  it('parses a flat podIP→worktreeId map', () => {
-    const m = parseVclusterAttribution('{"10.0.0.1":"sess-a","10.0.0.2":"sess-b"}')
-    expect(m).not.toBeNull()
-    expect(m!.get('10.0.0.1')).toBe('sess-a')
-    expect(m!.get('10.0.0.2')).toBe('sess-b')
-    expect(m!.size).toBe(2)
-  })
-
-  it('accepts an empty object (full-replace clear)', () => {
-    const m = parseVclusterAttribution('{}')
-    expect(m).not.toBeNull()
-    expect(m!.size).toBe(0)
-  })
-
-  it('returns null for malformed JSON, arrays, or non-string values', () => {
-    expect(parseVclusterAttribution('not json')).toBeNull()
-    expect(parseVclusterAttribution('[]')).toBeNull()
-    expect(parseVclusterAttribution('null')).toBeNull()
-    expect(parseVclusterAttribution('{"10.0.0.1":123}')).toBeNull()
-    expect(parseVclusterAttribution('{"10.0.0.1":""}')).toBeNull()
   })
 })
 

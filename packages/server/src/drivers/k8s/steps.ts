@@ -1,10 +1,6 @@
 import { reconcileImageSalvage } from '#drivers/k8s/worktrees'
-import { reconcileProxySshKeys, reconcileVclusterAttribution } from '#drivers/k8s/egress'
-import {
-  reconcileProjectRegistryGc,
-  reconcileRedirectClaims,
-  reconcileVclusters,
-} from '#drivers/k8s/cluster'
+import { reconcileProxySshKeys } from '#drivers/k8s/egress'
+import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster'
 import {
   reconcileBuildCacheGc,
   reconcileBuilderPodGc,
@@ -18,8 +14,8 @@ import type { DriverReconcileSteps } from '#drivers/contract'
  * The k8s runtime's own upkeep, as steps a pass can schedule.
  *
  * These moved off the mediators' step list because every one of them is
- * substrate housekeeping — leaked builder pods, registry blobs, vcluster
- * orphans, redirect claims — and the reasons they are ordered the way they
+ * substrate housekeeping — leaked builder pods, registry blobs, image
+ * stores — and the reasons they are ordered the way they
  * are are substrate reasons. What the mediators still own is where the two
  * GROUPS sit relative to their own steps, which is the only ordering they
  * have a stake in (see `defaultReconcileSteps`).
@@ -69,22 +65,6 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // still checks the loss signature itself, so a merely flaky tunnel
       // re-uploads nothing.
       { name: 'proxy-ssh-keys', triggers: ['proxy-reconnect'], run: () => reconcileProxySshKeys() },
-      // Per-worktree vclusters: orphan GC + host-side kubeconfig heal.
-      { name: 'vclusters', triggers: ['vcluster-namespaces', 'workspaces', 'units'],
-        run: (ctx) => reconcileVclusters(Date.now(), ctx.snapshot()) },
-      // yaac-in-yaac: tell the outer proxy which outer worktree owns each
-      // vcluster's pods. A stream reattach re-pushes, which is what covers
-      // an outer-proxy restart (the restart is what dropped the stream).
-      { name: 'vcluster-attribution',
-        triggers: ['vcluster-namespaces', 'vcluster-pods', 'proxy-reconnect'],
-        run: (ctx) => reconcileVclusterAttribution(ctx.snapshot()) },
-      // yaac-in-yaac: validate each vcluster's redirect claims and republish
-      // them for netd. Claim documents arrive through the vcluster syncer, so
-      // a ConfigMap delta is the signal; pod deltas matter too, since a claim
-      // is only as valid as the pod IPs it names.
-      { name: 'redirect-claims',
-        triggers: ['vcluster-namespaces', 'vcluster-configmaps', 'vcluster-pods'],
-        run: (ctx) => reconcileRedirectClaims(ctx.snapshot()) },
       // Host podman image GC. Throttled internally to every few hours.
       { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
       // Registry-side counterpart: retire step-cache tags no build has used

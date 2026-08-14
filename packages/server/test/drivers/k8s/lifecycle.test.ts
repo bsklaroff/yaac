@@ -27,9 +27,6 @@ const cacheStub = {
 
 vi.mock('#drivers/k8s/substrate', () => ({
   ClusterCache: class { constructor() { return cacheStub } },
-  VCLUSTER_DELTA_SOURCES: ['vcluster-namespaces'],
-  anyWorktreeDirsExist: vi.fn().mockResolvedValue(false),
-  armDeferredClusterBoot: vi.fn(),
   ensurePriorityClasses: vi.fn().mockResolvedValue(undefined),
   invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
@@ -38,6 +35,7 @@ vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureNamespace: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
+  sweepLegacyVclusterState: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('#drivers/k8s/container', () => ({
   killTrackedPodmanProcs: vi.fn(),
@@ -63,10 +61,8 @@ vi.mock('#drivers/k8s/view', () => ({
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
-import { anyWorktreeDirsExist, armDeferredClusterBoot } from '#drivers/k8s/substrate'
 import { ensureNamespace } from '#drivers/k8s/cluster'
 import { configureProxyCredentials } from '#drivers/k8s/egress'
-import { env } from '@yaac/shared/env'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
 
@@ -83,7 +79,6 @@ beforeEach(() => {
   order.length = 0
   onDeltaHandlers.length = 0
   reported = { triggers: [], workspaces: [] }
-  vi.mocked(anyWorktreeDirsExist).mockResolvedValue(false)
 })
 
 afterEach(() => {
@@ -126,40 +121,6 @@ describe('startK8sDriver', () => {
     // in — which is what an entrypoint that composes a driver without being
     // the server gets.
     expect(configureProxyCredentials).toHaveBeenCalledWith({ listSshEntries: sshIdentities })
-  })
-
-  it('defers the whole attach inside a nested yaac with no worktrees of its own', async () => {
-    const nested = vi.spyOn(env, 'nested', 'get').mockReturnValue(true)
-    try {
-      await startK8sDriver(sinks(), {})
-
-      // Attaching here would wake the born-at-zero vcluster this server runs
-      // inside, seconds after create put it to sleep. Nothing is touched and
-      // `attached` has NOT fired, so the reconcile loop stays down too.
-      expect(order).toEqual([])
-      expect(armDeferredClusterBoot).toHaveBeenCalledTimes(1)
-
-      // ...and the armed callback is the full attach, run on first real use.
-      await (vi.mocked(armDeferredClusterBoot).mock.calls[0][0])()
-      expect(order).toContain('attached')
-      expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
-    } finally {
-      nested.mockRestore()
-    }
-  })
-
-  it('attaches eagerly in a nested yaac that already has worktrees', async () => {
-    // A RESTART with live worktrees: they need the caches and the reconciler,
-    // and the vcluster is already awake, so there is nothing left to protect.
-    const nested = vi.spyOn(env, 'nested', 'get').mockReturnValue(true)
-    vi.mocked(anyWorktreeDirsExist).mockResolvedValue(true)
-    try {
-      await startK8sDriver(sinks(), {})
-      expect(armDeferredClusterBoot).not.toHaveBeenCalled()
-      expect(order).toContain('attached')
-    } finally {
-      nested.mockRestore()
-    }
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {
@@ -210,9 +171,4 @@ describe('triggerFor', () => {
     expect(triggerFor('worktree-jobs')).toBe('units')
   })
 
-  it("passes the driver's own sources through untranslated", () => {
-    // No layer above has a word for these; only this driver's own steps
-    // declare them.
-    expect(triggerFor('vcluster-namespaces')).toBe('vcluster-namespaces')
-  })
 })

@@ -15,7 +15,7 @@ import { serverLog } from '#log'
  * they are never dangling and the podman build cache survives.
  *
  * Scoped to repos yaac builds or stages (YAAC_IMAGE_REPO): digest-pinned
- * upstream mirrors (registry, vcluster set, podman/stable) are
+ * upstream mirrors (registry, podman/stable, envoy) are
  * single-tag and must never be touched.
  */
 

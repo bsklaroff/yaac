@@ -85,7 +85,7 @@ import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
 
 const fetchMock = vi.fn<typeof fetch>()
 
-/** The install's registry ref prefix with no YAAC_K8S_REGISTRY override. */
+/** The install's registry ref prefix. */
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 /** Where this process reaches it: the fake port-forward's local end. */
 const ENDPOINT = `127.0.0.1:${FORWARD_PORT}`
@@ -145,21 +145,11 @@ describe('registryHost', () => {
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
     expect(registryHost()).toBe(CLUSTER_HOST)
   })
-
-  it('honors the YAAC_K8S_REGISTRY override (a nested install)', () => {
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
-    expect(registryHost()).toBe('yaac-reg-proj.yaac.svc.cluster.local:5000')
-  })
 })
 
 describe('registryRef', () => {
   it('qualifies a tag with the cluster host, never the local endpoint', () => {
     expect(registryRef('yaac-tools:abc')).toBe(`${CLUSTER_HOST}/yaac-tools:abc`)
-  })
-
-  it('follows the YAAC_K8S_REGISTRY override', () => {
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'reg.local:5000')
-    expect(registryRef('a:b')).toBe('reg.local:5000/a:b')
   })
 })
 
@@ -173,14 +163,6 @@ describe('registryEndpoint', () => {
     expect(forwardArgs()).toEqual([[
       'port-forward', '-n', 'yaac', 'deploy/yaac-registry', '0:5000',
     ]])
-  })
-
-  it('dials an externally managed registry directly, with no forward at all', async () => {
-    // A nested yaac IS a pod: it reaches the outer project registry over
-    // cluster DNS, and must never spawn a port-forward for it.
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
-    await expect(registryEndpoint()).resolves.toBe('yaac-reg-proj.yaac.svc.cluster.local:5000')
-    expect(forwardArgs()).toHaveLength(0)
   })
 
   it('rejects when the forward cannot be established', async () => {
@@ -304,20 +286,6 @@ describe('pushImageToRegistry', () => {
     // The server's OWN reachability check keeps using the loopback — the two
     // endpoints are resolved separately and must not collapse into one.
     expect(fetchMock.mock.calls[0][0]).toContain(ENDPOINT)
-  })
-
-  it('sends an external registry to both halves unchanged, VM or not', async () => {
-    // A nested yaac's registry is a cluster address its in-pod podman and the
-    // server reach identically, so the VM swap must not touch it.
-    stubPlatform('darwin')
-    vi.stubEnv('YAAC_K8S_REGISTRY', 'yaac-reg-proj.yaac.svc.cluster.local:5000')
-    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
-    await pushImageToRegistry('yaac-tools:abc')
-    expect(podmanPushes()[0].args.at(-1)).toBe(
-      'yaac-reg-proj.yaac.svc.cluster.local:5000/yaac-tools:abc',
-    )
-    // No forward at all — there is nothing to port-forward to.
-    expect(forwardArgs()).toHaveLength(0)
   })
 
   it('rejects when podman push exits non-zero', async () => {

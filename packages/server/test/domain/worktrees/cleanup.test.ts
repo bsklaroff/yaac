@@ -74,7 +74,7 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
 /**
  * What the mediator asked the runtime to do, in the order it asked.
  *
- * The runtime's own sequencing (deregister, salvage, delete, vcluster) is
+ * The runtime's own sequencing (deregister, salvage, delete) is
  * asserted in `test/drivers/k8s/worktrees/teardown.test.ts`, where it lives.
  * What these tests own is the half above it: what the mediator records and
  * evicts before handing over, what it composes around the runtime's shell

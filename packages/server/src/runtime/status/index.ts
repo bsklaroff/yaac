@@ -14,7 +14,7 @@
 // The tri-state liveness verdicts are the reason this is worth sealing.
 // `unknown` must never be flattened into `dead` by a caller: the stale
 // reaper acts on the verdict, so a cluster blip read as death reaps a
-// healthy worktree, Job and vcluster and all, with no recovery. Callers get
+// healthy worktree, Job and all, with no recovery. Callers get
 // the tri-state or the deliberately-safe boolean, never the probe itself.
 //
 // What this feature does NOT own is how an agent is observed. That is an

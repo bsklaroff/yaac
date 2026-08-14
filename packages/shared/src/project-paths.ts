@@ -348,10 +348,10 @@ export function worktreeDir(slug: string, worktreeId: string): string {
 
 /**
  * SHARED. Per-worktree directory rooting everything worktree-scoped that is
- * not the worktree: the vcluster kubeconfig dir, the yaac-in-yaac data dir,
- * and the staged builtin-skills / worktree-bin copies. All of it is written
- * by the server and mounted into the worktree pod, so it has to be visible
- * from the pod's node. Its node-local twin is {@link nodeLocalWorktreeStateDir}.
+ * not the worktree — today the staged builtin-skills and worktree-bin
+ * copies. All of it is written by the server and mounted into the worktree
+ * pod, so it has to be visible from the pod's node. Its node-local twin is
+ * {@link nodeLocalWorktreeStateDir}.
  *
  * Removed wholesale by worktree cleanup and the orphan-worktree GC, which
  * sweep both roots.
@@ -412,25 +412,3 @@ export function projectsRoots(): string[] {
   return [...new Set([getProjectsDir(), getNodeLocalProjectsDir()])]
 }
 
-/**
- * SHARED. Per-worktree directory holding the vcluster kubeconfig, mounted
- * at /home/yaac/.kube inside the worktree container (virtualCluster
- * worktrees only). Written by the server (including a background heal that
- * rewrites the file in place) and read in-pod, so both sides must see it.
- * Dir-mounted (not the file) so the heal can rewrite without remounting.
- */
-export function worktreeVclusterDir(slug: string, worktreeId: string): string {
-  return path.join(worktreeStateDir(slug, worktreeId), 'vcluster')
-}
-
-/**
- * SHARED. Per-worktree directory backing the yaac-in-yaac data dir
- * (YAAC_DATA_DIR inside the worktree). Mounted at the IDENTICAL absolute
- * path in the pod — the kind $HOME extraMount makes the node see it, so
- * inner synced-pod hostPaths resolve. Also the VAP guard's only allowed
- * hostPath prefix for the worktree's synced pods. The inner yaac splits
- * this dir into the same three tiers again, so it must be the shared kind.
- */
-export function nestedYaacDataDir(slug: string, worktreeId: string): string {
-  return path.join(worktreeStateDir(slug, worktreeId), 'nested-yaac')
-}

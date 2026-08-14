@@ -1,11 +1,9 @@
 import {
   findWorktreePod,
   getActiveClusterCache,
-  isDeferredClusterBootPending,
   isPrewarmed,
   listWorktreeJobs,
   listWorktreePods,
-  triggerDeferredClusterBoot,
   type PodInfo,
 } from '#drivers/k8s/substrate'
 import { runtimeHandleFromPod } from '#drivers/k8s/view'
@@ -64,14 +62,6 @@ export async function findWorkspace(
  * blank the worktree list, and a dropped watch would keep serving a stale
  * one until the relist healed it. Unhealthy therefore takes the live
  * listing, which is what `find` does with the same fact.
- *
- * The deferred-boot answer is the other half of that path and belongs with
- * it: inside a nested yaac, a server whose cluster attach has not finished
- * has no workspaces BY CONSTRUCTION (a create awaits the attach), so it
- * answers empty instantly instead of holding the first snapshot — and the
- * whole webapp behind it — on a kubectl call to a still-waking vcluster. It
- * still kicks the attach: connecting the webapp is a real use, and the
- * caches push a fresh snapshot once it lands.
  */
 export async function listWorkspaces(
   projectSlug?: string,
@@ -81,10 +71,6 @@ export async function listWorkspaces(
     const cache = getActiveClusterCache()
     if (cache?.healthy('worktree-pods')) {
       return cache.worktreePods(projectSlug).map(runtimeHandleFromPod)
-    }
-    if (!cache && isDeferredClusterBootPending()) {
-      triggerDeferredClusterBoot()
-      return []
     }
   }
   return (await listWorkspacePods(projectSlug)).map(runtimeHandleFromPod)
@@ -133,15 +119,6 @@ export async function findWorkspaceForTeardown(
  */
 export async function countWorkspaces(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
-  if (isDeferredClusterBootPending()) {
-    // A nested server whose deferred cluster attach hasn't finished has no
-    // worktree pods by construction, so every count is 0 — answer instantly
-    // instead of holding the first snapshot (and with it the web app's
-    // project list) on a call to a still-waking vcluster. Kick the attach so
-    // the caches come up and push a fresh snapshot with real counts.
-    triggerDeferredClusterBoot()
-    return counts
-  }
   try {
     for (const p of await listWorktreePods()) {
       if (isPrewarmed(p)) continue

@@ -39,8 +39,6 @@ import {
   projectRoots,
   projectsRoots,
   worktreeStateDir,
-  worktreeVclusterDir,
-  nestedYaacDataDir,
   opencodeDataDir,
   cacheVolumeDir,
 } from '#project-paths'
@@ -224,8 +222,6 @@ describe('storage tiers', () => {
     setDataDir('/tmp/yaac-test')
     const sess = '/tmp/yaac-test/projects/my-repo/sessions/abc123'
     expect(worktreeStateDir('my-repo', 'abc123')).toBe(sess)
-    expect(worktreeVclusterDir('my-repo', 'abc123')).toBe(`${sess}/vcluster`)
-    expect(nestedYaacDataDir('my-repo', 'abc123')).toBe(`${sess}/nested-yaac`)
     expect(cacheVolumeDir('my-repo', 'pnpm')).toBe('/tmp/yaac-test/projects/my-repo/cache-volumes/pnpm')
   })
 })

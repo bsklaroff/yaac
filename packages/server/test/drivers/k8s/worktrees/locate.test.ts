@@ -14,11 +14,6 @@ import { LABEL_PREWARMED, listWorktreePods, type PodInfo } from '#drivers/k8s/su
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { getActiveClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 import {
-  _resetDeferredClusterBootForTests,
-  armDeferredClusterBoot,
-  awaitDeferredClusterBoot,
-} from '#drivers/k8s/substrate/deferred-boot'
-import {
   countProjectWorkspaces,
   countWorkspaces,
   findWorkspace,
@@ -57,13 +52,11 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  _resetDeferredClusterBootForTests()
   mockList.mockReset().mockResolvedValue([])
   mockCache.mockReset().mockReturnValue(null)
 })
 
 afterEach(async () => {
-  _resetDeferredClusterBootForTests()
   await cleanupTempDir(tmpDir)
 })
 
@@ -187,20 +180,6 @@ describe('countWorkspaces', () => {
     expect(await countWorkspaces()).toEqual({})
   })
 
-  // A nested server whose deferred attach hasn't finished has no pods by
-  // construction, so holding the first snapshot on a call to a still-waking
-  // vcluster would be pure latency.
-  it('answers empty without a substrate call while a deferred attach is pending', async () => {
-    const boot = vi.fn().mockResolvedValue(undefined)
-    armDeferredClusterBoot(boot)
-
-    expect(await countWorkspaces()).toEqual({})
-    expect(mockList).not.toHaveBeenCalled()
-
-    // The short-circuit still fires the attach — it just doesn't wait.
-    await awaitDeferredClusterBoot()
-    expect(boot).toHaveBeenCalledTimes(1)
-  })
 })
 
 describe('countProjectWorkspaces', () => {

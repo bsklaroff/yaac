@@ -143,7 +143,6 @@ export function installFakeWorktreeDriver(
     allGitAuthFailures: () => current.allGitAuthFailures(),
     forwardedPorts: (w) => current.forwardedPorts(w),
     unforwardedPorts: (w) => current.unforwardedPorts(w),
-    virtualClusterStatus: (w) => current.virtualClusterStatus(w),
     allowHost: (t, h, o) => current.allowHost(t, h, o),
     forwardPort: (t, p, o) => current.forwardPort(t, p, o),
     dismissPort: (w, p) => current.dismissPort(w, p),
@@ -234,7 +233,6 @@ function defaultRuntime(): WorktreeDriver {
     allGitAuthFailures: () => Promise.resolve({}),
     forwardedPorts: () => Promise.resolve([]),
     unforwardedPorts: () => Promise.resolve([]),
-    virtualClusterStatus: () => Promise.resolve(null),
     allowHost: () => Promise.resolve(),
     forwardPort: (_t, containerPort) => Promise.resolve({ containerPort, hostPort: containerPort }),
     // "Not an unforwarded listener" is the default for both of the

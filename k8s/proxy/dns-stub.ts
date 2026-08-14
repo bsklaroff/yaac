@@ -10,8 +10,8 @@
  *     channel closed.
  *   - INTERNAL names (`*.cluster.local`, see isInternalName) are forwarded to
  *     the real cluster DNS so the pod learns the live, allocator-assigned
- *     ClusterIP of in-cluster Services (the per-project registry, its vcluster
- *     API) — which is what lets yaac stop pinning those ClusterIPs.
+ *     ClusterIP of in-cluster Services (the per-project registry) — which is
+ *     what lets yaac stop pinning those ClusterIPs.
  *
  * This module only parses/classifies/builds; the resolve-or-sinkhole decision
  * and the upstream lookup live in proxy.ts. Everything that is not IN/A (AAAA
@@ -47,7 +47,7 @@ export interface DnsQuery {
  * host) would instead be forwarded to the node's remote resolver, re-opening a
  * DNS-exfiltration channel — so anything not in-zone is sinkholed. The server
  * emits every in-cluster name it needs resolved as a `.svc.cluster.local` FQDN
- * (project registry, vcluster API) to match. The host API server
+ * (the project registry) to match. The host API server
  * (`kubernetes.default.svc.cluster.local`) is deliberately EXCLUDED — no outer
  * worktree has business reaching it by name — so it stays sinkholed in-zone.
  */

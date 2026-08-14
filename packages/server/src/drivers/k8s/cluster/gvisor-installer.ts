@@ -38,7 +38,7 @@ import { assertMirrorArch } from './netd'
  * Blast radius is bounded by where the DaemonSet runs: `nodeSelector` is
  * plumbed through so a cluster with a dedicated worktrees pool can install
  * the runtime there only, leaving infra nodes' containerd untouched. Every
- * infra pod yaac runs (proxy, registries, node-write pods, vcluster control
+ * infra pod yaac runs (proxy, registries, node-write pods
  * planes, this installer) stamps no RuntimeClass and so keeps running on
  * runc wherever it lands.
  */

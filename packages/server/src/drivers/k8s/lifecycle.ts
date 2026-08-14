@@ -1,17 +1,15 @@
 import {
   ClusterCache,
-  anyWorktreeDirsExist,
-  armDeferredClusterBoot,
   ensurePriorityClasses,
   invalidateRelayAddr,
   setActiveClusterCache,
-  VCLUSTER_DELTA_SOURCES,
   type DeltaSource,
 } from '#drivers/k8s/substrate'
 import {
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
+  sweepLegacyVclusterState,
 } from '#drivers/k8s/cluster'
 import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#drivers/k8s/container'
 import {
@@ -33,7 +31,6 @@ import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
 } from '@yaac/shared/tool-auth'
-import { env } from '@yaac/shared/env'
 import {
   MEDIATOR_TRIGGERS,
   type DriverDeps,
@@ -64,7 +61,6 @@ import {
  */
 export const K8S_TRIGGERS = [
   ...MEDIATOR_TRIGGERS,
-  ...VCLUSTER_DELTA_SOURCES,
   ...PROXY_CHANGE_SOURCES,
 ] as const
 
@@ -72,19 +68,14 @@ export type K8sTrigger = typeof K8S_TRIGGERS[number]
 
 /**
  * The substrate's own delta sources, said in the vocabulary a pass
- * schedules on. Only the two the mediators' steps name are translated: a
- * pod is a workspace and a Job is the unit holding one. The vcluster
- * sources pass through unchanged — they are this driver's own, declared by
- * its own steps, and no layer above has a word for them.
+ * schedules on: a pod is a workspace and a Job is the unit holding one.
  *
  * The return type is what makes the translation checkable: rename a
  * mediator trigger in the contract and these two literals stop compiling,
  * rather than producing an edge no step answers.
  */
 export function triggerFor(source: DeltaSource): K8sTrigger {
-  if (source === 'worktree-pods') return 'workspaces'
-  if (source === 'worktree-jobs') return 'units'
-  return source
+  return source === 'worktree-pods' ? 'workspaces' : 'units'
 }
 
 let clusterCache: ClusterCache | null = null
@@ -137,9 +128,8 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
   // Failures are logged, not fatal — the server can serve project/auth
   // RPCs without a cluster, and worktree creation surfaces its own
   // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
-  // (unlike the fire-and-forget GCs) so a deferred boot's trigger —
-  // the first worktree create — sees the namespace exist before it
-  // applies anything into it.
+  // (unlike the fire-and-forget GCs) so the namespace exists before
+  // anything applies into it.
   await (async () => {
     await ensureNamespace()
     // Cluster-scoped and idempotent, like the RuntimeClasses `cluster
@@ -207,38 +197,22 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
   void gcOrphanProjectRegistries()
     .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 
+  // One-shot convergence for an install upgrading over the retired
+  // virtualCluster feature — a no-op on every install that never had one
+  // (docs/legacy-compat-shims.md).
+  void sweepLegacyVclusterState()
+    .catch((err) => serverLog(`[server] legacy vcluster sweep failed: ${String(err)}`))
+
   sinks.attached()
 }
 
 /** See `WorktreeDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks, deps: DriverDeps): Promise<void> {
-  // Where the egress path reads credential material from. Wired before any
-  // attach, since a deferred one fires from a worktree create — and left
-  // unwired when the caller supplies nothing, which degrades to "no ssh
-  // injection" rather than clearing what a live proxy is using.
+  // Where the egress path reads credential material from. Left unwired when
+  // the caller supplies nothing, which degrades to "no ssh injection"
+  // rather than clearing what a live proxy is using.
   if (deps.sshIdentities) configureProxyCredentials({ listSshEntries: deps.sshIdentities })
 
-  // A NESTED server's cluster is its worktree's born-at-zero vcluster
-  // (docs/vcluster-scale-to-zero.md) — attaching at boot is exactly what
-  // would wake it seconds after the create-time sleep, since `yaac
-  // server start` runs from the worktree's initCommands. With no
-  // worktrees of its own yet, defer every cluster touch until the first
-  // real use (worktree create awaits it; any kubectl call kicks it). A
-  // RESTARTING nested server with live worktrees attaches eagerly: those
-  // worktrees need the caches and reconciler, and their vcluster — this
-  // vcluster — is already awake.
-  //
-  // `sinks.attached` fires with the attach, not with this call: the
-  // reconcile loop is convergence too, and starting it against a
-  // sleeping vcluster is the same mistake as starting the caches.
-  if (env.nested && !(await anyWorktreeDirsExist())) {
-    armDeferredClusterBoot(async () => {
-      serverLog('[server] nested: first cluster use — attaching (caches, reconciler)')
-      await attachNow(sinks)
-    })
-    serverLog('[server] nested: cluster attach deferred until first use (vcluster stays asleep)')
-    return
-  }
   await attachNow(sinks)
 }
 

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 // Every project is inline (`extends: true`) so the shared test policy —
 // timeouts, isolation setupFiles, ordering — lives in exactly one file.
@@ -8,10 +8,8 @@ import { defineConfig } from 'vitest/config'
 //
 // vitest-setup strips inherited git env and points the default data dir at
 // a temp path so no test can touch the developer's real repo or ~/.yaac;
-// unit-setup additionally strips the nested-session env (YAAC_NESTED,
-// YAAC_DATA_DIR, YAAC_K8S_REGISTRY) so unit runs are identical on a host
-// and inside a yaac session. E2e keeps the nested env: the real CLI under
-// test genuinely needs it.
+// unit-setup additionally strips an ambient YAAC_DATA_DIR so unit runs are
+// identical on a host and inside a yaac worktree.
 // File paths, not @yaac/test-utils specifiers: vitest resolves setupFiles
 // with plain Node semantics, which can't substitute .ts sources for the
 // output-form (.js) targets in the package's exports map.
@@ -27,6 +25,26 @@ const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'
 // doesn't accumulate one netd DaemonSet per completed file on the single
 // node the remaining files still have to share.
 const CLUSTER_SETUP = [...SETUP, './packages/test-utils/src/cluster-setup.ts']
+// api-containerless only: its stand-in for the composition root, registering
+// the real containerless driver. No cluster hygiene — it makes no namespace.
+const CONTAINERLESS_SETUP = [...SETUP, './packages/test-utils/src/containerless-setup.ts']
+/**
+ * The api files that need no cluster: the containerless column of the route
+ * matrix, plus everything that drives the Hono app in process over routes no
+ * driver feature gates. What stays behind needs one of three things this
+ * project does not have — the k8s driver's own answers (`routes-k8s`), a
+ * route that refuses `NOT_SUPPORTED` without it (`write-routes`, the image
+ * routes), or a spawned server, which does not come up without one
+ * (`server-http`, `token-auth-flow` — verified, not assumed).
+ */
+const CONTAINERLESS_API = [
+  'test/api/routes-containerless.test.ts',
+  'test/api/auth.test.ts',
+  'test/api/read-marks.test.ts',
+  'test/api/server.test.ts',
+  'test/api/shortcuts.test.ts',
+  'test/api/web-session-flow.test.ts',
+]
 
 /** Machine-readable record of the last run — see the `reporters` note below.
  *  `scripts/test-failures.ts` renders the failures out of it. */
@@ -100,17 +118,38 @@ export default defineConfig({
       // plain JS in the base image, outside the root tsconfig, gated here.
       unitProject('dockerfiles/acpd'),
       // api + e2e live in the root test/ tree (inherently cross-package).
+      // The route matrix has two columns, and so does this tier: one
+      // project per driver, split so the half that needs no cluster can run
+      // where there isn't one (inside a worktree pod, or on a host with no
+      // kind). `api-k8s` carries everything that runs against the real k8s
+      // driver its setup installs; `api-containerless` carries what runs
+      // against the containerless one.
       {
         extends: true,
         test: {
-          name: 'api',
+          name: 'api-k8s',
           include: ['test/api/**/*.test.ts'],
+          // Spread the defaults: `exclude` REPLACES them rather than
+          // adding, so naming only our file would un-exclude node_modules.
+          exclude: [...configDefaults.exclude, ...CONTAINERLESS_API],
           setupFiles: CLUSTER_SETUP,
           // Image pre-builds live on the api/e2e projects, not the root:
           // `extends: true` would propagate a root globalSetup into every
           // unit project (each of which runs it through its own vite
           // server), and unit tests must never touch podman anyway.
           globalSetup: ['test/global-setup.ts'],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'api-containerless',
+          include: [...CONTAINERLESS_API],
+          setupFiles: CONTAINERLESS_SETUP,
+          // No globalSetup at all: nothing here builds an image, spawns a
+          // server or touches a registry — it drives the Hono app in
+          // process against a driver that needs no substrate.
           sequence: { groupOrder: 0 },
         },
       },

@@ -53,7 +53,7 @@ describe('buildBuilderRoleGuardPolicyManifest', () => {
   it('denies ServiceAccount creators and non-gvisor carriers', () => {
     const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
     const exprs = m.spec.validations.map((v) => v.expression)
-    // A session's only path to pod creation (a vcluster syncer) is an SA;
+    // Any untrusted path to pod creation authenticates as an SA;
     // session pods themselves hold no token. The trusted server is a cert
     // user, never an SA.
     expect(exprs).toContain("!request.userInfo.username.startsWith('system:serviceaccount:')")
@@ -74,7 +74,7 @@ describe('buildBuilderRoleGuardBindingManifest', () => {
     expect(m.kind).toBe('ValidatingAdmissionPolicyBinding')
     expect(m.spec.policyName).toBe(BUILDER_ROLE_GUARD_NAME)
     expect(m.spec.validationActions).toEqual(['Deny'])
-    // No matchResources: vcluster session namespaces are covered too.
+    // No matchResources: every namespace is covered.
     expect(m.spec.matchResources).toBeUndefined()
   })
 })

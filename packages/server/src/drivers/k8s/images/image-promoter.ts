@@ -1,7 +1,6 @@
 import { containerExec } from '#drivers/k8s/substrate'
 import { projectRegistryHost } from '#drivers/k8s/cluster'
 import { shellQuote } from '#lib/shell'
-import { env as yaacEnv } from '@yaac/shared/env'
 import { ensureNodeImageStore } from './store-writer'
 import { serverLog } from '#log'
 
@@ -119,18 +118,6 @@ export const MAX_CHAIN_DEPTH = 64
  * second slot is what keeps the newest push from evicting it.
  */
 export const CACHED_GENERATIONS_KEPT = 2
-
-/**
- * Whether this install can host a project registry at all. An INNER yaac
- * runs against its vcluster, whose synced-pod admission policy refuses the
- * node hostPath the registry's storage needs — so an inner install has no
- * registry to push to, and its worktrees simply run without a cross-worktree
- * cache (as they did before the cache moved off the node-local store).
- * Worktree-create skips the registry ensure on the same condition.
- */
-function registryAvailable(): boolean {
-  return !yaacEnv.nested
-}
 
 const IMAGE_ID = /^[0-9a-f]{64}$/
 /**
@@ -707,7 +694,6 @@ export async function salvageWorktreeImages(params: {
   opts?: SalvageOptions
 }): Promise<boolean> {
   const { worktreeId } = params
-  if (!registryAvailable()) return true
   const existing = salvageInflight.get(worktreeId)
   if (existing) return existing
   const run = salvageWorktreeImagesUncoalesced(params).finally(() => {

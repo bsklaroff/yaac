@@ -12,11 +12,6 @@ import { kubectlApply } from './kubectl'
  * over request) picks the cheap victim. Builders sit between the two —
  * above worktrees, but forbidden from preempting one.
  *
- * The per-worktree vcluster control planes are the deliberate omission: they
- * come out of `helm template` (k8s/vcluster/values.yaml) and stamp nothing,
- * so they sit at 0, below worktrees. That is the right way round — a control
- * plane is Deployment-managed and comes back, a worktree Job does not.
- *
  * netd is the exception and stays on `system-node-critical`: it is a
  * DaemonSet in the node's netns programming the redirect, so it is node
  * infrastructure in the same sense kube-proxy is.
@@ -28,13 +23,6 @@ export const PRIORITY_CLASS_INFRA = 'yaac-infra'
  * Ephemeral builder pods. Between the two: a build a worktree is waiting on
  * should outlive that worktree under node pressure, but must never displace
  * one to start (see the manifests below).
- *
- * Stamped unconditionally, unlike the worktree tier, and that is safe only
- * because a NESTED yaac never creates one — build-engine routes every build
- * to host-podman when `env.nested`. If that routing ever changes, this class
- * needs the same inner-skip treatment as worktrees (priorityClassSpec): it
- * declares `preemptionPolicy`, which is exactly what the vcluster syncer
- * copies to the host and the host then rejects.
  */
 export const PRIORITY_CLASS_BUILDER = 'yaac-builder'
 /** Worktree pods — the tier that gets evicted first. */
@@ -51,19 +39,8 @@ export const PRIORITY_VALUE_INFRA = 1_000_000
 export const PRIORITY_VALUE_BUILDER = 100_000
 export const PRIORITY_VALUE_WORKTREE = 1_000
 
-/**
- * THE priority policy for SESSION-TIER pods. An `inner` pod — one created
- * by a nested yaac against its vcluster — stamps NOTHING, for the same
- * shape of reason runtimeClassSpec skips the RuntimeClass there, and one
- * hard constraint: the syncer DROPS the class name on the way to the host
- * but COPIES `preemptionPolicy`, and the host's priority admission plugin
- * then rejects the pod ("the string value of PreemptionPolicy (Never) must
- * not be provided in pod spec") — a synced pod that never lands is a
- * worktree that never starts. Nothing is lost by skipping it: the host
- * scheduler places synced pods and never sees a vcluster's classes anyway.
- */
-export function priorityClassSpec(opts: { inner?: boolean }): { priorityClassName?: string } {
-  if (opts.inner) return {}
+/** THE priority policy for SESSION-TIER pods. */
+export function priorityClassSpec(): { priorityClassName?: string } {
   return { priorityClassName: PRIORITY_CLASS_WORKTREE }
 }
 
@@ -77,7 +54,7 @@ export function priorityClassSpec(opts: { inner?: boolean }): { priorityClassNam
  * ever targets STRICTLY lower priority, so for worktrees this is not about
  * evicting each other (equal priority — they never could); it stops a
  * pending worktree from killing the unstamped priority-0 pods it shares the
- * cluster with, which include the vcluster control planes other worktrees
+ * cluster with, which include the infra pods other worktrees
  * depend on. For builders it is the load-bearing one: a builder outranks
  * every worktree, so without it a routine image build could preempt running
  * worktrees until its request fits — and a preempted worktree pod is deleted
@@ -87,14 +64,7 @@ export function priorityClassSpec(opts: { inner?: boolean }): { priorityClassNam
  *
  * Infra alone keeps the default (PreemptLowerPriority): that is the whole
  * point of the split — when the proxy has nowhere to run, one worktree dies
- * so the rest keep their network. That default is also load-bearing for
- * NESTED installs, and must stay: an inner yaac's proxy/registry pods are
- * stamped like any other and synced to the host, where they survive
- * admission only because the syncer-copied policy matches the
- * PreemptLowerPriority the host computes for a pod whose class name the
- * syncer dropped. Adding an explicit `preemptionPolicy` to the infra class
- * would break every nested infra pod the way it broke worktrees (see
- * priorityClassSpec).
+ * so the rest keep their network.
  */
 export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
   return [

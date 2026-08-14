@@ -74,42 +74,85 @@ When that prints nothing on every install in use, the strip and
 `LEGACY_HOOK_PREFIX` go, along with the migration cases in
 `test/runtime/agents/claude.test.ts`.
 
-## `yaac.vcluster-session-id`, a rename still owed
+## `sweepLegacyVclusterState`
 
-The last label key that says "session". Current code stamps it —
-`vclusterLabels` (`drivers/k8s/cluster/vcluster.ts`) puts it on the vcluster's
-namespace and on every object the vcluster owns — so this is not an old name
-lingering in old clusters; it is being written today, and every day it stays
-is another namespace that will carry only it.
+The successor to everything that used to collect a per-worktree virtual
+cluster. `virtualCluster` is gone, and with it the teardown step and the
+orphan reconcile that deleted vclusters — so on an install that ran one, the
+namespaces, their control planes and their synced pods have nothing left that
+would ever remove them.
 
-**What reads it:** one place, `mapVclusterNamespaceObject`
-(`drivers/k8s/substrate/vcluster-objects.ts`), which takes the worktree id off
-the label and returns null without it. **No selector uses it** —
-`vclusterNamespaceSelector` keys on `yaac.vcluster` plus the data-dir hash. So
-this is not the shape the pod-label rename was: there is no set of
-NetworkPolicy podSelectors that has to move in the same commit, and renaming
-it needs one either-key read rather than an atomic flip.
+**What it reads:** namespaces (and cluster-scoped roles, bindings and
+admission policies) labelled `yaac.vcluster`, scoped to this install by
+`yaac.vcluster-data-dir-hash`; the fixed names `yaac-vc-activator` and
+`yaac-redirect-claims` in the install namespace; and the `vcluster/` and
+`nested-yaac/` subdirectories of every worktree state dir. It only ever
+deletes. Fired detached from the k8s driver's attach, beside
+`gcOrphanProjectRegistries`.
 
-**What breaks silently if it is renamed without that read:** every vcluster
-namespace created before the rename carries the old key alone, so the mapper
-drops it, the orphan sweep never sees it, and nothing else deletes it. A
-leaked namespace here is a whole vcluster left running, and unlike a pod a
-namespace is not recreated on the next start — so it never self-heals, and the
-symptom is a slow accumulation of vclusters nobody asked for rather than an
-error.
+The label-scoped deletes are install-scoped, so a sibling install's vclusters
+on a shared cluster are untouched. The two name-scoped ones are the
+exception: the activator and the claims document were namespace singletons
+stamped with `app:` alone, so installs sharing a namespace share them, and a
+staggered upgrade deletes a still-old sibling's waker out from under it. Its
+sleeping vclusters then wait for its own ensure to re-apply both on the next
+vcluster create.
 
-**How to do it:** stamp the new key, read either key, and keep both until no
-namespace can still carry only the old one. Unlike most entries here, that is
-directly checkable rather than a judgement about installed versions — this
-lists any namespace still missing the new key:
+**What breaks silently if it is deleted too early:** an install upgrading from
+a vcluster-era yaac keeps whole vclusters running — a control plane, a
+syncer and their synced pods per worktree — that nothing else deletes, and a
+namespace is not recreated on the next start, so it never self-heals. The
+symptom is accumulating node memory and a `kubectl get ns` full of `-vc-`
+namespaces, never an error. The accepted cost is on the other side: a worktree
+created by the old install loses its in-worktree cluster on the first new
+server start, and goes on running as an ordinary worktree.
+
+**Two installs it never converges.** The sweep runs at *k8s driver attach*,
+so an install that upgrades and simultaneously moves to
+`YAAC_DRIVER=containerless` — what this repo's own dev config now does —
+never fires it, and its vcluster estate stands until someone runs
+`kubectl delete ns -l yaac.vcluster` by hand. And an inner install wrote its
+`nested-yaac/` dir from inside a pod, so those bytes can be root-owned: the
+sweep runs as the server uid and logs the EACCES rather than escalating.
+
+**How to tell it is safe to remove:** directly checkable rather than a
+judgement about installed versions —
 
 ```sh
-kubectl get ns -l yaac.vcluster -o json \
-  | jq -r '.items[] | select(.metadata.labels["yaac.vcluster-worktree-id"] == null) | .metadata.name'
+kubectl get ns -l yaac.vcluster -o name
 ```
 
-When it prints nothing on every cluster in use, the either-key read goes and
-this entry with it.
+When that prints nothing on every cluster in use, this goes and the entry
+with it. Deliberately the cluster-side test alone: root-owned `nested-yaac/`
+residue can outlive a fully converged cluster, and keeping the shim alive for
+disk bytes it was never going to clear would be the wrong read.
+
+## The retired `virtualCluster` config key
+
+`RETIRED_KEYS` in `domain/projects/config.ts` maps `virtualCluster` to a
+warning naming it as removed, and the parser still honors the one thing the
+key implied that survives it: `nestedContainers`.
+
+**What it reads:** the key in any project's `yaac-config.json`. The key is
+ignored rather than rejected — erroring would make every create fail on a
+config the author has no reason to have revisited yet — except that
+`virtualCluster: true` with no explicit `nestedContainers` still resolves to
+`nestedContainers: true`, exactly as it always did. An explicit
+`nestedContainers: false` wins: it is the newer key, and the author said it
+outright.
+
+**What breaks silently if it is deleted too early:** two things, and the
+second is the reason the implication is kept. The key falls through to the
+generic `unknown field` warning, which reads like a typo — nothing to search
+for, and no mention of `nestedContainers`. And an unedited config loses its
+in-pod container engine, which surfaces much later as `docker: not found`
+inside a worktree, far from the config that caused it. The warning names the
+fix, but `console.warn` lands in the server log rather than the create's
+progress stream, so the person who hits it is unlikely to read it.
+
+**How to tell it is safe to remove:** a judgement call, unlike the sweep above
+— nothing records which configs still carry the key. A season after release,
+once no project config in use still names it.
 
 ## The pre-envelope spawn channel
 

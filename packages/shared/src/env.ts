@@ -71,21 +71,6 @@ export const env = {
     return port
   },
 
-  /**
-   * `YAAC_K8S_REGISTRY` — `host:port` of an EXTERNALLY managed OCI registry
-   * to use instead of the one this install runs in its own cluster. Unset
-   * (the normal case) → the server's in-cluster registry Service, whose
-   * name it resolves itself.
-   *
-   * The one production setter is a nested (vcluster) worktree: its registry
-   * is the OUTER install's per-project registry, which the inner server
-   * dials directly by cluster DNS and must never try to stand up.
-   */
-  get k8sRegistry(): string | undefined {
-    const raw = process.env.YAAC_K8S_REGISTRY
-    return raw && raw.trim() !== '' ? raw.trim() : undefined
-  },
-
   /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster setup` manages. */
   get kindCluster(): string {
     return process.env.YAAC_KIND_CLUSTER ?? 'yaac'
@@ -184,11 +169,6 @@ export const env = {
     return true
   },
 
-  /** `YAAC_NESTED` — set to `1` by the server inside a nested (vcluster) worktree. */
-  get nested(): boolean {
-    return process.env.YAAC_NESTED === '1'
-  },
-
   /**
    * `YAAC_WORKTREE_ID` — the worktree this process runs inside, stamped into
    * every worktree's environment by `createWorktree` (both drivers: k8s reads
@@ -246,9 +226,8 @@ export const env = {
    * (stream-relay.ts skips its address resolution entirely). Deployment
    * escape hatch for hosts with a direct TCP route to the proxy pod
    * (e.g. a server running on the cluster node itself), which skips the
-   * default kubectl port-forward hop. Unset → resolved automatically
-   * (a port-forward to the proxy Deployment, or the inner proxy's pod
-   * IP when nested).
+   * default kubectl port-forward hop. Unset → a port-forward to the proxy
+   * Deployment.
    */
   get relayAddr(): { host: string; port: number } | undefined {
     const raw = process.env.YAAC_RELAY_ADDR

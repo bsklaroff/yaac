@@ -1,14 +1,4 @@
 import { listWorktreeJobs, listWorktreePods, type JobInfo, type PodInfo } from './pods'
-import {
-  listVclusterConfigMaps,
-  listVclusterNamespaces,
-  listVclusterPods,
-  listVclusterServices,
-  type VclusterConfigMap,
-  type VclusterNamespaceInfo,
-  type VclusterPod,
-  type VclusterService,
-} from './vcluster-objects'
 import { getActiveClusterCache } from './cluster-cache'
 
 /**
@@ -17,7 +7,7 @@ import { getActiveClusterCache } from './cluster-cache'
  * case, costing nothing — and falls back to a one-shot kubectl list when
  * the cache is absent (unit tests, direct lib use) or degraded (watch
  * down). The fallback is the destructive-step safety story: the stale
- * reaper and vcluster GC never act on a cache known to be stale.
+ * reaper never acts on a cache known to be stale.
  *
  * Getters memoize per snapshot so every step in a pass sees one
  * point-in-time view; a failed fallback listing stays failed for the
@@ -32,13 +22,6 @@ export interface TickSnapshot {
   resync: boolean
   pods(): Promise<PodInfo[]>
   jobs(): Promise<JobInfo[]>
-  vclusters(): Promise<VclusterNamespaceInfo[]>
-  /** Pods inside one vcluster's host namespace. */
-  vclusterPods(namespace: string): Promise<VclusterPod[]>
-  /** Syncer-managed Services inside one vcluster's host namespace. */
-  vclusterServices(vc: Pick<VclusterNamespaceInfo, 'namespace' | 'name'>): Promise<VclusterService[]>
-  /** ConfigMaps inside one vcluster's host namespace (claims live here). */
-  vclusterConfigMaps(namespace: string): Promise<VclusterConfigMap[]>
 }
 
 export function createTickSnapshot(resync = true): TickSnapshot {
@@ -61,17 +44,5 @@ export function createTickSnapshot(resync = true): TickSnapshot {
     jobs: () => get('jobs',
       () => (cache?.healthy('worktree-jobs') ? cache.worktreeJobs() : null),
       () => listWorktreeJobs()),
-    vclusters: () => get('vclusters',
-      () => (cache?.healthy('vcluster-namespaces') ? cache.vclusterNamespaces() : null),
-      () => listVclusterNamespaces()),
-    vclusterPods: (namespace) => get(`vcluster-pods:${namespace}`,
-      () => cache?.vclusterPods(namespace) ?? null,
-      () => listVclusterPods(namespace)),
-    vclusterServices: (vc) => get(`vcluster-services:${vc.namespace}`,
-      () => cache?.vclusterServices(vc.namespace) ?? null,
-      () => listVclusterServices(vc.namespace, vc.name)),
-    vclusterConfigMaps: (namespace) => get(`vcluster-configmaps:${namespace}`,
-      () => cache?.vclusterConfigMaps(namespace) ?? null,
-      () => listVclusterConfigMaps(namespace)),
   }
 }

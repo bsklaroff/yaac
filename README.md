@@ -166,7 +166,7 @@ hostname over HTTPS, not `ip:8787`), or point a client CLI at it with
 [docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
 and phone setup, forwarded-port reachability, and the security model.
 
-A worktree's forwarded ports (a dev server, or a nested yaac's own web UI)
+A worktree's forwarded ports (a dev server, or an inner yaac's own web UI)
 bind the server's loopback by default. To reach them from other tailnet
 devices, set `YAAC_FORWARD_BIND` to the server's tailnet IP (from `tailscale
 ip -4`) and restart; the webapp's port chips then link to
@@ -442,8 +442,7 @@ Example `yaac-config.json` with all options:
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
 - **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a worktree's traffic reaches the proxy in the first place, and why it fails closed: [Worktree egress](docs/worktree-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since worktrees require these to function.
-- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
-- **virtualCluster** — give each worktree its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
+- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers](#nested-containers).
 - **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new worktree worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-worktree popover (which can also pin a new default). Changing it affects new worktrees only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
 ## Environment variables
@@ -458,10 +457,8 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
 | `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
-| `YAAC_K8S_REGISTRY` | the in-cluster registry Service | `host:port` of an externally managed OCI registry to use instead of the one this install runs in its cluster. Set for nested worktrees (the outer project registry). |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
-| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) worktree — not something you set yourself. |
 | `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reachable only through the outer server's port-forward" and skips the client credential (see docs/remote-hosting.md). |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
@@ -515,7 +512,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
 
 Layer order: default → Dockerfile.tools (agent CLIs) → Dockerfile.nestable (only when `nestedContainers` is on) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools (+ nestable) layers entirely.
 
-## Nested containers and virtual clusters
+## Nested containers
 
 **`nestedContainers: true`** runs a rootless podman inside the worktree pod and points the `docker` CLI (and compose) at its Docker-API socket:
 
@@ -523,12 +520,7 @@ Layer order: default → Dockerfile.tools (agent CLIs) → Dockerfile.nestable (
 - Nested containers share the pod's network namespace: a container's listener is reachable on `localhost:<port>` directly (`docker run -p` is a no-op — the app binds the port itself), and container-private networks are unsupported — use `network_mode: host` in compose files.
 - Built layers are promoted into a per-project shared store at worktree teardown, so an identical `docker build` in the next worktree is a pure cache hit.
 
-**`virtualCluster: true`** additionally gives the worktree its own kubernetes cluster:
+Each project gets a plain-HTTP push registry (`registry:2`) reachable from its worktrees as `yaac-reg-<project>.<namespace>.svc:5000`, which is the bus those promoted layers ride: a worktree's salvaged images are pushed there at teardown and pulled by the next one. Only the project's own worktrees can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
 
-- `kubectl` inside the worktree is preconfigured (`KUBECONFIG`) against a per-worktree [vcluster](https://www.vcluster.com/); `kubectl get nodes`, `kubectl run`, deployments, services, and inner NetworkPolicies all work. Pods created in the vcluster actually run on the host cluster, confined to the worktree: they can reach their own vcluster's API and each other, and nothing else (no host apiserver, no internet — in v1 synced pods have no upstream egress at all).
-- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the worktree's `nested-yaac` data dir, and requires the gVisor runtime tier (the sentry) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
-- Each project gets a plain-HTTP push registry (`registry:2`) reachable from its worktrees as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own worktrees can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
-- Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster worktrees run at once.
-
-**yaac-in-yaac**: vcluster worktrees are preset for running yaac itself inside the worktree — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-worktree dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
+**Running yaac inside a worktree** needs no container feature at all: start the inner server with `yaac server start --driver containerless` and its own worktrees are tmux servers in the worktree's checkout.
 
