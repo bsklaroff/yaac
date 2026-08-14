@@ -11,9 +11,11 @@ import type { AgentTool } from '@yaac/shared/types'
  * (docs/worktree-storage.md).
  *
  * Every tool with a host-mounted home runs a `SessionStart` hook
- * (`/etc/yaac/agent-links.sh`, baked into the tools image) which appends one
- * JSON line per firing to this log, mounted into the pod as an RW `File`
- * hostPath. The hook fires on `startup`, `resume`, `clear` and `compact` —
+ * (`worktree-bin/yaac-agent-links`, staged per worktree onto the workspace's
+ * PATH) which appends one JSON line per firing to this log, reached from the
+ * workspace at `$HOME/.yaac/session-starts.jsonl` — an RW `File` hostPath
+ * under k8s, a symlink under containerless. The hook fires on `startup`,
+ * `resume`, `clear` and `compact` —
  * exactly the events that change which conversation a pane is in — and it is
  * the only witness of a user-started one, because it alone sees `TMUX_PANE`
  * beside the tool's session id. A `/clear` and a hand-typed `claude --resume`

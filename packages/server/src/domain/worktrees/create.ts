@@ -1083,15 +1083,16 @@ export async function createWorktree(
     // these flags the user is forced to log in inside every worktree.
     await seedClaudeJson(claudeJson)
     await seedClaudeSettings(path.join(claude, 'settings.json'))
-    // Register the agent-session discovery hook (the script is baked into the
-    // image; this only points claude at it). Best-effort: without it the
-    // session still runs, with only the `--session-id`-pinned conversation
-    // known to yaac.
+    // Register the agent-session discovery hook (the script is staged from
+    // worktree-bin onto the workspace's PATH below; this only points claude at
+    // it). Best-effort: without it the session still runs, with only the
+    // `--session-id`-pinned conversation known to yaac.
     await ensureClaudeHooks(path.join(claude, 'settings.json')).catch(() => {})
 
-    // Codex discovers its conversations through the same managed SessionStart
-    // hook as the others (/etc/codex, baked into the image and trusted by
-    // policy), so nothing is seeded into the mounted codex dir.
+    // Codex runs the same script through a managed SessionStart hook baked
+    // into the image (/etc/codex, trusted by policy), so nothing is seeded
+    // into the mounted codex dir — and so codex discovery is a k8s-only
+    // feature, there being no image to carry it under containerless.
 
     // opencode: grant the websearch permission in the shared opencode.json so
     // the Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA below).
@@ -1283,6 +1284,10 @@ export async function createWorktree(
   // worktree's logs is fine. Skip pi's startup version check so a fresh pod
   // doesn't stall on a network probe. Set unconditionally (only pi reads them)
   // so a spare retooled to pi gets them.
+  //
+  // Written against the container layout like every other path here: a value
+  // naming a path under a mount this spec declares is the driver's to
+  // translate to wherever it put that mount.
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
 

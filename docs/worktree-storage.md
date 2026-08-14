@@ -130,10 +130,13 @@ finds goes straight into rows: the sweep reports a `sessions-discovered` /
 
 Discovery has one input the host cannot see for itself, and it is the only file
 in this story. Every tool with a host-mounted home runs a `SessionStart` hook
-(`/etc/yaac/agent-links.sh`, baked into the tools image) which appends **one
-JSON line per firing** to
-`projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, mounted into the pod
-at `/home/yaac/.yaac/session-starts.jsonl`:
+(`worktree-bin/yaac-agent-links`, staged per worktree onto the workspace's PATH
+like the other worktree-bin scripts) which appends **one JSON line per firing**
+to `projects/<slug>/meta/<worktreeId>.session-starts.jsonl`, reached from the
+workspace at `$HOME/.yaac/session-starts.jsonl` — a mount under the k8s driver,
+a symlink under containerless. Writing through `$HOME` rather than an absolute
+path is what lets one script and one registered command serve both substrates,
+since the settings file registering it is shared by a whole project:
 
 ```jsonc
 {"id":"<agentSessionId>","tool":"claude","pane":"3","path":"claude/projects/-workspace/….jsonl"}
@@ -208,10 +211,12 @@ processes.
 
 Project-relative rather than tool-home-relative because it needs no tool: every
 tool home is `<projectDir>/<tool>`, so the tool segment is simply the first
-component, and nothing has to know which home a path came out of. The in-pod
-hook is handed its home and that home's name (`agent-links.sh
-/home/yaac/.claude claude`), so producing the form stays parameter expansion
-with no interpreter.
+component, and nothing has to know which home a path came out of. The hook is
+handed its home and that home's name (`yaac-agent-links "$HOME/.claude"
+claude`), so producing the form stays parameter expansion with no interpreter.
+It tries the home's physical path as well, since a workspace may reach its tool
+home through a link and a tool that resolves its own paths then reports the
+transcript under the target.
 
 `toProjectRelative` / `resolveProjectPath` in `runtime/agents/transcripts.ts`
 are the only place the two forms meet. Disk code works in absolute paths

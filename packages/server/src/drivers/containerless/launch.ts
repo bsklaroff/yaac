@@ -44,7 +44,11 @@ const ENV_DENY_PREFIXES = ['YAAC_']
  * oversight — a host-run agent needs the user's PATH to find `git`, `node`
  * and the agent CLI itself, and there is no image to have installed them.
  */
-function workspaceEnvironment(spec: WorkspaceSpec, home: string): NodeJS.ProcessEnv {
+function workspaceEnvironment(
+  spec: WorkspaceSpec,
+  home: string,
+  paths: { workspaceDir: string },
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   // eslint-disable-next-line no-process-env -- a host-run agent needs the user's PATH to find git, node and the agent CLI; there is no image that installed them
   for (const [key, value] of Object.entries(process.env)) {
@@ -54,7 +58,7 @@ function workspaceEnvironment(spec: WorkspaceSpec, home: string): NodeJS.Process
   for (const entry of spec.env) {
     const eq = entry.indexOf('=')
     if (eq <= 0) continue
-    env[entry.slice(0, eq)] = entry.slice(eq + 1)
+    env[entry.slice(0, eq)] = remapMountedPath(entry.slice(eq + 1), spec.mounts, paths, home)
   }
   // After the caller's entries: the private home is this driver's to decide,
   // and it is what makes the tool-home symlinks below reachable.
@@ -69,6 +73,35 @@ function workspaceEnvironment(spec: WorkspaceSpec, home: string): NodeJS.Process
  *  PATH — the host stand-in for the pod's `/usr/local/bin`. */
 function workspaceBinDir(home: string): string {
   return path.join(home, '.local', 'bin')
+}
+
+/**
+ * A caller's env value that names a path inside one of this workspace's own
+ * mounts, translated to where the mount actually landed.
+ *
+ * The caller writes `spec.env` against the container layout, because that is
+ * the one filesystem every driver was written against: pi is pointed at its
+ * session dir inside its mounted home, and under a pod that is exactly where
+ * the mount put it. Here the mount is a symlink somewhere else, so a value
+ * naming a path under it has to follow it.
+ *
+ * Deliberately scoped to a DECLARED mount rather than rewriting anything that
+ * looks container-absolute. `envPassthrough` and `config.env` values are the
+ * user's own, and a yaac dev host runs as a user whose home is literally
+ * `/home/yaac` — a blanket rewrite would silently redirect a real host path
+ * they passed in. A path under a mount this workspace asked for can only have
+ * meant this workspace's copy of it.
+ */
+function remapMountedPath(
+  value: string,
+  mounts: WorkspaceMount[],
+  paths: { workspaceDir: string },
+  home: string,
+): string {
+  const mounted = mounts.some(({ mountPath }) =>
+    value === mountPath || value.startsWith(`${mountPath}/`))
+  if (!mounted) return value
+  return destinationFor(value, paths, home) ?? value
 }
 
 /**
@@ -254,7 +287,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     )
   }
 
-  const env = workspaceEnvironment(spec, home)
+  const env = workspaceEnvironment(spec, home, paths)
   // The helper scripts staged above are only useful if the workspace can
   // find them — the pod gets that from `/usr/local/bin` already being on
   // PATH, and here it has to be said.

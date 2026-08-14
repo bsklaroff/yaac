@@ -148,6 +148,41 @@ describe('launchWorkspace', () => {
     expect(env.env.PATH?.startsWith(binDir)).toBe(true)
   })
 
+  it('follows an env value naming a mounted path to where the mount landed', async () => {
+    // The caller writes env against the container layout, because that is the
+    // filesystem every driver was written against — pi is pointed at its
+    // session dir inside its mounted home. Left alone, it would write its
+    // transcripts to a path that does not exist here and the herd would find
+    // none. A value under a mount this spec declared follows that mount.
+    //
+    // The user's own values do NOT: a yaac dev host runs as a user whose home
+    // is literally /home/yaac, so rewriting anything container-shaped would
+    // silently redirect a real host path they passed in.
+    const piSrc = path.join(dataDir, 'projects', 'demo', 'pi')
+    await fsp.mkdir(path.join(piSrc, 'agent', 'sessions'), { recursive: true })
+    const mounts: WorkspaceMount[] = [
+      { source: { kind: 'hostPath', path: piSrc }, mountPath: '/home/yaac/.pi' },
+    ]
+    await launchWorkspace(spec({
+      mounts,
+      env: [
+        'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.pi/agent/sessions',
+        'MY_OWN_PATH=/home/yaac/notes',
+      ],
+    }))
+
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const env = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    expect(env.env.PI_CODING_AGENT_SESSION_DIR)
+      .toBe(path.join(home, '.pi', 'agent', 'sessions'))
+    // Which resolves, through the mount's own link, to the shared project dir
+    // the server reads transcripts back out of.
+    expect(await fsp.realpath(env.env.PI_CODING_AGENT_SESSION_DIR ?? ''))
+      .toBe(await fsp.realpath(path.join(piSrc, 'agent', 'sessions')))
+    expect(env.env.MY_OWN_PATH).toBe('/home/yaac/notes')
+  })
+
   it('refuses a mount it has no host equivalent for rather than dropping it', async () => {
     // Silently skipping would hand back a worktree missing the thing its
     // config asked for, failing much later and somewhere unrelated.

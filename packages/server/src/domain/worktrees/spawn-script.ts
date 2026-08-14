@@ -1,7 +1,8 @@
 /**
- * In-worktree helper commands — `worktree-bin/*` scripts shipped inside the
- * yaac package (currently just `yaac-spawn`) that yaac installs into every
- * worktree container on PATH.
+ * In-worktree helper commands — every `worktree-bin/*` script shipped inside
+ * the yaac package, which yaac installs into every worktree on PATH: the
+ * setup hook, the spawn and PR-watch helpers, and the agent-session discovery
+ * hook the tools run on SessionStart.
  *
  * Delivery mirrors the builtin-skills tier (features/skills): at
  * worktree create the packaged scripts are copied into a staging dir under
@@ -10,6 +11,10 @@
  * image, read-only so a worktree can't tamper with the host copy, and
  * copied fresh per worktree so it tracks the installed yaac version. The
  * staging dir is removed with the worktree dir on cleanup.
+ *
+ * A driver without mounts realizes the same thing its own way (containerless
+ * symlinks them into the workspace's bin dir), so a caller registering one of
+ * these names it by bare name and lets PATH resolve it.
  */
 
 import fs from 'node:fs/promises'

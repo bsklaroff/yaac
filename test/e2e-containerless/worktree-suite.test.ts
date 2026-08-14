@@ -240,6 +240,65 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(windows).toContain('shell')
   })
 
+  it('wires the agent-session discovery hook all the way to the worktree log', async () => {
+    // The whole chain, because every link of it is substrate-specific and
+    // each fails silently on its own: the command registered in the shared
+    // settings.json, the script staged onto the workspace's PATH, and the
+    // `$HOME`-relative log reaching this worktree's own file. Registering a
+    // command naming an in-image path is what made claude print a
+    // SessionStart hook error on every start here.
+    const settings = JSON.parse(await fs.readFile(
+      path.join(testEnv.dataDir, 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
+    )) as { hooks?: { SessionStart?: Array<{ hooks?: Array<{ command?: string }> }> } }
+    const commands = settings.hooks?.SessionStart
+      ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? []) ?? []
+    const command = commands.find((c) => c?.includes('yaac-agent-links'))
+    expect(command).toBe('yaac-agent-links "$HOME/.claude" claude')
+
+    const home = path.join(
+      testEnv.dataDir, 'projects', SLUG, 'sessions', worktreeId, 'containerless', 'home',
+    )
+    const binDir = path.join(home, '.local', 'bin')
+    await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))
+      .resolves.toBeUndefined()
+
+    // Run the REGISTERED command, unedited, through `sh -c` with the
+    // workspace's own PATH and HOME — which is exactly how claude runs it, and
+    // the only form that exercises the link the bug was about: resolving a
+    // bare name rather than an absolute path that does not exist here. Then
+    // read the line back out of the worktree's real log, which the workspace
+    // reaches only through the link this driver put in its private home.
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(
+        'sh', ['-c', command ?? ''],
+        {
+          env: {
+            ...process.env,
+            HOME: home,
+            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+            TMUX_PANE: '%7',
+          },
+        },
+        (err) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve()),
+      )
+      child.stdin?.end(JSON.stringify({
+        session_id: 'e2e-conv',
+        transcript_path: path.join(home, '.claude', 'projects', 'e2e-conv.jsonl'),
+      }))
+    })
+
+    const log = await fs.readFile(path.join(
+      testEnv.dataDir, 'projects', SLUG, 'meta', `${worktreeId}.session-starts.jsonl`,
+    ), 'utf8')
+    const line = log.trim().split('\n').map((l) => JSON.parse(l) as {
+      id: string; tool: string; pane: string; path: string
+    }).find((l) => l.id === 'e2e-conv')
+    expect(line).toEqual({
+      id: 'e2e-conv', tool: 'claude', pane: '7',
+      path: path.join('claude', 'projects', 'e2e-conv.jsonl'),
+    })
+  })
+
   // Skipped where the adapter happens to BE installed — the refusal is
   // then correctly silent, and there is no way to un-install it for one
   // request (the server's PATH is fixed when it spawns). The logic itself

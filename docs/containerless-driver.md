@@ -249,6 +249,13 @@ answer under both drivers on one line.
   host, which does not exist here, so an agent cannot spawn sibling
   worktrees yet.
 - **Per-worktree module caching.** See the mount note above.
+- **Codex session discovery.** Every tool's `SessionStart` hook runs the same
+  staged `worktree-bin/yaac-agent-links`, which works here — but codex reaches
+  it through a *managed* hook declared in `/etc/codex/requirements.toml`, the
+  trusted image layer that bypasses its per-change `/hooks` trust prompt.
+  There is no image to carry that here, so a codex worktree knows only the
+  conversation `--session-id` pinned. Claude registers the same script from
+  its own settings.json and is unaffected.
 
 ## Host requirements
 
