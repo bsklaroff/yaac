@@ -78,6 +78,17 @@ fi
 EOF
 USER yaac
 
+# Every directory the pod mounts something *inside*. A mount whose parent is
+# missing gets that parent created by the container runtime, as root:root
+# 0755, and then nothing running as yaac can write the directory at all —
+# which is why they are made here, owned by yaac, rather than left to appear
+# on their own. ~/.yaac is the case that bites: it takes the session-starts
+# log mount and it is also a nested yaac server's data dir, so a root-created
+# one fails that server's first write. The other two exist today only because
+# pnpm and claude's installer happen to write under them; naming them makes
+# the invariant the image's rather than those tools'.
+RUN mkdir -p /home/yaac/.yaac /home/yaac/.config /home/yaac/.local/share
+
 RUN npm config set prefix /home/yaac/.local
 RUN corepack install -g pnpm@11.1.2 && \
     pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
