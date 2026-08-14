@@ -12,6 +12,10 @@ type ProvisionOp = (worktreeId: string, onProgress: (message: string) => void) =
  * auto-open it so the creator watches progress in the main pane, and stream
  * progress/error into it until the server snapshot takes over (App prunes the
  * optimistic copy once its `provisioning[]` or `worktrees[]` includes the id).
+ *
+ * `groupId` is the sidebar group the row belongs in — a restart passes the
+ * stopped worktree's, so the row renders in that section from the first frame
+ * rather than at the top of the list until the server's own entry lands.
  */
 export function useProvisionWorktree(): (
   projectSlug: string,
@@ -19,14 +23,16 @@ export function useProvisionWorktree(): (
   kind: ProvisioningWorktreeEntry['kind'],
   worktreeId: string,
   op: ProvisionOp,
+  groupId?: string,
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const openWorktree = useUiStore((s) => s.openWorktree)
 
-  return useCallback((projectSlug, tool, kind, worktreeId, op) => {
-    addOptimisticProvisioning({ worktreeId, projectSlug, tool, kind, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
+  return useCallback((projectSlug, tool, kind, worktreeId, op, groupId) => {
+    const filed = groupId !== undefined ? { groupId } : {}
+    addOptimisticProvisioning({ worktreeId, projectSlug, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
     openWorktree(projectSlug, worktreeId) // auto-open the locally-initiated provision
     void op(worktreeId, (message) => updateOptimisticProvisioning(worktreeId, { message }))
       .then((res) => {
@@ -39,7 +45,7 @@ export function useProvisionWorktree(): (
         // pane on the new worktree until the snapshot takes over.
         if (res.worktreeId !== worktreeId) {
           addOptimisticProvisioning({
-            worktreeId: res.worktreeId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
+            worktreeId: res.worktreeId, projectSlug, tool, kind, ...filed, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
           })
           removeOptimisticProvisioning(worktreeId)
           openWorktree(projectSlug, res.worktreeId)

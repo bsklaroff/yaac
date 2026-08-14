@@ -26,8 +26,10 @@ interface ProvisioningEntry {
   kind: ProvisioningKind
   message: string
   error?: string
-  /** Group the create asked for, so the row renders in its sidebar section
-   *  while it provisions. The worktree row carries the durable membership. */
+  /** Group this worktree is filed under — what the create asked for, or what
+   *  the restarting worktree's row already says — so the row renders in its
+   *  sidebar section while it provisions instead of at the top of the list.
+   *  The worktree row carries the durable membership. */
   groupId?: string
   startedAt: number
   /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
@@ -81,6 +83,7 @@ export function ensureProvisioning(input: {
   tool: AgentTool
   kind: ProvisioningKind
   message?: string
+  groupId?: string
 }): void {
   if (entries.has(input.worktreeId)) return
   registerProvisioning(input)

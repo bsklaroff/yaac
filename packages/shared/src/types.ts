@@ -875,9 +875,10 @@ export interface ProvisioningWorktreeEntry {
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
-  /** The sidebar group this worktree was created into (`--group`), so the row
-   *  renders in its section while it provisions rather than jumping there
-   *  when it lands. Absent means the default list. */
+  /** The sidebar group this worktree is filed under — asked for by a create
+   *  (`--group`), or already recorded for a restart — so the row renders in
+   *  that section while it provisions rather than jumping to the top of the
+   *  list and back. Absent means the default list. */
   groupId?: string
   /** 'YYYY-MM-DD HH:MM:SS' UTC, derived from when provisioning started — so
    *  the sidebar can show a relative age for a row that has no pod yet. */

@@ -37,6 +37,7 @@ import {
   createWorktreeGroup,
   deleteWorktreeGroup,
   findWorktreeByMamaToken,
+  findWorktreeRow,
   listWorktreeAgentSessions,
   recordAllDeathsSeen,
   recordDeathSeen,
@@ -229,18 +230,25 @@ export const worktreeApp = new Hono()
       // not have — it would be silently ignored.
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
-    (c) => {
+    async (c) => {
       const body = c.req.valid('json')
       // Head start for a caller that already knows the answer, so the row is
       // on screen while the resolve runs; `restartWorktree` registers for
       // everyone else. Not the reaper interlock — that is the register
       // inside restartWorktree, which no caller can skip.
       if (body.projectSlug) {
+        // The group is read here rather than left to restartWorktree's own
+        // register: that one `ensure`s, so it would not correct this entry,
+        // and a groupless head start would park the restarting row at the top
+        // of the sidebar for the whole restart. Read, not taken from the
+        // caller — the row is what the sidebar files the worktree under.
+        const row = await findWorktreeRow(body.worktreeId)
         registerProvisioning({
           worktreeId: body.worktreeId,
           projectSlug: body.projectSlug,
           tool: body.tool ?? 'claude',
           kind: 'restart',
+          ...(row?.groupId !== undefined ? { groupId: row.groupId } : {}),
         })
       }
       return streamProvisioned(c, body.worktreeId, (onProgress) =>

@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
 import type {
+  ProvisioningWorktreeEntry,
   StoppedWorktreeEntry,
   WorktreeGroupSummary,
   WorktreeListEntry,
@@ -53,18 +54,40 @@ const stopped = (
   ...(groupId !== undefined ? { groupId } : {}),
 })
 
-/** { default: [ids], <group name>: [member ids + ghost ids] } */
+/** A provisioning row: a create in flight, or a worktree being restarted. */
+const prov = (
+  worktreeId: string,
+  at: number,
+  extra: Partial<ProvisioningWorktreeEntry> = {},
+): ProvisioningWorktreeEntry => ({
+  worktreeId,
+  projectSlug: 'p',
+  tool: 'claude',
+  kind: 'restart',
+  message: 'Starting…',
+  createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
+  ...extra,
+})
+
+/** { top: [provisioning ids], default: [ids],
+ *    <group name>: [its provisioning ids + member ids + ghost ids] } */
 const shape = (
   worktrees: WorktreeListEntry[],
   groups: WorktreeGroupSummary[],
   stoppedRows: StoppedWorktreeEntry[] = [],
+  provisioning: ProvisioningWorktreeEntry[] = [],
 ): Record<string, string[]> => {
-  const layout = sidebarLayout(worktrees, groups, stoppedRows)
+  const layout = sidebarLayout(worktrees, groups, stoppedRows, provisioning)
   return {
+    ...(provisioning.length > 0 ? { top: layout.provisioning.map((p) => p.worktreeId) } : {}),
     default: layout.defaultList.map((w) => w.worktreeId),
     ...Object.fromEntries(layout.groups.map((s) => [
       s.group.name,
-      [...s.members.map((w) => w.worktreeId), ...s.ghosts.map((d) => d.worktreeId)],
+      [
+        ...s.provisioning.map((p) => p.worktreeId),
+        ...s.members.map((w) => w.worktreeId),
+        ...s.ghosts.map((d) => d.worktreeId),
+      ],
     ])),
   }
 }
@@ -140,6 +163,32 @@ describe('sidebarLayout', () => {
       .toEqual({ default: [], g: ['gone'] })
   })
 
+  it('files a provisioning row into its group, above the live rows', () => {
+    const g = group('g', 10)
+    // Restarting a stopped member: the ghost row is already gone (the caller
+    // de-dupes it against the provisioning ids) and the restarting row takes
+    // its place inside the section — not at the top of the sidebar.
+    expect(shape(
+      [entry('live', 2, { groupId: 'g' })],
+      [g],
+      [],
+      [prov('coming-back', 9, { groupId: 'g' }), prov('fresh', 9)],
+    )).toEqual({ top: ['fresh'], default: [], g: ['coming-back', 'live'] })
+  })
+
+  it('shows an unpinned group whose only row is provisioning', () => {
+    // The last live member is mid-restart, so the section has nothing else to
+    // stand on — and it must not blink out from under the row.
+    const g = group('g', 10)
+    expect(shape([], [g], [], [prov('coming-back', 9, { groupId: 'g' })]))
+      .toEqual({ top: [], default: [], g: ['coming-back'] })
+  })
+
+  it('leaves a provisioning row naming an unknown group at the top', () => {
+    expect(shape([], [], [], [prov('orphan', 9, { groupId: 'gone' })]))
+      .toEqual({ top: ['orphan'], default: [] })
+  })
+
   it('falls back to the default list for a group that no longer exists', () => {
     // What a snapshot arriving mid-delete looks like.
     expect(shape([entry('orphan', 1, { groupId: 'gone' })], [])).toEqual({ default: ['orphan'] })
@@ -150,7 +199,7 @@ describe('sidebarLayout', () => {
 describe('sidebarRowIds', () => {
   it('runs provisioning, then the default list, then each shown group', () => {
     const rows = sidebarRowIds(
-      [{ worktreeId: 'prov-1' }],
+      [prov('prov-1', 9), prov('prov-grouped', 9, { groupId: 'g' })],
       [
         entry('grouped', 4, { groupId: 'g' }),
         entry('loose-new', 3),
@@ -159,7 +208,14 @@ describe('sidebarRowIds', () => {
       [group('g', 10)],
       [],
     )
-    expect(rows).toEqual(['prov-1', 'loose-new', 'loose-old', 'grouped'])
+    // A grouped provisioning row cycles with its section, not with the rows at
+    // the top — the same place it is drawn.
+    expect(rows).toEqual(['prov-1', 'loose-new', 'loose-old', 'prov-grouped', 'grouped'])
+  })
+
+  it('keeps a group that only holds a provisioning row in the cycle', () => {
+    expect(sidebarRowIds([prov('coming-back', 9, { groupId: 'g' })], [], [group('g', 10)], []))
+      .toEqual(['coming-back'])
   })
 
   it('skips stopping rows — server-marked or optimistically deleting', () => {

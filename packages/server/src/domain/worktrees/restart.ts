@@ -21,6 +21,10 @@ export interface RestartResolution {
   worktreeId: string
   tool: AgentTool
   jobName: string | null
+  /** The sidebar group it is filed under, so the restarting row renders in
+   *  that section rather than at the top of the list. Only the recorded row
+   *  knows this — the substrate has no idea a worktree is grouped. */
+  groupId?: string
 }
 
 /**
@@ -33,11 +37,17 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
   try {
     const match = await worktreeDriver().find(idOrName)
     if (match) {
+      // The pod answered everything but the group, which is a sidebar fact and
+      // lives only in the row. Absent or unreadable just means no group: this
+      // read must not fail the restart, nor be mistaken by the catch below for
+      // the substrate being unreachable.
+      const row = await findWorktreeRow(match.workspaceId).catch(() => undefined)
       return {
         projectSlug: match.projectSlug,
         worktreeId: match.workspaceId,
         tool: match.tool,
         jobName: match.jobName,
+        ...(row?.groupId !== undefined ? { groupId: row.groupId } : {}),
       }
     }
   } catch {
@@ -58,6 +68,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
       worktreeId: row.worktreeId,
       tool: first?.tool ?? 'claude',
       jobName: null,
+      ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
     }
   }
 
@@ -89,7 +100,7 @@ export async function restartWorktree(
   idOrName: string,
   opts: RestartWorktreeOptions = {},
 ): Promise<WorktreeCreateResult> {
-  const { projectSlug, worktreeId, tool, jobName } = await resolveRestartTarget(idOrName)
+  const { projectSlug, worktreeId, tool, jobName, groupId } = await resolveRestartTarget(idOrName)
 
   // Enter the provisioning registry before the teardown below, and here
   // rather than only in the route: the registry is what `inFlightWorktreeIds`
@@ -112,7 +123,15 @@ export async function restartWorktree(
   // This is the only scope that holds both, so the resolve/fail pair is
   // explicit rather than inherited. Both calls are idempotent, so the
   // webapp's full-id path simply runs them twice.
-  ensureProvisioning({ worktreeId, projectSlug, tool, kind: 'restart' })
+  ensureProvisioning({
+    worktreeId,
+    projectSlug,
+    tool,
+    kind: 'restart',
+    // Filed where the worktree is, so the row stays in its sidebar section
+    // for the whole restart instead of jumping to the top of the list.
+    ...(groupId !== undefined ? { groupId } : {}),
+  })
 
   // Progress has to be mirrored here for the same keying reason: the route's
   // mirror addresses the caller's id, so for a prefix restart it updates

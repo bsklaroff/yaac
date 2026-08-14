@@ -23,6 +23,21 @@ describe('useProvisionWorktree', () => {
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
   })
 
+  // A restart is started from the ghost row inside a group, and the row that
+  // replaces it has to be filed there from the first frame — the server's own
+  // entry says the same thing, so the swap between them moves nothing.
+  it('files the optimistic row in the group it was given', () => {
+    const { result } = renderHook(() => useProvisionWorktree())
+
+    act(() => {
+      result.current('proj', 'claude', 'restart', 'sid-g', () => Promise.resolve({ worktreeId: 'sid-g' }), 'g1')
+    })
+
+    expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
+      { worktreeId: 'sid-g', kind: 'restart', groupId: 'g1' },
+    ])
+  })
+
   it('streams progress into the optimistic row message', async () => {
     const { result } = renderHook(() => useProvisionWorktree())
 

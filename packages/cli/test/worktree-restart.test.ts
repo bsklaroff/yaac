@@ -21,6 +21,7 @@ import * as cleanup from '@yaac/server/domain/worktrees/cleanup'
 import * as worktreeCreate from '@yaac/server/domain/worktrees/create'
 import { resolveRestartTarget, restartWorktree } from '@yaac/server/domain/worktrees/restart'
 import { recordWorktreeCreated } from '@yaac/server/db/worktree-store'
+import { createWorktreeGroup } from '@yaac/server/db/group-store'
 import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { closeDb } from '@yaac/server/db/client'
 import { worktreeRestart } from '#commands/worktree-restart'
@@ -133,6 +134,17 @@ describe('resolveRestartTarget', () => {
     const info = await resolveRestartTarget('abcd')
     expect(info.worktreeId).toBe('abcd1234ffff')
     expect(info.projectSlug).toBe('demo')
+  })
+
+  // The sidebar group is the row's, never the pod's — the substrate knows
+  // nothing about it — and the restart carries it so the provisioning row
+  // renders in that section instead of at the top of the list.
+  it('carries the group the recorded row is filed under', async () => {
+    listSpy.mockResolvedValueOnce([])
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'grouped1' })
+    const group = await createWorktreeGroup('demo', 'Reviews', 'grouped1')
+    const info = await resolveRestartTarget('grouped1')
+    expect(info.groupId).toBe(group.groupId)
   })
 
   it('throws NOT_FOUND when no pod and no recorded session match', async () => {

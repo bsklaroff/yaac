@@ -21,7 +21,7 @@ vi.mock('#domain/worktrees/create', async (importOriginal) => ({
 }))
 
 import { restartWorktree } from '#domain/worktrees/restart'
-import { clearWorktreeStopped } from '#db/worktree-store'
+import { clearWorktreeStopped, findWorktreeRow } from '#db/worktree-store'
 import { teardownForRestart } from '#domain/worktrees/cleanup'
 import { createWorktree, type WorktreeCreateResult } from '#domain/worktrees/create'
 import {
@@ -177,6 +177,29 @@ describe('restartWorktree', () => {
     expect(rows()).toEqual([expect.objectContaining({
       worktreeId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'restart',
     })])
+  })
+
+  // The restarting row is all that stands in for the worktree while its
+  // container is recreated — the snapshot hides the worktree itself — so it
+  // has to say which sidebar group it belongs to, or the sidebar draws it at
+  // the top of the list instead of in the section the user filed it under.
+  // Only the row knows that; the pod that answered the resolve does not.
+  it('files the row in the group the worktree row records', async () => {
+    vi.mocked(findWorktreeRow).mockResolvedValueOnce({
+      projectSlug: 'proj',
+      worktreeId: 'sid-1',
+      createdAt: new Date(0),
+      groupId: 'grp-1',
+      deathSeen: false,
+      spare: false,
+      lifeLogBytes: 0,
+      permissionMode: 'bypass',
+    })
+    const rows = duringTeardown()
+
+    await restartWorktree('sid-1')
+
+    expect(rows()).toEqual([expect.objectContaining({ worktreeId: 'sid-1', groupId: 'grp-1' })])
   })
 
   // The webapp registers up front so its row renders during the resolve, and

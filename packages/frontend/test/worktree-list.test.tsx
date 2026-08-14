@@ -2,7 +2,12 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { StoppedWorktreeEntry, WorktreeGroupSummary, WorktreeListEntry } from '@yaac/shared/types'
+import type {
+  ProvisioningWorktreeEntry,
+  StoppedWorktreeEntry,
+  WorktreeGroupSummary,
+  WorktreeListEntry,
+} from '@yaac/shared/types'
 
 const stoppedRows: StoppedWorktreeEntry[] = []
 vi.mock('#lib/stoppedApi', () => ({ getStoppedWorktrees: vi.fn(() => Promise.resolve(stoppedRows)) }))
@@ -75,9 +80,23 @@ const group = (over: Partial<WorktreeGroupSummary> = {}): WorktreeGroupSummary =
   ...over,
 })
 
+const provisioning = (over: Partial<ProvisioningWorktreeEntry> = {}): ProvisioningWorktreeEntry => ({
+  worktreeId: 'p1',
+  projectSlug: 'proj',
+  tool: 'claude',
+  kind: 'restart',
+  message: 'Starting…',
+  createdAt: '2026-08-10 00:00:00',
+  ...over,
+})
+
 function renderList(
   worktrees: WorktreeListEntry[],
-  opts: { groups?: WorktreeGroupSummary[]; projectSlug?: string | null } = {},
+  opts: {
+    groups?: WorktreeGroupSummary[]
+    projectSlug?: string | null
+    provisioning?: ProvisioningWorktreeEntry[]
+  } = {},
 ): void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
@@ -86,7 +105,7 @@ function renderList(
         projectSlug={opts.projectSlug === undefined ? 'proj' : opts.projectSlug}
         worktrees={worktrees}
         groups={opts.groups ?? []}
-        provisioning={[]}
+        provisioning={opts.provisioning ?? []}
       />
     </QueryClientProvider>,
   )
@@ -159,6 +178,34 @@ describe('WorktreeList', () => {
     expect(useUiStore.getState().stoppedOverlayOpen).toBe(true)
     expect(useUiStore.getState().stoppedOverlayFocus).toBe('gone')
     expect(useUiStore.getState().selectedWorktreeId).not.toBe('gone')
+  })
+
+  // A worktree being restarted is out of the snapshot until its container is
+  // back, so this placeholder is the only thing holding its place — it has to
+  // hold it where the worktree lives, not at the top of the list.
+  it('draws a restarting worktree inside its group', () => {
+    renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], {
+      groups: [group()],
+      provisioning: [
+        provisioning({ worktreeId: 'r', groupId: 'g1' }),
+        provisioning({ worktreeId: 'loose', kind: 'create' }),
+      ],
+    })
+
+    const section = screen.getByRole('group', { name: 'Release' })
+    expect(section.contains(screen.getByText('Restarting worktree'))).toBe(true)
+    // The ungrouped one stays where every provisioning row used to go.
+    expect(section.contains(screen.getByText('New worktree'))).toBe(false)
+    // Counted in the section's tally alongside the live row.
+    expect(screen.getByText('2')).toBeTruthy()
+  })
+
+  it('keeps a group on screen while its last worktree restarts', () => {
+    // Nothing live is left in it — an unpinned group would vanish, taking the
+    // restarting row with it.
+    renderList([], { groups: [group()], provisioning: [provisioning({ groupId: 'g1' })] })
+    expect(screen.getByRole('group', { name: 'Release' })).toBeTruthy()
+    expect(screen.getByText('Restarting worktree')).toBeTruthy()
   })
 
   it('selects a worktree on tap, which is what advances the mobile pane screen', () => {

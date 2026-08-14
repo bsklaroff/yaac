@@ -75,6 +75,9 @@ function byCreatedAt<T extends { createdAt: string; worktreeId: string }>(a: T, 
 /** One group's section of the list. */
 export interface SidebarGroupSection {
   group: WorktreeGroupSummary
+  /** Members still provisioning — a create filed here, or a member being
+   *  restarted — rendered above the live rows. */
+  provisioning: ProvisioningWorktreeEntry[]
   /** Live (and terminating) members, newest first. */
   members: WorktreeListEntry[]
   /** Stopped members, newest first — ghost rows rendered after the live ones. */
@@ -82,6 +85,10 @@ export interface SidebarGroupSection {
 }
 
 export interface SidebarLayout {
+  /** Ungrouped provisioning rows, in the order they were started — the top of
+   *  the list. A provisioning row that names a group is in that section
+   *  instead. */
+  provisioning: ProvisioningWorktreeEntry[]
   /** Ungrouped worktrees, newest first. Terminating rows sit in place. */
   defaultList: WorktreeListEntry[]
   /** The groups that are shown, newest group first. */
@@ -96,12 +103,18 @@ export interface SidebarLayout {
  * running spinner, the unread dot, the stopping placeholder) say what state it
  * is in, and its position says where the user filed it.
  *
- * A group is shown when it is pinned or holds at least one live worktree, and
- * a shown group lists ALL its members: live ones as ordinary rows, stopped
- * ones as ghost rows with a restart action. So an unpinned group whose
- * worktrees have all stopped simply disappears — its row survives on the
- * server, and restarting a member brings the whole section back — while
- * pinning keeps it on screen as somewhere to restart into.
+ * A provisioning row is filed the same way: one that names a group leads that
+ * group's section rather than the whole list. That is what keeps a restart in
+ * place — the worktree is out of the snapshot while its container is recreated,
+ * so its restarting row is all there is to hold its section, and a row that
+ * jumped to the top would read as somewhere else entirely.
+ *
+ * A group is shown when it is pinned, holds at least one live worktree, or has
+ * one provisioning into it, and a shown group lists ALL its members: live ones
+ * as ordinary rows, stopped ones as ghost rows with a restart action. So an
+ * unpinned group whose worktrees have all stopped simply disappears — its row
+ * survives on the server, and restarting a member brings the whole section
+ * back — while pinning keeps it on screen as somewhere to restart into.
  *
  * `stopped` is the project's stopped listing, already de-duped against the
  * active and provisioning ids by the caller; only entries belonging to a shown
@@ -113,45 +126,59 @@ export function sidebarLayout(
   worktrees: WorktreeListEntry[],
   groups: WorktreeGroupSummary[],
   stopped: StoppedWorktreeEntry[] = [],
+  provisioning: ProvisioningWorktreeEntry[] = [],
 ): SidebarLayout {
   const known = new Set(groups.map((g) => g.groupId))
   const filedIn = (entry: { groupId?: string }): string | null =>
     entry.groupId !== undefined && known.has(entry.groupId) ? entry.groupId : null
   const live = [...worktrees].sort(byCreatedAt)
   const ghosts = [...stopped].sort(byCreatedAt)
+  // Provisioning rows keep the order they were started in (the caller's merge
+  // already sorts them oldest-first): they have no place among the live rows
+  // to sort into, and a row moving under the pointer while it provisions is
+  // exactly what this ordering is here to avoid.
   const sections = [...groups]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.groupId.localeCompare(a.groupId))
     .map((group) => ({
       group,
+      provisioning: provisioning.filter((p) => filedIn(p) === group.groupId),
       members: live.filter((w) => filedIn(w) === group.groupId),
       ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
     }))
-    .filter((s) => s.group.pinned || s.members.length > 0)
-  return { defaultList: live.filter((w) => filedIn(w) === null), groups: sections }
+    .filter((s) => s.group.pinned || s.members.length > 0 || s.provisioning.length > 0)
+  return {
+    provisioning: provisioning.filter((p) => filedIn(p) === null),
+    defaultList: live.filter((w) => filedIn(w) === null),
+    groups: sections,
+  }
 }
 
 /**
- * The list's selectable rows in display order — provisioning first, then the
- * ungrouped worktrees, then each shown group's live members. This is the list
- * the Alt+↑/↓ worktree-switch shortcut steps through (Workspace owns the
- * handler). Terminating rows (server-marked, or a mid-flight optimistic
- * delete) still render, greyed, but aren't selectable — nor are ghost rows,
- * which have nothing to open until they're restarted.
+ * The list's selectable rows in display order — the ungrouped provisioning
+ * rows, then the ungrouped worktrees, then each shown group's own provisioning
+ * rows and live members. This is the list the Alt+↑/↓ worktree-switch shortcut
+ * steps through (Workspace owns the handler). Terminating rows (server-marked,
+ * or a mid-flight optimistic delete) still render, greyed, but aren't
+ * selectable — nor are ghost rows, which have nothing to open until they're
+ * restarted.
  */
 export function sidebarRowIds(
-  provisioning: Pick<ProvisioningWorktreeEntry, 'worktreeId'>[],
+  provisioning: ProvisioningWorktreeEntry[],
   worktrees: WorktreeListEntry[],
   groups: WorktreeGroupSummary[],
   pendingDeleteIds: string[],
 ): string[] {
   // Built on the layout itself, so the cycle can't drift from what is drawn.
-  const layout = sidebarLayout(worktrees, groups)
+  const layout = sidebarLayout(worktrees, groups, [], provisioning)
   const selectable = (list: WorktreeListEntry[]): string[] =>
     list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.worktreeId)
   return [
-    ...provisioning.map((p) => p.worktreeId),
+    ...layout.provisioning.map((p) => p.worktreeId),
     ...selectable(layout.defaultList),
-    ...layout.groups.flatMap((s) => selectable(s.members)),
+    ...layout.groups.flatMap((s) => [
+      ...s.provisioning.map((p) => p.worktreeId),
+      ...selectable(s.members),
+    ]),
   ]
 }
 
@@ -196,8 +223,9 @@ interface SidebarDrag {
 }
 
 /**
- * The scrollable body of the worktree list: provisioning rows, the ungrouped
- * worktrees, the group sections, and the stopped-worktrees entry point.
+ * The scrollable body of the worktree list: the ungrouped provisioning rows,
+ * the ungrouped worktrees, the group sections (each leading with its own
+ * provisioning rows), and the stopped-worktrees entry point.
  *
  * Chrome-free on purpose — the desktop `Sidebar` wraps it in its fixed-width
  * card and the mobile worktrees screen gives it the whole viewport, and both
@@ -249,7 +277,7 @@ export function WorktreeList({
     ...(deletedList ?? []),
   ].filter((d) => !activeIds.has(d.worktreeId) && !provisioningIds.has(d.worktreeId))
 
-  const layout = sidebarLayout(worktrees, groups, stopped)
+  const layout = sidebarLayout(worktrees, groups, stopped, provisioning)
   // Display order of the selectable rows, so a row's × can hand the selection
   // to the row below it. Same list the Alt+K/J cycle steps through.
   const rowIds = sidebarRowIds(provisioning, worktrees, groups, pendingDeleteIds)
@@ -382,7 +410,7 @@ export function WorktreeList({
           description="Start one with the + above."
         />
       )}
-      {provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
+      {layout.provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
 
       {/* The default list is a drop zone in its own right — dragging a row out
           of a group and onto it files the worktree back under no group. It
@@ -504,7 +532,7 @@ function GroupSection({
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
 }): JSX.Element {
-  const { group, members, ghosts } = section
+  const { group, provisioning, members, ghosts } = section
   const [open, setOpen] = useState(true)
   const {
     editing,
@@ -559,7 +587,9 @@ function GroupSection({
                     state, so it stays visible next to the name. */}
                 {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
                 <span className="truncate">{group.name}</span>
-                <span className="text-text-faint/70">{members.length + ghosts.length}</span>
+                <span className="text-text-faint/70">
+                  {provisioning.length + members.length + ghosts.length}
+                </span>
               </Collapsible.Trigger>
 
               {/* Overlaid as siblings (the trigger is itself a button) and
@@ -601,6 +631,10 @@ function GroupSection({
           )}
         </div>
         <Collapsible.Panel>
+          {/* Leads the section, as provisioning rows lead the whole list: a
+              worktree being restarted has no live row to sit next to, and its
+              placeholder belongs where the worktree is filed. */}
+          {provisioning.map((p) => <ProvisioningRow key={p.worktreeId} entry={p} />)}
           {members.map((s) => (
             <WorktreeRow key={s.worktreeId} worktree={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
           ))}
@@ -1051,8 +1085,11 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
   const onConfirmRestart = (): void => {
     setConfirmRestart(false)
     removeOptimisticStopped(entry.worktreeId)
+    // The group goes with it, so the restarting row replaces this ghost right
+    // here instead of jumping to the top of the sidebar.
     provision(entry.projectSlug, entry.tool, 'restart', entry.worktreeId,
-      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }))
+      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }),
+      entry.groupId)
   }
 
   // The stopped list isn't snapshot-pushed, so clear the membership in the

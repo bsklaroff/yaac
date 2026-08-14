@@ -171,7 +171,8 @@ export function StoppedWorktreesButton({
     // the main pane.
     closeOverlay()
     provision(projectSlug, entry.tool, 'restart', entry.worktreeId,
-      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug, tool: entry.tool }))
+      (sid, onProgress) => restartWorktree(sid, onProgress, { projectSlug, tool: entry.tool }),
+      entry.groupId)
   }
 
   return (
