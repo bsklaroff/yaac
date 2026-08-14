@@ -51,9 +51,9 @@ function escapesRoot(rel: string): boolean {
 
 /**
  * An absolute transcript path in the form everything stores, or null when it
- * has none. Null is the same verdict the in-pod hook reaches when it writes
- * an empty record (see dockerfiles/Dockerfile.tools): the conversation is
- * real, only its path is unexpressible.
+ * has none. Null is the same verdict the workspace-side hook reaches when it
+ * writes an empty record (see worktree-bin/yaac-agent-links): the conversation
+ * is real, only its path is unexpressible.
  *
  * Purely textual, and can be: every path that reaches here is built from
  * `projectDir(slug)` by the same literal joins this un-joins — the hook

@@ -86,12 +86,31 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
 /**
  * Registration of yaac's agent-session discovery hook with Claude Code.
  *
- * The hook script itself is baked into the image at `/etc/yaac/agent-links.sh`
- * (dockerfiles/Dockerfile.tools) and shared with codex, which runs it as a
- * managed hook. Claude has no managed-hook tier, so it is registered from the
- * user-writable `~/.claude/settings.json` — the same file `seedClaudeSettings`
- * already owns. The script is *not* copied into the mounted claude dir: a
- * session must not be able to rewrite what yaac uses to track it.
+ * The hook script itself is `worktree-bin/yaac-agent-links`, staged per
+ * worktree and put on the workspace's PATH by whichever driver is running it
+ * (a read-only File mount at `/usr/local/bin` under k8s, a symlink in the
+ * workspace's bin dir under containerless). It is shared with codex, which
+ * runs it as a managed hook; claude has no managed-hook tier, so it is
+ * registered from the user-writable `~/.claude/settings.json` — the same file
+ * `seedClaudeSettings` already owns.
+ *
+ * The command names the script by BARE NAME and the home through `$HOME`,
+ * because no absolute form of either is right under both drivers: the staged
+ * script lives at `/usr/local/bin` in a pod and under the workspace's private
+ * home on a host, and this settings file is shared by a whole project — the
+ * same bytes are read by worktrees of either kind. Hooks run through
+ * `/bin/sh -c` with the agent's environment, which is what makes both resolve.
+ *
+ * The cost of the bare name is that discovery now depends on the staging dir
+ * being on the workspace's PATH — `/usr/local/bin` in an image, which a user
+ * Dockerfile resetting `ENV PATH` would drop, silently costing that project
+ * conversation discovery. `yaac-spawn` already rests on the same assumption,
+ * and the alternative (an absolute path) is what could not be written at all.
+ *
+ * The script is deliberately not copied into the mounted claude dir, which a
+ * session can rewrite. That is a tidiness boundary rather than a security one:
+ * an agent that wanted to forge discovery data can already append to the
+ * session-starts log itself, which is mounted writable beside it.
  *
  * `SessionStart` fires on `startup`, `resume`, `clear`, and `compact`, which is
  * exactly the set of events that changes which conversation a pane is in — and
@@ -99,21 +118,24 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
  * id, so its firing just refreshes the same links.
  */
 
-/** In-pod path of the shared hook script (baked into the tools image). */
-export const AGENT_LINKS_HOOK = '/etc/yaac/agent-links.sh'
-
-/** Claude's host-mounted home, as the pod sees it. */
-export const CONTAINER_CLAUDE_HOME = '/home/yaac/.claude'
-
 /** Claude's home under the project directory — the prefix a transcript path
- *  recorded by the hook carries, so the server can resolve it host-side. */
+ *  recorded by the hook carries, so the server can resolve it host-side. It is
+ *  also the tail of the workspace-side home, which is why one `$HOME`-relative
+ *  form serves both drivers. */
 const CLAUDE_HOME_NAME = 'claude'
 
 /** The command claude runs. The home and its project-relative name travel as
- *  arguments because one script body serves every tool (see the Dockerfile
- *  comment). */
+ *  arguments because one script body serves every tool (see the script). */
 export const CLAUDE_HOOK_COMMAND =
-  `${AGENT_LINKS_HOOK} ${CONTAINER_CLAUDE_HOME} ${CLAUDE_HOME_NAME}`
+  `yaac-agent-links "$HOME/.${CLAUDE_HOME_NAME}" ${CLAUDE_HOME_NAME}`
+
+/** Commands written by installs that registered the hook by its in-image path,
+ *  before it became a staged worktree-bin script. Matched by prefix so any
+ *  argument variant is caught. See docs/legacy-compat-shims.md. */
+const LEGACY_HOOK_PREFIX = '/etc/yaac/agent-links.sh'
+
+/** Distinguishes the temp files of concurrent writes within one process. */
+let tmpSeq = 0
 
 interface HookEntry {
   type?: string
@@ -141,6 +163,10 @@ interface ClaudeSettings {
  * is replaced rather than propagated — claude would ignore it anyway, and the
  * two keys yaac cares about are re-seeded on every session create.
  *
+ * Also strips the pre-worktree-bin form of our own hook, which named the
+ * script by its in-image path. That command is dead under both drivers now,
+ * and left in place it errors on every session start.
+ *
  * Best-effort by contract: losing the hook costs conversation discovery for
  * that session (it falls back to the one conversation pinned by
  * `--session-id`), which must never be worth failing a session create over.
@@ -154,17 +180,52 @@ export async function ensureClaudeHooks(settingsPath: string): Promise<void> {
   }
 
   const hooks = { ...settings.hooks }
-  const sessionStart = [...(hooks.SessionStart ?? [])]
+  let stripped = false
+  const sessionStart: HookMatcher[] = []
+  for (const matcher of hooks.SessionStart ?? []) {
+    if (matcher.hooks === undefined) {
+      sessionStart.push(matcher)
+      continue
+    }
+    const kept = matcher.hooks.filter((h) => !h.command?.startsWith(LEGACY_HOOK_PREFIX))
+    if (kept.length === matcher.hooks.length) {
+      sessionStart.push(matcher)
+      continue
+    }
+    stripped = true
+    // A matcher whose every hook was ours has nothing left to match on.
+    if (kept.length > 0) sessionStart.push({ ...matcher, hooks: kept })
+  }
   const already = sessionStart.some((m) =>
     m.hooks?.some((h) => h.command === CLAUDE_HOOK_COMMAND) ?? false,
   )
-  if (already) return
+  if (already && !stripped) return
 
-  sessionStart.push({
-    matcher: '*',
-    hooks: [{ type: 'command', command: CLAUDE_HOOK_COMMAND, timeout: 10 }],
-  })
+  if (!already) {
+    sessionStart.push({
+      matcher: '*',
+      hooks: [{ type: 'command', command: CLAUDE_HOOK_COMMAND, timeout: 10 }],
+    })
+  }
   hooks.SessionStart = sessionStart
   settings.hooks = hooks
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+
+  // Written through a temp file in the same directory and renamed, because
+  // this file has other writers — the user edits it by hand, and claude
+  // rewrites it itself when a theme changes. A plain write truncates first,
+  // and a reader landing in that window sees invalid JSON; our own answer to
+  // invalid JSON is "start fresh", so a torn read compounds into silently
+  // discarding the user's settings and their own hooks on the next create.
+  // Same directory so the rename stays on one filesystem, and hence atomic.
+  // The name is unique per call as well as per process: two creates in the
+  // same project run concurrently, and a shared temp name would let one
+  // rename the other's half-written file into place.
+  const tmp = `${settingsPath}.${String(process.pid)}.${String(tmpSeq++)}.tmp`
+  await fs.writeFile(tmp, JSON.stringify(settings, null, 2) + '\n')
+  try {
+    await fs.rename(tmp, settingsPath)
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw err
+  }
 }

@@ -17,29 +17,23 @@ import { setDataDir, worktreeSessionStartsPath } from '@yaac/shared/project-path
  * that: the fold's own tests are written against hand-authored lines, which
  * is precisely the copy that cannot drift.
  *
- * The script is extracted verbatim from `dockerfiles/Dockerfile.tools` rather
- * than duplicated here, so the copy under test is the copy that ships. It
- * needs only `sh`, `sed`, `basename` and `mkdir`, so it runs on the test host
- * with no container.
+ * The shipped `worktree-bin/yaac-agent-links` is run as-is, unedited — the
+ * copy under test is the copy staged into every worktree. That is possible
+ * because the script writes to `$HOME`, so the fixture below stands up the
+ * exact shape a workspace has: a private home whose `.yaac/session-starts.jsonl`
+ * is a link to the worktree's real log, which is what the containerless driver
+ * realizes and what the pod driver mounts. It needs only `sh`, `sed`,
+ * `basename` and `mkdir`, so it runs on the test host with no container.
  */
 
-/** The hook script as baked into the image, sliced out of its heredoc. */
-async function bakedHookScript(): Promise<string> {
-  const dockerfile = await fs.readFile(
-    path.resolve(__dirname, '..', '..', '..', '..', '..', 'dockerfiles', 'Dockerfile.tools'),
-    'utf8',
-  )
-  const start = dockerfile.indexOf("cat <<'HOOK' > /etc/yaac/agent-links.sh\n")
-  expect(start, 'agent-links.sh heredoc not found in Dockerfile.tools').toBeGreaterThan(-1)
-  const body = dockerfile.slice(dockerfile.indexOf('\n', start) + 1)
-  const end = body.indexOf('\nHOOK\n')
-  expect(end, 'unterminated agent-links.sh heredoc').toBeGreaterThan(-1)
-  return body.slice(0, end + 1)
+/** The staged hook script, as shipped. */
+function hookScript(): string {
+  return path.resolve(__dirname, '..', '..', '..', '..', '..', 'worktree-bin', 'yaac-agent-links')
 }
 
 describe('the SessionStart hook', () => {
   let tmpDir: string
-  let scriptPath: string
+  let workspaceHome: string
   let home: string
   let log: string
   const slug = 'demo'
@@ -48,12 +42,16 @@ describe('the SessionStart hook', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-hook-'))
     setDataDir(path.join(tmpDir, 'data'))
-    scriptPath = path.join(tmpDir, 'agent-links.sh')
-    await fs.writeFile(scriptPath, await bakedHookScript(), { mode: 0o755 })
     home = path.join(tmpDir, 'home', '.claude')
     await fs.mkdir(home, { recursive: true })
     log = worktreeSessionStartsPath(slug, wt)
     await fs.mkdir(path.dirname(log), { recursive: true })
+    // The workspace's own HOME, wired the way a driver wires it: the log is
+    // reached through a link to the worktree's real one, never written twice.
+    workspaceHome = path.join(tmpDir, 'workspace-home')
+    await fs.mkdir(path.join(workspaceHome, '.yaac'), { recursive: true })
+    await fs.writeFile(log, '')
+    await fs.symlink(log, path.join(workspaceHome, '.yaac', 'session-starts.jsonl'))
   })
 
   afterEach(async () => {
@@ -62,27 +60,22 @@ describe('the SessionStart hook', () => {
 
   /**
    * Run the hook the way a tool does: payload on stdin, home and its
-   * project-relative name as argv. The in-pod log path is fixed, so the test
-   * points the script at its own by overriding HOME_LOG — the one thing that
-   * cannot be an argument, since the pod mounts it at a known path.
+   * project-relative name as argv, and the workspace's HOME in the
+   * environment — which is what tells it where to append.
    */
   async function runHook(
     payload: Record<string, unknown>,
     env: Record<string, string> = {},
+    toolHome: string = home,
   ): Promise<void> {
-    const script = (await fs.readFile(scriptPath, 'utf8'))
-      .replaceAll('/home/yaac/.yaac/session-starts.jsonl', log)
-      .replaceAll('mkdir -p /home/yaac/.yaac', `mkdir -p ${path.dirname(log)}`)
-    const runnable = path.join(tmpDir, 'run.sh')
-    await fs.writeFile(runnable, script, { mode: 0o755 })
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'sh',
-        [runnable, home, 'claude'],
+        [hookScript(), toolHome, 'claude'],
         // TMUX_PANE is deliberately NOT inherited: these tests run inside a
         // yaac session, which sets it, and a test asserting "no pane" would
         // otherwise pass or fail on where it was run.
-        { env: { ...process.env, TMUX_PANE: '', ...env } },
+        { env: { ...process.env, TMUX_PANE: '', HOME: workspaceHome, ...env } },
         (err) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve()),
       )
       child.stdin?.end(JSON.stringify(payload))
@@ -162,14 +155,51 @@ describe('the SessionStart hook', () => {
     expect(seen?.transcriptPath).toMatch(/^claude\/projects\//)
   })
 
+  it('makes the path project-relative through a symlinked tool home', async () => {
+    // What a containerless workspace looks like: the tool home in its private
+    // HOME is a link to the project's shared one, and a tool that resolves its
+    // own paths reports the transcript under the physical directory. The
+    // project-relative form has to come out the same either way, or the herd
+    // cannot find the transcript it names.
+    const linked = path.join(workspaceHome, '.claude')
+    await fs.symlink(home, linked)
+    await fs.mkdir(path.join(home, 'projects'), { recursive: true })
+
+    await runHook(
+      { session_id: 'conv-s', transcript_path: `${home}/projects/conv-s.jsonl` },
+      {},
+      linked,
+    )
+
+    expect((await readSessionStarts(slug, wt)).sightings[0]?.transcriptPath)
+      .toBe(path.join('claude', 'projects', 'conv-s.jsonl'))
+  })
+
   it('exits 0 and writes nothing when it has no home to work from', async () => {
     // It runs on the agent's startup path; a broken invocation must never
     // take the agent down with it.
     await new Promise<void>((resolve, reject) => {
-      const child = execFile('sh', [scriptPath], (err) =>
+      const child = execFile('sh', [hookScript()], (err) =>
         (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve()))
       child.stdin?.end('{}')
     })
     await expect(fs.readFile(log, 'utf8').catch(() => '')).resolves.toBe('')
+  })
+
+  it('exits 0 and writes nothing when the environment has no HOME', async () => {
+    // HOME is what says where to append now, so an environment without one is
+    // the same class of broken invocation as a missing argument — and must
+    // fail the same way, silently and successfully.
+    const { HOME: _drop, ...noHome } = process.env
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(
+        'sh',
+        [hookScript(), home, 'claude'],
+        { env: { ...noHome, TMUX_PANE: '' } },
+        (err) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve()),
+      )
+      child.stdin?.end(JSON.stringify({ session_id: 'x', transcript_path: `${home}/x.jsonl` }))
+    })
+    await expect(fs.readFile(log, 'utf8')).resolves.toBe('')
   })
 })

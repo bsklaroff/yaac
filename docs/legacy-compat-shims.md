@@ -32,6 +32,48 @@ filesystem and every project arrives through `recordProject`
 (docs/layered-server.md). `domain/projects/add.ts` writes `project.json` beside
 the row specifically to keep feeding it, so the two are deleted together.
 
+## The `/etc/yaac/agent-links.sh` strip in `ensureClaudeHooks`
+
+`ensureClaudeHooks` (`runtime/agents/claude.ts`) drops any `hooks.SessionStart`
+command beginning `/etc/yaac/agent-links.sh` from a project's shared
+`projects/<slug>/claude/settings.json` before registering the current one.
+That path was where the agent-session discovery hook lived when it was baked
+into the tools image; it is now `worktree-bin/yaac-agent-links`, staged per
+worktree onto the workspace's PATH so one copy serves both substrates.
+
+**What breaks silently if it goes too early:** nothing silently — loudly, and
+forever. The settings file is per project and never rewritten wholesale, so a
+project seeded by an older install keeps the old command until something
+removes it. No image has that path any more and a containerless host never
+did, so claude prints a `SessionStart:startup hook error` on every session
+start, in every worktree of that project, under both drivers. Discovery still
+works (the current hook is registered beside it), which is exactly why this is
+easy to leave in place unnoticed.
+
+**One ordering note:** the strip runs on every create, including creates of
+*other* worktrees in the same project. A worktree still running an old image
+therefore loses discovery the moment a sibling create migrates the shared
+settings file — its pod has `/etc/yaac/agent-links.sh` but not the staged
+script the new command names. It also gets the visible symptom back: the
+migrated command is a bare `yaac-agent-links`, which that pod cannot resolve,
+so `/bin/sh -c` exits 127 and claude prints the same non-blocking
+`SessionStart` hook error this replaced — on every session start until the
+worktree restarts. Sessions still run; the hook is non-blocking and the
+registration itself never fails a create. That is the accepted cost of the
+strip being unconditional; making it conditional would need a per-worktree
+record of which image a running pod came from, which nothing keeps.
+
+**How to tell it is safe to remove:** every data dir in use has been through at
+least one create per project since this shipped. Directly checkable:
+
+```sh
+grep -rl '/etc/yaac/agent-links.sh' "${YAAC_DATA_DIR:-$HOME/.yaac}"/projects/*/claude/settings.json
+```
+
+When that prints nothing on every install in use, the strip and
+`LEGACY_HOOK_PREFIX` go, along with the migration cases in
+`test/runtime/agents/claude.test.ts`.
+
 ## `yaac.vcluster-session-id`, a rename still owed
 
 The last label key that says "session". Current code stamps it —

@@ -51,90 +51,37 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # agent CLI here so a session's behavior can't change under it mid-release.
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
 
-# Agent-session discovery hook. The script body lives once at
-# /etc/yaac/agent-links.sh and is parameterized by the tool's host-mounted
-# home; each tool registers a hook that runs it. Baked into the image (root
-# owned, not user-writable) rather than seeded into the mounted tool dirs, so
-# a session can't rewrite what yaac uses to track its own conversations.
+# Agent-session discovery hook. The script body lives once in
+# worktree-bin/yaac-agent-links, which the server stages per worktree and
+# mounts read-only at /usr/local/bin/yaac-agent-links; it is parameterized by
+# the tool's host-mounted home, and each tool registers a hook that runs it.
+# Staged rather than baked so ONE copy serves both substrates — a host-run
+# worktree has no image to bake it into — and so it tracks the installed yaac
+# version rather than the image's build date.
 #
 # Codex runs it as a *managed hook* in the trusted /etc/codex layer. Codex
 # gates hooks declared in the user-writable ~/.codex/hooks.json behind a
 # per-change `/hooks` trust approval; managed hooks under /etc/codex are
 # trusted by policy and bypass that gate, so this runs in every session with no
-# manual approval prompt. Claude registers the same script from its
-# settings.json (see features/sessions/agents/claude-hooks.ts), which is why
-# the body takes the home as an argument instead of hard-coding it.
-# In requirements.toml: `managed_dir` scopes
-# where managed-hook commands may live, `[features] hooks` pins the (default-on)
+# manual approval prompt. `managed_dir` scopes where managed-hook COMMANDS may
+# live, which is why the wrapper below stays in /etc and execs the staged
+# script instead of the script being registered directly; its `-x` guard keeps
+# a stripped build — one that staged no worktree-bin scripts — from erroring
+# every codex session over a missing helper. Claude registers the same script
+# from its settings.json (see packages/server/src/runtime/agents/claude.ts),
+# which is why the body takes the home as an argument instead of hard-coding
+# it. Also in requirements.toml: `[features] hooks` pins the (default-on)
 # hook engine, and `apps = false` disables the codex_apps MCP server whose
 # handshake fails and warns on startup (openai/codex#16550). The system
 # config.toml layer sets check_for_update_on_startup = false so a fresh pod
 # skips codex's startup update probe (against api.github.com) and drops
 # straight to the agent input instead of stalling on a version check — which
 # matters for yaac-spawn's unattended sessions. The script text is exercised by
-# packages/server/test/features/sessions/session-start-hook.test.ts, which extracts it
-# from the heredoc below and runs it. Verified against codex-cli
-# 0.144.5.
+# packages/server/test/domain/worktrees/session-start-hook.test.ts, which runs
+# the shipped copy directly. Verified against codex-cli 0.144.5.
 USER root
-RUN mkdir -p /etc/yaac && cat <<'HOOK' > /etc/yaac/agent-links.sh
-#!/bin/sh
-# yaac agent-session discovery hook, shared by every tool that has a
-# SessionStart hook and a host-mounted home. $1 is that home
-# (/home/yaac/.claude, /home/yaac/.codex); $2 is that home's name under the
-# project directory (claude, codex, pi). The hook payload is on stdin.
-#
-# Appends ONE JSON line per firing to /home/yaac/.yaac/session-starts.jsonl,
-# which the host mounts and the herd folds into the worktree's metadata
-# document. Append-only and never renamed, which is what makes it safe to
-# share with a host-side writer: a single-line append needs no lock, where the
-# document itself is rewritten whole and so is never mounted in here at all.
-#
-# The transcript is recorded RELATIVE TO THE PROJECT DIRECTORY, because the
-# payload's path is the in-pod one (/home/yaac/.claude/...) and the herd reads
-# the same file through the host mount, where that prefix does not exist.
-# Swapping the home for its project-relative name is the whole translation, so
-# it stays parameter expansion — no interpreter, and nothing to escape.
-#
-# Fires on startup/resume/clear/compact, so /clear and `claude --resume` are
-# what add sessions and repoint a pane. Always exits 0: a broken write must
-# never take the agent down with it.
-HOME_DIR="$1"
-HOME_NAME="$2"
-INPUT=$(cat)
-[ -n "$HOME_DIR" ] || exit 0
-[ -n "$HOME_NAME" ] || exit 0
-TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-SID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-# codex names its rollout files after the session; if a tool ever omits
-# session_id from the payload the transcript basename still identifies it.
-[ -n "$SID" ] || SID=$(basename "${TRANSCRIPT:-}" .jsonl)
-[ -n "$SID" ] || exit 0
-# A path outside this home has no project-relative form we can express, and
-# one the payload omitted has none yet. Either way the field is empty rather
-# than a path that resolves nowhere — the session is still real.
-case "$TRANSCRIPT" in
-  "$HOME_DIR"/*) REL="$HOME_NAME/${TRANSCRIPT#"$HOME_DIR"/}" ;;
-  *) REL='' ;;
-esac
-# The line has to be valid JSON or the reader drops it, silently — this hook
-# cannot report a failure. A backslash or a quote in a path is legal on every
-# filesystem yaac runs on, so escape both rather than emit something that
-# parses nowhere. The extraction above does NOT decode the payload's own JSON
-# escapes (sed, not a parser), so such a path may still come out mangled; what
-# this buys is that the SESSION is still recorded rather than the whole line
-# being lost.
-esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
-# tmux exports TMUX_PANE into every pane, and hooks inherit the agent's env,
-# so this is how a session is attributed to the pane running it. Strip the
-# leading '%' so the value is a plain token.
-mkdir -p /home/yaac/.yaac || exit 0
-printf '{"id":"%s","tool":"%s","pane":"%s","path":"%s"}\n' \
-  "$(esc "$SID")" "$HOME_NAME" "${TMUX_PANE#%}" "$(esc "$REL")" \
-  >> /home/yaac/.yaac/session-starts.jsonl
-exit 0
-HOOK
-RUN chmod 755 /etc/yaac/agent-links.sh && mkdir -p /etc/codex/hooks \
-  && printf '#!/bin/sh\nexec /etc/yaac/agent-links.sh /home/yaac/.codex codex\n' \
+RUN mkdir -p /etc/codex/hooks \
+  && printf '#!/bin/sh\n[ -x /usr/local/bin/yaac-agent-links ] && exec /usr/local/bin/yaac-agent-links /home/yaac/.codex codex\nexit 0\n' \
      > /etc/codex/hooks/yaac-session-start.sh
 RUN printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml
 RUN chmod 755 /etc/codex/hooks/yaac-session-start.sh && cat <<'REQ' > /etc/codex/requirements.toml
