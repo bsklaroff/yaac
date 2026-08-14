@@ -145,6 +145,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // never about which driver is installed.
   { method: 'GET', path: '/worktree/:id/agent-sessions/:sessionId/transcript', request: '/worktree/nope/agent-sessions/s1/transcript', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/worktree/:id/changes', request: '/worktree/nope/changes', k8s: [404, 503], containerless: MISSING },
+  // Recorded state too, and resolved from the record for the same reason: the
+  // founding ask outlives the workspace, so neither substrate needs one to
+  // answer — which is why no 503 sits beside the 404 here.
   { method: 'GET', path: '/worktree/:id/prompt', request: '/worktree/nope/prompt', k8s: [200, 404], containerless: [200, 404] },
   { method: 'GET', path: '/worktree/:id/terminals', request: '/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/:id/terminals', request: '/worktree/nope/terminals', k8s: [404, 409, 503], containerless: MISSING },

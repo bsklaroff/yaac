@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { resolveWorktreeContainer } from '#domain/worktrees/resolve'
+import { closeDb } from '#db/client'
+import { recordWorktreeCreated } from '#db/worktree-store'
+import { resolveWorktreeContainer, resolveWorktreeRecord } from '#domain/worktrees/resolve'
 import { ServerError } from '@yaac/shared/errors'
 import type { RuntimeHandle } from '#drivers/contract'
 
@@ -84,5 +86,56 @@ describe('resolveWorktreeContainer', () => {
     await expect(resolveWorktreeContainer('abc123')).rejects.toMatchObject({
       code: 'RUNTIME_UNAVAILABLE',
     })
+  })
+})
+
+/**
+ * The other half of the same question, for readers of RECORDED state: the row
+ * answers whenever the substrate does not, so a stopped worktree — and a
+ * server whose substrate is not up at all — still resolves.
+ */
+describe('resolveWorktreeRecord', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    installFakeWorktreeDriver({ find })
+    tmpDir = await createTempDataDir()
+    find.mockReset().mockResolvedValue(undefined)
+    await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'abc123def456' })
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  // The live workspace's job and tool ride along: a caller that can only read
+  // from inside the container needs them, and only a live match has them.
+  it('carries the running workspace through when there is one', async () => {
+    find.mockResolvedValue(handle())
+    expect(await resolveWorktreeRecord('abc123')).toEqual({
+      worktreeId: 'abc123def456',
+      projectSlug: 'proj',
+      jobName: 'yaac-proj-abc123',
+      tool: 'claude',
+    })
+  })
+
+  it.each([
+    ['the workspace is gone', undefined],
+    ['the substrate cannot be asked', new ServerError('RUNTIME_UNAVAILABLE', 'refused')],
+  ])('falls back to the row when %s', async (_case, outcome) => {
+    if (outcome instanceof Error) find.mockRejectedValue(outcome)
+    else find.mockResolvedValue(outcome)
+
+    // No job and no tool: there is no container to read anything out of.
+    expect(await resolveWorktreeRecord('abc123')).toEqual({
+      worktreeId: 'abc123def456',
+      projectSlug: 'proj',
+    })
+  })
+
+  it('throws NOT_FOUND when neither the substrate nor the rows know the id', async () => {
+    await expect(resolveWorktreeRecord('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

@@ -2,6 +2,7 @@ import { worktreeDriver } from '#drivers/driver'
 import { findWorktreeRow, getProjectWorktreeRows } from '#db'
 import type { RuntimeHandle } from '#drivers/contract'
 import { ServerError } from '@yaac/shared/errors'
+import type { AgentTool } from '@yaac/shared/types'
 
 export interface ResolvedWorktree {
   jobName: string
@@ -40,6 +41,17 @@ export async function resolveWorktreeContainer(
   }
 }
 
+export interface ResolvedWorktreeRecord {
+  projectSlug: string
+  worktreeId: string
+  /** The running workspace's, when the substrate had one to give. Absent for
+   *  a row-only resolve, so a reader that can only answer from inside the
+   *  container (opencode keeps its history there) knows there is nothing to
+   *  ask rather than dialling a workspace that is gone. */
+  jobName?: string
+  tool?: AgentTool
+}
+
 /**
  * Resolve a worktree whatever state it is in — running pod first, then the
  * recorded row.
@@ -52,10 +64,17 @@ export async function resolveWorktreeContainer(
  */
 export async function resolveWorktreeRecord(
   idOrName: string,
-): Promise<{ projectSlug: string; worktreeId: string }> {
+): Promise<ResolvedWorktreeRecord> {
   try {
     const match = await worktreeDriver().find(idOrName)
-    if (match) return { projectSlug: match.projectSlug, worktreeId: match.workspaceId }
+    if (match) {
+      return {
+        projectSlug: match.projectSlug,
+        worktreeId: match.workspaceId,
+        jobName: match.jobName,
+        tool: match.tool,
+      }
+    }
   } catch {
     // Substrate unreachable — the row still answers.
   }
