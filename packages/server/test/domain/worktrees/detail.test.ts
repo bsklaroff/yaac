@@ -6,7 +6,12 @@ import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-
 // choose a fork branch without a clone on disk.
 vi.mock('#domain/git', () => ({ worktreeUpstreamBranch: vi.fn() }))
 
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { claudeDir, projectDir } from '@yaac/shared/project-paths'
+import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
+import { recordWorktreeCreated } from '#db/worktree-store'
 import { closeDb } from '#db/client'
 import { worktreeUpstreamBranch } from '#domain/git'
 import {
@@ -54,10 +59,6 @@ describe('session detail helpers', () => {
 
   it('getWorktreeBlockedHosts throws NOT_FOUND for unknown ids', async () => {
     await expect(getWorktreeBlockedHosts('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-  })
-
-  it('getWorktreePrompt throws NOT_FOUND for unknown ids', async () => {
-    await expect(getWorktreePrompt('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('getWorktreeDetail reports what the runtime says about the workspace', async () => {
@@ -216,5 +217,72 @@ describe('getWorktreeChanges', () => {
     mockChanges.mockRejectedValue(failure)
 
     await expect(getWorktreeChanges(workspaceId, 'dev')).rejects.toBe(failure)
+  })
+})
+
+/**
+ * The founding ask is RECORDED state — a captured row, or a transcript on the
+ * host — so every case here answers with no workspace to resolve. That is the
+ * state it is asked for in: the stopped list, and a server whose substrate is
+ * not up.
+ */
+describe('getWorktreePrompt', () => {
+  const SLUG = 'demo'
+  const WORKTREE = 'wt-prompt'
+  const SESSION = '33333333-3333-3333-3333-333333333333'
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    await recordWorktreeCreated({ projectSlug: SLUG, worktreeId: WORKTREE })
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  async function seedConversation(capture: {
+    firstPrompt?: string
+    transcriptPath?: string
+  }): Promise<void> {
+    await recordAgentSessions(SLUG, WORKTREE, [
+      { tool: 'claude', agentSessionId: SESSION, mode: 'tui' },
+    ])
+    await setAgentSessionCapture(SLUG, 'claude', SESSION, capture)
+  }
+
+  // The 503 case: a server whose cluster is not up still knows what every
+  // worktree was asked to do, because the answer was never in the cluster.
+  it('answers from the captured row when the substrate cannot be asked', async () => {
+    installFakeWorktreeDriver({
+      find: () => Promise.reject(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused')),
+    })
+    await seedConversation({ firstPrompt: 'fix the router' })
+
+    await expect(getWorktreePrompt(WORKTREE)).resolves.toBe('fix the router')
+  })
+
+  // Nothing captured a prompt before the pod went away, so the recorded
+  // transcript is read on the host — the path the row holds, since a stopped
+  // worktree has no container to derive one from.
+  it('falls back to the recorded transcript of a worktree with no pod', async () => {
+    installFakeWorktreeDriver({ find: () => Promise.resolve(undefined) })
+    const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${SESSION}.jsonl`)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, JSON.stringify({
+      type: 'user', uuid: 'u1', parentUuid: null, sessionId: SESSION, cwd: '/workspace',
+      timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'what changed?' },
+    }) + '\n')
+    await seedConversation({
+      transcriptPath: path.relative(projectDir(SLUG), file),
+    })
+
+    await expect(getWorktreePrompt(WORKTREE)).resolves.toBe('what changed?')
+  })
+
+  it('throws NOT_FOUND when neither the substrate nor the record knows the id', async () => {
+    installFakeWorktreeDriver({ find: () => Promise.resolve(undefined) })
+    await expect(getWorktreePrompt('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

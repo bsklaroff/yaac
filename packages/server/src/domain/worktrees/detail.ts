@@ -2,7 +2,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
 import { worktreeForkBranch } from './fork-branch'
-import { resolveWorktreeContainer } from './resolve'
+import { resolveWorktreeContainer, resolveWorktreeRecord } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { worktreeDriver } from '#drivers/driver'
 import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
@@ -113,19 +113,29 @@ export async function getWorktreeBlockedHosts(idOrName: string): Promise<string[
   return worktreeDriver().blockedHosts(match.workspaceId)
 }
 
+/**
+ * The founding ask of a worktree's first conversation.
+ *
+ * Resolved from the RECORD, not from a container: the prompt is recorded
+ * state — a captured row, or a transcript on the host — so a stopped
+ * worktree still has one, and that is exactly when it is asked for (the
+ * stopped list is what you read before restarting). Only the opencode
+ * fallback needs a live workspace, and it simply has nothing to read when
+ * there is none.
+ */
 export async function getWorktreePrompt(idOrName: string): Promise<string | undefined> {
-  const match = await findWorktree(idOrName)
-  if (!match.workspaceId || !match.projectSlug) return undefined
+  const { projectSlug, worktreeId, jobName, tool } = await resolveWorktreeRecord(idOrName)
+  if (!worktreeId || !projectSlug) return undefined
   // The captured prompt first: for opencode the live lookup is an exec into
   // the pod, and this route can be polled, so a repeat caller must not cost
   // one of those each. Falls back to the live read for a worktree the capture
   // step hasn't reached yet.
-  const first = await firstAgentSession(match.projectSlug, match.workspaceId).catch(() => undefined)
+  const first = await firstAgentSession(projectSlug, worktreeId).catch(() => undefined)
   if (first?.firstPrompt !== undefined) return first.firstPrompt
+  const which = first?.tool ?? tool
+  if (which === undefined) return undefined
   // Fall back to the transcript the conversation recorded, not to a path
   // derived from the worktree id — codex's rollout name is underivable, and
   // the recorded path is the only handle on it.
-  return getAgentSessionFirstMessage(
-    first?.tool ?? match.tool, absoluteTranscriptPath(first), match.jobName,
-  )
+  return getAgentSessionFirstMessage(which, absoluteTranscriptPath(first), jobName)
 }
