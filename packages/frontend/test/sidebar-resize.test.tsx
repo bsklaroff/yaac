@@ -98,6 +98,18 @@ describe('sidebar resize', () => {
     expect(width()).toBe(DEFAULT_SIDEBAR_WIDTH + 40)
   })
 
+  // jsdom paints nothing, so this can only hold the class in place: the
+  // handle's z-10 has to stay confined to the sidebar, or it outranks the
+  // popups Base UI portals to <body> and steals the clicks of any that spill
+  // into the gutter (test-playwright-scripts/sidebar-popup-over-resize-handle.js
+  // is what checks the layering itself, in a real browser).
+  it('keeps the handle stacked inside the sidebar', () => {
+    const handle = renderSidebar()
+    const aside = handle.closest('aside') as HTMLElement
+    expect(aside.className).toContain('isolate')
+    expect(handle.className).toContain('z-10')
+  })
+
   it('persists the dragged width and restores it', () => {
     const handle = renderSidebar()
     drag(handle, 300, 360)

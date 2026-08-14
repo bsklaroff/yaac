@@ -40,6 +40,9 @@ export {
  * move goes to the handle, so a fast drag across a terminal neither loses the
  * pointer nor lets xterm see it. The body class carries the resize cursor and
  * suppresses selection document-wide for the same reason.
+ *
+ * The z-10 lifts it over the pane it hangs across; the `isolate` on the card's
+ * wrapper is what keeps that local (see below).
  */
 function ResizeHandle(): JSX.Element {
   const width = useUiStore((s) => s.sidebarWidth)
@@ -105,6 +108,16 @@ function ResizeHandle(): JSX.Element {
  *
  * The card keeps the `overflow-hidden` that clips rows to its rounded corners,
  * so the drag handle hangs off an outer wrapper that doesn't clip.
+ *
+ * `isolate`: the handle's z-10 is a private arrangement between it and the
+ * pane, and without a stacking context here it would outrank the whole app.
+ * Base UI portals every popup to the end of <body> with no z-index of its own,
+ * so the strip painted — and hit-tested — above any popup spilling into the
+ * gutter. The new-worktree form does: 240px wide, anchored under a button by
+ * the card's right edge, its left column landed under the strip, which lit the
+ * resize hairline and swallowed the clicks. Confined, the strip still covers
+ * the pane (a portal-free sibling below it in paint order) and every popup
+ * clears it.
  */
 export function Sidebar({
   projectSlug,
@@ -133,7 +146,7 @@ export function Sidebar({
   return (
     <aside
       style={{ width: sidebarWidth }}
-      className="relative my-2 ml-2 flex shrink-0 flex-col"
+      className="isolate relative my-2 ml-2 flex shrink-0 flex-col"
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg
         border border-hairline bg-surface text-text">
