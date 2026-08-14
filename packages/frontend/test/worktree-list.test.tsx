@@ -136,6 +136,31 @@ describe('WorktreeList', () => {
     await waitFor(() => expect(setWorktreeGroup).toHaveBeenCalledWith('proj', 'gone', null))
   })
 
+  it('opens a stopped member\'s conversation, without selecting a worktree', async () => {
+    // A ghost row has no pane to open — but it does have a conversation, and
+    // the stopped overlay is where that is readable. Selection must stay put:
+    // there is nothing to show in the pane until it is restarted, and on a
+    // phone selecting would navigate away from the list entirely.
+    stoppedRows.push({
+      worktreeId: 'gone',
+      projectSlug: 'proj',
+      tool: 'claude',
+      createdAt: '2026-08-10 00:00:00',
+      stoppedAt: '2026-08-10 01:00:00',
+      title: 'Stopped one',
+      seen: false,
+      agentSessions: [],
+      groupId: 'g1',
+    })
+    renderList([entry({ worktreeId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
+
+    fireEvent.click(await screen.findByText('Stopped one'))
+
+    expect(useUiStore.getState().stoppedOverlayOpen).toBe(true)
+    expect(useUiStore.getState().stoppedOverlayFocus).toBe('gone')
+    expect(useUiStore.getState().selectedWorktreeId).not.toBe('gone')
+  })
+
   it('selects a worktree on tap, which is what advances the mobile pane screen', () => {
     renderList([entry({ worktreeId: 'a', title: 'Fix parser' })])
     fireEvent.click(screen.getByText('Fix parser'))

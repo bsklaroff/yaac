@@ -93,6 +93,31 @@ record would show no user turns for anything said live.
 Because the record is the history, nothing is buffered for an absent client and
 the server retains nothing.
 
+### Reading a conversation without a workspace
+
+A conversation is worth reading after its worktree has stopped, so
+`GET /worktree/:id/agent-sessions/:sessionId/transcript` answers with the same
+`AcpEvent[]` a pane renders. It resolves from the *record* rather than a
+running workspace, which is what makes a stopped worktree's history the thing
+the stopped-worktrees view shows instead of only its founding ask.
+
+An `acp` conversation is a replay of acpd's record, as above. A `tui` one has
+no record — it was driven through a PTY — so claude's own session transcript is
+translated on demand. That translation is not yaac's: `claude-agent-acp`
+exposes the same `toAcpNotifications` its own `session/load` handler calls, and
+the server runs it as a library over the transcript's messages, then feeds the
+notifications to the same replay an acpd record goes through. No adapter
+process, no pod, no credentials — and, because it is the adapter's own
+function, a stopped conversation cannot render differently from how it was
+watched live. What keeps that true is a version pin: the package the server
+imports must be the one `dockerfiles/Dockerfile.tools` installs, and a unit
+test fails when the two drift.
+
+Only claude has an ACP adapter, so only claude has this second path. A tui
+conversation of any other tool refuses with `NOT_SUPPORTED` — opencode's
+history is a sqlite database inside the container and reaches the host at all
+only while the pod is alive.
+
 **The record is also the only path by which content reaches a pane.** The
 socket carries the RPC half — our requests and their replies, and the agent's
 own questions — but not a single rendered message. That is not a preference:

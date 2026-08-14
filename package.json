@@ -48,6 +48,8 @@
     "depcruise": "depcruise"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "catalog:",
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
     "@anthropic-ai/claude-code": "2.1.111",
     "@electric-sql/pglite": "catalog:",
     "@hono/node-server": "catalog:",
