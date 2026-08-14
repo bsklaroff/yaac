@@ -71,10 +71,19 @@ export function isLoopbackOnlyDeployment(): boolean {
  * CLI reaching it needs no token. Skipped when the server isn't deliberately
  * remote-fronted for direct external access:
  *   - a pure loopback deployment (`isLoopbackOnlyDeployment`), or
- *   - a nested yaac (`YAAC_NESTED`): it inherits the outer worktree's
- *     `allowedHosts`/`trustProxy` as ambient env, but its only path in is the
- *     outer server's port-forward — already tailnet-gated like any forwarded
- *     port, not a remote-fronting of this inner server.
+ *   - a yaac running inside a worktree (`YAAC_WORKTREE_ID`): it can pick up
+ *     the outer install's `allowedHosts`/`trustProxy` through the project's
+ *     `envPassthrough` — ambient env, not a remote-fronting of this inner
+ *     server, because nothing outside the machine addresses it unmediated.
+ *     Under k8s the only path in is the outer server's port-forward, already
+ *     tailnet-gated like any forwarded port; under containerless the inner
+ *     server binds host loopback, which this model already trusts. Keyed on
+ *     the worktree id rather than `YAAC_NESTED` because that flag marks only
+ *     the vcluster preset, while the reasoning holds for every worktree; the
+ *     id is stamped on all of them. The cost is that a server someone
+ *     deliberately fronts, but starts from a shell inside a worktree, also
+ *     skips the gate — `YAAC_REQUIRE_AUTH=1` is the answer there
+ *     (docs/remote-hosting.md).
  * `YAAC_REQUIRE_AUTH` forces the gate on regardless (shared machines; a
  * deliberately-gated inner server; the auth-path tests). The Host + Origin +
  * Sec-Fetch-Site guards still defeat a malicious website in every case. Read
@@ -83,7 +92,7 @@ export function isLoopbackOnlyDeployment(): boolean {
  */
 export function isCredentialOptional(): boolean {
   if (env.requireAuth) return false
-  return env.nested || isLoopbackOnlyDeployment()
+  return env.worktreeId !== undefined || isLoopbackOnlyDeployment()
 }
 
 /**

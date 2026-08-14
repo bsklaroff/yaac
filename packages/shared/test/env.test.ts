@@ -189,6 +189,19 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('worktreeId', () => {
+    it('answers the id a worktree stamps, and undefined outside one', () => {
+      vi.stubEnv('YAAC_WORKTREE_ID', 'abcd1234')
+      expect(env.worktreeId).toBe('abcd1234')
+      vi.stubEnv('YAAC_WORKTREE_ID', undefined)
+      expect(env.worktreeId).toBeUndefined()
+      // Blank is unset, so an explicit `YAAC_WORKTREE_ID=` clears it rather
+      // than reading as "some worktree" to the credential gate.
+      vi.stubEnv('YAAC_WORKTREE_ID', '  ')
+      expect(env.worktreeId).toBeUndefined()
+    })
+  })
+
   describe('bundled', () => {
     it('is false when YAAC_BUNDLED is unset', () => {
       vi.stubEnv('YAAC_BUNDLED', undefined)

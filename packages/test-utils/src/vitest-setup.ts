@@ -24,8 +24,25 @@ delete process.env.GIT_WORK_TREE
 // devices, and both suites assume the DEFAULT posture instead — the port
 // unit tests assert the listener lands on loopback, and the e2e forwarding
 // cases dial `127.0.0.1:<hostPort>`, which a tailnet-only listener refuses.
+//
+// YAAC_WORKTREE_ID is stripped for the same reason, and it is the subtlest of
+// the set: inside a worktree the preset stamps it, and the credential gate
+// reads it as "reachable only through the outer port-forward, so no token".
+// Left in place, the cases that stub YAAC_ALLOWED_HOSTS to assert the gate
+// comes back would see it skipped instead — passing on a developer host and
+// failing inside a worktree. Nothing else reads it (the zsh prompt in
+// Dockerfile.default is in-image), so no test loses anything.
+//
+// Note this one is stripped suite-WIDE, not just for unit runs the way the
+// rest of the worktree preset is (YAAC_NESTED and friends, in unit-setup —
+// "E2e keeps the nested env" in vitest.config.ts's header). It belongs with
+// the posture vars instead because it IS one now: e2e servers bind loopback
+// and would reach the same answer either way, but the var's only reader is
+// the credential gate, so leaving it to e2e would leave the posture under
+// test depending on where the suite runs.
 for (const key of [
   'YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS', 'YAAC_REQUIRE_AUTH', 'YAAC_FORWARD_BIND',
+  'YAAC_WORKTREE_ID',
 ] as const) {
   delete process.env[key]
 }

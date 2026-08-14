@@ -130,12 +130,30 @@ Semantics to keep in mind:
   `YAAC_REQUIRE_AUTH=1` to force the credential back on — for a shared machine,
   or to exercise the auth path. Configuring remote hosting (either var above)
   re-enables the credential automatically.
-- **A nested yaac (`YAAC_NESTED`) also skips the credential**, even though it
-  inherits the outer worktree's `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`. Those
-  are ambient env, not a remote-fronting of the inner server: a yaac-in-yaac
-  server is reachable only through the outer server's port-forward, already
-  tailnet-gated like any forwarded port (and never token-gated). `YAAC_REQUIRE_AUTH=1`
-  forces it on if you want the inner server independently gated.
+- **A yaac running inside a worktree (`YAAC_WORKTREE_ID`) also skips the
+  credential**, even when it picks up the outer install's
+  `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY` through the project's
+  `envPassthrough`. Those are ambient env, not a remote-fronting of the inner
+  server — nothing outside the machine addresses it unmediated. Under `k8s`
+  that is literal: the inner server is reachable only through the outer
+  server's port-forward, already tailnet-gated like any forwarded port (and
+  never token-gated). Under `containerless` the worktree is a host process and the
+  inner server binds the host's own loopback, so any local process or user can
+  reach it; the conclusion holds for the reason the bullet above gives — a
+  local process is already trusted, and an unsandboxed worktree agent can read
+  the outer install's data dir regardless, so the token never defended against
+  it. The worktree id is what marks this, rather than the vcluster preset's
+  `YAAC_NESTED`, because the reasoning holds for every worktree and
+  `createWorktree` stamps the id on all of them under both drivers.
+  `YAAC_REQUIRE_AUTH=1` forces it on if you want the inner server
+  independently gated.
+- **Beware a fronted server started from inside a worktree.** Because the
+  signal is the mere presence of `YAAC_WORKTREE_ID`, a server you deliberately
+  front by this doc's own setup silently drops the token gate if you start it
+  from a shell inside a worktree — and a yaac-dev worktree is exactly that
+  shell. The tailnet boundary and the three browser guards still hold, so this
+  is not an open door, but per-device token revocation no longer applies to it.
+  Set `YAAC_REQUIRE_AUTH=1` on any server you front deliberately.
 - **Tokens are durable and revocable** per device: a lost laptop is
   `yaac auth token revoke laptop` on the server — no restart, no effect on
   other clients or browser worktrees. Browser worktrees are tokens too
