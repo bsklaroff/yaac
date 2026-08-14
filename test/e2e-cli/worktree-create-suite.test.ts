@@ -433,6 +433,13 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
       await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
       await execInJob(jobName, ['test', '-d', '/home/yaac/.codex'])
+      // Writable, not merely present: the runtime creates a missing mount
+      // parent as root, and these three take mounts *inside* them. ~/.yaac is
+      // also a nested yaac server's data dir, so a root-created one fails
+      // that server's first write.
+      await execInJob(jobName, ['test', '-w', '/home/yaac/.yaac'])
+      await execInJob(jobName, ['test', '-w', '/home/yaac/.config'])
+      await execInJob(jobName, ['test', '-w', '/home/yaac/.local/share'])
 
       const { stdout: lsOut } = await execInJob(jobName, ['ls', '/workspace'])
       expect(lsOut).toContain('README.md')
