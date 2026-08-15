@@ -222,8 +222,12 @@ export function WorktreeChat({
         <AcpTranscript groups={groups} onAnswerPermission={answerPermission} />
         {busy && !awaitingPermission && (
           <div className="mt-2.5 flex items-center gap-1.5 text-xs text-text-dim">
-            <LoadingIcon size={12} />
-            working…
+            <LoadingIcon size={12} className="animate-spin" />
+            <span>
+              working
+              {/* The dots are decoration: a screen reader hears "working". */}
+              <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
+            </span>
           </div>
         )}
       </div>
