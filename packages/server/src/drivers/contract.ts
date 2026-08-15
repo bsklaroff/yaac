@@ -288,6 +288,25 @@ export interface WorkspaceSubstrate {
 }
 
 /**
+ * The project's git credential, resolved down to what a workspace's own git
+ * needs to authenticate with it.
+ *
+ * Only a runtime that does NOT mediate egress is handed one, which is the
+ * whole reason it is on the spec rather than looked up: a runtime whose proxy
+ * injects the credential in flight must never see the secret, and a runtime
+ * with no proxy has nothing to do the injecting, so its workspace has to hold
+ * the real thing (docs/containerless-driver.md). Either way the driver is
+ * handed the answer instead of reaching for it.
+ *
+ * The SSH variant names a key on the host rather than carrying its material:
+ * a driver that cannot read that path is a driver that mediates egress, and
+ * so is not handed this at all.
+ */
+export type WorkspaceGitCredential =
+  | { kind: 'https'; host: string; token: string }
+  | { kind: 'ssh'; privateKeyPath: string }
+
+/**
  * A workspace to run, described in decisions rather than in any
  * substrate's spelling.
  *
@@ -328,6 +347,13 @@ export interface WorkspaceSpec {
    * runtime's, since both are properties of its own egress path.
    */
   ssh?: { knownHostsFile: string }
+  /**
+   * How the workspace's own git authenticates against `origin`, for a
+   * runtime with no egress path to inject it on the way out. Absent under a
+   * mediating runtime, whose workspace is exactly what that boundary exists
+   * to keep the real credential from.
+   */
+  gitCredential?: WorkspaceGitCredential
   /** The receipt from this workspace's `prepareSubstrate`. */
   substrate: WorkspaceSubstrate
   onProgress?: (message: string) => void

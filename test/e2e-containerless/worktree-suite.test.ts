@@ -19,6 +19,7 @@ import {
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import type { AgentSessionEntry } from '@yaac/shared/types'
+import { PLACEHOLDER_GH_TOKEN } from '@yaac/shared/tool-auth'
 
 const execFileAsync = promisify(execFile)
 
@@ -200,6 +201,13 @@ async function tmux(id: string, ...args: string[]): Promise<string> {
   return stdout
 }
 
+/** One variable as the worktree's own tmux server holds it — the environment
+ *  every pane inherits, and so what anything running in the workspace sees. */
+async function workspaceEnvVar(id: string, name: string): Promise<string> {
+  const line = (await tmux(id, 'show-environment', '-g', name)).trim()
+  return line.startsWith(`${name}=`) ? line.slice(name.length + 1) : ''
+}
+
 beforeAll(async () => {
   if (!CAN_RUN) return
   testEnv = await createYaacTestEnv()
@@ -299,6 +307,51 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     })
     const changes = await res.json() as { files: Array<{ path: string }> }
     expect(changes.files.map((f) => f.path)).toContain('NEW.md')
+  })
+
+  it('gives the worktree\'s own git the project\'s credential', async () => {
+    // The link nothing below this tier covers: the credential the create
+    // resolved, through the spec, into config that real `git` reads. Without
+    // it every fetch and push from the worktree fails to authenticate — the
+    // checkout's `origin` is deliberately tokenless, and the private HOME
+    // hides the user's own git config from the workspace.
+    const home = workspaceHome(SLUG, worktreeId)
+    const dir = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId)
+    // Taken from the workspace's own tmux server rather than assembled here:
+    // this is the environment its panes inherit, so it is what the agent's
+    // git really runs with. A hand-built one would inherit the developer
+    // host's GIT_CONFIG_GLOBAL, which makes git ignore the workspace's config
+    // entirely — the very thing the launch pins against, and a spurious
+    // failure over a feature that works. Reading it back also proves the pin
+    // reached the workspace.
+    const gitConfigGlobal = await workspaceEnvVar(worktreeId, 'GIT_CONFIG_GLOBAL')
+    expect(gitConfigGlobal).toBe(path.join(home, '.gitconfig'))
+    const filled = await new Promise<string>((resolve, reject) => {
+      const child = execFile(
+        'git', ['credential', 'fill'],
+        {
+          cwd: dir,
+          // Both halves matter: the pin decides which config is read, and
+          // HOME is where the store's default file sits. The prompt is
+          // disarmed so a regression fails here rather than blocking on a
+          // terminal that will never answer.
+          env: {
+            ...process.env,
+            HOME: home,
+            GIT_CONFIG_GLOBAL: gitConfigGlobal,
+            GIT_TERMINAL_PROMPT: '0',
+          },
+        },
+        (err, stdout) => (err
+          ? reject(err instanceof Error ? err : new Error('git credential fill failed'))
+          : resolve(stdout)),
+      )
+      child.stdin?.end('protocol=https\nhost=github.com\n\n')
+    })
+    expect(filled).toContain('username=x-access-token')
+    // The REAL stored token, not a sentinel: there is no proxy here to swap
+    // one for the other (docs/containerless-driver.md).
+    expect(filled).toContain(`password=${PLACEHOLDER_GH_TOKEN}`)
   })
 
   it('opens a shell window through the same exec transport the webapp uses', async () => {
@@ -616,7 +669,15 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(exitCode).toBe(0)
     // The tmux server is the unit: when it is gone the worktree is gone,
     // and nothing is left holding the checkout.
-    await expect(tmux(worktreeId, 'has-session', '-t', 'yaac')).rejects.toThrow()
+    // Polled rather than asserted outright: the runtime teardown is
+    // deliberately detached so the caller returns immediately, which means
+    // `stop` answers once the teardown is under way and the kill can land
+    // just after. What is under test is that it lands, not that it wins a
+    // race with the CLI's own exit.
+    await vi.waitFor(
+      async () => { await expect(tmux(worktreeId, 'has-session', '-t', 'yaac')).rejects.toThrow() },
+      { timeout: 20_000, interval: 250 },
+    )
   }, 60_000)
 
   it('leaves the checkout behind, and stays stopped rather than flickering back', async () => {

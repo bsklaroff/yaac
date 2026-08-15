@@ -230,6 +230,85 @@ describe('launchWorkspace', () => {
     expect(gitconfig).toContain('ada@example.com')
     // Both repo roots are trusted, exactly as the pod's init hook does.
     expect(gitconfig).toContain(worktreeDir('demo', UUID))
+
+    // And git is pointed AT that file: the workspace inherits the server's
+    // environment, so a server started with GIT_CONFIG_GLOBAL set would
+    // otherwise have every setting here silently ignored.
+    const env = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    expect(env.env.GIT_CONFIG_GLOBAL).toBe(path.join(home, '.gitconfig'))
+  })
+
+  it('hands the workspace\'s own git the real HTTPS credential', async () => {
+    // There is no proxy here to inject one in flight, and the checkout's
+    // `origin` is deliberately tokenless — so a workspace given nothing
+    // cannot fetch or push at all.
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'https', host: 'github.com', token: 'ghp_a/b+c%d' },
+    }))
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+
+    const gitconfig = await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')
+    // The empty helper first: git takes the FIRST helper that answers, so a
+    // host with a system-wide one would otherwise answer with the user's own
+    // stored credential for that host rather than the one yaac resolved.
+    expect(gitconfig).toContain('helper =\n')
+    expect(gitconfig).toContain('helper = store')
+
+    // Percent-encoded, because git url-decodes both halves on the way back
+    // in and a token is opaque bytes that may hold a reserved character.
+    const creds = path.join(home, '.git-credentials')
+    expect(await fsp.readFile(creds, 'utf8'))
+      .toBe('https://x-access-token:ghp_a%2Fb%2Bc%25d@github.com\n')
+    expect((await fsp.stat(creds)).mode & 0o777).toBe(0o600)
+  })
+
+  it('points git at the registered key and host list for an SSH remote', async () => {
+    // A pod gets its identity from the proxy's forwarded ssh-agent; the key
+    // is a file on this host and the workspace is a process on it, so there
+    // is nothing to forward it over.
+    const knownHosts = path.join(dataDir, 'projects', 'demo', 'known_hosts')
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'ssh', privateKeyPath: '/home/ada/.ssh/id_ed25519' },
+      ssh: { knownHostsFile: knownHosts },
+    }))
+
+    const env = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
+    expect(sshCmd).toContain('-i /home/ada/.ssh/id_ed25519')
+    // Host verification is not weakened by having no sandbox: an unknown key
+    // fails here exactly as it does in a pod.
+    expect(sshCmd).toContain(`UserKnownHostsFile=${knownHosts}`)
+    expect(sshCmd).toContain('StrictHostKeyChecking=yes')
+    // Nothing to store for a key-based remote.
+    await expect(fsp.stat(path.join(
+      dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home', '.git-credentials',
+    ))).rejects.toThrow()
+  })
+
+  it('refuses an SSH credential with no host list rather than skipping the check', async () => {
+    // The degraded worktree would be one that verifies no host key at all.
+    await expect(launchWorkspace(spec({
+      gitCredential: { kind: 'ssh', privateKeyPath: '/home/ada/.ssh/id_ed25519' },
+    }))).rejects.toThrow(/known_hosts/)
+  })
+
+  it('clears a credential the last launch left behind', async () => {
+    // A relaunch is not always for the same answer: a rotated token, a remote
+    // moved to SSH, or a worktree restarted with no credential at all.
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'https', host: 'github.com', token: 'first' },
+    }))
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'https', host: 'github.com', token: 'second' },
+    }))
+    expect(await fsp.readFile(path.join(home, '.git-credentials'), 'utf8')).toContain('second')
+
+    await launchWorkspace(spec())
+    await expect(fsp.stat(path.join(home, '.git-credentials'))).rejects.toThrow()
+    expect(await fsp.readFile(path.join(home, '.gitconfig'), 'utf8')).not.toContain('helper')
   })
 
   it('keeps the server\'s own wiring out of the workspace environment', async () => {

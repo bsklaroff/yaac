@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
+import { realizeGitAuth } from './git-auth'
 import { runHost, onPath } from './host'
 import {
   assertShellSafePaths,
@@ -293,10 +294,19 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // PATH, and here it has to be said.
   env.PATH = `${workspaceBinDir(home)}${path.delimiter}${env.PATH ?? ''}`
 
-  // Git identity and trust, in the workspace's OWN home — the pod driver
-  // writes the same four settings from its postStart hook, into a home that
-  // is per-pod for exactly the same reason this one is per-worktree: a
-  // `--global` write must never race another worktree's.
+  // Git identity, trust and authentication, in the workspace's OWN home —
+  // the pod driver writes the same settings from its postStart hook, into a
+  // home that is per-pod for exactly the same reason this one is
+  // per-worktree: a `--global` write must never race another worktree's.
+  //
+  // Authentication is the half a pod does NOT write, because a pod never
+  // holds a credential to write; here the workspace is handed the real one
+  // and this is where it lands (see `git-auth`).
+  const gitAuth = await realizeGitAuth({
+    home,
+    credential: spec.gitCredential,
+    knownHostsFile: spec.ssh?.knownHostsFile,
+  })
   const gitName = env.YAAC_GIT_NAME ?? env.GIT_AUTHOR_NAME
   const gitEmail = env.YAAC_GIT_EMAIL ?? env.GIT_AUTHOR_EMAIL
   const gitconfig = [
@@ -306,9 +316,23 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     '[safe]',
     `\tdirectory = ${paths.workspaceDir}`,
     `\tdirectory = ${paths.repoGitDir}`,
+    ...gitAuth.gitconfig,
     '',
   ].join('\n')
-  await fs.writeFile(path.join(home, '.gitconfig'), gitconfig)
+  const gitconfigPath = path.join(home, '.gitconfig')
+  await fs.writeFile(gitconfigPath, gitconfig)
+  // After the caller's entries, like HOME above: this is the driver's own
+  // wiring, and a passthrough value cannot be allowed to disarm the host
+  // verification the ssh command carries.
+  Object.assign(env, gitAuth.env)
+  // Pinned rather than left to `$HOME` to find: this workspace inherits the
+  // server's environment, and a server started with `GIT_CONFIG_GLOBAL` set
+  // would have everything written above — the identity, the trusted
+  // directories, the credential helper — silently ignored in favor of
+  // whatever that names. Assigned LAST for the same reason, and any filter
+  // this environment grows must leave it alone: strip it and the workspace's
+  // git config goes quiet, with nothing to say it did.
+  env.GIT_CONFIG_GLOBAL = gitconfigPath
 
   const shell = await resolveShell()
   const statusRight = env.YAAC_STATUS_RIGHT ?? ''
