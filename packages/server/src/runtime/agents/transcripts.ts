@@ -242,3 +242,26 @@ export async function transcriptLastActiveMs(transcriptPath: string): Promise<nu
     return undefined
   }
 }
+
+/**
+ * Enough of a transcript's stat to tell "has this changed since I read it?" —
+ * for a caller that re-reads on every append and wants to skip the read when
+ * there was none.
+ *
+ * The size is what makes the answer trustworthy. An mtime alone can repeat
+ * across a real append: a data dir may sit on a filesystem with one-second
+ * timestamps, so a write landing in the same tick as the last read is
+ * indistinguishable by mtime — and a reader that concludes "unchanged" then
+ * caches a stale answer until the *next* append moves the clock. An append
+ * always makes the file longer, so the pair cannot collide the same way.
+ */
+export async function transcriptStamp(
+  transcriptPath: string,
+): Promise<{ mtimeMs: number; size: number } | undefined> {
+  try {
+    const { mtimeMs, size } = await fs.stat(transcriptPath)
+    return { mtimeMs, size }
+  } catch {
+    return undefined
+  }
+}

@@ -187,9 +187,31 @@ that were live when the worktree stopped, each in its own tmux window, in the
 order they were first opened (`agentWindowName` — the first keeps the bare tool
 name so every existing `yaac:<tool>` target still resolves).
 
+Two things are read *out of* a conversation's transcript and kept on its row so
+no display path has to parse one: its opening message and the **model** it last
+answered as. They are captured on the same sweep and stored the same way, but
+they are not the same kind of fact, and the write rules differ accordingly. An
+opening message is true forever, so it is filled once and coalesced — re-reading
+a transcript that has since been compacted would otherwise replace it with
+whatever now sits at the head. A model is true *now*: `/model` mid-conversation
+changes it, so the column is overwritten whenever a later read finds a different
+one. Absent still means "not read" on both, and leaves the stored value alone —
+a sweep that could not resolve the transcript this tick must not blank a label.
+
+The model is read from the transcript rather than from the launch because the
+launch goes stale immediately (an override is not persisted, and the default
+case names nothing), and because that one source answers for both agent modes:
+an ACP conversation is the tool's own SDK under a different front end, writing
+the file its TUI would. Each tool records it somewhere different — claude on
+every assistant message, codex in the `turn_context` it writes at each turn
+boundary, pi on assistant messages and `model_change` entries — and each reader
+takes the *last* occurrence, scanning backward from EOF so a long conversation
+costs a tail read rather than a walk.
+
 opencode is the exception throughout: it keeps history in a per-worktree sqlite
-DB inside the container and leaves no host transcript, so no hook fires for it
-and its first message comes from an HTTP probe while the pod runs.
+DB inside the container and leaves no host transcript, so no hook fires for it,
+its first message comes from an HTTP probe while the pod runs, and it never has
+a model to show at all — there is no probe for that one.
 
 `acp` needs none of this. The server *is* the ACP client, so `session/new` hands
 it the id directly and the live set carries it — the mode replaces a whole

@@ -33,6 +33,9 @@ export interface AgentSessionRow {
   transcriptPath?: string
   firstPrompt?: string
   lastActiveAt?: Date
+  /** The model it last answered as — see the `model` column. Absent until
+   *  the agent has replied once, and always for opencode. */
+  model?: string
 }
 
 /** A conversation's membership of one worktree. */
@@ -59,6 +62,9 @@ export interface DiscoveredAgentSession {
   transcriptPath?: string
   firstPrompt?: string
   lastActiveMs?: number
+  /** The model the transcript showed at this sighting. Absent means "not
+   *  read", never "none" — it leaves a recorded value alone. */
+  model?: string
   /** First observation time, used as the conversation's birth when it is
    *  new to the DB (the link record's birthtime). */
   firstSeenMs?: number
@@ -112,6 +118,11 @@ export async function recordAgentSessions(
       const fill = {
         ...(stored !== null ? { transcriptPath: stored } : {}),
         ...(d.lastActiveMs !== undefined ? { lastActiveAt: new Date(d.lastActiveMs) } : {}),
+        // Overwritten, not coalesced: `/model` mid-conversation is exactly
+        // what this column is here to follow. An absent value still leaves
+        // the stored one alone — the sweep omits it when it read nothing,
+        // which must not read as "the model went away".
+        ...(d.model !== undefined ? { model: d.model } : {}),
         ...(d.firstPrompt !== undefined
           ? {
             // A conversation's opening message never changes, and re-reading a
@@ -130,6 +141,7 @@ export async function recordAgentSessions(
         transcriptPath: stored,
         firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
         lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
+        model: d.model ?? null,
       }
       const target = [
         agentSessions.projectSlug,
@@ -237,6 +249,7 @@ function selectLinked() {
     transcriptPath: agentSessions.transcriptPath,
     firstPrompt: agentSessions.firstPrompt,
     lastActiveAt: agentSessions.lastActiveAt,
+    model: agentSessions.model,
   }
 }
 
@@ -255,6 +268,7 @@ type LinkedSelect = {
   transcriptPath: string | null
   firstPrompt: string | null
   lastActiveAt: Date | null
+  model: string | null
 }
 
 function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
@@ -273,6 +287,7 @@ function toLinkRow(r: LinkedSelect): AgentSessionLinkRow {
     ...(r.transcriptPath !== null ? { transcriptPath: r.transcriptPath } : {}),
     ...(r.firstPrompt !== null ? { firstPrompt: r.firstPrompt } : {}),
     ...(r.lastActiveAt !== null ? { lastActiveAt: r.lastActiveAt } : {}),
+    ...(r.model !== null ? { model: r.model } : {}),
   }
 }
 
@@ -396,7 +411,7 @@ export async function getAgentSessionsFor(
 
 
 /**
- * Persist a conversation's captured first message and transcript path.
+ * Persist a conversation's captured first message, transcript path and model.
  *
  * `transcriptPath` is project-relative, as in `recordAgentSessions` and as
  * the column holds it — a caller holding an absolute one converts before it
@@ -407,12 +422,14 @@ export async function getAgentSessionsFor(
  *
  * As in `recordAgentSessions`: an unexpressible path is simply absent, and
  * leaves the column alone rather than clearing what an earlier pass recorded.
+ * `model` is the one value here that legitimately *changes* — a `/model` is a
+ * new answer to the same question — so it overwrites where the others fill.
  */
 export async function setAgentSessionCapture(
   projectSlug: string,
   tool: AgentTool,
   agentSessionId: string,
-  capture: { firstPrompt?: string; transcriptPath?: string },
+  capture: { firstPrompt?: string; transcriptPath?: string; model?: string },
 ): Promise<void> {
   const values = {
     ...(capture.firstPrompt !== undefined
@@ -421,6 +438,7 @@ export async function setAgentSessionCapture(
     ...(capture.transcriptPath !== undefined
       ? { transcriptPath: capture.transcriptPath }
       : {}),
+    ...(capture.model !== undefined ? { model: capture.model } : {}),
   }
   if (Object.keys(values).length === 0) return
   try {

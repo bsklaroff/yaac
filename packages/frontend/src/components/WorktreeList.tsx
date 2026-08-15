@@ -23,6 +23,7 @@ import {
   RestartIcon,
   TOOL_LABEL,
 } from '#lib/icons'
+import { agentLabel, worktreeModel } from '#lib/agentLabel'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StoppedWorktreesButton } from '#components/StoppedWorktreesButton'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -789,9 +790,12 @@ function WorktreeRow({
         </span>
       )}
       {/* Tool name moved off the title line so the title can run full-width;
-          hidden when the blocked-hosts badge claims the bottom-right. */}
+          hidden when the blocked-hosts badge claims the bottom-right. Carries
+          the model beside it once the agent has answered as one. */}
       {worktree.blockedHosts.length === 0 && (
-        <span className="ml-auto shrink-0">{TOOL_LABEL[worktree.tool]}</span>
+        <span className="ml-auto shrink-0">
+          {agentLabel(worktree.tool, worktreeModel(worktree))}
+        </span>
       )}
     </span>
   )

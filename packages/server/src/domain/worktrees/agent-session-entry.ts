@@ -27,6 +27,7 @@ export function toAgentSessionEntry(
     ...(live !== undefined ? { status: live.status } : {}),
     ...(live?.waitingSinceMs !== undefined ? { waitingSinceMs: live.waitingSinceMs } : {}),
     ...(l.firstPrompt !== undefined ? { prompt: l.firstPrompt } : {}),
+    ...(l.model !== undefined ? { model: l.model } : {}),
     ...(l.lastActiveAt !== undefined
       ? { lastActiveAt: formatUtcTimestamp(l.lastActiveAt.getTime()) }
       : {}),

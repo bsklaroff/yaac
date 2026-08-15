@@ -16,6 +16,7 @@ import {
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
+  transcriptStamp,
 } from '#runtime/agents/transcripts'
 
 const slug = 'demo'
@@ -116,6 +117,37 @@ describe('transcripts', () => {
 
       await fs.rm(file)
       expect(await transcriptLastActiveMs(file)).toBeUndefined()
+    })
+  })
+
+  describe('transcriptStamp', () => {
+    it('reports the mtime and size, and undefined once the file is gone', async () => {
+      const file = await write(claudeLog('sid'), '{"a":1}\n')
+      await fs.utimes(file, new Date('2026-01-02'), new Date('2026-01-02'))
+      expect(await transcriptStamp(file))
+        .toEqual({ mtimeMs: Date.parse('2026-01-02'), size: 8 })
+
+      await fs.rm(file)
+      expect(await transcriptStamp(file)).toBeUndefined()
+    })
+
+    // The size is the whole reason this exists beside `transcriptLastActiveMs`.
+    // A data dir may sit on a filesystem with one-second timestamps, where an
+    // append lands in the same tick as the read before it — a caller comparing
+    // mtimes alone would call that file unchanged and serve a stale answer
+    // until the clock happened to move.
+    it('distinguishes an append that did not move the mtime', async () => {
+      const file = await write(claudeLog('sid'), '{"a":1}\n')
+      const when = new Date('2026-01-02')
+      await fs.utimes(file, when, when)
+      const before = await transcriptStamp(file)
+
+      await fs.appendFile(file, '{"b":2}\n')
+      await fs.utimes(file, when, when)
+
+      const after = await transcriptStamp(file)
+      expect(after?.mtimeMs).toBe(before?.mtimeMs)
+      expect(after?.size).toBeGreaterThan(before?.size ?? 0)
     })
   })
 

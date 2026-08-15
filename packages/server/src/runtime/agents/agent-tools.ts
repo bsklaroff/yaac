@@ -13,10 +13,10 @@
  */
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { AgentTool } from '@yaac/shared/types'
-import { classifyClaudeTitle, getFirstUserMessage } from './claude'
-import { classifyCodexTitle, getCodexFirstUserMessage } from './codex'
+import { classifyClaudeTitle, getClaudeModel, getFirstUserMessage } from './claude'
+import { classifyCodexTitle, getCodexFirstUserMessage, getCodexModel } from './codex'
 import { OPENCODE_BUSY_MARKERS, getSessionOpencodeFirstUserMessage } from './opencode'
-import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
+import { PI_BUSY_MARKERS, getPiFirstUserMessage, getPiModel } from './pi'
 
 /** What an agent pane is doing, as every display path reads it. */
 export type AgentPaneStatus = 'running' | 'waiting'
@@ -41,6 +41,31 @@ export async function getAgentSessionFirstMessage(
   if (tool === 'codex') return getCodexFirstUserMessage(transcriptPath)
   if (tool === 'pi') return getPiFirstUserMessage(transcriptPath)
   return getFirstUserMessage(transcriptPath)
+}
+
+/**
+ * The model one conversation last answered as, in the tool's own vocabulary —
+ * a display value, and the only source that stays true when a user switches
+ * model mid-conversation. Each tool records it somewhere different, and each
+ * reader takes the LAST occurrence rather than the first.
+ *
+ * The transcript is the one source that answers for both agent modes: an ACP
+ * conversation is the tool's own SDK under a different front end and writes
+ * the same file its TUI would, so nothing here branches on mode.
+ *
+ * opencode is the exception it always is, and here it is a permanent one:
+ * its history lives in a container-side sqlite DB, and unlike a first message
+ * there is no HTTP probe for this — an opencode conversation simply has no
+ * model to show.
+ */
+export async function getAgentSessionModel(
+  tool: AgentTool,
+  transcriptPath: string | undefined,
+): Promise<string | undefined> {
+  if (tool === 'opencode' || transcriptPath === undefined) return undefined
+  if (tool === 'codex') return getCodexModel(transcriptPath)
+  if (tool === 'pi') return getPiModel(transcriptPath)
+  return getClaudeModel(transcriptPath)
 }
 
 /**

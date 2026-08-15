@@ -26,6 +26,7 @@ import {
   recordAgentSessions,
 } from '#db/agent-session-store'
 import { absoluteTranscriptPath } from '#domain/worktrees/agent-session-paths'
+import { _resetModelCaptureForTests } from '#domain/worktrees/model-capture'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
 import { sessionStartsLogSize } from '#domain/worktrees/session-starts'
@@ -64,6 +65,7 @@ describe('reconcileWorktreeAgentSessions', () => {
     installFakeWorktreeDriver({ exec: podExec })
     _resetWorktreeStatusStoreForTests()
     _resetPromptCaptureForTests()
+    _resetModelCaptureForTests()
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
     // The life create would have stamped. The log is empty at this point, so
     // every sighting below belongs to it.
@@ -421,6 +423,68 @@ describe('reconcileWorktreeAgentSessions', () => {
     await expect(reconcileAgentSessions()).resolves.toBeUndefined()
 
     expect(await states()).toEqual([])
+  })
+
+  /**
+   * Make a conversation's transcript show an answer from `model`.
+   *
+   * Every append is pinned to the SAME mtime, which is the hostile case rather
+   * than a convenience: a data dir may sit on a filesystem with one-second
+   * timestamps, so two appends a moment apart genuinely can carry the same
+   * one. A capture that gated on mtime alone would call the file unchanged and
+   * serve a stale model until the next append happened to move the clock.
+   * Holding it fixed here means these tests only pass if the size is doing
+   * the work.
+   */
+  const FROZEN_MTIME = new Date('2026-08-15T00:00:00Z')
+
+  async function answerAs(id: string, model: string): Promise<void> {
+    const file = path.join(claudeDir('demo'), 'projects', '-workspace', `${id}.jsonl`)
+    await fs.appendFile(file, `${JSON.stringify({
+      type: 'assistant', message: { role: 'assistant', model },
+    })}\n`)
+    await fs.utimes(file, FROZEN_MTIME, FROZEN_MTIME)
+  }
+
+  const modelOf = async (id: string): Promise<string | undefined> =>
+    (await listWorktreeAgentSessions('demo', 'wt-1'))
+      .find((l) => l.agentSessionId === id)?.model
+
+  it('records the model a conversation answers as, and follows a switch', async () => {
+    await link('conv-a', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+
+    // Before the agent has answered there is nothing to read, and the row says
+    // so rather than guessing from the launch — a worktree simply shows its
+    // bare tool name until its first reply.
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-a')).toBeUndefined()
+
+    await answerAs('conv-a', 'claude-opus-5')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-a')).toBe('claude-opus-5')
+
+    // A `/model` mid-conversation. The transcript is the only source that
+    // knows — the launch said opus and still would.
+    await answerAs('conv-a', 'claude-fable-5')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-a')).toBe('claude-fable-5')
+  })
+
+  it('keeps a recorded model when a later sweep can no longer read one', async () => {
+    // The transcript going missing (a pruned tool home, an unresolvable path)
+    // must not blank the label — the conversation is still answering as
+    // whatever it last did.
+    await link('conv-a', '%0')
+    setLiveAgents('demo', 'wt-1', [{ handle: '%0', tool: 'claude' }])
+    await answerAs('conv-a', 'claude-opus-5')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+    expect(await modelOf('conv-a')).toBe('claude-opus-5')
+
+    await fs.rm(path.join(claudeDir('demo'), 'projects', '-workspace', 'conv-a.jsonl'))
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude')
+
+    expect(await modelOf('conv-a')).toBe('claude-opus-5')
   })
 
   it('keeps an ordinal stable once assigned, so a restart\'s windows do not reshuffle', async () => {
