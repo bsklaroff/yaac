@@ -82,7 +82,7 @@ export async function retoolSpare(
       ...(model !== undefined ? { model } : {}),
     })}'`,
   )
-  await verifyAgentWindowAlive(spare.jobName, tool)
+  await verifyAgentWindowAlive(spare.jobName, [tool])
 }
 
 /** The in-pod commands that re-point a prewarmed spare's worktree at a
@@ -224,5 +224,5 @@ export async function rebranchSpare(
     await runtime.exec(spare.jobName, prep.upstreamExec)
   })
   for (const cmd of prep.windowExecs) await runtime.exec(spare.jobName, cmd)
-  if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, spare.tool as AgentTool)
+  if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, [spare.tool as AgentTool])
 }

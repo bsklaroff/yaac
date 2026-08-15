@@ -1,9 +1,4 @@
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool } from '@yaac/shared/types'
-
-/** The host binary each tool's ACP adapter installs as. Mirrors the
- *  adapter table in `#runtime/agents`, which a driver may not name. */
-const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = { claude: 'claude-agent-acp' }
 import {
   awaitAgentTransport,
   execInWorkspace,
@@ -19,7 +14,7 @@ import {
   stopContainerlessDriver,
   watchNewWorkspace,
 } from './lifecycle'
-import { acpAdapterRunnable } from './check'
+import { assertHostCanLaunch } from './check'
 import { containerlessWorkspacePaths } from './paths'
 import { forgetPorts, workspacePorts } from './ports'
 import {
@@ -125,21 +120,11 @@ export function createContainerlessDriver(): WorktreeDriver {
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,
     retryImageBuild: () => false,
-    // `acp` runs the tool's adapter as a host process, so it has to be
-    // installed. Without this the create reports success and the worktree
-    // is gone seconds later: acpd execs nothing, exits 127, tmux closes the
-    // window, and the session ends with it.
-    assertCanLaunch: async ({ tool, mode }) => {
-      if (mode !== 'acp') return
-      const adapter = ACP_ADAPTERS[tool]
-      if (adapter !== undefined && await acpAdapterRunnable(adapter)) return
-      throw new ServerError(
-        'VALIDATION',
-        `--mode acp needs ${adapter ?? `an ACP adapter for ${tool}`} on this `
-        + 'host\'s PATH; this server runs agents as host processes and has no '
-        + 'image to supply one. Install it, or use --mode tui.',
-      )
-    },
+    // Every agent here is a host process, so what a worktree can run is
+    // whatever this machine has installed. Without this check the create
+    // reports success and the worktree is gone seconds later: the tool (or
+    // acpd's adapter) execs nothing, exits 127, and tmux closes the window.
+    assertCanLaunch: (opts) => assertHostCanLaunch(opts),
     ensureBuildEngine: () => Promise.resolve(),
     prepareImage: () => unsupported('building a workspace image'),
     salvageImages: () => Promise.resolve(),

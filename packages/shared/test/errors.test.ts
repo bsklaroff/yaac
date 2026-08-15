@@ -15,6 +15,7 @@ describe('shared errors', () => {
         UNAUTHENTICATED: 401,
         BAD_HOST: 403,
         NOT_SUPPORTED: 501,
+        MISSING_TOOL: 400,
         TOO_LARGE: 413,
         INTERNAL: 500,
       }

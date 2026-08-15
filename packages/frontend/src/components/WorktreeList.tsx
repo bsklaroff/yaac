@@ -455,10 +455,15 @@ function ProvisioningRow({ entry }: { entry: ProvisioningWorktreeEntry }): JSX.E
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId)
   const selectWorktree = useUiStore((s) => s.selectWorktree)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
+  const setProvisionRetry = useUiStore((s) => s.setProvisionRetry)
 
   const dismiss = (): void => {
     void dismissProvisioning(entry.worktreeId).catch(() => { /* best-effort */ })
     removeOptimisticProvisioning(entry.worktreeId)
+    // Dropping the row retires its retry too — the same reason the main
+    // pane's dismiss does it (see CreatingPlaceholder): only the success
+    // path clears these otherwise, and a dismissed failure never gets there.
+    setProvisionRetry(entry.worktreeId, null)
     if (selectedWorktreeId === entry.worktreeId) selectWorktree(null)
   }
 

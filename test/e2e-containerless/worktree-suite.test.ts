@@ -11,6 +11,7 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
+import { collectSnapshots } from '@yaac/test-utils/events-ws'
 import {
   containerlessJobName,
   containerlessWorkspacePaths,
@@ -72,14 +73,22 @@ const ACP_ADAPTER_ON_PATH = await execFileAsync('sh', ['-c', 'command -v claude-
  * TUI does. Without one the respawned window would exit instantly, tmux
  * would close it, and with no windows left the session — and the worktree —
  * would end before any assertion ran.
+ *
+ * `codex` is the deliberate exception: it stands in for an agent that is
+ * installed but cannot run (a broken or half-installed binary), which is
+ * exactly the launch failure a PATH check cannot predict. Nothing else in
+ * this file creates a codex worktree, so one tool can be the sick one.
  */
 async function installFakeAgents(binDir: string): Promise<void> {
   await fs.mkdir(binDir, { recursive: true })
-  for (const tool of ['claude', 'codex', 'opencode', 'pi']) {
+  for (const tool of ['claude', 'opencode', 'pi']) {
     const file = path.join(binDir, tool)
     await fs.writeFile(file, '#!/bin/sh\nexec sleep infinity\n')
     await fs.chmod(file, 0o755)
   }
+  const broken = path.join(binDir, 'codex')
+  await fs.writeFile(broken, '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
+  await fs.chmod(broken, 0o755)
 }
 
 /** The spawned server's own origin and credential — it binds a per-worker
@@ -617,5 +626,41 @@ describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
     expect(listed.stdout).toMatch(new RegExp(`${fresh!.worktreeId.slice(0, 8)}[^\\n]*friday batch`))
 
     await runYaac(serverEnv, 'worktree', 'stop', fresh!.worktreeId)
+  }, 180_000)
+})
+
+/**
+ * An agent that is installed but cannot run — the launch failure no PATH
+ * check predicts, and the one that used to be completely silent.
+ *
+ * Last in the file: its subject is a worktree that dies on purpose.
+ */
+describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
+  it('reports it as a failed provisioning row instead of a worktree that vanishes', async () => {
+    const watch = collectSnapshots(server.lock.port, server.lock.secret)
+    await watch.opened
+    try {
+      // The fake codex exits 127, so tmux closes the window the instant it
+      // is respawned — and `respawn-window` still reports success, which is
+      // the whole defect: before this the create said it worked and the
+      // worktree was gone seconds later with nothing said.
+      const { exitCode } = await runYaac(
+        serverEnv, 'worktree', 'create', SLUG, '--tool', 'codex',
+      )
+      // The create itself does NOT fail, and that is deliberate: the probe
+      // is not awaited, so its settle delay never lands on a create's wall
+      // clock. The verdict arrives just behind it.
+      expect(exitCode).toBe(0)
+
+      await vi.waitFor(() => {
+        const row = watch.latest()?.provisioning.find((p) => p.tool === 'codex' && p.error)
+        expect(row?.error).toMatch(/exited right after launch/)
+        // Containerless, so the row also names what to check — the failure
+        // is nearly always a tool this host cannot actually run.
+        expect(row?.error).toMatch(/npm install -g @openai\/codex/)
+      }, { timeout: 30_000, interval: 250 })
+    } finally {
+      watch.ws.close()
+    }
   }, 180_000)
 })

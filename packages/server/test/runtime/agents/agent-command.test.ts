@@ -8,6 +8,7 @@ import {
   typeInitialPrompt,
   buildAgentWindowCheck,
   verifyAgentWindowAlive,
+  AgentLaunchDeadError,
   initWindowCommand,
 } from '#runtime/agents/agent-command'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
@@ -338,9 +339,32 @@ describe('typeInitialPrompt', () => {
 
 describe('buildAgentWindowCheck', () => {
   it('probes for the agent window after a settle delay', () => {
-    expect(buildAgentWindowCheck('claude', PATHS)).toBe(
-      `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF claude"`,
-    )
+    // The delay is the whole trick: respawn-window reports success even for
+    // a command that dies instantly, so the probe has to let it die first.
+    const cmd = buildAgentWindowCheck(['claude'], PATHS)
+    expect(cmd).toContain('sleep 1;')
+    expect(cmd).toContain(`names=\\$(${TMUX} list-windows -t =yaac -F '#{window_name}')`)
+    expect(cmd).toContain('grep -qxF claude')
+  })
+
+  it('checks every window a multi-agent launch asked for, in one probe', () => {
+    // A restart resuming several conversations opens `claude`, `claude-2`,
+    // `codex` — one exit code covers the set, and each missing name is
+    // echoed so the caller's message can say which died.
+    const cmd = buildAgentWindowCheck(['claude', 'claude-2', 'codex'], PATHS)
+    for (const w of ['claude', 'claude-2', 'codex']) {
+      expect(cmd).toContain(`grep -qxF ${w} || { echo ${w} >&2; rc=1; }`)
+    }
+    // One list-windows for all of them, and one sleep.
+    expect(cmd.match(/list-windows/g)).toHaveLength(1)
+    expect(cmd.match(/sleep 1/g)).toHaveLength(1)
+    expect(cmd.endsWith('exit \\$rc"')).toBe(true)
+  })
+
+  it('fails the probe when tmux itself is gone, rather than reading no windows as no agents', () => {
+    // `names=$(...) || exit 1` — a dead tmux server must not present as
+    // "every window is missing", which reads as an agent problem.
+    expect(buildAgentWindowCheck(['claude'], PATHS)).toContain("#{window_name}') || exit 1")
   })
 })
 
@@ -351,32 +375,56 @@ describe('verifyAgentWindowAlive', () => {
   // its own implementation instead, which is all these need.
   it('relay-execs the window probe and passes when it exits 0', async () => {
     podExec.mockImplementation(() => Promise.resolve({ stdout: '', stderr: '' }))
-    await expect(verifyAgentWindowAlive('yaac-job-1', 'codex')).resolves.toBeUndefined()
+    await expect(verifyAgentWindowAlive('yaac-job-1', ['codex'])).resolves.toBeUndefined()
     // Read the arguments rather than matching the whole call: a driver
     // delegation passes its optional opts through, so the recorded call
     // carries a trailing undefined the caller never wrote.
     expect(podExec.mock.calls.at(-1)?.slice(0, 2))
-      .toEqual(['yaac-job-1', buildAgentWindowCheck('codex', PATHS)])
+      .toEqual(['yaac-job-1', buildAgentWindowCheck(['codex'], PATHS)])
   })
 
   it('reports a missing window as a dead agent when the probe ran in the pod', async () => {
     podExec.mockImplementation(
       () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'no server running on /tmp/yaac.sock')),
     )
-    // The probe is `list-windows | grep`, so a dead tmux server exits
-    // nonzero too — its stderr is what tells the two apart.
-    await expect(verifyAgentWindowAlive('yaac-job-1', 'codex'))
-      .rejects.toThrow(/agent "codex" exited right after its respawn.*no server running/s)
+    // A dead tmux server exits nonzero too — its stderr is what tells the
+    // two apart, so it has to reach the message.
+    await expect(verifyAgentWindowAlive('yaac-job-1', ['codex']))
+      .rejects.toThrow(/agent "codex" exited right after launch.*no server running/s)
+  })
+
+  it('names every window it was asked about when several agents were launched', async () => {
+    podExec.mockImplementation(
+      () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'claude-2')),
+    )
+    await expect(verifyAgentWindowAlive('yaac-job-1', ['claude', 'claude-2']))
+      .rejects.toThrow(/agents claude, claude-2 exited right after launch/)
   })
 
   it('propagates a transport failure instead of blaming the agent', async () => {
     // The probe never reached the pod, so it says nothing about the window —
-    // calling that a missing tool would send the user hunting the wrong bug.
+    // calling that a dead agent would send the user hunting the wrong bug.
     podExec.mockImplementation(
       () => Promise.reject(new Error('stream relay dial: timeout')),
     )
-    await expect(verifyAgentWindowAlive('yaac-job-1', 'codex'))
+    await expect(verifyAgentWindowAlive('yaac-job-1', ['codex']))
       .rejects.toThrow('stream relay dial: timeout')
+  })
+
+  it('types the verdict, so a caller that cannot rethrow still tells the two apart', async () => {
+    // The create fires this probe without awaiting it, so its handler sees
+    // every rejection and has no try/catch to honor the split with. Filing a
+    // transport blip as a dead agent there hides a live worktree behind an
+    // error row, so the distinction has to survive as a type.
+    podExec.mockImplementation(
+      () => Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'codex')),
+    )
+    await expect(verifyAgentWindowAlive('yaac-job-1', ['codex']))
+      .rejects.toBeInstanceOf(AgentLaunchDeadError)
+
+    podExec.mockImplementation(() => Promise.reject(new Error('stream relay dial: timeout')))
+    const transport = await verifyAgentWindowAlive('yaac-job-1', ['codex']).catch((e: unknown) => e)
+    expect(transport).not.toBeInstanceOf(AgentLaunchDeadError)
   })
 })
 

@@ -15,6 +15,7 @@
  */
 import { notifyWorktreeListChanged } from '#notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
+import { ServerError, type ErrorCode } from '@yaac/shared/errors'
 import type { AgentTool, ProvisioningWorktreeEntry } from '@yaac/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
@@ -26,6 +27,7 @@ interface ProvisioningEntry {
   kind: ProvisioningKind
   message: string
   error?: string
+  errorCode?: ErrorCode
   /** Group this worktree is filed under — what the create asked for, or what
    *  the restarting worktree's row already says — so the row renders in its
    *  sidebar section while it provisions instead of at the top of the list.
@@ -100,12 +102,82 @@ export function updateProvisioningMessage(worktreeId: string, message: string): 
 }
 
 /** Mark a tracked entry as failed; kept (no TTL) until dismissed. No-op if
- *  absent. */
-export function failProvisioning(worktreeId: string, error: string): void {
+ *  absent. The code travels with the message so a client can offer the
+ *  recovery the failure actually has (a missing tool can be installed), and
+ *  survives a reload because the row does. */
+export function failProvisioning(worktreeId: string, error: string, code?: ErrorCode): void {
   const e = entries.get(worktreeId)
   if (!e) return
   e.error = error
+  if (code !== undefined) e.errorCode = code
   notifyWorktreeListChanged()
+}
+
+/**
+ * Report a launch failure noticed after the create that caused it — the
+ * agent-window probe, which is deliberately not awaited so its settle sleep
+ * stays off the create's wall clock.
+ *
+ * A provisioning row is the surface because it is the only one that outlives
+ * the create: it renders as the same dismissable error the create's own
+ * failure does, in the sidebar and the main pane, and survives a reload.
+ *
+ * It WAITS for that create first, and the wait is the point rather than a
+ * formality. The probe is fired from inside the create, so "the verdict
+ * arrives afterwards" is arithmetic — a settle sleep against the create's
+ * remaining tail — not an ordering anybody enforces. Land this row first and
+ * `runProvisioned`'s success path removes it on the way out, erasing the
+ * verdict and restoring exactly the silent ghost this reporting exists to
+ * kill. Waiting on the run makes the order hold at any speed.
+ *
+ * The worktree itself is left alone. Whatever killed the agent is about to
+ * be observed by the liveness watch and the stale reaper, which own what
+ * happens to a session whose agent is gone; this only explains it.
+ */
+export async function reportAgentLaunchFailure(input: {
+  worktreeId: string
+  projectSlug: string
+  tool: AgentTool
+  kind: ProvisioningKind
+  error: string
+}): Promise<void> {
+  await settledRun(input.worktreeId)
+  // A create that failed on its own has already said why, and that reason is
+  // the CAUSE — an agent window missing after a create that blew up is the
+  // consequence. Overwriting would replace the useful error with a
+  // downstream symptom, and re-registering would reset the row besides.
+  if (entries.get(input.worktreeId)?.error !== undefined) return
+  registerProvisioning({
+    worktreeId: input.worktreeId,
+    projectSlug: input.projectSlug,
+    tool: input.tool,
+    kind: input.kind,
+    message: input.error,
+  })
+  failProvisioning(input.worktreeId, input.error)
+}
+
+/**
+ * In-flight `runProvisioned` calls, by worktree id — the anchor
+ * `reportAgentLaunchFailure` waits on. Each stored promise is already
+ * rejection-proofed, so a waiter never inherits the run's failure (it has
+ * its own verdict to file) and no stored value becomes an unhandled
+ * rejection.
+ */
+const runs = new Map<string, Promise<void>>()
+
+/** Resolves once no `runProvisioned` is in flight for this id — immediately
+ *  when none is. */
+async function settledRun(worktreeId: string): Promise<void> {
+  // A loop, not a single await: the id can be re-entered (the retry a
+  // failed create offers reuses its worktree id), and resuming into a
+  // second run would put this row back in the race it just left.
+  let run = runs.get(worktreeId)
+  while (run !== undefined) {
+    await run
+    const next = runs.get(worktreeId)
+    run = next === run ? undefined : next
+  }
 }
 
 /** Drop an entry (provisioning resolved, or user dismissed). Notifies only if
@@ -129,6 +201,13 @@ export async function runProvisioned<T>(
   worktreeId: string,
   run: (onProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
+  // Published BEFORE `run` is invoked, not after: the verdict this anchors
+  // is filed from inside the create itself, so a table populated afterwards
+  // would already have been read past — the waiter would see no run in
+  // flight and land its row in the very race the anchor exists to close.
+  let settle!: () => void
+  const settled = new Promise<void>((resolve) => { settle = resolve })
+  runs.set(worktreeId, settled)
   try {
     const result = await run((message) => updateProvisioningMessage(worktreeId, message))
     // Drop the row before the caller sees the result — its notify pushes the
@@ -139,8 +218,18 @@ export async function runProvisioned<T>(
     notifyWorktreeListChanged()
     return result
   } catch (err) {
-    failProvisioning(worktreeId, err instanceof Error ? err.message : String(err))
+    failProvisioning(
+      worktreeId,
+      err instanceof Error ? err.message : String(err),
+      err instanceof ServerError ? err.code : undefined,
+    )
     throw err
+  } finally {
+    // Clear before releasing, and only if this run is still the current one:
+    // a re-entrant run on the same id has already replaced the entry, and
+    // dropping it here would release a waiter into the middle of that one.
+    if (runs.get(worktreeId) === settled) runs.delete(worktreeId)
+    settle()
   }
 }
 
@@ -155,6 +244,7 @@ export function listProvisioning(): ProvisioningWorktreeEntry[] {
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
+      ...(e.errorCode !== undefined ? { errorCode: e.errorCode } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       createdAt: formatUtcTimestamp(e.startedAt),
     }))
@@ -176,4 +266,7 @@ export function inFlightWorktreeIds(): string[] {
 /** Test helper: drop all tracked entries. */
 export function clearAllProvisioningForTests(): void {
   entries.clear()
+  // The in-flight table too: a run left over from a previous test would
+  // block the next one's out-of-band report on a promise nothing settles.
+  runs.clear()
 }

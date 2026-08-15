@@ -117,8 +117,9 @@ export function NewWorktreeButton(
     const branch = branchValue && !isDefault ? branchValue : undefined
     setOpen(false)
     provision(projectSlug, tool, 'create', worktreeId,
-      (sid, onProgress) =>
-        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, permissionMode))
+      (sid, onProgress, retryOpts) =>
+        createWorktree(projectSlug, tool, onProgress, sid, branch, mode, permissionMode,
+          retryOpts?.installMissingTool))
   }
 
   const pinAsDefault = (): void => {

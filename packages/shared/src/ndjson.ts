@@ -7,11 +7,12 @@
  * Browser-safe on purpose (no node imports) — the webapp consumes the same
  * streams as the CLI.
  */
+import { ServerError, type ErrorCode } from '#errors'
 
 type NdjsonEvent<T> =
   | { type: 'progress'; message: string }
   | { type: 'result'; result: T }
-  | { type: 'error'; error: { code: string; message: string } }
+  | { type: 'error'; error: { code: ErrorCode; message: string } }
 
 /**
  * Read an NDJSON event stream, invoking `onProgress` per progress event
@@ -19,6 +20,12 @@ type NdjsonEvent<T> =
  * terminal `result` payload. Throws with the server's message if the stream
  * carries an `error` event or ends without a result. A trailing line without
  * a final newline is still processed.
+ *
+ * An `error` event throws a `ServerError` carrying the server's own code,
+ * not a bare `Error`: these streams answer 200 and put the failure in the
+ * body, so this is the only place the code can survive to a caller that
+ * branches on it (the webapp offers to install a `MISSING_TOOL`). Callers
+ * that only print `.message` — the CLI — read the same as before.
  */
 export async function consumeNdjsonStream<T>(
   res: Response,
@@ -35,7 +42,7 @@ export async function consumeNdjsonStream<T>(
     const event = JSON.parse(line) as NdjsonEvent<T>
     if (event.type === 'progress') onProgress(event.message)
     else if (event.type === 'result') return { value: event.result }
-    else if (event.type === 'error') throw new Error(event.error.message)
+    else if (event.type === 'error') throw new ServerError(event.error.code, event.error.message)
     return null
   }
   for (;;) {

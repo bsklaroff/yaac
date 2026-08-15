@@ -413,44 +413,84 @@ export async function typeInitialPrompt(
 }
 
 /**
- * In-pod probe that the agent window survived a claim-time respawn.
+ * In-workspace probe that every agent window survived its respawn.
  * `respawn-window` reports success even when its command dies instantly
- * (e.g. the tool binary is missing from the image the spare was warmed
- * from): the pane exits, tmux closes the window, and the yaac session
- * lives on through its init windows — so the claim would hand over a
- * "healthy" session whose agent pane silently falls back to the
- * lowest-index window (see attachArgs). The in-pod sleep gives a doomed
- * command time to exit before the existence probe; a slow crash past it
- * still slips through — this catches the deterministic spawn-failure
+ * (the tool binary missing from the image a spare was warmed from, or from
+ * a containerless host): the pane exits, tmux closes the window, and the
+ * yaac session lives on through its init windows — so the caller would hand
+ * over a "healthy" session whose agent pane silently falls back to the
+ * lowest-index window (see attachArgs). The in-workspace sleep gives a
+ * doomed command time to exit before the existence probe; a slow crash past
+ * it still slips through — this catches the deterministic spawn-failure
  * class, not every crash.
+ *
+ * A window-name LIST rather than a tool, because a launch can open several
+ * conversations at once (a restart resuming a multi-agent worktree), whose
+ * windows are `agentWindowName(tool, i)` — `claude`, `claude-2`, `codex`.
+ * One `list-windows`, one sleep, one exit code for the whole set; each
+ * missing window names itself on stderr, which is what the caller's message
+ * reports. Window names are tool names with an optional `-N` suffix, so
+ * they embed in the double-quoted `sh -c` with nothing to escape.
  */
-export function buildAgentWindowCheck(tool: AgentTool, paths: WorkspacePaths): string {
-  return `sh -c "sleep 1; ${tmuxCmd(paths)} list-windows -t =yaac -F '#{window_name}' `
-    + `| grep -qxF ${tool}"`
+export function buildAgentWindowCheck(windowNames: string[], paths: WorkspacePaths): string {
+  const probes = windowNames
+    .map((name) => `echo \\"\\$names\\" | grep -qxF ${name} || { echo ${name} >&2; rc=1; }`)
+    .join('; ')
+  return `sh -c "sleep 1; rc=0; names=\\$(${tmuxCmd(paths)} list-windows -t =yaac `
+    + `-F '#{window_name}') || exit 1; ${probes}; exit \\$rc"`
 }
 
 /**
- * Runs on the claim path, after `waitForStreamd`, so it rides the relay.
- * Only a `WorkspaceExecError` is a verdict about the window: the probe
- * reached the workspace and `grep` found no such window. A transport failure
- * proves nothing about the agent, so it propagates as itself rather than
- * masquerading as a missing tool.
+ * The probe's VERDICT: it reached the workspace, and the windows the launch
+ * asked for are not there.
  *
- * The probe is `list-windows | grep`, so a dead tmux server exits nonzero
- * too — its stderr ("no server running on ...") is the difference between
- * that and a missing tool, and carrying it keeps the operator off the
- * wrong trail.
+ * A type rather than a message, because the split it carries has to survive
+ * a caller that cannot use `try`/`catch` control flow to honor it. The
+ * create fires this probe without awaiting it, so its whole `.catch` sees
+ * every rejection — and reporting a transport blip as a dead agent there
+ * does not merely add noise: a failed provisioning row HIDES its worktree
+ * from the snapshot, so a false positive makes a live, working worktree
+ * vanish behind an error until the user dismisses it.
  */
-export async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
+export class AgentLaunchDeadError extends Error {
+  constructor(message: string, opts?: { cause?: unknown }) {
+    super(message, opts)
+    this.name = 'AgentLaunchDeadError'
+  }
+}
+
+/**
+ * Runs after the launch that opened the windows — on the claim path after
+ * `waitForStreamd`, so it rides the relay. Only a `WorkspaceExecError` is a
+ * verdict about the windows: the probe reached the workspace and did not
+ * find them, which is what rejects as `AgentLaunchDeadError`. A transport
+ * failure proves nothing about the agent, so it propagates as itself rather
+ * than masquerading as a dead agent.
+ *
+ * The probe also exits nonzero when the tmux server is gone entirely — its
+ * stderr ("no server running on ...") is the difference between that and a
+ * closed agent window, and carrying it keeps the reader off the wrong
+ * trail. Deliberately says the command "failed to start" rather than naming
+ * a cause: a missing binary is the common one, but a bad interpreter, a
+ * half-finished install and an immediate auth exit all land here, and the
+ * probe cannot tell them apart.
+ */
+export async function verifyAgentWindowAlive(
+  jobName: string,
+  windowNames: string[],
+): Promise<void> {
   const driver = worktreeDriver()
   try {
-    await driver.exec(jobName, buildAgentWindowCheck(tool, driver.workspacePaths(jobName)))
+    await driver.exec(jobName, buildAgentWindowCheck(windowNames, driver.workspacePaths(jobName)))
   } catch (err) {
     if (!(err instanceof WorkspaceExecError)) throw err
     const detail = err.stderr.trim()
-    throw new Error(
-      `agent "${tool}" exited right after its respawn in ${jobName} — `
-      + 'likely not installed in the image this spare was warmed from'
+    const label = windowNames.length === 1
+      ? `agent "${windowNames[0]}"`
+      : `agents ${windowNames.join(', ')}`
+    throw new AgentLaunchDeadError(
+      `${label} exited right after launch in ${jobName} — the agent command `
+      + 'failed to start'
       + (detail ? ` (probe stderr: ${detail})` : ''),
       { cause: err },
     )

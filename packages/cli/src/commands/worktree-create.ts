@@ -30,6 +30,10 @@ export interface WorktreeCreateOptions {
    *  matching no group creates it — the caller is naming a group here, not
    *  picking one from a list they can see. */
   group?: string
+  /** Let the server install the agent's CLI when this host hasn't got it,
+   *  rather than refusing the create. Only means anything on a server with
+   *  no image to supply tools (the containerless driver). */
+  installMissing?: boolean
 }
 
 interface WorktreeCreateResult {
@@ -83,6 +87,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       mode: options.mode,
       permissionMode: options.permissionMode,
       group: options.group,
+      installMissingTool: options.installMissing,
     },
   })
 

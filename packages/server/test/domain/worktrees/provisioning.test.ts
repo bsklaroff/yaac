@@ -9,6 +9,7 @@ import {
   updateProvisioningMessage,
   failProvisioning,
   removeProvisioning,
+  reportAgentLaunchFailure,
   runProvisioned,
   listProvisioning,
   inFlightWorktreeIds,
@@ -76,6 +77,85 @@ describe('failProvisioning', () => {
     failProvisioning('missing', 'x')
     expect(listProvisioning()).toEqual([])
   })
+
+  it('carries the failure code to the snapshot, so a client can offer its recovery', () => {
+    register('a')
+    failProvisioning('a', 'codex is not installed', 'MISSING_TOOL')
+    expect(listProvisioning()[0]).toMatchObject({ error: 'codex is not installed', errorCode: 'MISSING_TOOL' })
+  })
+
+  it('leaves the code off a failure that has none', () => {
+    register('a')
+    failProvisioning('a', 'something went wrong')
+    expect(listProvisioning()[0]).not.toHaveProperty('errorCode')
+  })
+})
+
+describe('reportAgentLaunchFailure', () => {
+  const report = (id: string, error = 'agent "codex" exited right after launch') =>
+    reportAgentLaunchFailure({ worktreeId: id, projectSlug: 'p', tool: 'codex', kind: 'create', error })
+
+  it('lands a failed row for a launch that died after its create resolved', async () => {
+    // The window probe is deliberately not awaited (its settle sleep would
+    // sit on every create's wall clock), so its verdict arrives with the
+    // create already gone. Re-registering is how it still reaches the user,
+    // in the same overlay a create failure uses.
+    await report('a')
+    expect(listProvisioning()[0]).toMatchObject({
+      worktreeId: 'a', tool: 'codex', kind: 'create',
+      error: 'agent "codex" exited right after launch',
+    })
+  })
+
+  it('keeps the failed row out of the in-flight set, so the reaper still owns the worktree', async () => {
+    // Nothing is provisioning any more — the worktree is dying, and the
+    // liveness watch and stale reaper are what handle that. A row that
+    // shielded it would leave the corpse in the sidebar forever.
+    await report('a', 'dead')
+    expect(inFlightWorktreeIds()).toEqual([])
+  })
+
+  it('waits for the create still in flight, so its success cannot erase the verdict', async () => {
+    // The probe fires from INSIDE the create, so "the verdict comes after"
+    // is arithmetic, not an ordering anyone enforces. Report first and
+    // runProvisioned's success path removes the row on its way out — the
+    // silent ghost this reporting exists to kill. Here the verdict is filed
+    // at the worst possible moment: mid-create.
+    register('a')
+    let filed: Promise<void> | undefined
+    let release!: () => void
+    const blocked = new Promise<void>((r) => { release = r })
+    const run = runProvisioned('a', async () => {
+      filed = report('a')
+      await blocked
+      return 'ok'
+    })
+    // Still mid-create: the verdict must not have touched the registry yet.
+    await Promise.resolve()
+    expect(listProvisioning()[0]?.error).toBeUndefined()
+
+    release()
+    await run
+    await filed
+    // The create dropped its row, and the verdict then put one back.
+    expect(listProvisioning()[0]).toMatchObject({ worktreeId: 'a', error: 'agent "codex" exited right after launch' })
+  })
+
+  it('leaves a create that failed on its own to say why', async () => {
+    // Waiting out the create means the verdict can find a row that already
+    // failed. That error is the CAUSE and a missing agent window is its
+    // consequence, so the useful message stays and the symptom is dropped.
+    register('a')
+    let filed: Promise<void> | undefined
+    const run = runProvisioned('a', () => {
+      filed = report('a', 'agent died')
+      return Promise.reject(new Error('create blew up'))
+    })
+    await expect(run).rejects.toThrow('create blew up')
+    await filed
+    expect(listProvisioning()).toHaveLength(1)
+    expect(listProvisioning()[0]?.error).toBe('create blew up')
+  })
 })
 
 describe('removeProvisioning', () => {
@@ -113,7 +193,9 @@ describe('runProvisioned', () => {
     await expect(
       runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
     ).rejects.toThrow('missing')
-    expect(listProvisioning()[0]).toMatchObject({ worktreeId: 'a', error: 'missing' })
+    expect(listProvisioning()[0]).toMatchObject({
+      worktreeId: 'a', error: 'missing', errorCode: 'NOT_FOUND',
+    })
   })
 
   it('leaves the registry alone when the caller never registered a row', async () => {
