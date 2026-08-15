@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this session to list the project's sessions, start a sibling session with a prompt, retitle a session, or file sessions into named groups — via the in-session `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac session, farm a task out to a parallel one, see what else is running, rename/retitle a session, or organize sessions into groups.
+description: Ask the yaac server running this session to list the project's sessions, start a sibling session with a prompt, retitle a session, stop a session (a sibling, or this one), or file sessions into named groups — via the in-session `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac session, farm a task out to a parallel one, see what else is running, rename/retitle a session, stop/shut down/wind down a session or this one when its work is done, or organize sessions into groups.
 ---
 
 You are running **inside a yaac session**. The `yaac-mama` command (already on
@@ -13,6 +13,7 @@ same project**. Use it directly — this skill is just the manual.
 yaac-mama list                                    # sessions + groups here
 yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
 yaac-mama rename [<session>] "<title>"            # omit the session to rename yourself
+yaac-mama stop [<session>]                        # omit the session to stop yourself
 yaac-mama group create "<name>"
 yaac-mama group move <session> ["<group>"]        # omit the group to ungroup
 yaac-mama models                                  # tools/models available
@@ -20,10 +21,11 @@ yaac-mama --help
 ```
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the
-`yaac` CLI, enforced by the server: everything here either observes or
-labels, plus the one command that makes something new. There is no stop, no
-delete, no restart, no config. If a task needs one of those, ask the user
-rather than looking for a way around it.
+`yaac` CLI, enforced by the server: it observes, labels, makes one new thing,
+and stops one. Stopping is in reach precisely because it is reversible — a
+stopped session keeps its checkout and its conversation, and the user can
+restart it. There is no delete, no restart, no config. If a task needs one of
+those, ask the user rather than looking for a way around it.
 
 Everything is scoped to **this session's project**, which is not a flag you
 pass — the server resolves who is calling and answers for that project only.
@@ -57,6 +59,21 @@ pass — the server resolves who is calling and answers for that project only.
   and the user can see it without opening the session. Titles are trimmed,
   whitespace-collapsed and capped at 120 characters; the reply tells you what
   was stored. Renaming a sibling works the same way.
+
+- **`stop [<session>]`** — end a session's running container (or tmux
+  server): its agent stops, and its checkout, title, group and conversation
+  all stay, so the user can restart it from the webapp. This is a stop, not a
+  delete — but it is still a visible interruption, and the session's
+  uncommitted work becomes reachable only by restarting it. **Omit the
+  session to stop yourself**, which is the common use: a session spawned to
+  do one job can wind itself down when the job is done. A session that exists
+  but is not running is reported as such rather than as unknown.
+  - **Stopping yourself is the last thing you do.** It tears down the very
+    channel this command's reply comes back over, so the confirmation may
+    never print — *the session ending is the confirmation*, and a missing
+    reply is not an error and not something to retry. Commit and push
+    anything worth keeping, and say whatever you need to say to the user,
+    **before** you run it; nothing after it happens.
 
 - **`group create "<name>"`** — make an empty group. Idempotent: naming one
   that already exists just resolves to it, so you never need to check first.
@@ -99,7 +116,10 @@ pass — the server resolves who is calling and answers for that project only.
   but never answered"* means the server had it and then died or lost the
   reply, so the command **may already have run**. `create` is not idempotent
   (every one mints a new session), so on that message run `yaac-mama list`
-  and look for the session before retrying, or you will get a duplicate.
+  and look for the session before retrying, or you will get a duplicate. The
+  others are safe to repeat — a second `stop` just answers that the session
+  is not running. A `stop` on yourself is the exception to all of this: no
+  reply at all is the expected outcome, not a timeout to interpret.
 - "cannot reach the yaac proxy" / "cannot reach the yaac server" means the
   path itself is broken — report it to the user rather than retrying.
 
@@ -111,3 +131,11 @@ pass — the server resolves who is calling and answers for that project only.
   is provisioning in the background (visible in the yaac webapp).
 - Prefer `yaac-mama list` over guessing what else is running; it is cheap and
   it is the only view you have of your siblings.
+- Stop a sibling when the user asked or when work you started there is
+  finished — not to tidy up unasked. It interrupts a whole agent mid-turn,
+  and any work it had not committed is only reachable by restarting it.
+- Stop yourself only when the user asked, or when the prompt that spawned
+  this session said to wind down when done. Finish first: commit, push,
+  report. Never stop yourself just because you ran out of things to do —
+  a session sitting idle costs the user nothing, and they may have a
+  follow-up.

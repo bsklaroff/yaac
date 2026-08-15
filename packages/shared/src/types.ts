@@ -1023,13 +1023,20 @@ export const MAX_PROMPT_LENGTH = 4000
  * queues opaque envelopes without knowing what any command means, and the
  * containerless route validates against this same list.
  *
- * Deliberately absent: anything that stops, deletes or reconfigures. An
- * agent may make work and file it; unmaking it stays the user's.
+ * `stop` is here because in yaac a stop is REVERSIBLE: it ends the running
+ * unit and keeps the checkout, the row, the title, the group and the
+ * conversation, so a user can restart what an agent wound down. An agent may
+ * stop itself as readily as a sibling — a fanned-out session that has
+ * finished its work is the case this exists for.
+ *
+ * Deliberately absent: anything that deletes, restarts or reconfigures.
+ * Those destroy work or reshape the install, and stay the user's.
  */
 export const MAMA_COMMANDS = [
   'list',
   'create',
   'rename',
+  'stop',
   'group-create',
   'group-move',
   'models',

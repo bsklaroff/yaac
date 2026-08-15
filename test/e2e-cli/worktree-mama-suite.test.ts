@@ -46,6 +46,12 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
   let mockGit: MockGit | null = null
   let serverEnv: NodeJS.ProcessEnv
   let jobA = ''
+  /** The caller's own worktree id — what the self-stop case asserts against,
+   *  since its whole point is that the CALLER's row outlives its unit. */
+  let callerWorktreeId = ''
+  /** The sibling the spawn case creates — the stop case's subject, since a
+   *  session bring-up is the most expensive thing in this file. */
+  let spawnedWorktreeId = ''
 
   beforeAll(async () => {
     await requirePodman()
@@ -113,6 +119,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     const pods = await listWorktreePods(SLUG)
     if (pods.length !== 1) throw new Error(`expected 1 session pod, found ${pods.length}`)
     jobA = pods[0].jobName
+    callerWorktreeId = pods[0].worktreeId
   }, 300_000)
 
   afterAll(async () => {
@@ -154,7 +161,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
 
   it('refuses a command outside the allowlist, whatever the caller sends', async () => {
     // The script rejects what it does not offer...
-    const viaScript = await runMama('stop 1234')
+    const viaScript = await runMama('delete 1234')
     expect(viaScript.exitCode).toBe(2)
     expect(viaScript.output).toContain('unknown command')
 
@@ -163,7 +170,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     // caller bypassing the script reaches the same allowlist.
     const { stdout } = await execInJob(jobA, ['sh', '-c',
       `curl -sS -X POST -H 'Content-Type: application/json' \
-        --data-binary '{"command":"stop","args":{},"body":"x"}' \
+        --data-binary '{"command":"delete","args":{},"body":"x"}' \
         -w '\nHTTP:%{http_code}' http://yaac.internal/cmd 2>&1`,
     ], { timeout: 120_000 })
     expect(stdout).toContain('unknown command')
@@ -188,6 +195,7 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(exitCode).toBe(0)
     const newWorktreeId = output.trim()
     expect(newWorktreeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    spawnedWorktreeId = newWorktreeId
 
     // The provisioning row for the minted id shows while the create runs.
     let sawRow = false
@@ -371,4 +379,66 @@ describe('yaac-mama from inside a session (real CLI + server + cluster)', () => 
     expect(output).toContain('yaac-mama create')
     expect(output).toContain('--group <name>')
   }, 120_000)
+
+  // The two destructive cases, last in the file: after them there is no
+  // sibling to list and, finally, no caller to run a command in.
+
+  it('stops the sibling it spawned, and the stop is a stop and not a delete', async () => {
+    expect(spawnedWorktreeId).not.toBe('')
+    const shortId = spawnedWorktreeId.slice(0, 8)
+
+    const { exitCode, output } = await runMama(`stop ${shortId}`)
+    expect(exitCode).toBe(0)
+    expect(output).toContain(shortId)
+    expect(output).toContain('checkout is kept')
+
+    // The teardown is detached, so the unit goes after the reply, not with
+    // it.
+    let gone = false
+    for (let i = 0; i < 120 && !gone; i++) {
+      const pods = await listWorktreePods(SLUG)
+      gone = !pods.some((p) => p.worktreeId === spawnedWorktreeId)
+      if (!gone) await sleep(1000)
+    }
+    expect(gone).toBe(true)
+
+    // What makes this reversible survives: the session is in the stopped
+    // listing, which is where the user restarts it from.
+    const listed = await runYaac(serverEnv, 'worktree', 'list', '--stopped')
+    expect(listed.exitCode).toBe(0)
+    expect(listed.stdout).toContain(shortId)
+
+    // The caller is untouched — naming a session means that session.
+    const mine = await runMama('list')
+    expect(mine.exitCode).toBe(0)
+    expect(mine.output).toContain('(you)')
+  }, 240_000)
+
+  it('stops ITSELF when no session is named', async () => {
+    // A self-stop tears down the pod its own reply travels back through, so
+    // what is asserted is that the session went away — not what printed.
+    // Whether the confirmation (or the exec itself) survives the teardown is
+    // exactly the race the skill tells an agent not to depend on, which is
+    // also why this does not go through `runMama`: a dying exec must not be
+    // retried into the file's time budget.
+    await execInJob(jobA, ['sh', '-c', 'yaac-mama stop 2>&1'], {
+      timeout: 60_000,
+      maxAttempts: 1,
+    }).catch(() => undefined)
+
+    let gone = false
+    for (let i = 0; i < 120 && !gone; i++) {
+      const pods = await listWorktreePods(SLUG)
+      gone = !pods.some((p) => p.jobName === jobA)
+      if (!gone) await sleep(1000)
+    }
+    expect(gone).toBe(true)
+
+    // The CALLER's own row specifically — the sibling stopped above is
+    // already in this listing, so asserting anything less than its id would
+    // pass whether or not the thing this case exists to prove happened.
+    const listed = await runYaac(serverEnv, 'worktree', 'list', '--stopped')
+    expect(listed.exitCode).toBe(0)
+    expect(listed.stdout).toContain(callerWorktreeId.slice(0, 8))
+  }, 240_000)
 })

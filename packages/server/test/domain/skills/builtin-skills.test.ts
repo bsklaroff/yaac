@@ -75,8 +75,13 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
+    // Stopping is in the subset, and the two things an agent has to know
+    // about it are that omitting the session means itself and that a
+    // self-stop's confirmation may never arrive.
+    expect(body).toContain('yaac-mama stop [<session>]')
+    expect(body).toContain('the session ending is the confirmation')
     // The subset is the point of the skill, so it has to say so: an agent
-    // reading this must not go looking for a stop or a delete.
+    // reading this must not go looking for a delete or a restart.
     expect(body).toContain('strict subset')
   })
 })
