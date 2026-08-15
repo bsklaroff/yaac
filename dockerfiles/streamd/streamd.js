@@ -91,6 +91,7 @@ function handleTcp(socket, params, leftover) {
   // 'localhost' (not a literal IP) so dev servers bound to either 127.0.0.1
   // or ::1 are reachable — the same reason the old relay used `nc localhost`.
   const target = net.connect({ port, host: 'localhost', allowHalfOpen: true })
+  target.setNoDelay(true)
   // Keep buffering client bytes until the dial lands: the socket is in
   // flowing mode (the handshake reader had a listener), and flowing data
   // with no listener is DISCARDED — a client that pipelines payload right
@@ -331,6 +332,10 @@ export function createStreamd({
   // direction; the 'close' handlers still reap the counterpart.
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     socket.on('error', () => { /* per-stream errors close the stream */ })
+    // The output batcher above already decides when a write goes out; Nagle
+    // holding it back for a companion can only add a delayed-ACK interval of
+    // latency to exactly the frames that care about it.
+    socket.setNoDelay(true)
     let buf = Buffer.alloc(0)
     const timer = setTimeout(() => socket.destroy(), HANDSHAKE_TIMEOUT_MS)
 

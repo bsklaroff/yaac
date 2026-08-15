@@ -6,7 +6,7 @@ import { buildApp } from '#main/server'
 import { authAgentHub, refreshPlanUsage } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, openDb } from '#db'
-import { EventHub } from '#api/events'
+import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
@@ -46,10 +46,15 @@ interface RawWebSocket {
   close(code?: number, reason?: string): void
   ping(): void
   terminate(): void
+  readonly readyState: number
   on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
   on(event: 'close', cb: () => void): void
   on(event: 'pong', cb: () => void): void
 }
+
+/** `WebSocket.OPEN`. Spelled out because the `ws` types aren't in our
+ *  resolvable set, so the class constant isn't reachable from here. */
+const WS_OPEN = 1
 
 /**
  * Server-side heartbeat cadence for the auth-agent socket. The daemon pings
@@ -205,16 +210,71 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // method that relies on `this`, so calling a detached reference later
   // would break it (and trips eslint's unbound-method rule).
   const nodeWs = createNodeWebSocket({ app })
-  app.get('/events', nodeWs.upgradeWebSocket(() => ({
-    onOpen: (_evt, ws) => {
-      hub.add(ws)
-      void hub.sendSnapshotTo(ws).catch(
-        (err: unknown) => serverLog(`[server] events: initial snapshot failed: ${String(err)}`),
-      )
-    },
-    onClose: (_evt, ws) => hub.remove(ws),
-    onError: (_err, ws) => hub.remove(ws),
-  })))
+  // Compress the WebSockets. What rides them is exactly what deflate is good
+  // at — ANSI-heavy terminal repaints and the snapshot/ACP JSON — and over a
+  // slow link (a tailnet from far away is the whole WAN path here) that is
+  // the cheapest bandwidth there is to get back.
+  //
+  // Set on the server *after* construction because @hono/node-ws builds its
+  // WebSocketServer itself with no options pass-through. `ws` reads this at
+  // upgrade time, once per connection, so assigning it here is honored — and
+  // it must be an object, since only ws's constructor normalizes `true` to
+  // one. The api test asserting the extension is negotiated is the tripwire
+  // if a future ws moves that read into the constructor.
+  //
+  // Everything else is ws's default, which is a deliberate choice with a
+  // price: context takeover stays ON in both directions, so a socket that
+  // has compressed one frame keeps its zlib contexts for the life of the
+  // connection — roughly 300KB per socket at the default memLevel 8 /
+  // windowBits 15, or a few MB for a user holding a dozen panes open plus
+  // /events and the ACP sockets. That is the right trade here precisely
+  // because successive ANSI repaints on one pane share so much history:
+  // context takeover is most of why they compress at all. If it ever needs
+  // capping, the knobs are `zlibDeflateOptions: { memLevel, windowBits }`
+  // and `serverNoContextTakeover: true`.
+  nodeWs.wss.options.perMessageDeflate = {
+    // Below this, framing and the deflate block header cost more than the
+    // compression saves — and the frames under it are the latency-critical
+    // ones (a keystroke, its echo, a control frame). Note this exempts our
+    // half only: the extension is negotiated in both directions and browsers
+    // apply no threshold of their own, so a browser still deflates its own
+    // tiny keystroke frames. That is client CPU and nothing else, but it is
+    // the one part of the interactive path this cannot exempt.
+    threshold: 512,
+    zlibDeflateOptions: { level: 6 },
+  }
+  app.get('/events', nodeWs.upgradeWebSocket(() => {
+    // Hold the raw `ws` socket, not Hono's WSContext: the context's send
+    // forwards `{ compress: opts?.compress }`, and that explicit `undefined`
+    // overrides ws's own `compress: true` default — which would silently
+    // leave the largest, most compressible payload on the server uncompressed.
+    // The factory runs per connection, so this closure is this client's.
+    let conn: WsLike | null = null
+    return {
+      onOpen: (_evt, ws) => {
+        const raw = ws.raw as RawWebSocket | undefined
+        if (!raw) {
+          ws.close(1011, 'no raw socket')
+          return
+        }
+        // The OPEN guard is not load-bearing — `ws` answers a send on a
+        // closed socket by accounting the bytes rather than throwing, so the
+        // hub's try/catch could never drop a dead connection anyway and
+        // removal rides on onClose/onError below. It states that lifecycle
+        // assumption here instead of inheriting it from ws internals, and
+        // skips the sends in the closing window for free.
+        conn = {
+          send: (data: string) => { if (raw.readyState === WS_OPEN) raw.send(data) },
+        }
+        hub.add(conn)
+        void hub.sendSnapshotTo(conn).catch(
+          (err: unknown) => serverLog(`[server] events: initial snapshot failed: ${String(err)}`),
+        )
+      },
+      onClose: () => { if (conn) hub.remove(conn) },
+      onError: () => { if (conn) hub.remove(conn) },
+    }
+  }))
 
   // Auth-daemon relay: the login broker on the user's machine holds one
   // outbound socket here; sign-in routes forward ops over it and serve

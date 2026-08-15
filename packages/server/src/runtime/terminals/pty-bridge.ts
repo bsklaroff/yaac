@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { worktreeDriver } from '#drivers/driver'
 import { tmuxCmd } from '#runtime/agents'
+import { createOutputBatcher } from '@yaac/shared/batcher'
 import type { WorkspacePaths } from '#drivers/contract'
 
 const DEFAULT_COLS = 80
@@ -279,6 +280,9 @@ interface ControlMessage {
   cols?: number
   rows?: number
   name?: string
+  /** Ping only: an opaque client stamp the pong echoes back, so the client
+   *  can measure the round trip. */
+  t?: number
 }
 
 /** Parse a text control frame. Returns null for anything unrecognized. */
@@ -349,15 +353,25 @@ function bridge(
     resizeWindow?: (cols: number, rows: number) => void
   },
 ): void {
-  ptyProc.onData((d) => {
+  // Output rides a micro-batcher (see @yaac/shared/batcher): one WebSocket
+  // message per burst rather than per PTY data event. The pod driver already
+  // batches at the source (streamd's own mirror of this batcher), but that
+  // one is in the image and so cannot serve the containerless driver, whose
+  // host PTY reaches this bridge event by event. Batching here covers both,
+  // and costs the pod path nothing: the leading-edge policy flushes a lone
+  // write immediately, so keystroke echo pays no added latency.
+  const out = createOutputBatcher((chunk) => {
     try {
-      sock.send(Buffer.from(d, 'utf8'))
+      sock.send(Buffer.from(chunk, 'utf8'))
     } catch {
       // socket gone; the close handler will kill the pty
     }
   })
 
+  ptyProc.onData((d) => out.push(d))
+
   ptyProc.onExit(({ exitCode }) => {
+    out.flush() // ordering: all output precedes the close
     try {
       sock.close(1000, `pty exited (${exitCode})`)
     } catch {
@@ -378,11 +392,18 @@ function bridge(
     } else if (ctrl.type === 'signal' && ctrl.name) {
       ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {
-      sock.send('{"type":"pong"}')
+      // Echo the client's stamp so it can time the round trip without
+      // keeping its own in-flight table (the browser probes the link this
+      // way; see the frontend's link-quality store). A ping without one —
+      // the CLI's bare keepalive — still gets the bare pong it expects.
+      sock.send(typeof ctrl.t === 'number' && Number.isFinite(ctrl.t)
+        ? JSON.stringify({ type: 'pong', t: ctrl.t })
+        : '{"type":"pong"}')
     }
   })
 
   sock.onClose(() => {
+    out.dispose()
     opts.detach?.()
     setTimeout(() => {
       opts.detach?.()

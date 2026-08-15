@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { DETACH_GRACE_MS } from '#runtime/terminals/pty-bridge'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { BATCH_MS } from '@yaac/shared/batcher'
 import type { StreamPty, WorktreeDriver } from '#drivers/contract'
 
 const execMock = vi.fn<WorktreeDriver['exec']>()
@@ -337,6 +338,17 @@ describe('attachPty', () => {
     a.sock.emitMessage('{"type":"ping"}', false)
     expect(a.sock.sent).toContain('{"type":"pong"}')
 
+    // A stamped ping is how the browser times the link: the pong echoes the
+    // stamp back, so the client measures a round trip without keeping its
+    // own table of what is in flight.
+    a.sock.emitMessage('{"type":"ping","t":1234.5}', false)
+    expect(a.sock.sent).toContain('{"type":"pong","t":1234.5}')
+    // A stamp that isn't a number can't be echoed as one; the CLI's bare
+    // keepalive shape is the fallback rather than a malformed frame.
+    a.sock.emitMessage('{"type":"ping","t":"soon"}', false)
+    a.sock.emitMessage('{"type":"ping","t":null}', false)
+    expect(a.sock.sent.filter((s) => s === '{"type":"pong"}')).toHaveLength(3)
+
     // Junk, non-objects, unknown types and half-filled frames are all no-ops.
     const before = { sent: a.sock.sent.length, killed: a.pty.killed.length }
     for (const junk of [
@@ -349,6 +361,50 @@ describe('attachPty', () => {
     // A PTY that exits takes the socket with it.
     a.pty.emitExit(3)
     expect(a.sock.closed).toEqual([[1000, 'pty exited (3)']])
+  })
+
+  it('coalesces an output burst into one frame per window, flushing before the close', async () => {
+    // Fake timers must be installed before the attach: the batcher reads the
+    // clock it captures at construction.
+    vi.useFakeTimers()
+    try {
+      const a = attach(job(14), { target: 'agent' })
+      await flush()
+      const frames = (): string[] =>
+        a.sock.sent.map((s) => Buffer.from(s as Uint8Array).toString('utf8'))
+
+      // Leading edge: the first write after quiet goes out immediately, so
+      // batching costs keystroke echo nothing.
+      a.pty.emitData('a')
+      expect(frames()).toEqual(['a'])
+
+      // A tmux redraw reaches the PTY as a run of small writes. Sending one
+      // frame each means the browser parses and paints each fragment
+      // separately — and a fragment ending mid-redraw is what makes the
+      // cursor flash across the screen while scrolling.
+      a.pty.emitData('b')
+      a.pty.emitData('c')
+      expect(a.sock.sent).toHaveLength(1)
+      vi.advanceTimersByTime(BATCH_MS)
+      expect(frames()).toEqual(['a', 'bc'])
+
+      // Whatever is still pending when the PTY exits has to reach the client
+      // ahead of the close, or a program's last output is lost on exit.
+      a.pty.emitData('bye')
+      expect(a.sock.sent).toHaveLength(2)
+      a.pty.emitExit(0)
+      expect(frames()).toEqual(['a', 'bc', 'bye'])
+      expect(a.sock.closed).toEqual([[1000, 'pty exited (0)']])
+
+      // A closed connection drops what it was holding rather than writing to
+      // a dead socket later.
+      a.pty.emitData('after')
+      a.sock.emitClose()
+      vi.advanceTimersByTime(BATCH_MS * 4)
+      expect(frames()).toEqual(['a', 'bc', 'bye'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('survives a socket that vanished between frames', async () => {

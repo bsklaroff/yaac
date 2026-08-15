@@ -19,6 +19,12 @@
  *    per batchMs;
  *  - an accumulation reaching maxBytes flushes at once (memory bound, and
  *    big transfers shouldn't wait out the timer).
+ *
+ * `packages/shared/src/batcher.ts` is the host-side mirror of this module —
+ * same policy, same constants, over strings rather than Buffers — used by the
+ * server's PTY bridge and the webapp's keystroke path. This copy exists
+ * separately because the image has no workspace resolver. Change both
+ * together, the same arrangement framing.js and stream-frames.ts already use.
  */
 
 /** One flush window. Well under a 60Hz frame, so batching never becomes
@@ -52,7 +58,12 @@ export function createOutputBatcher(write, { batchMs = BATCH_MS, maxBytes = MAX_
 
   return {
     push(buf) {
-      if (disposed) return
+      // Empty pushes are dropped rather than parked: flushNow's
+      // `pendingBytes === 0` return would otherwise leave a zero-length
+      // buffer sitting in `pending` until some later real byte flushed it.
+      // node-pty does not emit them, so this is about keeping the policy
+      // identical to the host-side mirror rather than a live case.
+      if (disposed || buf.length === 0) return
       pending.push(buf)
       pendingBytes += buf.length
       if (pendingBytes >= maxBytes) {

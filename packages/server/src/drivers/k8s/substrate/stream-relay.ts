@@ -179,6 +179,12 @@ export async function relayDial(
 
   return new Promise<net.Socket>((resolve, reject) => {
     const socket = net.connect(addr.port, addr.host)
+    // Nagle would hold a small write back waiting for more, and every stream
+    // that cares about latency here already coalesces deliberately (the
+    // output batcher at both ends, the keystroke batcher in the browser). All
+    // it can add on top of that is delay — up to a delayed-ACK interval per
+    // write, spending the batcher's whole 8ms budget in the kernel.
+    socket.setNoDelay(true)
     let settled = false
     // Anything at all coming back, not just a whole line: a peer that spoke
     // is a peer that is there, which is what the evidence rule below turns

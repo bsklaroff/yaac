@@ -3023,6 +3023,10 @@ const RELAY_PRESPLICE_TIMEOUT_MS = 6_000
 
 function handleRelayConnection(socket: net.Socket, podStreamPort: number): void {
   socket.on('error', () => { /* per-connection; close tears down the splice */ })
+  // Both legs of the splice go Nagle-free: what rides this relay is terminal
+  // output and keystrokes, already coalesced by the batchers at each end, so
+  // holding a small write back to look for a companion only adds delay.
+  socket.setNoDelay(true)
   let buf = Buffer.alloc(0)
   // Before the auth line there is nothing we may say (no oracle for
   // unauthenticated peers), so expiry is a silent destroy until it lands.
@@ -3103,6 +3107,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       // allowHalfOpen so an EOF from either end passes through the splice
       // (pipe propagates the end()); the close handlers reap the pair.
       const target = net.connect({ port: podStreamPort, host: ip, allowHalfOpen: true })
+      target.setNoDelay(true)
       // The dial leg's share of the deadline moves onto the target socket,
       // which is the only handle that can also reap it: a dropped SYN would
       // otherwise sit out the OS retry series holding both sockets open.

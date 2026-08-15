@@ -12,6 +12,12 @@ import { patchTouchScroll } from '#lib/touch-scroll'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
+import {
+  parsePongRtt,
+  recordRtt,
+  RTT_PROBE_INTERVAL_MS,
+} from '#lib/link-quality'
+import { createOutputBatcher } from '@yaac/shared/batcher'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#store'
@@ -23,6 +29,13 @@ import {
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+
+/** Keystroke coalescing window. Half the output batcher's, because input is
+ *  a trickle next to output and the only thing worth catching is a burst that
+ *  is already faster than a human — autorepeat, a paste arriving in pieces,
+ *  a TUI's mouse reports. Under a leading-edge policy a lone keypress is
+ *  never delayed by it at all. */
+const INPUT_BATCH_MS = 4
 
 /**
  * One embedded terminal attached to a worktree's tmux via the server's
@@ -187,9 +200,25 @@ export function WorktreeTerminal({
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let noticeTimer: ReturnType<typeof setTimeout> | undefined
+    let pingTimer: ReturnType<typeof setInterval> | undefined
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
     let closedByUs = false
     const encoder = new TextEncoder()
+
+    // Keystrokes ride a micro-batcher rather than one WebSocket frame each.
+    // Autorepeat, a fast typist and a paste that arrives in pieces all emit
+    // onData far faster than a slow link can carry that many frames, and each
+    // one costs its own WebSocket header and TLS record. The leading-edge
+    // policy means a keystroke after any quiet still goes out immediately, so
+    // ordinary typing is not delayed at all — only bursts coalesce.
+    //
+    // Nothing needs clearing when a socket drops: the send below is gated on
+    // an OPEN socket, and the reconnect that follows is orders of magnitude
+    // slower than the flush window, so pending input can never be replayed
+    // into the next socket. It is dropped, exactly as it was before batching.
+    const input = createOutputBatcher((d) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d))
+    }, { batchMs: INPUT_BATCH_MS })
 
     const sendResize = (): void => {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -234,6 +263,14 @@ export function WorktreeTerminal({
       sock.binaryType = 'arraybuffer'
       let opened = false
 
+      // Probe the round trip: the server echoes the stamp back, and the
+      // difference is what the link-quality store reports. One tiny frame per
+      // pane per interval, and it doubles as evidence the socket is alive.
+      const sendPing = (): void => {
+        if (sock.readyState !== WebSocket.OPEN) return
+        sock.send(JSON.stringify({ type: 'ping', t: performance.now() }))
+      }
+
       sock.onopen = (): void => {
         opened = true
         // Back before the pending notice could fire: the drop healed, so it
@@ -244,15 +281,29 @@ export function WorktreeTerminal({
         gate.onOpen()
         fit.fit()
         sendResize()
+        sendPing()
+        clearInterval(pingTimer)
+        pingTimer = setInterval(sendPing, RTT_PROBE_INTERVAL_MS)
       }
       sock.onmessage = (e: MessageEvent): void => {
-        if (typeof e.data === 'string') return // control frame (error/pong)
+        if (typeof e.data === 'string') {
+          // Control frame: a pong carrying our stamp is a link measurement,
+          // anything else (an error, a stamp-less pong) is not for us.
+          const rtt = parsePongRtt(e.data, performance.now())
+          if (rtt !== null) recordRtt(rtt)
+          return
+        }
         gate.onData()
         term.write(new Uint8Array(e.data as ArrayBuffer))
       }
       sock.onclose = (): void => {
-        // Ignore a stale socket we've already torn down or replaced.
+        // Ignore a stale socket we've already torn down or replaced. Note
+        // this precedes stopping the probe: a replacement socket has already
+        // installed its own timer over ours, so a late close here must not
+        // clear the live pane's.
         if (closedByUs || sock !== ws) return
+        clearInterval(pingTimer)
+        pingTimer = undefined
         // CAN (0x18) goes out now whether or not anything is ever announced:
         // a stream that died mid-escape-sequence leaves the parser inside
         // that sequence, where it would swallow the notice and the reattach
@@ -280,9 +331,7 @@ export function WorktreeTerminal({
 
     // Tap the terminal (not a single socket) so input/resize keep flowing to
     // whichever socket is current after a reconnect.
-    const dataSub = term.onData((d: string): void => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d))
-    })
+    const dataSub = term.onData((d: string): void => input.push(d))
     const resizeSub = term.onResize((): void => sendResize())
 
     // Let the mobile accessory key bar type into this pane. Routed through
@@ -335,6 +384,14 @@ export function WorktreeTerminal({
       clearTimeout(connectTimer)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       clearTimeout(noticeTimer)
+      clearInterval(pingTimer)
+      // Unmount is the one teardown where the tail of a burst can still be
+      // delivered: the socket below is closed after this, so it is open now,
+      // and the send's OPEN guard makes the flush a no-op if it isn't. (A
+      // socket *drop* is the other case, and there the pending input must
+      // stay dropped — see the batcher's construction.)
+      input.flush()
+      input.dispose()
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('online', reconnectNow)
       observer.disconnect()
