@@ -23,6 +23,10 @@ asks, which breaks hostPath writes from gVisor worktree pods; see the
 [machine notes](docs/cluster-setup.md#macos-the-podman-machine) and
 [#27](https://github.com/bsklaroff/yaac/issues/27)).
 
+It also installs what the [containerless driver](docs/containerless-driver.md)
+needs on the host — `tmux`, `socat`, `fd`, `ripgrep` — since that mode runs
+worktrees as host processes with no session image to supply anything.
+
 ### From source (development)
 
 A dev install **replaces** the brew one — both want to own the same
@@ -39,6 +43,8 @@ brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
 brew install node pnpm kubernetes-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
+# For the containerless driver (worktrees as host processes, no image):
+brew install tmux socat fd ripgrep
 ```
 
 #### Linux
@@ -51,6 +57,8 @@ brew install node pnpm kubernetes-cli podman bsklaroff/yaac/yaac-kind bsklaroff/
 # links against; a minimal 26.04 does not ship it. yaac fetches it into its
 # own cache if it is missing, so this line only saves it the trip.
 sudo apt install podman acl libgomp1
+# For the containerless driver (worktrees as host processes, no image):
+sudo apt install tmux socat fd-find ripgrep
 
 # Node via nvm: its official builds ship the type-stripper (Node >= 22.18).
 # 22.22.2 matches the repo's .nvmrc; pnpm installs into nvm's user-owned

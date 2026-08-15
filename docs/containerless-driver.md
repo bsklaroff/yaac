@@ -342,8 +342,15 @@ answer under both drivers on one line.
 `yaac host check` verifies them, and the driver logs any hard failure at
 startup rather than letting a create fail with a spawn error:
 
-- **tmux** (3.0+ — the status watcher drives control mode) and **git**: required.
-- **lsof**: port detection; without it worktrees run fine and report no ports.
+- **tmux** (3.0+ — the status watcher drives control mode) and **git**:
+  required. The launch spawns both directly, so a create refuses up front
+  rather than dying inside `launchWorkspace` with the workspace half made.
+- **node**: required for `--mode acp`, where the window's command is `node`
+  running yaac's own acpd. Unlike an agent CLI's interpreter, that one is
+  yaac's to account for — a server started by a node that never landed on
+  `PATH` (a bundled one, as the desktop app stages) would open a window that
+  execs nothing. Warned about rather than failed, like socat below: the
+  server plainly runs without it, and only acp creates refuse.
 - **socat**: required for `--mode acp` — the chat transport dials acpd's
   socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
   rather than fails for that reason; a create in acp mode refuses.
@@ -351,6 +358,15 @@ startup rather than letting a create fail with a spawn error:
   image under the pod driver, and has to be installed here.
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
   image to have installed one.
+- **lsof**: port detection; without it worktrees run fine and report no ports.
+- **curl**: how `yaac-mama` reaches this server from inside a session;
+  nothing else uses it.
+
+Nothing gates on the tools the agents themselves reach for — `ripgrep` and
+`fd` (pi downloads its own when neither `fd` nor `fdfind` is on `PATH`), `gh`,
+`jq` — which is the same line the builtin skills are written to. The Homebrew
+formula installs the useful ones anyway, since a mode with no image is the
+one place a missing utility is the user's problem.
 
 ### Missing tools
 
@@ -361,14 +377,17 @@ command that execs nothing exits 127, tmux closes the window, and the
 worktree ends seconds after a create that already reported success:
 
 - Before anything is provisioned, the create asks the driver
-  (`assertCanLaunch`) whether this host has the binary the launch will run —
-  the tool itself for `--mode tui`, the tool's ACP adapter for `--mode acp`,
-  which bundles its own SDK and never shells out to the CLI, plus the `socat`
-  that mode's transport dials with. A miss refuses the create with
-  `MISSING_TOOL` and the command that installs it. socat is in that list even
-  though its absence does not kill the worktree: the pane simply never
-  attaches, which reads as an agent that hangs rather than a tool that is
-  missing, and there is no npm command for yaac to offer to run.
+  (`assertCanLaunch`) whether this host has the binaries the launch will run:
+  `tmux` and `git` whatever it runs, then the tool itself for `--mode tui`,
+  or for `--mode acp` the tool's ACP adapter — which bundles its own SDK and
+  never shells out to the CLI — under `node`, plus the `socat` that mode's
+  transport dials with. A miss refuses the create with `MISSING_TOOL` and the
+  command that installs it. They are asked in dependency order, so a bare
+  machine is told about tmux rather than about an adapter it has nowhere to
+  run. socat is in that list even though its absence does not kill the
+  worktree: the pane simply never attaches, which reads as an agent that
+  hangs rather than a tool that is missing, and there is no npm command for
+  yaac to offer to run.
 - After the launch, a probe checks the agent windows actually survived,
   catching what a PATH check cannot: a binary that is present but broken. It
   is deliberately not awaited — its settle delay would land on every create

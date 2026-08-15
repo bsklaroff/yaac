@@ -19,6 +19,27 @@ class Yaac < Formula
   depends_on "podman"
   depends_on "bsklaroff/yaac/yaac-kind"
 
+  # The containerless driver (`yaac server start --driver containerless`)
+  # runs worktrees as host processes, so what a session image would have
+  # supplied has to be on this machine instead. macOS ships none of these.
+  # tmux supervises every worktree and socat carries the ACP chat transport;
+  # `yaac host check` reports both, and a create refuses without them.
+  depends_on "tmux"
+  depends_on "socat"
+  # Agent file-search tools, the same pair the session images carry. Nothing
+  # gates on them: pi downloads its own fd when none is on PATH, and an
+  # agent without ripgrep just searches more slowly.
+  depends_on "fd"
+  depends_on "ripgrep"
+  # Provided by macOS, installed on Linux. git arrives with the Command Line
+  # Tools that installing Homebrew itself requires, so it is here for Linux
+  # and for the record: the containerless driver spawns all three directly
+  # (git for every checkout, curl for the in-session yaac-mama helper, lsof
+  # for port detection).
+  uses_from_macos "curl"
+  uses_from_macos "git"
+  uses_from_macos "lsof"
+
   on_macos do
     # libkrun is the only macOS virtualization stack whose virtiofs can
     # report real file ownership, which gVisor session pods writing hostPath
@@ -56,6 +77,17 @@ class Yaac < Formula
       Verify everything with:
 
         yaac cluster check
+
+      To run worktrees as host processes instead - no cluster, no image and
+      no sandbox - start the server on the containerless driver and verify
+      the host rather than a cluster:
+
+        yaac server start --driver containerless
+        yaac host check
+
+      That mode has no session image, so install the agent CLI you want to
+      run (claude, codex, opencode, pi) on this machine; `yaac host check`
+      names the commands.
     EOS
   end
 
