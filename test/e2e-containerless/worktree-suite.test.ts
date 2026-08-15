@@ -466,9 +466,17 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
   }, 120_000)
 
   it('refuses a command outside the allowlist, and an unknown token', async () => {
-    const denied = await runMama('stop', worktreeId)
+    const denied = await runMama('delete', worktreeId)
     expect(denied.code).toBe(2)
     expect(denied.out).toContain('unknown command')
+
+    // An empty session argument is a usage error, not a self-stop: it never
+    // leaves the script, so this is safe to run against the live subject.
+    // `stop "$id"` with $id unset is a caller that meant to name a sibling,
+    // and falling through to the default would stop THIS worktree instead.
+    const empty = await runMama('stop', '')
+    expect(empty.code).toBe(2)
+    expect(empty.out).toContain('omit the session to stop yourself')
 
     // Straight at the route, past the script: the server refuses the same
     // command, and refuses a caller it cannot identify.
@@ -481,11 +489,51 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       return res.status
     }
     const token = (await mamaCreds()).YAAC_MAMA_TOKEN
-    expect(await post(token, 'stop')).toBe(422)
+    expect(await post(token, 'delete')).toBe(422)
     expect(await post('not-a-real-token', 'list')).toBe(401)
     // The server's own secret is not a yaac-mama credential either.
     expect(await post(server.lock.secret, 'list')).toBe(401)
   })
+
+  it('stops a session it names, and stops ITSELF when it names none', async () => {
+    // Its own subject, because both halves destroy one — and the second half
+    // destroys the very worktree it is running in, which is the whole point:
+    // under this driver the tmux server hosting the command IS the unit the
+    // stop takes down.
+    const doomed = await createWorktree()
+    const theirs = await worktreeEnv(doomed)
+    const asDoomed = async (...args: string[]): Promise<{ code: number; out: string }> => {
+      const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+      const { stdout } = await execFileAsync('sh', ['-c',
+        `YAAC_MAMA_URL='${theirs.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${theirs.YAAC_MAMA_TOKEN}' `
+        + `${path.join(process.cwd(), 'worktree-bin', 'yaac-mama')} ${quoted} 2>&1; echo "EXIT:$?"`,
+      ])
+      const m = /EXIT:(\d+)\s*$/.exec(stdout)
+      if (!m) throw new Error(`no exit marker:\n${stdout}`)
+      return { code: Number(m[1]), out: stdout.slice(0, m.index) }
+    }
+
+    // A session it cannot see is refused rather than half-resolved.
+    const missing = await asDoomed('stop', 'no-such-session')
+    expect(missing.code).toBe(1)
+    expect(missing.out).toContain('no session')
+
+    // No session named: the token says who is asking, and the answer is the
+    // caller. Its reply may not survive its own teardown, so what is
+    // asserted is the tmux server going away — the contract the skill
+    // states, rather than the line it hopes to print.
+    await asDoomed('stop').catch(() => undefined)
+    let gone = false
+    for (let i = 0; i < 60 && !gone; i++) {
+      gone = await tmux(doomed, 'has-session', '-t', 'yaac').then(() => false, () => true)
+      if (!gone) await new Promise((r) => setTimeout(r, 1_000))
+    }
+    expect(gone).toBe(true)
+    // A stop, not a delete: the checkout it was working in is still there.
+    await expect(fs.stat(
+      path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', doomed),
+    )).resolves.toBeDefined()
+  }, 180_000)
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
     // The delivery a pod does with a read-only mount over each tool home. No

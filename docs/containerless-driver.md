@@ -172,11 +172,20 @@ project, that project wants the k8s driver.
 
 `yaac-mama` is the in-worktree command channel — a strict subset of the yaac
 CLI an agent may run against the server that started it: list the project's
-sessions, start another, retitle one, and make and fill sidebar groups.
-Everything in it either observes or labels, plus the one command that makes
-something new; nothing stops, deletes or reconfigures. Both drivers have it,
-and the difference is only the transport, because the two substrates differ
-in one fact: whether a workspace can dial the server at all.
+sessions, start another, retitle one, stop one (its own session included),
+and make and fill sidebar groups. Stopping is in reach because it is
+reversible — the checkout, the row and the conversation survive it, so the
+user can restart what an agent wound down; deleting, restarting and
+reconfiguring are not there. Both drivers have it, and the difference is only
+the transport, because the two substrates differ in one fact: whether a
+workspace can dial the server at all.
+
+A session stopping ITSELF is the one command whose reply is best-effort under
+either driver, since the caller tears down what its own answer travels over —
+its pod under `k8s`, and under `containerless` the tmux server the command is
+running in. The teardown is detached, so the handler answers first, but the
+contract the script and the skill state is that the session ending is the
+confirmation.
 
 A pod cannot. It is inside the cluster, the server is a host process with no
 in-cluster address, and the whole point of the sandbox is that the pod holds

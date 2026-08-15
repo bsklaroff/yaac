@@ -9,11 +9,13 @@
  * name cannot be run, whichever way it arrived.
  *
  * What a caller may NOT do is as deliberate as what it may. An agent can see
- * the project's worktrees, make another one, retitle one, and file worktrees
- * into named groups — everything here either observes or labels, plus the
- * one command that makes something new. It cannot stop, delete, restart or
- * reconfigure anything: those destroy or reshape work, and stay the user's.
- * An agent that wants one asks for it in prose.
+ * the project's worktrees, make another one, retitle one, file them into
+ * named groups, and stop one — its own included. Stopping is in reach
+ * because in yaac it is REVERSIBLE: `stopWorktree` ends the running unit and
+ * keeps the checkout, the row, the title, the group and the conversation, so
+ * a user can restart whatever an agent wound down. Deleting, restarting and
+ * reconfiguring are not: those destroy work or reshape the install, and stay
+ * the user's. An agent that wants one asks for it in prose.
  *
  * The caller is never trusted for its own identity: `MamaCaller` is resolved
  * by the transport (pod source IP under k8s, an opaque per-worktree token
@@ -24,6 +26,8 @@ import { listActiveWorktrees } from './list'
 import { listWorktreeGroups, resolveGroup } from './groups'
 import { getProjectWorktreeRows, setWorktreeGroup, setWorktreeTitle } from '#db'
 import { resolveSessionInProject } from './resolve'
+import { stopWorktree } from './stop'
+import { ServerError } from '@yaac/shared/errors'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import {
@@ -83,6 +87,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
   create: ['tool', 'model', 'group'],
   rename: ['session'],
+  stop: ['session'],
   'group-create': [],
   'group-move': ['session'],
   models: [],
@@ -127,6 +132,7 @@ export async function runMamaCommand(
       case 'list': return await runList(caller)
       case 'create': return await runCreate(caller, request)
       case 'rename': return await runRename(caller, request)
+      case 'stop': return await runStop(caller, request)
       case 'group-create': return await runGroupCreate(caller, request)
       case 'group-move': return await runGroupMove(caller, request)
       case 'models': return await runModels(caller)
@@ -241,16 +247,9 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
  * same way everything here is.
  */
 async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const session = request.args.session
-  // Omitted means "me", which is the common case and saves an agent looking
-  // up an id it would only be using to name itself.
-  const target = session === undefined || session.trim() === ''
-    ? caller.workspaceId
-    : session.trim()
-  const worktreeId = await resolveSessionInProject(caller.projectSlug, target)
-  if (worktreeId === null) {
-    return { ok: false, error: `no session '${target}' in ${caller.projectSlug}` }
-  }
+  const target = await resolveTargetSession(caller, request.args.session)
+  if (!target.ok) return target
+  const worktreeId = target.worktreeId
 
   const title = request.body.trim()
   if (title === '') return { ok: false, error: 'rename needs a title' }
@@ -259,6 +258,85 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
   // whitespace and caps the length, so this is what the sidebar will show.
   const stored = (await getProjectWorktreeRows(caller.projectSlug)).get(worktreeId)?.title
   return { ok: true, output: `Renamed ${worktreeId.slice(0, 8)} to "${stored ?? title}".` }
+}
+
+/**
+ * Which session a command that names one is aimed at.
+ *
+ * Shared by the two commands that take a `--session`, so both say "me" the
+ * same way: omitted means the caller, which saves an agent looking up an id
+ * it would only be using to name itself. Resolution is
+ * `resolveSessionInProject`'s, so an id from another project simply is not
+ * here, and an ambiguous prefix resolves to nothing rather than to whichever
+ * row came back first.
+ */
+async function resolveTargetSession(
+  caller: MamaCaller,
+  session: string | undefined,
+): Promise<{ ok: true; worktreeId: string } | { ok: false; error: string }> {
+  const target = session === undefined || session.trim() === ''
+    ? caller.workspaceId
+    : session.trim()
+  const resolved = await resolveSessionInProject(caller.projectSlug, target)
+  return resolved.ok
+    ? resolved
+    : { ok: false, error: sessionError(caller.projectSlug, target, resolved.reason) }
+}
+
+/**
+ * What to tell a caller whose session argument resolved to nothing.
+ *
+ * The two failures need different next moves, and behind a destructive verb
+ * that difference is the whole message: an unknown id means look again, an
+ * ambiguous prefix means the caller already holds the right id and simply
+ * did not type enough of it. Answering both with "no session" sends an agent
+ * back to `list` when it needed one more character.
+ */
+function sessionError(
+  projectSlug: string,
+  target: string,
+  reason: 'not-found' | 'ambiguous',
+): string {
+  return reason === 'ambiguous'
+    ? `'${target}' matches more than one session in ${projectSlug} — use a longer prefix`
+    : `no session '${target}' in ${projectSlug}`
+}
+
+/**
+ * Stop a session: the running unit goes, everything that makes it
+ * restartable stays.
+ *
+ * Omitting the session stops the CALLER, and that is the case this exists
+ * for — a fanned-out session that has finished its work winding itself down.
+ * The cost is that a self-stop's confirmation is best-effort: the caller is
+ * tearing down the very transport its reply rides (its pod under k8s, the
+ * tmux server hosting the command under containerless). `stopWorktree`
+ * schedules the teardown detached, so this returns and the reply is written
+ * before it proceeds — but whether that reaches a session being torn down is
+ * not something this can promise, which is why the script and the skill both
+ * say the session ending IS the confirmation.
+ */
+async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = await resolveTargetSession(caller, request.args.session)
+  if (!target.ok) return target
+
+  try {
+    await stopWorktree(target.worktreeId)
+  } catch (err) {
+    // `stopWorktree`'s own NOT_FOUND sends the caller to `yaac worktree
+    // list`, which an agent does not have. It also means something narrower
+    // here than it does at the CLI: the id already resolved against this
+    // project's rows, so the session exists — it just has no running unit.
+    if (err instanceof ServerError && err.code === 'NOT_FOUND') {
+      return { ok: false, error: `session ${target.worktreeId.slice(0, 8)} is not running` }
+    }
+    throw err
+  }
+  return {
+    ok: true,
+    output: `Stopped ${target.worktreeId.slice(0, 8)}. Its checkout is kept — `
+      + 'the user can restart it from the yaac webapp.',
+  }
 }
 
 async function runGroupCreate(
@@ -287,10 +365,11 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   // Resolved against the caller's OWN project's rows, which is what scopes
   // the move: a session id from another project simply is not here, so there
   // is no cross-project move to refuse separately.
-  const worktreeId = await resolveSessionInProject(caller.projectSlug, session.trim())
-  if (worktreeId === null) {
-    return { ok: false, error: `no session '${session}' in ${caller.projectSlug}` }
+  const found = await resolveSessionInProject(caller.projectSlug, session.trim())
+  if (!found.ok) {
+    return { ok: false, error: sessionError(caller.projectSlug, session.trim(), found.reason) }
   }
+  const worktreeId = found.worktreeId
 
   const target = request.body.trim()
   // No group named means the default list, which is how both surfaces say

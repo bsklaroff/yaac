@@ -5,13 +5,16 @@
 #   yaac-mama list
 #   yaac-mama create [--tool T] [--model M] [--group G] "<prompt>"
 #   yaac-mama rename [<session>] "<title>"
+#   yaac-mama stop [<session>]
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <session> ["<group>"]
 #   yaac-mama models
 #
 # A strict subset of the `yaac` CLI: see what this project is running, start
-# another session, and file sessions into named groups. Nothing here stops,
-# deletes or reconfigures anything — that stays with the user.
+# another session, file sessions into named groups, and stop one. Stopping is
+# in reach because it is reversible — the checkout and the conversation
+# survive it. Nothing here deletes, restarts or reconfigures anything; that
+# stays with the user.
 #
 # One request shape for both substrates — a JSON envelope {command, args,
 # body} — because they differ only in where it goes and how the caller is
@@ -42,6 +45,7 @@ Usage:
   yaac-mama list                                   # sessions + groups here
   yaac-mama create [opts] "<prompt>"               # start another session
   yaac-mama rename [<session>] "<title>"           # retitle (default: yourself)
+  yaac-mama stop [<session>]                       # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <session> ["<group>"]       # omit the group to ungroup
   yaac-mama models                                 # tools/models available
@@ -59,6 +63,12 @@ Options for create:
 
 create prints the new session's id; the session provisions in the background
 (watch it in the yaac webapp). Everything else prints a short report.
+
+stop ends a session's running container/tmux server and keeps its checkout,
+title, group and conversation, so the user can restart it. Stopping YOURSELF
+tears down what this command's own reply travels over, so the confirmation
+may never print — the session ending is the confirmation. Do everything that
+must outlive the session (commit, push, report) before you run it.
 EOF
 }
 
@@ -182,6 +192,24 @@ case "$1" in
     fi
     ;;
 
+  stop)
+    shift
+    # No argument stops the caller — the same "omitted means me" idiom rename
+    # uses, and the common case here. `run` drops an empty-valued pair, so
+    # that sends no `session` at all, which is what the server reads as "me".
+    #
+    # An argument that is present but EMPTY is refused rather than treated as
+    # absent, which is the one place those two must not mean the same thing:
+    # `yaac-mama stop "$id"` with $id unset is a caller that plainly meant to
+    # name a sibling, and letting it fall through to the default would stop
+    # the caller instead — silently, and unstoppably by then.
+    if [ $# -gt 1 ] || { [ $# -eq 1 ] && [ -z "$1" ]; }; then
+      echo 'usage: yaac-mama stop [<session>]   (omit the session to stop yourself)' >&2
+      exit 2
+    fi
+    run stop '' session "${1:-}"
+    ;;
+
   group)
     shift
     [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move …' >&2; exit 2; }
@@ -212,7 +240,7 @@ case "$1" in
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, rename, group, models)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, rename, stop, group, models)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

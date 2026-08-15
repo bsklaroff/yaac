@@ -3,19 +3,25 @@ import { installRealWorktreeDriver } from '@yaac/test-utils/real-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 // The command handler composes real db and real group resolution — those are
-// what the commands DO. Mocked at the two process boundaries only: the
-// substrate listing behind `listActiveWorktrees`, and the create a spawn
-// detaches into.
+// what the commands DO. Mocked at the process boundaries only: the substrate
+// listings behind `listActiveWorktrees` and the teardown resolve, the create
+// a spawn detaches into, and the teardown a stop detaches into.
 vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
-  return { ...actual, listWorktreePods: vi.fn().mockResolvedValue([]) }
+  return {
+    ...actual,
+    listWorktreePods: vi.fn().mockResolvedValue([]),
+    listWorktreeJobs: vi.fn().mockResolvedValue([]),
+  }
 })
 vi.mock('#domain/worktrees/create', () => ({ createWorktree: vi.fn() }))
+vi.mock('#domain/worktrees/cleanup', () => ({ cleanupWorktreeDetached: vi.fn() }))
 
 import { listWorktreePods } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { createWorktree } from '#domain/worktrees/create'
 import type { WorktreeCreateResult } from '#domain/worktrees/create'
+import { cleanupWorktreeDetached } from '#domain/worktrees/cleanup'
 import { closeDb } from '#db/client'
 import { createWorktreeGroup, listWorktreeGroupRows } from '#db/group-store'
 import { getProjectWorktreeRows, recordWorktreeCreated } from '#db/worktree-store'
@@ -43,6 +49,7 @@ beforeEach(async () => {
   clearAllProvisioningForTests()
   _clearListActiveInflightForTests()
   vi.mocked(listWorktreePods).mockResolvedValue([])
+  vi.mocked(cleanupWorktreeDetached).mockReset().mockResolvedValue()
   vi.mocked(createWorktree).mockReset().mockResolvedValue({
     worktreeId: 'spawned', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
   } as WorktreeCreateResult)
@@ -74,13 +81,13 @@ describe('runMamaCommand', () => {
     // The union IS the subset of the yaac CLI a session may reach, and this
     // is where it is enforced for BOTH transports — the proxy queues
     // envelopes without knowing what any of them mean.
-    for (const forbidden of ['stop', 'delete', 'restart', 'worktree-stop', '']) {
+    for (const forbidden of ['delete', 'restart', 'worktree-stop', 'config', '']) {
       const outcome = await run(forbidden)
       expect(outcome.ok, forbidden).toBe(false)
       if (!outcome.ok) expect(outcome.error).toContain('unknown command')
     }
     // The refusal tells the caller what it could have said instead.
-    const outcome = await run('stop')
+    const outcome = await run('delete')
     if (!outcome.ok) {
       expect(outcome.error).toContain('create')
       expect(outcome.error).toContain('group-move')
@@ -257,6 +264,78 @@ describe('runMamaCommand', () => {
     })
   })
 
+  describe('stop', () => {
+    beforeEach(async () => {
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'caller-session' })
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-session' })
+      vi.mocked(listWorktreePods).mockResolvedValue([
+        podFor('caller-session'), podFor('sibling-session'),
+      ])
+    })
+
+    it('stops a sibling by short id prefix, keeping what makes it restartable', async () => {
+      const text = await output('stop', '', { session: 'sibling' })
+
+      // The teardown is the driver's; what this owns is that the RESOLVED
+      // session is the one handed to it.
+      expect(vi.mocked(cleanupWorktreeDetached)).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(cleanupWorktreeDetached).mock.calls[0][0]).toMatchObject({
+        worktreeId: 'sibling-session',
+        projectSlug: 'proj',
+        jobName: 'yaac-proj-sibling-session',
+      })
+      expect(text).toContain('sibling-')
+      // The line has to say this was reversible, or an agent reads a stop as
+      // a delete and never offers the user the restart.
+      expect(text).toContain('checkout is kept')
+    })
+
+    it('stops the CALLER when no session is named', async () => {
+      // The case the command exists for: a session spawned to do one job
+      // winding itself down once the job is done.
+      await output('stop')
+
+      expect(vi.mocked(cleanupWorktreeDetached).mock.calls[0][0]).toMatchObject({
+        worktreeId: 'caller-session',
+      })
+    })
+
+    it('reports a session that is not running as such, not as unknown', async () => {
+      // The row resolved, so the session exists — it just has no unit. The
+      // driver's own NOT_FOUND sends a caller to `yaac worktree list`, which
+      // an agent does not have.
+      vi.mocked(listWorktreePods).mockResolvedValue([])
+
+      const outcome = await run('stop', '', { session: 'sibling' })
+
+      expect(outcome).toEqual({ ok: false, error: 'session sibling- is not running' })
+      expect(vi.mocked(cleanupWorktreeDetached)).not.toHaveBeenCalled()
+    })
+
+    it('cannot stop another project\'s session', async () => {
+      await recordWorktreeCreated({ projectSlug: 'other', worktreeId: 'foreign-session' })
+      vi.mocked(listWorktreePods).mockResolvedValue([podFor('foreign-session', 'other')])
+
+      const outcome = await run('stop', '', { session: 'foreign-session' })
+
+      expect(outcome.ok).toBe(false)
+      expect(vi.mocked(cleanupWorktreeDetached)).not.toHaveBeenCalled()
+    })
+
+    it('refuses an ambiguous prefix rather than stopping the wrong session', async () => {
+      await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'sibling-second' })
+
+      const outcome = await run('stop', '', { session: 'sibling' })
+
+      expect(outcome.ok).toBe(false)
+      // Told apart from "no such session", because the two ask the caller
+      // for different things — and behind a teardown that difference is the
+      // whole message: it holds the right id and typed too little of it.
+      if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
+      expect(vi.mocked(cleanupWorktreeDetached)).not.toHaveBeenCalled()
+    })
+  })
+
   describe('group-create', () => {
     it('makes an empty group the caller can then file sessions into', async () => {
       const text = await output('group-create', 'release train')
@@ -352,7 +431,9 @@ describe('runMamaCommand', () => {
       await recordWorktreeCreated({ projectSlug: 'proj', worktreeId: 'aaaabbbb-3333-4444' })
       const outcome = await run('group-move', 'release', { session: 'aaaabbbb' })
       expect(outcome.ok).toBe(false)
-      if (!outcome.ok) expect(outcome.error).toContain('no session')
+      // The fix is a longer prefix, so the message says so rather than
+      // sending the caller back to `list` for an id it already has.
+      if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
     })
 
     it('needs a session to move', async () => {

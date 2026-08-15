@@ -445,10 +445,20 @@ export const worktreeApp = new Hono()
       // An id or its unique short prefix, which is what every surface prints
       // — the membership write itself matches exactly, so a prefix reaching
       // it would file nothing and report success.
-      const resolved = await resolveSessionInProject(projectSlug, worktreeId)
-      if (resolved === null) {
-        throw new ServerError('NOT_FOUND', `No such worktree in ${projectSlug}: ${worktreeId}`)
+      const found = await resolveSessionInProject(projectSlug, worktreeId)
+      if (!found.ok) {
+        // An ambiguous prefix is an under-specified request, not a missing
+        // worktree: the caller holds the right id and typed too little of
+        // it, so saying "no such worktree" sends it looking for the wrong
+        // thing.
+        throw found.reason === 'ambiguous'
+          ? new ServerError(
+            'VALIDATION',
+            `Ambiguous worktree prefix in ${projectSlug}: ${worktreeId} — use a longer prefix`,
+          )
+          : new ServerError('NOT_FOUND', `No such worktree in ${projectSlug}: ${worktreeId}`)
       }
+      const resolved = found.worktreeId
       const target = group === null
         ? null
         : await resolveGroup(projectSlug, group, { create: create ?? false })

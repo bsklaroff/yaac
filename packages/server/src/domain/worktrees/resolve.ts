@@ -84,27 +84,39 @@ export async function resolveWorktreeRecord(
 }
 
 /**
+ * What a session id, or its short prefix, resolved to within one project.
+ *
+ * The two failures are told apart because they ask the caller for different
+ * things: an unknown id means look again, an ambiguous prefix means type
+ * more of the one you already have. Reported rather than resolved — a move,
+ * a rename or a STOP aimed at the wrong session is silent, so a prefix
+ * naming several must never land on whichever row came back first.
+ */
+export type SessionResolution =
+  | { ok: true; worktreeId: string }
+  | { ok: false; reason: 'not-found' | 'ambiguous' }
+
+/**
  * Resolve a session id, or its unique short prefix, WITHIN one project.
  *
  * Project-scoped by construction rather than by a check afterwards: this is
  * what an in-worktree caller uses (`yaac-mama`) and what the name-addressed
  * group routes use, and neither may reach a worktree in another project. An
  * id from elsewhere simply is not in this project's rows, so there is no
- * cross-project case to refuse separately.
+ * cross-project case to refuse separately — and for the same reason an
+ * `ambiguous` answer says nothing about anywhere else.
  *
- * `null` for both "no such session" and "that prefix names several" — a move
- * or a rename aimed at the wrong session is silent, so an ambiguous prefix
- * must not resolve to whichever row came back first. Rows in any state
- * match: a stopped worktree keeps its title and its group.
+ * Rows in any state match: a stopped worktree keeps its title and its group.
  */
 export async function resolveSessionInProject(
   projectSlug: string,
   session: string,
-): Promise<string | null> {
+): Promise<SessionResolution> {
   const trimmed = session.trim()
-  if (trimmed === '') return null
+  if (trimmed === '') return { ok: false, reason: 'not-found' }
   const rows = await getProjectWorktreeRows(projectSlug)
-  if (rows.has(trimmed)) return trimmed
+  if (rows.has(trimmed)) return { ok: true, worktreeId: trimmed }
   const matches = [...rows.keys()].filter((id) => id.startsWith(trimmed))
-  return matches.length === 1 ? matches[0] : null
+  if (matches.length === 1) return { ok: true, worktreeId: matches[0] }
+  return { ok: false, reason: matches.length > 1 ? 'ambiguous' : 'not-found' }
 }
