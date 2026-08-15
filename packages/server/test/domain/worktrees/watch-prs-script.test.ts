@@ -23,7 +23,11 @@ const SCRIPT = path.join(worktreeBinDir(), 'yaac-watch-prs')
 const US = String.fromCharCode(31)
 /** The on-disk "baseline pass finished" marker; mirrors BASELINE_MARK. */
 const BASELINE_MARK = '#baselined'
-/** Probed the way the script itself does, so the skip below matches reality. */
+/**
+ * The script needs no jq of its own — it filters through gh's built-in `--jq`.
+ * The host's jq is what lets the stub gh below *emulate* that engine, so only
+ * the filter suite at the bottom depends on one being installed.
+ */
 const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).status === 0
 
 /**
@@ -93,10 +97,6 @@ describe('yaac-watch-prs script', () => {
     await fs.mkdir(binDir)
     await fs.mkdir(fixtures)
     await fs.writeFile(path.join(binDir, 'gh'), GH_STUB, { mode: 0o755 })
-    // The script probes for jq at startup, but these tests' fixtures are
-    // pre-rendered lines, so a no-op stub keeps them running on a host with
-    // no jq. The filter block below drops it to reach the real one.
-    await fs.writeFile(path.join(binDir, 'jq'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   })
 
   afterEach(async () => {
@@ -155,6 +155,31 @@ describe('yaac-watch-prs script', () => {
     const { stdout, code } = await run(['--pr', '43', '--events', 'comment', '--once'])
     expect(code).toBe(0)
     expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
+  })
+
+  // A containerless worktree runs on the user's own host, which need not have
+  // jq — so the script must never reach for one, neither to filter a response
+  // nor to probe for it at startup: gh's `--jq` is a flag on gh's own built-in
+  // engine. A jq that fails on sight proves nothing invokes it, and the source
+  // check catches a `command -v jq` preflight, which a *present* stub would
+  // satisfy.
+  it('needs no jq of its own — gh --jq only', async () => {
+    await seedBaseline()
+    await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
+    await fs.writeFile(
+      path.join(binDir, 'jq'),
+      '#!/bin/sh\necho "jq: not installed" >&2\nexit 127\n',
+      { mode: 0o755 },
+    )
+
+    const { stdout, code } = await run(['--pr', '43', '--events', 'comment', '--once'])
+    expect(code).toBe(0)
+    expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
+
+    const body = (await fs.readFile(SCRIPT, 'utf8'))
+      .split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
+      .replaceAll('--jq', '')
+    expect(body).not.toMatch(/\bjq\b/)
   })
 
   it('skips the poll — no stdout — when the comment API calls fail', async () => {
@@ -276,14 +301,10 @@ describe('yaac-watch-prs script', () => {
   })
 
   // The jq filters live in the script, so feed the stub real GitHub-shaped
-  // JSON and let it run the script's own `--jq` argument over it.
+  // JSON and let it run the script's own `--jq` argument over it — through the
+  // host's jq, standing in for the engine gh has built in.
   describe.skipIf(!HAS_JQ)(
     'the shipped jq filters', () => {
-      // Drop the no-op stub so the gh stub's `jq` resolves to the real one.
-      beforeEach(async () => {
-        await fs.rm(path.join(binDir, 'jq'))
-      })
-
       async function fixtureJson(key: string, value: unknown) {
         await fs.writeFile(path.join(fixtures, `${key}.json`), JSON.stringify(value))
       }

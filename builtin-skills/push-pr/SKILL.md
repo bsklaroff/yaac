@@ -39,7 +39,10 @@ of the session:
 
 - `git fetch origin` first, so every candidate tip and `origin/main` exist
   locally for the ancestry tests below.
-- `gh pr list --state open --json number,headRefName,headRefOid`
+- `gh pr list --state open --json number,headRefName,headRefOid --jq '.[] | [.number, .headRefName, .headRefOid] | @tsv'`
+  — filter with gh's own `--jq` flag, never a `| jq` pipe: `jq` is not
+  installed on every host a containerless worktree runs on, while gh's is
+  built in.
 - A PR is underneath this branch when its head tip is an ancestor of `HEAD`
   but not of `origin/main`:
   `git merge-base --is-ancestor <headRefOid> HEAD` succeeds and

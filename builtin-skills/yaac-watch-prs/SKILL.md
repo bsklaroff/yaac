@@ -101,9 +101,11 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 ## What actually happens
 
 - Each poll runs `gh` from `/workspace` (repo inferred from the git remote,
-  auth via this session's `GH_TOKEN`). Needs `gh` and `jq` — both in yaac's
-  default session image; the command fails fast if either is missing. There
-  are **no yaac-specific dependencies** — it's pure `gh`/`jq`.
+  auth via this session's `GH_TOKEN`). `gh` is the only dependency — the JSON
+  filtering goes through gh's built-in `--jq`, never a `| jq` pipe, so the
+  watcher runs on a containerless worktree whose host has no `jq` installed.
+  The command fails fast if `gh` is missing. There are **no yaac-specific
+  dependencies**.
 - **Seen state** persists in `$HOME/.yaac-watch-prs-seen` (override the path
   via `YAAC_WATCH_PRS_STATE`), keyed per event so each comment/commit/PR
   fires at most once. On the **first run** every current PR/comment/commit is

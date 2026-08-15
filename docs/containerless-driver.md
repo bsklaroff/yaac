@@ -154,6 +154,13 @@ containerless create: shipped names are shadowed by the pod's own mounts, and
 a skill retired while the project is on k8s leaves a link that dangles in-pod
 until the next containerless create removes it.
 
+The skills reach both substrates unchanged, so what they tell an agent to run
+may only assume what a host has. There is no session image here to supply the
+utilities a pod's `Dockerfile.default` installs, and the same goes for the
+helper scripts in the private bin dir. `jq` is the one that keeps coming up:
+GitHub JSON is filtered with `gh`'s own `--jq` flag — gh embeds a jq engine —
+rather than a `| jq` pipe, and `yaac-watch-prs` therefore preflights only `gh`.
+
 ## Credentials, and why they are real
 
 Under the k8s driver a worktree never holds a real credential: it gets a

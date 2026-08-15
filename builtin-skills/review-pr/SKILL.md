@@ -28,6 +28,11 @@ The argument is the PR number. Without one, take the current branch's PR
 gh pr view <n> --json number,title,author,headRefName,baseRefName,isCrossRepository,url,additions,deletions,changedFiles,files
 ```
 
+Narrow that with gh's own `--jq` flag when you want fields rather than the
+whole object (e.g. `--jq '.files[].path'`) — never a `| jq` pipe. `jq` is not
+installed on every host a containerless worktree runs on, while gh's jq engine
+is built into the binary; the same goes for every `gh` call below.
+
 Then `git fetch origin <headRefName> && git checkout -B <headRefName> origin/<headRefName>`
 — or `gh pr checkout <n>` when `isCrossRepository` is true, since a fork's
 head branch is **not on origin**.
@@ -147,7 +152,8 @@ Once the "Approved" comment is posted, this session's job is done:
   print, and a missing reply is neither an error nor something to retry.
 
 Stop the same way if the PR is **merged or closed** while you are watching
-(`gh pr view <n> --json state,mergedAt,closedAt`) — there is nothing left to
+(`gh pr view <n> --json state,mergedAt,closedAt --jq '[.state, (.mergedAt // ""), (.closedAt // "")] | @tsv'`)
+— there is nothing left to
 review. Post nothing further, tell the user, then stop.
 
 Do **not** stop for any other reason. A PR waiting on the implementer is not

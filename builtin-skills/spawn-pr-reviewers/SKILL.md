@@ -66,6 +66,11 @@ waiting for a reply.
 gh pr view <n> --json number,title,author,headRefName,isCrossRepository,url,additions,deletions,changedFiles,files
 ```
 
+Narrow that with gh's own `--jq` flag when you want fields rather than the
+whole object (e.g. `--jq '.files[].path'`) — never a `| jq` pipe. `jq` is not
+installed on every host a containerless worktree runs on, while gh's jq engine
+is built into the binary; the same goes for every `gh` call below.
+
 The file list is what lets you aim the review; the size says how much to ask
 for. If `isCrossRepository` is true the head branch is **not on origin** — the
 reviewer must use `gh pr checkout <n>`, not `git fetch origin <branch>`.
@@ -140,7 +145,8 @@ of the conventions.
 evidence of conflict, and a stale warning is worse than none — it sends the
 reviewer chasing a conflict that doesn't exist. Before naming another PR,
 check at that moment (never off an earlier `gh pr list`) that it is still open
-(`gh pr view <n> --json state,mergedAt,closedAt`) and that the histories
+(`gh pr view <n> --json state,mergedAt,closedAt --jq '[.state, (.mergedAt // ""), (.closedAt // "")] | @tsv'`)
+and that the histories
 actually diverge — judge two live branches against their merge-base, not
 main's tip, since a branch sitting on top of an already-merged PR only looks
 like an overlap. Only when both hold: name the PR, say what you verified, and
@@ -196,7 +202,7 @@ notice, **do not just restart it** — the seen-state in
 `$HOME/.yaac-watch-prs-seen` (override with `YAAC_WATCH_PRS_STATE`) is
 per-session, so a restarted watcher re-baselines and any PR opened during the
 downtime is recorded as seen and **never reviewed**. Instead run
-`gh pr list --state all --limit 10 --json number,title,state,createdAt`,
+`gh pr list --state all --limit 10 --json number,title,state,createdAt --jq '.[] | [.number, .state, .createdAt, .title] | @tsv'`,
 compare against the last PR you spawned a reviewer for, cover anything opened
 in the gap — including already-closed or merged PRs, if the review is still
 worth having — and only then re-arm. Tell the user what you found, including

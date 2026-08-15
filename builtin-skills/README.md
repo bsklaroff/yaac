@@ -15,6 +15,13 @@ See `packages/server/src/domain/skills/builtin.ts` (staging, mounts, and the
 shared-root sync) and `packages/server/src/domain/skills/discover.ts`
 (discovery).
 
+A built-in skill runs under **both** substrates, so the commands it hands the
+agent may only assume what a containerless worktree has: the user's own host,
+with none of the tooling yaac's session image bakes in. `jq` is the recurring
+trap — filter GitHub JSON with gh's own `--jq` flag (gh embeds a jq engine),
+never a `| jq` pipe. Same for any other image-provided tool: name a fallback,
+or don't depend on it.
+
 Add a skill by dropping a `<name>/SKILL.md` dir in here. Keep names distinct
 from what users are likely to name their own personal skills (the two share a
 directory in-pod, and a real directory on a containerless host — where a
