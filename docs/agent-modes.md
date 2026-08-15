@@ -47,6 +47,14 @@ transports. Everything downstream of "a conversation is a tmux window" is
 untouched: the launch exec, the restart that respawns what was live,
 window-close teardown, and worktree GC.
 
+acpd is shared by both runtimes and knows nothing about either. The launch
+command hands it everything that differs between them: the socket to bind, the
+record to write, and — as `--cwd` — the workspace to run the agent in, since a
+checkout is at `/workspace` in a pod and somewhere under the data dir on a
+host. A cwd that does not exist fails the spawn with the same `ENOENT` a
+missing binary gives, so a guess here is indistinguishable from an adapter
+that was never installed.
+
 ## The driver seam
 
 `#runtime/agents` exposes `agentDriver(mode)`, returning an `AgentDriver` with
@@ -321,7 +329,7 @@ to be restarted mid-turn.
 | JSON-RPC peer | `packages/server/src/runtime/agents/acp-jsonrpc.ts` |
 | Conversation state | `packages/server/src/runtime/agents/acp-client.ts` |
 | Pane bridge (`/acp/attach`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
-| In-pod supervisor | `dockerfiles/acpd/` (baked into the base image) |
+| Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorktreeChat.tsx`, `src/lib/acp.ts` |

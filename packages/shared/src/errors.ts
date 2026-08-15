@@ -36,6 +36,30 @@ export class ServerError extends Error {
   }
 }
 
+/**
+ * A `MISSING_TOOL` that also says whether yaac can install the thing itself.
+ *
+ * The code alone cannot answer that, and a client deciding whether to OFFER
+ * an install needs it: an agent CLI or an ACP adapter comes from a fixed npm
+ * command yaac runs on request, while socat comes from a system package
+ * manager it has no business driving. A client reading only the code puts an
+ * install button on both, and on the second one the retry re-fails with the
+ * identical error — which is worse than no button, because it looks like the
+ * fix was tried.
+ *
+ * The message says the same thing in prose (it names `--install-missing`
+ * only when there is something to install); this is that fact in a form a
+ * client can branch on rather than parse.
+ */
+export class MissingToolError extends ServerError {
+  readonly installable: boolean
+
+  constructor(message: string, installable: boolean) {
+    super('MISSING_TOOL', message)
+    this.installable = installable
+  }
+}
+
 export function defaultStatus(code: ErrorCode): number {
   switch (code) {
     case 'NOT_FOUND': return 404

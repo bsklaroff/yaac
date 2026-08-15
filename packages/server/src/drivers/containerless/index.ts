@@ -138,8 +138,10 @@ export function createContainerlessDriver(): WorktreeDriver {
     prepareSubstrate: () => prepareSubstrate(),
     launch: async (spec) => {
       const handle = await launchWorkspace(spec)
-      // Start the liveness watch the moment there is something to watch,
-      // rather than waiting for the next sweep to notice it.
+      // Watch it, and say it exists — the moment there is something to watch,
+      // rather than waiting for the next sweep to notice it. Both halves
+      // matter here: no informer reports a workspace on this substrate, so
+      // this is the only thing that tells the layers above one was born.
       watchNewWorkspace(handle.workspaceId, handle.jobName)
       return handle
     },

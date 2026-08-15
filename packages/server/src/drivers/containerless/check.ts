@@ -1,4 +1,4 @@
-import { ServerError } from '@yaac/shared/errors'
+import { MissingToolError, ServerError } from '@yaac/shared/errors'
 import { AGENT_INSTALL, installCommandFor } from '@yaac/shared/tool-install'
 import { AGENT_TOOLS, type AgentMode, type AgentTool, type CheckResult } from '@yaac/shared/types'
 import { WorkspaceExecError } from '#drivers/contract'
@@ -53,7 +53,8 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
   {
     binary: 'socat',
     why: 'carries the ACP chat transport to an agent',
-    fix: 'Install socat to use --mode acp; tui-mode worktrees do not need it.',
+    fix: 'Install socat (apt install socat / brew install socat) to use --mode acp, '
+      + 'which is refused without it; tui-mode worktrees do not need it.',
   },
 ]
 
@@ -72,7 +73,12 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * WHICH binary has to be there differs by mode, and only by mode: `tui` runs
  * the tool itself, while `acp` runs the tool's adapter — which bundles its
  * own SDK rather than shelling out to the tool, so an acp worktree needs the
- * adapter and not the CLI.
+ * adapter and not the CLI. `acp` needs `socat` besides, because the chat
+ * transport dials acpd's UNIX socket by spawning one on this host: without
+ * it the worktree comes up and its pane never attaches, which reads as an
+ * agent that hangs rather than a tool that is missing — a worse failure than
+ * the one this whole check exists to replace, and the reason it is refused
+ * here rather than warned about in `yaac host check` alone.
  *
  * The probe is `onPath`, which resolves against the environment this server
  * was started from — the same one `launchWorkspace` hands the workspace's
@@ -98,6 +104,11 @@ export async function assertHostCanLaunch(opts: {
       throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
     }
     await requireBinary(adapter, `--mode acp runs ${adapter}`, opts)
+    await requireBinary('socat', "the chat transport dials acpd's socket with it", {
+      ...opts,
+      manual: 'apt install socat / brew install socat',
+      alternative: 'create the worktree with --mode tui',
+    })
     return
   }
   await requireBinary(tool, `a tui worktree runs ${tool}`, opts)
@@ -116,7 +127,16 @@ export async function assertHostCanLaunch(opts: {
 async function requireBinary(
   binary: string,
   why: string,
-  opts: { installMissing?: boolean; onProgress?: (message: string) => void },
+  opts: {
+    installMissing?: boolean
+    onProgress?: (message: string) => void
+    /** How to install a binary the npm table does not cover, since a reader
+     *  told only that something is missing is barely better off. */
+    manual?: string
+    /** What to do INSTEAD, for a reader who would rather not install
+     *  anything. Defaults to the agent CLIs' answer. */
+    alternative?: string
+  },
 ): Promise<void> {
   if (await onPath(binary)) return
   const install = installCommandFor(binary)
@@ -124,14 +144,18 @@ async function requireBinary(
     await installBinary(binary, install, opts.onProgress)
     return
   }
-  throw new ServerError(
-    'MISSING_TOOL',
+  const alternative = opts.alternative ?? 'pick a tool this host has'
+  throw new MissingToolError(
     `"${binary}" is not on this host's PATH — ${why}, and this server runs `
     + 'agents as host processes with no image to supply one.'
+    // No `--install-missing` offer without a table entry: yaac runs npm, and
+    // the package manager that carries socat wants a root it does not have.
     + (install === undefined
-      ? ' Install it and retry, or pick a tool this host has.'
+      ? ` Install it${opts.manual === undefined ? '' : ` (${opts.manual})`} and retry, `
+        + `or ${alternative}.`
       : ` Install it (${install}) and retry, retry with --install-missing to `
-        + 'let yaac run that command, or pick a tool this host has.'),
+        + `let yaac run that command, or ${alternative}.`),
+    install !== undefined,
   )
 }
 
@@ -174,17 +198,22 @@ async function installBinary(
       const res = await runHost(['sh', '-c', command], { timeoutMs: 600_000 })
       output = `${res.stdout}\n${res.stderr}`
     } catch (err) {
-      throw new ServerError(
-        'MISSING_TOOL',
+      // Installable: the command exists and yaac ran it. What failed is the
+      // run (a prefix it cannot write, a cold registry), which is a thing a
+      // user can fix and then retry into.
+      throw new MissingToolError(
         `installing ${binary} failed (${command})${installerDetail(err)}`,
+        true,
       )
     }
     if (!(await onPath(binary))) {
-      throw new ServerError(
-        'MISSING_TOOL',
+      // Installable too, and for the same reason: what is wrong is where the
+      // command put things, not whether one exists.
+      throw new MissingToolError(
         `${command} reported success but "${binary}" is still not on this `
         + "server's PATH — its bin directory may not be on the PATH this "
         + `server was started with${tailDetail(output)}`,
+        true,
       )
     }
   })()

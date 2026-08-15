@@ -89,6 +89,22 @@ describe('failProvisioning', () => {
     failProvisioning('a', 'something went wrong')
     expect(listProvisioning()[0]).not.toHaveProperty('errorCode')
   })
+
+  it('says whether the missing tool is one yaac can fetch, not just that one is missing', () => {
+    // The code is what a client branches on to offer a recovery; this is
+    // what stops it offering one that cannot work. socat comes from a system
+    // package manager, so an install-and-retry would re-run the create and
+    // fail with the identical error.
+    register('a')
+    failProvisioning('a', '"socat" is not on this host\'s PATH', 'MISSING_TOOL', false)
+    expect(listProvisioning()[0]).toMatchObject({
+      errorCode: 'MISSING_TOOL', installable: false,
+    })
+
+    register('b')
+    failProvisioning('b', '"codex" is not on this host\'s PATH', 'MISSING_TOOL', true)
+    expect(listProvisioning().find((e) => e.worktreeId === 'b')?.installable).toBe(true)
+  })
 })
 
 describe('reportAgentLaunchFailure', () => {

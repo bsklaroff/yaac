@@ -15,7 +15,14 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktr
   // always names the install command too, so a reloaded row still tells the
   // user how to fix it by hand.
   const retry = useUiStore((s) => s.provisionRetries[creating.worktreeId])
-  const canInstall = creating.errorCode === 'MISSING_TOOL' && retry !== undefined
+  // `installable` as well as the code: a MISSING_TOOL yaac cannot fetch (a
+  // system package like socat) would otherwise get a button whose retry
+  // re-runs the create and fails with the identical error — which reads as
+  // "the fix was tried and did not work" rather than "install this yourself".
+  // The failure message names the command to run either way.
+  const canInstall = creating.errorCode === 'MISSING_TOOL'
+    && creating.installable === true
+    && retry !== undefined
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.worktreeId).catch(() => { /* best-effort */ })

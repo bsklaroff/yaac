@@ -197,11 +197,28 @@ function syncWatches(sinks: DriverSinks): void {
   }
 }
 
-/** Ask for a watch of a just-launched workspace, without waiting for a
- *  sweep. Called by the assembly right after `launch`. */
+/**
+ * Ask for a watch of a just-launched workspace, without waiting for a
+ * sweep. Called by the assembly right after `launch`.
+ *
+ * Announcing it is the other half, and the half nothing else here does. The
+ * pod driver gets it free — its informer reports the new pod, and everything
+ * that watches workspaces (the status watcher pool above all) learns about it
+ * from that event. This substrate has no informer: the set is announced when
+ * the driver starts and when a workspace dies, so without this a worktree
+ * created since startup is one nothing observes until the next server start.
+ * A `tui` worktree merely goes unwatched — its status stops tracking the
+ * agent — while an `acp` one never gets a connection at all, so nobody dials
+ * acpd, the handshake never runs, and the worktree has no conversation and no
+ * chat pane for as long as this server lives.
+ */
 export function watchNewWorkspace(workspaceId: string, jobName: string): void {
   const sinks = activeSinks
-  if (sinks) watchWorkspace(workspaceId, jobName, sinks)
+  if (!sinks) return
+  watchWorkspace(workspaceId, jobName, sinks)
+  // The whole set, never a delta — the receiver holds no state it would have
+  // to reconcile (see `DriverSinks.workspacesChanged`).
+  sinks.workspacesChanged(listWorkspaces())
 }
 
 let activeSinks: DriverSinks | null = null

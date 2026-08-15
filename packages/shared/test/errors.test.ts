@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ServerError, defaultStatus, type ErrorCode } from '#errors'
+import { MissingToolError, ServerError, defaultStatus, type ErrorCode } from '#errors'
 
 describe('shared errors', () => {
   describe('defaultStatus', () => {
@@ -22,6 +22,23 @@ describe('shared errors', () => {
       for (const [code, status] of Object.entries(expected)) {
         expect(defaultStatus(code as ErrorCode)).toBe(status)
       }
+    })
+  })
+
+  describe('MissingToolError', () => {
+    it('carries whether yaac can fetch the tool, which the code cannot say', () => {
+      // Both are MISSING_TOOL and both are 400; what separates them is
+      // whether an install-and-retry could ever work, and only a client that
+      // can read that avoids offering one that cannot.
+      const npm = new MissingToolError('"codex" is not on this host\'s PATH', true)
+      const system = new MissingToolError('"socat" is not on this host\'s PATH', false)
+      expect(npm.code).toBe('MISSING_TOOL')
+      expect(npm.httpStatus).toBe(400)
+      expect(npm.installable).toBe(true)
+      expect(system.installable).toBe(false)
+      // Still a ServerError, so every route and adapter that handles one
+      // handles these unchanged.
+      expect(system).toBeInstanceOf(ServerError)
     })
   })
 
