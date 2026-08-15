@@ -144,7 +144,11 @@ describe('NewWorktreeButton', () => {
       // so the create omits the field and the SERVER resolves it. Sending one
       // here would both make that fallback unreachable and overwrite the
       // project's remembered choice with a default nobody picked.
+      //
+      // The trailing undefined is installMissingTool: a first attempt never
+      // installs anything, only the explicit Install-and-retry does.
       'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', undefined,
+      undefined,
     )
   })
 
@@ -167,6 +171,7 @@ describe('NewWorktreeButton', () => {
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createWorktree)).toHaveBeenCalledWith(
       'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x', 'tui', undefined,
+      undefined,
     )
   })
 
@@ -230,6 +235,7 @@ describe('NewWorktreeButton', () => {
     // defaulted create never overwrites what the user last picked.
     expect(vi.mocked(createWorktree)).toHaveBeenLastCalledWith(
       'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', undefined,
+      undefined,
     )
 
     cleanup()
@@ -238,6 +244,7 @@ describe('NewWorktreeButton', () => {
     fireEvent.click(screen.getByText('Claude'))
     expect(vi.mocked(createWorktree)).toHaveBeenLastCalledWith(
       'proj', 'claude', expect.any(Function), expect.any(String), undefined, 'tui', 'manual',
+      undefined,
     )
   })
 

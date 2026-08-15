@@ -146,8 +146,10 @@ export function createK8sDriver(): WorktreeDriver {
 
     claimSpare: (workspaceId, tool) => claimSpareWorkspace(workspaceId, tool),
 
-    // Whether the image ships a tool's adapter is settled at build time,
-    // and the caller already refuses a tool that has none.
+    // Whether the image ships a tool and its adapter is settled at build
+    // time, and the caller already refuses a tool that has none. Nothing to
+    // install either: an image that lacks the tool is the wrong image, which
+    // the post-launch window probe reports.
     assertCanLaunch: () => Promise.resolve(),
     ensureBuildEngine: () => ensureContainerRuntime(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),

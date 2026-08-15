@@ -1,9 +1,16 @@
-import { AGENT_TOOLS, type CheckResult } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
+import { AGENT_INSTALL, installCommandFor } from '@yaac/shared/tool-install'
+import { AGENT_TOOLS, type AgentMode, type AgentTool, type CheckResult } from '@yaac/shared/types'
+import { WorkspaceExecError } from '#drivers/contract'
 import { onPath, runHost } from './host'
 
 /** The adapter binaries `--mode acp` can run. Kept here rather than
  *  imported from `#runtime/agents`, which a driver may not name. */
 const ACP_ADAPTER_BINARIES = ['claude-agent-acp'] as const
+
+/** The host binary each tool's ACP adapter installs as — the same table, by
+ *  the tool that needs it. */
+const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = { claude: 'claude-agent-acp' }
 
 /**
  * `yaac host check`: whether this machine can run worktrees without
@@ -51,16 +58,175 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
 ]
 
 /**
- * Whether an agent's ACP adapter is runnable on this host.
+ * See `WorktreeDriver.assertCanLaunch` — this driver's answer.
  *
- * Under the pod driver the adapter ships in the image, so its presence is a
- * build-time fact. Here it has to be installed like every other tool, and
- * without it acpd execs nothing: it exits 127, tmux closes the window, and
- * the worktree ends seconds after a create that reported success. So the
- * create asks first.
+ * Under the pod driver every tool ships in the image, so what a worktree can
+ * run is a build-time fact. Here it has to be installed like anything else,
+ * and the failure without this check is silent both ways: a `tui` agent that
+ * is not on PATH makes tmux respawn a command that exits 127, closing the
+ * window — and `respawn-window` reports success — while `acp` has acpd exec
+ * nothing and end the same way. Either leaves a worktree that vanishes
+ * seconds after a create that already said it worked. So the create asks
+ * first.
+ *
+ * WHICH binary has to be there differs by mode, and only by mode: `tui` runs
+ * the tool itself, while `acp` runs the tool's adapter — which bundles its
+ * own SDK rather than shelling out to the tool, so an acp worktree needs the
+ * adapter and not the CLI.
+ *
+ * The probe is `onPath`, which resolves against the environment this server
+ * was started from — the same one `launchWorkspace` hands the workspace's
+ * tmux server, so what this sees is exactly what the respawned command will.
+ * A binary reachable only through an interactive shell's rc files is missed
+ * by both, consistently, which is the failure worth reporting.
+ *
+ * With `installMissing`, a missing binary is installed rather than refused
+ * (see `installBinary`); the caller's `onProgress` narrates it.
  */
-export async function acpAdapterRunnable(adapter: string): Promise<boolean> {
-  return await onPath(adapter)
+export async function assertHostCanLaunch(opts: {
+  tool: AgentTool
+  mode: AgentMode
+  installMissing?: boolean
+  onProgress?: (message: string) => void
+}): Promise<void> {
+  const { tool, mode } = opts
+  if (mode === 'acp') {
+    const adapter = ACP_ADAPTERS[tool]
+    if (adapter === undefined) {
+      // Create rejects this combination before it ever reaches a runtime;
+      // reachable only from a caller that skipped it.
+      throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
+    }
+    await requireBinary(adapter, `--mode acp runs ${adapter}`, opts)
+    return
+  }
+  await requireBinary(tool, `a tui worktree runs ${tool}`, opts)
+}
+
+/**
+ * `binary` resolves on PATH — installing it first when asked to, and
+ * refusing with what to run when not.
+ *
+ * The refusal names the install command because a message that says only
+ * what is wrong is barely better than the spawn failure it replaces, and
+ * because it is the whole of the recovery on a client that has no button
+ * (the CLI, and a webapp row reloaded after the closure that could retry it
+ * is gone).
+ */
+async function requireBinary(
+  binary: string,
+  why: string,
+  opts: { installMissing?: boolean; onProgress?: (message: string) => void },
+): Promise<void> {
+  if (await onPath(binary)) return
+  const install = installCommandFor(binary)
+  if (opts.installMissing === true && install !== undefined) {
+    await installBinary(binary, install, opts.onProgress)
+    return
+  }
+  throw new ServerError(
+    'MISSING_TOOL',
+    `"${binary}" is not on this host's PATH — ${why}, and this server runs `
+    + 'agents as host processes with no image to supply one.'
+    + (install === undefined
+      ? ' Install it and retry, or pick a tool this host has.'
+      : ` Install it (${install}) and retry, retry with --install-missing to `
+        + 'let yaac run that command, or pick a tool this host has.'),
+  )
+}
+
+/**
+ * Run an install command from the shared table and confirm it landed.
+ *
+ * The re-probe is the point. `npm -g` fails in ways that are invisible to
+ * its exit code's absence — a prefix the user cannot write, a bin dir that
+ * is not on this server's PATH — and without checking, an "install" would
+ * hand back a worktree that dies exactly as it would have before, having
+ * spent a minute to do it. Reporting the installer's own output is what
+ * turns EACCES into something a reader can act on.
+ *
+ * Concurrent creates asking for the same binary share one install: two
+ * `npm -g` runs into one prefix race each other's file writes, and the
+ * second has nothing to add.
+ */
+const installsInFlight = new Map<string, Promise<void>>()
+
+async function installBinary(
+  binary: string,
+  command: string,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  onProgress?.(`Installing ${binary} (${command})…`)
+  const existing = installsInFlight.get(binary)
+  // A shared install still has to satisfy THIS caller, so its rejection
+  // propagates here too rather than falling through to a second attempt.
+  if (existing !== undefined) {
+    await existing
+    return
+  }
+  const run = (async () => {
+    let output = ''
+    try {
+      // Ten minutes: `npm -g` on a cold cache is slow, and the failure this
+      // whole path exists to prevent is worse than a long wait. The command
+      // is a fixed table entry, never anything a caller supplied, so there
+      // is nothing here to escape.
+      const res = await runHost(['sh', '-c', command], { timeoutMs: 600_000 })
+      output = `${res.stdout}\n${res.stderr}`
+    } catch (err) {
+      throw new ServerError(
+        'MISSING_TOOL',
+        `installing ${binary} failed (${command})${installerDetail(err)}`,
+      )
+    }
+    if (!(await onPath(binary))) {
+      throw new ServerError(
+        'MISSING_TOOL',
+        `${command} reported success but "${binary}" is still not on this `
+        + "server's PATH — its bin directory may not be on the PATH this "
+        + `server was started with${tailDetail(output)}`,
+      )
+    }
+  })()
+  installsInFlight.set(binary, run)
+  try {
+    await run
+  } finally {
+    installsInFlight.delete(binary)
+  }
+}
+
+/** The installer's own words, which is where "EACCES, needs a writable
+ *  prefix" actually lives. A timeout or spawn failure has no output to
+ *  quote, so it degrades to the error's message. */
+function installerDetail(err: unknown): string {
+  if (err instanceof WorkspaceExecError) {
+    return tailDetail(`${err.stdout}\n${err.stderr}`) || `: exit ${err.code}`
+  }
+  return `: ${err instanceof Error ? err.message : String(err)}`
+}
+
+/**
+ * The interesting part of installer output, prefixed for an error message.
+ * Bounded because npm's full log runs to pages.
+ *
+ * The tail is where the explanation lives ("do not have the permissions to
+ * access this file"), but the machine-readable line — `npm error code
+ * EACCES` — is printed near the TOP of the block and scrolls off a
+ * tail-only window. Both halves are worth keeping: one tells a person what
+ * happened, the other is what anyone automating against this would match.
+ * So the code lines are lifted out and shown above a tail that no longer
+ * repeats them.
+ */
+function tailDetail(output: string): string {
+  const lines = output.split('\n').map((l) => l.trimEnd()).filter(Boolean)
+  // `npm error code EACCES`, `npm ERR! code EACCES` — the one line worth
+  // pulling forward from anywhere in the block.
+  const isCode = (l: string): boolean => /^npm (error|ERR!)\s+code\s+\S+$/.test(l)
+  const codes = lines.filter(isCode)
+  const tail = lines.filter((l) => !isCode(l)).slice(-10)
+  const kept = [...codes, ...tail]
+  return kept.length === 0 ? '' : `:\n${kept.join('\n')}`
 }
 
 /** Every check, in the order they print. */
@@ -118,8 +284,9 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     status: adapters.length > 0 ? 'pass' : 'warn',
     detail: adapters.length > 0 ? adapters.join(', ') : 'none found on PATH',
     ...(adapters.length > 0 ? {} : {
-      fix: 'Install an ACP adapter (e.g. claude-agent-acp) to create worktrees '
-        + 'with --mode acp; tui-mode worktrees do not need one.',
+      fix: 'Install an ACP adapter to create worktrees with --mode acp '
+        + `(${ACP_ADAPTER_BINARIES.map((a) => installCommandFor(a) ?? a).join('; ')}); `
+        + 'tui-mode worktrees do not need one.',
     }),
   })
   results.push({
@@ -127,8 +294,8 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     status: agents.length > 0 ? 'pass' : 'warn',
     detail: agents.length > 0 ? agents.join(', ') : 'none found on PATH',
     ...(agents.length > 0 ? {} : {
-      fix: 'Install at least one agent CLI (claude, codex, opencode, pi) — '
-        + 'a worktree runs whichever tool it was created with.',
+      fix: 'Install at least one agent CLI — a worktree runs whichever tool '
+        + `it was created with (${AGENT_TOOLS.map((t) => AGENT_INSTALL[t]).join('; ')}).`,
     }),
   })
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { consumeNdjsonStream } from '#ndjson'
+import { ServerError } from '#errors'
 
 function ndjsonResponse(events: unknown[], opts: { trailingNewline?: boolean } = {}): Response {
   const body = events.map((e) => JSON.stringify(e)).join('\n')
@@ -57,6 +58,18 @@ describe('consumeNdjsonStream', () => {
       { type: 'error', error: { code: 'VALIDATION', message: 'no github token' } },
     ])
     await expect(consumeNdjsonStream(res, () => {})).rejects.toThrow('no github token')
+  })
+
+  it('carries the server\'s error code, not just its message', async () => {
+    // These streams answer 200 and put the failure in the body, so this is
+    // the only place a code can survive to a caller that branches on it —
+    // the webapp offers to install a MISSING_TOOL and retry.
+    const res = ndjsonResponse([
+      { type: 'error', error: { code: 'MISSING_TOOL', message: '"codex" is not on this host\'s PATH' } },
+    ])
+    const err = await consumeNdjsonStream(res, () => {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ServerError)
+    expect((err as ServerError).code).toBe('MISSING_TOOL')
   })
 
   it('processes a trailing line that arrives without a final newline', async () => {

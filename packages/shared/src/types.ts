@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { ErrorCode } from '#errors'
 import type { OpencodeProvider, PiProvider } from '#tool-providers'
 
 export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
@@ -867,6 +868,10 @@ export interface ProvisioningWorktreeEntry {
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */
   error?: string
+  /** The failure's code, when it had one — what lets a client offer the
+   *  recovery this failure has rather than only printing it (`MISSING_TOOL`
+   *  can be installed and retried). */
+  errorCode?: ErrorCode
   /** The sidebar group this worktree is filed under — asked for by a create
    *  (`--group`), or already recorded for a restart — so the row renders in
    *  that section while it provisions rather than jumping to the top of the

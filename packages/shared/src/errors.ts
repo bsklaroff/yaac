@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'UNAUTHENTICATED'
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
+  | 'MISSING_TOOL'
   | 'TOO_LARGE'
   | 'INTERNAL'
 
@@ -51,6 +52,11 @@ export function defaultStatus(code: ErrorCode): number {
     // Distinct from 404 (which would say the route is unknown) and from 400
     // (which would blame the caller for asking).
     case 'NOT_SUPPORTED': return 501
+    // 400: the request names a tool this host has not installed. Its own
+    // code rather than a VALIDATION, because a client can act on it — the
+    // webapp offers to run the install and retry — and nothing about the
+    // request was malformed.
+    case 'MISSING_TOOL': return 400
     // 413: the thing asked for exists but is too big to answer with. Said out
     // loud rather than truncated, because a silently shortened answer is
     // indistinguishable from a complete one.

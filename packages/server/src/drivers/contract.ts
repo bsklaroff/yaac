@@ -339,8 +339,8 @@ export interface WorkspaceSpec {
  * proves nothing about it.
  *
  * The one error distinction the contract makes, and it is forced: the agent
- * probes branch on it. `verifyAgentWindowAlive` reports "that tool is not in
- * this image" only when the probe reached the workspace and grep found no
+ * probes branch on it. `verifyAgentWindowAlive` reports "that agent died on
+ * launch" only when the probe reached the workspace and found no such
  * window, and the stale reaper's tmux probe may only conclude `dead` on the
  * same evidence — a cluster blip read as death reaps a live worktree, Job
  * and all. Every driver must therefore distinguish the two; a driver that
@@ -913,8 +913,19 @@ export interface WorktreeDriver {
    * an adapter or does not, and that is settled at build time, but a host
    * has whatever the user installed. Only the runtime can answer it, and
    * only at the moment it is asked.
+   *
+   * `installMissing` asks the runtime to make the answer yes rather than
+   * report it — the caller carrying a user who opted into that. Advisory,
+   * like `onProgress`: a runtime with nothing to install (an image either
+   * has the tool or is the wrong image) ignores both, and no caller may
+   * read a resolved promise as "something was installed".
    */
-  assertCanLaunch(opts: { tool: AgentTool; mode: AgentMode }): Promise<void>
+  assertCanLaunch(opts: {
+    tool: AgentTool
+    mode: AgentMode
+    installMissing?: boolean
+    onProgress?: (message: string) => void
+  }): Promise<void>
 
   /**
    * The machinery a launch will need exists and is running — the image

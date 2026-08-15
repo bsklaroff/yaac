@@ -85,11 +85,21 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
   })
 }
 
-/** Whether a binary resolves on PATH. Used by the host check and by the
- *  launch's shell selection; never throws. */
+/**
+ * Whether a binary resolves on PATH. Used by the host check, the create's
+ * launch preflight and the launch's shell selection; never throws.
+ *
+ * The name is a positional argument rather than interpolated into the
+ * script, so it is data to the shell no matter who supplies it. Every
+ * caller today passes a validated tool name or a table constant; this is
+ * what keeps that from being load-bearing.
+ */
 export async function onPath(binary: string): Promise<boolean> {
   try {
-    await runHost(['sh', '-c', `command -v ${binary}`], { timeoutMs: 5_000 })
+    await runHost(
+      ['sh', '-c', 'command -v -- "$1"', 'onPath', binary],
+      { timeoutMs: 5_000 },
+    )
     return true
   } catch {
     return false

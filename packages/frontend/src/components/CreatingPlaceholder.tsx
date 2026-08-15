@@ -8,11 +8,23 @@ import type { ProvisioningWorktreeEntry } from '@yaac/shared/types'
  *  terminal that will arrive. Streams progress; on failure offers dismiss. */
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktreeEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
+  const setProvisionRetry = useUiStore((s) => s.setProvisionRetry)
   const selectWorktree = useUiStore((s) => s.selectWorktree)
+  // Present only for a provision this browser session started — the closure
+  // holding its parameters cannot survive a reload. The failure message
+  // always names the install command too, so a reloaded row still tells the
+  // user how to fix it by hand.
+  const retry = useUiStore((s) => s.provisionRetries[creating.worktreeId])
+  const canInstall = creating.errorCode === 'MISSING_TOOL' && retry !== undefined
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.worktreeId).catch(() => { /* best-effort */ })
     removeOptimisticProvisioning(creating.worktreeId)
+    // The row is gone, so nothing can offer its retry any more — and the
+    // success path that normally clears this is one a dismissed failure
+    // never reaches, so without this each one strands its closure (and the
+    // create parameters it captured) for the life of the tab.
+    setProvisionRetry(creating.worktreeId, null)
     selectWorktree(null)
   }
 
@@ -22,13 +34,24 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorktr
         <>
           <p className="text-sm font-medium text-[#d65858]">Couldn&apos;t create worktree</p>
           <p className="max-w-md text-xs text-text-faint">{creating.error}</p>
-          <button
-            onClick={dismiss}
-            className="mt-1 rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition
-              hover:bg-surface-3 hover:text-text"
-          >
-            Dismiss
-          </button>
+          <div className="mt-1 flex items-center gap-2">
+            {canInstall && (
+              <button
+                onClick={retry}
+                className="rounded-md bg-surface-3 px-3 py-1.5 text-xs text-text transition
+                  hover:bg-surface-2"
+              >
+                Install and retry
+              </button>
+            )}
+            <button
+              onClick={dismiss}
+              className="rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition
+                hover:bg-surface-3 hover:text-text"
+            >
+              Dismiss
+            </button>
+          </div>
         </>
       ) : (
         <>

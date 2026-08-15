@@ -330,6 +330,20 @@ describe('validation errors (no state created)', () => {
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/Project "nope" not found/)
   })
+
+  it('worktree create accepts --install-missing', async () => {
+    // The flag only DOES anything on a containerless server (a driver with
+    // an image has nothing to install), and this suite's server runs the
+    // pod driver — so what is asserted here is that the option parses and
+    // reaches the same create path: commander answers an unknown option
+    // with its own usage error, never the project check below.
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'worktree', 'create', 'nope', '--install-missing',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).not.toMatch(/unknown option/i)
+    expect(stderr).toMatch(/Project "nope" not found/)
+  })
 })
 
 describe('yaac open (real CLI + real server)', () => {

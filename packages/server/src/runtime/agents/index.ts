@@ -63,6 +63,7 @@ export {
   tmuxCmd,
   typeInitialPrompt,
   verifyAgentWindowAlive,
+  AgentLaunchDeadError,
   type InitWindow,
 } from './agent-command'
 // Where each tool keeps its transcript on disk, and the project-relative

@@ -64,6 +64,7 @@ import { serverLog } from '#log'
 import {
   acpAdapterFor,
   agentDriver,
+  AgentLaunchDeadError,
   agentWindowName,
   buildUpstreamExec,
   buildWindowsExec,
@@ -71,6 +72,7 @@ import {
   ensureClaudeHooks,
   ensureOpencodeConfigJson,
   validateInitWindows,
+  verifyAgentWindowAlive,
   type InitWindow,
 } from '#runtime/agents'
 import {
@@ -79,6 +81,7 @@ import {
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
 } from '#db'
+import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
 import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
@@ -109,6 +112,7 @@ import {
   piProviderInfo,
   type PiProvider,
 } from '@yaac/shared/tool-providers'
+import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
  *  mirroring `~/.claude`), so every worktree's pi session logs are visible to all. */
@@ -134,6 +138,14 @@ export interface WorktreeCreateOptions {
    * route against the tools that have an adapter.
    */
   mode?: AgentMode
+  /**
+   * Install the agent's CLI (or ACP adapter) if this runtime hasn't got it,
+   * instead of refusing the create — the user having opted into yaac running
+   * an install command on their machine. Only a runtime with something to
+   * install honors it; under k8s the tool comes from the image and this is
+   * ignored (see `WorktreeDriver.assertCanLaunch`).
+   */
+  installMissingTool?: boolean
   /**
    * Reference branch for the fresh worktree (a branch on `origin`, no
    * `origin/` prefix). Overrides the project's `referenceBranch` config
@@ -476,6 +488,47 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   emit(`Starting ${toolLabel}...`, options)
   await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
 
+  // Did the agents actually come up? `respawn-window` says yes even when the
+  // command it ran died instantly, so without this a worktree whose agent
+  // binary is missing or broken reports a clean create and then dies with
+  // nobody told why (the preflight catches the deterministic
+  // missing-from-PATH case; this catches the rest).
+  //
+  // Deliberately not awaited. The probe has to let a doomed command exit
+  // before it looks, and there is nothing left here to overlap that sleep
+  // with — awaiting it would put a second on every create to serve the rare
+  // one that fails. So the create returns now and the verdict lands after,
+  // as a failed provisioning row (see reportAgentLaunchFailure).
+  //
+  // `tui` only: an acp launch is proven by its own transport handshake, and
+  // its one deterministic failure is the adapter check the preflight ran.
+  if (mode === 'tui') {
+    const windows = launching.map((a, i) => agentWindowName(a.tool, i))
+    void verifyAgentWindowAlive(jobName, windows).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      serverLog(`[server] create ${worktreeId}: ${message}`)
+      // ONLY a verdict is reported. The probe deliberately distinguishes
+      // "the agent is not there" from "the probe never got an answer", and
+      // this handler has to honor that split even though it cannot rethrow:
+      // a failed provisioning row hides its worktree from the snapshot, so
+      // filing a relay blip as a dead agent would make a live, working
+      // worktree disappear behind an error until it is dismissed.
+      if (!(err instanceof AgentLaunchDeadError)) return
+      // A spare has no row and no user watching it; a claim runs this same
+      // probe again, which is where its failure belongs.
+      if (options.prewarm === true) return
+      void reportAgentLaunchFailure({
+        worktreeId,
+        projectSlug,
+        tool,
+        kind: options.resume === true ? 'restart' : 'create',
+        error: runtime.kind === 'containerless'
+          ? `${message}. Check that "${tool}" runs on this host (${AGENT_INSTALL[tool]}).`
+          : message,
+      })
+    })
+  }
+
   if (options.initialPrompt !== undefined) {
     emit('Sending initial prompt...', options)
     // Mode-agnostic: `tui` pastes it into the pane and submits, `acp` waits
@@ -727,11 +780,18 @@ export async function createWorktree(
   if (mode === 'acp' && acpAdapterFor(tool) === undefined) {
     throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
   }
-  // And whether THIS runtime can run it: an image either ships the adapter
-  // or does not, but a host has whatever the user installed, and acpd
-  // exec'ing nothing ends the worktree seconds after a create that already
-  // reported success.
-  await runtime.assertCanLaunch({ tool, mode })
+  // And whether THIS runtime can run it: an image either ships the tool and
+  // its adapter or does not, but a host has whatever the user installed, and
+  // a launch command that execs nothing ends the worktree seconds after a
+  // create that already reported success. With `installMissingTool` the
+  // runtime installs what is missing instead of refusing, narrating it
+  // through the create's own progress stream.
+  await runtime.assertCanLaunch({
+    tool,
+    mode,
+    installMissing: options.installMissingTool === true,
+    onProgress: (message) => { emit(message, options) },
+  })
 
   // Same discipline for the permission posture, and for the same reason: a
   // posture the tool cannot take is a launch flag that silently does nothing.

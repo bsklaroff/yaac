@@ -316,11 +316,35 @@ startup rather than letting a create fail with a spawn error:
 - **lsof**: port detection; without it worktrees run fine and report no ports.
 - **socat**: the ACP chat transport; `--mode tui` does not need it.
 - **an ACP adapter** (`claude-agent-acp`) for `--mode acp`: it ships in the
-  image under the pod driver, and has to be installed here. A create in that
-  mode is refused when it is missing, rather than reporting success and
-  ending seconds later.
+  image under the pod driver, and has to be installed here.
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
   image to have installed one.
+
+### Missing tools
+
+The tool a create names has to be on the PATH this server was started from,
+because that is the PATH its tmux server will resolve the launch command
+against. Two checks say so instead of letting it fail silently — a launch
+command that execs nothing exits 127, tmux closes the window, and the
+worktree ends seconds after a create that already reported success:
+
+- Before anything is provisioned, the create asks the driver
+  (`assertCanLaunch`) whether this host has the binary the launch will run —
+  the tool itself for `--mode tui`, the tool's ACP adapter for `--mode acp`,
+  which bundles its own SDK and never shells out to the CLI. A miss refuses
+  the create with `MISSING_TOOL` and the command that installs it.
+- After the launch, a probe checks the agent windows actually survived,
+  catching what a PATH check cannot: a binary that is present but broken. It
+  is deliberately not awaited — its settle delay would land on every create
+  — so its verdict arrives as a failed provisioning row a moment later.
+
+`--install-missing` (or the webapp's **Install and retry** on a
+`MISSING_TOOL` failure) has yaac run the install itself, from the fixed table
+in `@yaac/shared/tool-install`, narrated on the create's progress stream. It
+re-probes afterwards and refuses if the binary still does not resolve: `npm
+-g` reports success into prefixes this server's PATH may never search, and
+an unverified install would hand back a worktree that dies exactly as it
+would have. The same table backs `yaac host check`'s advice.
 
 ## Testing
 

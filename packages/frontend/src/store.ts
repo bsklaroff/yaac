@@ -4,6 +4,7 @@ import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
+import type { ErrorCode } from '@yaac/shared/errors'
 import type { AgentTool, StoppedWorktreeEntry, ProvisioningWorktreeEntry, WorktreeListEntry } from '@yaac/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v2'
@@ -618,6 +619,19 @@ interface UiState {
    *  these only bridge the gap until the first snapshot frame carries the id,
    *  then they're pruned. */
   optimisticProvisioning: ProvisioningWorktreeEntry[]
+  /**
+   * How to run a failed provision again, by worktree id — set by whoever
+   * started it, since the parameters (branch, mode, permission posture) live
+   * only in that closure and no row carries them.
+   *
+   * Kept BESIDE the rows rather than on one, because the row a failure
+   * renders from is the server's: `mergeProvisioning` lets the snapshot win,
+   * and the optimistic copy carrying the closure is pruned the moment the
+   * snapshot knows the id. Absent after a reload (a closure cannot survive
+   * one), which is why every retryable failure also states its recovery in
+   * the message.
+   */
+  provisionRetries: Record<string, () => void>
   /** Worktrees whose delete was confirmed — rendered as "stopping…"
    *  optimistically (bridging the gap before the snapshot carries the
    *  server's own `stopping` flag) until the snapshot drops them. */
@@ -676,8 +690,13 @@ interface UiState {
   closeSkillsOverlay: () => void
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningWorktreeEntry) => void
+  /** Record (or, with null, forget) how to re-run a provision. */
+  setProvisionRetry: (worktreeId: string, retry: (() => void) | null) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
-  updateOptimisticProvisioning: (worktreeId: string, patch: { message?: string; error?: string }) => void
+  updateOptimisticProvisioning: (
+    worktreeId: string,
+    patch: { message?: string; error?: string; errorCode?: ErrorCode },
+  ) => void
   /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
   removeOptimisticProvisioning: (worktreeId: string) => void
   setActiveProject: (slug: string | null) => void
@@ -803,6 +822,15 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.worktreeId !== worktreeId) }
       : s
   )),
+  provisionRetries: {},
+  setProvisionRetry: (worktreeId, retry) => set((s) => {
+    if (retry === null) {
+      if (!(worktreeId in s.provisionRetries)) return s
+      const { [worktreeId]: _dropped, ...rest } = s.provisionRetries
+      return { provisionRetries: rest }
+    }
+    return { provisionRetries: { ...s.provisionRetries, [worktreeId]: retry } }
+  }),
   // Switching projects clears the open worktree — the sidebar now shows a
   // different project's worktrees, so the old selection no longer belongs.
   // On mobile that lands on the project's worktree list; clearing the project

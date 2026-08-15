@@ -9,7 +9,10 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   onPath: mockOnPath,
   runHost: mockRunHost,
 }))
-import { acpAdapterRunnable, runHostCheck } from '#drivers/containerless/check'
+import { assertHostCanLaunch, runHostCheck } from '#drivers/containerless/check'
+import { WorkspaceExecError } from '#drivers/contract'
+import { ServerError } from '@yaac/shared/errors'
+import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 
 const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string) =>
   results.find((r) => r.name === name)
@@ -82,15 +85,129 @@ describe('runHostCheck', () => {
   })
 })
 
-describe('acpAdapterRunnable', () => {
-  it('answers from PATH, which is what a create asks before recording anything', async () => {
-    // Without this the create reports success and the worktree is gone
-    // seconds later: acpd execs an adapter that ships in the image and is
-    // absent from a host, exits 127, and tmux closes the window with the
-    // session in it.
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(bin === 'claude-agent-acp'))
-    expect(await acpAdapterRunnable('claude-agent-acp')).toBe(true)
-    expect(await acpAdapterRunnable('codex-agent-acp')).toBe(false)
+/**
+ * The create's preflight. Everything here is the same failure — a launch
+ * command that execs nothing, exits 127, and takes the worktree with it
+ * seconds after a create that already reported success — caught before
+ * anything is provisioned instead of after.
+ */
+describe('assertHostCanLaunch', () => {
+  const present = (...bins: string[]) =>
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bins.includes(bin)))
+
+  it('passes a tui launch whose tool is on PATH', async () => {
+    present('codex')
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
+  })
+
+  it('refuses a tui launch whose tool is missing, with the command that fixes it', async () => {
+    present()
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' }).catch((e: unknown) => e)
+    // A code, not just prose: the webapp offers to run the install off it.
+    expect(err).toBeInstanceOf(ServerError)
+    expect((err as ServerError).code).toBe('MISSING_TOOL')
+    // An error that says only what is wrong is barely better than the spawn
+    // failure it replaces.
+    expect((err as ServerError).message).toContain(AGENT_INSTALL.codex)
+    expect((err as ServerError).message).toContain('--install-missing')
+  })
+
+  it('asks for the ADAPTER under acp, not the tool it adapts', async () => {
+    // claude-agent-acp bundles its own SDK; acpd never shells out to
+    // `claude`, so a host with the adapter and no CLI runs acp fine.
+    present('claude-agent-acp')
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' })).resolves.toBeUndefined()
+
+    present('claude')
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
+      .rejects.toThrow(/claude-agent-acp.*not on this host's PATH/)
+  })
+
+  it('refuses acp for a tool that has no adapter at all', async () => {
+    present()
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'acp' }))
+      .rejects.toThrow(/no ACP adapter/)
+  })
+
+  it('installs a missing tool when asked to, then proves it landed', async () => {
+    // `npm -g` reports success into prefixes this server's PATH never
+    // searches, so the re-probe is what separates a real install from a
+    // worktree that will die exactly as it would have.
+    let installed = false
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'codex' && installed))
+    mockRunHost.mockImplementation((argv: string[]) => {
+      expect(argv).toEqual(['sh', '-c', AGENT_INSTALL.codex])
+      installed = true
+      return Promise.resolve({ stdout: 'added 1 package', stderr: '' })
+    })
+    const progress: string[] = []
+    await expect(assertHostCanLaunch({
+      tool: 'codex', mode: 'tui', installMissing: true, onProgress: (m) => progress.push(m),
+    })).resolves.toBeUndefined()
+    expect(mockRunHost).toHaveBeenCalledTimes(1)
+    expect(progress.join('\n')).toContain(AGENT_INSTALL.codex)
+  })
+
+  it('installs nothing when the tool is already there', async () => {
+    present('codex')
+    await assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true })
+    expect(mockRunHost).not.toHaveBeenCalled()
+  })
+
+  it('reports the installer\'s own words when the install fails', async () => {
+    present()
+    mockRunHost.mockRejectedValue(
+      new WorkspaceExecError('command exited 243', 243, '', 'npm ERR! EACCES /usr/lib/node_modules'),
+    )
+    // Where "needs a writable prefix" actually lives — without it the user
+    // gets a second silent failure instead of a fixable one.
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }))
+      .rejects.toThrow(/installing codex failed.*EACCES/s)
+  })
+
+  it('keeps npm\'s code line, which a tail-only window would scroll off', async () => {
+    present()
+    // Shaped like a real npm failure: the machine-readable code is printed
+    // near the TOP, and the sentence a person needs is at the bottom, with
+    // more than a window's worth of path noise in between.
+    const npmError = [
+      'npm error code EACCES',
+      'npm error syscall mkdir',
+      "npm error path '/ro-prefix/lib'",
+      ...Array.from({ length: 12 }, (_, i) => `npm error   detail line ${String(i)}`),
+      'npm error The operation was rejected by your operating system.',
+      'npm error It is likely you do not have the permissions to access this file.',
+    ].join('\n')
+    mockRunHost.mockRejectedValue(new WorkspaceExecError('command exited 243', 243, '', npmError))
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true })
+      .catch((e: unknown) => e) as Error
+    expect(err.message).toContain('npm error code EACCES')
+    expect(err.message).toContain('do not have the permissions')
+    // Lifted, not duplicated — the tail drops the code line it hoisted.
+    expect(err.message.match(/npm error code EACCES/g)).toHaveLength(1)
+  })
+
+  it('refuses when the install reports success but the binary still is not on PATH', async () => {
+    present()
+    mockRunHost.mockResolvedValue({ stdout: 'added 1 package', stderr: '' })
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }))
+      .rejects.toThrow(/still not on this server's PATH/)
+  })
+
+  it('runs one install for concurrent creates wanting the same tool', async () => {
+    // Two `npm -g` runs into one prefix race each other's writes, and the
+    // second has nothing to add.
+    let installed = false
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'codex' && installed))
+    mockRunHost.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10))
+      installed = true
+      return { stdout: '', stderr: '' }
+    })
+    await Promise.all([
+      assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }),
+      assertHostCanLaunch({ tool: 'codex', mode: 'tui', installMissing: true }),
+    ])
+    expect(mockRunHost).toHaveBeenCalledTimes(1)
   })
 })

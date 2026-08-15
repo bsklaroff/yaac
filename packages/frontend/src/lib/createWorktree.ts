@@ -41,6 +41,10 @@ export async function createWorktree(
    *  choice, else the per-driver default) rather than the webapp guessing —
    *  and so an untouched form never overwrites the remembered choice. */
   permissionMode?: PermissionMode,
+  /** Retry-only: let the server install the agent's CLI when its host hasn't
+   *  got it. Set by the Install-and-retry path, never by a first attempt —
+   *  yaac does not install anything the user did not ask it to. */
+  installMissingTool?: boolean,
 ): Promise<CreateWorktreeResult> {
   const body = {
     project,
@@ -51,6 +55,7 @@ export async function createWorktree(
     // make every create look like an explicit mode choice in the logs.
     ...(mode === 'acp' ? { mode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(installMissingTool === true ? { installMissingTool } : {}),
   }
   return await streamWorktreeOp('/worktree/create', body, onProgress) as CreateWorktreeResult
 }
