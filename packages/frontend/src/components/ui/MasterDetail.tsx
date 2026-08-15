@@ -17,6 +17,14 @@ import { NavBackIcon } from '#lib/icons'
  * selected" — every one of these overlays auto-selects its first row so the
  * desktop detail pane is never blank, and that auto-pick must not count as a
  * navigation on a phone.
+ *
+ * The detail pane is floored at `min-w-0` because a flex item's automatic
+ * minimum size is its content's, and what these panes show is exactly the
+ * content that has none worth honoring: a conversation's source lines, diffs
+ * and fenced blocks are `white-space: pre`, so the column would size itself to
+ * the widest line in the transcript, run off the right of the overlay and take
+ * the actions at its foot with it. Floored, each of those blocks scrolls
+ * inside its own scroller, which is where a long line belongs.
  */
 export function MasterDetail({
   detailOpen,
@@ -41,7 +49,7 @@ export function MasterDetail({
         {master}
       </div>
       <div className={clsx(
-        'flex min-h-0 flex-1 flex-col gap-2',
+        'flex min-h-0 min-w-0 flex-1 flex-col gap-2',
         !detailOpen && 'max-md:hidden',
       )}>
         <button
