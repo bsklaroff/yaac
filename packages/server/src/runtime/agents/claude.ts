@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import { scanJsonlForward } from './jsonl'
+import { scanJsonlBackward, scanJsonlForward } from './jsonl'
 
 /**
  * Classifies Claude Code's "actively working" state from the pane's OSC
@@ -80,6 +80,26 @@ export async function getFirstUserMessage(jsonlPath: string): Promise<string | u
 
     if (isCommandMessage(parsed.isMeta, text)) return undefined
     return text
+  })
+}
+
+/**
+ * The model claude last answered as, from the newest `assistant` entry that
+ * names one (`message.model`, e.g. `claude-opus-5`).
+ *
+ * `<synthetic>` is claude's own placeholder on entries it generated rather
+ * than a model did — an interrupt notice, an API-error stand-in — and naming
+ * it as the session's model would show a worktree answering as a model that
+ * does not exist. Skipping it falls through to the last real answer, which is
+ * still what the next turn will use.
+ */
+export async function getClaudeModel(jsonlPath: string): Promise<string | undefined> {
+  return scanJsonlBackward(jsonlPath, (entry) => {
+    const parsed = entry as { type?: unknown; message?: { model?: unknown } }
+    if (parsed.type !== 'assistant') return undefined
+    const model = parsed.message?.model
+    if (typeof model !== 'string' || model.length === 0) return undefined
+    return model === '<synthetic>' ? undefined : model
   })
 }
 

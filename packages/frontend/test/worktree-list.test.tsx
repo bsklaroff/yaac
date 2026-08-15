@@ -136,6 +136,24 @@ describe('WorktreeList', () => {
     expect(screen.getByText('stopping…')).toBeTruthy()
   })
 
+  it('names each row\'s tool and the model it is answering as', () => {
+    // The model comes off the live conversation, so a row says what it is
+    // running rather than what it was launched with. A worktree whose agent
+    // has not replied yet — and every opencode one, which leaves no
+    // transcript to read — keeps the bare tool name.
+    renderList([
+      entry({
+        worktreeId: 'a',
+        title: 'Answered once',
+        agentSessions: [{ agentSessionId: 'c1', tool: 'claude', ordinal: 0, active: true, model: 'claude-opus-5' }],
+      }),
+      entry({ worktreeId: 'b', title: 'Not yet', tool: 'opencode' }),
+    ])
+
+    expect(screen.getByText('Claude · Opus 5')).toBeTruthy()
+    expect(screen.getByText('OpenCode')).toBeTruthy()
+  })
+
   it('ghosts a group\'s stopped members and offers them a way out of it', async () => {
     stoppedRows.push({
       worktreeId: 'gone',

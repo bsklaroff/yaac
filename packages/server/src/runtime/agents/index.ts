@@ -53,6 +53,7 @@ export {
   agentWindowTool,
   classifyAgentObservation,
   getAgentSessionFirstMessage,
+  getAgentSessionModel,
   type AgentPaneStatus,
 } from './agent-tools'
 export {
@@ -75,6 +76,7 @@ export {
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
+  transcriptStamp,
 } from './transcripts'
 export { ensureClaudeHooks } from './claude'
 export { ensureOpencodeConfigJson } from './opencode'

@@ -1,4 +1,4 @@
-import { scanJsonlForward } from './jsonl'
+import { scanJsonlBackward, scanJsonlForward } from './jsonl'
 
 // ---------------------------------------------------------------------------
 // Status + first-message
@@ -53,4 +53,23 @@ export function classifyCodexTitle(title: string): 'running' | 'waiting' {
  */
 export async function getCodexFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
   return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as CodexEntry))
+}
+
+/**
+ * The model codex last ran a turn with, from the newest `turn_context` entry.
+ *
+ * codex records a `turn_context` at every turn boundary carrying that turn's
+ * settings — model, approval policy, sandbox, effort — so the last one is
+ * both the current model and what the next turn will use. The messages
+ * themselves name no model, which is why this reads turn boundaries rather
+ * than answers (verified against the rollout codex 0.142.4 writes:
+ * `{"type":"turn_context","payload":{"model":"gpt-5.6-sol",…}}`).
+ */
+export async function getCodexModel(jsonlPath: string): Promise<string | undefined> {
+  return scanJsonlBackward(jsonlPath, (entry) => {
+    const parsed = entry as { type?: unknown; payload?: { model?: unknown } }
+    if (parsed.type !== 'turn_context') return undefined
+    const model = parsed.payload?.model
+    return typeof model === 'string' && model.length > 0 ? model : undefined
+  })
 }

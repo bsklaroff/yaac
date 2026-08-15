@@ -11,6 +11,7 @@ import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { acpPaneTargets, defaultPaneTarget, paneStillLive } from '#lib/panes'
+import { agentLabel } from '#lib/agentLabel'
 import { isElectron } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
 import { useIsMobile } from '#lib/viewport'
@@ -81,15 +82,32 @@ interface DragState {
   over?: DropTarget
 }
 
+/**
+ * An agent pane is named for what is answering in it — "Claude · Opus 5" —
+ * rather than the bare word "Agent", which said nothing a worktree with one
+ * agent didn't already know. Both modes resolve the same way, from the
+ * conversation the target names: `agent` is the worktree's primary tui window
+ * (ordinal 0, the one a restart brings up first), and an `acp:<id>` target
+ * names its conversation outright.
+ *
+ * `worktree` is absent on the paths that only ever name a terminal (the
+ * kill-confirm chord), where the fallback is unreachable rather than wrong.
+ */
 function paneName(
   target: string,
   terminals: WorktreeTerminalEntry[] | undefined,
   previewPort?: number,
+  worktree?: WorktreeListEntry,
 ): string {
-  if (target === 'agent') return 'Agent'
   if (isPreviewTarget(target)) return previewLabel(previewPort)
   if (isChangesTarget(target)) return 'Changes'
-  if (isAcpTarget(target)) return 'Agent'
+  if (target === 'agent' || isAcpTarget(target)) {
+    const sessions = worktree?.agentSessions ?? []
+    const session = isAcpTarget(target)
+      ? sessions.find((a) => a.agentSessionId === acpTargetSession(target))
+      : [...sessions].sort((a, b) => a.ordinal - b.ordinal).find((a) => a.mode !== 'acp')
+    return worktree === undefined ? 'Agent' : agentLabel(worktree.tool, session?.model)
+  }
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
@@ -617,13 +635,13 @@ export function WorktreeView({
             : 'text-text-faint hover:text-text-dim',
         )}
       >
-        {paneName(t, terminals, previewPortForWorktree)}
+        {paneName(t, terminals, previewPortForWorktree, worktree)}
       </button>
       {isSpecialPane(t) ? (
         <button
           onClick={() => closePane(t)}
           title="Close pane"
-          aria-label={`Close ${paneName(t, terminals, previewPortForWorktree)}`}
+          aria-label={`Close ${paneName(t, terminals, previewPortForWorktree, worktree)}`}
           className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
             text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100
             max-md:h-6 max-md:w-6 max-md:opacity-100"

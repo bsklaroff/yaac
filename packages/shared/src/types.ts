@@ -574,6 +574,17 @@ export interface AgentSessionEntry {
   prompt?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
   lastActiveAt?: string
+  /**
+   * The model it last answered as, in the tool's own spelling
+   * (`claude-opus-5`, `gpt-5.6-sol`, `anthropic/claude-opus-4-8`) — for
+   * display beside the tool name, never to relaunch with. Follows a `/model`
+   * switch, since it is read from the transcript rather than the launch.
+   *
+   * Absent until the agent has answered once, and always for opencode, whose
+   * history is a container-side sqlite DB with nothing to read. A UI shows the
+   * bare tool name in that case.
+   */
+  model?: string
 }
 
 export interface WorktreeListEntry {

@@ -68,6 +68,54 @@ describe('deleteWorktreeAgentSessions', () => {
   })
 })
 
+/**
+ * Covered here for one decision only: which captured values a re-sighting is
+ * allowed to REPLACE. Every other write this makes is exercised through the
+ * reconciler and the listings that read it back.
+ */
+describe('recordAgentSessions', () => {
+  const conversation = async (id: string) =>
+    (await listWorktreeAgentSessions('demo', 'wt-1')).find((l) => l.agentSessionId === id)
+
+  it('follows a model switch but keeps the opening message', async () => {
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5' },
+    ])
+    // The same conversation, seen again after a `/model` — and after a
+    // compaction that left a different message at the head of its transcript.
+    await recordAgentSessions('demo', 'wt-1', [
+      {
+        tool: 'claude',
+        agentSessionId: 'conv-a',
+        firstPrompt: 'continue where we left off',
+        model: 'claude-fable-5',
+      },
+    ])
+
+    const row = await conversation('conv-a')
+    // The model is a fact about now, so the later sighting wins; the opening
+    // message is a fact about the conversation's birth, so the first does.
+    expect(row?.model).toBe('claude-fable-5')
+    expect(row?.firstPrompt).toBe('ship it')
+  })
+
+  it('leaves a recorded model alone when a sighting read none', async () => {
+    // Absent means "not read" — a sweep that could not resolve the transcript
+    // this tick, or a tool that never reports one. Treating it as "no model"
+    // would blank the label on every such tick.
+    await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'wt-1' })
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-b', model: 'claude-opus-5' },
+    ])
+    await recordAgentSessions('demo', 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-b', paneId: '%1' },
+    ])
+
+    expect((await conversation('conv-b'))?.model).toBe('claude-opus-5')
+  })
+})
+
 describe('recordedConversationHandles', () => {
   // Keyed by the driver's handle, and only conversations that are on one:
   // the ACP driver re-addresses a live agent by handle, so a link with no

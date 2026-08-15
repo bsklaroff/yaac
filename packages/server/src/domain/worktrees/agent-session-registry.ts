@@ -14,6 +14,7 @@ import {
   setAgentSessionCapture,
 } from '#db'
 import { absoluteTranscriptPath } from './agent-session-paths'
+import { captureModel } from './model-capture'
 import { captureFirstPrompt } from './prompt-capture'
 import { readSessionStarts, type SessionStartSighting } from './session-starts'
 import path from 'node:path'
@@ -214,13 +215,24 @@ export async function reconcileWorktreeAgentSessions(
   // this adds a fact to a row that already exists, and a whole re-report would
   // have to carry every conversation's pane back with it just to avoid
   // clearing them.
+  //
+  // The model rides along on the same read, and is the one capture here that
+  // repeats: a `/model` is a new answer to the same question, so it is asked
+  // again whenever the transcript has moved (`captureModel` gates that on
+  // mtime). Written only when it actually differs from the row, which keeps a
+  // settled worktree at zero writes a tick.
   await Promise.all(links.map(async (l) => {
-    if (l.firstPrompt !== undefined) return
-    const firstPrompt = await captureFirstPrompt(
-      projectSlug, l.tool, l.agentSessionId, absoluteTranscriptPath(l), jobName,
-    )
-    if (firstPrompt === undefined) return
-    await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, { firstPrompt })
+    const transcript = absoluteTranscriptPath(l)
+    const firstPrompt = l.firstPrompt === undefined
+      ? await captureFirstPrompt(projectSlug, l.tool, l.agentSessionId, transcript, jobName)
+      : undefined
+    const model = await captureModel(projectSlug, l.tool, l.agentSessionId, transcript)
+    const capture = {
+      ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+      ...(model !== undefined && model !== l.model ? { model } : {}),
+    }
+    if (Object.keys(capture).length === 0) return
+    await setAgentSessionCapture(projectSlug, l.tool, l.agentSessionId, capture)
   }))
 
   // Intersect the recorded handles with what the status watcher can see. When
@@ -365,6 +377,10 @@ async function reconcileAcpAgentSessions(
         const firstPrompt = await readAcpFirstPrompt(
           path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`),
         )
+        // From the transcript, not the conversation: the ACP stream carries no
+        // model, and the adapter is the tool's own SDK writing the same file
+        // its TUI would — so this is the same read the tui branch makes.
+        const model = await captureModel(projectSlug, a.tool, agentSessionId, transcriptPath)
         return {
           tool: a.tool,
           agentSessionId,
@@ -373,6 +389,7 @@ async function reconcileAcpAgentSessions(
           ...(firstPrompt !== undefined ? { firstPrompt } : {}),
           ...(transcriptPath !== undefined ? { transcriptPath } : {}),
           ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
+          ...(model !== undefined ? { model } : {}),
         }
       }),
   )

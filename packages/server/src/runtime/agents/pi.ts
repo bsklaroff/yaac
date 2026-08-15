@@ -1,5 +1,5 @@
 import { piSessionLogs } from './transcripts'
-import { scanJsonlForward } from './jsonl'
+import { scanJsonlBackward, scanJsonlForward } from './jsonl'
 
 /**
  * Status classification + first-message lookup for pi (earendil) sessions.
@@ -89,4 +89,47 @@ export async function getSessionPiFirstUserMessage(
  *  tree already resolved to a file. */
 export async function getPiFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
   return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as PiMessageEntry))
+}
+
+/**
+ * The model pi last answered as, as `provider/model` — the same spelling pi's
+ * own `--model` flag takes, so the stored value reads the way the tool talks
+ * about it.
+ *
+ * Two entry kinds carry it and the later one wins, which is what a backward
+ * scan gives for free: an assistant `message` (whose `provider`/`model` name
+ * what actually answered) and a `model_change`, which pi appends when the
+ * model is switched *before* anything has answered as it. Reading both is what
+ * pi itself does to resolve a session's current model.
+ *
+ * One deliberate divergence: pi resolves along the active branch — the
+ * `parentId` chain back from the current leaf — where this takes the last
+ * entry in file order. They agree except right after a fork or rewind that
+ * switches branch without appending, where this can name the abandoned
+ * branch's model until the next answer corrects it. Reconstructing the chain
+ * would mean reading the whole log, which is the walk the tail read exists to
+ * avoid, and the cost of being wrong is a stale label for one turn.
+ */
+export async function getPiModel(jsonlPath: string): Promise<string | undefined> {
+  return scanJsonlBackward(jsonlPath, (entry) => {
+    const parsed = entry as {
+      type?: unknown
+      provider?: unknown
+      modelId?: unknown
+      message?: { role?: unknown; provider?: unknown; model?: unknown }
+    }
+    if (parsed.type === 'model_change') {
+      return qualifiedModel(parsed.provider, parsed.modelId)
+    }
+    if (parsed.type === 'message' && parsed.message?.role === 'assistant') {
+      return qualifiedModel(parsed.message.provider, parsed.message.model)
+    }
+    return undefined
+  })
+}
+
+/** `provider/model`, or the bare model when the entry named no provider. */
+function qualifiedModel(provider: unknown, model: unknown): string | undefined {
+  if (typeof model !== 'string' || model.length === 0) return undefined
+  return typeof provider === 'string' && provider.length > 0 ? `${provider}/${model}` : model
 }
