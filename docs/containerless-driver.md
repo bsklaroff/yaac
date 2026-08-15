@@ -330,7 +330,9 @@ startup rather than letting a create fail with a spawn error:
 
 - **tmux** (3.0+ — the status watcher drives control mode) and **git**: required.
 - **lsof**: port detection; without it worktrees run fine and report no ports.
-- **socat**: the ACP chat transport; `--mode tui` does not need it.
+- **socat**: required for `--mode acp` — the chat transport dials acpd's
+  socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
+  rather than fails for that reason; a create in acp mode refuses.
 - **an ACP adapter** (`claude-agent-acp`) for `--mode acp`: it ships in the
   image under the pod driver, and has to be installed here.
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
@@ -347,15 +349,21 @@ worktree ends seconds after a create that already reported success:
 - Before anything is provisioned, the create asks the driver
   (`assertCanLaunch`) whether this host has the binary the launch will run —
   the tool itself for `--mode tui`, the tool's ACP adapter for `--mode acp`,
-  which bundles its own SDK and never shells out to the CLI. A miss refuses
-  the create with `MISSING_TOOL` and the command that installs it.
+  which bundles its own SDK and never shells out to the CLI, plus the `socat`
+  that mode's transport dials with. A miss refuses the create with
+  `MISSING_TOOL` and the command that installs it. socat is in that list even
+  though its absence does not kill the worktree: the pane simply never
+  attaches, which reads as an agent that hangs rather than a tool that is
+  missing, and there is no npm command for yaac to offer to run.
 - After the launch, a probe checks the agent windows actually survived,
   catching what a PATH check cannot: a binary that is present but broken. It
   is deliberately not awaited — its settle delay would land on every create
   — so its verdict arrives as a failed provisioning row a moment later.
 
-`--install-missing` (or the webapp's **Install and retry** on a
-`MISSING_TOOL` failure) has yaac run the install itself, from the fixed table
+`--install-missing` (or the webapp's **Install and retry**, offered on a
+`MISSING_TOOL` failure that reports itself `installable` — the code alone
+would put the button on socat too, where the retry installs nothing and
+re-fails identically) has yaac run the install itself, from the fixed table
 in `@yaac/shared/tool-install`, narrated on the create's progress stream. It
 re-probes afterwards and refuses if the binary still does not resolve: `npm
 -g` reports success into prefixes this server's PATH may never search, and

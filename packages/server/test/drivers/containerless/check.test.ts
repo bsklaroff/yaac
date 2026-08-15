@@ -11,7 +11,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
 }))
 import { assertHostCanLaunch, runHostCheck } from '#drivers/containerless/check'
 import { WorkspaceExecError } from '#drivers/contract'
-import { ServerError } from '@yaac/shared/errors'
+import { MissingToolError, ServerError } from '@yaac/shared/errors'
 import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 
 const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string) =>
@@ -110,17 +110,52 @@ describe('assertHostCanLaunch', () => {
     // failure it replaces.
     expect((err as ServerError).message).toContain(AGENT_INSTALL.codex)
     expect((err as ServerError).message).toContain('--install-missing')
+    // And says so in a form a client can act on — this is the case where an
+    // Install-and-retry button really can fix it.
+    expect((err as MissingToolError).installable).toBe(true)
   })
 
   it('asks for the ADAPTER under acp, not the tool it adapts', async () => {
     // claude-agent-acp bundles its own SDK; acpd never shells out to
     // `claude`, so a host with the adapter and no CLI runs acp fine.
-    present('claude-agent-acp')
+    present('claude-agent-acp', 'socat')
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' })).resolves.toBeUndefined()
 
-    present('claude')
+    present('claude', 'socat')
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
       .rejects.toThrow(/claude-agent-acp.*not on this host's PATH/)
+  })
+
+  it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
+    // The adapter alone gets a worktree that launches and never attaches:
+    // the chat transport dials acpd's socket by spawning socat on this host,
+    // so without it there is no handshake, no conversation and no pane —
+    // which reads as a wedged agent rather than a missing tool.
+    present('claude-agent-acp')
+    const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
+      .catch((e: unknown) => e) as ServerError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toMatch(/"socat" is not on this host's PATH/)
+    // No npm package carries socat, so the recovery is the system one and an
+    // `--install-missing` offer yaac could not honour is left unsaid.
+    expect(err.message).toContain('apt install socat')
+    expect(err.message).toContain('--mode tui')
+    expect(err.message).not.toContain('--install-missing')
+    // The same fact in a form a client can branch on: the webapp offers its
+    // Install-and-retry button off this, not off the code, because a retry
+    // that installs nothing re-fails with this identical error.
+    expect(err).toBeInstanceOf(MissingToolError)
+    expect((err as MissingToolError).installable).toBe(false)
+
+    // And an install run cannot paper over it either.
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp', installMissing: true }))
+      .rejects.toThrow(/"socat" is not on this host's PATH/)
+    expect(mockRunHost).not.toHaveBeenCalled()
+  })
+
+  it('leaves socat alone for tui, which never dials a socket', async () => {
+    present('claude')
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'tui' })).resolves.toBeUndefined()
   })
 
   it('refuses acp for a tool that has no adapter at all', async () => {

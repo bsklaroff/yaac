@@ -329,13 +329,41 @@ describe('createAcpd', () => {
     fs.mkdirSync(path.dirname(sock), { recursive: true })
     fs.writeFileSync(sock, '')
 
-    // cwd like every other case here: acpd defaults to /workspace, which
-    // exists inside a worktree container but not on a plain host, and a spawn
-    // that fails there races shutdown() against listen() instead of failing.
     const daemon = createAcpd({
       sockPath: sock, argv: ['cat'], cwd: process.cwd(), logStream: quiet,
     })
     daemons.push(daemon)
     await expect(daemon.listen()).resolves.toBe(sock)
+  })
+
+  it('runs the agent in the cwd it was handed, not one baked in here', async () => {
+    // The launch command names the workspace because acpd is shared by both
+    // runtimes and a checkout lives somewhere different under each. Getting
+    // this wrong does not look like a bad directory: spawn reports ENOENT for
+    // a missing cwd exactly as it does for a missing binary, so the adapter
+    // "cannot be found", acpd exits 127, tmux closes the window, and the
+    // worktree ends seconds after a create that reported success.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-cwd-'))
+    tmpDirs.push(dir)
+    const logPath = path.join(dir, 'c.jsonl')
+    await start(['sh', '-c', 'pwd -P; exec cat'], { cwd: dir, logPath })
+    // The record rather than a client: what the agent says before anyone
+    // attaches reaches only the file, and this is said at startup.
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes(fs.realpathSync(dir)))
+  })
+
+  it('defaults to its own directory, which is the window tmux opened', async () => {
+    // Every driver pins the tmux session's start directory to the workspace,
+    // so the inherited cwd is already the right one — a default that is wrong
+    // under one of them is how the literal above got there in the first place.
+    const sock = sockPath()
+    const logPath = path.join(path.dirname(sock), 'c.jsonl')
+    const daemon = createAcpd({
+      sockPath: sock, argv: ['sh', '-c', 'pwd -P; exec cat'], logStream: quiet, logPath,
+    })
+    daemons.push(daemon)
+    await daemon.listen()
+    await waitUntil(() =>
+      fs.readFileSync(logPath, 'utf8').includes(fs.realpathSync(process.cwd())))
   })
 })

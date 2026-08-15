@@ -587,8 +587,12 @@ export const acpDriver: AgentDriver = {
     // already known and this is its final name; on a fresh create the agent has
     // not minted one yet, so it starts under the worktree id and is adopted
     // once `session/new` answers (see `adoptLog`).
+    // `--cwd` is the workspace the adapter runs in, named rather than
+    // inherited: it is the one thing here that differs per runtime, and acpd
+    // is shared code that cannot know a checkout's path.
     return `node ${spec.paths.acpdEntry} --sock ${acpSockPath(spec.paths, spec.windowName)}`
-      + ` --log ${acpLogPath(spec.paths, spec.agentSessionId)} -- ${adapter}${model}`
+      + ` --log ${acpLogPath(spec.paths, spec.agentSessionId)}`
+      + ` --cwd ${spec.paths.workspaceDir} -- ${adapter}${model}`
   },
 
   connect(session, sink, deps = {}): AgentConnection {

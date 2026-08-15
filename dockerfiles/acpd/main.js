@@ -11,7 +11,7 @@ import { createAcpd } from './acpd.js'
 
 function usage(msg) {
   console.error(`[acpd] ${msg}`)
-  console.error('[acpd] usage: acpd --sock <path> [--log <path>] -- <agent argv...>')
+  console.error('[acpd] usage: acpd --sock <path> [--log <path>] [--cwd <path>] -- <agent argv...>')
   process.exit(2)
 }
 
@@ -21,16 +21,27 @@ if (sep < 0) usage('missing `--` separator before the agent argv')
 
 let sockPath
 let logPath
+// The agent's working directory — the worktree checkout, which is a
+// different path under every runtime. Optional because the window tmux
+// spawned this in is already the right one; passing it makes the launch
+// command say so rather than depending on what it inherited.
+let cwd
 for (let i = 0; i < sep; i++) {
   if (args[i] === '--sock') sockPath = args[++i]
   else if (args[i] === '--log') logPath = args[++i]
+  else if (args[i] === '--cwd') cwd = args[++i]
   else usage(`unknown option ${args[i]}`)
 }
 const argv = args.slice(sep + 1)
 if (!sockPath) usage('--sock is required')
 if (argv.length === 0) usage('no agent command given')
 
-const daemon = createAcpd({ sockPath, argv, ...(logPath ? { logPath } : {}) })
+const daemon = createAcpd({
+  sockPath,
+  argv,
+  ...(logPath ? { logPath } : {}),
+  ...(cwd ? { cwd } : {}),
+})
 daemon.onExit((code, signal) => {
   process.exit(signal ? 1 : code)
 })

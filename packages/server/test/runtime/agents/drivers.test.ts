@@ -201,6 +201,10 @@ describe('agentDriver', () => {
     expect(acp).toContain('node /opt/yaac/acpd/main.js')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
+    // The adapter's own cwd, named rather than inherited: acpd is shared by
+    // both runtimes and cannot know where a checkout lives, and a wrong one
+    // fails the spawn as if the binary were missing.
+    expect(acp).toContain('--cwd /workspace')
     // The record is named for the CONVERSATION, not the window: a window name
     // is a slot, and a restart that drops an earlier conversation shifts the
     // others down a slot, which under slot-naming would truncate one

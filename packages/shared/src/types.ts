@@ -883,6 +883,12 @@ export interface ProvisioningWorktreeEntry {
    *  recovery this failure has rather than only printing it (`MISSING_TOOL`
    *  can be installed and retried). */
   errorCode?: ErrorCode
+  /** Whether yaac can install the tool the failure names, for a client
+   *  deciding whether to offer that. Only meaningful with `MISSING_TOOL`,
+   *  and false for a binary that comes from a system package manager
+   *  (socat): there the code alone would put up an install button whose
+   *  retry re-fails identically, which reads as a fix that was tried. */
+  installable?: boolean
   /** The sidebar group this worktree is filed under — asked for by a create
    *  (`--group`), or already recorded for a restart — so the row renders in
    *  that section while it provisions rather than jumping to the top of the
