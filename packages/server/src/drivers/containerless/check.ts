@@ -39,7 +39,7 @@ const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
   {
     binary: 'git',
     why: 'creates and reads every worktree checkout',
-    fix: 'Install git.',
+    fix: 'Install git (apt install git / brew install git).',
   },
 ]
 
@@ -51,10 +51,24 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
     fix: 'Install lsof to get clickable port links; worktrees run fine without it.',
   },
   {
+    binary: 'node',
+    why: 'runs acpd, the supervisor an ACP worktree launches into',
+    fix: 'Install node (apt install nodejs / brew install node) to use --mode acp, '
+      + 'which is refused without it; tui-mode worktrees do not need it. A yaac '
+      + 'started by a bundled interpreter is the usual reason this is missing — '
+      + 'the server runs, and only acp creates fail.',
+  },
+  {
     binary: 'socat',
     why: 'carries the ACP chat transport to an agent',
     fix: 'Install socat (apt install socat / brew install socat) to use --mode acp, '
       + 'which is refused without it; tui-mode worktrees do not need it.',
+  },
+  {
+    binary: 'curl',
+    why: 'yaac-mama, the in-session helper, reaches this server with it',
+    fix: 'Install curl (apt install curl) so a session can run yaac-mama; '
+      + 'everything else works without it.',
   },
 ]
 
@@ -70,15 +84,30 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * seconds after a create that already said it worked. So the create asks
  * first.
  *
- * WHICH binary has to be there differs by mode, and only by mode: `tui` runs
- * the tool itself, while `acp` runs the tool's adapter — which bundles its
- * own SDK rather than shelling out to the tool, so an acp worktree needs the
- * adapter and not the CLI. `acp` needs `socat` besides, because the chat
- * transport dials acpd's UNIX socket by spawning one on this host: without
- * it the worktree comes up and its pane never attaches, which reads as an
- * agent that hangs rather than a tool that is missing — a worse failure than
- * the one this whole check exists to replace, and the reason it is refused
- * here rather than warned about in `yaac host check` alone.
+ * `tmux` and `git` come first and are asked of every launch, because the
+ * failure they cause is the same one arriving later and dirtier: the launch
+ * spawns them directly, so a host without either dies inside
+ * `launchWorkspace` — after the workspace home, its mounts and its state dir
+ * were created — with a bare spawn ENOENT under a create that has already
+ * reported progress. Asked here, that is a clean refusal before anything is
+ * provisioned.
+ *
+ * The rest differs by mode, and only by mode: `tui` runs the tool itself,
+ * while `acp` runs the tool's adapter — which bundles its own SDK rather
+ * than shelling out to the tool, so an acp worktree needs the adapter and
+ * not the CLI. `acp` needs `node` and `socat` besides. `node` because acpd
+ * is yaac's own supervisor and `node <acpdEntry>` is literally the window's
+ * command — a server started by an interpreter that is not itself on PATH
+ * (a bundled one, as the desktop app stages) runs a window that execs
+ * nothing. `socat` because the chat transport dials acpd's UNIX socket by
+ * spawning one on this host: without it the worktree comes up and its pane
+ * never attaches, which reads as an agent that hangs rather than a tool that
+ * is missing — a worse failure than the one this whole check exists to
+ * replace, and the reason it is refused here rather than warned about in
+ * `yaac host check` alone.
+ *
+ * What a tui tool's own shim needs to start is deliberately NOT asked: that
+ * is the tool's business, where acpd's interpreter is yaac's.
  *
  * The probe is `onPath`, which resolves against the environment this server
  * was started from — the same one `launchWorkspace` hands the workspace's
@@ -96,6 +125,20 @@ export async function assertHostCanLaunch(opts: {
   onProgress?: (message: string) => void
 }): Promise<void> {
   const { tool, mode } = opts
+  // In dependency order, so a host missing several is fixed from the bottom
+  // up: no tmux means no session at all, and no git means no checkout to put
+  // one in. Neither has an `alternative` because there is none — a worktree
+  // on this substrate IS a tmux server over a git worktree.
+  await requireBinary('tmux', 'every worktree here is a tmux session on this host', {
+    ...opts,
+    manual: 'apt install tmux / brew install tmux',
+    alternative: null,
+  })
+  await requireBinary('git', "it makes and reads the worktree's checkout", {
+    ...opts,
+    manual: 'apt install git / brew install git',
+    alternative: null,
+  })
   if (mode === 'acp') {
     const adapter = ACP_ADAPTERS[tool]
     if (adapter === undefined) {
@@ -103,6 +146,14 @@ export async function assertHostCanLaunch(opts: {
       // reachable only from a caller that skipped it.
       throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
     }
+    // Before the adapter, and for the reason the ordering above exists: the
+    // adapter is installed BY npm and run BY node, so on a host without one
+    // the adapter's own install advice is unrunnable too.
+    await requireBinary('node', 'acpd, the ACP supervisor, is the window command and runs under it', {
+      ...opts,
+      manual: 'apt install nodejs / brew install node',
+      alternative: 'create the worktree with --mode tui',
+    })
     await requireBinary(adapter, `--mode acp runs ${adapter}`, opts)
     await requireBinary('socat', "the chat transport dials acpd's socket with it", {
       ...opts,
@@ -134,8 +185,10 @@ async function requireBinary(
      *  told only that something is missing is barely better off. */
     manual?: string
     /** What to do INSTEAD, for a reader who would rather not install
-     *  anything. Defaults to the agent CLIs' answer. */
-    alternative?: string
+     *  anything — or `null` where nothing else will do, since inventing an
+     *  alternative to tmux would only mislead. Defaults to the agent CLIs'
+     *  answer. */
+    alternative?: string | null
   },
 ): Promise<void> {
   if (await onPath(binary)) return
@@ -144,17 +197,19 @@ async function requireBinary(
     await installBinary(binary, install, opts.onProgress)
     return
   }
-  const alternative = opts.alternative ?? 'pick a tool this host has'
+  const alternative = opts.alternative === undefined ? 'pick a tool this host has' : opts.alternative
+  const orElse = alternative === null ? '' : `, or ${alternative}`
   throw new MissingToolError(
     `"${binary}" is not on this host's PATH — ${why}, and this server runs `
     + 'agents as host processes with no image to supply one.'
     // No `--install-missing` offer without a table entry: yaac runs npm, and
-    // the package manager that carries socat wants a root it does not have.
+    // the package managers that carry tmux, git and socat want a root it does
+    // not have.
     + (install === undefined
-      ? ` Install it${opts.manual === undefined ? '' : ` (${opts.manual})`} and retry, `
-        + `or ${alternative}.`
+      ? ` Install it${opts.manual === undefined ? '' : ` (${opts.manual})`} and `
+        + `retry${orElse}.`
       : ` Install it (${install}) and retry, retry with --install-missing to `
-        + `let yaac run that command, or ${alternative}.`),
+        + `let yaac run that command${orElse}.`),
     install !== undefined,
   )
 }

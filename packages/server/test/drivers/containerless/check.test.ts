@@ -59,9 +59,31 @@ describe('runHostCheck', () => {
     expect(byName(await runHostCheck(), 'tmux version')?.status).toBe('warn')
   })
 
+  it('warns about a node that acp needs and the server itself did not come from', async () => {
+    // The case this exists for: a yaac whose server runs a bundled
+    // interpreter whose dir never lands on PATH. Everything else works, so
+    // without a row here the check passes clean and every acp create then
+    // refuses — the same position socat is in, and it warns.
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'node'))
+    const results = await runHostCheck()
+    expect(byName(results, 'node')?.status).toBe('warn')
+    expect(byName(results, 'node')?.fix).toMatch(/--mode acp/)
+    expect(results.some((r) => r.status === 'fail')).toBe(false)
+  })
+
+  it('warns about curl, which only the in-session helper needs', async () => {
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'curl'))
+    const results = await runHostCheck()
+    // yaac-mama posts to the server with it; a worktree with no curl still
+    // runs its agent, so this can never be what fails a host.
+    expect(byName(results, 'curl')?.status).toBe('warn')
+    expect(byName(results, 'curl')?.fix).toMatch(/yaac-mama/)
+    expect(results.some((r) => r.status === 'fail')).toBe(false)
+  })
+
   it('warns when no agent CLI is installed, since there is no image to supply one', async () => {
     mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(['tmux', 'git', 'lsof', 'socat'].includes(bin)))
+      Promise.resolve(['tmux', 'git', 'node', 'lsof', 'socat', 'curl'].includes(bin)))
     const agents = byName(await runHostCheck(), 'agent CLIs')
     expect(agents?.status).toBe('warn')
     expect(agents?.detail).toContain('none found')
@@ -92,12 +114,57 @@ describe('runHostCheck', () => {
  * anything is provisioned instead of after.
  */
 describe('assertHostCanLaunch', () => {
+  /** What every launch needs whatever it runs, so a case below names only
+   *  the binary it is actually about. */
+  const BASE = ['tmux', 'git', 'node']
+
   const present = (...bins: string[]) =>
-    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bins.includes(bin)))
+    mockOnPath.mockImplementation((bin: string) =>
+      Promise.resolve(BASE.includes(bin) || bins.includes(bin)))
+
+  /** The inverse, for the cases about a base binary itself. */
+  const missing = (...bins: string[]) =>
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(!bins.includes(bin)))
 
   it('passes a tui launch whose tool is on PATH', async () => {
     present('codex')
     await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
+  })
+
+  it('refuses any launch on a host with no tmux, before a thing is provisioned', async () => {
+    // Otherwise this surfaces from inside launchWorkspace as a bare spawn
+    // ENOENT — after the workspace home, its mounts and its state dir exist,
+    // under a create that already reported progress.
+    missing('tmux')
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+      .catch((e: unknown) => e) as MissingToolError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toMatch(/"tmux" is not on this host's PATH/)
+    expect(err.message).toContain('brew install tmux')
+    // No npm package carries tmux, so the button a client would draw off
+    // `installable` is one whose retry installs nothing and re-fails.
+    expect(err.installable).toBe(false)
+    expect(err.message).not.toContain('--install-missing')
+    // And nothing to fall back to: this substrate IS tmux over a checkout,
+    // so an invented alternative would only mislead.
+    expect(err.message).not.toMatch(/, or /)
+  })
+
+  it('refuses a launch on a host with no git, which makes the checkout', async () => {
+    missing('git')
+    const err = await assertHostCanLaunch({ tool: 'codex', mode: 'tui' })
+      .catch((e: unknown) => e) as MissingToolError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toMatch(/"git" is not on this host's PATH/)
+    expect(err.message).toContain('brew install git')
+  })
+
+  it('reports the most fundamental gap first, so a host is fixed bottom-up', async () => {
+    // A bare machine is missing all of these; being told about the ACP
+    // adapter while there is no tmux to run it in helps nobody.
+    missing('tmux', 'git', 'claude-agent-acp', 'socat')
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
+      .rejects.toThrow(/"tmux" is not on this host's PATH/)
   })
 
   it('refuses a tui launch whose tool is missing, with the command that fixes it', async () => {
@@ -153,6 +220,38 @@ describe('assertHostCanLaunch', () => {
     expect(mockRunHost).not.toHaveBeenCalled()
   })
 
+  it('asks for node under acp, because acpd IS the window command', async () => {
+    // `node <acpdEntry>` is what the acp window runs, so this is yaac's own
+    // interpreter and not the tool's. A server started by a bundled node
+    // that never landed on PATH (the desktop app stages one) launches a
+    // window that execs nothing and closes.
+    missing('node')
+    const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
+      .catch((e: unknown) => e) as MissingToolError
+    expect(err.code).toBe('MISSING_TOOL')
+    expect(err.message).toMatch(/"node" is not on this host's PATH/)
+    expect(err.message).toContain('brew install node')
+    expect(err.message).toContain('--mode tui')
+  })
+
+  it('asks for node before the adapter npm would install with it', async () => {
+    // The ordering with teeth: under --install-missing, asking for the
+    // adapter first would run its `npm install -g` on a host that has no
+    // node — and so no npm — instead of refusing with the thing to fix.
+    missing('node', 'claude-agent-acp')
+    await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp', installMissing: true }))
+      .rejects.toThrow(/"node" is not on this host's PATH/)
+    expect(mockRunHost).not.toHaveBeenCalled()
+  })
+
+  it('asks nothing about node for tui, whose interpreter is the tool\'s business', async () => {
+    // A tool that ships a native binary needs no node at all, and one that
+    // does not carries its own shim — either way that is not yaac's call to
+    // make, where acpd's interpreter is.
+    missing('node')
+    await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
+  })
+
   it('leaves socat alone for tui, which never dials a socket', async () => {
     present('claude')
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'tui' })).resolves.toBeUndefined()
@@ -169,7 +268,8 @@ describe('assertHostCanLaunch', () => {
     // searches, so the re-probe is what separates a real install from a
     // worktree that will die exactly as it would have.
     let installed = false
-    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'codex' && installed))
+    mockOnPath.mockImplementation((bin: string) =>
+      Promise.resolve(BASE.includes(bin) || (bin === 'codex' && installed)))
     mockRunHost.mockImplementation((argv: string[]) => {
       expect(argv).toEqual(['sh', '-c', AGENT_INSTALL.codex])
       installed = true
@@ -233,7 +333,8 @@ describe('assertHostCanLaunch', () => {
     // Two `npm -g` runs into one prefix race each other's writes, and the
     // second has nothing to add.
     let installed = false
-    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin === 'codex' && installed))
+    mockOnPath.mockImplementation((bin: string) =>
+      Promise.resolve(BASE.includes(bin) || (bin === 'codex' && installed)))
     mockRunHost.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 10))
       installed = true
