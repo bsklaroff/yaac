@@ -122,7 +122,7 @@ function remapMountedPath(
  *
  * A caller that wants a nested path delivered anyway states it as host
  * state instead of as a mount, which is what the shared skills roots are
- * (`syncSharedBuiltinSkills`): per project, because that is what the dir it
+ * (`reconcileSharedSkillRoots`): per project, because that is what the dir it
  * lands in already is.
  */
 type MountOutcome = 'realized' | 'nothing-to-do' | 'nested' | 'in-workspace'

@@ -11,7 +11,8 @@
 // and is covered through the entry points that use it.
 
 export {
-  builtinSkillMounts, builtinSkillsDir, sharedSkillRoots, stageBuiltinSkills, syncSharedBuiltinSkills,
+  builtinSkillMounts, builtinSkillsDir, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from './builtin'
+export type { SkillDelivery } from './builtin'
 export { refreshClaudeBundledSkills } from './claude-bundled'
 export { getProjectSkills, getSkillDetail } from './discover'

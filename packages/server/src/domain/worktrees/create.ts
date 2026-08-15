@@ -86,7 +86,7 @@ import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
 import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
 import {
-  builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, sharedSkillRoots, syncSharedBuiltinSkills,
+  builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, reconcileSharedSkillRoots,
 } from '#domain/skills'
 import { deleteWorktreeState } from './cleanup'
 import {
@@ -1160,7 +1160,7 @@ export async function createWorktree(
     // linked into the project's shared skills roots once instead.
     const builtinSkillsStaging = path.join(worktreeStateDir(projectSlug, worktreeId), 'builtin-skills')
     const builtinSkillNames = hostSkills
-      ? await syncSharedBuiltinSkills(builtinSkillsDir(), projectSlug)
+      ? await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'link')
       : await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
 
     // In-session helper commands (yaac-mama, and the yaac-worktree-init
@@ -1178,17 +1178,18 @@ export async function createWorktree(
       )
     }
     if (!hostSkills && builtinSkillNames.length > 0) {
-      // Pre-create each tool's personal skills root (server-owned) before the
-      // pod mounts a skill at `<root>/<name>`. Otherwise the kubelet creates the
-      // intervening `skills/` dir as root:root to host the nested mount, which
-      // would block the non-root agent from adding its own personal skills there.
-      // Only the per-skill leaf mountpoints stay kubelet-owned (empty, and
-      // skipped by discovery, so no stale skill ever surfaces). Best-effort: a
-      // skills-dir permission hiccup must never fail worktree creation — the skill
-      // still mounts; at worst the agent can't add same-root personal skills.
-      // The containerless sync makes the same roots itself, as real dirs it
-      // then links into — nothing mounts, so there is no kubelet to race.
-      await Promise.allSettled(sharedSkillRoots(projectSlug).map((d) => fs.mkdir(d, { recursive: true })))
+      // Pre-create each tool's skills root AND every per-skill mountpoint
+      // (server-owned) before the pod mounts a skill at `<root>/<name>`.
+      // Anything the kubelet has to create instead it creates root:root: a
+      // root-owned `skills/` dir blocks the non-root agent from adding personal
+      // skills beside ours, and a root-owned leaf survives the pod, holding the
+      // name against a later containerless run that delivers by link and cannot
+      // clear it. Best-effort: a permission hiccup must never fail worktree
+      // creation — the skill still mounts either way.
+      await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'mountpoint')
+        .catch((err: unknown) => {
+          serverLog(`[server] create ${worktreeId}: skills roots: ${String(err)}`)
+        })
     }
 
     return {

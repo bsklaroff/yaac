@@ -136,6 +136,20 @@ recognizable by nothing else. Two live installs sharing a data dir therefore
 reconcile the same roots, and will differ over any skill only one of them
 ships.
 
+Both substrates put something at the same name, so one function
+(`reconcileSharedSkillRoots`) owns both deliveries and takes which one to
+converge on as an argument — because an install can switch between them, and
+each has to be able to undo the other. A pod run leaves an empty directory at
+every mounted name; that is not a skill by any reader's definition, so the
+link delivery reclaims it rather than reading it as a name the user took. The
+mount delivery does the mirror, replacing a link of ours with the empty
+directory a pod mounts over — a link here would aim at an install path no pod
+can resolve. It also creates those directories itself, so the server owns
+them: a mountpoint the kubelet has to create is root-owned, and then nothing
+running as the server can clear it. Either delivery claims only a name this
+install SHIPS, and both run on every create and every restart, so a switched
+install heals per project on first use.
+
 The pod's mount is read-only and a symlink is not, so writing what looks like
 a personal skill at `~/.claude/skills/<name>/SKILL.md` writes through into the
 install — an npm install loses it on upgrade, a dev checkout gets its working

@@ -190,6 +190,37 @@ fix: an old proxy announces a queued request as `spawn`. Without it the
 server still drains on its 60s resync, so the failure is a slow spawn rather
 than a broken one — the quietest item here, and the reason it is written down.
 
+## The spent-mountpoint reclaim in `reconcileSharedSkillRoots`
+
+`reclaimSpentMountpoint` (`domain/skills/builtin.ts`) rmdirs an empty
+directory sitting at a builtin skill's name in a project's shared skills root,
+so the `link` delivery can put its symlink there. What it reads is a directory
+a pod run left behind: under k8s each builtin is delivered as a mount at
+`<root>/<name>`, and the mountpoint outlives the pod.
+
+Only the reclaim is a shim. The `link`/`mountpoint` conversion around it is
+permanent — an install may switch substrates in either direction at any time,
+and each delivery has to undo the other. What dates this is ownership of the
+mountpoint: the `mountpoint` delivery now creates those directories itself, so
+they are server-owned and get cleaned up by the same code that made them.
+Installs that ran an older k8s yaac have kubelet-created, **root-owned** ones,
+which is the case this exists for — and the case it can only report, since a
+server running as the user may not be able to remove one.
+
+Deleted too early, a builtin skill is silently absent from every worktree of
+an affected project: the name is taken by an empty directory, discovery
+(which reads the install dir, not these roots) still lists the skill in the
+web app, and the agent simply never sees it. That gap between what the viewer
+lists and what the agent has is the whole failure mode — there is no error.
+
+Safe to remove once no install can still hold a mountpoint this yaac did not
+create. There is no flag to check for that; the practical test is per install,
+and it is a `find` rather than a version: `find
+<data>/projects/*/{claude,codex,opencode-config,pi}/**/skills -maxdepth 1
+-type d -empty -user root` naming nothing. Removing it early costs nothing on
+an install that has always run one driver, since a root-owned mountpoint can
+only exist where k8s ran.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

@@ -463,6 +463,25 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])).rejects.toThrow()
     }, 60_000)
 
+    it('mounts each builtin skill over a mountpoint the SERVER made', async () => {
+      // Who created the mountpoint is the whole point. The kubelet creates a
+      // missing one root-owned, and it outlives the pod — so it holds the name
+      // against a later containerless run of this install, which delivers the
+      // same skills by symlink and cannot clear a root-owned dir. Create makes
+      // them first for that reason; the mount composing over them is the other
+      // half, since a mountpoint nothing can mount over would be worse.
+      const skillsRoot = path.join(projectPath, 'claude', 'skills')
+      const entries = await fs.readdir(skillsRoot, { withFileTypes: true })
+      expect(entries.length).toBeGreaterThan(0)
+      for (const entry of entries) {
+        expect(entry.isDirectory()).toBe(true)
+        expect((await fs.stat(path.join(skillsRoot, entry.name))).uid).toBe(process.getuid?.())
+      }
+      for (const entry of entries) {
+        await execInJob(jobName, ['test', '-f', `/home/yaac/.claude/skills/${entry.name}/SKILL.md`])
+      }
+    }, 60_000)
+
     it('passes envPassthrough vars to the container', async () => {
       const { stdout } = await execInJob(jobName, ['env'])
       expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')

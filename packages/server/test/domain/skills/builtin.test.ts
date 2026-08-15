@@ -3,8 +3,14 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { claudeDir, piDir, setDataDir } from '@yaac/shared/project-paths'
+
+// The reclaim path reports what it could not take back, which is the only
+// notice a stranded skill ever gets — so the channel is stubbed and asserted.
+vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
+
+import { serverLog } from '#log'
 import {
-  builtinSkillsDir, builtinSkillMounts, sharedSkillRoots, stageBuiltinSkills, syncSharedBuiltinSkills,
+  builtinSkillsDir, builtinSkillMounts, reconcileSharedSkillRoots, sharedSkillRoots, stageBuiltinSkills,
 } from '#domain/skills'
 // setBuiltinSkillsDir is the feature's test hook (restore the packaged default
 // between cases); TOOL_SKILL_ROOTS is the policy constant the mounts derive
@@ -23,6 +29,7 @@ async function writeSkill(dir: string, name: string, body = 'body'): Promise<voi
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-builtin-test-'))
   setDataDir(tmp)
+  vi.mocked(serverLog).mockClear()
 })
 
 afterEach(async () => {
@@ -98,7 +105,7 @@ describe('sharedSkillRoots', () => {
   })
 })
 
-describe('syncSharedBuiltinSkills', () => {
+describe('reconcileSharedSkillRoots', () => {
   /** An install shipping `names`, at a dir named like a real one — the name
    *  is what marks the links it plants as ours. */
   async function install(names: string[], where = 'install'): Promise<string> {
@@ -109,7 +116,7 @@ describe('syncSharedBuiltinSkills', () => {
 
   it('links every shipped skill into every tool root, and stays put when re-run', async () => {
     const src = await install(['welcome', 'alpha'])
-    expect(await syncSharedBuiltinSkills(src, SLUG)).toEqual(['alpha', 'welcome'])
+    expect(await reconcileSharedSkillRoots(src, SLUG, 'link')).toEqual(['alpha', 'welcome'])
 
     for (const root of sharedSkillRoots(SLUG)) {
       for (const name of ['alpha', 'welcome']) {
@@ -121,7 +128,7 @@ describe('syncSharedBuiltinSkills', () => {
       }
     }
     // A second create must not trip over the links the first one left.
-    expect(await syncSharedBuiltinSkills(src, SLUG)).toEqual(['alpha', 'welcome'])
+    expect(await reconcileSharedSkillRoots(src, SLUG, 'link')).toEqual(['alpha', 'welcome'])
     expect(await fs.readlink(path.join(claudeDir(SLUG), 'skills', 'alpha')))
       .toBe(path.join(src, 'alpha'))
   })
@@ -139,7 +146,7 @@ describe('syncSharedBuiltinSkills', () => {
     await fs.writeFile(path.join(root, 'notes'), 'not a skill dir\n')
 
     const src = await install(['welcome', 'alpha', 'notes'])
-    await syncSharedBuiltinSkills(src, SLUG)
+    await reconcileSharedSkillRoots(src, SLUG, 'link')
 
     expect((await fs.lstat(path.join(root, 'welcome'))).isSymbolicLink()).toBe(false)
     expect(await fs.readFile(path.join(root, 'welcome', 'SKILL.md'), 'utf8')).toContain('the-users-own')
@@ -165,7 +172,7 @@ describe('syncSharedBuiltinSkills', () => {
     await fs.symlink(path.join(theirs, 'ideas'), path.join(root, 'ideas'), 'dir')
 
     const src = await install(['welcome'])
-    await syncSharedBuiltinSkills(src, SLUG)
+    await reconcileSharedSkillRoots(src, SLUG, 'link')
 
     // A shipped name is re-aimed at this install; an unshipped one is pruned.
     expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
@@ -186,7 +193,7 @@ describe('syncSharedBuiltinSkills', () => {
     await fs.symlink(path.join(old, 'retired'), path.join(root, 'retired'), 'dir')
 
     const src = await install(['welcome'], 'new-version')
-    expect(await syncSharedBuiltinSkills(src, SLUG)).toEqual(['welcome'])
+    expect(await reconcileSharedSkillRoots(src, SLUG, 'link')).toEqual(['welcome'])
 
     expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
     // A retired skill is only ever removed here — nothing else reads the root.
@@ -198,8 +205,8 @@ describe('syncSharedBuiltinSkills', () => {
     // race means the link is already there — never a failed worktree create.
     const src = await install(['welcome', 'alpha'])
     const [a, b] = await Promise.all([
-      syncSharedBuiltinSkills(src, SLUG),
-      syncSharedBuiltinSkills(src, SLUG),
+      reconcileSharedSkillRoots(src, SLUG, 'link'),
+      reconcileSharedSkillRoots(src, SLUG, 'link'),
     ])
     expect(a).toEqual(b)
     expect(await fs.readlink(path.join(claudeDir(SLUG), 'skills', 'welcome')))
@@ -226,7 +233,7 @@ describe('syncSharedBuiltinSkills', () => {
       return realRename(from, to)
     })
     try {
-      await expect(syncSharedBuiltinSkills(src, SLUG)).resolves.toEqual(['welcome'])
+      await expect(reconcileSharedSkillRoots(src, SLUG, 'link')).resolves.toEqual(['welcome'])
     } finally {
       spy.mockRestore()
     }
@@ -237,10 +244,109 @@ describe('syncSharedBuiltinSkills', () => {
   })
 
   it('creates nothing when the install ships no skills (stripped build)', async () => {
-    expect(await syncSharedBuiltinSkills(path.join(tmp, 'nope'), SLUG)).toEqual([])
-    for (const root of sharedSkillRoots(SLUG)) {
-      await expect(fs.access(root)).rejects.toThrow()
+    for (const delivery of ['link', 'mountpoint'] as const) {
+      expect(await reconcileSharedSkillRoots(path.join(tmp, 'nope'), SLUG, delivery)).toEqual([])
+      for (const root of sharedSkillRoots(SLUG)) {
+        await expect(fs.access(root)).rejects.toThrow()
+      }
     }
+  })
+
+  it('makes every mountpoint itself, so the kubelet never creates one root-owned', async () => {
+    const root = path.join(claudeDir(SLUG), 'skills')
+    // Their own skill under a shipped name, and their own link under another:
+    // the mount lands over them, but the NAME is still not ours to rewrite.
+    await writeSkill(root, 'welcome', 'the-users-own')
+    const mine = path.join(tmp, 'mine')
+    await writeSkill(mine, 'alpha', 'also-theirs')
+    await fs.symlink(path.join(mine, 'alpha'), path.join(root, 'alpha'), 'dir')
+
+    const src = await install(['welcome', 'alpha'])
+    expect(await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')).toEqual(['alpha', 'welcome'])
+
+    expect(await fs.readFile(path.join(root, 'welcome', 'SKILL.md'), 'utf8')).toContain('the-users-own')
+    expect(await fs.readlink(path.join(root, 'alpha'))).toBe(path.join(mine, 'alpha'))
+    // Every uncontested name is a real, empty directory before any pod exists —
+    // the content rides in on the mount, so empty is the finished state.
+    for (const other of sharedSkillRoots(SLUG).filter((r) => r !== root)) {
+      for (const name of ['alpha', 'welcome']) {
+        const entry = path.join(other, name)
+        expect((await fs.lstat(entry)).isDirectory()).toBe(true)
+        expect(await fs.readdir(entry)).toEqual([])
+      }
+    }
+  })
+
+  it('converts either delivery into the other, so an install can switch drivers', async () => {
+    const src = await install(['welcome', 'alpha'])
+    const claudeRoot = path.join(claudeDir(SLUG), 'skills')
+
+    // containerless → k8s: a link of ours aims at an install path no pod can
+    // resolve, so every one becomes a mountpoint.
+    await reconcileSharedSkillRoots(src, SLUG, 'link')
+    expect(await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')).toEqual(['alpha', 'welcome'])
+    for (const root of sharedSkillRoots(SLUG)) {
+      for (const name of ['alpha', 'welcome']) {
+        const st = await fs.lstat(path.join(root, name))
+        expect(st.isSymbolicLink()).toBe(false)
+        expect(st.isDirectory()).toBe(true)
+      }
+    }
+    // Re-running is the same state, not a second one: every create re-runs it.
+    await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')
+
+    // k8s → containerless: the spent mountpoints are reclaimed and linked, so
+    // the skill is there for an agent that reads the dir directly.
+    await reconcileSharedSkillRoots(src, SLUG, 'link')
+    expect(await fs.readFile(path.join(claudeRoot, 'welcome', 'SKILL.md'), 'utf8'))
+      .toContain('name: welcome')
+    expect(await fs.readlink(path.join(claudeRoot, 'alpha'))).toBe(path.join(src, 'alpha'))
+  })
+
+  it('reclaims a spent mountpoint only under a name it ships', async () => {
+    const root = path.join(claudeDir(SLUG), 'skills')
+    await fs.mkdir(root, { recursive: true })
+    // A pod run of an older yaac: one mountpoint for a name still shipped, one
+    // for a skill since retired. Only the first is a name we need.
+    await fs.mkdir(path.join(root, 'welcome'))
+    await fs.mkdir(path.join(root, 'yaac-spawn'))
+    // And an empty dir the user made to fill later, under no shipped name.
+    await fs.mkdir(path.join(root, 'mine-to-be'))
+
+    const src = await install(['welcome'])
+    await reconcileSharedSkillRoots(src, SLUG, 'link')
+
+    expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
+    expect((await fs.lstat(path.join(root, 'yaac-spawn'))).isDirectory()).toBe(true)
+    expect((await fs.lstat(path.join(root, 'mine-to-be'))).isDirectory()).toBe(true)
+  })
+
+  it('names the skill it had to strand when a mountpoint will not come back', async () => {
+    // The root-owned case: a kubelet-created mountpoint under a skills root
+    // this server cannot write. Nothing else would ever mention it, and the
+    // symptom — one builtin quietly absent — points nowhere near the cause.
+    const root = path.join(claudeDir(SLUG), 'skills')
+    await fs.mkdir(root, { recursive: true })
+    const blocked = path.join(root, 'welcome')
+    await fs.mkdir(blocked)
+
+    const realRmdir = fs.rmdir.bind(fs)
+    const spy = vi.spyOn(fs, 'rmdir').mockImplementation(async (p) => {
+      if (p === blocked) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      return realRmdir(p)
+    })
+    const src = await install(['welcome'])
+    try {
+      await expect(reconcileSharedSkillRoots(src, SLUG, 'link')).resolves.toEqual(['welcome'])
+    } finally {
+      spy.mockRestore()
+    }
+
+    // Left as it was, said out loud, and no other root held hostage by it.
+    expect((await fs.lstat(blocked)).isDirectory()).toBe(true)
+    expect(vi.mocked(serverLog).mock.calls.flat().join('\n')).toContain('welcome')
+    expect(await fs.readlink(path.join(piDir(SLUG), 'agent', 'skills', 'welcome')))
+      .toBe(path.join(src, 'welcome'))
   })
 })
 
