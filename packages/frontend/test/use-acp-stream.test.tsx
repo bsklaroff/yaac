@@ -71,19 +71,43 @@ afterEach(() => {
 const latest = (): FakeSocket => FakeSocket.instances[FakeSocket.instances.length - 1]
 
 describe('useAcpStream', () => {
-  it('opens no socket until enabled, so an off-screen pane holds no connection', () => {
-    renderHook(() => useAcpStream('wt-1', 'acp-1', false))
+  it('holds one socket for as long as it is mounted, and drops it on unmount', async () => {
+    // Mounting is the gate: an off-screen pane stays mounted and keeps its
+    // connection, so a switch back costs nothing. What must not happen is a
+    // socket outliving the pane, or an unmount being mistaken for a drop and
+    // reconnected — a closed pane would then hold a connection forever.
+    vi.useFakeTimers()
+    const { unmount } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
+    act(() => {
+      latest().open()
+      latest().deliver(hello([]))
+    })
+    expect(FakeSocket.instances).toHaveLength(1)
+
+    const sock = latest()
+    unmount()
+    expect(sock.readyState).toBe(3)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  it('opens no socket for a conversation that has no id yet', () => {
+    // A worktree whose agent has not minted a session id is addressed by
+    // nothing; dialling would attach to whatever answers to the empty string.
+    renderHook(() => useAcpStream('wt-1', ''))
     expect(FakeSocket.instances).toHaveLength(0)
   })
 
   it('addresses the conversation by worktree and session id', () => {
-    renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    renderHook(() => useAcpStream('wt-1', 'acp-1'))
     expect(latest().url).toContain('id=wt-1')
     expect(latest().url).toContain('session=acp-1')
   })
 
   it('renders the replayed history and reports connected', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([agent(0, 'earlier')]))
@@ -94,7 +118,7 @@ describe('useAcpStream', () => {
   })
 
   it('replaces its list on every hello, since the record is renumbered per attach', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([agent(0, 'a')]))
@@ -111,7 +135,7 @@ describe('useAcpStream', () => {
   })
 
   it('discards a stale list when the record it re-reads is shorter', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([agent(0, 'old one'), agent(1, 'old two')]))
@@ -132,7 +156,7 @@ describe('useAcpStream', () => {
     // Only the server's explicit boundaries move this. `turn-start` covers the
     // turns the pane cannot infer as well as the ones it could: a turn already
     // running when the server reattached to the agent was sent by nobody here.
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
@@ -164,7 +188,7 @@ describe('useAcpStream', () => {
     // what is happening now and are never recorded — so a pane that read a
     // `user` event as "a turn began" would sit at `working…` for good, offering
     // a Stop button with no turn behind it.
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
@@ -192,7 +216,7 @@ describe('useAcpStream', () => {
   })
 
   it('adopts the busy state the server reports on attach', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([], true))
@@ -202,7 +226,7 @@ describe('useAcpStream', () => {
   })
 
   it('greys out on a health frame without tearing the pane down', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([agent(0, 'a')]))
@@ -217,7 +241,7 @@ describe('useAcpStream', () => {
 
   it('reconnects after the socket closes', async () => {
     vi.useFakeTimers()
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
@@ -235,7 +259,7 @@ describe('useAcpStream', () => {
   })
 
   it('reports whether a send reached the socket, so a dropped message is not silently cleared', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     // Not open yet: the caller must be able to keep the user's text.
     expect(result.current.send({ type: 'prompt', text: 'early' })).toBe(false)
 
@@ -253,7 +277,7 @@ describe('useAcpStream', () => {
     // Writing to a socket is not evidence the server got anything. The
     // conversation echoing the message back as a `user` event is, and that is
     // what the pane waits for before it clears the box.
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([]))
@@ -270,7 +294,7 @@ describe('useAcpStream', () => {
   })
 
   it('ignores a malformed frame rather than dropping the conversation', async () => {
-    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1', true))
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
     act(() => {
       latest().open()
       latest().deliver(hello([agent(0, 'a')]))

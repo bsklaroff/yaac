@@ -11,12 +11,17 @@ import type { AcpContent } from '@yaac/shared/acp'
  *
  * This is the `acp` half of the pane-target split — the same slot
  * `WorktreeTerminal` fills for a `tui` conversation, chosen by the pane's
- * target rather than by anything this component knows. It follows
- * `WorktreeChanges`' conventions (own transport, own scroll state, torn down
- * when off-screen) rather than the terminal's keep-alive discipline: there is
- * no PTY to keep warm, because the conversation lives on the server and
- * replays on every attach. The one thing a teardown must not cost is the
- * user's own words, so the draft lives in the ui store rather than here.
+ * target rather than by anything this component knows. It owns its transport
+ * and its scroll state, and it follows the terminal's keep-alive discipline: a
+ * pane that goes off-screen stays mounted and holds its socket, because the
+ * expensive part of a chat pane is not the conversation (that lives on the
+ * server and replays on any attach) but the attach itself, and re-paying it on
+ * every switch is what makes the pane feel slow on a bad link. `visible`
+ * therefore only decides focus.
+ *
+ * It is still unmounted for good when the worktree goes away or the pane is
+ * closed — and by a reload — so the one thing a teardown must not cost, the
+ * user's own words, lives in the ui store rather than here.
  *
  * What a conversation *looks* like is `AcpTranscript`'s, not this component's:
  * a stopped worktree's history is the same conversation with no socket behind
@@ -39,7 +44,7 @@ export function WorktreeChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, connected, send } = useAcpStream(worktreeId, agentSessionId, visible)
+  const { events, busy, connected, send } = useAcpStream(worktreeId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   /**

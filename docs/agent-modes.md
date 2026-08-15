@@ -134,9 +134,19 @@ The cost is polling latency — a streaming reply arrives in bursts rather than
 continuously, which a chat pane tolerates far better than a terminal would.
 
 A pane keeps nothing of the conversation, then, but it does keep what has not
-been said yet. A chat pane is torn down whenever it goes off-screen, so the
-half-typed message lives in the webapp's ui store — keyed per conversation and
-persisted — rather than in the pane, and returns with it.
+been said yet. A chat pane can be torn down under a half-typed message — the
+worktree stops, the tab is closed, the page is reloaded — so that message lives
+in the webapp's ui store, keyed per conversation and persisted, rather than in
+the pane, and returns with it.
+
+A pane going *off-screen* is not one of those cases: like a terminal, it stays
+mounted and holds its socket, so switching tabs or worktrees is a visibility
+flip with no network on it at all. The conversation replaying on any attach is
+what makes a chat pane cheap to re-create, but it is also what makes attaching
+expensive — a handshake, then the whole conversation in one `hello` frame —
+and on a slow or lossy link that is the entire "Connecting to the agent…" wait.
+The same eager warm-up that pre-attaches terminals after a page load covers
+chat panes too, taking each worktree's default pane from its mode.
 
 A sent message stays in the box until the server echoes it back, so a pane torn
 down inside that window restores text that may already have been delivered.

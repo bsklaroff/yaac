@@ -9,7 +9,8 @@ import { WorktreeChanges } from '#components/WorktreeChanges'
 import { WorktreeChat } from '#components/WorktreeChat'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
-import { acpTarget, acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
+import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
+import { acpPaneTargets, defaultPaneTarget, paneStillLive } from '#lib/panes'
 import { isElectron } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
 import { useIsMobile } from '#lib/viewport'
@@ -107,18 +108,6 @@ function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isChangesTarget(target) || isAcpTarget(target)
 }
 
-/**
- * The pane a worktree opens with. A `tui` worktree attaches a PTY to its agent
- * window; an `acp` one opens its first conversation's chat pane. Falls back to
- * the terminal when a fresh ACP worktree has not reported a conversation yet
- * (its id is minted by the agent, seconds after the pod is up) — the window
- * sync swaps in the chat pane as soon as it appears.
- */
-function defaultPaneTarget(worktree: WorktreeListEntry | undefined): string {
-  const acp = worktree?.agentSessions.find((a) => a.mode === 'acp' && a.active)
-  return acp ? acpTarget(acp.agentSessionId) : 'agent'
-}
-
 export function WorktreeView({
   snapshot,
   provisioning,
@@ -212,9 +201,7 @@ export function WorktreeView({
     // An ACP worktree's conversations are panes too, but they come off the
     // snapshot rather than the window list: the tmux window behind one runs
     // acpd, and its name says nothing about which conversation it holds.
-    const acpPanes = worktree.agentSessions
-      .filter((a) => a.mode === 'acp' && a.active)
-      .map((a) => acpTarget(a.agentSessionId))
+    const acpPanes = acpPaneTargets(worktree)
     const isAcp = acpPanes.length > 0
     // With chat panes present the raw agent window is acpd's log, not
     // something to attach a terminal to — drop it from the live set.
@@ -276,8 +263,38 @@ export function WorktreeView({
     })
   }, [sid, layout])
 
-  const liveIds = new Set(worktrees.map((s) => s.worktreeId))
-  const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.indexOf('|'))))
+  /** The worktree a `<id>|<target>` key belongs to, if this snapshot has it. */
+  const keyWorktree = (key: string): WorktreeListEntry | undefined =>
+    worktrees.find((s) => s.worktreeId === key.slice(0, key.indexOf('|')))
+  const keyTarget = (key: string): string => key.slice(key.indexOf('|') + 1)
+
+  // A pane whose worktree stops having it is dropped from the open set for
+  // good, the way an explicit close already drops one. Filtering it out of
+  // `mounted` on the way past would not be enough: `paneStillLive` answers
+  // about the worktree's state *now*, so a key left lying around can come back
+  // to life. The boot-window `agent` key of an ACP worktree is the one that
+  // does — the terminating placeholder reports no conversations, so the key
+  // resurrects as the worktree stops and dials a PTY into a container being
+  // torn down. Only a worktree we can actually see settles it; one missing
+  // from this snapshot is left alone, since that may be a gap rather than an
+  // ending.
+  useEffect(() => {
+    setOpened((prev) => {
+      const next = prev.filter((key) => {
+        const wt = keyWorktree(key)
+        return wt === undefined || paneStillLive(wt, keyTarget(key))
+      })
+      return next.length === prev.length ? prev : next
+    })
+  }, [worktrees])
+
+  // A pane stays mounted until its worktree goes — or, for the agent-side
+  // targets, until the worktree stops having it. The prune above is what makes
+  // that permanent; this is what makes it immediate.
+  const mounted = opened.filter((key) => {
+    const wt = keyWorktree(key)
+    return wt !== undefined && paneStillLive(wt, keyTarget(key))
+  })
 
   // Last shown rect per kept-alive terminal — hidden panes freeze here so
   // re-showing them is resize-free (see the style computation below). Render-
@@ -292,22 +309,26 @@ export function WorktreeView({
   // "Connecting…" mask. Instead, mount every live worktree's agent pane
   // (hidden) as soon as the workspace is measured — they attach and settle
   // off-screen, and a sidebar click becomes the same pure visibility flip
-  // as switching back to an already-viewed worktree. Agent only: it's the
-  // tab a fresh page reveals (activeTabs don't persist), it exists for
-  // every worktree, and it avoids trusting persisted layouts whose window
-  // ids may be stale. Each pane's rect is pre-seeded to the tabs-mode rect
-  // so the hidden terminal attaches at exactly the size a click reveals —
-  // no resize round trip at reveal. Capped so a large install doesn't fan
-  // out dozens of kubectl PTYs at once; uncovered worktrees just keep the
-  // old click-to-attach behavior.
-  const eagerIdsKey = worktrees
+  // as switching back to an already-viewed worktree. The agent pane only:
+  // it's the tab a fresh page reveals (activeTabs don't persist), it exists
+  // for every worktree, and it avoids trusting persisted layouts whose
+  // window ids may be stale. Which pane that is depends on the mode — a
+  // `tui` worktree's PTY, an `acp` one's chat — so it comes from the same
+  // `defaultPaneTarget` a fresh layout opens with, or the warm-up would
+  // attach a terminal to acpd's log and leave the conversation cold. Each
+  // pane's rect is pre-seeded to the tabs-mode rect so the hidden terminal
+  // attaches at exactly the size a click reveals — no resize round trip at
+  // reveal. Capped so a large install doesn't fan out dozens of kubectl
+  // PTYs at once; uncovered worktrees just keep the old click-to-attach
+  // behavior.
+  const eagerKeys = worktrees
     .filter((s) => !s.stopping)
     .slice(0, isMobile ? MOBILE_EAGER_ATTACH_MAX : EAGER_ATTACH_MAX)
-    .map((s) => s.worktreeId)
+    .map((s) => `${s.worktreeId}|${defaultPaneTarget(s)}`)
     .join(',')
   useEffect(() => {
-    if (wsSize.w <= 0 || wsSize.h <= 0 || eagerIdsKey === '') return
-    const keys = eagerIdsKey.split(',').map((id) => `${id}|agent`)
+    if (wsSize.w <= 0 || wsSize.h <= 0 || eagerKeys === '') return
+    const keys = eagerKeys.split(',')
     const rect = {
       left: PAD,
       top: headerH,
@@ -321,7 +342,7 @@ export function WorktreeView({
       const fresh = keys.filter((k) => !prev.includes(k))
       return fresh.length ? [...prev, ...fresh] : prev
     })
-  }, [eagerIdsKey, wsSize.w, wsSize.h, headerH])
+  }, [eagerKeys, wsSize.w, wsSize.h, headerH])
 
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
@@ -854,7 +875,15 @@ export function WorktreeView({
           const preview = isPreviewTarget(target)
           const changes = isChangesTarget(target)
           const chat = acpTargetSession(target)
-          const special = preview || changes || chat !== undefined
+          // Which panes are unmounted the moment they leave the screen. A
+          // preview/changes pane polls the pod, so a hidden one is pure cost.
+          // A chat pane holds one WebSocket to the server and polls nothing —
+          // and re-attaching it is the expensive part (handshake, then the
+          // whole conversation replayed in `hello`, which on a slow link is
+          // seconds of "Connecting to the agent…"). So it is laid out like a
+          // terminal instead: kept mounted at a frozen rect and merely
+          // invisible, which makes a switch back a pure visibility flip.
+          const ephemeral = preview || changes
           // In tiles mode a pane is on-screen when it's the active tab of its
           // column; its rect is that column's body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
@@ -865,8 +894,9 @@ export function WorktreeView({
           // terminal tab of the selected worktree shares the active tab's rect
           // (the inactive ones merely invisible), and any other kept-alive pane
           // freezes at the last rect it was shown with — switching tabs or
-          // worktrees is a pure visibility flip, no resize at all. Special panes
-          // still unmount off-screen (below).
+          // worktrees is a pure visibility flip, no resize at all. Chat panes
+          // ride along (same keep-alive, no resize round trip to freeze for);
+          // ephemeral panes still unmount off-screen (below).
           const tabsRect = {
             left: PAD,
             top: headerH,
@@ -881,18 +911,19 @@ export function WorktreeView({
                 width: colRect.w - PAD * 2,
                 height: colRect.h - headerH - PAD,
               }
-            : id === sid && !tiled && (special ? target === activeTab : targets.includes(target))
+            : id === sid && !tiled && (ephemeral ? target === activeTab : targets.includes(target))
               ? tabsRect
-              : special
+              : ephemeral
                 ? undefined
                 : lastRects.current.get(key)
-          if (!special && style) lastRects.current.set(key, style)
-          // Terminals stay mounted while hidden (instant switch-back, live PTY);
-          // a preview/changes pane is torn down off-screen (a hidden one keeps
-          // polling the pod) and cheaply re-mounts on return. Both only have a
-          // `style` for the selected worktree, so previewPorts /
+          if (!ephemeral && style) lastRects.current.set(key, style)
+          // Terminals and chat panes stay mounted while hidden (instant
+          // switch-back, live PTY / live conversation socket); a
+          // preview/changes pane is torn down off-screen (a hidden one keeps
+          // polling the pod) and cheaply re-mounts on return. The latter only
+          // has a `style` for the selected worktree, so previewPorts /
           // previewPortForWorktree (both for sid) apply.
-          if (special && !style) return null
+          if (ephemeral && !style) return null
           return (
             <div
               key={key}

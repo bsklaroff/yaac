@@ -45,14 +45,20 @@ export function mergeEvents(existing: AcpEvent[], incoming: AcpEvent[]): AcpEven
 }
 
 /**
- * Attach to one conversation. `enabled` gates the socket so an off-screen
- * pane holds no connection — unlike a terminal, there is nothing to keep warm:
- * the conversation is server-side and replays on the next attach.
+ * Attach to one conversation, for as long as the pane is mounted.
+ *
+ * Mounting is the whole gate: a hidden pane keeps its socket, exactly as a
+ * hidden terminal keeps its PTY. What there is to keep warm is not the
+ * conversation — that lives on the server and replays on any attach — but the
+ * *transport*: an attach costs a WebSocket handshake and then the entire
+ * conversation as one `hello` frame, which on a slow or lossy link is the
+ * "Connecting to the agent…" wait, and re-paying it on every tab switch is the
+ * one cost a pane can simply not incur. `WorktreeView` decides which panes stay
+ * mounted; there is nothing left for this hook to second-guess.
  */
 export function useAcpStream(
   worktreeId: string,
   agentSessionId: string,
-  enabled: boolean,
 ): AcpStream {
   const [events, setEvents] = useState<AcpEvent[]>([])
   const [busy, setBusy] = useState(false)
@@ -60,7 +66,7 @@ export function useAcpStream(
   const socketRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    if (!enabled || worktreeId === '' || agentSessionId === '') return
+    if (worktreeId === '' || agentSessionId === '') return
     let closed = false
     let delay = INITIAL_RECONNECT_DELAY_MS
     let retry: ReturnType<typeof setTimeout> | undefined
@@ -136,7 +142,7 @@ export function useAcpStream(
       socketRef.current?.close()
       socketRef.current = null
     }
-  }, [worktreeId, agentSessionId, enabled])
+  }, [worktreeId, agentSessionId])
 
   return {
     events,

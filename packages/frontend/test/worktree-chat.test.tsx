@@ -4,11 +4,12 @@ import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/re
 import type { AcpClientMessage, AcpEvent, AcpToolCall } from '@yaac/shared/acp'
 
 /**
- * What the chat pane keeps across a teardown. The pane is unmounted every time
- * it goes off-screen (tab switch, worktree switch, column close), so a draft
- * held in component state would simply vanish — and the awkward case is the
- * one where the draft is a message that was already sent but not yet echoed
- * back, which must NOT come back to haunt the box.
+ * What the chat pane keeps across a teardown. A pane going off-screen stays
+ * mounted, but one whose worktree stops — or whose tab is closed, or that a
+ * reload takes with it — does not, so a draft held in component state would
+ * simply vanish. The awkward case is the one where the draft is a message that
+ * was already sent but not yet echoed back, which must NOT come back to haunt
+ * the box.
  *
  * The ACP socket is mocked at the hook: everything below it is transport,
  * already covered by use-acp-stream.test.tsx, and none of it is what this
