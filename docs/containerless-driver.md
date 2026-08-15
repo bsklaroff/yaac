@@ -327,7 +327,13 @@ answer under both drivers on one line.
 - **Images and builds.** Nothing to build; the Dockerfile editors and the
   build feed are hidden in the webapp.
 - **Egress mediation.** No blocked hosts, no git-auth failure reports, no
-  allowlist. A worktree reaches whatever the user running the server can.
+  allowlist. A worktree reaches whatever the user running the server can —
+  including when `YAAC_USE_TOR` is set, which under k8s routes a pod's whole
+  namespace through the proxy's Tor agent and here can only cover the
+  server's own git. The start logs warn rather than route workspace traffic
+  through advisory environment (`ALL_PROXY`, an ssh ProxyCommand) that
+  undici, raw sockets and the agent's own shell all bypass: silently missing
+  traffic is worse for the person who asked for Tor than a stated gap.
 - **Nested containers.** `nestedContainers` asks for a container to put a
   container in. A project config requesting it is rejected at create.
 - **The prewarmed spare pool.** A spare amortizes an image pull and a pod

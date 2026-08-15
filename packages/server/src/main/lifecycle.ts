@@ -6,9 +6,9 @@ import { readLock, removeLock } from '@yaac/shared/lock'
 import { isLockLive, isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
-import { preflightHostTor } from '#main/server-run'
+import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
-import { assertDriverSwitchSafe } from '#main/driver-choice'
+import { assertDriverSwitchSafe, recordedDriver } from '#main/driver-choice'
 
 /**
  * Entry point for `yaac server start`.
@@ -61,6 +61,12 @@ export async function startServer(): Promise<void> {
   }
   const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
+  // The child resolved the driver and recorded it before it went ready, so
+  // this reads the driver the server actually came up on rather than
+  // re-deriving one. Repeated here because the child said it to its own log
+  // file, which is not where the operator who set the variable is looking.
+  const torGap = torCoverageWarning(await recordedDriver() ?? 'k8s')
+  if (torGap !== undefined) console.error(`[yaac] WARNING: ${torGap}`)
 }
 
 /**

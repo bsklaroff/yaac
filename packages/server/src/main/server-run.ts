@@ -31,6 +31,7 @@ import { createContainerlessDriver } from '#drivers/containerless'
 import { resolveDriverKind } from '#main/driver-choice'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
+import type { DriverKind } from '@yaac/shared/types'
 
 export interface ServerRunOptions {
   port?: number
@@ -89,6 +90,34 @@ export async function preflightHostTor(): Promise<void> {
       + `'brew services start tor' on macOS) or unset YAAC_USE_TOR.`,
     )
   })
+}
+
+/**
+ * What `YAAC_USE_TOR` does NOT cover under the running driver, or undefined
+ * when it covers everything.
+ *
+ * Two halves are torified independently. The server's own git is one, and it
+ * is host-side and driver-independent, so it is routed under either
+ * substrate. Workspace traffic is the other, and under `k8s` it is total:
+ * a pod's network namespace redirects every connection into the egress
+ * proxy, which carries `USE_TOR` and dials upstream through Tor, and a pod
+ * has no other way out.
+ *
+ * A containerless workspace is plain host processes with no namespace and no
+ * proxy, so there is nothing to redirect them into. The only lever left is
+ * advisory environment (`ALL_PROXY`, an ssh ProxyCommand), which fails OPEN
+ * — undici ignores it, raw sockets bypass it, DNS can leak past it, and the
+ * agent's own shell can unset it. For someone who asked for Tor, a mechanism
+ * that silently misses traffic is worse than knowing which half is covered,
+ * so the setting keeps doing the half it can and this says what it cannot.
+ */
+export function torCoverageWarning(driver: DriverKind): string | undefined {
+  if (!env.useTor || driver !== 'containerless') return undefined
+  return 'YAAC_USE_TOR is set, but the containerless driver runs workspaces '
+    + 'directly on the host with no egress proxy, so agent traffic and '
+    + 'anything a worktree does itself will NOT go through Tor. Only the '
+    + "server's own git operations are routed through it. Start with "
+    + '--driver k8s for Tor-covered workspaces.'
 }
 
 // `FetchCallback` isn't re-exported from the package entry, so derive the
@@ -151,6 +180,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
   )
   serverLog(`[server] runtime driver: ${driverKind}`)
+  // Only now can the Tor question be answered: what the setting reaches
+  // depends on which substrate carries the workspaces.
+  const torGap = torCoverageWarning(driverKind)
+  if (torGap !== undefined) serverLog(`[server] WARNING: ${torGap}`)
 
   // Read build-id up front so a broken install fails loudly before we
   // bind a port or write a lock file.

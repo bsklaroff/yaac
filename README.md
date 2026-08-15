@@ -463,7 +463,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 |----------|---------|-------------|
 | `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, worktrees, and the server lock. |
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
-| `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
+| `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy, and (under the `k8s` driver) every worktree's egress with it. Under `containerless` it covers only the server's own git — a host-run worktree has no proxy to route through, and the server says so at startup. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
