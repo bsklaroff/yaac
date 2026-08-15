@@ -12,6 +12,7 @@ import { worktreeDriver } from '#drivers/driver'
 import type {
   RuntimeHandle,
   TeardownTarget,
+  WorkspaceGitCredential,
   WorkspaceMount,
   WorkspaceResources,
   WorkspaceSpec,
@@ -1480,6 +1481,20 @@ export async function createWorktree(
     ...worktreeBinMounts(worktreeBinStaging, worktreeBinNames),
   ]
 
+  // Git auth for the workspace's OWN git, and the last of the credential
+  // decisions `mediatedEgress` turns on. With a proxy the workspace holds
+  // nothing and the injection happens in flight; without one it would hold
+  // nothing and have no way to authenticate at all, since the checkout's
+  // `origin` is deliberately tokenless (cloneRepo strips it) and every
+  // server-side git call re-injects per invocation. The resolved credential
+  // therefore goes in, the same bargain as the OAuth bundles and GH_TOKEN.
+  let gitCredential: WorkspaceGitCredential | undefined
+  if (!mediatedEgress) {
+    gitCredential = credential.kind === 'https'
+      ? { kind: 'https', host: parsedRemote.host, token: credential.token }
+      : { kind: 'ssh', privateKeyPath: credential.privateKeyPath }
+  }
+
   const spec: WorkspaceSpec = {
     projectSlug,
     workspaceId: worktreeId,
@@ -1497,6 +1512,7 @@ export async function createWorktree(
     postStartExec: [`/usr/local/bin/${WORKTREE_INIT_SCRIPT}`],
     nestedContainers,
     ...(sshKnownHostsFile !== undefined ? { ssh: { knownHostsFile: sshKnownHostsFile } } : {}),
+    ...(gitCredential !== undefined ? { gitCredential } : {}),
     substrate,
     onProgress: (m) => emit(m, options),
   }

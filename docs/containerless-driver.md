@@ -193,6 +193,33 @@ plainly. There is no boundary between the agent and this machine, so there
 is nothing to withhold a secret from. If that is not acceptable for a given
 project, that project wants the k8s driver.
 
+Git is where that has to be spelled out, because a workspace here is cut off
+from the credential twice over. The checkout's `origin` is deliberately
+tokenless — the clone strips it, and every server-side call re-injects per
+invocation — and the private `HOME` hides the user's own `~/.gitconfig` and
+`~/.ssh`. Under a pod neither matters, since the proxy injects the credential
+in flight. So the launch is handed the resolved credential on the spec and
+writes it into the workspace's own home: an HTTPS token becomes a line in
+git's credential store (`$HOME/.git-credentials`, which is the store's
+default file, so the helper needs no argument), and an SSH key becomes a
+`GIT_SSH_COMMAND` naming that key with `-i` where a pod gets the proxy's
+forwarded agent. Host verification is unchanged — the same project-scoped
+known_hosts the pod path writes.
+
+Two details keep that deterministic rather than dependent on the host. The
+helper list is reset before `store` is added, so a system-wide credential
+manager cannot answer first with whatever the user has stored for that host;
+and `GIT_CONFIG_GLOBAL` is pinned at the file the launch wrote, because the
+workspace inherits the server's environment and one already set there would
+otherwise silence the whole config — identity and trusted directories
+included.
+
+Tor is the one thing not carried across: the SSH command a workspace gets
+deliberately omits the Tor options the server's own git commands carry. That
+is the same call the driver makes about Tor everywhere — routing one hop
+through advisory environment while the rest goes direct is the fail-open
+shape the difference list below rejects.
+
 ## `yaac-mama`, and how a worktree reaches its server
 
 `yaac-mama` is the in-worktree command channel — a strict subset of the yaac
