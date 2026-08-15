@@ -11,8 +11,10 @@ GitHub, keep watching it, re-review as it changes.
 You stay the dispatcher. You never review the PR yourself, and reviewer
 sessions never report back to you — their output is the PR thread.
 
-Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
-[`yaac-mama`](../yaac-mama/SKILL.md) (the reviewer).
+Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source),
+[`yaac-mama`](../yaac-mama/SKILL.md) (the spawn) and
+[`review-pr`](../review-pr/SKILL.md) — which is what a reviewer session
+actually runs, so your prompt supplies the *aim*, not the procedure.
 
 ## The reviewer argument
 
@@ -100,8 +102,10 @@ against the PR, and skip the move if that's still a guess.
 
 ### 3. Write a prompt aimed at *this* PR
 
-A generic "review this PR" wastes the reviewer. Read the file list and name
-the actual risk. Recurring shapes:
+The reviewer already knows *how* to review a PR — `review-pr` gives it the
+checkout, the posting, the approval bar and the watch. What it cannot know is
+what is risky about **this** PR, and a generic "review this PR" wastes it.
+Read the file list and name the actual risk. Recurring shapes:
 
 - **Schema / migration** → does it apply in order on a database already
   holding real rows and preserve them, rather than drop-and-recreate? Where
@@ -149,53 +153,33 @@ to resolve them.
 yaac-mama create --tool <tool> --model <model> --group "PR <n>" "<prompt>"
 ```
 
-One quoted argument, max 10,000 characters, carrying these steps whatever the
-PR:
+One quoted argument, max 10,000 characters. It opens by handing the whole
+procedure to the skill, whatever the PR:
 
-1. **Check out the head** — `git fetch origin <branch> && git checkout -B <branch> origin/<branch>`, or `gh pr checkout <n>` for a fork PR.
-2. **Review it** — with `/code-review` if the reviewer has it, plus the angles
-   from step 3.
-3. **Post the findings to the PR** with `gh` (`GH_TOKEN` is already set):
-   `gh pr review <n> --comment --body "…"`, or line-anchored notes via
-   `gh api repos/<owner>/<repo>/pulls/<n>/comments` with `path`/`line`/`commit_id`,
-   plus one top-level `gh pr comment <n> --body "…"`. Cite `file:line`; never
-   quote credential values; default to `--comment`, not approve/request-changes;
-   **do not push commits or modify the PR branch** — reviewing, not fixing.
-4. **Say approval in words when it approves.** A review that found nothing
-   blocking must say so outright in the comment — open it with **"Approved"**,
-   or **"Approved with nits"** when the only findings are optional, and label
-   which findings are nits. Silence is not approval, and neither is a comment
-   that lists three small remarks and stops; the user must be able to tell an
-   approval from a review that merely ran out of things to say.
-   The same comment must **spell out the follow-up testing still warranted**:
-   name, as commands, every check the reviewer could not run from its own
-   worktree — test tiers needing a substrate, cluster, credentials or network
-   it doesn't have (in this repo, the host-only k8s tiers a yaac worktree has
-   no cluster for), plus any manual verification the diff calls for — and say
-   which checks it *did* run and what passed. An approval with no such list
-   reads as "fully verified"; if there is genuinely nothing left to run, say
-   that explicitly too.
-5. **Keep watching its own PR** — arm a watch on
-   `yaac-watch-prs --pr <n> --events commit,comment` that will **wake it**.
-   Spell out the mechanism, since "run it in the background" silently fails: a
-   backgrounded command logs to a file nobody reads and notifies only on exit,
-   which this watcher never does. Give it whichever fits the tool — a
-   persistent `Monitor` on Claude Code, else the detached tmux paste loop from
-   [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) ("Option B") copied in with
-   `<n>` substituted — and tell it to **confirm the watch armed** before going
-   idle (one that didn't looks identical to a quiet PR), and that an event line
-   is not a message from the user.
-6. **Re-review on activity** — on `[commit]`, re-read the diff
-   (`git fetch origin <branch> && git diff origin/<base>...origin/<branch>`),
-   check whether earlier findings were addressed, post what's resolved and what
-   still stands, and re-state approval (with its outstanding-tests list) if the
-   PR now passes. On `[comment]`, answer and re-check what it's asked to. Tell
-   it to **ignore comments it wrote itself** — the watcher does no author
-   filtering, so its own replies come back as events.
+> Follow the **`review-pr`** skill for PR #`<n>` — `/review-pr <n>` if your
+> tool takes slash commands, otherwise read `review-pr/SKILL.md` from your
+> skills directory and follow it. It covers checking out the head, posting
+> findings, when you may say "Approved", watching the PR, and stopping this
+> session once the PR is approved.
 
-Where the review turns on one judgment call (an isolation verdict, a data-loss
-verdict), tell it to **re-derive that verdict against the new code** on a
-follow-up commit rather than assuming the earlier answer holds.
+Everything after that is **this PR's aim**: the risks from step 3, the files
+worth reading first, a verified collision if there is one. Don't restate the
+skill's steps — a prompt that re-specifies the posting commands or the
+approval wording only gives the reviewer a second, drifting copy to weigh
+against the first. Where the review turns on one judgment call (an isolation
+verdict, a data-loss verdict), say so, so the reviewer knows which verdict
+`review-pr` will have it re-derive on every follow-up commit.
+
+Two things to expect from a reviewer running that skill, so neither reads as
+a failure:
+
+- It approves only once **every** finding it raised — nits included — has
+  been fixed by a commit or answered by the implementer. A PR sitting with
+  one open nit is a reviewer doing its job, not a stalled session.
+- It **stops itself** (`yaac-mama stop`) right after posting "Approved", or
+  if the PR is merged or closed while it watches. Its row leaving
+  `yaac-mama list` is the review finishing. Don't respawn a reviewer for a
+  PR that was already approved unless the user asks.
 
 ### 5. Report
 

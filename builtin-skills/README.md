@@ -32,6 +32,8 @@ Shipped skills:
   / comment / commit), one event line per update, via `yaac-watch-prs`.
 - **`push-pr`** — commit the current branch, open a PR, then watch it for
   reviewer comments and address them.
+- **`review-pr`** — own one PR as its reviewer: post findings, watch it,
+  re-review, approve only once every finding is settled, then stop the
+  session.
 - **`spawn-pr-reviewers`** — watch for newly opened PRs and spawn a sibling
-  session to review each one, post its findings to the PR, and re-review as it
-  changes.
+  session to review each one with `review-pr`, aimed at that PR's risks.

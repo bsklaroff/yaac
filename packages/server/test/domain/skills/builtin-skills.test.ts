@@ -94,14 +94,30 @@ describe('yaac-watch-prs skill', () => {
   })
 })
 
+describe('review-pr skill', () => {
+  it('is discoverable and drives the watch and the self-stop through the worktree-bin commands', async () => {
+    expectShipped('review-pr')
+    const body = await bodyOf('review-pr')
+    // A reviewer session watches its own PR's activity, and winds itself down
+    // through yaac-mama once the PR is approved.
+    expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
+    expect(body).toContain('yaac-mama stop')
+    // The approval bar is the reason this skill exists as its own thing: a nit
+    // nobody addressed still blocks approval, so the halfway verdict the
+    // reviewer would otherwise reach for is ruled out by name.
+    expect(body).toContain('Say "Approved" only when nothing is outstanding')
+    expect(body).toContain('There is no "Approved with nits"')
+  })
+})
+
 describe('spawn-pr-reviewers skill', () => {
   it('is discoverable and drives both halves through the worktree-bin commands', async () => {
     expectShipped('spawn-pr-reviewers')
     const body = await bodyOf('spawn-pr-reviewers')
-    // The watch half scopes the generalized watcher to newly opened PRs, and
-    // the per-reviewer half re-scopes it to that one PR's activity.
+    // The watch half scopes the generalized watcher to newly opened PRs; the
+    // per-reviewer half is delegated to review-pr rather than restated here.
     expect(body).toContain('yaac-watch-prs --events opened')
-    expect(body).toContain('yaac-watch-prs --pr <n> --events commit,comment')
+    expect(body).toContain('`review-pr`')
     // The spawn half must name a tool and model, and resolve the tool itself
     // when the argument names only a model. The model is required with no
     // default, so no model id is baked in anywhere as one.
