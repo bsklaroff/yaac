@@ -31,11 +31,15 @@ const CONTAINERLESS_SETUP = [...SETUP, './packages/test-utils/src/containerless-
 /**
  * The api files that need no cluster: the containerless column of the route
  * matrix, plus everything that drives the Hono app in process over routes no
- * driver feature gates. What stays behind needs one of three things this
- * project does not have — the k8s driver's own answers (`routes-k8s`), a
+ * driver feature gates. What stays behind needs one of two things this
+ * project does not have — the k8s driver's own answers (`routes-k8s`), or a
  * route that refuses `NOT_SUPPORTED` without it (`write-routes`, the image
- * routes), or a spawned server, which does not come up without one
- * (`server-http`, `token-auth-flow` — verified, not assumed).
+ * routes).
+ *
+ * A spawned server is no longer among them. It needs the CLI built, which is
+ * why the project carries the containerless global setup (the CLI build and
+ * nothing else) and names the driver in its env — `server-http` and
+ * `token-auth-flow` could move here too, on the same terms.
  */
 const CONTAINERLESS_API = [
   'test/api/routes-containerless.test.ts',
@@ -44,6 +48,11 @@ const CONTAINERLESS_API = [
   'test/api/server.test.ts',
   'test/api/shortcuts.test.ts',
   'test/api/web-session-flow.test.ts',
+  // Driver-neutral: it guards the WebSocket compression pass-through, which
+  // a dependency bump could drop for every install. That makes it worth
+  // running where developers actually run things — a worktree with no
+  // cluster — rather than only in the host column.
+  'test/api/websocket-compression.test.ts',
 ]
 
 /** Machine-readable record of the last run — see the `reporters` note below.
@@ -147,9 +156,16 @@ export default defineConfig({
           name: 'api-containerless',
           include: [...CONTAINERLESS_API],
           setupFiles: CONTAINERLESS_SETUP,
-          // No globalSetup at all: nothing here builds an image, spawns a
-          // server or touches a registry — it drives the Hono app in
-          // process against a driver that needs no substrate.
+          // Reaches a spawned server through `spawnYaacServer`, which
+          // spreads `process.env` into the child — so the child needs the
+          // driver named here rather than inheriting whatever the ambient
+          // environment happens to be.
+          env: { YAAC_DRIVER: 'containerless' },
+          // The CLI build and nothing else: still no image, no registry and
+          // no namespace, but a file here does spawn a server and cannot do
+          // it without `dist-test/`. Same setup the e2e containerless tier
+          // uses, for the same reason.
+          globalSetup: ['test/global-setup-containerless.ts'],
           sequence: { groupOrder: 0 },
         },
       },

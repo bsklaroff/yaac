@@ -62,7 +62,12 @@ backend. Every connection opens with one JSON handshake line
   atomically — fewer frames on every hop, no cursor flicker from
   painting redraw fragments — while a lone keystroke echo pays no added
   latency. The server-side pty adapter likewise dispatches consecutive
-  data frames from one chunk as a single callback (one WS message).
+  data frames from one chunk as a single callback (one WS message), and
+  `bridge()` runs the same batcher once more before the socket
+  (`@yaac/shared/batcher`, of which streamd's copy is the in-pod mirror)
+  — which is what gives the containerless driver, whose host PTY reaches
+  the bridge event by event with no streamd in front of it, the same
+  coalescing.
 - `ports {}` — push the pod's localhost-reachable LISTEN ports (parsed
   in-pod from `/proc/net/tcp{,6}`, bounded, loopback/wildcard binds
   only, streamd's own port excluded) as JSON lines: once on connect, on
@@ -139,6 +144,44 @@ are unchanged: `dialCtrlStream` (child-shaped, the status watcher's
 `relayTcpFactory` (the port-forward RelayFactory), and `podExec`
 (the one-shot command runner behind tmux probes, terminal listing, view
 cleanup, status-right updates, the changes diff, and the opencode probe).
+
+## The browser hop
+
+Everything above optimizes bytes inside the cluster, but the link that is
+actually slow is usually the first one: a remote install is
+`tailscale serve` straight to the server (docs/remote-hosting.md), so the
+browser↔server WebSocket is the whole WAN path, with no edge tier in
+front of it. Four things keep it cheap.
+
+- **Compression.** `permessage-deflate` is negotiated on every WebSocket
+  (`server-run.ts`), with a 512-byte threshold so the latency-critical
+  small frames — a keystroke, its echo, a control frame — skip the codec
+  entirely. What benefits is the bulk: ANSI-heavy repaints, and the
+  snapshot and ACP JSON. `@hono/node-ws` builds its `WebSocketServer`
+  with no options pass-through, so the option is set on the `wss` it
+  returns; `ws` reads it per upgrade, which is what makes that work, and
+  `test/api/websocket-compression.test.ts` asserts the negotiation so a
+  dependency bump cannot silently drop it. For the same reason the
+  `/events` hub holds the raw `ws` socket rather than Hono's `WSContext`:
+  the context's `send` passes an explicit `undefined` compress flag,
+  which overrides ws's own default and would leave the largest payload on
+  the server uncompressed.
+- **No Nagle.** Every relay socket sets `setNoDelay` — the server's dial,
+  both legs of the proxy splice, streamd's accept and its TCP target.
+  Coalescing here is the batchers' job, and they do it deliberately;
+  leaving Nagle on top only spends their window in the kernel waiting for
+  a companion write that the batcher already folded in.
+- **Keystroke batching.** The browser coalesces input on a 4ms
+  leading-edge window (the same shared batcher, half the output window):
+  a lone keypress is never delayed, while autorepeat, a piecewise paste
+  and a TUI's mouse reports stop costing one WebSocket frame and one TLS
+  record each.
+- **Link measurement.** The PTY control channel's `ping` carries a client
+  stamp that the `pong` echoes back, so the webapp can time the round
+  trip without tracking what is in flight; each open pane probes every
+  10s and the samples land in one app-wide store
+  (`frontend/src/lib/link-quality.ts`). A stamp-less ping — the CLI's
+  keepalive — still gets the bare pong it expects.
 
 ## Failure model
 
