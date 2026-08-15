@@ -38,7 +38,8 @@
 # Needs `gh` and nothing else: every filter below runs through gh's own `--jq`
 # (gh embeds a jq engine), never a `| jq` pipe, so this works on a containerless
 # worktree whose host has no jq installed. gh authenticates via the session's
-# GH_TOKEN and infers the repo from the /workspace git remote. No yaac-specific
+# GH_TOKEN and infers the repo from the git remote of the checkout the caller is
+# standing in (override with YAAC_WATCH_PRS_WORKDIR). No yaac-specific
 # dependencies.
 set -u
 
@@ -57,8 +58,17 @@ while [ $# -gt 0 ]; do
 done
 
 command -v gh >/dev/null 2>&1 || { echo "yaac-watch-prs: gh not found" >&2; exit 1; }
-# gh infers the repo from this dir's git remote (overridable for tests).
-cd "${YAAC_WATCH_PRS_WORKDIR:-/workspace}" || exit 1
+# gh infers the repo from this dir's git remote. Default to the checkout the
+# caller is standing in — that is /workspace in a container, but an arbitrary
+# host path on a containerless worktree, so a hard-coded /workspace would fail
+# outright there. Fall back to /workspace only when the cwd is in no repo at
+# all, and let YAAC_WATCH_PRS_WORKDIR override both (tests, odd layouts).
+workdir="${YAAC_WATCH_PRS_WORKDIR:-}"
+if [ -z "$workdir" ]; then
+  workdir=$(git rev-parse --show-toplevel 2>/dev/null) || workdir=""
+  [ -n "$workdir" ] || workdir=/workspace
+fi
+cd "$workdir" || exit 1
 
 # Default event set depends on scope: a single PR can't be "opened", so watch
 # its comments and commits; across all PRs the useful default is new PRs.

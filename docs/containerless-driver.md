@@ -174,6 +174,10 @@ utilities a pod's `Dockerfile.default` installs, and the same goes for the
 helper scripts in the private bin dir. `jq` is the one that keeps coming up:
 GitHub JSON is filtered with `gh`'s own `--jq` flag — gh embeds a jq engine —
 rather than a `| jq` pipe, and `yaac-watch-prs` therefore preflights only `gh`.
+Paths are the other one: a checkout is at `/workspace` only in a pod, so a
+helper that needs the repo derives it from where it was invoked (`git
+rev-parse --show-toplevel`) and keeps `/workspace` as a fallback, never as the
+default.
 
 ## Credentials, and why they are real
 

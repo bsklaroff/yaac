@@ -35,7 +35,9 @@ const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).sta
  * whatever the test wrote there — no test data is interpolated into the
  * script, so a fixture containing `$`, a backtick or a quote stays literal.
  * `$FIXTURES` holds the fixture dir, `$FAIL_KEYS` a `:`-delimited list of
- * keys whose calls should fail the way an outage does.
+ * keys whose calls should fail the way an outage does. It also records the
+ * directory it was invoked from in `$FIXTURES/gh-cwd`, since which checkout
+ * `gh` runs in is what decides the repo it infers.
  *
  * With a `.txt` fixture the stub returns its lines verbatim (the US-joined
  * shape gh's `--jq` would have produced). With a `.json` one it runs the
@@ -43,6 +45,7 @@ const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).sta
  * themselves are under test too.
  */
 const GH_STUB = `#!/bin/sh
+pwd > "$FIXTURES/gh-cwd"
 key=unknown
 case "$1" in
   api)
@@ -111,10 +114,10 @@ describe('yaac-watch-prs script', () => {
     )
   }
 
-  function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
+  function run(args: string[], env: Record<string, string> = {}, cwd = tmpDir): Promise<Run> {
     return new Promise((resolve, reject) => {
       execFile('sh', [SCRIPT, ...args], {
-        cwd: tmpDir,
+        cwd,
         timeout: 15_000,
         env: {
           ...process.env,
@@ -156,6 +159,45 @@ describe('yaac-watch-prs script', () => {
     expect(code).toBe(0)
     expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
   })
+
+  // Which checkout gh runs in is what decides the repo it infers, and
+  // /workspace is only the *container's* answer for where that checkout is: a
+  // containerless worktree is a plain checkout at an arbitrary host path, so a
+  // hard-coded /workspace makes the watcher fail outright there. The default is
+  // therefore the top of whatever repo the caller is standing in.
+  it('runs gh from the top of the checkout it was started in', async () => {
+    await seedBaseline()
+    await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
+    // realpath: git answers with the physical path, and on macOS the temp dir
+    // is reached through a symlink.
+    const repo = await fs.realpath(await fs.mkdtemp(path.join(tmpDir, 'repo-')))
+    const sub = path.join(repo, 'packages', 'server')
+    await fs.mkdir(sub, { recursive: true })
+    expect(spawnSync('git', ['init', repo], { stdio: 'ignore' }).status).toBe(0)
+
+    // An empty override is the same as an unset one — this is the default path.
+    const { stdout } = await run(
+      ['--pr', '43', '--events', 'comment', '--once'],
+      { YAAC_WATCH_PRS_WORKDIR: '' },
+      sub,
+    )
+    expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
+    expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe(repo)
+  })
+
+  // The container's checkout is always /workspace, so it stays the fallback for
+  // a caller started outside any repo (a pod's PATH-resolved Monitor command
+  // run from `/`, say) rather than an immediate failure.
+  it.skipIf(spawnSync('sh', ['-c', 'test -d /workspace']).status !== 0)(
+    'falls back to /workspace when the cwd is in no repo', async () => {
+      await seedBaseline()
+      await fixtureLines('issue-comments', [['7', 'alice', '', 'looks good']])
+
+      // tmpDir is a bare temp dir under no git repo.
+      await run(['--pr', '43', '--events', 'comment', '--once'], { YAAC_WATCH_PRS_WORKDIR: '' })
+      expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe('/workspace')
+    },
+  )
 
   // A containerless worktree runs on the user's own host, which need not have
   // jq — so the script must never reach for one, neither to filter a response

@@ -100,8 +100,11 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 
 ## What actually happens
 
-- Each poll runs `gh` from `/workspace` (repo inferred from the git remote,
-  auth via this session's `GH_TOKEN`). `gh` is the only dependency — the JSON
+- Each poll runs `gh` from the top of the checkout you are standing in (repo
+  inferred from its git remote, auth via this session's `GH_TOKEN`) — so it
+  works both in a container, where that is `/workspace`, and on a containerless
+  worktree, whose checkout is an arbitrary host path. Point it elsewhere with
+  `YAAC_WATCH_PRS_WORKDIR`. `gh` is the only dependency — the JSON
   filtering goes through gh's built-in `--jq`, never a `| jq` pipe, so the
   watcher runs on a containerless worktree whose host has no `jq` installed.
   The command fails fast if `gh` is missing. There are **no yaac-specific
