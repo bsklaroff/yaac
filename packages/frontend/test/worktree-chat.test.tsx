@@ -545,12 +545,14 @@ describe('WorktreeChat permission asks', () => {
   })
 
   it('says the agent is waiting on the user rather than working', () => {
-    // A blocked turn is `busy` — its prompt is unanswered — but "working…"
+    // A blocked turn is `busy` — its prompt is unanswered — but "working"
     // under the card asking the user to act is the one place that misreads.
+    // The label's trailing dots are decorative spans, so the text to match on
+    // is the word itself.
     stream.events = [ask(0)]
     stream.busy = true
     show()
-    expect(screen.queryByText('working…')).toBeNull()
+    expect(screen.queryByText('working')).toBeNull()
 
     cleanup()
     stream.events = [
@@ -558,6 +560,6 @@ describe('WorktreeChat permission asks', () => {
       { type: 'permission-resolved', seq: 1, requestId: '5', outcome: 'selected', optionId: 'allow' },
     ]
     show()
-    expect(screen.getByText('working…')).toBeTruthy()
+    expect(screen.getByText('working')).toBeTruthy()
   })
 })
