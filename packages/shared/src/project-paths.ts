@@ -177,12 +177,23 @@ export function repoDir(slug: string): string {
   return sharedProjectPath(slug, 'repo')
 }
 
-/** SHARED: mounted at `/home/yaac/.claude` in every worktree of the project. */
+/**
+ * SHARED: mounted at `/home/yaac/.claude` in every worktree of the project,
+ * and named by `CLAUDE_CONFIG_DIR` — so claude's global config is the
+ * `.claude.json` INSIDE this directory, carried by this mount.
+ */
 export function claudeDir(slug: string): string {
   return sharedProjectPath(slug, 'claude')
 }
 
-/** SHARED: mounted at `/home/yaac/.claude.json`. */
+/**
+ * SHARED, and legacy only: where claude's global config lived before
+ * worktrees named `CLAUDE_CONFIG_DIR`, when it resolved beside the home dir
+ * rather than inside the claude home and needed a `File` mount of its own.
+ * Nothing mounts or writes it now; its one caller is the adoption that
+ * carries a pre-move install's state forward, and it goes with that
+ * (`adoptLegacyClaudeJson`, docs/legacy-compat-shims.md).
+ */
 export function claudeJsonFile(slug: string): string {
   return sharedProjectPath(slug, 'claude.json')
 }

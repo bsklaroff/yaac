@@ -7,7 +7,7 @@ import { ensureDataDir, serverLocalRoot } from '@yaac/shared/project-paths'
 import { persistToolLogin } from '@yaac/shared/tool-auth'
 import {
   claudeKeychainService,
-  deleteScratchClaudeKeychainItem,
+  deleteScopedClaudeKeychainItem,
   extractClaudeOAuthBundle,
   extractCodexOAuthBundle,
   readClaudeKeychainPayload,
@@ -92,7 +92,7 @@ export function killAllToolLogins(): void {
 /** Drop the scratch config home and (claude) its scoped Keychain item. */
 function discardScratch(s: LoginSession): void {
   if (s.view.tool === 'claude') {
-    deleteScratchClaudeKeychainItem(claudeKeychainService(s.scratchDir))
+    deleteScopedClaudeKeychainItem(claudeKeychainService(s.scratchDir))
   }
   void fs.rm(s.scratchDir, { recursive: true, force: true }).catch(() => {})
 }

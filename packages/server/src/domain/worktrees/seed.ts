@@ -16,13 +16,63 @@ interface ClaudeJsonState {
 }
 
 /**
- * Ensure `~/.claude.json` exists (it is hostPath-mounted as a file) and seed
+ * Move a pre-existing `<project>/claude.json` to the path claude reads now.
+ *
+ * LEGACY COMPAT (docs/legacy-compat-shims.md). Worktrees used to run with no
+ * `CLAUDE_CONFIG_DIR`, which put claude's global config beside the home dir
+ * rather than inside it, so yaac kept it as a sibling of the claude home and
+ * mounted it at `~/.claude.json`. Naming the config dir moved the file into
+ * the home, and the old one is where an install that predates the change
+ * still keeps its state — claude's `oauthAccount`, its own migration
+ * bookkeeping, the approved-API-key list, the accepted trust roots.
+ *
+ * Only when the new path has nothing: the destination is authoritative the
+ * moment it exists, so a re-run can never walk a newer file backwards. The
+ * old file is left where it is rather than unlinked, so a downgrade still
+ * finds it; nothing reads it after this, and it is small.
+ */
+export async function adoptLegacyClaudeJson(
+  legacyPath: string,
+  currentPath: string,
+): Promise<void> {
+  try {
+    await fs.access(currentPath)
+    return
+  } catch {
+    // Nothing there yet — the old file, if any, is still the state of record.
+  }
+  try {
+    await fs.copyFile(legacyPath, currentPath)
+  } catch {
+    // No legacy file (the common case, and every fresh install): the seed
+    // below writes the new one from scratch.
+  }
+}
+
+/**
+ * Ensure claude's global config exists and seed
  * claude-code's onboarding state so its first-run wizard (theme picker, then
  * the login screen) is skipped. Merges into any existing state so
- * claude-code's own keys (oauthAccount, migrations, …) survive. The agent
- * runs in /workspace; /repo is the git worktree root.
+ * claude-code's own keys (oauthAccount, migrations, …) survive.
+ *
+ * `trustedDirs` are the roots the agent will open, **as the agent sees
+ * them** — which is the whole reason they are a parameter. Under a pod that
+ * is the mount layout (`/workspace`, and `/repo` for the git worktree
+ * root); under containerless nothing is mounted anywhere and the agent runs
+ * in the real host checkout, so those two constants would name directories
+ * that do not exist. Getting it wrong is silent in the worst way: claude
+ * keys this map by directory, so an unmatched entry simply sits in the file
+ * looking correct while the trust dialog opens on first launch anyway.
+ *
+ * The map accumulates across a project's worktrees under containerless,
+ * where every worktree is its own path. That is claude's own behavior for a
+ * user who works in more than one checkout, and the file is merged rather
+ * than rewritten, so it costs an entry per worktree and nothing else.
  */
-export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
+export async function seedClaudeJson(
+  claudeJsonPath: string,
+  trustedDirs: readonly string[],
+): Promise<void> {
   let state: ClaudeJsonState = {}
   try {
     state = JSON.parse(await fs.readFile(claudeJsonPath, 'utf8')) as ClaudeJsonState
@@ -34,7 +84,7 @@ export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
   const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
   state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
   const projects = { ...state.projects }
-  for (const dir of ['/workspace', '/repo']) {
+  for (const dir of trustedDirs) {
     projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
   }
   state.projects = projects
@@ -43,17 +93,27 @@ export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
 
 /**
  * Seed `~/.claude/settings.json` so claude-code skips the one-time
- * "Bypass Permissions mode" warning. yaac runs the agent with permission
- * bypass inside a sandboxed pod — exactly the case the warning says
- * is safe — so showing it on every worktree is pure friction. Merges into
- * any existing settings (e.g. the theme claude-code writes itself).
+ * "Bypass Permissions mode" warning.
+ *
+ * The warning asks a question yaac has already answered, on either
+ * substrate: a posture is resolved per create from what the request named,
+ * else the project's last choice, else the driver's default, and recorded on
+ * the worktree row (docs/permission-modes.md). Under `k8s` that default is
+ * bypass, because the container is the containment and a second layer of
+ * prompting inside it only costs interruptions. Under `containerless` it is
+ * `accept-edits`, and bypass is reached only by asking for it — which is a
+ * deliberate choice about the user's own machine, made before the worktree
+ * existed. Re-confirming it inside every worktree is friction either way.
+ * Merges into any existing settings (e.g. the theme claude-code writes
+ * itself).
  *
  * Also raises `cleanupPeriodDays` from claude-code's 30-day default to
- * 100 years: worktree transcripts live in the project's hostPath-mounted
- * `.claude` dir and yaac owns their lifecycle, so claude-code must never
- * garbage-collect them on startup. (0 would disable transcript
- * persistence entirely, not cleanup — hence a large finite value.)
- * codex and opencode need no equivalent: neither expires worktrees.
+ * 100 years: a worktree's transcripts live in the project's claude dir —
+ * a mount under `k8s`, a symlink into it under `containerless` — and yaac
+ * owns their lifecycle, so claude-code must never garbage-collect them on
+ * startup. (0 would disable transcript persistence entirely, not cleanup —
+ * hence a large finite value.) codex and opencode need no equivalent:
+ * neither expires worktrees.
  */
 export async function seedClaudeSettings(settingsPath: string): Promise<void> {
   let settings: Record<string, unknown> = {}

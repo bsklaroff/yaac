@@ -22,6 +22,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
 }))
 import { launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
+import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
 let dataDir: string
@@ -148,39 +149,66 @@ describe('launchWorkspace', () => {
     expect(env.env.PATH?.startsWith(binDir)).toBe(true)
   })
 
-  it('follows an env value naming a mounted path to where the mount landed', async () => {
-    // The caller writes env against the container layout, because that is the
-    // filesystem every driver was written against — pi is pointed at its
-    // session dir inside its mounted home. Left alone, it would write its
-    // transcripts to a path that does not exist here and the herd would find
-    // none. A value under a mount this spec declared follows that mount.
+  it('translates an env value naming a mounted path to that mount\'s source', async () => {
+    // The caller writes env against the container layout on both substrates,
+    // because that is the filesystem every driver was written against. Here
+    // the value resolves to the directory the mount came from — the project's
+    // own — rather than to the private HOME's link to it. Both name the same
+    // files; a tool that keys anything on the string it was handed can tell
+    // them apart, and would get a per-worktree home from the link.
     //
-    // The user's own values do NOT: a yaac dev host runs as a user whose home
-    // is literally /home/yaac, so rewriting anything container-shaped would
-    // silently redirect a real host path they passed in.
+    // The user's own values do NOT move: a yaac dev host runs as a user whose
+    // home is literally /home/yaac, so rewriting anything container-shaped
+    // would silently redirect a real host path they passed in.
     const piSrc = path.join(dataDir, 'projects', 'demo', 'pi')
+    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
     await fsp.mkdir(path.join(piSrc, 'agent', 'sessions'), { recursive: true })
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: piSrc }, mountPath: '/home/yaac/.pi' },
+      { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
     ]
     await launchWorkspace(spec({
       mounts,
       env: [
+        'PI_CODING_AGENT_DIR=/home/yaac/.pi/agent',
         'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.pi/agent/sessions',
+        'CLAUDE_CONFIG_DIR=/home/yaac/.claude',
         'MY_OWN_PATH=/home/yaac/notes',
       ],
     }))
 
-    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
     expect(env.env.PI_CODING_AGENT_SESSION_DIR)
-      .toBe(path.join(home, '.pi', 'agent', 'sessions'))
-    // Which resolves, through the mount's own link, to the shared project dir
-    // the server reads transcripts back out of.
-    expect(await fsp.realpath(env.env.PI_CODING_AGENT_SESSION_DIR ?? ''))
-      .toBe(await fsp.realpath(path.join(piSrc, 'agent', 'sessions')))
+      .toBe(path.join(piSrc, 'agent', 'sessions'))
+    // A tool's two variables describing one home stay consistent with each
+    // other, because one rule produced both.
+    expect(env.env.PI_CODING_AGENT_DIR).toBe(path.join(piSrc, 'agent'))
+    // The project's dir, not this worktree's: claude names its macOS Keychain
+    // item after this string, and a per-worktree one would let the first
+    // token refresh take the credential away from every sibling worktree.
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    expect(env.env.CLAUDE_CONFIG_DIR).toBe(claudeSrc)
+    expect(env.env.CLAUDE_CONFIG_DIR).not.toContain(home)
     expect(env.env.MY_OWN_PATH).toBe('/home/yaac/notes')
+  })
+
+  it('resolves a value under a nested mount to the innermost source', async () => {
+    // Otherwise a path inside the inner mount would be expressed against the
+    // outer one's source, which is a different directory on this filesystem.
+    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const skillSrc = path.join(dataDir, 'staged-skill')
+    await fsp.mkdir(skillSrc, { recursive: true })
+    await launchWorkspace(spec({
+      mounts: [
+        { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
+        { source: { kind: 'hostPath', path: skillSrc }, mountPath: '/home/yaac/.claude/skills/demo' },
+      ],
+      env: ['SKILL=/home/yaac/.claude/skills/demo/SKILL.md'],
+    }))
+    const env = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    expect(env.env.SKILL).toBe(path.join(skillSrc, 'SKILL.md'))
   })
 
   it('refuses a mount it has no host equivalent for rather than dropping it', async () => {
@@ -321,6 +349,71 @@ describe('launchWorkspace', () => {
       .toEqual(expect.arrayContaining(['YAAC_GIT_NAME']))
     expect(call.env.YAAC_DATA_DIR).toBeUndefined()
     expect(call.env.YAAC_SERVER_PORT).toBeUndefined()
+  })
+
+  it('drops the host variables that would re-point a tool away from its home', async () => {
+    // Every tool home is staged HOME-relative, so the private HOME only
+    // decides anything if the tools resolve their defaults. One of these
+    // inherited and the agent reads the SERVER user's config — with real
+    // credentials in it — and writes its sessions where nothing looks.
+    const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const hostConfig = path.join(dataDir, 'the-host-user')
+    const saved = { ...process.env }
+    // Every name the driver clears, poisoned from the list itself — a case
+    // that restated the names would keep passing when one was added.
+    for (const key of TOOL_HOME_VARS) process.env[key] = path.join(hostConfig, key)
+    const progress: string[] = []
+    try {
+      await launchWorkspace(spec({
+        mounts: [{ source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' }],
+        onProgress: (m) => progress.push(m),
+      }))
+    } finally {
+      process.env = saved
+    }
+
+    // Ignoring a user's environment is otherwise indistinguishable from
+    // honoring it — the agent reads the project's config either way, and
+    // only the user knows they had pointed it somewhere else.
+    const notice = progress.find((m) => m.includes('CLAUDE_CONFIG_DIR'))
+    expect(notice, 'the create never said it was ignoring anything').toBeDefined()
+    expect(notice).toContain('CODEX_HOME')
+
+    const call = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    for (const key of TOOL_HOME_VARS) {
+      expect(call.env[key], `${key} reached the workspace`).toBeUndefined()
+    }
+    // Dropped rather than pinned, so the tools land on their own defaults —
+    // which is what the staged home is built out of.
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    expect(call.env.HOME).toBe(home)
+    expect(await fsp.realpath(path.join(home, '.claude'))).toBe(await fsp.realpath(claudeSrc))
+  })
+
+  it('lets a caller\'s own env win over the inherited host value', async () => {
+    // The deny lists are about what LEAKS in. A value the create put on the
+    // spec is a stated decision (envPassthrough, config.env), and a worktree
+    // that ignored it would be honoring the host over its own config.
+    const saved = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = path.join(dataDir, 'the-host-user', '.config')
+    const progress: string[] = []
+    try {
+      await launchWorkspace(spec({
+        env: ['XDG_CONFIG_HOME=/etc/xdg-they-asked-for'],
+        onProgress: (m) => progress.push(m),
+      }))
+    } finally {
+      if (saved === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = saved
+    }
+    const call = mockRunHost.mock.calls
+      .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    expect(call.env.XDG_CONFIG_HOME).toBe('/etc/xdg-they-asked-for')
+    // And the create does not claim to have ignored a value it is handing
+    // straight to the agent — the notice reports what was actually dropped,
+    // not what the host merely happened to set.
+    expect(progress.some((m) => m.includes('XDG_CONFIG_HOME'))).toBe(false)
   })
 
   it('survives a tmux that refuses its cosmetic options', async () => {

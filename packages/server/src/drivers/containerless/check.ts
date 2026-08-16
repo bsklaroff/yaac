@@ -3,6 +3,7 @@ import { AGENT_INSTALL, installCommandFor } from '@yaac/shared/tool-install'
 import { AGENT_TOOLS, type AgentMode, type AgentTool, type CheckResult } from '@yaac/shared/types'
 import { WorkspaceExecError } from '#drivers/contract'
 import { onPath, runHost } from './host'
+import { overriddenToolHomeVars } from './tool-homes'
 
 /** The adapter binaries `--mode acp` can run. Kept here rather than
  *  imported from `#runtime/agents`, which a driver may not name. */
@@ -380,6 +381,31 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     ...(agents.length > 0 ? {} : {
       fix: 'Install at least one agent CLI — a worktree runs whichever tool '
         + `it was created with (${AGENT_TOOLS.map((t) => AGENT_INSTALL[t]).join('; ')}).`,
+    }),
+  })
+
+  // A host that re-points its own tool homes. Worktrees ignore these (see
+  // `overriddenToolHomeVars`), which is the right answer and an invisible
+  // one: nothing inside a worktree looks different, so a user whose shell
+  // has said for years that opencode lives elsewhere would have no way to
+  // learn that yaac disagrees. Ahead of the create rather than only during
+  // it, since this is a property of the host and `host check` is where a
+  // reader comes to find those.
+  const overridden = overriddenToolHomeVars()
+  results.push({
+    name: 'tool home overrides',
+    status: overridden.length === 0 ? 'pass' : 'warn',
+    detail: overridden.length === 0
+      ? 'none set — agents resolve their config from this project\'s own dirs'
+      : `${overridden.join(', ')} set here, not used inside worktrees`,
+    ...(overridden.length === 0 ? {} : {
+      fix: 'A worktree reads its tool config from this project\'s dirs — named '
+        + 'outright where a tool has a home variable, and reached through its '
+        + 'private HOME where none exists — so these are cleared rather than '
+        + 'followed. Otherwise an agent would read your own config and '
+        + 'credentials and write its transcripts where yaac does not look. '
+        + 'Nothing to fix unless you meant a worktree to use them; per-worktree '
+        + 'values go in the project config.',
     }),
   })
 

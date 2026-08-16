@@ -14,6 +14,7 @@ import {
   workspaceStateDir,
 } from './paths'
 import { rememberWorkspace, writeMarker, type WorkspaceMarker } from './registry'
+import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
 import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
 /**
@@ -37,6 +38,11 @@ import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/cont
  *  invites a worktree to reconfigure the server that launched it. */
 const ENV_DENY_PREFIXES = ['YAAC_']
 
+/** Host variables that could point a tool somewhere other than the project
+ *  dirs staged for this workspace. See `tool-homes` for which of these the
+ *  create names outright and which have nothing to name. */
+const ENV_DENY_KEYS = TOOL_HOME_VARS
+
 /**
  * The environment a workspace's processes get: the server's own, stripped
  * of its wiring, plus what the caller decided, plus the private HOME.
@@ -44,6 +50,8 @@ const ENV_DENY_PREFIXES = ['YAAC_']
  * Inheriting the host environment at all is a real decision, not an
  * oversight — a host-run agent needs the user's PATH to find `git`, `node`
  * and the agent CLI itself, and there is no image to have installed them.
+ * What is inherited is therefore chosen twice: broadly here, then narrowed
+ * by the two deny lists above.
  */
 function workspaceEnvironment(
   spec: WorkspaceSpec,
@@ -54,6 +62,7 @@ function workspaceEnvironment(
   // eslint-disable-next-line no-process-env -- a host-run agent needs the user's PATH to find git, node and the agent CLI; there is no image that installed them
   for (const [key, value] of Object.entries(process.env)) {
     if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) continue
+    if (ENV_DENY_KEYS.has(key)) continue
     if (value !== undefined) env[key] = value
   }
   for (const entry of spec.env) {
@@ -78,13 +87,39 @@ function workspaceBinDir(home: string): string {
 
 /**
  * A caller's env value that names a path inside one of this workspace's own
- * mounts, translated to where the mount actually landed.
+ * mounts, translated to the directory that mount actually came from.
  *
  * The caller writes `spec.env` against the container layout, because that is
- * the one filesystem every driver was written against: pi is pointed at its
- * session dir inside its mounted home, and under a pod that is exactly where
- * the mount put it. Here the mount is a symlink somewhere else, so a value
- * naming a path under it has to follow it.
+ * the one filesystem every driver was written against: a tool is pointed at
+ * its home inside the mount that carries it, and under a pod that is exactly
+ * where the mount put it. Here there is no mount, so the value has to be
+ * translated — and the SOURCE is what it translates to, not the symlink this
+ * driver made pointing at it.
+ *
+ * Both name the same files, and the difference is the string. A tool that
+ * keys anything on the string it was handed sees a per-worktree home if it
+ * gets the link, because the private home is per worktree, and a per-project
+ * one if it gets the source, because the staged dir is per project. claude is
+ * the case that proves it — its macOS Keychain item is named after a hash of
+ * this exact value, and the first token refresh migrates the credential into
+ * that item and deletes the file it came from, so a per-worktree name would
+ * let one worktree take the credential away from its siblings. Handing over
+ * the real directory makes that impossible to get wrong from a call site,
+ * instead of correct only where someone remembered.
+ *
+ * The longest matching mount wins, so a value under a nested mount resolves
+ * to the inner one's source rather than the outer's. A mount with no host
+ * directory behind it (an emptyDir) has no source to name, so those fall back
+ * to wherever this driver put the mount.
+ *
+ * Read off the mounts the spec DECLARED, not the ones `realizeMount` managed
+ * to make, and a nested mount is where that matters: those are skipped here
+ * rather than linked, and the destination string for one would resolve
+ * through the OUTER mount's link into the outer source — a different
+ * directory than the value asked for. The source is the only truthful answer
+ * there. Its one sharp edge is that a skipped mount's source is not created,
+ * so such a value can name a directory that does not exist yet; no caller
+ * writes one today, and the alternative names the wrong directory.
  *
  * Deliberately scoped to a DECLARED mount rather than rewriting anything that
  * looks container-absolute. `envPassthrough` and `config.env` values are the
@@ -99,9 +134,13 @@ function remapMountedPath(
   paths: { workspaceDir: string },
   home: string,
 ): string {
-  const mounted = mounts.some(({ mountPath }) =>
+  const matches = mounts.filter(({ mountPath }) =>
     value === mountPath || value.startsWith(`${mountPath}/`))
-  if (!mounted) return value
+  if (matches.length === 0) return value
+  const mount = matches.reduce((a, b) => b.mountPath.length > a.mountPath.length ? b : a)
+  if (mount.source.kind === 'hostPath') {
+    return path.join(mount.source.path, value.slice(mount.mountPath.length))
+  }
   return destinationFor(value, paths, home) ?? value
 }
 
@@ -289,6 +328,24 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   }
 
   const env = workspaceEnvironment(spec, home, paths)
+  // Said out loud, because ignoring a user's environment is otherwise
+  // indistinguishable from honoring it: the agent reads this project's tool
+  // config either way, and only the user knows they had pointed it
+  // somewhere else. Reported per create rather than once at startup because
+  // this is the moment it takes effect, and a create is what the user is
+  // watching. `yaac host check` answers the same question ahead of time.
+  // Only what the workspace actually ends up without: a spec that re-supplies
+  // one of these (envPassthrough, config.env) has overruled the host itself,
+  // and announcing a value the agent is about to receive would be a lie about
+  // the one thing this notice exists to report.
+  const overridden = overriddenToolHomeVars().filter((key) => env[key] === undefined)
+  if (overridden.length > 0) {
+    const message = `Ignoring ${overridden.join(', ')} from this host's environment `
+      + "— a worktree's agent reads this project's tool config, under its own HOME."
+    spec.onProgress?.(message)
+    serverLog(`[server] containerless ${spec.workspaceId}: ${message}`)
+  }
+
   // The helper scripts staged above are only useful if the workspace can
   // find them — the pod gets that from `/usr/local/bin` already being on
   // PATH, and here it has to be said.

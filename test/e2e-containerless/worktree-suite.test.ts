@@ -222,6 +222,16 @@ beforeAll(async () => {
     // The project's "remote" is a local clone; there is nothing to fetch
     // from, and the host-side fetch would try to reach it as a real remote.
     YAAC_E2E_SKIP_FETCH: '1',
+    // Poison, for the tool-home case below: this is the server user's own
+    // environment as far as the driver is concerned, and it must not be what
+    // an agent resolves its config and credentials from. Set on the ONE
+    // server this file spawns, so the assertion costs no fixture.
+    CLAUDE_CONFIG_DIR: '/nowhere/claude',
+    CODEX_HOME: '/nowhere/codex',
+    PI_CODING_AGENT_DIR: '/nowhere/pi',
+    OPENCODE_CONFIG_DIR: '/nowhere/opencode',
+    XDG_CONFIG_HOME: '/nowhere/config',
+    XDG_DATA_HOME: '/nowhere/share',
   }
   // A create resolves the git identity from the global config; the test env
   // redirects that to its own file, which starts empty.
@@ -478,6 +488,52 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // give the worktree the whole CLI rather than the subset.
     expect(creds.YAAC_MAMA_TOKEN).not.toBe(server.lock.secret)
     expect(Object.values(creds)).not.toContain(server.lock.secret)
+  })
+
+  it('resolves its tool homes from the project, not the server user', async () => {
+    // The unit tests assert the env object the driver COMPUTES. This is the
+    // only place the whole chain is real — server process → launch → tmux
+    // server → the pane an agent runs in — and a leak anywhere along it (a
+    // later client attach re-exporting a name, a re-exec against the
+    // server's own environment) is invisible to a computed-object
+    // assertion. `serverEnv` poisons every one of these in `beforeAll`.
+    const env = await worktreeEnv(worktreeId)
+
+    // No home override may be inherited: the ones with nothing to replace
+    // them are gone outright, so the tool falls back through the private
+    // HOME's staged links rather than to /nowhere.
+    for (const key of ['OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']) {
+      expect(env[key], `${key} reached the worktree`).toBeUndefined()
+    }
+    // And the ones a create names are the project's own directories, not
+    // the server user's and not a per-worktree path (see create.ts: claude
+    // keys its macOS Keychain item on this exact string).
+    const projectDir = path.join(testEnv.dataDir, 'projects', SLUG)
+    expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
+    expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
+    expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
+    // pi's two variables describe one home, so they are spelled the same
+    // way — a session dir under the private HOME would name the same files
+    // only for as long as the link is what resolves them.
+    expect(env.PI_CODING_AGENT_SESSION_DIR)
+      .toBe(path.join(projectDir, 'pi', 'agent', 'sessions'))
+
+    // Naming the config dir moves claude's global config with it: it reads
+    // `<$CLAUDE_CONFIG_DIR>/.claude.json` and never probes the home-relative
+    // one. So the seed has to land INSIDE the dir named above — put it in the
+    // sibling `claude.json` a pod mounts and every first launch reopens the
+    // onboarding wizard and the trust dialog, with nothing to show for it.
+    const seeded = JSON.parse(await fs.readFile(
+      path.join(env.CLAUDE_CONFIG_DIR ?? '', '.claude.json'), 'utf8',
+    )) as { hasCompletedOnboarding?: boolean; projects?: Record<string, unknown> }
+    expect(seeded.hasCompletedOnboarding).toBe(true)
+    // And trusted for the directory the agent actually opens here.
+    expect(seeded.projects?.[path.join(projectDir, 'worktrees', worktreeId)])
+      .toEqual({ hasTrustDialogAccepted: true })
+    // The fallback the cleared names rely on is still in place, and is the
+    // worktree's own home rather than the user running the server.
+    expect(env.HOME).toContain(worktreeId)
+    expect(env.HOME).not.toBe(process.env.HOME)
   })
 
   it('lists this project’s sessions from inside the worktree', async () => {

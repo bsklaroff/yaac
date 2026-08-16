@@ -154,6 +154,52 @@ progress stream, so the person who hits it is unlikely to read it.
 — nothing records which configs still carry the key. A season after release,
 once no project config in use still names it.
 
+## `adoptLegacyClaudeJson`
+
+`adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`), called once per create,
+copies `<project>/claude.json` to `<project>/claude/.claude.json` when the
+latter does not exist.
+
+Worktrees used to run with no `CLAUDE_CONFIG_DIR`. claude resolves its global
+config at `<$CLAUDE_CONFIG_DIR or the home dir>/.claude.json`, so with the
+variable unset the file sat beside the claude home rather than inside it, and
+yaac kept it as a sibling of that home and mounted it at `~/.claude.json`.
+Every create now names the config dir, which moves the file into the home on
+both substrates — and retires the lone `File` mount that used to carry it.
+
+**What it reads:** the old sibling `claude.json`, whose path
+`claudeJsonFile()` still returns and which nothing else calls any more. Only
+when the new path is absent, so the destination is authoritative the moment it
+exists and a re-run can never walk a newer file backwards. The old file is
+copied rather than moved: nothing reads it afterwards, it is small, and
+leaving it means a downgrade still finds its state.
+
+**What breaks silently if it is deleted too early:** an install that has not
+created a worktree since the change starts from an empty global config, and
+claude re-derives everything it holds — `hasCompletedOnboarding` and
+`lastOnboardingVersion` (the first-run wizard reopens), the
+`customApiKeyResponses` approval, the accepted trust roots, and claude's own
+`oauthAccount` and migration bookkeeping. `seedClaudeJson` immediately rewrites
+the first three, so the visible damage is narrower than it looks and lands on
+what only claude wrote: the account record, and the trust roots for any
+directory outside the ones the seed names. Nothing errors, and the worktree
+looks new rather than broken.
+
+**The one way it can discard newer state**, which the copy-never-overwrite
+rule does not cover: a worktree that was already running before the upgrade
+still has the old `File` mount, so its claude goes on writing the sibling. Any
+of that written *after* a later create has adopted the copy — a refreshed
+`oauthAccount`, a trust root accepted in that worktree — lands in a file
+nothing reads again. It is bounded (those writes are rare, and the window
+closes when that worktree is recreated on the new layout), and there is no
+version-floor scheme to detect it, which is why the destination stays
+authoritative rather than trying to merge by timestamp.
+
+**How to tell it is safe to remove:** when no data dir in use still has a
+`claude.json` beside a project's claude dir. Unlike a sweep there is nothing to
+watch drain — the copy leaves the old file in place — so the honest test is a
+season after release, or a look in the data dirs that matter.
+
 ## The pre-envelope spawn channel
 
 `yaac-spawn` became `yaac-mama`, and a single-purpose spawn queue became a
