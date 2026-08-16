@@ -1,6 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
+import type * as childProcessModule from 'node:child_process'
+
+// The Keychain is reached by running `security`, so that is where this is
+// cut — the cleanup itself runs for real, including which service name it
+// asks for, which is the part that has to be right.
+const execFileSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => string>())
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof childProcessModule>()),
+  execFileSync: execFileSyncMock,
+}))
+
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { claudeKeychainService } from '#tool-auth-interactive'
 import {
   claudeDir,
   codexDir,
@@ -62,6 +74,37 @@ describe('cleanupProjectClaudePlaceholders', () => {
 
     expect(await fileExists(projectClaudeCredentialsFile('alpha'))).toBe(false)
     expect(await fileExists(projectClaudeCredentialsFile('beta'))).toBe(false)
+  })
+
+  it('clears the macOS Keychain item too, not just the file', async () => {
+    // On macOS the file is only half of it. A containerless worktree runs
+    // claude with CLAUDE_CONFIG_DIR set to the project's claude dir, and on
+    // its first token refresh claude migrates the credential into the
+    // Keychain item that dir names and deletes the file. Unlinking alone
+    // would then leave a working credential behind while reporting the
+    // account signed out.
+    const realPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      await fs.mkdir(projectDir('alpha'), { recursive: true })
+      await fs.mkdir(projectDir('beta'), { recursive: true })
+      await writeProjectClaudePlaceholder('alpha', CLAUDE_BUNDLE)
+      await writeProjectClaudePlaceholder('beta', CLAUDE_BUNDLE)
+
+      await cleanupProjectClaudePlaceholders()
+
+      const deleted = execFileSyncMock.mock.calls
+        .filter((c) => (c[1] as string[])[0] === 'delete-generic-password')
+        .map((c) => (c[1] as string[])[2])
+      // One per project, each named after that project's own config dir.
+      expect(deleted).toContain(claudeKeychainService(claudeDir('alpha')))
+      expect(deleted).toContain(claudeKeychainService(claudeDir('beta')))
+      // Never the un-suffixed host service — that is the user's own claude
+      // install, which signing out of yaac must not touch.
+      expect(deleted).not.toContain('Claude Code-credentials')
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform })
+    }
   })
 
   it('ignores projects that have no placeholder', async () => {

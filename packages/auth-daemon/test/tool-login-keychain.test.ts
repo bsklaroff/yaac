@@ -18,7 +18,7 @@ vi.mock('@yaac/shared/tool-auth-interactive', async (importOriginal) => {
   return {
     ...actual,
     readClaudeKeychainPayload: keychain.read,
-    deleteScratchClaudeKeychainItem: keychain.del,
+    deleteScopedClaudeKeychainItem: keychain.del,
   }
 })
 

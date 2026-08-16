@@ -33,7 +33,11 @@ import {
   type OpencodeProvider,
   type PiProvider,
 } from '#tool-providers'
-import { type ToolLoginResult } from '#tool-auth-interactive'
+import {
+  claudeKeychainService,
+  deleteScopedClaudeKeychainItem,
+  type ToolLoginResult,
+} from '#tool-auth-interactive'
 
 /**
  * Parse a provider for a write path, where neither a missing nor an
@@ -685,13 +689,28 @@ async function unlinkIgnoreMissing(filePath: string): Promise<void> {
 }
 
 /**
- * Remove the project-local `.claude/.credentials.json` placeholder from
- * every tracked project. Used by `auth clear` to make sure running
- * containers don't keep using a placeholder that the proxy will no longer
- * swap for a real token.
+ * Remove every tracked project's claude credential — both places one can be.
+ *
+ * Used by `auth clear` (the CLI and the webapp's sign-out reach the same
+ * door) to make sure running worktrees don't keep using a credential the
+ * user has just revoked: a placeholder the proxy will no longer swap for a
+ * real token, or — under a runtime with no proxy — the real bundle itself.
+ *
+ * The file is only half of it on macOS. A containerless worktree runs claude
+ * with `CLAUDE_CONFIG_DIR` set to the project's claude dir, and claude
+ * prefers the Keychain there: on its first token refresh it migrates the
+ * credential into the item that dir names and deletes the file it came from.
+ * So by the time anyone clears auth, the live token may exist ONLY in the
+ * Keychain, and unlinking alone would leave a working credential behind
+ * while reporting the account signed out. The item is per project because
+ * the config dir is, and `deleteScopedClaudeKeychainItem` refuses the
+ * un-suffixed service, so the user's own claude install is never touched.
  */
 export async function cleanupProjectClaudePlaceholders(): Promise<void> {
-  await forEachProject((slug) => unlinkIgnoreMissing(projectClaudeCredentialsFile(slug)), 'failed to remove Claude placeholder')
+  await forEachProject(async (slug) => {
+    await unlinkIgnoreMissing(projectClaudeCredentialsFile(slug))
+    deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(slug)))
+  }, 'failed to remove Claude placeholder')
 }
 
 /**

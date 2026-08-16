@@ -108,13 +108,17 @@ export function readClaudeKeychainPayload(
 }
 
 /**
- * Delete a scratch login's Keychain item once its credentials have been
- * persisted (or the flow abandoned) — live OAuth tokens must not linger in
- * items nothing reads anymore. Refuses the un-suffixed host service so no
- * caller bug can ever log the user's own claude install out. Missing items
- * and non-darwin are no-ops.
+ * Delete one of the Keychain items yaac's own claude invocations create —
+ * live OAuth tokens must not linger in items nothing reads anymore.
+ *
+ * Two callers, both scoped by a `CLAUDE_CONFIG_DIR` of yaac's choosing: a
+ * scratch login's item, once its credentials have been persisted or the flow
+ * abandoned, and a project's item on `auth clear`. Refuses the un-suffixed
+ * host service so no caller bug can ever log the user's own claude install
+ * out — which is the whole reason a caller may pass a service name in
+ * without checking it first. Missing items and non-darwin are no-ops.
  */
-export function deleteScratchClaudeKeychainItem(service: string): void {
+export function deleteScopedClaudeKeychainItem(service: string): void {
   if (process.platform !== 'darwin' || service === CLAUDE_KEYCHAIN_SERVICE) return
   try {
     execFileSync(

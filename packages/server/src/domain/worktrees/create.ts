@@ -85,7 +85,12 @@ import {
 import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
-import { prepareEphemeralMounts, seedClaudeJson, seedClaudeSettings } from './seed'
+import {
+  adoptLegacyClaudeJson,
+  prepareEphemeralMounts,
+  seedClaudeJson,
+  seedClaudeSettings,
+} from './seed'
 import {
   builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, reconcileSharedSkillRoots,
 } from '#domain/skills'
@@ -115,12 +120,43 @@ import {
 } from '@yaac/shared/tool-providers'
 import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 
+/** In-pod claude home. The host-side `claudeDir` is mounted here, and
+ *  `CLAUDE_CONFIG_DIR` names it — which also puts claude's global config at
+ *  `<here>/.claude.json` rather than beside the home dir. */
+const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
+/** In-pod codex home; the host-side `codexDir` is mounted here. */
+const CODEX_CONTAINER_HOME = '/home/yaac/.codex'
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
  *  mirroring `~/.claude`), so every worktree's pi session logs are visible to all. */
 const PI_CONTAINER_HOME = '/home/yaac/.pi'
 /** In-pod dir pi writes its JSONL session logs to (PI_CODING_AGENT_SESSION_DIR
  *  points here; it lives under the mounted `PI_CONTAINER_HOME`). */
 const PI_SESSIONS_CONTAINER_DIR = `${PI_CONTAINER_HOME}/agent/sessions`
+
+/**
+ * Each path, plus what it resolves to where that differs — for the places a
+ * tool records a directory it was handed and we cannot know whether it
+ * recorded the name or the destination.
+ *
+ * A worktree is launched with the literal path as its cwd, but a data dir
+ * reached through a symlink (macOS `/var` -> `/private/var`, which is where
+ * a tmp-based data dir lands) gives a tool that resolves its own cwd a
+ * different string for the same directory. Naming both costs one map entry
+ * and removes the question. Unresolvable paths are dropped rather than
+ * fatal: a container path has no meaning on this host, and a directory not
+ * created yet resolves on the next create.
+ */
+async function withResolved(dirs: readonly string[]): Promise<string[]> {
+  const out = new Set(dirs)
+  for (const dir of dirs) {
+    try {
+      out.add(await fs.realpath(dir))
+    } catch {
+      // Not on this filesystem, or not created yet.
+    }
+  }
+  return [...out]
+}
 
 function emit(message: string, options: WorktreeCreateOptions): void {
   console.log(message)
@@ -1039,7 +1075,16 @@ export async function createWorktree(
     }
 
     const claude = claudeDir(projectSlug)
-    const claudeJson = claudeJsonFile(projectSlug)
+    // Where claude reads its global config. It resolves `<$CLAUDE_CONFIG_DIR
+    // or the home dir>/.claude.json`, with no fallback probe of the other, so
+    // naming the config dir — which every create now does — puts the file
+    // INSIDE the claude home on both substrates. That is also why it needs no
+    // mount of its own any more: it is a file in a directory already mounted,
+    // rather than a lone `File` mount beside it.
+    const claudeJson = path.join(claude, '.claude.json')
+    // An install that predates that move keeps its state where the old
+    // home-relative file was (docs/legacy-compat-shims.md).
+    await adoptLegacyClaudeJson(claudeJsonFile(projectSlug), claudeJson)
     const codex = codexDir(projectSlug)
     const opencodeData = opencodeDataDir(projectSlug, worktreeId)
     const opencodeConfig = opencodeConfigDir(projectSlug)
@@ -1127,7 +1172,14 @@ export async function createWorktree(
     // state so the first-run wizard — theme picker then login — is skipped.
     // The injected placeholder credential authenticates the agent; without
     // these flags the user is forced to log in inside every worktree.
-    await seedClaudeJson(claudeJson)
+    //
+    // The trusted roots are named in the shape the agent will see them: a
+    // pod's mount points, or the real checkout when there is no mount
+    // namespace to put one anywhere else.
+    await seedClaudeJson(
+      claudeJson,
+      mediatedEgress ? ['/workspace', '/repo'] : await withResolved([wtDir, repo]),
+    )
     await seedClaudeSettings(path.join(claude, 'settings.json'))
     // Register the agent-session discovery hook (the script is staged from
     // worktree-bin onto the workspace's PATH below; this only points claude at
@@ -1196,7 +1248,7 @@ export async function createWorktree(
     return {
       toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
-      claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
+      claude, codex, opencodeData, opencodeConfig, pi,
       cachedPackages, acpLogs, sessionStarts,
     }
   })()
@@ -1205,7 +1257,7 @@ export async function createWorktree(
   const {
     toolAuthByTool, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, worktreeBinStaging, worktreeBinNames,
-    claude, claudeJson, codex, opencodeData, opencodeConfig, pi,
+    claude, codex, opencodeData, opencodeConfig, pi,
     cachedPackages, acpLogs, sessionStarts,
   } = prep
 
@@ -1361,16 +1413,34 @@ export async function createWorktree(
   // retooled to opencode gets it.
   env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
 
-  // Point pi at its worktree-log dir inside the mounted `.pi` home so its JSONL
+  // Point pi at its worktree-log dir inside its `.pi` home so its JSONL
   // transcripts are readable on the host (first-message / status). pi resumes
   // by `--session-id` (buildAgentCmd), so the shared home holding every
   // worktree's logs is fine. Skip pi's startup version check so a fresh pod
   // doesn't stall on a network probe. Set unconditionally (only pi reads them)
   // so a spare retooled to pi gets them.
   //
-  // Written against the container layout like every other path here: a value
-  // naming a path under a mount this spec declares is the driver's to
-  // translate to wherever it put that mount.
+  // Name each tool's home outright rather than leaving it to be derived from
+  // `$HOME`, so what a worktree resolves is stated instead of inferred.
+  //
+  // Written against the container layout like every other path here, on both
+  // substrates. A pod's tool homes ARE these paths, so the value is already
+  // true there; a runtime with no mount namespace translates each to the
+  // directory its mount came from, which is the project's own (see the
+  // containerless driver's `remapMountedPath`). One spelling, and the
+  // per-project property belongs to the translation rather than to whoever
+  // writes the next call site — which matters because the difference is
+  // invisible: both spellings name the same files, and only a tool that keys
+  // something on the STRING can tell them apart. claude does, naming its
+  // macOS Keychain item after a hash of this exact value.
+  //
+  // Set, not merely inherited-and-hoped-for: under containerless a host value
+  // for any of these is cleared on the way in (`TOOL_HOME_VARS`), and a pod
+  // never had one to inherit. opencode is absent because it has no such
+  // variable — its homes are reached `$HOME`-relative.
+  env.push(`CLAUDE_CONFIG_DIR=${CLAUDE_CONTAINER_HOME}`)
+  env.push(`CODEX_HOME=${CODEX_CONTAINER_HOME}`)
+  env.push(`PI_CODING_AGENT_DIR=${PI_CONTAINER_HOME}/agent`)
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
 
@@ -1422,10 +1492,6 @@ export async function createWorktree(
     ...(acpLogs !== undefined
       ? [{ source: { kind: 'hostPath' as const, path: acpLogs }, mountPath: CONTAINER_ACP_LOG_DIR }]
       : []),
-    {
-      source: { kind: 'hostPath', path: claudeJson, type: 'File' },
-      mountPath: '/home/yaac/.claude.json',
-    },
     // SHARED, and the one file the pod writes that the server reads back. A
     // `File` mount is safe here precisely because nothing ever renames it: a
     // rename would replace the inode the mount pins, and the pod would go on

@@ -775,17 +775,16 @@ describe('createWorktree', () => {
       '/tmp/demo/worktrees/abcd1234',
       '/tmp/demo/repo/.git',
       '/tmp/demo/claude',
-      '/tmp/demo/claude.json',
       '/tmp/demo/codex',
       '/tmp/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-config',
       '/tmp/demo/pi',
       '/tmp/demo/.cached-packages',
     ]))
-    // ~/.claude.json is a single file — hostPath type File.
-    const claudeJsonVol = manifest.spec.template.spec.volumes
-      .find((v) => v.hostPath?.path === '/tmp/demo/claude.json')
-    expect(claudeJsonVol?.hostPath?.type).toBe('File')
+    // claude's global config gets no mount of its own: naming
+    // CLAUDE_CONFIG_DIR puts it at `<claude home>/.claude.json`, inside the
+    // directory the mount above already carries.
+    expect(hostPaths).not.toContain('/tmp/demo/claude.json')
 
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
@@ -985,7 +984,10 @@ describe('createWorktree', () => {
 
   it('seeds claude.json onboarding flags even for non-Claude sessions (spares are retoolable)', async () => {
     await createWorktree('demo', { tool: 'codex', worktreeId: 'abcd1234' })
-    const claudeJsonWrite = mockWriteFile.mock.calls.find((c) => c[0] === '/tmp/demo/claude.json')
+    // Inside the claude home, which is where CLAUDE_CONFIG_DIR points and so
+    // where claude resolves its global config — not the sibling beside it.
+    const claudeJsonWrite = mockWriteFile.mock.calls
+      .find((c) => c[0] === '/tmp/demo/claude/.claude.json')
     expect(claudeJsonWrite).toBeDefined()
     const state = JSON.parse(claudeJsonWrite![1] as string) as Record<string, unknown>
     expect(state.hasCompletedOnboarding).toBe(true)

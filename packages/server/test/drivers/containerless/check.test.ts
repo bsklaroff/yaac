@@ -17,6 +17,11 @@ import { AGENT_INSTALL } from '@yaac/shared/tool-install'
 const byName = (results: Awaited<ReturnType<typeof runHostCheck>>, name: string) =>
   results.find((r) => r.name === name)
 
+/** Cleared before each case below, since the row under test reports on
+ *  whatever ambient environment a test run happens to have. Imported rather
+ *  than restated so the reset cannot drift from the list under test. */
+import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
+
 beforeEach(() => {
   mockOnPath.mockReset()
   mockRunHost.mockReset()
@@ -96,6 +101,44 @@ describe('runHostCheck', () => {
     // Learned here rather than from a worktree that vanishes seconds after
     // a create that reported success.
     expect(adapters?.fix).toMatch(/claude-agent-acp/)
+  })
+
+  it('reports a host whose own environment re-points a tool home', async () => {
+    // Worktrees drop these, which is right and invisible: nothing inside a
+    // worktree looks different, so a user whose shell has said for years
+    // that opencode lives elsewhere would never learn yaac disagrees.
+    const saved = { ...process.env }
+    for (const key of TOOL_HOME_VARS) delete process.env[key]
+    process.env.XDG_CONFIG_HOME = '/home/someone/.config'
+    process.env.CODEX_HOME = '/home/someone/.codex'
+    let row
+    try {
+      row = byName(await runHostCheck(), 'tool home overrides')
+    } finally {
+      process.env = saved
+    }
+    expect(row?.status).toBe('warn')
+    expect(row?.detail).toContain('XDG_CONFIG_HOME')
+    expect(row?.detail).toContain('CODEX_HOME')
+    // Named individually, because "some of your variables" sends a reader
+    // hunting through a shell profile for which ones.
+    expect(row?.detail).not.toContain('XDG_CACHE_HOME')
+    expect(row?.fix).toMatch(/private HOME/)
+  })
+
+  it('passes the tool-home row on a host that sets none of them', async () => {
+    const saved = { ...process.env }
+    for (const key of TOOL_HOME_VARS) delete process.env[key]
+    // Empty is not set: every tool here reads an empty value as absent, so
+    // warning about one would report something that changes nothing.
+    process.env.XDG_DATA_HOME = ''
+    let row
+    try {
+      row = byName(await runHostCheck(), 'tool home overrides')
+    } finally {
+      process.env = saved
+    }
+    expect(row?.status).toBe('pass')
   })
 
   it('says plainly that nothing here is sandboxed', async () => {

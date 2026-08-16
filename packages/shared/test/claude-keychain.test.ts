@@ -10,7 +10,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import {
   claudeKeychainService,
-  deleteScratchClaudeKeychainItem,
+  deleteScopedClaudeKeychainItem,
   readClaudeKeychainPayload,
 } from '#tool-auth-interactive'
 
@@ -62,11 +62,11 @@ describe('claude keychain access', () => {
     })
   })
 
-  describe('deleteScratchClaudeKeychainItem', () => {
+  describe('deleteScopedClaudeKeychainItem', () => {
     it('deletes a scoped scratch item', () => {
       setPlatform('darwin')
       const service = claudeKeychainService('/tmp/scratch')
-      deleteScratchClaudeKeychainItem(service)
+      deleteScopedClaudeKeychainItem(service)
       expect(execFileSyncMock).toHaveBeenCalledWith(
         'security',
         ['delete-generic-password', '-s', service],
@@ -76,20 +76,20 @@ describe('claude keychain access', () => {
 
     it('refuses the un-suffixed host service — never logs the host out', () => {
       setPlatform('darwin')
-      deleteScratchClaudeKeychainItem('Claude Code-credentials')
+      deleteScopedClaudeKeychainItem('Claude Code-credentials')
       expect(execFileSyncMock).not.toHaveBeenCalled()
     })
 
     it('is a no-op on non-darwin', () => {
       setPlatform('linux')
-      deleteScratchClaudeKeychainItem(claudeKeychainService('/tmp/scratch'))
+      deleteScopedClaudeKeychainItem(claudeKeychainService('/tmp/scratch'))
       expect(execFileSyncMock).not.toHaveBeenCalled()
     })
 
     it('swallows a failed delete (item never created)', () => {
       setPlatform('darwin')
       execFileSyncMock.mockImplementation(() => { throw new Error('not found') })
-      expect(() => deleteScratchClaudeKeychainItem(claudeKeychainService('/tmp/scratch'))).not.toThrow()
+      expect(() => deleteScopedClaudeKeychainItem(claudeKeychainService('/tmp/scratch'))).not.toThrow()
     })
   })
 })

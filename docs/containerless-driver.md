@@ -89,6 +89,68 @@ with the project's tool homes (`claude`, `codex`, `pi`, the opencode config)
 linked into it, and a private bin dir on `PATH` holding the helper scripts a
 pod would find in `/usr/local/bin`.
 
+That layout is HOME-relative, and this driver inherits the host environment —
+where the server's user may well have pointed a tool somewhere else. Left
+alone, the failure is silent and looks like success: the agent reads the
+server user's config, with that user's real credentials in it, and writes its
+transcripts where yaac's discovery never looks.
+
+So a worktree gets its tool homes two ways. Where a tool has a real home
+override, every create **names it** — `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`PI_CODING_AGENT_DIR`, and pi's session dir — on both substrates, in the one
+vocabulary the layers above drivers are written in: the container layout. A
+pod's homes already ARE those paths. Here each is translated to the directory
+its mount came from, which is the project's own. Where a tool has none, the
+home is reached `$HOME`-relative through the staged links, and the only
+defense is that nothing redirects it — so every variable that could is
+**cleared** on the way in, alongside the server's own `YAAC_*` wiring. The
+named ones are cleared too, so "no host tool-home value survives" holds on
+its own rather than only while every create remembers to re-supply one.
+
+opencode is why the cleared half cannot simply be replaced by naming things.
+It has no home override at all: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
+`OPENCODE_CONFIG_CONTENT` are additional config *inputs* — the first is
+pushed onto the list of directories it loads from, so a host value injects
+the server user's opencode config, and any provider keys in it, no matter
+what else is set. Its actual homes come from `XDG_CONFIG_HOME` and
+`XDG_DATA_HOME`, which cleared resolve to the staged links.
+
+That translation lands on the mount's **source**, not on the workspace's own
+`$HOME/<tool>` link to it, though the two resolve to the same files. What
+differs is the string, and a tool that keys anything on the string sees a
+different home per worktree, because the private home is per worktree while
+the staged dir is per project. claude is the proven case: it names its macOS
+Keychain item after a hash of this exact value, and on the first token
+refresh — the item being empty — it migrates the credential in and deletes
+the `.credentials.json` it came from. Per-worktree strings would mean the
+first refresh anywhere took away the shared file every other worktree of the
+project still authenticates from. Because the rule lives in the translation
+rather than at each call site, that is not something a future caller can get
+wrong by writing the obvious thing.
+
+Naming a config dir also moves what lives in it. claude resolves its global
+config at `<$CLAUDE_CONFIG_DIR or the home dir>/.claude.json` and never
+probes the other, so the seeded onboarding state, API-key approval and trust
+roots live in the `.claude.json` **inside** the claude home — on both
+substrates, since both name the dir. That is also why it needs no mount of
+its own: it is a file in a directory already carried, rather than a lone
+`File` mount beside it. `settings.json` and `.credentials.json` never needed
+the care, having always been written inside that dir.
+
+That migration is also why signing out clears both places. By the time anyone
+runs `yaac auth clear` (or signs out in the webapp — the same door), the live
+token may exist only in the Keychain, so removing the file alone would leave
+a working credential behind while reporting the account signed out. The item
+is per project because the config dir is, and the delete refuses the
+un-suffixed service, so the user's own claude install is never touched.
+
+Any of this taking effect is reported, because being right here is otherwise
+invisible — nothing inside the worktree looks different, so a user whose
+shell has said for years that opencode lives elsewhere would have no way to
+learn that yaac disagrees. `yaac host check` names them ahead of any create,
+and a create says so in its progress output, reporting only what the
+workspace actually ends up without.
+
 Two kinds of mount are deliberately not realized. A redirect INTO the
 checkout — `node_modules`, a cache volume under `/workspace` — is left alone:
 a pod mounts those onto other storage and git never sees them, but a symlink
