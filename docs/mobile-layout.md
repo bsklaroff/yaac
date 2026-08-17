@@ -152,17 +152,38 @@ Three things change:
 
 ## Terminals and the soft keyboard
 
-`#root` is sized to `var(--app-height, 100dvh)`, and on mobile
-`useVisualViewportHeight` publishes `--app-height` from `window.visualViewport`.
+`#root` is `position: fixed` at `var(--app-top, 0px)`, sized to
+`var(--app-height, 100dvh)`, and on mobile `useVisualViewportHeight` publishes
+both from `window.visualViewport`.
+
 By default a soft keyboard shrinks only the *visual* viewport — the layout
 viewport stays full height behind the keyboard — so sizing to that would leave
 the bottom of a terminal out of sight. Sizing to the visual viewport makes the
 pane's ResizeObserver — and so the PTY's row count — track the space actually on
 screen. The page meta asks for `interactive-widget=resizes-content` as well, so
 that where it is supported the layout viewport shrinks too and the browser has
-no room left to pan the shell around while someone types. `html`/`body` are
-`overflow: hidden; overscroll-behavior: none` because every scroll in this app
-belongs to a pane, never the page.
+no room left to pan the shell around while someone types.
+
+Where it is not — iOS — the keyboard does not just shrink the visual viewport,
+it *slides* it: focusing the chat composer makes Safari scroll the control into
+view and never scroll back. An app anchored to the layout viewport is then
+sized to the visible region but sitting above it, so the shell squeezes against
+the top with the page's background showing below the pane and a finger free to
+drag around in the gap. `--app-top` is that slide, and a fixed root moved down
+by it covers the visible region exactly, leaving nothing underneath to scroll
+to (and riding out any page scroll iOS grants itself besides). A pinch-zoom
+pans the visual viewport too, but that pan is the user looking around a zoomed
+page, so the hook publishes `0` while zoomed rather than yanking the app back
+on every frame. The threshold for that is a hair above 1, not 1: `scale` is a
+float a browser may leave slightly off after a pinch, and a strict comparison
+would turn the keyboard compensation off for good on such a device — the bug
+back with no zoom on screen to explain it — while below a percent there is no
+pan worth preserving. A fixed root is not a containing block for
+`position: fixed` descendants — only transforms and friends are — so overlays
+inside the app resolve against the viewport as they always did.
+
+`html`/`body` are `overflow: hidden; overscroll-behavior: none` because every
+scroll in this app belongs to a pane, never the page.
 
 A phone keyboard has no Esc, Tab, Ctrl or arrows and every agent TUI needs all
 four, so a terminal pane on mobile grows `TerminalKeyBar`. It is a sibling of
@@ -199,6 +220,13 @@ content to go but the pane.
   layout effect, up to the max-height at which it goes back to scrolling. A
   textarea is `rows` tall and scrolls its own content, which means writing a
   five-line message through a one-line slot.
+
+The pane getting *shorter* is the third case, and a phone is where it happens:
+a scroller keeps its `scrollTop` when its box shrinks, so the keyboard opening
+would push the tail below the fold — tapping the box to reply losing the
+message being replied to. A `ResizeObserver` on the message list re-pins it,
+under the same condition as the streaming follow: only a reader already at the
+tail is carried down.
 
 ## No text control under 16px
 
@@ -335,6 +363,13 @@ surviving a widen, tap-target sizes — are verified only by
 program nothing in `pnpm test` runs. A regression in exactly those behaviors
 lands green. Re-run it by hand against a live server after any change to
 `MobileScreenLayer` or `WorktreeView`'s layout math.
+
+The keyboard's effect on the shell is the same kind of gap, and no desktop
+browser produces one: `test-playwright-scripts/mobile-keyboard-slide-test.js`
+installs a drivable stand-in for `window.visualViewport` before the app loads
+and moves it the way a keyboard does, then measures whether `#root` still
+covers the visible band — and whether a pinch-zoom pan leaves it alone. It
+needs no worktree.
 
 The 16px floor is the same kind of gap — a computed style, over a whole UI —
 and is covered by `test-playwright-scripts/mobile-input-zoom-test.js`, which
