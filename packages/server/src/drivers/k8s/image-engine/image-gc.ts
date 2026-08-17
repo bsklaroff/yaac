@@ -1,9 +1,8 @@
 import { execFileAsync } from '#drivers/k8s/container'
-import { testEnv } from '@yaac/shared/env'
-import { serverLog } from '#log'
 
 /**
- * Periodic GC of the host podman engine's image store. Every
+ * GC of the host podman engine's image store, run by `yaac cluster
+ * install` — the one command that still builds on this engine. Every
  * content-hash rebuild re-tags under the same
  * repository (`yaac-base:<hash>`, `yaac-user-<slug>:<hash>`, …) and each
  * tag pins its whole intermediate layer chain, so the engine accumulates
@@ -17,10 +16,12 @@ import { serverLog } from '#log'
  * Scoped to repos yaac builds or stages (YAAC_IMAGE_REPO): digest-pinned
  * upstream mirrors (registry, podman/stable, envoy) are
  * single-tag and must never be touched.
+ *
+ * Sweeping at install time rather than on a server tick is what keeps it
+ * honest about generations still in use: the registry, not this store, is
+ * where a running cluster resolves images, and the process doing the
+ * retiring is the same one that just rebuilt what it wants to keep.
  */
-
-/** Min interval between sweeps — hygiene work, not per-tick reconciliation. */
-export const HOST_IMAGE_GC_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /** Tagged generations kept per repo: current + one rollback/in-flight. */
 export const HOST_GENERATIONS_KEPT = 2
@@ -103,27 +104,4 @@ export async function gcHostImages(): Promise<{ retired: string[]; pruned: numbe
   ])
   const pruned = pruneOut.split('\n').filter((l) => /^[0-9a-f]{12,}$/.test(l.trim())).length
   return { retired, pruned }
-}
-
-let lastSweepMs = 0
-
-/**
- * Reconcile step. Gated to the default install: e2e servers
- * (per-run `YAAC_K8S_NAMESPACE`) share the host engine, and a GC firing
- * at every test-server boot could retire generations a concurrent run's
- * `requirePrebuilt` worktrees still resolve on the host. The long-running
- * dev server does the cleanup for everyone.
- */
-export async function reconcileHostImageGc(nowMs: number = Date.now()): Promise<void> {
-  if (testEnv.k8sNamespace !== 'yaac') return
-  if (nowMs - lastSweepMs < HOST_IMAGE_GC_INTERVAL_MS) return
-  lastSweepMs = nowMs
-  const { retired, pruned } = await gcHostImages()
-  if (retired.length > 0 || pruned > 0) {
-    serverLog(
-      `[image-gc] retired ${retired.length} stale image tag(s), `
-      + `pruned ${pruned} dangling image(s)`
-      + (retired.length > 0 ? `: ${retired.join(', ')}` : ''),
-    )
-  }
 }

@@ -10,7 +10,7 @@
 // registry promoter, the prewarm sweep — and it sits above #drivers/k8s/cluster
 // because it needs one.
 //
-// The split exists because cluster setup builds an image: netd's own image is
+// The split exists because cluster install builds an image: netd's own image is
 // produced by a plain host build before there is any cluster to build it in.
 // With one images folder, that made the two features mutually dependent.
 //
@@ -27,9 +27,11 @@ export {
   ensureImageByTag,
   fileHash,
   resolveImageChain,
+  resolveTrustedLayers,
   stringHash,
   toolsContentHash,
   type ImageLayer,
+  type TrustedLayers,
 } from './image-builder'
 export {
   attachImageBuildProject,
@@ -45,4 +47,5 @@ export {
   registerImageBuild,
   type ImageBuildReason,
 } from './image-builds'
-export { reconcileHostImageGc } from './image-gc'
+export { gcHostImages } from './image-gc'
+export { missingPrebuiltImage } from './prebuilt'

@@ -18,10 +18,10 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-import { ClusterSetupError, runClusterSetup } from '#drivers/k8s/cluster'
-// The deps shape is part of the public interface (runClusterSetup takes one);
+import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/cluster'
+// The deps shape is part of the public interface (runClusterInstall takes one);
 // CALICO_VERSION is a pinned setup value for the assertions.
-import { CALICO_VERSION, type ClusterSetupDeps } from '#drivers/k8s/cluster/setup'
+import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/cluster/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/cluster/check'
@@ -63,6 +63,26 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   return Promise.resolve({ stdout: '', stderr: '' })
 }
 
+/**
+ * deps.run for a machine with NO cluster yet. `kind get nodes` answers
+ * empty the first time — install's "is there a cluster?" question — and
+ * lists the node afterwards, which is the sequence a real create produces.
+ * Every other install test runs against `happyRun`, whose cluster already
+ * exists: that is the converge path, and the one an upgrade takes.
+ */
+function freshRun(): RunMock {
+  let asked = 0
+  return vi.fn((file: string, args: string[]) => {
+    if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
+      asked += 1
+      return asked === 1
+        ? Promise.resolve({ stdout: '', stderr: '' })
+        : Promise.resolve({ stdout: 'yaac-control-plane\n', stderr: '' })
+    }
+    return happyRun(file, args)
+  }) as RunMock
+}
+
 /** Stand-in Calico manifest and its real checksum, so the pin verifies. */
 const FAKE_CALICO_MANIFEST = 'kind: DaemonSet\nmetadata:\n  name: calico-node\n'
 const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
@@ -99,16 +119,16 @@ function fakeCalicoReadTextFile(p: string): Promise<string | null> {
 }
 
 function makeDeps(
-  overrides: Omit<Partial<ClusterSetupDeps>, 'run' | 'runStreaming'> & {
+  overrides: Omit<Partial<ClusterInstallDeps>, 'run' | 'runStreaming'> & {
     run?: RunMock
     runStreaming?: StreamMock
   } = {},
-): ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock } {
+): ClusterInstallDeps & { run: RunMock; runStreaming: StreamMock } {
   const run = overrides.run ?? (vi.fn(happyRun) as RunMock)
   const runStreaming = overrides.runStreaming
     ?? (vi.fn(() => Promise.resolve()) as StreamMock)
   return {
-    run: run as unknown as ClusterSetupDeps['run'],
+    run: run as unknown as ClusterInstallDeps['run'],
     runStreaming,
     log: overrides.log ?? vi.fn(),
     confirm: overrides.confirm ?? vi.fn().mockResolvedValue(false),
@@ -116,6 +136,7 @@ function makeDeps(
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
     ensureBuilderGuard: overrides.ensureBuilderGuard ?? vi.fn().mockResolvedValue(undefined),
     ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
+    buildImages: overrides.buildImages ?? vi.fn().mockResolvedValue(undefined),
     ensureGvisorRuntime: overrides.ensureGvisorRuntime ?? vi.fn().mockResolvedValue(undefined),
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
@@ -131,7 +152,7 @@ function makeDeps(
     fetchText: overrides.fetchText ?? vi.fn().mockResolvedValue(FAKE_CALICO_MANIFEST),
     fileExists: overrides.fileExists ?? vi.fn().mockResolvedValue(false),
     listDir: overrides.listDir ?? vi.fn().mockResolvedValue([]),
-  } as ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock }
+  } as ClusterInstallDeps & { run: RunMock; runStreaming: StreamMock }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +321,10 @@ function calicoReads(rest: (p: string) => string | null) {
   ))
 }
 
-describe('runClusterSetup', () => {
-  it('runs the full setup in order on a healthy linux host', async () => {
-    const deps = makeDeps()
-    const ok = await runClusterSetup({}, deps)
+describe('runClusterInstall', () => {
+  it('creates the cluster and installs everything on a host that has none', async () => {
+    const deps = makeDeps({ run: freshRun() })
+    const ok = await runClusterInstall({}, deps)
 
     expect(ok).toBe(true)
     // The registry is an in-cluster Deployment, so it is stood up AFTER
@@ -318,11 +339,19 @@ describe('runClusterSetup', () => {
     // missing PriorityClass is rejected, so setup installs them.
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
 
-    // Cluster recreated: delete (best-effort) then create from the bundled
-    // config with $HOME substituted, under the podman provider.
+    // Every built-in image built and pushed, after the registry they land
+    // in and before the layers that name one.
+    expect(deps.buildImages).toHaveBeenCalledOnce()
+    expect(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(deps.ensureRegistry).mock.invocationCallOrder[0])
+    expect(vi.mocked(deps.buildImages).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
+
+    // Created from the bundled config with $HOME substituted, under the
+    // podman provider — and NOTHING deleted: install has no destructive
+    // path, so a cluster it finds is converged rather than replaced.
     const runCalls = deps.run.mock.calls
-    const deleteCall = runCalls.find(([f, a]) => f === 'kind' && a[0] === 'delete')
-    expect(deleteCall?.[1]).toEqual(['delete', 'cluster', '--name', 'yaac'])
+    expect(runCalls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     const createCall = deps.runStreaming.mock.calls.find(([f, a]) => f === 'kind' && a[0] === 'create')
     expect(createCall).toBeDefined()
     expect(createCall?.[2]?.input).toContain('/home/tester')
@@ -383,7 +412,7 @@ describe('runClusterSetup', () => {
     const deps = makeDeps({
       ensurePriorityClasses: vi.fn().mockRejectedValue(new Error('apiserver said no')),
     })
-    await expect(runClusterSetup({}, deps)).rejects.toThrow('apiserver said no')
+    await expect(runClusterInstall({}, deps)).rejects.toThrow('apiserver said no')
     expect(deps.check).not.toHaveBeenCalled()
   })
 
@@ -394,7 +423,7 @@ describe('runClusterSetup', () => {
         results: [{ name: 'probe', status: 'fail', detail: 'x' }],
       }),
     })
-    await expect(runClusterSetup({}, deps)).resolves.toBe(false)
+    await expect(runClusterInstall({}, deps)).resolves.toBe(false)
     // A generic failure gets the generic line and nothing more.
     expect(logged(deps)).not.toMatch(/Do not start sessions/)
   })
@@ -412,7 +441,7 @@ describe('runClusterSetup', () => {
         results: [{ name: 'egress', status: 'fail', detail: 'reached the apiserver' }],
       }),
     })
-    await expect(runClusterSetup({}, deps)).resolves.toBe(false)
+    await expect(runClusterInstall({}, deps)).resolves.toBe(false)
     const log = logged(deps)
     expect(log).toMatch(/Do not start sessions until a re-run passes/)
     expect(log).toMatch(/advisory/)
@@ -420,16 +449,17 @@ describe('runClusterSetup', () => {
 
   it('honors YAAC_KIND_CLUSTER for every kind invocation', async () => {
     vi.stubEnv('YAAC_KIND_CLUSTER', 'yaac-alt')
-    const deps = makeDeps()
-    await runClusterSetup({}, deps)
+    const deps = makeDeps({ run: freshRun() })
+    await runClusterInstall({}, deps)
     const kindCalls = deps.run.mock.calls.filter(([f]) => f === 'kind')
-    expect(kindCalls.some(([, a]) => a.join(' ') === 'delete cluster --name yaac-alt')).toBe(true)
     expect(kindCalls.some(([, a]) => a.join(' ') === 'get nodes --name yaac-alt')).toBe(true)
+    expect(deps.runStreaming.mock.calls.some(([f, a]) =>
+      f === 'kind' && a.join(' ').includes('create cluster --name yaac-alt'))).toBe(true)
   })
 
   it('renders one worker per extra --nodes, each carrying the home extraMount', async () => {
-    const deps = makeDeps()
-    await runClusterSetup({ nodes: 3 }, deps)
+    const deps = makeDeps({ run: freshRun() })
+    await runClusterInstall({ nodes: 3 }, deps)
 
     const input = deps.runStreaming.mock.calls
       .find(([f, a]) => f === 'kind' && a[0] === 'create')?.[2]?.input ?? ''
@@ -445,16 +475,19 @@ describe('runClusterSetup', () => {
   })
 
   it('applies the container-side node fixups to every node of a multi-node cluster', async () => {
+    let asked = 0
     const run = vi.fn((file: string, args: string[]) => {
       if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
+        asked += 1
         return Promise.resolve({
-          stdout: 'yaac-control-plane\nyaac-worker\nyaac-worker2\n', stderr: '',
+          stdout: asked === 1 ? '' : 'yaac-control-plane\nyaac-worker\nyaac-worker2\n',
+          stderr: '',
         })
       }
       return happyRun(file, args)
     }) as RunMock
     const deps = makeDeps({ run })
-    await runClusterSetup({ nodes: 3 }, deps)
+    await runClusterInstall({ nodes: 3 }, deps)
 
     const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
     // The container-side fixups are per-node state: a node missing them
@@ -486,19 +519,12 @@ describe('runClusterSetup', () => {
   })
 
   it('rejects a --nodes value it cannot honor before touching the host', async () => {
-    // The node count is decided at create time, so --repair has no way to
-    // act on it.
-    const repairDeps = makeDeps()
-    await expect(runClusterSetup({ repair: true, nodes: 3 }, repairDeps))
-      .rejects.toThrow(/cannot be combined with --repair/)
-    expect(repairDeps.run).not.toHaveBeenCalled()
-
     // Out of range, non-integer, and non-numeric — the CLI hands the raw
     // text through, so the message quotes what was typed, not "NaN".
     for (const nodes of [0, 99, 2.5, 'three']) {
       const deps = makeDeps()
-      const err = await runClusterSetup({ nodes }, deps).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
+      const err = await runClusterInstall({ nodes }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toContain('between 1 and 5')
       expect((err as Error).message).toContain(`"${nodes}"`)
       expect(deps.run).not.toHaveBeenCalled()
@@ -514,8 +540,8 @@ describe('runClusterSetup', () => {
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
     const deps = makeDeps({ run })
-    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     const msg = (err as Error).message
     expect(msg).toContain('Missing required tools')
     expect(msg).toContain('podman')
@@ -537,8 +563,8 @@ describe('runClusterSetup', () => {
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
     const deps = makeDeps({ run })
-    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('yaac-kind')
     expect(deps.ensureRegistry).not.toHaveBeenCalled()
   })
@@ -556,8 +582,8 @@ describe('runClusterSetup', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const err = await runClusterSetup({}, makeDeps({ run })).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, makeDeps({ run })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('kind get clusters')
     expect((err as Error).message).toContain('cannot connect to podman')
     expect((err as Error).message).not.toContain('kind#4203')
@@ -576,8 +602,8 @@ describe('runClusterSetup', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const err = await runClusterSetup({}, makeDeps({ run, platform: 'linux' })).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, makeDeps({ run, platform: 'linux' })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('systemctl enable --now podman.socket')
   })
 
@@ -594,17 +620,18 @@ describe('runClusterSetup', () => {
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const err = await runClusterSetup({}, makeDeps({ run })).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, makeDeps({ run })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('kind#4203')
     expect((err as Error).message).toContain('bsklaroff/yaac/yaac-kind')
   })
 
-  it('drops the CIDR caches so a long-lived server cannot render for the dead cluster', async () => {
-    // A setup outlives the cluster it replaces. Reusing the old node `/32`s
-    // in the same process names a host that no longer exists (every policy
-    // fails closed), and reusing the old pod CIDRs
-    // makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the proxy.
+  it('drops the CIDR caches so a long-lived process cannot render for the old cluster', async () => {
+    // An install can outlive a cluster (delete, then install again).
+    // Reusing the old node `/32`s in the same process names a host that no
+    // longer exists (every policy fails closed), and reusing the old pod
+    // CIDRs makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the
+    // proxy.
     resetClusterCidrCache()
     const stageNode = (ip: string): void => {
       vi.mocked(kubectlGetJson).mockResolvedValue({
@@ -614,7 +641,7 @@ describe('runClusterSetup', () => {
     stageNode('10.89.0.7')
     expect(await nodeIpBlocks()).toEqual(['10.89.0.7/32'])
 
-    await runClusterSetup({}, makeDeps())
+    await runClusterInstall({}, makeDeps({ run: freshRun() }))
 
     // The rebuilt cluster's node has a new address; a live cache would
     // still answer with the dead one.
@@ -652,14 +679,14 @@ describe('runClusterSetup', () => {
     ])
   })
 
-  it('--repair drops the CIDR caches too — the node address is why you repair', async () => {
+  it('converging drops the CIDR caches too — a moved node address is why you re-run', async () => {
     resetClusterCidrCache()
     vi.mocked(kubectlGetJson).mockResolvedValue({
       items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.7' }] } }],
     })
     expect(await nodeIpBlocks()).toEqual(['10.89.0.7/32'])
 
-    await runClusterSetup({ repair: true }, makeDeps())
+    await runClusterInstall({}, makeDeps())
 
     vi.mocked(kubectlGetJson).mockResolvedValue({
       items: [{ status: { addresses: [{ type: 'InternalIP', address: '10.89.0.9' }] } }],
@@ -667,41 +694,41 @@ describe('runClusterSetup', () => {
     expect(await nodeIpBlocks()).toEqual(['10.89.0.9/32'])
   })
 
-  it('--repair re-applies fixups without recreating the cluster', async () => {
+  it('converges an existing cluster in place — never recreating it', async () => {
     const deps = makeDeps()
-    const ok = await runClusterSetup({ repair: true }, deps)
+    const ok = await runClusterInstall({}, deps)
 
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
-    // Re-applied on --repair too: that is how an existing cluster picks
-    // netd, the PriorityClasses and a runsc version bump up on a yaac
+    // Re-applied on every run: that is how an existing cluster picks netd,
+    // the PriorityClasses, a runsc version bump and new images up on a yaac
     // upgrade. The gVisor half no longer repairs node state — the installer
-    // DaemonSet does that on its own whenever a node appears — so what
-    // --repair still owns is the kind-node-container state with no agent to
-    // re-apply it (sysctls, TasksMax, pids limit, registry wiring).
+    // DaemonSet does that on its own whenever a node appears — so what an
+    // install still owns per node is the kind-node-container state with no
+    // agent to re-apply it (sysctls, TasksMax, pids limit).
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
     expect(deps.ensurePriorityClasses).toHaveBeenCalledOnce()
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
-    // No delete/create/Calico — only the fixups and the check.
+    expect(deps.buildImages).toHaveBeenCalledOnce()
+    // No delete, no create, no Calico — only the fixups, the layers and
+    // the check. This is the whole safety property of the verb: running it
+    // against a machine with live worktrees costs nothing.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
     expect(deps.check).toHaveBeenCalledOnce()
   })
 
-  it('--repair fails fast (before any mutation) when the cluster does not exist', async () => {
-    const run = vi.fn((file: string, args: string[]) => {
-      if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
-        return Promise.resolve({ stdout: '', stderr: 'No kind nodes found for cluster "yaac".' })
-      }
-      return happyRun(file, args)
-    }) as RunMock
-    const deps = makeDeps({ run })
-    const err = await runClusterSetup({ repair: true }, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
-    expect((err as Error).message).toContain('not found')
-    expect(deps.ensureRegistry).not.toHaveBeenCalled()
+  it('notes that --nodes cannot change an existing cluster, and converges anyway', async () => {
+    // A node count is fixed when the cluster is created, and re-running the
+    // command with the flags you first typed has to stay ordinary — so this
+    // is a note, not a refusal.
+    const deps = makeDeps()
+    await expect(runClusterInstall({ nodes: 3 }, deps)).resolves.toBe(true)
+    expect(logged(deps)).toMatch(/--nodes is ignored/)
+    expect(deps.runStreaming).not.toHaveBeenCalled()
+    expect(deps.ensureRegistry).toHaveBeenCalledOnce()
   })
 
   it('refuses a podman 6 / kind <= v0.32.0 pairing, pointing at the tapped build', async () => {
@@ -713,8 +740,8 @@ describe('runClusterSetup', () => {
         return happyRun(file, args)
       }) as RunMock,
     })
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(/kind#4201/)
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(/bsklaroff\/yaac\/yaac-kind/)
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(/kind#4201/)
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(/bsklaroff\/yaac\/yaac-kind/)
   })
 
   it.each([
@@ -735,12 +762,12 @@ describe('runClusterSetup', () => {
         return happyRun(file, args)
       }) as RunMock,
     })
-    await expect(runClusterSetup({}, deps)).resolves.toBe(true)
+    await expect(runClusterInstall({}, deps)).resolves.toBe(true)
   })
 
   it('runs every kind invocation under the podman provider, host env forwarded', async () => {
     const deps = makeDeps()
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
     const envs = [...deps.run.mock.calls, ...deps.runStreaming.mock.calls]
       .filter(([f]) => f === 'kind')
       .map(([, , opts]) => (opts as { env?: NodeJS.ProcessEnv } | undefined)?.env)
@@ -766,7 +793,7 @@ describe('runClusterSetup', () => {
         totalmem: () => totalmem,
         cpuCount: () => cpuCount,
       })
-      await runClusterSetup({}, deps)
+      await runClusterInstall({}, deps)
       return deps.runStreaming.mock.calls.find(([, a]) => a[1] === 'init')![1]
     }
 
@@ -808,7 +835,7 @@ describe('runClusterSetup', () => {
           return fakeCalicoReadTextFile(path)
         }),
       })
-      await runClusterSetup({}, deps)
+      await runClusterInstall({}, deps)
       // A drop-in is written only when the effective provider is not libkrun.
       return vi.mocked(deps.writeTextFile).mock.calls
         .some(([p]) => String(p).includes('99-yaac-machine-provider.conf'))
@@ -832,11 +859,11 @@ describe('runClusterSetup', () => {
   })
 
   function darwinDeps(
-    overrides: Omit<Partial<ClusterSetupDeps>, 'run' | 'runStreaming'> & {
+    overrides: Omit<Partial<ClusterInstallDeps>, 'run' | 'runStreaming'> & {
       run?: RunMock
       runStreaming?: StreamMock
     } = {},
-  ): ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock } {
+  ): ClusterInstallDeps & { run: RunMock; runStreaming: StreamMock } {
     return makeDeps({ platform: 'darwin', ...overrides })
   }
 
@@ -861,7 +888,7 @@ describe('runClusterSetup', () => {
   it('writes the libkrun drop-in and inits a rootful machine when none exists', async () => {
     const run = machineRun([], [{ Name: 'podman-machine-default', Running: false, Default: true }])
     const deps = darwinDeps({ run })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
 
     // Provider drop-in written (no containers.conf on disk in this test).
     const write = vi.mocked(deps.writeTextFile).mock.calls[0]
@@ -893,9 +920,9 @@ describe('runClusterSetup', () => {
           : p.includes('containers.conf.d')
             ? null
             : fakeCalicoReadTextFile(p),
-      )) as unknown as ClusterSetupDeps['readTextFile'],
+      )) as unknown as ClusterInstallDeps['readTextFile'],
     })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
     expect(deps.writeTextFile).not.toHaveBeenCalled()
     // Already rootful and running: nothing to stop/set/start.
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'start')).toBe(false)
@@ -913,7 +940,7 @@ describe('runClusterSetup', () => {
       },
     )
     const deps = darwinDeps({ run })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
     const podmanMachineCalls = run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'machine')
       .map(([, a]) => a.slice(1).join(' '))
@@ -928,8 +955,8 @@ describe('runClusterSetup', () => {
       [{ Name: 'podman-machine-default', Running: true, Default: true, VMType: 'applehv' }],
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(false) })
-    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('applehv')
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[1] === 'rm')).toBe(false)
   })
@@ -940,7 +967,7 @@ describe('runClusterSetup', () => {
       [{ Name: 'podman-machine-default', Running: false, Default: true, VMType: 'libkrun' }],
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(true) })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
     expect(run.mock.calls.some(([f, a]) =>
       f === 'podman' && a.join(' ') === 'machine rm -f podman-machine-default')).toBe(true)
     expect(deps.runStreaming.mock.calls.some(([, a]) => a[1] === 'init')).toBe(true)
@@ -968,7 +995,7 @@ describe('runClusterSetup', () => {
       },
     )
     const deps = darwinDeps({ run, confirm: vi.fn().mockResolvedValue(true) })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
     expect(run.mock.calls.some(([f, a]) =>
       f === 'podman' && a.join(' ') === 'machine rm -f podman-machine-default')).toBe(true)
     expect(deps.runStreaming.mock.calls.some(([, a]) => a[1] === 'init')).toBe(true)
@@ -990,15 +1017,17 @@ describe('runClusterSetup', () => {
       },
     )
     const deps = darwinDeps({ run })
-    const err = await runClusterSetup({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('krunkit crashed')
     expect(deps.confirm).not.toHaveBeenCalled()
   })
 
   it('uses the cached Calico manifest when it matches the pin, without downloading', async () => {
-    const deps = makeDeps()
-    await runClusterSetup({}, deps)
+    // Calico is installed only with the cluster, so every case below is on
+    // the create path.
+    const deps = makeDeps({ run: freshRun() })
+    await runClusterInstall({}, deps)
     expect(deps.fetchText).not.toHaveBeenCalled()
     expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
       .toBe(false)
@@ -1009,8 +1038,8 @@ describe('runClusterSetup', () => {
   })
 
   it('downloads the pinned Calico manifest by tag, verifies it, and caches it', async () => {
-    const deps = makeDeps({ readTextFile: calicoReads(() => null) })
-    await runClusterSetup({}, deps)
+    const deps = makeDeps({ run: freshRun(), readTextFile: calicoReads(() => null) })
+    await runClusterInstall({}, deps)
     expect(deps.fetchText).toHaveBeenCalledWith(
       `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`,
     )
@@ -1022,41 +1051,48 @@ describe('runClusterSetup', () => {
   it('re-downloads when the cached Calico copy no longer matches the pin', async () => {
     // A tampered-with or truncated cache must not be trusted just because
     // it is on disk — the checksum is checked on every use, not on write.
-    const deps = makeDeps({ readTextFile: calicoReads(() => 'kind: DaemonSet # tampered\n') })
-    await runClusterSetup({}, deps)
+    const deps = makeDeps({
+      run: freshRun(),
+      readTextFile: calicoReads(() => 'kind: DaemonSet # tampered\n'),
+    })
+    await runClusterInstall({}, deps)
     expect(deps.fetchText).toHaveBeenCalledOnce()
   })
 
   it('refuses a Calico download that fails the checksum, and caches nothing', async () => {
-    const deps = makeDeps({
+    const badCalico = () => makeDeps({
+      run: freshRun(),
       readTextFile: calicoReads(() => null),
       fetchText: vi.fn().mockResolvedValue('kind: Evil\n'),
     })
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(ClusterSetupError)
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(/does not match the pinned checksum/)
+    await expect(runClusterInstall({}, badCalico())).rejects.toThrow(ClusterInstallError)
+    const deps = badCalico()
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(/does not match the pinned checksum/)
     expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
       .toBe(false)
   })
 
   it('reports an actionable error when the Calico download fails', async () => {
     const deps = makeDeps({
+      run: freshRun(),
       readTextFile: calicoReads(() => null),
       fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')),
     })
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(
       /Could not download the Calico manifest.*HTTP 503/s,
     )
   })
 
   it('fails when the committed Calico checksum is missing (broken install)', async () => {
     const deps = makeDeps({
+      run: freshRun(),
       readTextFile: vi.fn((p: string) => Promise.resolve(
         p.includes('calico') || p.endsWith('.sha256')
           ? null
           : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
       )),
     })
-    await expect(runClusterSetup({}, deps)).rejects.toThrow(/checksum not found/)
+    await expect(runClusterInstall({}, deps)).rejects.toThrow(/checksum not found/)
   })
 
   // -------------------------------------------------------------------
@@ -1066,7 +1102,7 @@ describe('runClusterSetup', () => {
   it('--adopt-cni installs the in-cluster layers without creating a cluster or a CNI', async () => {
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun() })
-    const ok = await runClusterSetup({ adoptCni: true }, deps)
+    const ok = await runClusterInstall({ adoptCni: true }, deps)
 
     expect(ok).toBe(true)
     // Nothing destructive and no CNI: the cluster and its Calico are the
@@ -1100,23 +1136,21 @@ describe('runClusterSetup', () => {
     expect(log).toMatch(/cali\* resolves 2 workload route\(s\) across all 1 node/)
   })
 
-  it('--adopt-cni needs no kind, and refuses the flags that cannot mean anything with it', async () => {
+  it('--adopt-cni needs no kind, and refuses the flag that cannot mean anything with it', async () => {
     // Adopt mode creates nothing, so the local cluster tool is not part of
     // its shopping list — the target may be any cluster the kubeconfig names.
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun({ kind: false }) })
-    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
 
-    // --repair fixes up a cluster yaac built; --nodes renders nodes it
-    // creates. Both are refused before anything on the host is touched.
-    for (const opts of [{ adoptCni: true, repair: true }, { adoptCni: true, nodes: 3 }]) {
-      const d = makeDeps({ run: adoptRun() })
-      const err = await runClusterSetup(opts, d).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
-      expect((err as Error).message).toContain('--adopt-cni')
-      expect(d.run).not.toHaveBeenCalled()
-      expect(d.ensureRegistry).not.toHaveBeenCalled()
-    }
+    // --nodes renders nodes install creates, and adopt mode creates none.
+    // Refused before anything on the host is touched.
+    const d = makeDeps({ run: adoptRun() })
+    const err = await runClusterInstall({ adoptCni: true, nodes: 3 }, d).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain('--adopt-cni')
+    expect(d.run).not.toHaveBeenCalled()
+    expect(d.ensureRegistry).not.toHaveBeenCalled()
   })
 
   it('--adopt-cni refuses Calico\'s eBPF dataplane, from the CR or the container env', async () => {
@@ -1145,8 +1179,8 @@ describe('runClusterSetup', () => {
     for (const facts of cases) {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun(facts) })
-      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
+      const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toMatch(/eBPF dataplane/)
       expect((err as Error).message).toContain('bpfEnabled')
       // The gate runs before anything is applied: a cluster that cannot
@@ -1161,8 +1195,8 @@ describe('runClusterSetup', () => {
     const refuse = async (facts: AdoptFacts, cidrs?: Parameters<typeof stageAdoptCidrs>[0]) => {
       stageAdoptCidrs(cidrs)
       const deps = makeDeps({ run: adoptRun(facts) })
-      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
+      const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
       expect(deps.ensureRegistry).not.toHaveBeenCalled()
       return (err as Error).message
     }
@@ -1205,7 +1239,7 @@ describe('runClusterSetup', () => {
     // of a cluster yaac does not own should be told.
     stageAdoptCidrs({ pools: [], nodeCidrs: ['10.244.0.0/24'] })
     const deps = makeDeps({ run: adoptRun({ felix: [{ spec: { chainInsertMode: 'Append' } }] }) })
-    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
 
     const log = logged(deps)
     expect(log).toContain('chainInsertMode: Append')
@@ -1226,7 +1260,7 @@ describe('runClusterSetup', () => {
     const deps = makeDeps({
       run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
     })
-    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
 
     const log = logged(deps)
     expect(log).toContain('172.31.0.0/16')
@@ -1243,8 +1277,8 @@ describe('runClusterSetup', () => {
     const deps = makeDeps({
       run: adoptRun({ routes: '10.0.3.41 dev enia7b3c9d1e2f4 scope link' }),
     })
-    const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toMatch(/no per-workload host route matches cali\*/)
     // The suggested prefix is the veth FAMILY, not the family plus however
     // many leading hash characters happen to be letters: hex digits are
@@ -1259,7 +1293,7 @@ describe('runClusterSetup', () => {
     // and there is no prefix to suggest.
     stageAdoptCidrs()
     const bare = makeDeps({ run: adoptRun({ routes: 'default via 10.89.0.1 dev eth0' }) })
-    await expect(runClusterSetup({ adoptCni: true }, bare))
+    await expect(runClusterInstall({ adoptCni: true }, bare))
       .rejects.toThrow(/no per-workload host route at all/)
   })
 
@@ -1272,8 +1306,8 @@ describe('runClusterSetup', () => {
     for (const denied of ['felix', 'kube-proxy', 'nodes', 'calico'] as const) {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun({ denied }) })
-      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
+      const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
       expect((err as Error).message).toMatch(/could not be evaluated/)
       expect((err as Error).message).toMatch(/Forbidden/)
       expect(deps.ensureRegistry).not.toHaveBeenCalled()
@@ -1309,8 +1343,8 @@ describe('runClusterSetup', () => {
       return Promise.resolve({ items: [{ spec: { podCIDR: '10.244.0.0/24' } }] })
     }) as never)
     const cidrDeps = makeDeps({ run: adoptRun() })
-    const cidrErr = await runClusterSetup({ adoptCni: true }, cidrDeps).catch((e: unknown) => e)
-    expect(cidrErr).toBeInstanceOf(ClusterSetupError)
+    const cidrErr = await runClusterInstall({ adoptCni: true }, cidrDeps).catch((e: unknown) => e)
+    expect(cidrErr).toBeInstanceOf(ClusterInstallError)
     expect((cidrErr as Error).message).toMatch(/pod-CIDR source: Calico IPPools/)
     expect(cidrDeps.ensureRegistry).not.toHaveBeenCalled()
 
@@ -1320,7 +1354,7 @@ describe('runClusterSetup', () => {
     // what yaac wants.
     stageAdoptCidrs()
     const ok = makeDeps({ run: adoptRun() })
-    await expect(runClusterSetup({ adoptCni: true }, ok)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, ok)).resolves.toBe(true)
     expect(logged(ok)).toMatch(/no FelixConfiguration sets it/)
   })
 
@@ -1328,8 +1362,8 @@ describe('runClusterSetup', () => {
     const refuse = async (facts: AdoptFacts): Promise<string> => {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun(facts) })
-      const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(ClusterSetupError)
+      const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ClusterInstallError)
       expect(deps.ensureNetd).not.toHaveBeenCalled()
       return (err as Error).message
     }
@@ -1375,7 +1409,7 @@ describe('runClusterSetup', () => {
     for (const falsey of ['false', 'no', '0', 'off', 'F']) {
       stageAdoptCidrs()
       const deps = makeDeps({ run: adoptRun(withEnv(falsey)) })
-      await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+      await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
     }
   })
 
@@ -1385,14 +1419,14 @@ describe('runClusterSetup', () => {
     // advertises — fail-closed, but an adoption blocker.
     stageAdoptCidrs()
     const gke = makeDeps({ run: adoptRun({ kubeProxyLabel: 'component' }) })
-    await expect(runClusterSetup({ adoptCni: true }, gke)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, gke)).resolves.toBe(true)
 
     // k3s runs kube-proxy in-process inside the kubelet: no pod, no
     // DaemonSet, no label. Self-managed k3s is a PRIMARY target, so the
     // refusal names the case and an explicit acknowledgement clears it —
     // recorded, since it is the one check an operator can wave through.
     stageAdoptCidrs()
-    const k3sRefusal = await runClusterSetup(
+    const k3sRefusal = await runClusterInstall(
       { adoptCni: true }, makeDeps({ run: adoptRun({ kubeProxyPods: [] }) }),
     ).catch((e: unknown) => (e as Error).message)
     expect(k3sRefusal).toMatch(/YAAC_KUBE_PROXY_EXTERNAL=1/)
@@ -1401,7 +1435,7 @@ describe('runClusterSetup', () => {
     vi.stubEnv('YAAC_KUBE_PROXY_EXTERNAL', '1')
     stageAdoptCidrs()
     const k3s = makeDeps({ run: adoptRun({ kubeProxyPods: [] }) })
-    await expect(runClusterSetup({ adoptCni: true }, k3s)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, k3s)).resolves.toBe(true)
     expect(logged(k3s)).toMatch(/declared external/)
   })
 
@@ -1420,7 +1454,7 @@ describe('runClusterSetup', () => {
         ],
       }),
     })
-    await expect(runClusterSetup({ adoptCni: true }, partial)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, partial)).resolves.toBe(true)
     expect(logged(partial)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): w2/)
 
     // Which nodes count is answered by real per-taint matching against the
@@ -1438,7 +1472,7 @@ describe('runClusterSetup', () => {
         kubeProxyPods: [{ spec: { nodeName: 'pool-1' }, status: { phase: 'Running' } }],
       }),
     })
-    await expect(runClusterSetup({ adoptCni: true }, pool)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, pool)).resolves.toBe(true)
     // pool-2 is tolerated and therefore in scope, and IS uncovered; the
     // control plane is not tolerated, so it is out of scope entirely.
     expect(logged(pool)).toMatch(/no running kube-proxy on 1 session-capable node\(s\): pool-2/)
@@ -1460,8 +1494,8 @@ describe('runClusterSetup', () => {
         },
       }),
     })
-    const err = await runClusterSetup({ adoptCni: true }, mixed).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({ adoptCni: true }, mixed).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toMatch(/matches cali\* on w2/)
     expect((err as Error).message).toMatch(/2 other node\(s\) resolve fine/)
     expect((err as Error).message).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
@@ -1481,7 +1515,7 @@ describe('runClusterSetup', () => {
         },
       }),
     })
-    await expect(runClusterSetup({ adoptCni: true }, idle)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, idle)).resolves.toBe(true)
     expect(logged(idle)).toMatch(/w2 have no per-workload route at all/)
   })
 
@@ -1493,8 +1527,8 @@ describe('runClusterSetup', () => {
     vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 172.31/16, 999.1.1.1/99, 10.0.0.0/33')
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun() })
-    const err = await runClusterSetup({ adoptCni: true }, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
+    const err = await runClusterInstall({ adoptCni: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
     const msg = (err as Error).message
     expect(msg).toMatch(/not usable IPv4 CIDRs/)
     // Out-of-range octets and masks are rejected too — they would otherwise
@@ -1513,7 +1547,7 @@ describe('runClusterSetup', () => {
     // check's datapath gate is what owns the first one.
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun({ routes: null }) })
-    await expect(runClusterSetup({ adoptCni: true }, deps)).resolves.toBe(true)
+    await expect(runClusterInstall({ adoptCni: true }, deps)).resolves.toBe(true)
     expect(logged(deps)).toMatch(/unverified on yaac-control-plane/)
   })
 
@@ -1529,6 +1563,7 @@ describe('runClusterSetup', () => {
     ].join('\n')
     const sha = crypto.createHash('sha256').update(manifest, 'utf8').digest('hex')
     const deps = makeDeps({
+      run: freshRun(),
       readTextFile: vi.fn((p: string) => Promise.resolve(
         p.endsWith('.sha256')
           ? `${sha}  calico.yaml\n`
@@ -1537,7 +1572,7 @@ describe('runClusterSetup', () => {
             : 'extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n',
       )),
     })
-    await runClusterSetup({}, deps)
+    await runClusterInstall({}, deps)
 
     const pulled = deps.run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'image' && a[1] === 'exists')

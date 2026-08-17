@@ -14,10 +14,7 @@
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
  */
-import {
-  engineForLayer,
-  TRUSTED_PARENT_COMPRESSION,
-} from './build-engine'
+import { engineForLayer } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { serverLog } from '#log'
@@ -218,16 +215,17 @@ export async function ensureImage(
 
   // One builder pod per request, shared by adjacent untrusted layers.
   // Created lazily on the first cluster-pod build; a no-op release when
-  // every layer was already realized or host-built.
+  // every layer was already in the registry.
   const lease = new BuilderPodLease()
   try {
     for (const [i, layer] of layers.entries()) {
-      const engine = engineForLayer(layer.name)
-      // An in-flight build means the tag doesn't exist yet — join it rather
-      // than trusting the exists check (podman commits the tag at the end).
+      // The registry is authoritative for every layer: it is what a pod
+      // pulls from, whichever side produced the tag. An in-flight build
+      // means the tag is not there yet — join it rather than trusting the
+      // check (podman commits a tag only at the end).
       if (!inflightBuilds.has(layer.tag)) {
         if (realizedTags.has(layer.tag)) continue
-        if (await engine.imageExists(layer.tag)) {
+        if (await registryHasTag(layer.tag)) {
           realizedTags.add(layer.tag)
           continue
         }
@@ -238,15 +236,6 @@ export async function ensureImage(
           `Image ${layer.tag} is missing or stale. ` +
           'Restart the test run so the global setup can rebuild it.',
         )
-      }
-
-      // A cluster-pod build pulls its parent from the registry — push a
-      // host-built parent first (HEAD-skipped when already present; a
-      // cluster-pod parent was pushed by its own build).
-      if (engine.kind === 'cluster-pod' && layer.buildArgs?.BASE_IMAGE) {
-        await pushImageShared(layer.buildArgs.BASE_IMAGE, { projectSlug, reason }, {
-          compressionFormat: TRUSTED_PARENT_COMPRESSION,
-        })
       }
 
       opts.onLayerStart?.(i + 1, layers.length, layer.name)

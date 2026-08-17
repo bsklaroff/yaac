@@ -139,7 +139,7 @@ function rejected(cidrs: string[]): string[] {
  *     overrides — see the too-narrow note below.
  *  1. **Calico IPPools**, including `disabled` ones — that flag stops new
  *     allocations, not existing ones. The authority wherever Calico does
- *     the IPAM, which is every cluster `yaac cluster setup` builds. Calico
+ *     the IPAM, which is every cluster `yaac cluster install` builds. Calico
  *     allocates /26 blocks from anywhere in its pool, so a pod's IP
  *     routinely falls outside its own node's `spec.podCIDR` — that field
  *     describes the kubeadm allocation Calico is not using.

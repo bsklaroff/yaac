@@ -45,10 +45,6 @@ vi.mock('simple-git', () => ({
   })),
 }))
 
-vi.mock('@yaac/server/drivers/k8s/container/runtime', () => ({
-  ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
-} satisfies Partial<typeof runtimeModule>))
-
 // Stubbed to keep podman off the import path; nothing on the create path
 // calls into it (podUid, the one name it used to supply, is in pod-spec).
 vi.mock('@yaac/server/drivers/k8s/image-engine/image-builder', () => ({
@@ -61,6 +57,7 @@ vi.mock('@yaac/server/drivers/k8s/images/build-coordinator', () => ({
 
 vi.mock('@yaac/server/drivers/k8s/substrate/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
+  ensureKubernetes: vi.fn().mockResolvedValue(undefined),
   k8sNamespace: vi.fn(() => 'yaac'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
@@ -289,7 +286,7 @@ import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/runtime/agents/agent-command'
 import { retoolSpare } from '@yaac/server/domain/worktrees/spare-pool'
 import { worktreeCreate } from '#commands/worktree-create'
-import { ensureContainerRuntime } from '@yaac/server/drivers/k8s/container/runtime'
+import { ensureKubernetes } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { ensureImage, pushImageShared } from '@yaac/server/drivers/k8s/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { containerExec } from '@yaac/server/drivers/k8s/substrate/exec'
@@ -411,7 +408,7 @@ describe('createWorktree', () => {
         ? [{ name: 'yaac-worktree-init', isFile: () => true }]
         : [],
     )) as never)
-    vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
+    vi.mocked(ensureKubernetes).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
@@ -461,7 +458,7 @@ describe('createWorktree', () => {
     // the proxy client, the relay, podman), so nothing here reaches a
     // cluster.
     installFakeWorktreeDriver({
-      ensureBuildEngine: () => ensureContainerRuntime(),
+      ensureRuntimeReachable: () => ensureKubernetes(),
       prepareImage: (o) => prepareWorkspaceImage(o),
       prepareSubstrate: (i) => prepareWorkspaceSubstrate(i),
       launch: (spec) => launchWorkspace(spec),
@@ -915,7 +912,7 @@ describe('createWorktree', () => {
     })
     expect(messages).toContain('Fetching latest from remote...')
     expect(messages).toContain('Ensuring container images are built...')
-    expect(messages).toContain('Pushing session image to the local registry...')
+    expect(messages).toContain('Publishing the session image to the local registry...')
     expect(messages).toContain('Creating worktree from main...')
     expect(messages).toContain('Ensuring proxy deployment...')
     expect(messages.some((m) => m.startsWith('Creating session job yaac-demo-'))).toBe(true)
@@ -1332,7 +1329,6 @@ describe('resolveInitWindows', () => {
 import type * as allowedHostsModule from '@yaac/server/lib/allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 import type * as opencodeAgentModule from '@yaac/server/runtime/agents/opencode'
-import type * as runtimeModule from '@yaac/server/drivers/k8s/container/runtime'
 import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'

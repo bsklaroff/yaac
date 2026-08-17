@@ -62,7 +62,7 @@ describe('prepareWorkspaceImage', () => {
     expect(messages).toEqual([
       'Ensuring container images are built...',
       'Building image layer 1/2 (base)...',
-      'Pushing session image to the local registry...',
+      'Publishing the session image to the local registry...',
     ])
   })
 })

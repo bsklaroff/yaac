@@ -11,7 +11,7 @@ brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac
-yaac cluster setup   # podman machine + registry + kind cluster + Calico + netd
+yaac cluster install   # cluster + CNI + registry + every image yaac ships
 ```
 
 The formula pulls in the whole toolchain: `node`, `kubectl`,
@@ -95,13 +95,13 @@ host netfilter and routing access that rootless podman doesn't delegate, or the
 calico-node DaemonSet hangs (see
 [Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
-Give the host **swap** before `yaac cluster setup` if `swapon --show` is
+Give the host **swap** before `yaac cluster install` if `swapon --show` is
 empty. Worktree pods run under gVisor, which holds the sandboxed workload's
 memory in a memfd — shmem, which the kernel cannot reclaim at all without
 swap, so a worktree under pressure is OOM-killed where it would otherwise
 have paged out. Create it first: the cluster's kubelet picks up
 `swapBehavior: LimitedSwap` (`k8s/kind-config.yaml`) only when kind creates
-the node, and no `--repair` adds it later.
+the node, and no later install adds it.
 
 ```sh
 # ext4. On btrfs: sudo btrfs filesystem mkswapfile --size 32G /swapfile
@@ -127,7 +127,7 @@ cd yaac
 pnpm install
 pnpm build
 npm install -g .      # symlinks the checkout — every pnpm build is live
-yaac cluster setup
+yaac cluster install
 ```
 
 ## Web app
@@ -229,8 +229,12 @@ Commands:
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
-  setup [--repair]  Create the kind cluster, CNI wiring, and in-cluster registry
-                    (--repair re-applies the node fixups without recreating)
+  install           Converge this machine and its cluster to the installed yaac
+                    version: the kind cluster and CNI if there is none, the node
+                    fixups, every built-in image, and the in-cluster layers.
+                    Safe to re-run; never destructive
+    --nodes <n>     Nodes to create (default 1; ignored if a cluster exists)
+    --adopt-cni     Install into a cluster whose CNI yaac did not install
   delete [-y]       Delete the kind cluster (registry included), keeping
                     on-disk worktrees and their checkouts (-y skips confirmation)
 
@@ -465,7 +469,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
 | `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy, and (under the `k8s` driver) every worktree's egress with it. Under `containerless` it covers only the server's own git — a host-run worktree has no proxy to route through, and the server says so at startup. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
-| `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
+| `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster install` creates and converges. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed worktrees kept ready per active project (`0` disables prewarming). |
 | `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reachable only through the outer server's port-forward" and skips the client credential (see docs/remote-hosting.md). |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |

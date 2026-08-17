@@ -14,7 +14,7 @@
 # expand environment variables), e.g.:
 #   sed "s|\$HOME|$HOME|g" k8s/kind-config.yaml | kind create cluster --name yaac --config -
 #
-# MULTI-NODE: `yaac cluster setup --nodes N` renders this file into an
+# MULTI-NODE: `yaac cluster install --nodes N` renders this file into an
 # N-node cluster by COPYING the control-plane entry below into N-1 `role:
 # worker` entries — so the $HOME extraMount lands on every node, which is
 # what keeps hostPath working when a session schedules off the control
@@ -41,7 +41,7 @@ networking:
   # No kindnet: its NetworkPolicy engine (kube-network-policies) fails
   # OPEN — a new pod's first packets flow before its IP reaches the
   # engine's nftables set, so sessions would start with a brief window of
-  # unrestricted egress. `yaac cluster setup` installs Calico instead,
+  # unrestricted egress. `yaac cluster install` installs Calico instead,
   # which fails CLOSED: until Felix has programmed a workload's endpoint,
   # traffic on its veth hits the dispatch chain's "unknown interface"
   # DROP. Calico allocates pod IPs from the cluster CIDR (kind's default

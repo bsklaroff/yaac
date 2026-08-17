@@ -53,15 +53,16 @@ const PROBE_POD_NAME = 'yaac-cluster-check'
 
 const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac by running:',
-  '  yaac cluster setup',
+  '  yaac cluster install',
   'It provisions the podman machine (macOS), the kind cluster (home',
-  'extraMount), Calico, the node fixups, and the in-cluster registry.',
+  'extraMount), Calico, the node fixups, every built-in image, and the',
+  'in-cluster registry.',
 ].join('\n')
 
 /**
- * Node-state the setup applies and this check verifies. Shared with
- * cluster-setup.ts (which imports them) so `yaac cluster setup --repair`
- * and the node-fixups check below can never drift apart.
+ * Node-state the install applies and this check verifies. Shared with
+ * install.ts (which imports them) so `yaac cluster install` and the
+ * node-fixups check below can never drift apart.
  */
 export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
 export const NODE_MIN_FREE_KBYTES = 262144
@@ -75,7 +76,7 @@ export const NODE_PIDS_LIMIT = 32768
  * Envoy asserts on `inotify_fd_ >= 0` and dies with SIGSEGV, which
  * presents as every worktree losing its egress redirect rather than as
  * anything mentioning inotify. Applied on each node for the same reason
- * `--repair` re-applies the vm sysctls — whichever node runs it, the
+ * install re-applies the vm sysctls — whichever node runs it, the
  * write lands on the host.
  */
 export const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
@@ -112,9 +113,9 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  *   6. yaac namespace exists / can be created
  *   6b. node fixups (warn-only, kind nodes only): DefaultTasksMax,
  *      vm.min_free_kbytes, the kubelet housekeeping interval, and node
- *      pids-limit that `yaac cluster setup` applies — most live in node/VM
+ *      pids-limit that `yaac cluster install` applies — most live in node/VM
  *      state and vanish on restart — detect and point at
- *      `yaac cluster setup --repair`
+ *      `yaac cluster install`
  *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist, at least one
  *      node carries the label they schedule on (the installer DaemonSet
  *      landed the runtime somewhere), AND a pod on the gvisor class is
@@ -223,8 +224,8 @@ export async function runClusterCheck(
       name: 'registry', status: 'fail',
       detail: `the in-cluster registry ${registryHost()} is not answering`,
       fix: 'The registry is an in-cluster Deployment installed by `yaac '
-        + 'cluster setup` and re-ensured by the yaac server on start. '
-        + 'Re-apply it with:\n  yaac cluster setup --repair\n'
+        + 'cluster install` and re-ensured by the yaac server on start. '
+        + 'Re-apply it with:\n  yaac cluster install\n'
         + `Inspect it with \`kubectl -n ${REGISTRY_NAMESPACE} get deploy,pods -l app=yaac-main-registry\`.`,
     })
   }
@@ -273,7 +274,7 @@ export async function runClusterCheck(
   }
   // 8. The three pod-based probes, CONCURRENTLY. Each starts its own
   // gVisor sandbox, and serially they were most of the check's wall time
-  // (~19s of a 71s `cluster setup`). They share nothing: distinct pod
+  // (~19s of a 71s `cluster install`). They share nothing: distinct pod
   // names, distinct nonce files, and the policies the egress probe
   // applies are the ones the server applies anyway. The gvisor gate above
   // still runs first, so none of them can sit Pending to its timeout
@@ -415,7 +416,7 @@ const SESSION_SCHEDULING_FIX =
 
 /**
  * The node inventory line. Multi-node is a supported topology now (the
- * local backend renders it with `yaac cluster setup --nodes N`), so node
+ * local backend renders it with `yaac cluster install --nodes N`), so node
  * count alone is never a warning — what is worth flagging is a node that
  * cannot take work: NotReady, or cordoned/tainted in a way no worktree pod
  * tolerates. The readiness gates below say whether the nodes that CAN take a
@@ -457,10 +458,10 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
 
 const NODE_FIXUPS_FIX =
   'These fixups live in node/VM state and vanish on a node or VM restart. '
-  + 'Re-apply them with: yaac cluster setup --repair'
+  + 'Re-apply them with: yaac cluster install'
 
 /**
- * Warn-level detection for the node fixups `yaac cluster setup` applies. The
+ * Warn-level detection for the node fixups `yaac cluster install` applies. The
  * TasksMax / vm.min_free_kbytes / pids-limit fixups fail late — worktrees die
  * mid-flight under subagent fan-out or virtiofs pressure — so worktrees can
  * look healthy on a cluster that lost them to a restart. Probing is
@@ -564,7 +565,7 @@ const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
  * captured at import time.
  */
 function gvisorFix(): string {
-  return 'Install the gVisor runtime with: yaac cluster setup --repair\n'
+  return 'Install the gVisor runtime with: yaac cluster install\n'
     + '(applies the yaac-gvisor-install DaemonSet, which drops pinned runsc + '
     + 'containerd-shim-runsc-v1 on every node, registers the runsc handlers in '
     + 'its containerd and labels it, plus the gvisor/gvisor-nested '
@@ -573,7 +574,7 @@ function gvisorFix(): string {
 }
 
 const PRIORITY_CLASS_FIX =
-  'Install the yaac PriorityClasses with: yaac cluster setup --repair\n'
+  'Install the yaac PriorityClasses with: yaac cluster install\n'
   + '(the yaac server also re-applies them on every start)'
 
 /**
@@ -784,7 +785,7 @@ async function runRuntimeStampSweep(): Promise<CheckResult> {
 /**
  * The one check that exercises the full wiring: registry pull from inside
  * the cluster plus host-visible hostPath mounts. Failure modes map to the
- * two pieces of cluster setup yaac cannot do itself (containerd registry
+ * two pieces of cluster install yaac cannot do itself (containerd registry
  * config, node extraMounts).
  */
 async function runEndToEndProbe(): Promise<CheckResult> {
@@ -848,12 +849,12 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         fix: 'If the pod is stuck in ImagePullBackOff, the node cannot '
           + `pull from ${registryHost()} — its containerd hosts.toml for `
           + 'that host is missing or stale; re-apply it with `yaac cluster '
-          + 'setup --repair`.\nIf it failed mounting '
+          + 'install`.\nIf it failed mounting '
           + `/probe, the node cannot see ${dataDir} — add an extraMounts `
           + 'entry for your home directory to the kind config.\n'
           + 'If it never got past Pending or failed with a runsc/'
           + 'RuntimeClass error, the gvisor runtime is broken — run '
-          + '`yaac cluster setup --repair` (re-applies the runsc installer '
+          + '`yaac cluster install` (re-applies the runsc installer '
           + 'DaemonSet).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
           + `${podUid()} cannot write hostPath mounts — see the `
@@ -1006,7 +1007,7 @@ async function podFailureEvent(podName: string): Promise<string> {
  * it. The mount check comes first on purpose: kubelet sets volumes up
  * before it pulls, so a node missing the home extraMount fails at
  * FailedMount having never touched the registry — reporting that as a
- * registry problem would hand the user a fix (`--repair` rewrites
+ * registry problem would hand the user a fix (install rewrites
  * hosts.toml) that cannot address it.
  *
  * Nothing matches on the bare word "sandbox": `FailedCreatePodSandBox` is
@@ -1108,13 +1109,13 @@ async function probeNode(
 const REGISTRY_NODES_FIX =
   'Each node pulls session images itself, so every node needs the registry '
   + 'wiring: the containerd `hosts.toml` mapping and the registry container '
-  + 'on the kind network. `yaac cluster setup --repair` re-applies both on '
+  + 'on the kind network. `yaac cluster install` re-applies both on '
   + 'every node.'
 
 const VOLUME_NODES_FIX =
   'Session pods mount worktrees, caches and credentials by hostPath, which '
   + 'resolves on the NODE. Every node therefore needs the home-directory '
-  + 'extraMount — `yaac cluster setup --nodes N` renders it onto every node '
+  + 'extraMount — `yaac cluster install --nodes N` renders it onto every node '
   + 'it creates, so a cluster made by hand (or by an older yaac) is the '
   + 'usual cause.'
 
@@ -1452,7 +1453,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         detail: 'a session-labeled pod reached the apiserver directly — the CNI is not enforcing NetworkPolicy',
         fix: 'Session egress lockdown fails open without NetworkPolicy '
           + 'enforcement, leaving the proxy allowlist advisory. Re-run '
-          + '`yaac cluster setup`, which installs Calico as the CNI and '
+          + '`yaac cluster install`, which installs Calico as the CNI and '
           + 'policy engine.\nOn a cluster whose CNI yaac adopted '
           + '(`--adopt-cni`), this is the probe that says the adopted engine '
           + 'is not actually enforcing plain networking.k8s.io/v1 policy — '
@@ -1569,7 +1570,7 @@ async function runDatapathCheck(): Promise<CheckResult> {
       return {
         name: 'datapath', status: 'fail',
         detail: `calico-node is ${calico.trim()} ready — NetworkPolicy is not being enforced`,
-        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster setup` '
+        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster install` '
           + '(or `--adopt-cni` on a cluster whose Calico yaac did not install), '
           + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
       }
@@ -1594,8 +1595,8 @@ async function runDatapathCheck(): Promise<CheckResult> {
           ? `${NETD_APP_NAME} is ${netd.trim()} ready — session egress has no redirect`
             + (blocked.length ? ` (${blocked.join(', ')})` : '')
           : `${NETD_APP_NAME} is not deployed — session egress has no redirect`,
-        fix: 'netd steers session egress into the proxy. `yaac cluster setup '
-          + '--repair` re-applies it (the server also re-ensures it whenever it '
+        fix: 'netd steers session egress into the proxy. `yaac cluster install` '
+          + 're-applies it (the server also re-ensures it whenever it '
           + 'brings the proxy up). Inspect both containers with '
           + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c netd\` and `
           + '`-c envoy`.',
@@ -1721,7 +1722,7 @@ async function runNestedMountProbe(): Promise<CheckResult> {
 const NESTED_MOUNT_FIX =
   'Only nestedContainers sessions are affected (docker build/run in-pod). '
   + 'The gvisor-nested runsc handler is broken or the sentry refuses the '
-  + 'mount — run `yaac cluster setup --repair` to re-apply the runsc '
+  + 'mount — run `yaac cluster install` to re-apply the runsc '
   + 'installer DaemonSet, which reinstalls the binaries and rewrites the '
   + 'handlers.'
 
@@ -1745,7 +1746,8 @@ async function runVapAvailabilityCheck(): Promise<CheckResult> {
     fix: 'Sandboxed image builds reserve their pod label with a '
       + 'ValidatingAdmissionPolicy (kubernetes >= 1.30, enabled by '
       + 'default) and fail closed without it, so no worktree image can '
-      + 'be built. Recreate the cluster with `yaac cluster setup`.',
+      + 'be built. This needs a newer cluster: `yaac cluster delete`, '
+      + 'then `yaac cluster install`.',
   }
 }
 

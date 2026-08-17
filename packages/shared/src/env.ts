@@ -71,7 +71,7 @@ export const env = {
     return port
   },
 
-  /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster setup` manages. */
+  /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster install` manages. */
   get kindCluster(): string {
     return process.env.YAAC_KIND_CLUSTER ?? 'yaac'
   },
@@ -84,9 +84,9 @@ export const env = {
    * table can never make it redirect something that is not a workload.
    *
    * Unset → `cali`, correct wherever Calico does the IPAM (every cluster
-   * `yaac cluster setup` builds). Policy-only Calico over the AWS VPC CNI
+   * `yaac cluster install` builds). Policy-only Calico over the AWS VPC CNI
    * gives `eni`; other pairings give other names, which is why this is
-   * configuration rather than a constant. `yaac cluster setup --adopt-cni`
+   * configuration rather than a constant. `yaac cluster install --adopt-cni`
    * verifies the effective prefix against the node's real routing table and
    * refuses an adoption where it resolves nothing.
    */

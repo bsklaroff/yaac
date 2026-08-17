@@ -62,7 +62,7 @@
  *
  * A claim that never binds — a cluster with NO default StorageClass — leaves
  * the registry down rather than degraded, since `Recreate` takes the serving
- * pod away first. `cluster setup` reports that precisely; the boot ensure
+ * pod away first. `cluster install` reports that precisely; the boot ensure
  * only logs it. Losing the volume itself costs nothing permanent:
  * `registryHasTag` misses and the pushers refill, the same self-healing the
  * store relies on for a cluster recreate.
@@ -272,8 +272,8 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  * goes STALE if node addresses move under it (a VM restart is the usual
  * cause) — and stale means node pulls are denied, since this fails closed.
  * The same is true of the per-project registries' locks and of the
- * hosts.toml beside them, and the fix is the same: `yaac cluster setup
- * --repair` re-renders all of it. Note the server's boot ensure does NOT
+ * hosts.toml beside them, and the fix is the same: `yaac cluster install`
+ * re-renders all of it. Note the server's boot ensure does NOT
  * heal this, because it takes the cheap reachable-and-done path — the
  * registry is still reachable from the SERVER, which comes in over a
  * port-forward rather than from a node address. `cluster check`'s probe is
@@ -468,9 +468,9 @@ export async function mainRegistryStorageIsClaim(): Promise<boolean> {
 export interface EnsureMainRegistryOptions {
   /**
    * Apply everything even when the registry already answers from its claim.
-   * `yaac cluster setup` (both modes) passes this — `--repair` exists
-   * precisely to re-write wiring that a node or VM restart may have dropped
-   * — while the server's boot ensure takes the cheap path.
+   * `yaac cluster install` passes this: converging a machine exists
+   * precisely to re-write wiring that a node or VM restart may have
+   * dropped, while the server's boot ensure takes the cheap path.
    */
   force?: boolean
 }

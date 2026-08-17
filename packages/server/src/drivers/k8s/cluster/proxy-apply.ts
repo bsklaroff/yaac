@@ -187,12 +187,12 @@ export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Pro
  * RuntimeClass.
  * Fail-closed: the label excludes its pods from the world-deny egress
  * policy, so builders must not run on a cluster that cannot enforce the
- * reservation. Applied idempotently by `yaac cluster setup` and again by
+ * reservation. Applied idempotently by `yaac cluster install` and again by
  * the builder pool before it leases a pod.
  *
  * Lives here, not with the builder pool it guards: it applies this
- * feature's own manifests to this feature's cluster, and cluster setup
- * calls it. Housing it in #drivers/k8s/images meant cluster setup imported
+ * feature's own manifests to this feature's cluster, and cluster install
+ * calls it. Housing it in #drivers/k8s/images meant cluster install imported
  * the feature that sits above it.
  */
 export async function ensureBuilderRoleGuard(): Promise<void> {
@@ -200,7 +200,7 @@ export async function ensureBuilderRoleGuard(): Promise<void> {
     throw new Error(
       'sandboxed image builds need the ValidatingAdmissionPolicy API to '
       + `reserve the ${LABEL_ROLE}=${ROLE_BUILDER} pod label (kubernetes `
-      + '>= 1.30). Recreate the cluster with `yaac cluster setup`.',
+      + '>= 1.30). Recreate the cluster with `yaac cluster install`.',
     )
   }
   await kubectlApply(buildBuilderRoleGuardPolicyManifest())

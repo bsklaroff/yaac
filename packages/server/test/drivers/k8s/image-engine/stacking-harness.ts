@@ -34,6 +34,13 @@ export interface StackingHarness {
   /** Ordered `build <tag> [k=v,…]` rows in build order. */
   readonly operations: string[]
   /**
+   * Declare which tags the local registry holds. The yaac-shipped layers
+   * are built by `yaac cluster install`, so a chain realization that is
+   * expected to succeed has to say they are already there — and one that
+   * does not is exercising the refusal.
+   */
+  stageRegistry(tags: readonly string[]): void
+  /**
    * Stop the podman fake from exiting on its own, so a test owns when (and
    * whether) a build produces output. Held builds land in `heldBuilds`.
    * Call before `load`.
@@ -56,13 +63,14 @@ export function setupStackingHarness(): StackingHarness {
   const heldBuilds: HeldBuild[] = []
   /** Group pid (negative) -> what the fake child does when signalled. */
   const killedGroups = new Map<number, (signal: string) => void>()
-  const state = { dataDir: '', hold: false }
+  const state = { dataDir: '', hold: false, registryTags: new Set<string>() }
 
   beforeEach(async () => {
     operations.length = 0
     heldBuilds.length = 0
     killedGroups.clear()
     state.hold = false
+    state.registryTags.clear()
     state.dataDir = await createTempDataDir()
   })
 
@@ -147,7 +155,7 @@ export function setupStackingHarness(): StackingHarness {
     // spawn fake records for host builds; registry mocked so the
     // untrusted-layer exists-check (registryHasTag) never touches the network.
     vi.doMock('#drivers/k8s/container/registry', () => ({
-      registryHasTag: vi.fn().mockResolvedValue(false),
+      registryHasTag: vi.fn((tag: string) => Promise.resolve(state.registryTags.has(tag))),
       registryRef: (tag: string) => `localhost:5001/${tag}`,
       pushImageToRegistry: vi.fn().mockResolvedValue('pushed'),
     }))
@@ -183,6 +191,9 @@ export function setupStackingHarness(): StackingHarness {
     get dataDir() { return state.dataDir },
     operations,
     heldBuilds,
+    stageRegistry(tags: readonly string[]) {
+      for (const tag of tags) state.registryTags.add(tag)
+    },
     holdBuilds() {
       state.hold = true
       // Held children are killed by pid — spied, so a fictional pid can

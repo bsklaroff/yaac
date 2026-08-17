@@ -207,7 +207,7 @@ export async function runStreamingProcess(
  * the group is already gone. Best-effort: every caller is on a path that is
  * already failing.
  */
-export function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid
   // A pid of 0 would signal this server's own process group.
   if (pid === undefined || pid <= 0) return

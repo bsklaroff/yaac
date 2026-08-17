@@ -1,20 +1,18 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import type {
   AgentTool,
   PendingMamaRequest,
   SecretProxyRule,
   MamaResultWire,
 } from '@yaac/shared/types'
-import { imageExists } from '#drivers/k8s/container'
-import { PROXY_DIR } from '@yaac/shared/project-paths'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#drivers/k8s/image-engine'
 import {
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
+  ensureProxyImage as lookupProxyImage,
   ensureProxyResources,
   resetProxyClusterIpCache,
+  resolveProxyImageTag,
 } from '#drivers/k8s/cluster'
 import {
   PROXY_APP_NAME,
@@ -24,7 +22,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { registryRef } from '#drivers/k8s/container'
 import { proxySshEntries } from './credential-providers'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
@@ -144,7 +142,6 @@ export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
 
 export interface ProxyClientConfig {
   image: string
-  requirePrebuilt?: boolean
 }
 
 /**
@@ -695,38 +692,13 @@ export class ProxyClient {
   }
 
   /**
-   * Ensure the proxy image (content-hash tagged) exists in the registry
-   * and return its in-cluster ref. Builds locally with podman only when
-   * the registry doesn't already hold the tag.
+   * The proxy image's in-cluster ref, under the content-hash tag this
+   * source tree hashes to. A lookup, never a build: the image is
+   * yaac-shipped, so `yaac cluster install` is what puts it in the
+   * registry (see proxy-image.ts).
    */
-  private async ensureProxyImage(): Promise<string> {
-    const hash = await contextHash(PROXY_DIR)
-    const localTag = `${this.config.image}:${hash}`
-    if (await registryHasTag(localTag)) return registryRef(localTag)
-
-    if (!await imageExists(localTag)) {
-      if (this.config.requirePrebuilt) {
-        throw new Error(
-          `Proxy image ${localTag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-      // Track the build in the shared registry so it surfaces in the webapp's
-      // "building" UX like every other image build. It has no owning project
-      // (shared infrastructure), so it registers with an empty projectSlugs.
-      const id = registerImageBuild({ tag: localTag, layer: 'proxy', action: 'build', reason: 'session' })
-      serverLog(`[build] starting ${localTag} (proxy sidecar)`)
-      try {
-        await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR, undefined, {
-          onLog: (line) => ingestImageBuildLine(id, line),
-        })
-        finishImageBuild(id)
-      } catch (err) {
-        failImageBuild(id, err instanceof Error ? err.message : String(err))
-        throw err
-      }
-    }
-    return pushImageToRegistry(localTag)
+  private ensureProxyImage(): Promise<string> {
+    return lookupProxyImage(this.config.image)
   }
 
   private async waitForHealthy(): Promise<void> {
@@ -790,20 +762,7 @@ async function readExistingProxyAuthSecret(): Promise<string | null> {
   return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
 }
 
-/**
- * Compute the proxy image tag without starting or building anything.
- * Useful for fingerprinting — the tag encodes the content of the proxy
- * build context.
- */
-export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string> {
-  const hash = await contextHash(PROXY_DIR)
-  return `${image}:${hash}`
-}
-
 // Default singleton. YAAC_PROXY_IMAGE is a test-only hook that lets the
 // e2e suite point a server subprocess at pre-built test images. Unset in
 // production.
-export const proxyClient = new ProxyClient({
-  image: testEnv.proxyImage,
-  requirePrebuilt: testEnv.requirePrebuiltImages,
-})
+export const proxyClient = new ProxyClient({ image: testEnv.proxyImage })

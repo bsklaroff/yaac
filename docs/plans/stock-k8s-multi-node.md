@@ -154,8 +154,9 @@ docs/cluster-setup.md §4:
   being just a mutable-OS node with the same containerd config.
 - Node recycling (node-pool upgrades replace nodes) is handled for free —
   the DaemonSet reapplies on every new node. This took the runtime out of
-  `--repair`, which now owns only the kind-node-container state that has no
-  node-side agent (sysctls, TasksMax, pids limit, registry wiring).
+  the install's node-fixup tail, which now owns only the
+  kind-node-container state that has no node-side agent (sysctls,
+  TasksMax, pids limit, registry wiring).
 - The binaries are fetched **from the node**, not pushed from the server:
   the pinned release, verified against its published sha512 and cached
   node-locally. A server-side cache cannot help a node yaac has no shell on.
@@ -235,7 +236,7 @@ short-circuits the netfilter hook the redirect needs. The only known way
 around that is docs/plans/in-sandbox-netstack-dnat.md, which is written up
 and deliberately not planned.
 
-**Adoption has shipped too**: `yaac cluster setup --adopt-cni` installs
+**Adoption has shipped too**: `yaac cluster install --adopt-cni` installs
 into a cluster whose Calico we did not install, detecting the dataplane
 mode, the veth naming and the real pod CIDRs instead of assuming them, and
 refusing the configurations that would otherwise fail silently (Calico in
@@ -312,7 +313,7 @@ reachable on a real managed cluster without further design work here.
 
 ### 7. Cluster lifecycle: setup/check become provider-aware
 
-- `yaac cluster setup` splits into backends: the existing local path
+- `yaac cluster install` splits into backends: the existing local path
   (kind, later k3s per `moving-off-kind.md`) and **`yaac cluster attach`**
   for a bring-your-own cluster: **probe the §3/§4 capabilities and refuse the
   unsupported tiers** (node OS mutable enough to install runsc, privileged
@@ -321,7 +322,7 @@ reachable on a real managed cluster without further design work here.
   fail the probe; GKE routes to the Sandbox adapter. Then install in-cluster
   components (proxy, RuntimeClasses + the node agent, registry, priority
   classes) and record the backend in config.
-  **The §4 half of that already exists** as `yaac cluster setup
+  **The §4 half of that already exists** as `yaac cluster install
   --adopt-cni`: it creates no cluster, probes the CNI/kube-proxy/pod-CIDR
   capabilities and refuses what cannot work, labels the install namespace
   for the privileged Pod Security Standard, and then installs exactly that
@@ -397,7 +398,7 @@ shaped.
 
 **Final gate, re-run after every migration above lands: the e2e suite on a
 multi-node cluster.** ~~Multi-node kind with per-node extraMounts (from the
-storage plan)~~ — `yaac cluster setup --nodes N` builds it, `cluster check`
+storage plan)~~ — `yaac cluster install --nodes N` builds it, `cluster check`
 gates per-node readiness (runsc / registry pull / shared volume), which is
 §7's "single node assumed" warning inverted, and the suite has been run
 against one. It is listed last rather than as a phase because each item

@@ -7,7 +7,6 @@ import {
   reconcileImagePrewarm,
   reconcileNodeImageStores,
 } from '#drivers/k8s/images'
-import { reconcileHostImageGc } from '#drivers/k8s/image-engine'
 import type { DriverReconcileSteps } from '#drivers/contract'
 
 /**
@@ -65,8 +64,6 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // still checks the loss signature itself, so a merely flaky tunnel
       // re-uploads nothing.
       { name: 'proxy-ssh-keys', triggers: ['proxy-reconnect'], run: () => reconcileProxySshKeys() },
-      // Host podman image GC. Throttled internally to every few hours.
-      { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
       // Registry-side counterpart: retire step-cache tags no build has used
       // in a cache-ttl and collect their blobs. Throttled internally, and it
       // stands down while anything is pushing.

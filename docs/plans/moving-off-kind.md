@@ -10,15 +10,15 @@ container rather than a machine.
 
 Status and boundaries:
 
-- Brew packaging and `yaac cluster setup` (Phases 1–2 of the retired
-  brew-packaging plan) shipped: the formula installs the toolchain, setup
-  provisions the machine/cluster/CNI/fixups idempotently, `--repair`
+- Brew packaging and `yaac cluster install` (Phases 1–2 of the retired
+  brew-packaging plan) shipped: the formula installs the toolchain, the
+  install provisions the machine/cluster/CNI/fixups idempotently and
   re-applies the volatile node fixups, and the tap pins the kind+podman
   pair around the podman-6 skew (kind#4201).
 - The last *runtime* kind coupling is gone: the `podman exec <node>`
   writes in `src/lib/k8s/project-registry.ts` were replaced by one-shot
   in-cluster node-write pods (hostPath + `nodeName`), so kind specificity
-  lives only in `src/lib/k8s/cluster-setup.ts` and the self-skipping
+  lives only in `drivers/k8s/cluster/install.ts` and the self-skipping
   node-fixups check.
 - This plan is the spike-and-migrate track. It commits to nothing until
   the spikes pass; kind + podman-libkrun stays the supported backend
@@ -26,15 +26,15 @@ Status and boundaries:
 
 ## Why the node-in-a-container is the problem
 
-Everything below is applied by `yaac cluster setup`, lives in node/VM
+Everything below is applied by `yaac cluster install`, lives in node/VM
 state that resets on restart, and would not exist on a real (VM or host)
 node:
 
 - **sysfs unmask** for userns pods (kind#3436): the kernel refuses sysfs
   mounts in a userns while the node container's `/sys` is masked
-  (`src/lib/k8s/cluster-setup.ts:424`). A VM node has a real sysfs.
+  (`drivers/k8s/cluster/install.ts`). A VM node has a real sysfs.
 - **`DefaultTasksMax=infinity` + vm sysctls + `podman update
-  --pids-limit`** (`cluster-setup.ts:427-434`): without them, subagent
+  --pids-limit`** (`install.ts`): without them, subagent
   fan-out dies with `fork: resource temporarily unavailable`. The
   container-level PID/task caps disappear with the container; the vm
   sysctls may still be wanted inside a VM.
@@ -44,9 +44,9 @@ node:
   through a `kubectl port-forward` (docs/trust-split-builds.md).
 - **kind↔podman version skew**: podman 6.x breaks kind ≤ v0.32.0, hence
   the tap-pinned `yaac-kind` build and the preflight
-  (`diagnoseKindPodmanSkew`, `cluster-setup.ts:244-305`). Goes away
+  (`diagnoseKindPodmanSkew` in `install.ts`). Goes away
   entirely without kind.
-- The whole reason `--repair` and the warn-level `node-fixups` check
+- The whole reason the node fixups and the warn-level `node-fixups` check
   exist is that these vanish silently on node/VM restart.
 
 ## Constraints any backend must satisfy
@@ -114,7 +114,7 @@ Candidates:
   (`--flannel-backend=none --disable-network-policy`) is well-trodden;
   recent k3s embeds containerd 2.x (userns pods). Not brew-manageable
   (root systemd service) — install stays a documented one-liner, with
-  `yaac cluster setup` doing the rest.
+  `yaac cluster install` doing the rest.
 - **macOS two-layer (VM is the node): needs a spike.** Two credible
   routes, both deleting the sysfs hack, the node-container PID cap, and
   the kind/podman skew:
@@ -125,7 +125,7 @@ Candidates:
   - **Lima template** (Lima ≥ 2.0, homebrew-core) with the experimental
     krunkit vmtype + virtiofs mounts, running k3s inside — "podman
     machine, but the VM is the Kubernetes node." No sudo networking,
-    fully scriptable from `yaac cluster setup`.
+    fully scriptable from `yaac cluster install`.
 
 ## Spikes
 
@@ -153,11 +153,11 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
    directly, and the push paths in `src/lib/k8s/registry.ts` assume host
    podman. Passing would remove host podman entirely on both platforms.
 3. **Linux end-state**: validate native k3s + Calico against
-   `yaac cluster check`; `yaac cluster setup` grows a k3s path.
+   `yaac cluster check`; `yaac cluster install` grows a k3s path.
 
 ## setup/check integration
 
-- `yaac cluster setup` grows backend selection; kind stays the default
+- `yaac cluster install` grows backend selection; kind stays the default
   until a spike winner exists. The kind-specific fixups become a
   kind-backend path rather than unconditional steps.
 - `cluster check` needs no structural change: the node-fixups probe
@@ -165,7 +165,7 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
   (`src/lib/k8s/cluster-check.ts:289-293`), and every other check is
   backend-agnostic. Fix messages that say "kind" should become
   backend-aware once a second backend exists.
-- Per repo conventions, any new `cluster setup` arguments get gated
+- Per repo conventions, any new `cluster install` arguments get gated
   `test/e2e/` coverage like the existing cluster-mutating tests.
 
 ## Exit criteria

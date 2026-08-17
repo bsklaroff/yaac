@@ -3,7 +3,14 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { baseImageHash, contextHash, fileHash, toolsContentHash } from '#drivers/k8s/image-engine/image-builder'
+import {
+  baseImageHash,
+  contextHash,
+  fileHash,
+  resolveTrustedLayers,
+  toolsContentHash,
+} from '#drivers/k8s/image-engine/image-builder'
+import { podUid } from '#drivers/k8s/substrate'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -63,7 +70,7 @@ describe('baseImageHash', () => {
     vi.restoreAllMocks()
   })
 
-  it('folds the session uid into the Dockerfile content hash', async () => {
+  it('folds the pod uid and the in-pod daemons into the Dockerfile content hash', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-bih-'))
     try {
       const dockerfile = path.join(tmpDir, 'Dockerfile')
@@ -75,12 +82,55 @@ describe('baseImageHash', () => {
       const hash1000 = await baseImageHash(dockerfile)
 
       expect(hash501).toMatch(/^[0-9a-f]{16}$/)
-      // A uid change must invalidate the tag like a Dockerfile edit would.
+      // A uid change must invalidate the tag like a Dockerfile edit would —
+      // the pod runs as that uid, so an image baked for another one cannot
+      // write the dirs the server pre-created.
       expect(hash501).not.toBe(hash1000)
+      // The COPY'd streamd/acpd sources are in there too, so the tag is
+      // never just the Dockerfile's own hash.
       expect(hash501).not.toBe(await fileHash(dockerfile))
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('resolveTrustedLayers', () => {
+  it('names the three yaac-shipped layers, each built FROM the one above it', async () => {
+    const { base, tools, nestable } = await resolveTrustedLayers('yaac')
+
+    // The chain `yaac cluster install` builds, in the only order it can be
+    // built in: each layer's parent tag is the previous layer's.
+    expect(base.name).toBe('base')
+    expect(tools.name).toBe('tools')
+    expect(nestable.name).toBe('nestable')
+    expect(tools.buildArgs?.BASE_IMAGE).toBe(base.tag)
+    expect(nestable.buildArgs?.BASE_IMAGE).toBe(tools.tag)
+    // Every one is a real, shipped build context — this is what makes the
+    // install's `podman build` and the server's registry lookup agree.
+    expect(base.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.default'))
+    expect(tools.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
+    expect(nestable.dockerfile).toBe(path.join(DOCKERFILES_DIR, 'Dockerfile.nestable'))
+    for (const layer of [base, tools, nestable]) {
+      expect(layer.context).toBe(DOCKERFILES_DIR)
+      expect(layer.tag).toMatch(/^yaac-(base|tools|nestable):[0-9a-f]{16}$/)
+      expect(layer.tag.endsWith(layer.contentHash)).toBe(true)
+    }
+    // The uid is a build input of the layers that create the `yaac` user.
+    expect(base.buildArgs?.YAAC_UID).toBe(String(podUid()))
+    expect(nestable.buildArgs?.YAAC_UID).toBe(String(podUid()))
+  })
+
+  it('scopes every tag to the prefix, so a test run never collides with the install', async () => {
+    const yaac = await resolveTrustedLayers('yaac')
+    const test = await resolveTrustedLayers('yaac-test')
+
+    expect(test.base.tag.startsWith('yaac-test-base:')).toBe(true)
+    expect(test.tools.tag.startsWith('yaac-test-tools:')).toBe(true)
+    expect(test.nestable.tag.startsWith('yaac-test-nestable:')).toBe(true)
+    // Same content, so the hashes match — only the repository differs.
+    expect(test.base.contentHash).toBe(yaac.base.contentHash)
+    expect(test.tools.buildArgs?.BASE_IMAGE).toBe(test.base.tag)
   })
 })
 

@@ -15,7 +15,7 @@ import type { SshCredentialEntry } from '#drivers/contract'
  * at all.
  *
  * So the composition root hands the reader in once (`main` for the server,
- * the api project's cluster setup for tests) and every path calls it. The
+ * the api project's cluster install for tests) and every path calls it. The
  * import arrow still points down — this module names only the entry type,
  * which is contract vocabulary — and it is the same dependency inversion
  * `setWorktreeDriver` itself is.

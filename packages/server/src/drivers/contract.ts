@@ -954,13 +954,13 @@ export interface WorktreeDriver {
   }): Promise<void>
 
   /**
-   * The machinery a launch will need exists and is running — the image
-   * build engine, for a runtime that builds images.
+   * The substrate a launch will need is reachable — the cluster, for a
+   * runtime that runs workspaces on one.
    *
    * Called before the caller has recorded or provisioned anything, so a
    * broken installation fails a create while it is still free to fail.
    */
-  ensureBuildEngine(): Promise<void>
+  ensureRuntimeReachable(): Promise<void>
   /**
    * Make the workspace's image available to run, and answer with the ref
    * that names it.

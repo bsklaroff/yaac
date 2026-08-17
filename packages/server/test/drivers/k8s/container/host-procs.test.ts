@@ -61,16 +61,12 @@ vi.mock('#log', () => ({
 
 import { pipeToServerLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import {
-  killTrackedPodmanProcs,
-  reapOrphanedPodmanProcs,
-  runTrackedPodman,
-} from '#drivers/k8s/container'
+import { reapOrphanedPodmanProcs, runTrackedPodman } from '#drivers/k8s/container'
 import { _clearTrackedPodmanProcsForTests } from '#drivers/k8s/container/host-procs'
 
 let dataDir: string
 
-/** Records the server persists so a successor can reap what it left behind. */
+/** Records an install persists so its successor can reap what it left behind. */
 function readState(): Array<{ pid: number; tag: string; verb: string }> {
   return JSON.parse(fs.readFileSync(path.join(dataDir, 'host-podman.json'), 'utf8')) as Array<{
     pid: number
@@ -169,38 +165,8 @@ describe('runTrackedPodman', () => {
   })
 })
 
-describe('killTrackedPodmanProcs', () => {
-  it('SIGTERMs the process group of every in-flight podman child', () => {
-    // The group, not the child: podman runs the build container as a child
-    // of its own, and that is what holds the image-store lock. Children are
-    // spawned detached (`streaming-proc.ts`), so the negated pid is the
-    // group — spied, never really signalled, since these pids are fictional.
-    const kill = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
-    void runTrackedPodman(['build', '-t', 'a:1', '.'], {
-      tag: 'a:1', logPrefix: '', timeoutMs: 1000,
-    }).catch(() => {})
-    void runTrackedPodman(['push', 'b:2'], {
-      tag: 'b:2', logPrefix: '', timeoutMs: 1000,
-    }).catch(() => {})
-
-    killTrackedPodmanProcs()
-
-    expect(kill).toHaveBeenCalledWith(-spawned[0].child.pid!, 'SIGTERM')
-    expect(kill).toHaveBeenCalledWith(-spawned[1].child.pid!, 'SIGTERM')
-    // The records stay on disk: the shutdown path exits without waiting for
-    // the children, so only the next boot's sweep — which re-verifies each
-    // pid against `ps` — is allowed to clear them.
-    expect(readState().map((r) => r.tag)).toEqual(['a:1', 'b:2'])
-  })
-
-  it('is a no-op with nothing in flight', () => {
-    expect(() => killTrackedPodmanProcs()).not.toThrow()
-    expect(stateExists()).toBe(false)
-  })
-})
-
 describe('reapOrphanedPodmanProcs', () => {
-  it('kills a surviving podman build from a previous server and clears the file', async () => {
+  it('kills a surviving podman build from a previous install and clears the file', async () => {
     writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
     execFileMock.mockResolvedValue({
       stdout: 'podman build -t yaac-tools:abc /home/u/.yaac/dockerfiles\n',

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as runtimeModule from '#drivers/k8s/container/runtime'
 
 const mockExecFileAsync = vi.hoisted(() => vi.fn())
@@ -7,14 +7,10 @@ vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
   execFileAsync: mockExecFileAsync,
 }))
 
-const mockServerLog = vi.hoisted(() => vi.fn())
-vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
-
-import { reconcileHostImageGc } from '#drivers/k8s/image-engine'
-// Setup values, not units under test: the sweep is throttled and the prune
-// carries an age floor, so a test that drives the reconcile has to speak in
-// the same numbers the module does.
-import { HOST_IMAGE_GC_INTERVAL_MS, HOST_PRUNE_UNTIL } from '#drivers/k8s/image-engine/image-gc'
+import { gcHostImages } from '#drivers/k8s/image-engine'
+// Setup value, not a unit under test: the prune carries an age floor, so a
+// test asserting the prune call has to speak the same number the module does.
+import { HOST_PRUNE_UNTIL } from '#drivers/k8s/image-engine/image-gc'
 
 // Newest-first, as `podman image ls --sort created` emits. Four yaac-base
 // generations (2 stale at the default budget), one in-budget registry-staged
@@ -31,11 +27,6 @@ const LS_OUTPUT = [
   '<none>|<none>:<none>',
   '',
 ].join('\n')
-
-// The throttle is module state with no reset hook, so every sweep in this
-// file gets its own tick, one full interval past the last.
-let clock = HOST_IMAGE_GC_INTERVAL_MS * 100
-const nextSweep = (): number => (clock += HOST_IMAGE_GC_INTERVAL_MS)
 
 type Call = [string, string[]]
 const callsMatching = (pred: (args: string[]) => boolean): string[][] =>
@@ -56,23 +47,15 @@ function servingLs(overrides: (args: string[]) => Promise<unknown> | undefined =
 
 beforeEach(() => {
   mockExecFileAsync.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
-  mockServerLog.mockReset()
-  // The shared test setup isolates YAAC_K8S_NAMESPACE; the reconcile is
-  // gated to the default install, so opt in unless a test says otherwise.
-  vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac')
 })
 
-afterEach(() => {
-  vi.unstubAllEnvs()
-})
-
-describe('reconcileHostImageGc', () => {
+describe('gcHostImages', () => {
   it('retires stale generation tags, then prunes dangling images past the age floor', async () => {
     servingLs((args) => args[1] === 'prune'
       ? Promise.resolve({ stdout: `${'a'.repeat(64)}\n${'b'.repeat(64)}\n`, stderr: '' })
       : undefined)
 
-    await reconcileHostImageGc(nextSweep())
+    const { retired, pruned } = await gcHostImages()
 
     // No -f on rmi: a tag in use by a container, or mid-build as a FROM,
     // must fail its rmi and wait for the next sweep.
@@ -83,12 +66,13 @@ describe('reconcileHostImageGc', () => {
     expect(callsMatching((a) => a[1] === 'prune')).toEqual([
       ['image', 'prune', '-f', '--filter', `until=${HOST_PRUNE_UNTIL}`],
     ])
-    expect(mockServerLog.mock.calls[0][0]).toContain('pruned 2 dangling image(s)')
+    expect(retired).toEqual(['localhost/yaac-base:old1', 'localhost/yaac-base:old2'])
+    expect(pruned).toBe(2)
   })
 
   it('keeps the newest generations per yaac repo and never touches non-yaac repos', async () => {
     servingLs()
-    await reconcileHostImageGc(nextSweep())
+    await gcHostImages()
     // yaac-base has 4 generations → the 2 oldest go. The registry-staged
     // yaac ref is in scope but within budget; ubuntu has 3 tags and is not
     // a yaac-built repo, so neither is a candidate.
@@ -97,14 +81,13 @@ describe('reconcileHostImageGc', () => {
 
   it('ignores dangling and malformed rows in the listing', async () => {
     servingLs()
-    await reconcileHostImageGc(nextSweep())
+    await gcHostImages()
     expect(rmiRefs().some((ref) => ref.includes('<none>'))).toBe(false)
   })
 
   it('retires nothing when the engine has no images', async () => {
     mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' })
-    await reconcileHostImageGc(nextSweep())
-    expect(rmiRefs()).toEqual([])
+    await expect(gcHostImages()).resolves.toEqual({ retired: [], pruned: 0 })
   })
 
   it('tolerates an rmi failure and still prunes', async () => {
@@ -112,41 +95,10 @@ describe('reconcileHostImageGc', () => {
       ? Promise.reject(new Error('image is in use by a container'))
       : undefined)
 
-    await reconcileHostImageGc(nextSweep())
+    const { retired } = await gcHostImages()
 
     expect(callsMatching((a) => a[1] === 'prune')).toHaveLength(1)
     // The failed tag stays for the next sweep; only the other is reported.
-    expect(mockServerLog.mock.calls[0][0]).toContain('retired 1 stale image tag(s)')
-    expect(mockServerLog.mock.calls[0][0]).toContain('localhost/yaac-base:old2')
-  })
-
-  it('sweeps immediately, then throttles to the interval', async () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' })
-    const t0 = nextSweep()
-    await reconcileHostImageGc(t0)
-    await reconcileHostImageGc(t0 + HOST_IMAGE_GC_INTERVAL_MS - 1)
-    expect(callsMatching((a) => a[1] === 'ls')).toHaveLength(1)
-
-    await reconcileHostImageGc(t0 + HOST_IMAGE_GC_INTERVAL_MS)
-    expect(callsMatching((a) => a[1] === 'ls')).toHaveLength(2)
-    clock = t0 + HOST_IMAGE_GC_INTERVAL_MS
-  })
-
-  it('is a no-op on test-isolated installs (per-run namespaces)', async () => {
-    vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
-    await reconcileHostImageGc(nextSweep())
-    expect(mockExecFileAsync).not.toHaveBeenCalled()
-  })
-
-  it('logs a summary only when something was reclaimed', async () => {
-    servingLs()
-    await reconcileHostImageGc(nextSweep())
-    expect(mockServerLog).toHaveBeenCalledOnce()
-    expect(mockServerLog.mock.calls[0][0]).toContain('retired 2 stale image tag(s)')
-
-    mockServerLog.mockReset()
-    mockExecFileAsync.mockResolvedValue({ stdout: '', stderr: '' })
-    await reconcileHostImageGc(nextSweep())
-    expect(mockServerLog).not.toHaveBeenCalled()
+    expect(retired).toEqual(['localhost/yaac-base:old2'])
   })
 })

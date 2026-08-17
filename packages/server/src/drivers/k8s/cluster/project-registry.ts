@@ -13,11 +13,11 @@ import {
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
+import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { imageExists } from '#drivers/k8s/container'
 import { projectDir } from '@yaac/shared/project-paths'
-import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 
 /** `app` label value shared by every per-project registry pod. */
@@ -728,23 +728,19 @@ export function buildRegistryGcPodManifest(
 }
 
 /**
- * Ensure the registry:2 mirror (digest-pinned) exists in the local
- * registry and return its in-cluster ref — same build-or-skip shape as
- * `ensureRedirectInitImage`. The mirror is what lets the node pull the
- * image with zero upstream egress at pod-create time.
+ * The registry:2 mirror's in-cluster ref, from the registry. The mirror is
+ * what lets a node pull the image with zero upstream egress at pod-create
+ * time; `yaac cluster install` is what puts it there.
  */
-export async function ensureRegistryImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
+export async function ensureRegistryImage(): Promise<string> {
   if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
+  throw missingPrebuiltImage('Registry', REGISTRY_MIRROR_TAG)
+}
 
+/** Mirror the pinned registry:2 image into the local registry. Install-time only. */
+export async function mirrorRegistryImage(): Promise<string> {
+  if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
   if (!await imageExists(REGISTRY_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `Registry image ${REGISTRY_MIRROR_TAG} is missing. ` +
-        'Restart the test run so the global setup can mirror it.',
-      )
-    }
     await execFileAsync('podman', ['pull', REGISTRY_UPSTREAM_IMAGE], { timeout: 300_000 })
     await execFileAsync('podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG])
   }

@@ -45,7 +45,6 @@ import {
   PROJECT_REGISTRY_STORAGE_SIZE,
   REGISTRY_APP_LABEL,
   REGISTRY_IMAGE_DIGEST,
-  REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
   REGISTRY_GC_INTERVAL_MS,
   REGISTRY_GENERATIONS_KEPT,
@@ -423,36 +422,24 @@ describe('ensureProjectRegistry', () => {
     expect(egress.spec.egress).toEqual([])
   })
 
-  it('mirrors the pinned upstream registry image, pulling only when it is absent', async () => {
-    // Already in the local registry — no podman at all.
+  it('takes the registry image from the local registry, never the host engine', async () => {
+    // A digest-pinned upstream mirrored by `yaac cluster install`. Standing
+    // a project's registry up is a server-side action, so it may only look
+    // the mirror tag up — a server has no container engine to pull with.
     mockHasTag.mockResolvedValue(true)
     await ensureProjectRegistry('demo')
+    expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
     expect(mockExec).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
 
-    // Present in podman but not pushed — push without pulling.
-    vi.clearAllMocks()
-    stageLiveCluster()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(true)
-    await ensureProjectRegistry('demo')
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
-
-    // Absent everywhere — pull by the multi-arch index digest, tag, push.
+    // Missing: refuse, naming the command that mirrors it.
     vi.clearAllMocks()
     stageLiveCluster()
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await ensureProjectRegistry('demo')
-    expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['pull', REGISTRY_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
-    )
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG],
-    )
-    expect(mockPush).toHaveBeenCalledWith(REGISTRY_MIRROR_TAG)
+    await expect(ensureProjectRegistry('demo'))
+      .rejects.toThrow(/Registry image .* is missing.*yaac cluster install/s)
+    expect(mockExec).not.toHaveBeenCalled()
   })
 
   it('names the PVC when the rollout times out', async () => {

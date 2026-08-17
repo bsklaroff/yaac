@@ -38,6 +38,10 @@ export async function prepareWorkspaceImage(opts: {
     },
   )
 
-  emit('Pushing session image to the local registry...')
+  // Answer with the ref the cluster resolves. In practice the tag is
+  // already in the registry — every layer above was either looked up there
+  // or built by a pod that pushed it — so this is a HEAD, and the push
+  // behind it is the backstop for a registry that lost the tag mid-run.
+  emit('Publishing the session image to the local registry...')
   return pushImageShared(imageName, { projectSlug: opts.projectSlug, reason: 'session' })
 }

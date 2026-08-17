@@ -103,7 +103,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cluster'
-import { ensureBuilderImage } from './builder-pod'
+import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'

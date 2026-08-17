@@ -3,14 +3,16 @@
 // src from reaching past this file. Modules in here import each other by
 // relative path, which is why they are unaffected by that rule.
 //
-// This feature owns the *substrate*: the local kind/podman cluster and the
+// This feature owns the *substrate*: the local kind/podman cluster, the
 // datapath the server hangs off it — the shared egress proxy, netd's
-// redirect layer, and the main and per-project registries. Three kinds of
-// consumer enter here: `yaac cluster check/setup/delete` (before any
-// server exists), worktree create and its
-// reconcilers (which stand a worktree's slice of that datapath up and tear it
-// down), and the image builders (which need the builder pod's admission
-// guard and its route to the registry).
+// redirect layer, and the main and per-project registries — and every image
+// yaac itself ships, which `yaac cluster install` builds on this machine
+// and everything else looks up in the registry. Three kinds of consumer
+// enter here: `yaac cluster check/install/delete` (before any server
+// exists), worktree create and its reconcilers (which stand a worktree's
+// slice of that datapath up and tear it down), and the image builders
+// (which need the builder pod's admission guard and its route to the
+// registry).
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/cluster/. Modules not re-exported are
@@ -20,7 +22,7 @@
 // Two things this feature uses heavily are deliberately NOT part of its
 // interface, because their consumers want them without any cluster
 // machinery — routing either of them through this barrel would drag cluster
-// check and setup into the image builder and the informer cache.
+// check and install into the image builder and the informer cache.
 //
 //  - The datapath's *names and ports* are a zero-import constant vocabulary
 //    the stream relay, the pod spec, and the image builders read, so they
@@ -55,6 +57,9 @@ export {
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
 } from './proxy-apply'
+export { ensureBuilderImage } from './builder-image'
+export { buildBuiltinImages } from './builtin-images'
+export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
 export {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
@@ -64,4 +69,4 @@ export {
   mainRegistryExec,
   restartMainRegistry,
 } from './main-registry'
-export { ClusterSetupError, runClusterSetup } from './setup'
+export { ClusterInstallError, runClusterInstall } from './install'

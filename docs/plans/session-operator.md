@@ -112,8 +112,8 @@ used for vcluster synced pods).
 - Second language and build artifact. A Go controller image fits the
   existing `k8s/proxy` sidecar pattern (built/pushed to the local
   registry, mirrored for e2e in `test/global-setup.ts`).
-- CRD versioning/migration discipline; heavier `yaac cluster setup`
-  (CRDs + controller Deployment, `--repair` re-applies).
+- CRD versioning/migration discipline; heavier `yaac cluster install`
+  (CRDs + controller Deployment, re-applied on every install).
 - e2e: per-run namespaces need either one shared controller serving all
   test namespaces or namespace-scoped controller instances per run
   (controller-runtime supports namespace-scoped caches). Decide early —
@@ -218,7 +218,7 @@ KEP-stage vapor:
   policy gating, and a cross-namespace-adoption guard.
 - **Template + managed NetworkPolicy**: implemented —
   `sandboxtemplate_controller.go` owns a `NetworkPolicy` per template.
-- **Admission/webhook footprint (good news for `yaac cluster setup`)**: the
+- **Admission/webhook footprint (good news for `yaac cluster install`)**: the
   controller runs a webhook server, but it is **conversion-focused**
   (v1alpha1↔v1beta1) and **self-manages its serving certs**
   (`--manage-webhook-certs=true` default, patches CRD `caBundle`s on
@@ -324,7 +324,7 @@ controller (the `agent-sandbox-system` Deployment) alongside ours.
 
 - Two controllers, two CRD bundles: agent-sandbox `sandbox.yaml` +
   `extensions.yaml` (namespace `agent-sandbox-system`) plus yaac's
-  `Session`. `yaac cluster setup`/`--repair` applies all three.
+  `Session`. `yaac cluster install` applies all three.
 - The agent-sandbox controller image joins the digest-pinned upstream
   mirror set in `test/global-setup.ts` (same pattern as the vcluster image
   set and `registry:2`).
