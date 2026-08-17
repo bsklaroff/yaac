@@ -111,6 +111,24 @@ export function WorktreeChat({
     if (list && pinnedRef.current) list.scrollTop = list.scrollHeight
   }, [draft])
 
+  // The pane shrinking under the reader is the same event as the conversation
+  // growing under them, and wants the same answer. A scroller keeps its
+  // scrollTop when its box gets shorter, so the tail slides out of sight below
+  // the fold — and on a phone the thing that shrinks it is the soft keyboard,
+  // which means tapping the box to reply is what loses the message being
+  // replied to. (A rotation and the terminal key bar do it too.) Same
+  // condition as everywhere else here: follow only a reader who was already at
+  // the tail.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (pinnedRef.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   useEffect(() => {
     if (visible) inputRef.current?.focus()
   }, [visible])

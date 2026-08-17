@@ -305,15 +305,32 @@ body {
 }
 
 /*
- * `--app-height` is the *visual* viewport height, published by
+ * `--app-height` is the *visual* viewport height and `--app-top` is how far
+ * that viewport has slid down the layout one, both published by
  * useVisualViewportHeight() while the mobile shell is active. The layout
  * viewport doesn't shrink when a soft keyboard opens, so sizing to it would
  * leave the bottom of a terminal behind the keyboard; sizing to the visual
  * viewport instead makes the pane's ResizeObserver — and so the PTY's row
  * count — track the space actually on screen. Falls back to the dynamic
  * viewport unit, and then to the 100% above, when neither is available.
+ *
+ * `fixed` at that offset is the other half, and what the offset is *for*:
+ * focusing the chat composer makes iOS slide the visual viewport up to reveal
+ * it and never slide back, which leaves an app anchored to the layout viewport
+ * sitting above the space it was sized for — background showing below the
+ * pane, and the whole shell draggable in the gap. Pinning the root to the
+ * visible region instead leaves nothing under it to scroll to, and also takes
+ * it out of any page scroll iOS grants itself while the keyboard is up.
+ *
+ * A fixed root is not a containing block for `position: fixed` descendants
+ * (only transforms and friends are), so overlays inside the app resolve
+ * against the viewport exactly as before.
  */
 #root {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
   height: var(--app-height, 100dvh);
 }
 

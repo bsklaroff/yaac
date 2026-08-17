@@ -1,7 +1,25 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpToolCall } from '@yaac/shared/acp'
+
+/**
+ * jsdom has no ResizeObserver, and the pane makes one to follow the tail when
+ * its box shrinks. Drivable rather than inert, so the scroll-follow tests
+ * below can play the resize a soft keyboard causes.
+ */
+const paneResized = new Set<() => void>()
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    private readonly fire: () => void
+    constructor(cb: ResizeObserverCallback) {
+      this.fire = () => cb([], this as unknown as ResizeObserver)
+    }
+    observe(): void { paneResized.add(this.fire) }
+    unobserve(): void { paneResized.delete(this.fire) }
+    disconnect(): void { paneResized.delete(this.fire) }
+  }
+})
 
 /**
  * What the chat pane keeps across a teardown. A pane going off-screen stays
@@ -561,5 +579,63 @@ describe('WorktreeChat permission asks', () => {
     ]
     show()
     expect(screen.getByText('working')).toBeTruthy()
+  })
+})
+
+/**
+ * Where the conversation sits when the pane changes size under the reader.
+ *
+ * On a phone the thing that shrinks it is the soft keyboard, so the gesture
+ * that loses the tail is tapping the box to reply — to the message that just
+ * scrolled out of sight. The rule is the same one the streaming follow uses:
+ * only a reader already at the tail is carried down with it.
+ */
+describe('WorktreeChat scroll follow', () => {
+  beforeEach(() => {
+    stream.events = [user(0, 'hello')]
+    stream.busy = false
+    stream.connected = true
+    useUiStore.setState({ chatDrafts: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    flushChatDrafts()
+    paneResized.clear()
+  })
+
+  /** jsdom lays nothing out, so the scroller's metrics are installed by hand.
+   *  `scrollTop` records what the pane writes, which is the assertion. */
+  function scroller(container: HTMLElement, clientHeight: number, scrollTop: number): () => number {
+    const el = container.querySelector('.overflow-y-auto') as HTMLElement
+    let top = scrollTop
+    Object.defineProperty(el, 'scrollHeight', { get: () => 1000, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { get: () => clientHeight, configurable: true })
+    Object.defineProperty(el, 'scrollTop', {
+      get: () => top,
+      set: (next: number) => { top = next },
+      configurable: true,
+    })
+    return () => top
+  }
+
+  it('follows the tail when the pane shrinks under a reader who was at it', () => {
+    const { container } = show()
+    // The keyboard is up: 400px of pane became 200, and the bottom of the
+    // conversation is now below the fold.
+    const top = scroller(container, 200, 600)
+    for (const fire of paneResized) fire()
+    expect(top()).toBe(1000)
+  })
+
+  it('leaves a reader who scrolled up where they were', () => {
+    const { container } = show()
+    const list = container.querySelector('.overflow-y-auto') as HTMLElement
+    const top = scroller(container, 200, 0)
+    // They went back to read an earlier tool call; the keyboard must not yank
+    // them to the bottom any more than a streaming reply may.
+    fireEvent.scroll(list)
+    for (const fire of paneResized) fire()
+    expect(top()).toBe(0)
   })
 })
