@@ -919,7 +919,7 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
 }
 
 interface RawServiceList {
-  items: Array<{ metadata: { labels?: Record<string, string> } }>
+  items: Array<{ metadata: { labels?: Record<string, string>; creationTimestamp?: string } }>
 }
 
 /**
@@ -933,8 +933,37 @@ export const REGISTRY_GC_INTERVAL_MS = 6 * 60 * 60_000
 export const REGISTRY_GC_TIMEOUT_MS = 10 * 60_000
 
 /** Last collect per project — module state, so a server restart just
- *  means the next resync pass is eligible again. */
+ *  means a registry that is already older than the interval is eligible
+ *  again on the next resync pass. */
 const lastRegistryGcMs = new Map<string, number>()
+
+/**
+ * When this project's registry last had nothing to collect: its previous
+ * collect, or — for one this process has not collected yet — the moment
+ * the Service came into being.
+ *
+ * The creation time is the load-bearing half. Garbage here is the
+ * PREVIOUS generation of a rebuilt tag, so a registry accrues none until
+ * something is rebuilt through it, and a registry younger than the
+ * interval cannot have accrued a window's worth however busy it has been.
+ * Without that baseline the throttle measures this process's uptime
+ * instead, and an unseen slug is eligible immediately — which puts a
+ * maintenance window (two `Recreate` rollouts, a few seconds of connection
+ * refusals each) on the registry a worktree create JUST stood up, at the
+ * one moment the new worktree is pushing and pulling through it hardest.
+ * The registry's own age is the honest measure, and it survives the server
+ * restart the map does not: a registry that really is due is still due on
+ * the first pass after one.
+ *
+ * A Service with no parseable creationTimestamp (nothing a real API server
+ * returns) falls back to "eligible", the pre-baseline behavior.
+ */
+function gcBaselineMs(projectSlug: string, creationTimestamp?: string): number {
+  const collected = lastRegistryGcMs.get(projectSlug)
+  if (collected !== undefined) return collected
+  const created = Date.parse(creationTimestamp ?? '')
+  return Number.isNaN(created) ? 0 : created
+}
 
 /** Test hook: forget the per-project throttle and any in-flight collect. */
 export function _resetRegistryGcForTests(): void {
@@ -991,8 +1020,8 @@ export async function reconcileProjectRegistryGc(now = Date.now()): Promise<void
   for (const item of services?.items ?? []) {
     const slug = item.metadata.labels?.[LABEL_PROJECT]
     if (!slug) continue
-    const last = lastRegistryGcMs.get(slug)
-    if (last !== undefined && now - last < REGISTRY_GC_INTERVAL_MS) continue
+    if (now - gcBaselineMs(slug, item.metadata.creationTimestamp)
+      < REGISTRY_GC_INTERVAL_MS) continue
     lastRegistryGcMs.set(slug, now)
     inFlightCollect = collectProjectRegistry(slug)
       .catch((err: unknown) => {

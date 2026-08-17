@@ -593,18 +593,26 @@ describe('gcOrphanProjectRegistries', () => {
 })
 
 describe('reconcileProjectRegistryGc', () => {
-  /** One registry to collect, plus the poll a collect pod needs. */
-  function oneRegistry(): void {
+  /**
+   * A registry created at the epoch — old enough that DUE is past its
+   * first interval — plus the poll a collect pod needs.
+   */
+  function oneRegistry(createdMs = 0): void {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       const cidr = cidrRead(args)
       if (cidr) return cidr
       if (args[1] === 'services') {
-        return Promise.resolve({ items: [{ metadata: { labels: { 'yaac.project': 'demo' } } }] })
+        return Promise.resolve({ items: [{ metadata: {
+          labels: { 'yaac.project': 'demo' },
+          creationTimestamp: new Date(createdMs).toISOString(),
+        } }] })
       }
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
     })
   }
+  /** A `now` at which the epoch-created registry above is collectable. */
+  const DUE = REGISTRY_GC_INTERVAL_MS + 1_000
   const kubectlArgs = (): string[][] => mockRetry.mock.calls.map((c) => c[0])
   /** Whether each applied registry Deployment was the read-only one. */
   const rollouts = (): boolean[] => mockApply.mock.calls
@@ -626,7 +634,7 @@ describe('reconcileProjectRegistryGc', () => {
 
   it('collects behind a read-only window, then restores serving mode', async () => {
     oneRegistry()
-    await gcPass(1_000)
+    await gcPass(DUE)
 
     // Read-only in, serving out. Not scale-to-zero: an active project's
     // session count never reaches zero, and pulls have to keep working.
@@ -687,7 +695,7 @@ describe('reconcileProjectRegistryGc', () => {
 
   it('retires only yaac content-hash generations, never a name someone could pull', async () => {
     oneRegistry()
-    await gcPass(1_000)
+    await gcPass(DUE)
     const script = (mockApply.mock.calls.map((c) => c[0] as {
       kind: string; metadata: { name: string }
       spec: { containers: Array<{ command: string[] }> }
@@ -705,7 +713,7 @@ describe('reconcileProjectRegistryGc', () => {
 
   it('sends valid POSIX shell into the collect pod', async () => {
     oneRegistry()
-    await gcPass(1_000)
+    await gcPass(DUE)
     const script = (mockApply.mock.calls.map((c) => c[0] as {
       kind: string; metadata: { name: string }
       spec: { containers: Array<{ command: string[] }> }
@@ -718,17 +726,33 @@ describe('reconcileProjectRegistryGc', () => {
     oneRegistry()
     // Nothing about the pass consults session pods: read-only is what
     // makes a concurrent push safe, and a push that 405s is retried.
-    await gcPass(1_000)
+    await gcPass(DUE)
     expect(rollouts()).toEqual([true, false])
   })
 
   it('throttles to one collect per project per interval', async () => {
     oneRegistry()
-    await gcPass(1_000)
+    await gcPass(DUE)
     mockApply.mockClear()
-    await gcPass(1_000 + REGISTRY_GC_INTERVAL_MS - 1)
+    await gcPass(DUE + REGISTRY_GC_INTERVAL_MS - 1)
     expect(rollouts()).toEqual([])
-    await gcPass(1_000 + REGISTRY_GC_INTERVAL_MS)
+    await gcPass(DUE + REGISTRY_GC_INTERVAL_MS)
+    expect(rollouts()).toEqual([true, false])
+  })
+
+  it('measures the throttle from the registry, not from this process', async () => {
+    // A registry a worktree create JUST stood up has nothing to reclaim —
+    // garbage here is the previous generation of a REBUILT tag — while the
+    // window it would pay is two `Recreate` rollouts, landing exactly when
+    // the new worktree is pushing and pulling through it hardest. So the
+    // clock the throttle reads is the Service's age, not this process's
+    // uptime, which is also why a server restart cannot re-arm it.
+    oneRegistry(DUE - 1)
+    await gcPass(DUE)
+    expect(rollouts()).toEqual([])
+
+    // The same unseen slug, one interval older: due, and collected.
+    await gcPass(DUE + REGISTRY_GC_INTERVAL_MS - 1)
     expect(rollouts()).toEqual([true, false])
   })
 
@@ -744,7 +768,7 @@ describe('reconcileProjectRegistryGc', () => {
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
       return Promise.resolve(null)
     })
-    await gcPass(1_000)
+    await gcPass(DUE)
     // A failed collect must never strand the registry in maintenance mode.
     expect(rollouts()).toEqual([true, false])
   })
@@ -762,7 +786,7 @@ describe('reconcileProjectRegistryGc', () => {
     mockRetry.mockImplementation((args: string[]) =>
       args[0] === 'rollout' ? held : Promise.resolve({ stdout: '', stderr: '' }))
 
-    await reconcileProjectRegistryGc(1_000)
+    await reconcileProjectRegistryGc(DUE)
     expect(rollouts()).not.toContain(false)
 
     release()
@@ -771,6 +795,6 @@ describe('reconcileProjectRegistryGc', () => {
 
   it('tolerates an unreachable cluster', async () => {
     mockGetJson.mockRejectedValue(new Error('connection refused'))
-    await expect(reconcileProjectRegistryGc(1_000)).resolves.toBeUndefined()
+    await expect(reconcileProjectRegistryGc(DUE)).resolves.toBeUndefined()
   })
 })

@@ -313,6 +313,16 @@ one project per pass, detaches (reconcile steps run sequentially), and the
 restore to serving mode is unconditional so a failed collect never strands
 a registry in maintenance mode.
 
+The throttle's clock is the REGISTRY's, not the server process's: a
+project the server has not collected in this run dates from its Service's
+`creationTimestamp`. Garbage is the previous generation of a rebuilt tag,
+so a registry younger than the interval has none however busy it has been,
+and collecting one would put the window on the registry a worktree create
+just stood up — while that worktree is pushing and pulling through it
+hardest. Reading the registry's own age instead also means a server
+restart cannot re-arm a window that is not due, and a registry that IS due
+is still due on the first pass after one.
+
 That env var is spelled as an inline YAML map: the `…_READONLY_ENABLED`
 form collapses the key to a scalar and registry 2.8 panics at boot.
 
