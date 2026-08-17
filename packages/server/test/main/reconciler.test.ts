@@ -26,7 +26,6 @@ vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
   ...(await importOriginal<typeof imagePrewarmModule>()),
   reconcileImagePrewarm: vi.fn(),
 }))
-vi.mock('#drivers/k8s/image-engine/image-gc', () => ({ reconcileHostImageGc: vi.fn() }))
 vi.mock('#drivers/k8s/egress/proxy-reconcile', () => ({ reconcileProxySshKeys: vi.fn() }))
 vi.mock('#drivers/k8s/cluster/project-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof projectRegistryModule>()),
@@ -55,7 +54,6 @@ import { reconcileBuilderPodGc } from '#drivers/k8s/images/builder-pod'
 import { reconcileBuildCacheGc } from '#drivers/k8s/images/build-cache-gc'
 import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
 import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
-import { reconcileHostImageGc } from '#drivers/k8s/image-engine/image-gc'
 import { reconcileProxySshKeys } from '#drivers/k8s/egress/proxy-reconcile'
 import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registry'
 import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
@@ -65,7 +63,7 @@ const ALL_STEP_FNS = [
   reconcileBuilderPodGc, reconcileImagePrewarm, reconcilePrewarmPool,
   reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
   reconcileAgentSessions,
-  reconcileProxySshKeys, reconcileHostImageGc, reconcileBuildCacheGc,
+  reconcileProxySshKeys, reconcileBuildCacheGc,
   gcOrphanEphemeralModuleDirs, reconcileGeneratedTitles,
 ] as const
 

@@ -1,31 +1,30 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/cli'
 
 /**
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no
- * options), `setup` (and its `--repair` / `--nodes` options), and `delete`
- * (and its `-y/--yes` option). All three are host-side commands — they talk to
- * kubectl/podman/kind/the registry directly, never to the server — so no
- * server is spawned anywhere in this file and every case runs without a
- * cluster: we sabotage the environment (PATH stripping, a bogus KUBECONFIG)
- * and assert the diagnostic output + exit code.
+ * options), `install` (and its `--nodes` / `--adopt-cni` options), and
+ * `delete` (and its `-y/--yes` option). All three are host-side commands —
+ * they talk to kubectl/podman/kind/the registry directly, never to the
+ * server — so no server is spawned anywhere in this file and every case
+ * runs without a cluster: we sabotage the environment (PATH stripping, a
+ * bogus KUBECONFIG) and assert the diagnostic output + exit code.
  *
  * The happy paths are excluded by design: `check`'s all-green run needs a
- * fully wired kind cluster, and `setup`/`delete`'s full runs are
- * destructive (they recreate or delete the host's kind cluster and
- * registry) — all are exercised manually per the README. The guard-rail
- * cases below all stop BEFORE any mutating step.
+ * fully wired kind cluster, and a full `install` builds every image (and a
+ * full `delete` destroys the host's cluster) — all are exercised manually
+ * per the README. The guard-rail cases below all stop BEFORE any mutating
+ * step.
  *
- * `setup --adopt-cni` is the one mode that is NOT destructive, but a real
- * run of it needs a second cluster whose CNI yaac did not install, which no
- * e2e worker can stand up beside the one it is running in. What is covered
- * here is its whole option surface plus its refusal gate — which is the
- * part that matters, since an unverified adoption fails silently. The
- * gate's per-refusal reasoning is unit-tested against staged cluster reads
- * in packages/server/test/features/cluster/cluster-setup.test.ts.
+ * `install --adopt-cni` needs a second cluster whose CNI yaac did not
+ * install, which no e2e worker can stand up beside the one it is running
+ * in. What is covered here is its whole option surface plus its refusal
+ * gate — which is the part that matters, since an unverified adoption fails
+ * silently. The gate's per-refusal reasoning is unit-tested against staged
+ * cluster reads in
+ * packages/server/test/drivers/k8s/cluster/cluster-install.test.ts.
  *
  * One test env is shared for the whole file: these tests never write into
  * the data dir (every path fails preflight), and each test that needs a
@@ -93,11 +92,11 @@ describe('yaac cluster check (real CLI)', () => {
   }, 30_000)
 })
 
-describe('yaac cluster setup (real CLI)', () => {
+describe('yaac cluster install (real CLI)', () => {
   it('fails with a complete shopping list when podman and kind are missing', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env, PATH: stripFromPath('podman', 'kind') }
 
-    const { stderr, exitCode } = await runYaac(env, 'cluster', 'setup')
+    const { stderr, exitCode } = await runYaac(env, 'cluster', 'install')
     expect(exitCode).toBe(1)
     expect(stderr).toMatch(/Missing required tools/)
     expect(stderr).toMatch(/podman/)
@@ -109,52 +108,32 @@ describe('yaac cluster setup (real CLI)', () => {
   // The --nodes cases below stop in the option check, which runs before
   // the binary preflight and before anything is created — so they need no
   // podman, no kind, and no gate.
-  it('rejects --nodes together with --repair', async () => {
-    // The node count is fixed when the cluster is created; --repair fixes
-    // up the nodes that exist, so the combination cannot mean anything.
-    const env: NodeJS.ProcessEnv = { ...testEnv.env }
-
-    const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', '3', '--repair')
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/--nodes cannot be combined with --repair/)
-    // The fix is the create that would honor it.
-    expect(stderr).toMatch(/yaac cluster setup --nodes 3/)
-    expect(stdout).not.toMatch(/Re-applying node fixups/)
-  }, 30_000)
-
   it('rejects a --nodes value outside the supported range', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
 
     for (const value of ['0', '99', 'three']) {
-      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--nodes', value)
+      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', '--nodes', value)
       expect(exitCode).toBe(1)
       expect(stderr).toMatch(/--nodes must be an integer between 1 and \d+/)
       // The message quotes what was typed — the CLI passes the raw text
       // through rather than converting `three` to NaN first.
       expect(stderr).toContain(`"${value}"`)
       // Nothing was created: the check precedes the binary preflight.
-      expect(stdout).not.toMatch(/Recreating kind cluster/)
+      expect(stdout).not.toMatch(/Creating kind cluster/)
       expect(stderr).not.toMatch(/Missing required tools/)
     }
   }, 60_000)
 
   // The --adopt-cni option checks run before the binary preflight too, so
   // they need no podman, no kind, and no cluster.
-  it('rejects --adopt-cni together with --repair or --nodes', async () => {
+  it('rejects --adopt-cni together with --nodes', async () => {
+    // Adopt mode creates no cluster, so there are no nodes to render.
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
 
-    // --repair fixes up a kind cluster yaac built; --adopt-cni installs
-    // into one it did not, and is itself idempotent.
-    const repair = await runYaac(env, 'cluster', 'setup', '--adopt-cni', '--repair')
-    expect(repair.exitCode).toBe(1)
-    expect(repair.stderr).toMatch(/--adopt-cni cannot be combined with --repair/)
-    expect(repair.stdout).not.toMatch(/Re-applying node fixups/)
-
-    // Adopt mode creates no cluster, so there are no nodes to render.
-    const nodes = await runYaac(env, 'cluster', 'setup', '--adopt-cni', '--nodes', '3')
+    const nodes = await runYaac(env, 'cluster', 'install', '--adopt-cni', '--nodes', '3')
     expect(nodes.exitCode).toBe(1)
     expect(nodes.stderr).toMatch(/--nodes cannot be combined with --adopt-cni/)
-    expect(nodes.stdout).not.toMatch(/Recreating kind cluster/)
+    expect(nodes.stdout).not.toMatch(/Creating kind cluster/)
   }, 60_000)
 
   // The CNI gate itself, driven against a cluster that answers nothing: a
@@ -172,7 +151,7 @@ describe('yaac cluster setup (real CLI)', () => {
         KUBECONFIG: path.join(testEnv.scratchDir, 'no-such-kubeconfig'),
       }
 
-      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
+      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', '--adopt-cni')
       expect(exitCode).toBe(1)
       expect(stdout).toMatch(/Verifying the CNI this cluster already runs/)
       expect(stderr).toMatch(/Cannot adopt this cluster's CNI/)
@@ -193,7 +172,7 @@ describe('yaac cluster setup (real CLI)', () => {
 
       // Nothing was installed, and no cluster was touched.
       expect(stdout).not.toMatch(/Deploying the in-cluster image registry/)
-      expect(stdout).not.toMatch(/Recreating kind cluster/)
+      expect(stdout).not.toMatch(/Creating kind cluster/)
     },
     120_000,
   )
@@ -212,7 +191,7 @@ describe('yaac cluster setup (real CLI)', () => {
         YAAC_POD_CIDRS: '172.31.0.0/16, 172.31/16, 10.0.0.0/33',
       }
 
-      const { stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--adopt-cni')
+      const { stderr, exitCode } = await runYaac(env, 'cluster', 'install', '--adopt-cni')
       expect(exitCode).toBe(1)
       expect(stderr).toMatch(/not usable IPv4 CIDRs/)
       expect(stderr).toContain('172.31/16')
@@ -221,30 +200,6 @@ describe('yaac cluster setup (real CLI)', () => {
       expect(stderr).not.toMatch(/CIDRs:[^.]*172\.31\.0\.0\/16/)
     },
     120_000,
-  )
-
-  // Needs a real, working podman+kind pair (`kind get clusters` must
-  // succeed), so not on a host missing either binary. Linux-only: on macOS
-  // the machine-bootstrap step runs first and could touch real machine
-  // state.
-  it.skipIf(process.platform !== 'linux' || !onPath('kind') || !onPath('podman'))(
-    '--repair fails fast when the target kind cluster does not exist',
-    async () => {
-      const env: NodeJS.ProcessEnv = {
-        ...testEnv.env,
-        // A cluster name that cannot exist: --repair must fail on node
-        // enumeration BEFORE ensuring the registry or touching any node.
-        YAAC_KIND_CLUSTER: `yaac-e2e-absent-${crypto.randomBytes(4).toString('hex')}`,
-      }
-
-      const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'setup', '--repair')
-      expect(exitCode).toBe(1)
-      expect(stderr).toMatch(/not found/)
-      expect(stderr).toMatch(/yaac cluster setup/)
-      // No fixups were attempted.
-      expect(stdout).not.toMatch(/Re-applying node fixups/)
-    },
-    60_000,
   )
 })
 

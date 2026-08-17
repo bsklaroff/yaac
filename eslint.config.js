@@ -624,7 +624,7 @@ export default tseslint.config(
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
   // @yaac/shared, and the sanctioned host-side modules — exec
   // (drivers/k8s/substrate/exec, attaches/streams via `kubectl exec -it`),
-  // cluster check/setup/delete (drivers/k8s/cluster/*, run before any server
+  // cluster check/install/delete (drivers/k8s/cluster/*, run before any server
   // exists), and the host driver's own doctor (drivers/containerless/check,
   // the same door for the same reason: administering a substrate is
   // substrate-specific by nature). The negation chain re-includes each
@@ -650,12 +650,12 @@ export default tseslint.config(
                 '!@yaac/server/drivers/k8s/substrate/exec',
                 '!@yaac/server/drivers/k8s/cluster', '@yaac/server/drivers/k8s/cluster/*',
                 '!@yaac/server/drivers/k8s/cluster/check',
-                '!@yaac/server/drivers/k8s/cluster/setup',
+                '!@yaac/server/drivers/k8s/cluster/install',
                 '!@yaac/server/drivers/k8s/cluster/delete',
                 '!@yaac/server/drivers/containerless', '@yaac/server/drivers/containerless/*',
                 '!@yaac/server/drivers/containerless/check',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/{k8s/{substrate/exec,cluster/{check,setup,delete}},containerless/check}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/{k8s/{substrate/exec,cluster/{check,install,delete}},containerless/check}.',
             },
           ],
         },

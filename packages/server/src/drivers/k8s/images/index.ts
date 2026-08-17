@@ -18,7 +18,7 @@
 
 export { reconcileBuildCacheGc } from './build-cache-gc'
 export { ensureImage } from './build-coordinator'
-export { ensureBuilderImage, reconcileBuilderPodGc } from './builder-pod'
+export { reconcileBuilderPodGc } from './builder-pod'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
 export { salvageWorktreeImages } from './image-promoter'
 export { prepareWorkspaceImage } from './workspace-image'

@@ -1,4 +1,4 @@
-import { confirmDefault, kindEnv } from './setup'
+import { confirmDefault, kindEnv } from './install'
 import { ClusterDeleteError } from './arg-guards'
 import { execFileAsync } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
@@ -12,7 +12,7 @@ import { env } from '@yaac/shared/env'
  * per-project registries) and so does all of their node-local storage,
  * including the registries' image blobs — the node's filesystem goes with
  * the node. Nothing under the yaac data dir (projects, worktrees, worktrees)
- * is touched, so a later `yaac cluster setup` recreates the cluster and
+ * is touched, so a later `yaac cluster install` recreates the cluster and
  * re-pushes the images.
  */
 
@@ -86,6 +86,6 @@ export async function runClusterDelete(
 
   console.log(
     '\nDone. Sessions and worktrees on disk are untouched — run '
-    + '`yaac cluster setup` to recreate the cluster when you need it.',
+    + '`yaac cluster install` to recreate the cluster when you need it.',
   )
 }

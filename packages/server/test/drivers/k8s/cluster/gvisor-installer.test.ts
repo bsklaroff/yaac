@@ -251,43 +251,22 @@ describe('ensureGvisorRuntime', () => {
     expect(pod.nodeSelector).toEqual({ 'yaac.node-pool': 'sessions' })
   })
 
-  it('mirrors the pinned upstream installer image, pulling only when it is absent', async () => {
-    // Already in the local registry — no podman at all.
-    await ensureGvisorRuntime()
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
-
-    // Present in podman but not pushed — push without pulling.
-    vi.clearAllMocks()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(true)
-    await ensureGvisorRuntime()
-    expect(mockExec).not.toHaveBeenCalled()
-    expect(mockPush).toHaveBeenCalledWith(GVISOR_INSTALLER_MIRROR_TAG)
-
-    // Absent everywhere — pull by the multi-arch INDEX digest (a child
-    // manifest would mirror one platform's bytes onto every node), verify the
-    // mirrored architecture, tag, push.
-    vi.clearAllMocks()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
-    mockExec.mockResolvedValue({ stdout: process.arch === 'x64' ? 'amd64' : process.arch, stderr: '' })
+  it('takes the installer image from the registry, never the host engine', async () => {
+    // The image is a digest-pinned upstream (a child manifest would mirror
+    // one platform's bytes onto every node), mirrored by `yaac cluster
+    // install`. Everything here only looks it up: applying the DaemonSet
+    // must not need a container engine.
     await ensureGvisorRuntime()
     expect(GVISOR_INSTALLER_UPSTREAM_IMAGE).toMatch(/^docker\.io\/curlimages\/curl@sha256:[0-9a-f]{64}$/)
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['pull', GVISOR_INSTALLER_UPSTREAM_IMAGE], expect.objectContaining({ timeout: 300_000 }),
-    )
-    expect(mockExec).toHaveBeenCalledWith(
-      'podman', ['tag', GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG],
-    )
-    expect(mockPush).toHaveBeenCalledWith(GVISOR_INSTALLER_MIRROR_TAG)
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockApply).toHaveBeenCalled()
   })
 
-  it('fails fast instead of pulling when prebuilt images are required', async () => {
-    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
+  it('refuses, naming the command that mirrors it, when the registry lacks the tag', async () => {
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await expect(ensureGvisorRuntime()).rejects.toThrow(/missing/)
+    await expect(ensureGvisorRuntime()).rejects.toThrow(/missing.*yaac cluster install/s)
     expect(mockExec).not.toHaveBeenCalled()
     expect(mockApply).not.toHaveBeenCalled()
   })

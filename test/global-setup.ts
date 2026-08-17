@@ -3,16 +3,15 @@ import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
-import crypto from 'node:crypto'
-import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTag } from '@yaac/server/drivers/k8s/image-engine/image-builder'
-import { podUid } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { contextHash, ensureImageByTag, resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { ensureRegistryImage } from '@yaac/server/drivers/k8s/cluster/project-registry'
-import { ensureBuilderImage } from '@yaac/server/drivers/k8s/images/builder-pod'
-import { ensureEnvoyImage } from '@yaac/server/drivers/k8s/cluster/netd'
-import { ensureGvisorInstallerImage } from '@yaac/server/drivers/k8s/cluster/gvisor-installer'
+import { TRUSTED_PARENT_COMPRESSION } from '@yaac/server/drivers/k8s/cluster/builtin-images'
+import { mirrorRegistryImage } from '@yaac/server/drivers/k8s/cluster/project-registry'
+import { mirrorBuilderImage } from '@yaac/server/drivers/k8s/cluster/builder-image'
+import { mirrorEnvoyImage } from '@yaac/server/drivers/k8s/cluster/netd'
+import { mirrorGvisorInstallerImage } from '@yaac/server/drivers/k8s/cluster/gvisor-installer'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
-import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
+import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
 
 const execFileAsync = promisify(execFile)
@@ -186,35 +185,16 @@ export async function setup(): Promise<void> {
   // conmons died hang the podman service under subsequent build load.
   await pruneTestContainers()
 
-  // --- Base image (Dockerfile.default) ---
-  // Hash composition must match resolveImageChain: the YAAC_UID build arg
-  // (in-container yaac uid = server uid, for idmapped hostPath writes) is
-  // part of the image content, so it is folded into the tag.
-  const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseHash = await baseImageHash(baseDockerfile)
-  const baseTag = `yaac-test-base:${baseHash}`
-  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR, { YAAC_UID: String(podUid()) })
-
-  // --- Tools layer (Dockerfile.tools, layered on base) ---
-  // toolsContentHash covers the Dockerfile plus its COPY'd support files
-  // (the generated opencode models.dev catalog) — same helper as
-  // resolveImageChain so the two derive identical tags.
-  const toolsDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
-  const toolsHash = crypto.createHash('sha256').update(`${baseHash}:${await toolsContentHash()}`).digest('hex').slice(0, 16)
-  const toolsTag = `yaac-test-tools:${toolsHash}`
-  await ensureImageByTag(toolsTag, toolsDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
-
-  // --- Nestable layer (Dockerfile.nestable, layered on tools) ---
-  // In-pod rootless podman for nestedContainers e2e tests. Hash composition
-  // must match resolveImageChain (tools hash + nestable content).
-  const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-  const nestableContentHash = await fileHash(nestableDockerfile)
-  const nestableHash = crypto.createHash('sha256').update(`${toolsHash}:${nestableContentHash}`).digest('hex').slice(0, 16)
-  const nestableTag = `yaac-test-nestable:${nestableHash}`
-  await ensureImageByTag(nestableTag, nestableDockerfile, DOCKERFILES_DIR, {
-    BASE_IMAGE: toolsTag,
-    YAAC_UID: String(podUid()),
-  })
+  // --- The trusted chain: base (Dockerfile.default) → tools
+  // (Dockerfile.tools) → nestable (Dockerfile.nestable) ---
+  // Resolved by the same helper the server's chain resolution and `yaac
+  // cluster install` use, under the suite's own `yaac-test` prefix, so the
+  // tags here ARE the tags a test worker looks up — hash composition
+  // cannot drift between the two.
+  const { base, tools, nestable } = await resolveTrustedLayers('yaac-test')
+  for (const layer of [base, tools, nestable]) {
+    await ensureImageByTag(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
+  }
 
   // --- Proxy (k8s/proxy/) ---
   const proxyHash = await contextHash(PROXY_DIR)
@@ -232,20 +212,26 @@ export async function setup(): Promise<void> {
   // store — push everything up front so test workers never race a push.
   // pushImageToRegistry no-ops when the content-hash tag is already there.
   if (await registryReachable()) {
-    for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, netdTag]) {
+    // The trusted chain goes up zstd-compressed: these are the blobs a
+    // sandboxed builder pod pulls as its parent, and zstd is measurably
+    // faster there (see TRUSTED_PARENT_COMPRESSION).
+    for (const tag of [base.tag, tools.tag, nestable.tag]) {
+      await pushImageToRegistry(tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
+    }
+    for (const tag of [proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
     // Per-project registry image (registry:2, digest-pinned mirror) and
     // the sandboxed builder pods' podman image — pull-or-skip, then push,
     // same as above.
-    await ensureRegistryImage(false)
-    await ensureBuilderImage(false)
-    await ensureEnvoyImage(false)
+    await mirrorRegistryImage()
+    await mirrorBuilderImage()
+    await mirrorEnvoyImage()
     // The gVisor installer's image (digest-pinned upstream curl). No e2e
-    // runs `cluster setup`, so nothing here needs it today — mirrored so a
-    // test that does exercise the installer fails on what it is testing
+    // runs `cluster install`, so nothing here needs it today — mirrored so
+    // a test that does exercise the installer fails on what it is testing
     // rather than on a missing image.
-    await ensureGvisorInstallerImage(false)
+    await mirrorGvisorInstallerImage()
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

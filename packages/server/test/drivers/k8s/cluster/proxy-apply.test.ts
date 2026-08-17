@@ -7,7 +7,7 @@ import fs from 'node:fs/promises'
 // inside features/cluster is mocked — so `ensureProxyResources` drives the
 // real proxy manifests, the real policy set, the real cluster-CIDR probes,
 // and the real netd (which is internal to the folder and covered only here
-// and through cluster setup).
+// and through cluster install).
 vi.mock('#drivers/k8s/substrate/kubectl', () => ({
   isKubectlAbsentError: vi.fn(() => false),
   kubectlErrorSummary: vi.fn((e: unknown) => String(e)),
@@ -42,15 +42,18 @@ vi.mock('#drivers/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(true),
 }))
 
-// netd's image is produced by the host build engine — cluster setup builds it
-// before there is a cluster to build it in.
-vi.mock('#drivers/k8s/image-engine', () => ({
+// netd's image is produced on the CLI machine by `yaac cluster install`;
+// everything here only ever looks its content-hash tag up, so the real
+// refusal (missingPrebuiltImage) is kept and only the hash is faked.
+vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
+  ...(await importOriginal<typeof imageEngineModule>()),
   contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
   buildImage: vi.fn().mockResolvedValue(undefined),
   registerImageBuild: vi.fn(() => 'build-1'),
   finishImageBuild: vi.fn(),
   failImageBuild: vi.fn(),
 }))
+import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
 import {
   ensureBuilderRoleGuard,
@@ -87,7 +90,7 @@ import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/p
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
-import { buildImage, failImageBuild, registerImageBuild } from '#drivers/k8s/image-engine'
+import { buildImage, registerImageBuild } from '#drivers/k8s/image-engine'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
@@ -501,85 +504,30 @@ describe('ensureProxyResources', () => {
     expect(env.find((e) => e.name === 'NETD_VETH_PREFIX')?.value).toBe('eni')
   })
 
-  it('builds the netd image when neither the registry nor podman has it', async () => {
+  it('refuses with the install pointer when netd or Envoy is missing from the registry', async () => {
+    // Neither image is built here any more: both are yaac-shipped, so
+    // `yaac cluster install` produces them and this path is a lookup. A
+    // proxy bootstrap that could build would put a container engine back
+    // on the server's critical path.
     stageClusterReads()
-    mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
 
-    await ensureProxyResources('img')
-
-    expect(vi.mocked(registerImageBuild)).toHaveBeenCalledWith(
-      expect.objectContaining({ layer: 'netd', action: 'build' }),
-    )
-    expect(vi.mocked(buildImage)).toHaveBeenCalledWith(
-      expect.stringMatching(/^yaac-netd:/),
-      expect.stringContaining('Dockerfile'),
-      expect.any(String),
-    )
-    // Envoy is mirrored rather than built: pull the digest-pinned upstream,
-    // verify the arch, retag into the local mirror tag.
-    const argvs = podmanArgs()
-    expect(argvs).toContainEqual(['pull', expect.stringContaining('envoyproxy/envoy@')])
-    expect(argvs.some((a) => a[0] === 'tag')).toBe(true)
-  })
-
-  it('marks the netd build failed and rethrows when the image build dies', async () => {
-    stageClusterReads()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
-    vi.mocked(buildImage).mockRejectedValueOnce(new Error('podman exploded'))
-
-    await expect(ensureProxyResources('img')).rejects.toThrow('podman exploded')
-    expect(vi.mocked(failImageBuild)).toHaveBeenCalledWith('build-1', 'podman exploded')
-  })
-
-  it('fails fast on a missing netd or Envoy image when prebuilt images are required', async () => {
-    stageClusterReads()
-    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    mockImageExists.mockResolvedValue(false)
-
-    // Envoy mirrored, netd not: the missing build is the one named.
+    // Envoy mirrored, netd not: the missing one is the one named.
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(!tag.startsWith('yaac-netd:')))
-    await expect(ensureProxyResources('img')).rejects.toThrow(/netd image .* is missing or stale/)
+    await expect(ensureProxyResources('img'))
+      .rejects.toThrow(/netd image .* is missing.*yaac cluster install/s)
 
     // netd present, Envoy absent: the mirror is what fails.
     mockHasTag.mockImplementation((tag: string) =>
       Promise.resolve(tag.startsWith('yaac-netd:')))
-    await expect(ensureProxyResources('img')).rejects.toThrow(/Envoy image .* is missing/)
-    // Nothing was pulled — that is the point of the gate.
+    await expect(ensureProxyResources('img'))
+      .rejects.toThrow(/Envoy image .* is missing.*yaac cluster install/s)
+
+    // Nothing was built, pulled or pushed — that is the point.
     expect(podmanArgs().some((a) => a[0] === 'pull')).toBe(false)
-  })
-
-  it('refuses an Envoy mirror built for another architecture', async () => {
-    stageClusterReads()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockImplementation((tag: string) =>
-      Promise.resolve(tag.startsWith('yaac-netd:')))
-    const realArch = process.arch
-    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true })
-    try {
-      // podman reports amd64, which is what x64 means — the mirror is fine.
-      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
-        const args = allArgs[1] as string[]
-        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-        cb(null, { stdout: isArchProbe ? 'amd64' : '', stderr: '' })
-      }) as never)
-      await expect(ensureProxyResources('img')).resolves.toBeUndefined()
-
-      // A child manifest for the wrong platform must not be mirrored.
-      mockPodman.mockImplementation(((...allArgs: unknown[]) => {
-        const args = allArgs[1] as string[]
-        const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-        const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-        cb(null, { stdout: isArchProbe ? 'arm64' : '', stderr: '' })
-      }) as never)
-      await expect(ensureProxyResources('img'))
-        .rejects.toThrow(/is a arm64 image but this host is amd64/)
-    } finally {
-      Object.defineProperty(process, 'arch', { value: realArch, configurable: true })
-    }
+    expect(vi.mocked(buildImage)).not.toHaveBeenCalled()
+    expect(vi.mocked(registerImageBuild)).not.toHaveBeenCalled()
   })
 
   it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {
@@ -685,7 +633,7 @@ describe('ensureBuilderRoleGuard', () => {
       args.includes('validatingadmissionpolicies')
         ? Promise.reject(new Error("the server doesn't have a resource type"))
         : Promise.resolve({ stdout: '', stderr: '' }))
-    await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster setup/)
+    await expect(ensureBuilderRoleGuard()).rejects.toThrow(/yaac cluster install/)
     expect(mockApply).not.toHaveBeenCalled()
   })
 })

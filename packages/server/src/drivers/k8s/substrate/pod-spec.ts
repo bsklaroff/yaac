@@ -481,10 +481,26 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
  * The uid worktree pods run as (`runAsUser`), and the uid baked into worktree
  * images as the `yaac` user (YAAC_UID build arg) so the two agree. Under
  * gVisor there is no userns and no idmap, so numeric uids pass through raw:
- * a hostPath file owned by host uid N appears in-container as uid N.
- * Server-created dirs (worktrees, cache volumes, config mounts) are owned by
- * the server's uid — the in-container user must carry the same uid to write
- * them. Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
+ * a hostPath file owned by host uid N appears in-container as uid N, so
+ * every writer of a shared path — the image's `yaac` user, the session pod,
+ * and whatever pre-creates the dirs — has to name the same number.
+ *
+ * Today that number is the SERVER's uid, because the server is what
+ * pre-creates them: worktree checkouts, cache and config mounts are
+ * `fs.mkdir`ed host-side by the server process (`#domain/worktrees`), so
+ * they land owned by whoever runs it. A pod running as anything else could
+ * not write them — on macOS especially, where the libkrun requirement
+ * exists precisely so virtiofs reports real ownership rather than
+ * flattening it to the accessing process (docs/cluster-setup.md).
+ *
+ * It becomes the constant 1000 when the server is a pod that runs as 1000
+ * and creates those dirs itself (docs/plans/server-in-cluster.md, phase 2):
+ * pinning it before then would break every host whose uid is not 1000 —
+ * the first login uid is 501 on macOS — for no gain, since the CLI that
+ * builds the images and the server that consumes them are still the same
+ * host user.
+ *
+ * Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
  * server runs as root (uid 0 is taken inside the image).
  */
 export function podUid(): number {

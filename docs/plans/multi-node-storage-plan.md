@@ -72,7 +72,7 @@ References:
 
 ### Cluster setup and manifests
 
-`yaac cluster setup` (full and `--repair`) applies the `yaac-gvisor-install`
+`yaac cluster install` applies the `yaac-gvisor-install`
 DaemonSet, which installs pinned runsc + containerd-shim-runsc-v1 on every
 node it lands on (systrap platform — no `/dev/kvm`), patches that node's
 containerd config with two handlers and labels it; setup then applies two
@@ -389,7 +389,7 @@ contract holds; treat ACL support as incompatible with idmap until proven.
   (`sec=sys`, no squash). The sessionUid = server uid = image yaac uid
   alignment must hold on every host.
 - **runsc is the load-bearing runtime.** A pinned binary + node containerd
-  config in `cluster setup`, a CVE stream to track, and a behavior surface to
+  config in `cluster install`, a CVE stream to track, and a behavior surface to
   re-verify on upgrades. A sentry escape lands the attacker in an
   unprivileged host process; kube-system and the host stay runc/kernel-hardened.
 - **NFS server availability.** The export will be a SPOF for all shared

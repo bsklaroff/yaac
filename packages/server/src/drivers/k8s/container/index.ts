@@ -6,17 +6,19 @@
 // path, which is why they are unaffected by that rule.
 //
 // Four modules. runtime.ts is the host side of the split runtime: the
-// once-per-process check that podman (the image build engine) and kubernetes
-// (the worktree runtime) are both usable, the CONTAINER_HOST lever that points
-// every podman call at the rootful engine, and the two image-store queries the
-// image and cluster features make.
+// CONTAINER_HOST lever that points every podman call at the rootful engine,
+// and the two image-store queries the image and cluster features make. The
+// engine itself is now install-time only — `yaac cluster install` builds and
+// pushes every yaac-shipped image, and the server resolves them all from the
+// registry (docs/trust-split-builds.md).
 // registry.ts is the CLIENT of the main OCI registry — the two addresses it
 // has (the cluster ref every image name carries, and the port-forwarded
 // endpoint this process pushes and HEADs through) plus the push itself. The
 // registry workload lives in the cluster and is owned by `#drivers/k8s/cluster`.
-// host-procs.ts owns every long-running podman child (`build` / `push`): it
-// runs them, and it makes them die with the server rather than outliving it
-// into the next one, which is where duplicate builds come from.
+// host-procs.ts owns every long-running podman child (`build` / `push`) —
+// all of them install-time now: it runs them, and it makes an interrupted
+// install's orphans die before the next one starts, which is where duplicate
+// builds come from.
 // streaming-proc.ts is the runner underneath them — the child-process engine
 // that streams a build's output line by line and enforces the silence and
 // hard-cap timeouts. host-procs runs podman on it; images runs its builder-pod
@@ -33,11 +35,7 @@
 // platform-specific podman install instructions, the registry's readiness
 // wait — is internal, and covered through the entry points below.
 
-export {
-  killTrackedPodmanProcs,
-  reapOrphanedPodmanProcs,
-  runTrackedPodman,
-} from './host-procs'
+export { reapOrphanedPodmanProcs, runTrackedPodman } from './host-procs'
 export { runStreamingProcess } from './streaming-proc'
 export {
   invalidateRegistryEndpoint,
@@ -52,7 +50,6 @@ export {
   REGISTRY_SERVICE_PORT,
 } from './registry'
 export {
-  ensureContainerRuntime,
   ensureRootfulPodmanHost,
   execFileAsync,
   imageExists,

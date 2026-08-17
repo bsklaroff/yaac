@@ -69,7 +69,7 @@ interface LivePriorityClass {
 
 /**
  * The installed PriorityClasses as the apiserver hands them back: same
- * objects `yaac cluster setup` applies, except that kubernetes materializes
+ * objects `yaac cluster install` applies, except that kubernetes materializes
  * the omitted preemptionPolicy into an explicit PreemptLowerPriority — the
  * asymmetry the check has to tolerate.
  */
@@ -639,7 +639,7 @@ describe('runClusterCheck', () => {
     const runsc = byName(results, 'runsc-nodes')
     expect(runsc).toMatchObject({ status: 'warn' })
     expect(runsc?.detail).toContain('yaac-worker')
-    expect(runsc?.fix).toContain('--repair')
+    expect(runsc?.fix).toContain('yaac cluster install')
 
     // The mount failure is NOT reported as a registry problem — that would
     // hand the user a hosts.toml repair that cannot add an extraMount.
@@ -874,7 +874,7 @@ describe('runClusterCheck', () => {
     expect(appliedKinds).not.toContain('Pod')
   })
 
-  it('warns on node-fixups (pointing at setup --repair) when a fixup went missing', async () => {
+  it('warns on node-fixups (pointing at install) when a fixup went missing', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'podman' && args[0] === 'exec') {
@@ -904,7 +904,7 @@ describe('runClusterCheck', () => {
     expect(fixups?.detail).toContain('pids-limit')
     expect(fixups?.detail).toContain('fs.inotify.max_user_instances')
     expect(fixups?.detail).toContain('fs.inotify.max_user_watches')
-    expect(fixups?.fix).toContain('yaac cluster setup --repair')
+    expect(fixups?.fix).toContain('yaac cluster install')
     expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start
   })
 
@@ -941,7 +941,7 @@ describe('runClusterCheck', () => {
     const pcs = byName(results, 'priority-classes')
     expect(pcs).toMatchObject({ status: 'fail' })
     expect(pcs?.detail).toContain('yaac-worktree')
-    expect(pcs?.fix).toContain('yaac cluster setup --repair')
+    expect(pcs?.fix).toContain('yaac cluster install')
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
   })
 
@@ -981,7 +981,7 @@ describe('runClusterCheck', () => {
     const gvisor = byName(results, 'gvisor')
     expect(gvisor).toMatchObject({ status: 'fail' })
     expect(gvisor?.detail).toContain('gvisor-nested')
-    expect(gvisor?.fix).toContain('yaac cluster setup --repair')
+    expect(gvisor?.fix).toContain('yaac cluster install')
     // A gvisor pod would sit Pending to its timeout — the probes skip.
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
@@ -1314,7 +1314,7 @@ describe('runClusterCheck', () => {
     const { ok, results } = await runClusterCheck()
     const nested = byName(results, 'nested-mount')
     expect(nested).toMatchObject({ status: 'warn' })
-    expect(nested?.fix).toContain('cluster setup --repair')
+    expect(nested?.fix).toContain('cluster install')
     expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
   })
 
@@ -1343,7 +1343,7 @@ describe('runClusterCheck', () => {
     expect(registry).toMatchObject({ status: 'fail' })
     // The registry is an in-cluster Deployment, so the fix is a repair pass
     // and a look at the workload — never a host container to start by hand.
-    expect(registry?.fix).toContain('yaac cluster setup --repair')
+    expect(registry?.fix).toContain('yaac cluster install')
     expect(registry?.fix).toContain('app=yaac-main-registry')
   })
 

@@ -64,15 +64,15 @@ class Yaac < Formula
 
   def caveats
     <<~EOS
-      Create the local cluster yaac runs sessions on (podman machine on
-      macOS, local registry, kind cluster, Calico, node fixups):
+      Converge the local cluster yaac runs sessions on (podman machine on
+      macOS, kind cluster, Calico, node fixups, local registry, and every
+      image yaac ships):
 
-        yaac cluster setup
+        yaac cluster install
 
-      The node fixups it applies do not survive a node or VM restart;
-      re-apply them without recreating the cluster:
-
-        yaac cluster setup --repair
+      Safe to re-run at any time, and it is what an upgrade runs: it never
+      recreates a cluster that already exists, and re-applies the node
+      fixups that do not survive a node or VM restart.
 
       Verify everything with:
 

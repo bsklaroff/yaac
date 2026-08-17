@@ -1,8 +1,6 @@
 /**
- * The builder-pod entry points that are not reached through a chain build:
- * the pinned-image mirror (also called by the e2e global setup), the
- * cluster-wide role guard (applied at `yaac cluster setup`) and the
- * leaked-pod reaper (a reconcile step).
+ * The builder-pod entry point that is not reached through a chain build:
+ * the leaked-pod reaper (a reconcile step).
  *
  * Everything else in this module — pod manifests, in-pod scripts, build
  * argv, context tar — is exercised through `ensureImage` in
@@ -56,13 +54,11 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   pushImageToRegistry: vi.fn(),
 }))
 
-import { ensureBuilderImage, reconcileBuilderPodGc } from '#drivers/k8s/images'
-// Reap policy constant, the upstream pin, and the sweep-throttle reset:
-// setup values, not units under test.
+import { reconcileBuilderPodGc } from '#drivers/k8s/images'
+// Reap policy constant and the sweep-throttle reset: setup values, not
+// units under test.
 import {
-  BUILDER_LOCAL_TAG,
   BUILDER_REAP_AGE_MS,
-  BUILDER_UPSTREAM_IMAGE,
   _resetBuilderReapForTests,
 } from '#drivers/k8s/images/builder-pod'
 
@@ -82,21 +78,6 @@ beforeEach(() => {
   mockKubectlGetJson.mockResolvedValue(null)
   mockRegistryHasTag.mockResolvedValue(true)
   mockImageExists.mockResolvedValue(false)
-})
-
-describe('ensureBuilderImage', () => {
-  it('returns the registry ref without pulling when the tag is mirrored', async () => {
-    await expect(ensureBuilderImage(true)).resolves.toBe(`localhost:5001/${BUILDER_LOCAL_TAG}`)
-  })
-
-  it('refuses to build under requirePrebuilt when the mirror is missing', async () => {
-    mockRegistryHasTag.mockResolvedValue(false)
-    await expect(ensureBuilderImage(true)).rejects.toThrow(/Restart the test run/)
-  })
-
-  it('is digest-pinned upstream (the digest IS the pin — no content hash)', () => {
-    expect(BUILDER_UPSTREAM_IMAGE).toMatch(/^quay\.io\/podman\/stable@sha256:[0-9a-f]{64}$/)
-  })
 })
 
 describe('reconcileBuilderPodGc', () => {

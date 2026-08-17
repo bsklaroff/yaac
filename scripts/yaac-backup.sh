@@ -9,11 +9,11 @@
 # worktrees, the agent homes and transcripts, and the proxy MITM CA under
 # run/proxy-data. Everything in Kubernetes and podman is rebuilt from it —
 # `yaac cluster delete` says so explicitly — so restoring is
-# "unpack, then re-run `yaac cluster setup`".
+# "unpack, then re-run `yaac cluster install`".
 #
 # Three things this CANNOT capture, reported by `dump` and reprinted by
 # `restore`:
-#   1. The cluster itself. Re-run `yaac cluster setup` on the new host.
+#   1. The cluster itself. Re-run `yaac cluster install` on the new host.
 #   2. ssh private keys. .credentials/github.json stores a privateKeyPath
 #      pointing anywhere on the host; the key file is not in the data dir.
 #      Likewise any host path named by `bindMounts` in a yaac-config.json.
@@ -145,7 +145,7 @@ cmd_dump() {
   # need its state.
   #
   # cache/ and models/ are re-fetched rather than carried: the Calico
-  # manifest by `yaac cluster setup` (checksum-verified), and the ~333MB
+  # manifest by `yaac cluster install` (checksum-verified), and the ~333MB
   # title-gen GGUF on first use — that one needs huggingface.co egress, so
   # an air-gapped host has no titles until it can reach it.
   set -- --exclude=./.server.lock --exclude=./.auth-daemon.lock --exclude='./login-*' \
@@ -180,7 +180,7 @@ EOF
   echo
   echo "NOT in this archive — copy or recreate by hand:"
   report_external_state "${dir}"
-  echo "  the cluster itself: run 'yaac cluster setup' on the new host"
+  echo "  the cluster itself: run 'yaac cluster install' on the new host"
 }
 
 cmd_restore() {
@@ -263,7 +263,7 @@ cmd_restore() {
   echo "restored ${target}"
   echo
   echo "still to do on this host:"
-  echo "  yaac cluster setup        # kind cluster, registry, netd, proxy, gVisor"
+  echo "  yaac cluster install      # kind cluster, registry, netd, proxy, gVisor, images"
   report_external_state "${target}"
   echo "  then: yaac server start"
 }

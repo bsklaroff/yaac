@@ -99,7 +99,7 @@ export function buildPriorityClassManifests(): Array<Record<string, unknown>> {
  * server start: the classes must exist BEFORE any pod naming them is
  * created (the apiserver rejects a pod whose class is missing, and a Job
  * whose pod is rejected hangs instead of failing cleanly), and running it at
- * boot as well as from `yaac cluster setup` is how a cluster installed by an
+ * boot as well as from `yaac cluster install` is how a cluster installed by an
  * older yaac picks them up on upgrade.
  */
 export async function ensurePriorityClasses(): Promise<void> {

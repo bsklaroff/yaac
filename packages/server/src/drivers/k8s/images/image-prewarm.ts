@@ -1,7 +1,7 @@
 /**
  * Reconcile step that keeps every project's image chain built and
- * pushed, so worktree create finds warm images instead of paying a podman
- * build (minutes after a Dockerfile.default edit) inside the create request.
+ * pushed, so worktree create finds warm images instead of paying a builder
+ * pod (minutes after a Dockerfile.yaac edit) inside the create request.
  *
  * Each tick sweeps all projects and fires one detached prewarm task per
  * project not already in flight — the tick body itself never blocks on a
@@ -33,9 +33,9 @@ import {
 const FAILED_RETRY_MS = 10 * 60_000
 
 /** Min interval between full sweeps. A warm-project sweep is cheap but not
- *  free — one detached task per project, each running a handful of podman
- *  inspects plus a registry HEAD — and at the 5s tick cadence that steady
- *  child-process churn was a measurable slice of server CPU. A minute
+ *  free — one detached task per project, each running a registry HEAD per
+ *  layer — and at the 5s tick cadence that steady churn was a measurable
+ *  slice of server CPU. A minute
  *  bounds how long a Dockerfile edit or an externally pruned image waits
  *  for the sweep; worktree creates bypass the sweep and build immediately. */
 export const PREWARM_SWEEP_INTERVAL_MS = 60_000
@@ -47,8 +47,9 @@ const prewarming = new Set<string>()
 let lastSweepMs = 0
 
 /** Ensure one project's chain is built and its final tag pushed. No-op when
- *  everything is warm (a handful of `podman image inspect`s + one registry
- *  HEAD), so an externally pruned image self-heals within a tick.
+ *  everything is warm (a handful of registry HEADs), so an image pruned out
+ *  from under the install self-heals within a tick — or, for a yaac-shipped
+ *  layer, surfaces the error naming `yaac cluster install`.
  *
  *  WHICH chain a project should keep warm follows from its config, which is
  *  the caller's to resolve — the pass hands it down (`ctx.projectConfig`),

@@ -125,7 +125,7 @@ export function createContainerlessDriver(): WorktreeDriver {
     // reports success and the worktree is gone seconds later: the tool (or
     // acpd's adapter) execs nothing, exits 127, and tmux closes the window.
     assertCanLaunch: (opts) => assertHostCanLaunch(opts),
-    ensureBuildEngine: () => Promise.resolve(),
+    ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => unsupported('building a workspace image'),
     salvageImages: () => Promise.resolve(),
 

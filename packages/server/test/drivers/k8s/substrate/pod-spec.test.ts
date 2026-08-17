@@ -497,6 +497,9 @@ describe('podUid', () => {
   })
 
   it('mirrors the server process uid', () => {
+    // The server is what pre-creates the hostPath dirs a pod writes, so
+    // until it is itself a pod running as 1000 the pod has to name the uid
+    // those dirs actually landed under (macOS's first login uid is 501).
     vi.spyOn(process, 'getuid').mockReturnValue(501)
     expect(podUid()).toBe(501)
   })

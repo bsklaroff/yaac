@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { setupStackingHarness } from './stacking-harness'
+import { HASH_RE, setupStackingHarness } from './stacking-harness'
 
 describe('resolveImageChain', () => {
   const h = setupStackingHarness()
@@ -18,6 +18,76 @@ describe('resolveImageChain', () => {
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain('myproject', 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'nestable', 'project', 'user'])
+  })
+
+  it('composes each step\'s tag and build args from the one above it', async () => {
+    // The chain is a hash chain: every layer's tag folds in its parent's,
+    // and the parent tag it will be built FROM is its BASE_IMAGE. Getting
+    // either wrong silently produces an image built on the wrong parent.
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'build'), { recursive: true })
+    await fs.writeFile(
+      path.join(buildDir, 'Dockerfile.yaac'),
+      'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n',
+    )
+    await fs.writeFile(
+      path.join(h.dataDir, 'build', 'Dockerfile.user'),
+      'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n',
+    )
+
+    const { resolveImageChain } = await h.load()
+    const { layers, finalTag } = await resolveImageChain('myproject', 'yaac', true)
+
+    const described = layers.map((l) => {
+      const args = Object.entries(l.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`).join(',')
+      return `${l.tag}${args ? ` [${args}]` : ''}`
+    })
+    expect(described).toEqual([
+      // The uid is the server's — it is what pre-creates the hostPath dirs
+      // the pod writes (see podUid).
+      expect.stringMatching(new RegExp(`^yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`)),
+      expect.stringMatching(new RegExp(`^yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`)),
+      expect.stringMatching(
+        new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE},YAAC_UID=\\d+\\]$`),
+      ),
+      expect.stringMatching(
+        new RegExp(`^yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
+      ),
+      expect.stringMatching(
+        new RegExp(`^yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`),
+      ),
+    ])
+    expect(finalTag).toBe(layers.at(-1)!.tag)
+  })
+
+  it('skips the shipped layers entirely for a standalone Dockerfile.yaac', async () => {
+    // It replaces the canonical base and owns its own toolchain, so neither
+    // tools nor nestable applies — even with nestedContainers on.
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(
+      path.join(buildDir, 'Dockerfile.yaac'),
+      'FROM docker.io/ubuntu:24.04\nRUN echo custom\n',
+    )
+
+    const { resolveImageChain } = await h.load()
+    const { layers } = await resolveImageChain('myproject', 'yaac', true)
+    expect(layers.map((l) => l.name)).toEqual(['project'])
+    expect(layers[0].buildArgs?.YAAC_UID).toMatch(/^\d+$/)
+  })
+
+  it('treats a Dockerfile.yaac with FROM yaac-base (no ARG) as standalone', async () => {
+    const buildDir = path.join(h.dataDir, 'projects', 'myproject', 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(buildDir, { recursive: true })
+    await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
+
+    const { resolveImageChain } = await h.load()
+    const { layers } = await resolveImageChain('myproject', 'yaac')
+    expect(layers.map((l) => l.name)).toEqual(['project'])
   })
 
   it('names a standalone Dockerfile.yaac as the project step', async () => {

@@ -17,7 +17,7 @@ lifetime:
 
 | Store | Owner today | Reconcile step |
 |---|---|---|
-| Host podman engine | `#drivers/k8s/image-engine` `image-gc.ts` | `host-image-gc` |
+| Host podman engine | `#drivers/k8s/image-engine` `image-gc.ts` | swept by `yaac cluster install` |
 | Main registry step-cache repos | `#drivers/k8s/images` `build-cache-gc.ts` | `build-cache-gc` |
 | Per-project registry blobs | `#drivers/k8s/cluster` `project-registry.ts` | `registry-gc` |
 | **Node containerd image store** | **nobody** | — |

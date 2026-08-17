@@ -1,6 +1,6 @@
 # Calico pin
 
-`yaac cluster setup` installs Calico as the CNI + NetworkPolicy engine from
+`yaac cluster install` installs Calico as the CNI + NetworkPolicy engine from
 upstream's classic KDD/iptables release manifest. The manifest is *not*
 vendored — only its checksum is. Setup downloads it once
 (`raw.githubusercontent.com/projectcalico/calico/v<version>/manifests/calico.yaml`),

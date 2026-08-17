@@ -1,15 +1,16 @@
 /**
  * The build-engine seam: routes each image layer to the engine that
- * executes its `podman build`, keyed on layer trust
- * (docs/trust-split-builds.md).
+ * realizes it, keyed on layer trust (docs/trust-split-builds.md).
  *
- * Routing is a WHITELIST: only the yaac-shipped layers — `base`, `tools`,
+ * Routing is a WHITELIST: the yaac-shipped layers — `base`, `tools`,
  * `nestable`, whose Dockerfiles live in the install's DOCKERFILES_DIR with
- * pinned upstreams — build on the host podman engine. Every other layer
- * name executes user/agent-editable RUN steps and builds in an ephemeral
- * runsc builder pod, so a malicious step at worst compromises a throwaway
- * sandbox. Whitelisting means a future layer name is sandboxed by default
- * rather than silently host-built.
+ * pinned upstreams — are not built here at all. `yaac cluster install`
+ * builds them on the machine running the CLI and pushes them, so the
+ * server only ever looks their content-hash tag up in the registry. Every
+ * other layer name executes user/agent-editable RUN steps and builds in an
+ * ephemeral runsc builder pod, so a malicious step at worst compromises a
+ * throwaway sandbox. Whitelisting means a future layer name is sandboxed by
+ * default rather than silently trusted.
  *
  * The trusted names cannot be faked: `resolveImageChain()` is the only
  * producer of `ImageLayer.name` and assigns `base`/`tools`/`nestable`
@@ -17,18 +18,17 @@
  * always `project` (layered or standalone) and `Dockerfile.user` always
  * `user`, regardless of their content.
  *
- * The seam is build/imageExists. Pushes are deliberately NOT routed
- * per layer: host products push through `pushImageShared` (which
- * coalesces + HEAD-skips), while a cluster-pod build's delta push is an
- * inseparable step of the build itself — the product only ever exists in
- * the registry.
+ * The seam is the build itself, and only that. Whether a layer is already
+ * realized is not routed at all any more — the registry is where every
+ * layer lands, whichever side produced it — and neither are pushes: a
+ * cluster-pod build's delta push is an inseparable step of the build
+ * itself, and a prebuilt layer was pushed by the install that built it.
  */
-import { imageExists, registryHasTag } from '#drivers/k8s/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import type { ImageLayerName } from '@yaac/shared/types'
-import { buildImage, type ImageLayer } from '#drivers/k8s/image-engine'
+import { missingPrebuiltImage, type ImageLayer } from '#drivers/k8s/image-engine'
 
-export type BuildEngineKind = 'host-podman' | 'cluster-pod'
+export type BuildEngineKind = 'prebuilt' | 'cluster-pod'
 
 const TRUSTED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools', 'nestable'])
 
@@ -38,11 +38,11 @@ export function isTrustedLayer(name: ImageLayerName): boolean {
 }
 
 /**
- * Which engine realizes a layer: whitelisted trusted layers on host
- * podman; everything else in a runsc builder pod.
+ * Which engine realizes a layer: whitelisted trusted layers come prebuilt
+ * from the registry; everything else builds in a runsc builder pod.
  */
 export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
-  return isTrustedLayer(name) ? 'host-podman' : 'cluster-pod'
+  return isTrustedLayer(name) ? 'prebuilt' : 'cluster-pod'
 }
 
 export interface EngineBuildContext {
@@ -59,36 +59,25 @@ export interface EngineBuildContext {
 
 export interface BuildEngine {
   kind: BuildEngineKind
-  /** Realize the layer's tag (host store or, for cluster-pod, the registry). */
+  /** Realize the layer's tag in the registry, where every pod pulls from. */
   build(layer: ImageLayer, ctx: EngineBuildContext): Promise<void>
-  /** Whether the layer's tag is already realized where this engine looks. */
-  imageExists(tag: string): Promise<boolean>
 }
 
-export const hostPodmanEngine: BuildEngine = {
-  kind: 'host-podman',
-  build: (layer, ctx) => buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
-    onLog: ctx.onLog,
-  }),
-  imageExists: (tag) => imageExists(tag),
+/**
+ * The trusted layers' "engine", which builds nothing: their tags are
+ * install output, so a missing one is a missing install and the only
+ * useful thing to do is say which command produces it.
+ */
+export const prebuiltEngine: BuildEngine = {
+  kind: 'prebuilt',
+  build: (layer) => Promise.reject(missingPrebuiltImage(layer.name, layer.tag)),
 }
 
 export const clusterPodEngine: BuildEngine = {
   kind: 'cluster-pod',
   build: (layer, ctx) => buildLayerInPod(layer, ctx),
-  // The registry is authoritative — the host store never sees these tags.
-  imageExists: (tag) => registryHasTag(tag),
 }
 
 export function engineForLayer(name: ImageLayerName): BuildEngine {
-  return engineKindForLayer(name) === 'cluster-pod' ? clusterPodEngine : hostPodmanEngine
+  return engineKindForLayer(name) === 'cluster-pod' ? clusterPodEngine : prebuiltEngine
 }
-
-/**
- * Compression for trusted-layer pushes feeding builder-pod parent pulls:
- * zstd cuts the pod's empty-graphroot parent pull from 65.6s to 40.4s
- * (measured). Node containerd zstd pulls are validated live (worktree pods
- * pull product manifests referencing these blobs) — see the plan doc's
- * validation notes.
- */
-export const TRUSTED_PARENT_COMPRESSION = 'zstd' as const

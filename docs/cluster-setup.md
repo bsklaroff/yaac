@@ -1,24 +1,50 @@
 # Cluster setup
 
-Current-state reference for `yaac cluster setup` — the runtime yaac needs,
+Current-state reference for `yaac cluster install` — the runtime yaac needs,
 what the command provisions, and why. Companion to `yaac cluster check`,
 which verifies all of it (the command finishes by running it).
 
 ```sh
-yaac cluster setup             # one node
-yaac cluster setup --nodes 3   # one control-plane node + two workers
-yaac cluster setup --adopt-cni # install into a cluster whose CNI is not ours
+yaac cluster install             # one node
+yaac cluster install --nodes 3   # one control-plane node + two workers
+yaac cluster install --adopt-cni # install into a cluster whose CNI is not ours
 ```
 
-The command bootstraps the podman machine on macOS (see below) — or expects a
-reachable rootful podman on Linux (see below) — creates a kind cluster from the
-bundled `k8s/kind-config.yaml`, installs pinned Calico (the CNI and
-NetworkPolicy engine) and netd (the worktree-egress redirect), applies the node
-fixups to every node, and deploys the in-cluster image registry.
+One idempotent verb, safe to run at any time. It bootstraps the podman
+machine on macOS (see below) — or expects a reachable rootful podman on
+Linux (see below) — creates a kind cluster from the bundled
+`k8s/kind-config.yaml` **if there is none**, installs pinned Calico (the CNI
+and NetworkPolicy engine), applies the node fixups to every node, deploys
+the in-cluster image registry, builds and pushes every image yaac ships (see
+"Images are built here, and only here"), and applies the in-cluster layers —
+the gVisor runtime, the PriorityClasses, netd.
 
-`--adopt-cni` is the one non-destructive mode: it creates nothing and
-installs no CNI, adopting the Calico an existing cluster already runs (see
-"Adopting a CNI yaac did not install").
+Nothing in it is destructive: a cluster that already exists is converged,
+never recreated, so it is also what an upgrade runs (`npm update`, then
+`yaac cluster install`). Teardown happens only through an explicit `yaac
+cluster delete`, which is the one command that can lose running worktrees.
+`--nodes` therefore applies only to a cluster this run creates; against an
+existing one it is a no-op with a note.
+
+`--adopt-cni` installs into a cluster yaac did not create: it makes no
+cluster and installs no CNI, adopting the Calico that cluster already runs
+(see "Adopting a CNI yaac did not install").
+
+## Images are built here, and only here
+
+Every image yaac itself ships — the base/tools/nestable worktree chain, the
+egress proxy, netd — is built by `podman build` on the machine running the
+yaac CLI and pushed to the in-cluster registry, together with the mirrors of
+the digest-pinned upstreams it uses (registry:2, Envoy, podman-stable, the
+gVisor installer's curl). Content-hash tags make an unchanged source tree
+cost one registry HEAD per image, so re-running install is cheap.
+
+The server builds none of them. It resolves each one from the registry by
+content-hash tag, and a tag that is not there is an actionable error naming
+this command rather than a build trigger — which is what lets the server run
+with no container engine at all (docs/trust-split-builds.md). What it still
+builds is what a project or a user wrote, and only inside sandboxed builder
+pods.
 
 ## The split runtime
 
@@ -55,7 +81,7 @@ that forces `LinuxComplete` semantics, which report real host ownership
 (and advertise FUSE `ALLOW_IDMAP` — the `MOUNT_ATTR_IDMAP` EINVAL that
 first surfaced this, [#27](https://github.com/bsklaroff/yaac/issues/27),
 dates from when worktree pods used user namespaces instead of gVisor).
-`yaac cluster setup` applies both settings: it writes a `containers.conf.d`
+`yaac cluster install` applies both settings: it writes a `containers.conf.d`
 drop-in selecting libkrun and drives `podman machine init --rootful` +
 start. Use podman >= 6.0 — it passes krunkit's `--timesync` flag itself
 ([podman#28527](https://github.com/containers/podman/pull/28527)) and its
@@ -67,7 +93,7 @@ manual wiring.
 
 > **Upgrading from a pre-6.0 install:** a machine provisioned under podman
 > 5.x lacks the 6.0 image's guest wiring and must be recreated
-> (`podman machine rm` + re-init) — `yaac cluster setup` detects this and
+> (`podman machine rm` + re-init) — `yaac cluster install` detects this and
 > prompts.
 
 ## Linux: rootful podman
@@ -78,7 +104,7 @@ engine, and the calico-node agent needs privileges that only exist in the initia
 user namespace. Under rootless podman the node lives in a user namespace,
 where the kernel denies the agent's `mount-bpf-fs` init container
 (`mount: /sys/fs/bpf: permission denied`), so the agent pod crash-loops in
-init and never leaves phase Pending: `yaac cluster setup` hangs at
+init and never leaves phase Pending: `yaac cluster install` hangs at
 `1 pods of DaemonSet calico-node are not ready / pod is pending` and times out.
 Even on kernels new enough to permit that mount in a user namespace (>= 6.9),
 loading the datapath's BPF programs still needs CAP_BPF in the initial user
@@ -103,7 +129,7 @@ sudo setfacl -m u:$USER:rw /run/podman/podman.sock
 
 For access that survives socket recreation, use a `podman.socket` systemd
 drop-in (`sudo systemctl edit podman.socket`) setting `SocketMode=0660` and
-`SocketGroup=` to a group you belong to. `yaac cluster setup` prints these same
+`SocketGroup=` to a group you belong to. `yaac cluster install` prints these same
 steps if the rootful socket isn't reachable.
 
 ## Linux: VPN and firewall interference
@@ -144,7 +170,7 @@ to `main` but unreleased (latest stable is v0.32.0; even v0.33.0-alpha
 predates it). The brew formula handles this by depending on `yaac-kind`, a
 build pinned past the fix. Installing by hand: stay on podman 5.x, or build
 kind from `main` (`go install sigs.k8s.io/kind@main` — note `@latest`
-resolves to the v0.32.0 tag, which lacks the fix). `yaac cluster setup`
+resolves to the v0.32.0 tag, which lacks the fix). `yaac cluster install`
 preflights the pair and reports the skew explicitly. yaac's own podman
 calls are unaffected (they read `.ID`/`.Repository`/`.Tag`, not `.Labels`);
 only kind's provider breaks.
@@ -247,13 +273,14 @@ only kind's provider breaks.
 ## Multi-node
 
 ```sh
-yaac cluster setup --nodes 3
+yaac cluster install --nodes 3
 ```
 
 `--nodes N` creates one control-plane node and `N-1` workers (max 5 — every
 node is a full node container on this one host, so this is a topology knob,
-not a capacity one). It is create-time only: `--repair` fixes up the nodes
-that exist and rejects `--nodes`.
+not a capacity one). It is create-time only: an existing cluster's node
+count is fixed and install never recreates one, so against one the flag is
+a no-op with a note.
 
 **Worktrees land on the workers.** kind keeps the control-plane's
 `node-role.kubernetes.io/control-plane:NoSchedule` taint as soon as a cluster
@@ -298,7 +325,7 @@ for a single point of failure.
 ## Adopting a CNI yaac did not install
 
 ```sh
-yaac cluster setup --adopt-cni
+yaac cluster install --adopt-cni
 ```
 
 Installs into the cluster the current kubeconfig points at, adopting the
@@ -307,8 +334,8 @@ one (GKE Dataplane V1, AKS `--network-policy calico`, Calico policy-only over
 the AWS VPC CNI on EKS). It creates no cluster, needs no `kind`, and skips
 the Calico install; everything else it applies is what the other modes apply
 (PriorityClasses, registry, builder guard, gVisor runtime, netd), so it is
-idempotent and re-runnable. It refuses `--nodes` (no nodes to render) and
-`--repair` (that mode fixes up a cluster yaac built).
+idempotent and re-runnable. It refuses `--nodes`: there are no nodes for it
+to render, since the adopted cluster brings its own.
 
 There is no datapath change here — the netd redirect (docs/worktree-egress.md)
 works unmodified on any CNI whose pod egress traverses host netfilter and
@@ -410,16 +437,16 @@ The node limits live in node/VM state and **vanish on a node or VM restart**
 the cluster:
 
 ```sh
-yaac cluster setup --repair
+yaac cluster install
 ```
 
 `yaac cluster check` detects when they're missing and points here.
 
-`--repair` owns exactly the state that has no node-side agent to re-apply
-it: the sysctls, `DefaultTasksMax`, the node container's pids ceiling and
-the registry wiring. The gVisor runtime is **not** in that set — its
-installer DaemonSet reinstalls on any node that appears — but `--repair`
-does re-apply the DaemonSet itself, which is how an existing cluster picks
+Install re-applies, on every run, exactly the state that has no node-side
+agent to restore it: the sysctls, `DefaultTasksMax`, the node container's
+pids ceiling and the registry wiring. The gVisor runtime is **not** in that
+set — its installer DaemonSet reinstalls on any node that appears — but the
+DaemonSet itself is re-applied too, which is how an existing cluster picks
 up a runsc version bump on a yaac upgrade.
 
 ## What a worktree reserves
@@ -465,13 +492,24 @@ unsandboxed on runc: it only executes yaac-shipped code, and the sentries'
 CPU cost is what matters at fleet scale.
 
 Under gVisor there is no user namespace and no idmap, so hostPath files are
-presented at their real node-side uids (the gofer preserves them), and the
-worktree image builds its `yaac` user with the server's uid
-(`YAAC_UID` build arg, baked in automatically and folded into the image
-tag). Nothing to configure — but if your uid ever changes, images rebuild
-on their own, and a standalone `Dockerfile.yaac` that creates its own user
-should honor `ARG YAAC_UID` the same way `dockerfiles/Dockerfile.default`
-does, or its writes to `/workspace` will fail with `Permission denied`.
+presented at their real node-side uids (the gofer preserves them), and every
+writer of a shared path has to name the same number. That number is **the
+server's uid**, because the server is what pre-creates those paths:
+worktree checkouts, cache and config mounts are made host-side and land
+owned by whoever runs it. So the worktree image builds its `yaac` user with
+that uid (`YAAC_UID` build arg, baked in automatically and folded into the
+image tag) and the pod runs as it.
+
+`yaac cluster install` builds the images and the server consumes them, so
+the two agree as long as the same user runs both — which is the ordinary
+case. Run install as a different user and the server looks up a tag that
+install never built, and says so, naming the command. If your uid changes,
+images re-tag and rebuild on their own.
+
+Nothing to configure — but a standalone `Dockerfile.yaac` that creates its
+own user should honor `ARG YAAC_UID` the same way
+`dockerfiles/Dockerfile.default` does, or its writes to `/workspace` will
+fail with `Permission denied`.
 
 ## Verifying
 
@@ -537,13 +575,13 @@ fix points at declaring the pool's toleration on the RuntimeClass — not at
 removing the taint, which would dismantle the isolation the pool exists for.
 
 Nothing persists that toleration yet, so whether it survives `yaac cluster
-setup --repair` depends on how it got there — the repair re-applies the
+install` depends on how it got there — install re-applies the
 RuntimeClasses from the builder's defaults, which carry none. A toleration
 that went in through the code path is recorded in the object's
 `last-applied-configuration` and is pruned by that re-apply, putting the
 pool's nodes straight back to reading excluded; one added with `kubectl
 edit`/`patch` survives, because client-side apply only prunes fields it
-previously owned. Neither is a home for it: check after a repair until the
+previously owned. Neither is a home for it: check after an install until the
 pool's own config knob exists.
 
 On a cluster with more than one node it also runs a **per-node readiness
@@ -566,7 +604,7 @@ reporting three warn-level gates —
 
 They are warnings, not failures: a single-node cluster is still a legitimate
 topology, and each carries the fix for its own cause — the installer
-DaemonSet for runsc, `--repair` for the registry wiring, the home
+DaemonSet for runsc, `yaac cluster install` for the registry wiring, the home
 extraMount for the volume. A probe pod that never ran is attributed to one
 gate from the kubelet's event and left explicitly *unverified* on the
 others, so no gate ever passes on a node it could not actually check.
@@ -590,11 +628,11 @@ was a control plane or a worker that just went under disk pressure.
 yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
-The teardown counterpart to `setup`, and one `kind delete` is the whole of
-it: everything yaac deploys lives inside the cluster — Calico, netd, the
+The teardown counterpart to `install`, and one `kind delete` is the whole
+of it: everything yaac deploys lives inside the cluster — Calico, netd, the
 main and per-project registries — and so does their node-local storage on
 every node, including every pushed image. Running worktree pods
 stop, but nothing under the yaac data dir is touched: on-disk worktrees and
-worktrees survive, and a later `yaac cluster setup` recreates the cluster and
+worktrees survive, and a later `yaac cluster install` recreates the cluster and
 re-pushes images on demand. It leaves the podman machine and its shared image
 store alone (that's the build engine, not the cluster).

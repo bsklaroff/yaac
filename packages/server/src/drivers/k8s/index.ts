@@ -45,13 +45,13 @@ import {
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
+  ensureKubernetes,
   k8sWorkspacePaths,
   podExec,
   waitForJobPodReady,
   waitForStreamd,
   worktreeIdFromJobName,
 } from '#drivers/k8s/substrate'
-import { ensureContainerRuntime } from '#drivers/k8s/container'
 import { k8sReconcileSteps } from '#drivers/k8s/steps'
 import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/lifecycle'
 import { WorkspaceExecError, type WorktreeDriver } from '#drivers/contract'
@@ -151,7 +151,7 @@ export function createK8sDriver(): WorktreeDriver {
     // install either: an image that lacks the tool is the wrong image, which
     // the post-launch window probe reports.
     assertCanLaunch: () => Promise.resolve(),
-    ensureBuildEngine: () => ensureContainerRuntime(),
+    ensureRuntimeReachable: () => ensureKubernetes(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncSshIdentities: () => proxyClient.syncSshKeysFromCredentials(),

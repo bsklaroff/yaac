@@ -327,7 +327,7 @@ describe('ensureMainRegistry', () => {
   it('applies everything again under `force`, even when the registry answers', async () => {
     mockReachable.mockResolvedValue(true)
     await ensureMainRegistry({ force: true })
-    // `yaac cluster setup --repair` exists to re-write wiring a node
+    // `yaac cluster install` exists to re-write wiring a node
     // restart may have dropped, so it must not short-circuit.
     expect(applied().map((m) => m.kind)).toContain('Deployment')
     expect(applied().map((m) => m.kind)).toContain('Pod')

@@ -38,7 +38,6 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
     getCaTrustEnv: () => ['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'],
   },
   buildRulesFromConfig: () => [],
-  resolveProxyImageTag: vi.fn().mockResolvedValue('proxy:tag'),
 }))
 
 // The cluster half is a whole subprocess tree per call (registry pods,

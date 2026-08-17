@@ -1,19 +1,19 @@
 # Trust-split image builds
 
-How yaac keeps untrusted Dockerfile execution off the host. This is a
+How yaac keeps untrusted Dockerfile execution inside a sandbox. This is a
 current-state reference for the shipped subsystem.
 
 ## The problem
 
-Image builds shell out to rootful podman on the host. Dockerfile `RUN`
-steps execute arbitrary code, and two Dockerfiles in the build chain are
+Building an image shells out to rootful podman. Dockerfile `RUN` steps
+execute arbitrary code, and two Dockerfiles in the build chain are
 user/agent-editable:
 
 - `Dockerfile.yaac` — the per-project Dockerfile (layered or standalone).
 - `Dockerfile.user` — the per-user Dockerfile (`~/.yaac/Dockerfile.user`).
 
 A malicious or compromised step in either would get root-adjacent code
-execution on the host. Everything else in the chain
+execution wherever it ran. Everything else in the chain
 (`Dockerfile.default`, `Dockerfile.tools`, `Dockerfile.nestable`) is
 yaac-shipped content over pinned upstreams — the same trust tier as the
 node/registry podman that manages the cluster itself.
@@ -23,18 +23,26 @@ node/registry podman that manages the cluster itself.
 Build routing is per layer, by trust, keyed on `ImageLayer.name` from
 `resolveImageChain()`:
 
-| Layers | Trust | Engine |
+| Layers | Trust | Where it is realized |
 |---|---|---|
-| `base`, `tools`, `nestable` (yaac-shipped, pinned upstreams) | trusted | host podman, built and pushed exactly as before |
-| `project` (`Dockerfile.yaac`), `user` (`Dockerfile.user`) | untrusted (user/agent-editable) | ephemeral runsc builder pod |
+| `base`, `tools`, `nestable` (yaac-shipped, pinned upstreams) | trusted | `yaac cluster install`, on the machine running the CLI |
+| `project` (`Dockerfile.yaac`), `user` (`Dockerfile.user`) | untrusted (user/agent-editable) | ephemeral runsc builder pod, driven by the server |
 
 Routing is a **whitelist** and is not configurable. Only the exact names
-`base`, `tools`, `nestable` build on the host; every other name —
-including any future layer — is sandboxed by default. The trusted names
-cannot be faked: `resolveImageChain()` is their only producer and assigns
-them exclusively to the yaac-shipped Dockerfiles, regardless of file
-content. Untrusted layers build against their host-built, registry-pushed
-parent, so the sandbox only ever executes the untrusted suffix of a chain.
+`base`, `tools`, `nestable` come prebuilt; every other name — including
+any future layer — is sandboxed by default. The trusted names cannot be
+faked: `resolveImageChain()` is their only producer and assigns them
+exclusively to the yaac-shipped Dockerfiles, regardless of file content.
+Untrusted layers build against their prebuilt, registry-resident parent,
+so the sandbox only ever executes the untrusted suffix of a chain.
+
+**The server builds no trusted layer.** It resolves each one from the
+in-cluster registry by content-hash tag, and a missing tag is an
+actionable "run `yaac cluster install`" rather than a build trigger. That
+is what lets a server run with no container engine at all — every image
+yaac ships (these three plus the egress proxy, netd, and the digest-pinned
+upstream mirrors) is produced on the CLI machine and pushed, and the
+registry is the only bus between the two.
 
 ## Why sandbox only the untrusted layers
 
@@ -47,7 +55,8 @@ is the big *trusted* layers, which carry no untrusted code, so the split
 sandboxes only the untrusted suffix.
 
 The trust split cuts along the threat model: trusted layers keep native
-host speed, and only the small untrusted suffix pays the sandbox tax. That
+build-machine speed, and only the small untrusted suffix pays the sandbox
+tax. That
 tax is bounded — a standalone fully-untrusted `Dockerfile.yaac` is the
 worst case and correctly pays the most. A full cold chain runs ~1.35x
 host; the common path (tag already in the registry) touches no pod at all.
@@ -95,8 +104,9 @@ Build flow, per layer tag `T` with parent tag `P`:
 5. Delete the pod on success or failure; a background reconcile
    (`reconcileBuilderPodGc`) reaps any leaked `yaac.role=builder` pods.
 
-Every build — in a pod or on the host engine — is bounded by a pair of
-timeouts, run by the shared `drivers/k8s/container/streaming-proc.ts`:
+Every build — in a pod or on the install machine's engine — is bounded by
+a pair of timeouts, run by the shared
+`drivers/k8s/container/streaming-proc.ts`:
 
 - An **idle** timeout per exec step, the primary signal: the clock resets
   on every byte the step writes, and while the context tar streams in, on
@@ -108,9 +118,9 @@ timeouts, run by the shared `drivers/k8s/container/streaming-proc.ts`:
 - A **total** backstop, for the case idle cannot see: a build wedged but
   chatty (a `RUN` step retrying in a loop) never goes silent, and would
   otherwise hold the image-store lock forever. In a pod that backstop is
-  the pod's `activeDeadlineSeconds`; on the host it is `buildImage`'s own
-  total budget, which is shorter — the host only ever builds yaac-shipped
-  layers over pinned upstreams.
+  the pod's `activeDeadlineSeconds`; on the install machine it is
+  `buildImage`'s own total budget, which is shorter — install only ever
+  builds yaac-shipped layers over pinned upstreams.
 
 Either expiry signals the child's whole process group — builds spawn
 grandchildren that would otherwise keep the lock — and the failure is
@@ -227,7 +237,7 @@ not — can apply, since `FROM ${BASE_IMAGE}` resolves against the local
 store. Step cache cannot remove this leg; it is bounded instead:
 
 - Trusted-layer pushes use `--compression-format zstd`. It is free on the
-  host side and roughly halves the empty-graphroot pod pull (the remainder
+  pushing side and roughly halves the empty-graphroot pod pull (the remainder
   is layer extraction, not decompression). Worktree pods pull the same
   manifests, so node containerd zstd support was confirmed before this
   shipped.
@@ -237,15 +247,15 @@ store. Step cache cannot remove this leg; it is bounded instead:
 If parent-pull latency ever dominates real usage, the escalation is a
 per-node image cache seeded ahead of the pod. It is deliberately not
 built: it adds a node-local store, its GC, and version pinning across
-host and pod to save the pull on a rare, prewarm-hidden path.
+build machine and pod to save the pull on a rare, prewarm-hidden path.
 
-## A restart aborts every in-flight build
+## An interrupted run never leaves a build behind it
 
 Podman commits an image tag only when the build finishes, so a build that
-outlives its server is invisible to the successor's existence check: it
-starts a second build of the same tag, and the two fight over the shared
-layer cache and the image-store lock. Both halves of the split therefore
-die with the server.
+outlives the process that started it is invisible to the successor's
+existence check: it starts a second build of the same tag, and the two
+fight over the shared layer cache and the image-store lock. Both halves of
+the split are swept, each by whatever restarts around it.
 
 - **Builder pods.** `reconcileBuilderPodGc` deletes any
   `yaac.role=builder` pod created before this process started (the
@@ -253,15 +263,16 @@ die with the server.
   belong to a dead one). The reconciler runs it ahead of the prewarm
   step on the boot pass, so the leaked pod's memory reservation is
   released before anything tries to schedule a replacement.
-- **Host podman.** `podman build`/`podman push` children run through
-  `drivers/k8s/container/host-procs.ts`, which SIGTERMs them from the
-  shutdown handler and records each pid in `<data dir>/host-podman.json`
-  first. A host pid carries no label to select on, so the file is what
-  makes the crash path reapable: `reapOrphanedPodmanProcs` reads it once
-  at boot, confirms via `ps` that the pid is still a podman invocation
-  carrying the recorded tag (a pid-reuse guard), and terminates it —
-  SIGTERM so podman releases the store lock, escalating to SIGKILL after
-  a grace period.
+- **Host podman.** `podman build`/`podman push` children — all of them
+  inside `yaac cluster install` — run through
+  `drivers/k8s/container/host-procs.ts`, which records each pid in
+  `<data dir>/host-podman.json` before it can be orphaned. A host pid
+  carries no label to select on, so the file is what makes an interrupted
+  install reapable: the next install reads it first, confirms via `ps`
+  that the pid is still a podman invocation carrying the recorded tag (a
+  pid-reuse guard), and terminates it — SIGTERM so podman releases the
+  store lock, escalating to SIGKILL after a grace period — before it
+  decides which tags are missing.
 
 The in-memory build registry that feeds the webapp's build list is *not*
 persisted: with the build itself aborted there is no live work to
@@ -270,21 +281,20 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 ## Server wiring
 
 - A `BuildEngine` seam (`drivers/k8s/images/build-engine.ts`,
-  `engineForLayer` keyed on `ImageLayer.name`): `host-podman` wraps the
-  existing build/imageExists/remove; `cluster-pod`
+  `engineForLayer` keyed on `ImageLayer.name`): `prebuilt` looks the tag
+  up in the registry and refuses to build; `cluster-pod`
   (`drivers/k8s/images/builder-pod.ts`) drives the builder pod. Push is
   deliberately not routed per layer — a cluster-pod build's delta push is
-  an inseparable build step, and the shared push path treats a forced push
-  of a registry-only tag as already satisfied. The coordinator,
-  content-hash tags, `resolveImageChain()`, prewarm, and the
-  build-tracking UI are untouched.
-- Existence checks for untrusted layers use `registryHasTag()`
-  (authoritative — the host store never sees these tags); trusted layers
-  keep the host inspect path. The host image GC never sees untrusted tags,
-  so untrusted generations accumulate only in the registry.
+  an inseparable build step, and a prebuilt layer was pushed by the
+  install that built it. The coordinator, content-hash tags,
+  `resolveImageChain()`, prewarm, and the build-tracking UI are untouched.
+- Existence checks go to `registryHasTag()` for every layer: the registry
+  is what a pod pulls from, and on an in-cluster server the host store is
+  not even reachable. The install machine's own store is a build cache
+  only, swept by `gcHostImages` at the end of each install.
 - Untrusted-layer builds require a healthy cluster: a chain reaching
   `Dockerfile.yaac`/`Dockerfile.user` errors with a pointer to `yaac cluster
-  check` when there isn't one. Trusted-layer builds stay host-only.
+  check` when there isn't one.
 
 ## Open risk: builder-origin writes to the shared registry
 
@@ -327,7 +337,7 @@ and the trust split that keeps yaac-shipped layers off that path.
   may create or update a pod carrying it — the only API identities
   untrusted code can hold — and carriers must run under the `gvisor`
   RuntimeClass. Applied fail-closed before any builder pod is created, and
-  by `yaac cluster setup`.
+  by `yaac cluster install`.
 
 ## Open items
 

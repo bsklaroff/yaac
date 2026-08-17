@@ -14,7 +14,7 @@ import { podCidrSources } from './cluster-cidrs'
 /**
  * Adopting a CNI yaac did not install.
  *
- * `yaac cluster setup` normally owns the CNI: it creates the cluster with
+ * `yaac cluster install` normally owns the CNI: it creates the cluster with
  * no default CNI and applies a checksum-pinned Calico. `--adopt-cni` skips
  * that and runs this gate instead, so yaac can install into a Calico the
  * cluster already runs — our own, a self-managed one, or a

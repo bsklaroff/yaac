@@ -11,7 +11,6 @@ import {
   gcOrphanProjectRegistries,
   sweepLegacyVclusterState,
 } from '#drivers/k8s/cluster'
-import { killTrackedPodmanProcs, reapOrphanedPodmanProcs } from '#drivers/k8s/container'
 import {
   PortDetectorManager,
   stopAllWorktreeForwarders,
@@ -111,18 +110,6 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
   await reseedPlaceholderCredentials()
     .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
 
-  // Kill any podman build/push a previous server left running before the
-  // first thing that could duplicate it (the registry bootstrap's own
-  // podman calls, then the reconciler's prewarm sweep). The graceful path
-  // already SIGTERMs them, so this only fires after a crash, a SIGKILL,
-  // or a host reboot — the cases builder-pod GC covers on the cluster
-  // side via SERVER_START_MS.
-  try {
-    await reapOrphanedPodmanProcs()
-  } catch (err) {
-    serverLog(`[server] orphan podman reap failed: ${String(err)}`)
-  }
-
   // Best-effort cluster bootstrap: the yaac namespace and the in-cluster
   // registry are cheap to ensure and needed by the first worktree.
   // Failures are logged, not fatal — the server can serve project/auth
@@ -140,7 +127,7 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
     // class, and a pod naming a class the apiserver does not have is
     // rejected — so on the very cluster this re-ensure exists for, the
     // rollout would wait out its full timeout, throw, and abort this
-    // chain before ever installing the classes. `cluster setup` orders
+    // chain before ever installing the classes. `cluster install` orders
     // these the same way.
     await ensurePriorityClasses()
     // The registry stands itself up only when it isn't already answering,
@@ -230,11 +217,6 @@ export function stopK8sDriver(): void {
   // child behind it) alive, exactly like the watches above.
   proxyEvents?.stop()
   proxyEvents = null
-  // Abort in-flight host builds/pushes. Podman commits an image tag only
-  // when the build finishes, so an orphaned `podman build` is invisible
-  // to the next server's exists check — it would start a second build of
-  // the same tag and the two would fight over the layer cache.
-  killTrackedPodmanProcs()
 }
 
 /** See `WorktreeDriver.release`. */

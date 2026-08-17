@@ -10,9 +10,10 @@ import { registryHost } from '#drivers/k8s/container'
 import { ensureMainRegistry } from './main-registry'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { ensureNetd } from './netd'
+import { buildBuiltinImages } from './builtin-images'
 import { ensureBuilderRoleGuard } from './proxy-apply'
 import { resetClusterCidrCache } from './cluster-cidrs'
-import { ClusterSetupError, MAX_KIND_NODES, resolveNodeCount } from './arg-guards'
+import { ClusterInstallError, MAX_KIND_NODES, resolveNodeCount } from './arg-guards'
 import {
   assessCniAdoption,
   assessVethSource,
@@ -38,35 +39,43 @@ import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
 
 /**
- * `yaac cluster setup` — the port of the retired scripts/setup-kind-cluster.sh
- * plus the macOS podman-machine bootstrap the README used to describe by
- * hand. Brew (or any package manager) can only install binaries; everything
- * per-user and stateful — the rootful libkrun machine, the kind cluster,
- * Calico, the node fixups, the in-cluster registry — happens here,
- * idempotently and with actionable error messages.
+ * `yaac cluster install` — ONE idempotent verb that converges this machine
+ * and its cluster to the yaac version that is installed. Brew (or any
+ * package manager) can only install binaries; everything per-user and
+ * stateful — the rootful libkrun machine, the kind cluster, Calico, the
+ * node fixups, every built-in image, the in-cluster layers — happens here,
+ * with actionable error messages.
  *
- * Full mode recreates the cluster from scratch (delete + create), with
- * `--nodes N` choosing the topology: one control-plane node by default,
- * plus N-1 workers when asked for. Every per-node step below (fixups,
- * hosts.toml, the runsc install) already runs over the enumerated node
- * set, so multi-node is a config-rendering change here. `--repair`
- * re-applies only the node fixups that vanish on a node/VM restart
- * (DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
- * touching the cluster itself. Both modes also converge the in-cluster
- * layers an upgrade can change — the gVisor runtime (installer DaemonSet +
- * RuntimeClasses), the PriorityClasses, netd — which is how an existing
- * cluster picks them up on a yaac upgrade.
+ * It is safe to run at any time, and it is what an upgrade runs: `npm
+ * update` then `yaac cluster install`. A cluster that already exists is
+ * converged, never recreated, so teardown normally only happens through an
+ * explicit `yaac cluster delete` — the one command whose job is to lose
+ * running worktrees. The single exception is the macOS machine bootstrap
+ * below, which cannot converge a machine on the wrong provider or from a
+ * podman too old to start it: those are `podman machine rm -f`, and both
+ * are gated behind an interactive confirm that defaults to No and refuses
+ * outright when there is no TTY.
  *
- * `--adopt-cni` is the third mode, and the only one that does not assume
- * yaac owns the cluster: it skips both the kind create and the Calico
- * install, verifies the CNI the cluster already runs (cni-adopt.ts), and
- * then applies the same in-cluster layers the other two modes converge.
+ * `--nodes N` chooses the topology of a cluster this run CREATES: one
+ * control-plane node by default, plus N-1 workers when asked for. Every
+ * per-node step below (fixups, hosts.toml, the runsc install) already runs
+ * over the enumerated node set, so multi-node is a config-rendering change
+ * here. Against a cluster that already exists the flag is a no-op with a
+ * note — the node count is fixed when the cluster is created.
  *
- * The gVisor install is NOT a node fixup any more: a DaemonSet reinstalls
- * it on every node that appears, so a restarted (or replaced) node repairs
- * itself with nothing to run. What `--repair` still owns is the state that
- * lives in the kind node CONTAINER — sysctls, TasksMax, the pids limit, the
- * registry wiring — which has no node-side agent to re-apply it.
+ * `--adopt-cni` is the one mode that does not assume yaac owns the
+ * cluster: it skips both the kind create and the Calico install, verifies
+ * the CNI the cluster already runs (cni-adopt.ts), and then applies the
+ * same in-cluster layers every other run converges.
+ *
+ * Two kinds of state need re-applying on an existing cluster, and both are
+ * unconditional here. The node fixups (sysctls, TasksMax, the pids limit)
+ * live in the kind node CONTAINER and vanish on a node or VM restart, with
+ * no node-side agent to restore them. The in-cluster layers — the gVisor
+ * runtime, the PriorityClasses, netd, the images — change with the yaac
+ * version, and re-applying them is how an existing cluster picks up an
+ * upgrade. The gVisor install is NOT a node fixup: a DaemonSet reinstalls
+ * it on every node that appears, so a replaced node repairs itself.
  */
 
 /**
@@ -108,11 +117,11 @@ function sha256Hex(text: string): string {
  * kind node image and the gVisor release — and the cache means a cluster
  * recreate does not refetch.
  */
-export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<string> {
+export async function ensureCalicoManifest(deps: ClusterInstallDeps): Promise<string> {
   const pin = await deps.readTextFile(CALICO_SHA256_FILE)
   const expected = pin?.trim().split(/\s+/)[0]
   if (!expected) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `Calico manifest checksum not found at ${CALICO_SHA256_FILE} — broken install?`,
     )
   }
@@ -126,7 +135,7 @@ export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<stri
   try {
     raw = await deps.fetchText(url)
   } catch (err) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `Could not download the Calico manifest from ${url} `
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}). `
       + `Check network access, or drop a verified copy at ${cache} and re-run.`,
@@ -134,7 +143,7 @@ export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<stri
   }
   const actual = sha256Hex(raw)
   if (actual !== expected) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `The Calico manifest at ${url} does not match the pinned checksum `
       + `(expected ${expected}, got ${actual}) — not installing it.`,
     )
@@ -145,12 +154,10 @@ export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<stri
 
 // Both live in arg-guards.ts (which costs nothing to import) so the CLI can
 // reject a bad flag without loading this module. Re-exported here because
-// this is where consumers of `runClusterSetup` expect to find them.
-export { ClusterSetupError, MAX_KIND_NODES }
+// this is where consumers of `runClusterInstall` expect to find them.
+export { ClusterInstallError, MAX_KIND_NODES }
 
-export interface ClusterSetupOptions {
-  /** Re-apply node fixups on the existing cluster instead of recreating it. */
-  repair?: boolean
+export interface ClusterInstallOptions {
   /**
    * Bring-your-own-CNI: install into the cluster the current kubeconfig
    * points at, adopting the Calico it already runs instead of creating a
@@ -161,8 +168,8 @@ export interface ClusterSetupOptions {
   adoptCni?: boolean
   /**
    * kind nodes to create: one control-plane plus `nodes - 1` workers.
-   * Undefined (the default) means one node. Create-time only — the node
-   * count of an existing cluster is not something `--repair` can change.
+   * Undefined (the default) means one node. Create-time only — an existing
+   * cluster's node count is fixed, and install never recreates one.
    *
    * A string is accepted so the CLI can hand the raw `--nodes` text
    * through: converting first would turn `--nodes three` into `NaN` and the
@@ -171,7 +178,7 @@ export interface ClusterSetupOptions {
   nodes?: number | string
 }
 
-export interface ClusterSetupDeps {
+export interface ClusterInstallDeps {
   /** execFile-style runner, injectable for tests. */
   run: typeof execFileAsync
   /**
@@ -194,9 +201,14 @@ export interface ClusterSetupDeps {
   /** Applies the builder-role admission guard, which gates the sandboxed
    *  builder pods. Injectable for the same reason as ensureRegistry. */
   ensureBuilderGuard: () => Promise<void>
-  /** Builds/pushes the netd + Envoy images and applies the DaemonSet.
+  /** Applies the netd DaemonSet (its images come from buildImages).
    *  Injectable for the same reason as ensureRegistry. */
   ensureNetd: () => Promise<void>
+  /** Builds and pushes every yaac-shipped image, and mirrors the pinned
+   *  upstreams. The one step that needs a container engine — everything
+   *  else here is kubectl and kind. Injectable for the same reason as
+   *  ensureRegistry. */
+  buildImages: (log: (message: string) => void) => Promise<void>
   /** Applies the gVisor installer DaemonSet + the RuntimeClasses.
    *  Injectable for the same reason as the two above. */
   ensureGvisorRuntime: () => Promise<void>
@@ -254,26 +266,27 @@ export async function confirmDefault(question: string): Promise<boolean> {
 }
 
 /**
- * The host/TTY wiring every setup runs on unless the caller substitutes its
- * own. Built on call, not at module scope: this module is reachable from the
- * feature barrel, and a module-scope object would make merely importing the
- * barrel bind podman, the registry, and the check suite.
+ * The host/TTY wiring every install runs on unless the caller substitutes
+ * its own. Built on call, not at module scope: this module is reachable
+ * from the feature barrel, and a module-scope object would make merely
+ * importing the barrel bind podman, the registry, and the check suite.
  */
-function defaultDeps(): ClusterSetupDeps {
+function defaultDeps(): ClusterInstallDeps {
   return {
     run: execFileAsync,
     runStreaming: runStreamingDefault,
     log: (m) => { console.log(m) },
     confirm: confirmDefault,
     ensureRegistry: async () => {
-      // Forced: `--repair` exists to re-write wiring a node or VM restart
-      // may have dropped, and a full setup runs against a cluster that has
-      // just been recreated under it.
+      // Forced: install exists to re-write wiring a node or VM restart may
+      // have dropped, and a fresh run has just created the cluster under
+      // it.
       await ensureMainRegistry({ force: true })
       return registryHost()
     },
     ensureBuilderGuard: ensureBuilderRoleGuard,
     ensureNetd,
+    buildImages: (log) => buildBuiltinImages({ log }),
     ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
     check: () => runClusterCheck(),
@@ -290,8 +303,8 @@ function defaultDeps(): ClusterSetupDeps {
     listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
     fetchText: async (url) => {
       // Node's fetch rather than curl: this runs on the host (unlike the
-      // gVisor fetch, which happens inside the node), and setup should not
-      // grow a host binary dependency for one GET.
+      // gVisor fetch, which happens inside the node), and install should
+      // not grow a host binary dependency for one GET.
       const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
       return res.text()
@@ -310,19 +323,24 @@ export function kindEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Run the full setup (or a `--repair` fixup pass, or an `--adopt-cni`
- * install into a cluster yaac does not own) and finish with a cluster
- * check. Returns the check's overall verdict; throws ClusterSetupError with
- * a user-actionable message when a step cannot proceed.
+ * Converge the machine and the cluster, then finish with a cluster check.
+ * Returns the check's overall verdict; throws ClusterInstallError with a
+ * user-actionable message when a step cannot proceed.
+ *
+ * The three phases are the same every run: get a cluster (create one only
+ * if there is none), re-apply the node state that a restart drops, and
+ * converge the in-cluster layers plus the images they name. Only the first
+ * differs between a fresh machine and an upgrade, which is why there is one
+ * verb rather than a mode flag.
  *
  * The finishing check is load-bearing for adoption specifically: its
  * `egress` gate is the positive NetworkPolicy probe the CNI verification
  * deliberately does not try to infer, so a `false` return there means "the
  * adopted policy engine is not enforcing" and the CLI exits non-zero.
  */
-export async function runClusterSetup(
-  opts: ClusterSetupOptions = {},
-  deps: ClusterSetupDeps = defaultDeps(),
+export async function runClusterInstall(
+  opts: ClusterInstallOptions = {},
+  deps: ClusterInstallDeps = defaultDeps(),
 ): Promise<boolean> {
 
   const nodeCount = resolveNodeCount(opts)
@@ -358,50 +376,46 @@ export async function runClusterSetup(
         + 'has no shell on.',
       )
     }
-    await installPriorityClasses(deps)
-    await installRegistry(deps)
-    await installBuilderGuard(deps)
-    await installGvisorRuntime(deps)
-    await deployNetd(deps)
-    // Last, because it needs netd on a node: netd is hostNetwork and ships
-    // iproute2, so it is the node's own view of the routing table.
-    await verifyAdoptedVethSource(deps)
-  } else if (opts.repair) {
-    const nodes = await kindNodes(deps, cluster)
-    if (nodes.length === 0) {
-      throw new ClusterSetupError(
-        `kind cluster "${cluster}" not found — run \`yaac cluster setup\` `
-        + '(without --repair) to create it.',
-      )
-    }
-    deps.log(`Re-applying node fixups on kind cluster "${cluster}"...`)
-    // A repair pass is what you run after the node's address moved under it
-    // (a podman machine restart is the usual cause), so anything this process
-    // cached about "the node" is exactly what must not be reused below.
-    resetClusterCidrCache()
-    for (const node of nodes) await applyNodeFixups(deps, node)
-    await installPriorityClasses(deps)
-    await installRegistry(deps)
-    await installBuilderGuard(deps)
-    await installGvisorRuntime(deps)
-    await deployNetd(deps)
-  } else {
-    await recreateKindCluster(deps, cluster, nodeCount)
-    // The node `/32`s and pod CIDRs of the cluster that just went away say
-    // nothing about the one that replaced it. A process that outlives the
-    // recreate would otherwise render every policy below for the dead
-    // cluster — stale node addresses fail closed, and a stale pod-CIDR
-    // list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod as world.
+  } else if ((await kindNodes(deps, cluster)).length === 0) {
+    await createKindCluster(deps, cluster, nodeCount)
+    // The node `/32`s and pod CIDRs of whatever cluster this process last
+    // looked at say nothing about the one just created. Rendering a policy
+    // for the wrong one fails closed on node addresses, and a stale
+    // pod-CIDR list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod
+    // as world.
     resetClusterCidrCache()
     await installCalico(deps, cluster)
-    const nodes = await kindNodes(deps, cluster)
-    for (const node of nodes) await applyNodeFixups(deps, node)
-    await installPriorityClasses(deps)
-    await installRegistry(deps)
-    await installBuilderGuard(deps)
-    await installGvisorRuntime(deps)
-    await deployNetd(deps)
+    for (const node of await kindNodes(deps, cluster)) await applyNodeFixups(deps, node)
+  } else {
+    if (opts.nodes !== undefined) {
+      deps.log(
+        `note: kind cluster "${cluster}" already exists, so --nodes is ignored — a `
+        + 'node count is fixed when the cluster is created. To change it: `yaac '
+        + 'cluster delete`, then install again (this loses running worktrees).',
+      )
+    }
+    deps.log(`Converging the existing kind cluster "${cluster}"...`)
+    // Re-applied every run because they live in node/VM state a restart
+    // drops (a podman machine restart is the usual cause) — which is also
+    // why anything this process cached about "the node" must not be reused
+    // below: the node's address may have moved under it.
+    resetClusterCidrCache()
+    for (const node of await kindNodes(deps, cluster)) await applyNodeFixups(deps, node)
   }
+
+  await installPriorityClasses(deps)
+  await installRegistry(deps)
+  await installBuilderGuard(deps)
+  // After the registry, which is where every image lands, and before the
+  // two layers that name one: the gVisor installer pod and netd both pull
+  // from it and neither builds anything itself.
+  await buildImages(deps)
+  await installGvisorRuntime(deps)
+  await deployNetd(deps)
+  // Last, and only under adoption, because it needs netd on a node: netd is
+  // hostNetwork and ships iproute2, so it is the node's own view of the
+  // routing table.
+  if (opts.adoptCni) await verifyAdoptedVethSource(deps)
 
   deps.log('\nVerifying with cluster check...')
   const { ok, results } = await deps.check()
@@ -410,7 +424,7 @@ export async function runClusterSetup(
     deps.log('\nCluster is ready for yaac sessions.')
     return true
   }
-  deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster setup`.')
+  deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster install`.')
   // Every mode installs BEFORE it verifies, so a failed check leaves the
   // in-cluster layers in place and a usable-looking cluster behind. The
   // exit code is the only artifact of the failure, and nothing re-checks
@@ -460,7 +474,7 @@ export function renderKindConfig(
   const template = KIND_NODES_SECTION.exec(substituted)?.[1]
   const entries = template?.match(/^- /gm) ?? []
   if (!template || entries.length !== 1 || !/^- role: control-plane$/m.test(template)) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       'The bundled kind config no longer ends in a single control-plane node '
       + 'entry, so --nodes cannot render worker copies of it. Restore the '
       + '`nodes:` list as the last section of k8s/kind-config.yaml (one entry, '
@@ -485,7 +499,7 @@ interface BinaryVersions {
  * either way — it is the image build engine.
  */
 async function requireBinaries(
-  deps: ClusterSetupDeps,
+  deps: ClusterInstallDeps,
   opts: { requireKind: boolean } = { requireKind: true },
 ): Promise<BinaryVersions> {
   const missing: string[] = []
@@ -513,7 +527,7 @@ async function requireBinaries(
       + '  Install: https://kubernetes.io/docs/tasks/tools/')
   }
   if (missing.length > 0) {
-    throw new ClusterSetupError(`Missing required tools:\n\n${missing.join('\n')}`)
+    throw new ClusterInstallError(`Missing required tools:\n\n${missing.join('\n')}`)
   }
   return { podman, kind }
 }
@@ -574,12 +588,12 @@ function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string
  * Unlike macOS, yaac can't provision the socket (it's root-owned and
  * systemd-activated), so this only checks and instructs.
  */
-async function ensureRootfulPodmanReachable(deps: ClusterSetupDeps): Promise<void> {
+async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<void> {
   ensureRootfulPodmanHost()
   try {
     await deps.run('podman', ['info', '--format', 'json'])
   } catch {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       'Rootful podman is not reachable. yaac runs kind on the rootful podman '
       + 'engine on Linux (the calico-node DaemonSet needs the host netfilter '
       + 'and routing access that rootless podman does not delegate). Enable the '
@@ -597,15 +611,15 @@ async function ensureRootfulPodmanReachable(deps: ClusterSetupDeps): Promise<voi
  * a harmless read. Diagnose the known skew explicitly instead of letting
  * cluster creation die with a bare exit code.
  */
-async function preflightKindProvider(deps: ClusterSetupDeps, versions: BinaryVersions): Promise<void> {
+async function preflightKindProvider(deps: ClusterInstallDeps, versions: BinaryVersions): Promise<void> {
   const skew = diagnoseKindPodmanSkew(versions.podman, versions.kind)
-  if (skew) throw new ClusterSetupError(skew)
+  if (skew) throw new ClusterInstallError(skew)
   try {
     await deps.run('kind', ['get', 'clusters'], { env: kindEnv() })
   } catch (err) {
     const stderr = ((err as { stderr?: string })?.stderr ?? '').trim()
       || (err instanceof Error ? err.message : String(err))
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `\`kind get clusters\` failed under the podman provider:\n  ${stderr.split('\n')[0]}\n`
       + 'Check that podman is running (`podman info`).'
       + (kindPodmanSkewPossible(versions.podman, versions.kind)
@@ -619,7 +633,7 @@ async function preflightKindProvider(deps: ClusterSetupDeps, versions: BinaryVer
 }
 
 /** Node names of the kind cluster; [] when the cluster does not exist. */
-async function kindNodes(deps: ClusterSetupDeps, cluster: string): Promise<string[]> {
+async function kindNodes(deps: ClusterInstallDeps, cluster: string): Promise<string[]> {
   try {
     const { stdout } = await deps.run('kind', ['get', 'nodes', '--name', cluster], { env: kindEnv() })
     return stdout.trim().split('\n').map((l) => l.trim()).filter(Boolean)
@@ -629,42 +643,40 @@ async function kindNodes(deps: ClusterSetupDeps, cluster: string): Promise<strin
 }
 
 /**
- * Delete + recreate the kind cluster from the bundled k8s/kind-config.yaml,
- * rendered for the requested node count (see renderKindConfig). No --wait:
- * the config disables the default CNI, so nodes cannot go Ready until
- * Calico is installed.
+ * Create the kind cluster from the bundled k8s/kind-config.yaml, rendered
+ * for the requested node count (see renderKindConfig). No --wait: the
+ * config disables the default CNI, so nodes cannot go Ready until Calico
+ * is installed.
+ *
+ * Only ever called when there is no cluster: install has no destructive
+ * path, so nothing here deletes.
  */
-async function recreateKindCluster(
-  deps: ClusterSetupDeps,
+async function createKindCluster(
+  deps: ClusterInstallDeps,
   cluster: string,
   nodes: number,
 ): Promise<void> {
   const configPath = path.join(PACKAGE_ROOT, 'k8s', 'kind-config.yaml')
   const raw = await deps.readTextFile(configPath)
   if (raw === null) {
-    throw new ClusterSetupError(`Bundled kind config not found at ${configPath} — broken install?`)
+    throw new ClusterInstallError(`Bundled kind config not found at ${configPath} — broken install?`)
   }
   const config = renderKindConfig(raw, { homedir: deps.homedir(), nodes })
 
   const topology = nodes === 1
     ? 'single node'
     : `${nodes} nodes: 1 control-plane + ${nodes - 1} worker${nodes > 2 ? 's' : ''}`
-  deps.log(
-    `Recreating kind cluster "${cluster}" (${topology}; this deletes any `
-    + `existing "${cluster}" cluster)...`,
-  )
-  await deps.run('kind', ['delete', 'cluster', '--name', cluster], { env: kindEnv() })
-    .catch(() => { /* no existing cluster */ })
+  deps.log(`Creating kind cluster "${cluster}" (${topology})...`)
   try {
     await deps.runStreaming('kind', ['create', 'cluster', '--name', cluster, '--config', '-'], {
       env: kindEnv(),
       input: config,
     })
   } catch (err) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `kind could not create the cluster (${err instanceof Error ? err.message : String(err)}).\n`
       + 'On macOS the machine must be rootful (`podman machine set --rootful`) — '
-      + 'setup normally ensures this; check `podman machine inspect`.',
+      + 'install normally ensures this; check `podman machine inspect`.',
     )
   }
 }
@@ -685,7 +697,7 @@ async function recreateKindCluster(
  * installs no Calico CRs, which is what keeps the managed-cloud ports
  * cheap (their provider-managed Calicos do not support Calico CRDs).
  */
-async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<void> {
+async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise<void> {
   const raw = await ensureCalicoManifest(deps)
   await sideloadCalicoImages(deps, cluster, raw)
   const context = `kind-${cluster}`
@@ -700,9 +712,9 @@ async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<v
       'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=300s',
     ], { timeout: 310_000 })
   } catch (err) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `Calico install did not complete (${err instanceof Error ? err.message : String(err)}). `
-      + `Re-run \`yaac cluster setup\`, or inspect with \`kubectl --context ${context} -n kube-system get pods -l k8s-app=calico-node\`.`,
+      + `Re-run \`yaac cluster install\`, or inspect with \`kubectl --context ${context} -n kube-system get pods -l k8s-app=calico-node\`.`,
     )
   }
   await deps.run('kubectl', [
@@ -728,14 +740,14 @@ async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<v
  * the cluster check that finishes every setup — a positive probe from a
  * worktree-labeled pod, whose failure makes this command exit non-zero.
  */
-async function verifyAdoptedCni(deps: ClusterSetupDeps): Promise<void> {
+async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Verifying the CNI this cluster already runs (--adopt-cni)...')
   const facts = await gatherCniFacts(deps.run)
   const { refusals, warnings, notes } = assessCniAdoption(facts)
   for (const note of notes) deps.log(`  recorded: ${note}`)
   for (const warning of warnings) deps.log(`  ! ${warning}`)
   if (refusals.length > 0) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `Cannot adopt this cluster's CNI:\n\n${refusals.map((r) => `  - ${r}`).join('\n\n')}`,
     )
   }
@@ -754,13 +766,13 @@ async function verifyAdoptedCni(deps: ClusterSetupDeps): Promise<void> {
  * that verdict), fail-hard on a node that has the routes but not under this
  * prefix — that is the misconfiguration this exists to catch.
  */
-async function verifyAdoptedVethSource(deps: ClusterSetupDeps): Promise<void> {
+async function verifyAdoptedVethSource(deps: ClusterInstallDeps): Promise<void> {
   const prefix = cniVethPrefix()
   const { status, detail, fix } = assessVethSource(
     await probeWorkloadVeths(deps.run, prefix), prefix,
   )
   if (status === 'fail') {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `Cannot adopt this cluster's CNI:\n\n  - ${detail}${fix ? `\n\n    ${fix}` : ''}`,
     )
   }
@@ -781,7 +793,7 @@ export function calicoImageRefs(manifestYaml: string): string[] {
 /**
  * Put Calico's images on the node before applying the manifest.
  *
- * Without this, cluster setup spends over a minute waiting on the node to
+ * Without this, the install spends over a minute waiting on the node to
  * pull ~235 MB from quay.io — and pays it again on every recreate, since
  * the node's image store dies with the node. calico-node's init
  * containers pull serially (cni, then node), so the waits compound.
@@ -796,7 +808,7 @@ export function calicoImageRefs(manifestYaml: string): string[] {
  * back to pulling for itself — slower, but not broken.
  */
 async function sideloadCalicoImages(
-  deps: ClusterSetupDeps,
+  deps: ClusterInstallDeps,
   cluster: string,
   manifestYaml: string,
 ): Promise<void> {
@@ -845,7 +857,7 @@ async function sideloadCalicoImages(
  * housekeeping interval (see NODE_KUBELET_HOUSEKEEPING_INTERVAL —
  * default-interval cAdvisor stats burned whole cores against gVisor
  * sandboxes), and the node container's own PID ceiling. Most of these live
- * in node/VM state that resets on restart — `yaac cluster setup --repair`
+ * in node/VM state that resets on restart — `yaac cluster install`
  * re-applies them, and `yaac cluster check` warns when they are missing.
  *
  * No registry wiring here: both the main and the per-project registries are
@@ -853,7 +865,7 @@ async function sideloadCalicoImages(
  * pods that hostPath-mount the node's `certs.d` directory, so nothing about
  * the image path assumes the node is a container on this host's engine.
  */
-async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<void> {
+async function applyNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
   deps.log(`Applying node fixups to ${node}...`)
   await deps.run('podman', ['exec', node, 'sh', '-c',
     'mkdir -p /etc/systemd/system.conf.d\n'
@@ -886,19 +898,33 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
 
 /**
  * Stand the in-cluster registry up. Runs AFTER the cluster exists and the
- * PriorityClasses are installed — it is a Deployment now, not a host
+ * PriorityClasses are installed, and before anything pushes an image — it is a Deployment now, not a host
  * container, and its pod names the infra class.
  *
  * Deliberately NOT fail-soft: the registry is the only image bus, so
  * without it no worktree image can be pushed, no node can pull one, and no
- * builder pod can fetch a parent. Finishing setup without it would trade a
+ * builder pod can fetch a parent. Finishing an install without it would trade a
  * clear error here for an opaque ImagePullBackOff at the first worktree
  * create.
  */
-async function installRegistry(deps: ClusterSetupDeps): Promise<void> {
+async function installRegistry(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the in-cluster image registry...')
   const host = await deps.ensureRegistry()
   deps.log(`Registry serving as ${host}.`)
+}
+
+/**
+ * Build and push every yaac-shipped image, and mirror the pinned upstreams
+ * (builtin-images.ts). The only step that needs a container engine, and the
+ * reason install still requires podman while the server no longer does.
+ *
+ * Deliberately NOT fail-soft, and deliberately BEFORE the layers that name
+ * these images: nothing else builds them, so a run that skipped this would
+ * leave a cluster whose first worktree create fails on a registry lookup —
+ * pointing back at the command that just declined to do the work.
+ */
+async function buildImages(deps: ClusterInstallDeps): Promise<void> {
+  await deps.buildImages(deps.log)
 }
 
 /**
@@ -907,7 +933,7 @@ async function installRegistry(deps: ClusterSetupDeps): Promise<void> {
  * builder engine re-ensures it lazily before every untrusted build and
  * throws loudly there.
  */
-async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
+async function installBuilderGuard(deps: ClusterInstallDeps): Promise<void> {
   try {
     await deps.ensureBuilderGuard()
   } catch (err) {
@@ -920,17 +946,17 @@ async function installBuilderGuard(deps: ClusterSetupDeps): Promise<void> {
 }
 
 /**
- * Install the infra/worktree PriorityClasses. Runs in `--repair` too: like
+ * Install the infra/worktree PriorityClasses. Re-applied every run: like
  * the gVisor RuntimeClasses, these are cluster-scoped objects the manifest
  * builders name, so this is how a cluster created by an older yaac gets
  * them on upgrade (the server re-ensures them at boot as well).
  *
  * Deliberately NOT fail-soft: a pod naming a class the apiserver doesn't
  * have is rejected, and a Job whose pod is rejected hangs rather than
- * failing, so finishing setup without them would trade a clear error here
+ * failing, so finishing an install without them would trade a clear error here
  * for a mystifying one at the next worktree create.
  */
-async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
+async function installPriorityClasses(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
   await deps.ensurePriorityClasses()
 }
@@ -939,21 +965,21 @@ async function installPriorityClasses(deps: ClusterSetupDeps): Promise<void> {
  * Apply the gVisor installer DaemonSet and, once it has converged, the
  * RuntimeClasses — so a freshly-set-up cluster can run sandboxed pods
  * before any worktree exists, and so `check`'s gvisor gate has something to
- * verify. Runs in `--repair` too: it is how a cluster created by an older
+ * verify. Re-applied every run: it is how a cluster created by an older
  * yaac picks up a runsc version bump.
  *
  * Deliberately NOT fail-soft, unlike netd below. Nothing else installs the
  * runtime (there is no lazy re-ensure on the worktree-create path), and
  * every worktree pod names a RuntimeClass whose nodeSelector only matches an
- * installed node — so finishing setup with this broken would trade a clear
+ * installed node — so finishing an install with this broken would trade a clear
  * error here for every worktree sitting Pending later.
  */
-async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
+async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
   try {
     await deps.ensureGvisorRuntime()
   } catch (err) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       'Could not install the gVisor runtime '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}).\n`
       + `Inspect the installer with: kubectl -n ${k8sNamespace()} logs -l app=${GVISOR_INSTALLER_APP_NAME}\n`
@@ -967,7 +993,7 @@ async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
  * freshly-set-up cluster can redirect worktree egress before any worktree
  * exists — and so `check`'s datapath gate has something to verify.
  *
- * Runs in `--repair` too: like the gVisor install, this is how an existing
+ * Re-applied every run: like the gVisor install, this is how an existing
  * cluster picks netd up on a yaac upgrade.
  *
  * Fails soft. The server re-ensures netd on every proxy bootstrap
@@ -975,7 +1001,7 @@ async function installGvisorRuntime(deps: ClusterSetupDeps): Promise<void> {
  * self-heals on first worktree create rather than aborting the whole setup;
  * the cluster check that follows reports it either way.
  */
-async function deployNetd(deps: ClusterSetupDeps): Promise<void> {
+async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   try {
     await deps.ensureNetd()
@@ -1044,26 +1070,26 @@ interface MachineListEntry {
   VMType?: string
 }
 
-async function listMachines(deps: ClusterSetupDeps): Promise<MachineListEntry[]> {
+async function listMachines(deps: ClusterInstallDeps): Promise<MachineListEntry[]> {
   const { stdout } = await deps.run('podman', ['machine', 'list', '--format', 'json'])
   const parsed = JSON.parse(stdout || '[]') as MachineListEntry[] | null
   return parsed ?? []
 }
 
-async function machineRootful(deps: ClusterSetupDeps, name: string): Promise<boolean> {
+async function machineRootful(deps: ClusterInstallDeps, name: string): Promise<boolean> {
   const { stdout } = await deps.run('podman', ['machine', 'inspect', name])
   const parsed = JSON.parse(stdout) as Array<{ Rootful?: boolean }>
   return parsed[0]?.Rootful === true
 }
 
-function providerDropinPath(deps: ClusterSetupDeps): string {
+function providerDropinPath(deps: ClusterInstallDeps): string {
   return path.join(
     deps.homedir(), '.config', 'containers', 'containers.conf.d',
     '99-yaac-machine-provider.conf',
   )
 }
 
-async function initMachine(deps: ClusterSetupDeps): Promise<void> {
+async function initMachine(deps: ClusterInstallDeps): Promise<void> {
   const { cpus, memoryMib } = defaultMachineResources(deps.totalmem(), deps.cpuCount())
   deps.log(`Initializing a rootful podman machine (libkrun, ${cpus} cpus, ${memoryMib} MiB)...`)
   try {
@@ -1071,7 +1097,7 @@ async function initMachine(deps: ClusterSetupDeps): Promise<void> {
       'machine', 'init', '--rootful', '--cpus', String(cpus), '--memory', String(memoryMib),
     ])
   } catch (err) {
-    throw new ClusterSetupError(
+    throw new ClusterInstallError(
       `podman machine init failed (${err instanceof Error ? err.message : String(err)}).\n`
       + 'Is krunkit installed? brew install libkrun/krun/krunkit',
     )
@@ -1094,7 +1120,7 @@ async function initMachine(deps: ClusterSetupDeps): Promise<void> {
  *     guest wiring (vsock qemu-guest-agent for timesync) and trips podman's
  *     config-version gate on start → prompt for the destructive rm+re-init.
  */
-export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<void> {
+export async function ensurePodmanMachineSetup(deps: ClusterInstallDeps): Promise<void> {
   // Provider: base containers.conf, then conf.d drop-ins (later wins).
   const confDir = path.join(deps.homedir(), '.config', 'containers')
   const sources: string[] = []
@@ -1110,7 +1136,7 @@ export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<
       + '(gVisor session pods need its ownership-preserving virtiofs)...')
     await deps.writeTextFile(
       providerDropinPath(deps),
-      '# Written by `yaac cluster setup`: gVisor session pods need the VM\'s\n'
+      '# Written by `yaac cluster install`: gVisor session pods need the VM\'s\n'
       + '# file sharing to report real file ownership — the runsc gofer does\n'
       + '# hostPath I/O as root while the sentry enforces permissions on the\n'
       + '# ownership the gofer sees. libkrun\'s virtiofs passes ownership\n'
@@ -1127,12 +1153,13 @@ export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<
   if (machine && machine.VMType !== undefined && machine.VMType !== 'libkrun') {
     const replace = await deps.confirm(
       `Podman machine "${machine.Name}" uses the ${machine.VMType} provider; yaac `
-      + 'needs libkrun. Remove and recreate it? (destroys the machine and its image store)',
+      + 'needs libkrun. Remove and recreate it? (destroys the machine, and with '
+      + 'it the image store, the kind cluster inside it, and any running worktrees)',
     )
     if (!replace) {
-      throw new ClusterSetupError(
+      throw new ClusterInstallError(
         `Cannot proceed with a ${machine.VMType} podman machine. Recreate it under `
-        + `libkrun when ready:\n  podman machine rm -f ${machine.Name}\n  yaac cluster setup`,
+        + `libkrun when ready:\n  podman machine rm -f ${machine.Name}\n  yaac cluster install`,
       )
     }
     await deps.run('podman', ['machine', 'rm', '-f', machine.Name])
@@ -1148,7 +1175,7 @@ export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<
   await startMachine(deps)
 }
 
-async function startMachine(deps: ClusterSetupDeps): Promise<void> {
+async function startMachine(deps: ClusterInstallDeps): Promise<void> {
   const machines = await listMachines(deps).catch(() => [] as MachineListEntry[])
   const machine = machines.find((m) => m.Default) ?? machines[0]
   if (!machine || machine.Running) return
@@ -1160,7 +1187,7 @@ async function startMachine(deps: ClusterSetupDeps): Promise<void> {
     const stderr = ((err as { stderr?: string })?.stderr ?? '')
       + (err instanceof Error ? err.message : '')
     if (!isLegacyMachineError(stderr)) {
-      throw new ClusterSetupError(
+      throw new ClusterInstallError(
         `podman machine start failed:\n  ${stderr.trim().split('\n')[0]}`,
       )
     }
@@ -1168,12 +1195,13 @@ async function startMachine(deps: ClusterSetupDeps): Promise<void> {
     // the timesync guest wiring, so recreation is required (not just nice).
     const recreate = await deps.confirm(
       `Podman machine "${machine.Name}" was created by an older podman and must be `
-      + 'recreated. Remove and re-init it? (destroys the machine and its image store)',
+      + 'recreated. Remove and re-init it? (destroys the machine, and with it the '
+      + 'image store, the kind cluster inside it, and any running worktrees)',
     )
     if (!recreate) {
-      throw new ClusterSetupError(
+      throw new ClusterInstallError(
         'The podman machine must be recreated for this podman version. When ready:\n'
-        + `  podman machine rm -f ${machine.Name}\n  yaac cluster setup`,
+        + `  podman machine rm -f ${machine.Name}\n  yaac cluster install`,
       )
     }
     await deps.run('podman', ['machine', 'rm', '-f', machine.Name])

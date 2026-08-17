@@ -16,7 +16,14 @@ import {
   kubectlApply,
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
-import { buildImage, contextHash, failImageBuild, finishImageBuild, registerImageBuild } from '#drivers/k8s/image-engine'
+import {
+  buildImage,
+  contextHash,
+  failImageBuild,
+  finishImageBuild,
+  missingPrebuiltImage,
+  registerImageBuild,
+} from '#drivers/k8s/image-engine'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
@@ -49,7 +56,7 @@ const execFileAsync = promisify(execFile)
 /**
  * Envoy, digest-pinned and mirrored into the local registry like
  * `registry:2` — the node then pulls it with no
- * upstream egress, which also keeps `cluster setup` working on a flaky or
+ * upstream egress, which also keeps `cluster install` working on a flaky or
  * offline network.
  *
  * The pin is the multi-arch INDEX digest, never one platform's child
@@ -100,23 +107,26 @@ export async function resolveNetdImageTag(image = 'yaac-netd'): Promise<string> 
 }
 
 /**
- * Build-or-skip the netd image and return its in-cluster ref. Same shape
- * as the proxy's: the content-hash tag means an unchanged source tree is
- * a registry lookup and nothing more.
+ * The netd image's in-cluster ref, from the registry. Lookup-only: netd is
+ * a yaac-shipped image, so `yaac cluster install` is what puts it there
+ * (see missingPrebuiltImage).
  */
-export async function ensureNetdImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
+export async function ensureNetdImage(): Promise<string> {
+  const localTag = await resolveNetdImageTag(testEnv.netdImage)
+  if (await registryHasTag(localTag)) return registryRef(localTag)
+  throw missingPrebuiltImage('netd', localTag)
+}
+
+/**
+ * Build-or-skip the netd image on host podman and push it. Install-time
+ * only: the content-hash tag means an unchanged source tree costs one
+ * registry HEAD and nothing more.
+ */
+export async function buildNetdImage(): Promise<string> {
   const localTag = await resolveNetdImageTag(testEnv.netdImage)
   if (await registryHasTag(localTag)) return registryRef(localTag)
 
   if (!await imageExists(localTag)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `netd image ${localTag} is missing or stale. `
-        + 'Restart the test run so the global setup can rebuild it.',
-      )
-    }
     const id = registerImageBuild({ tag: localTag, layer: 'netd', action: 'build', reason: 'session' })
     serverLog(`[build] starting ${localTag} (netd)`)
     try {
@@ -130,18 +140,16 @@ export async function ensureNetdImage(
   return pushImageToRegistry(localTag)
 }
 
-/** Mirror the pinned Envoy image into the local registry. */
-export async function ensureEnvoyImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
+/** The mirrored Envoy image's in-cluster ref. Lookup-only, like netd's. */
+export async function ensureEnvoyImage(): Promise<string> {
+  if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
+  throw missingPrebuiltImage('Envoy', ENVOY_MIRROR_TAG)
+}
+
+/** Mirror the pinned Envoy image into the local registry. Install-time only. */
+export async function mirrorEnvoyImage(): Promise<string> {
   if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
   if (!await imageExists(ENVOY_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `Envoy image ${ENVOY_MIRROR_TAG} is missing. `
-        + 'Restart the test run so the global setup can mirror it.',
-      )
-    }
     await execFileAsync('podman', ['pull', ENVOY_UPSTREAM_IMAGE], { timeout: 600_000 })
     const { stdout: arch } = await execFileAsync('podman', [
       'image', 'inspect', '--format', '{{.Architecture}}', ENVOY_UPSTREAM_IMAGE,

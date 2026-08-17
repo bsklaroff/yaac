@@ -71,7 +71,6 @@ export function useTestNamespace(): () => void {
  */
 export const TEST_PROXY_CONFIG: ProxyClientConfig = {
   image: 'yaac-test-proxy',
-  requirePrebuilt: true,
 }
 
 /**

@@ -37,10 +37,6 @@ vi.mock('#drivers/k8s/cluster', () => ({
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
   sweepLegacyVclusterState: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('#drivers/k8s/container', () => ({
-  killTrackedPodmanProcs: vi.fn(),
-  reapOrphanedPodmanProcs: vi.fn().mockResolvedValue(undefined),
-}))
 vi.mock('#drivers/k8s/forwarders', () => ({
   PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
   stopAllWorktreeForwarders: vi.fn(() => { order.push('forwarders.released') }),

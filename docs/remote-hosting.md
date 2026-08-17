@@ -27,7 +27,7 @@ same machine.
 
 ```sh
 # 1. Install yaac + the cluster (see README "Install"), then:
-yaac cluster setup && yaac cluster check
+yaac cluster install && yaac cluster check
 yaac server start
 
 # 2. Join the tailnet and serve the server over TLS — tailnet-only
@@ -164,7 +164,7 @@ Semantics to keep in mind:
 ## Not yet covered
 
 - **Reboot durability** (systemd unit for the server, cluster restart on
-  boot) — run `yaac cluster setup --repair && yaac server start` after a
+  boot) — run `yaac cluster install && yaac server start` after a
   server reboot for now.
 - `yaac port-forward`-style tunnels that preserve `localhost:<port>` on the
   client.

@@ -161,11 +161,11 @@ yaac server start --driver containerless
 export YAAC_DATA_DIR="$HOME/.yaac-dev" YAAC_SERVER_PORT=8890 \
        YAAC_K8S_NAMESPACE=yaac-dev YAAC_KIND_CLUSTER=yaac-dev \
        KUBECONFIG="$HOME/.kube/yaac-dev.config"
-yaac cluster setup && yaac cluster check
+yaac cluster install && yaac cluster check
 yaac server start --driver k8s
 ```
 
-Never run `cluster setup`/`delete` without `YAAC_KIND_CLUSTER` pointed at a
+Never run `cluster install`/`delete` without `YAAC_KIND_CLUSTER` pointed at a
 test cluster: the default name is the developer's, and both recreate or
 destroy it.
 

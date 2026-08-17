@@ -5,7 +5,7 @@ the yaac MITM proxy, which enforces a per-worktree allowlist. Two
 components make that true, with a deliberate split of responsibility:
 
 - **Calico** (pinned by checksum in `k8s/calico/`, installed by `yaac
-  cluster setup`) is the CNI and the policy engine. It enforces every
+  cluster install`) is the CNI and the policy engine. It enforces every
   allow and deny, expressed as plain `networking.k8s.io/v1`
   NetworkPolicy.
 - **netd** (`k8s/netd/`, a DaemonSet) owns only the *redirect*: it steers
@@ -213,7 +213,7 @@ Cilium — enforces natively. Only the redirect is CNI-sensitive.
 `FelixConfiguration.bpfEnabled` (or `FELIX_BPFENABLED` on the calico-node
 container) bypasses iptables for pod traffic exactly the way Cilium's
 host-routing does, and it can be turned on under a Calico install that
-otherwise looks adoptable. `yaac cluster setup --adopt-cni` — the mode
+otherwise looks adoptable. `yaac cluster install --adopt-cni` — the mode
 that installs into a cluster whose Calico yaac did not install — refuses
 it outright rather than warning, along with a replaced kube-proxy, an
 empty pod-CIDR set, and a veth prefix that resolves no workload route.
@@ -232,13 +232,13 @@ per provider.
 
 | Platform | Policy engine | Notes |
 |---|---|---|
-| local kind, self-managed k3s | **our Calico** (CNI + policy) | what `yaac cluster setup` installs |
+| local kind, self-managed k3s | **our Calico** (CNI + policy) | what `yaac cluster install` installs |
 | GKE Standard, Dataplane V1 | **Google-managed Calico** (`--enable-network-policy`) | don't install our own. DPv2 is a create-time opt-in, so a Standard cluster created without the flag runs the legacy netfilter dataplane and works as-is |
 | EKS (AWS VPC CNI) | **our Calico, policy-only mode** | do *not* use AWS's network-policy agent: it enforces via TC eBPF *before* netfilter, which would force world-allows on 443/80 into the worktree policy and destroy the netd-late fail-closed floor; its default mode is also fail-open at pod birth |
 | AKS (Azure CNI, non-Cilium) | **Microsoft-managed Calico** (`--network-policy calico`) | plain NP enforced natively |
 | GKE Dataplane V2 / Autopilot, AKS-Cilium, DOKS | — | **out of scope**: Cilium-mandated (DOKS's is not replaceable), which defeats the veth-peer redirect. Autopilot also blocks the privileged DaemonSet netd needs |
 
-Every row but the first is an **adoption**: `yaac cluster setup
+Every row but the first is an **adoption**: `yaac cluster install
 --adopt-cni` installs into the cluster without touching its CNI, after
 verifying the dataplane it is about to depend on (docs/cluster-setup.md).
 

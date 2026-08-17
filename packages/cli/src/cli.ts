@@ -42,11 +42,11 @@ import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
-import { clusterArgError, type ClusterSetupArgs } from '@yaac/server/drivers/k8s/cluster/arg-guards'
+import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/cluster/arg-guards'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
 
 /**
- * Reject a `cluster setup`/`delete` invocation the flags and environment
+ * Reject a `cluster install`/`delete` invocation the flags and environment
  * already condemn, printing the same message the command itself would.
  * Returns true when it did, and the action must return without loading the
  * command.
@@ -57,7 +57,7 @@ import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
  * `@kubernetes/client-node` and the cluster feature graph, ~3s to tell
  * someone they typed `--nodes three`.
  */
-function rejectClusterArgs(command: 'setup' | 'delete', options: ClusterSetupArgs = {}): boolean {
+function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstallArgs = {}): boolean {
   const message = clusterArgError(command, options)
   if (message === null) return false
   console.error(`\n${message}`)
@@ -94,7 +94,7 @@ function applyDriverFlag(driver: string | undefined): void {
  * nothing about a server that is genuinely running k8s. `/health` is
  * auth-exempt, so this needs no credential; a server that does not answer
  * (none running, or one predating the field) falls back to the environment,
- * which is also the only answer available to `cluster setup` — which
+ * which is also the only answer available to `cluster install` — which
  * legitimately runs before any server exists.
  */
 async function runningServerDriver(): Promise<string | undefined> {
@@ -139,7 +139,7 @@ async function rejectClusterOnContainerless(): Promise<boolean> {
 }
 
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
-// here so every command — `cluster setup` (kind inherits our env) and the
+// here so every command — `cluster install` (kind inherits our env) and the
 // image build/push paths — targets the same engine. No-op on macOS and nested,
 // and skipped entirely on a containerless install, which has no engine to
 // point at and no images to build.
@@ -265,16 +265,15 @@ cluster
   })
 
 cluster
-  .command('setup')
-  .description('Create the kind cluster, registry, and CNI wiring yaac needs (destructive: recreates the cluster)')
-  .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
-  .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal)')
+  .command('install')
+  .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
+  .option('--nodes <count>', 'Number of kind nodes to create (default 1; worktrees run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
   .option('--adopt-cni', 'Install into the cluster your kubeconfig points at, adopting the Calico it already runs instead of creating a cluster (verifies the dataplane and refuses what would fail silently)')
-  .action(async (options: { repair?: boolean; nodes?: string; adoptCni?: boolean }) => {
+  .action(async (options: { nodes?: string; adoptCni?: boolean }) => {
     if (await rejectClusterOnContainerless()) return
-    if (rejectClusterArgs('setup', options)) return
-    const { clusterSetup } = await import('#commands/cluster-setup')
-    await clusterSetup(options)
+    if (rejectClusterArgs('install', options)) return
+    const { clusterInstall } = await import('#commands/cluster-install')
+    await clusterInstall(options)
   })
 
 cluster

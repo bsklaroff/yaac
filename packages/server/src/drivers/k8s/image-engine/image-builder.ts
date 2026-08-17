@@ -170,6 +170,71 @@ export interface ImageLayer {
   contentHash: string
 }
 
+/** The yaac-shipped layers, in dependency order. */
+export interface TrustedLayers {
+  base: ImageLayer
+  tools: ImageLayer
+  nestable: ImageLayer
+}
+
+/**
+ * The three layers yaac itself ships: the Ubuntu+Node base, the agent CLIs
+ * on top of it, and the optional in-pod container engine.
+ *
+ * Split out of `resolveImageChain` because these are the layers NO server
+ * builds: they are yaac's own, pinned by the install's Dockerfiles, and
+ * `yaac cluster install` builds and pushes all three on the CLI machine
+ * (docs/trust-split-builds.md). Both that install and the chain resolution
+ * derive their tags from here, so the tag the install pushes is by
+ * construction the tag a worktree create looks up.
+ */
+export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLayers> {
+  // The uid is a build input (YAAC_UID arg, see podUid) and is folded into
+  // the root layer's content hash, so a uid change invalidates the tag just
+  // like a Dockerfile edit — which is also what makes an install and the
+  // server it builds for agree only while they run as the same user.
+  const uid = podUid()
+
+  const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const baseHash = await baseImageHash(baseDockerfile)
+  const base: ImageLayer = {
+    tag: `${prefix}-base:${baseHash}`,
+    name: 'base',
+    dockerfile: baseDockerfile,
+    context: DOCKERFILES_DIR,
+    buildArgs: { YAAC_UID: String(uid) },
+    contentHash: baseHash,
+  }
+
+  // Split out from the base so editing the agent toolchain re-runs only this
+  // layer and its downstream, not the slow apt/Node build under it.
+  const toolsHash = stringHash(`${baseHash}:${await toolsContentHash()}`)
+  const tools: ImageLayer = {
+    tag: `${prefix}-tools:${toolsHash}`,
+    name: 'tools',
+    dockerfile: path.join(DOCKERFILES_DIR, 'Dockerfile.tools'),
+    context: DOCKERFILES_DIR,
+    buildArgs: { BASE_IMAGE: base.tag },
+    contentHash: toolsHash,
+  }
+
+  // In-pod rootless podman + docker CLI + compose, for `nestedContainers`
+  // worktrees. The uid shapes its subuid ranges and socket path, but is
+  // already folded into the chain through the base hash.
+  const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+  const nestableHash = stringHash(`${toolsHash}:${await fileHash(nestableDockerfile)}`)
+  const nestable: ImageLayer = {
+    tag: `${prefix}-nestable:${nestableHash}`,
+    name: 'nestable',
+    dockerfile: nestableDockerfile,
+    context: DOCKERFILES_DIR,
+    buildArgs: { BASE_IMAGE: tools.tag, YAAC_UID: String(uid) },
+    contentHash: nestableHash,
+  }
+
+  return { base, tools, nestable }
+}
+
 /**
  * Resolves the full image layer chain for a project without building anything.
  * Returns the ordered list of layers.
@@ -202,71 +267,32 @@ export async function resolveImageChain(
   }
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
-  const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  // The server uid is a build input (YAAC_UID arg, see podUid), so it
-  // is folded into the root layer's content hash — a uid change must
-  // invalidate the tag just like a Dockerfile edit.
   const uid = podUid()
-  const defaultHash = await baseImageHash(defaultDockerfile)
-  const defaultTag = `${prefix}-base:${defaultHash}`
 
   // We're on the canonical base unless Dockerfile.yaac replaces it standalone.
-  // Tools (the agent CLI layer) sit on top of the canonical base only.
+  // Tools (the agent CLI layer) sit on top of the canonical base only, and
+  // nestable on top of tools — a standalone Dockerfile.yaac skips all three
+  // (it owns its own toolchain).
   const useDefaultBase = !yaacDockerfile || yaacIsLayered
+  // Resolved only when the chain actually stands on it — a standalone
+  // Dockerfile.yaac should not pay for hashing three Dockerfiles it will
+  // never name.
+  const trusted = useDefaultBase ? await resolveTrustedLayers(prefix) : null
 
-  if (useDefaultBase) {
-    layers.push({
-      tag: defaultTag,
-      name: 'base',
-      dockerfile: defaultDockerfile,
-      context: DOCKERFILES_DIR,
-      buildArgs: { YAAC_UID: String(uid) },
-      contentHash: defaultHash,
-    })
-  }
-
-  // Layer 1a: <prefix>-tools (Dockerfile.tools) — agent CLIs (claude, codex,
-  // opencode, chrome-devtools-mcp). Split out so editing the agent toolchain
-  // re-runs only this layer and its downstream, not the slow apt/Node base
-  // build. Skipped for a standalone Dockerfile.yaac, which owns its own
-  // toolchain.
   let toolsTag: string | null = null
   let toolsHash: string | null = null
-  if (useDefaultBase) {
-    const toolsDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
-    toolsHash = stringHash(`${defaultHash}:${await toolsContentHash()}`)
-    toolsTag = `${prefix}-tools:${toolsHash}`
-    layers.push({
-      tag: toolsTag,
-      name: 'tools',
-      dockerfile: toolsDockerfile,
-      context: DOCKERFILES_DIR,
-      buildArgs: { BASE_IMAGE: defaultTag },
-      contentHash: toolsHash,
-    })
+  if (trusted) {
+    layers.push(trusted.base, trusted.tools)
+    toolsTag = trusted.tools.tag
+    toolsHash = trusted.tools.contentHash
   }
 
-  // Layer 1b (optional): <prefix>-nestable (Dockerfile.nestable) — in-pod
-  // rootless podman + docker CLI + compose for `nestedContainers`
-  // worktrees. Sits on tools so a layered Dockerfile.yaac inherits it; a
-  // standalone Dockerfile.yaac skips it (it owns its toolchain). The uid
-  // shapes the layer's subuid ranges and socket path, but it is already
-  // folded into the chain through the base hash.
   let nestableTag: string | null = null
   let nestableHash: string | null = null
-  if (useDefaultBase && nestedContainers) {
-    const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const nestableContentHash = await fileHash(nestableDockerfile)
-    nestableHash = stringHash(`${toolsHash!}:${nestableContentHash}`)
-    nestableTag = `${prefix}-nestable:${nestableHash}`
-    layers.push({
-      tag: nestableTag,
-      name: 'nestable',
-      dockerfile: nestableDockerfile,
-      context: DOCKERFILES_DIR,
-      buildArgs: { BASE_IMAGE: toolsTag!, YAAC_UID: String(uid) },
-      contentHash: nestableHash,
-    })
+  if (trusted && nestedContainers) {
+    layers.push(trusted.nestable)
+    nestableTag = trusted.nestable.tag
+    nestableHash = trusted.nestable.contentHash
   }
 
   // Resolve the base layer tag (may be tools/nestable, layered yaac, or

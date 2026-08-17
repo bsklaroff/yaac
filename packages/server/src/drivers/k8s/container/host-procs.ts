@@ -1,24 +1,21 @@
 /**
  * Tracking and reaping for the podman child processes yaac spawns on the
- * host — `podman build` and `podman push`.
+ * host — `podman build` and `podman push`, both of which now happen only
+ * inside `yaac cluster install`.
  *
- * These outlive the server by default. Nothing holds a handle to them, so a
- * SIGTERM'd (let alone crashed) server leaves a live `podman build`
- * reparented to PID 1. Podman only commits the tag when the build finishes,
- * so the next server's `imageExists` check misses and it starts a *second*
- * build of the same tag — two podman processes fighting over the shared
- * layer cache and the image-store lock, for the slowest layers we have.
+ * They outlive their parent by default. Nothing holds a handle to them, so
+ * an install killed mid-build leaves a live `podman build` reparented to
+ * PID 1. Podman only commits the tag when the build finishes, so the next
+ * install's exists check misses and it starts a *second* build of the same
+ * tag — two podman processes fighting over the shared layer cache and the
+ * image-store lock, for the slowest layers we have.
  *
- * The builder-pod half of a trust-split build is already covered:
- * `reconcileBuilderPodGc` deletes any builder pod created before this
- * process started. This is the host-side equivalent, and it needs a durable
- * record because a host pid carries no label to select on. Every tracked
- * spawn is written to `<data dir>/host-podman.json` before it can be
- * orphaned; `reapOrphanedPodmanProcs` reads that file once at boot — under
- * the data-dir lock, so its pids can only belong to a dead predecessor — and
- * kills whatever is still alive. `killTrackedPodmanProcs` is the graceful
- * half, called from the shutdown handler so a normal restart leaves nothing
- * to reap in the first place.
+ * A host pid carries no label to select on, so this needs a durable record:
+ * every tracked spawn is written to `<data dir>/host-podman.json` before it
+ * can be orphaned, and `reapOrphanedPodmanProcs` reads that file once at the
+ * start of an install and kills whatever is still alive. Nothing else writes
+ * podman pids any more — the server resolves every image from the registry —
+ * so every pid in the file belongs to an install that is gone.
  *
  * Every part of this is best-effort: a failed record write, a missing file
  * or a failed kill degrades to the old behaviour (one duplicate build), so
@@ -29,7 +26,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { serverLocalPath } from '@yaac/shared/paths'
 import { serverLog } from '#log'
-import { killGroup, runStreamingProcess } from './streaming-proc'
+import { runStreamingProcess } from './streaming-proc'
 import { execFileAsync } from './runtime'
 
 /** How long a reaped orphan gets to honour SIGTERM before SIGKILL. */
@@ -92,8 +89,8 @@ export interface TrackedPodmanOpts {
 
 /**
  * Run a podman command, piping its output to the server log and recording
- * its pid for the duration so both the shutdown handler and the next
- * server's boot sweep can abort it. Resolves on exit 0, rejects otherwise.
+ * its pid for the duration so the next install's sweep can abort it if this
+ * one dies holding it. Resolves on exit 0, rejects otherwise.
  */
 export function runTrackedPodman(args: string[], opts: TrackedPodmanOpts): Promise<void> {
   const verb = args[0] ?? 'podman'
@@ -116,40 +113,17 @@ export function runTrackedPodman(args: string[], opts: TrackedPodmanOpts): Promi
     },
     // Forgotten on `exit` — the process is dead — rather than on `close`,
     // whose pipes a grandchild can hold open indefinitely: a pid left in the
-    // file outlives the process, and after pid reuse the shutdown handler or
-    // the next boot's sweep would signal whatever inherited the number.
+    // file outlives the process, and after pid reuse the next install's sweep
+    // would signal whatever inherited the number.
     onExit: forget,
   })
 }
 
 /**
- * Abort every tracked podman process. Called from the shutdown handler, so
- * a restart never hands its successor a half-finished build to duplicate.
- *
- * SIGTERM rather than SIGKILL: podman tears down the in-progress build
- * container and releases the image-store lock on its way out. We don't wait
- * for that — the shutdown path is time-bounded, and a podman still cleaning
- * up exits on its own without ever committing the tag. The state file is
- * deliberately left in place; the next boot's sweep is the only thing that
- * clears it, after confirming each pid is actually gone.
- */
-export function killTrackedPodmanProcs(): void {
-  if (live.size === 0) return
-  serverLog(`[podman] aborting ${live.size} in-flight host process(es)`)
-  // The group, not the child: podman spawns the build container as a child
-  // of its own, and only signalling podman leaves that holding the lock.
-  for (const { child } of live.values()) killGroup(child, 'SIGTERM')
-  live.clear()
-}
-
-/**
- * Kill any podman build/push left behind by a previous server, then clear
+ * Kill any podman build/push left behind by a previous install, then clear
  * the record. Must run before anything can start a build — the whole point
- * is that the orphan dies before the new server decides the tag is missing
+ * is that the orphan dies before this install decides the tag is missing
  * and rebuilds it.
- *
- * Safe to call unconditionally at boot: the data-dir lock is already held,
- * so every pid in the file belongs to a server that is gone.
  */
 export async function reapOrphanedPodmanProcs(): Promise<void> {
   let records: unknown
@@ -176,15 +150,15 @@ export async function reapOrphanedPodmanProcs(): Promise<void> {
       if (!await isOrphanedPodman(rec)) continue
       serverLog(
         `[podman] reaping orphaned ${rec.verb} of ${rec.tag} `
-        + `(pid ${rec.pid}) left by a previous server`,
+        + `(pid ${rec.pid}) left by a previous install`,
       )
       await terminate(rec)
     }
   }
 
   // Cleared only once every kill is done: a wedged orphan holds the loop
-  // above for the full grace period, and a server that dies in that window
-  // must leave the remaining entries on disk for the next boot. Re-running
+  // above for the full grace period, and an install that dies in that window
+  // must leave the remaining entries on disk for the next one. Re-running
   // the sweep over them is harmless — `isOrphanedPodman` re-verifies each
   // pid and re-killing a dead one is a no-op. Rewriting the live set rather
   // than unlinking means a build that somehow started alongside the sweep

@@ -55,17 +55,15 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
   - `config.bindMounts` and every other "the server can see your
     files" affordance is containerless-only by construction.
 - **Built-in images build on the CLI machine, always.** Every image
-  yaac itself owns — base, tools, nestable, netd, proxy, the server
-  image — is built by host podman on the machine running the yaac CLI
-  and pushed to the in-cluster registry. Never in-cluster. This is
-  already how `yaac cluster setup` builds netd today, and the
+  yaac itself owns is built by host podman on the machine running the
+  yaac CLI and pushed to the in-cluster registry, never in-cluster —
+  `yaac cluster install` does it (docs/trust-split-builds.md), and the
   published npm artifact ships every build context (`build:assets`
   copies `dockerfiles/` and `k8s/` into `dist/`), so it works from an
-  npm install. The delta is moving the builds the *server process*
-  runs today (base/tools/nestable, proxy) out to the CLI, since an
-  in-cluster server has no engine. (No cross-arch builds, ever — on
-  the local backend builder and node arch match by construction; a
-  future remote install must bring a same-arch build machine.)
+  npm install. The server image joins that set in phase 2. (No
+  cross-arch builds, ever — on the local backend builder and node arch
+  match by construction; a future remote install must bring a
+  same-arch build machine.)
 - **Project/user layers are unchanged.** Untrusted dockerfile layers
   keep building in the sandboxed in-cluster runsc builder pods
   (docs/trust-split-builds.md) driven by the server — that is a
@@ -74,9 +72,9 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
   sentry).
 - **No public image hosting.** Publishing per-release images is off
   this plan; the CLI-machine build is the only delivery path.
-- **One idempotent converge verb: `yaac cluster install`.** Replaces
-  `yaac cluster setup` and `setup --repair` (see below). Teardown only
-  ever happens via an explicit `yaac cluster delete`.
+- **One idempotent converge verb: `yaac cluster install`**
+  (docs/cluster-setup.md). Teardown only ever happens via an explicit
+  `yaac cluster delete`.
 - **No support for pre-existing kind clusters.** The move to the
   in-cluster server (and later the extraPortMapping, the PVs) assumes
   a cluster created by `install`; an older cluster gets an actionable
@@ -129,57 +127,22 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
 
 ## `yaac cluster install`
 
-One command, safe to run any time, that converges the machine and the
-cluster to the current yaac version:
+The converge verb exists (docs/cluster-setup.md): substrate if necessary,
+node state, every built-in image built on the CLI machine and pushed, then
+the in-cluster components, finishing with `cluster check`. `--adopt-cni`
+survives as-is; growing it into a full bring-your-own-cluster install mode
+is out of scope (see below).
 
-1. **Substrate, if necessary:** binaries preflight (podman, kind,
-   kubectl), podman-machine bootstrap on macOS / rootful-socket check
-   on Linux, then — only if the kind cluster does not exist — create
-   it (`--nodes N` supported) and install Calico. An existing
-   install-created cluster is never recreated; there is no
-   destructive path in this command. A pre-install-era cluster is
-   refused (see Decisions) rather than upgraded in place.
-2. **Node state:** the node fixups (sysctls, TasksMax, pids-limit,
-   kubelet flags) re-applied idempotently — today's `--repair` tail.
-3. **Images:** build every built-in image on this machine
-   (content-hash tags, so an unchanged image is a no-op) and push what
-   the registry is missing (`registryHasTag()` HEAD-skip already
-   dedupes). Mirror the digest-pinned upstream images (registry:2,
-   Envoy, podman-stable, curl installer) the same way.
-4. **In-cluster components:** namespace + PSS labels, PriorityClasses,
-   main registry (+ node hosts.toml), builder-role VAP, gVisor
-   installer DaemonSet + RuntimeClasses, netd — all already
-   ensure-shaped.
-5. **Server Deployment** (once phase 2 lands — the k8s server always
-   runs in-cluster): apply/roll the Deployment to the freshly built
-   server image. Upgrading yaac = `npm update` + `yaac cluster
-   install`.
-6. Finish with `cluster check`, as setup does today.
+What phases 2–3 add to it, in order:
 
-Existing-cluster runs are therefore exactly today's `setup --repair`
-semantics; fresh runs are today's `setup`. `yaac cluster check` and
-`yaac cluster delete` keep their jobs. (`--adopt-cni` survives as-is
-for now; growing it into a full bring-your-own-cluster install mode is
-out of scope — see below.)
-
-Consequences worth naming:
-
-- The **server never builds trusted layers**. `ensureImage` for
-  base/tools/nestable becomes registry-lookup-only; a missing
-  content-hash tag is an actionable error ("run `yaac cluster
-  install`"), not a build trigger. The prewarm sweep keeps building
-  only project/user layers (builder pods).
-- The **host podman modules migrate from server runtime to install
-  time**: the engine preflight, tracked-process reaping, and host
-  image GC stop being server concerns (the GC becomes an install-time
-  sweep on the CLI machine); the server's driver attach drops
-  `reapOrphanedPodmanProcs()`/`killTrackedPodmanProcs()`.
-- The **image uid build-arg is pinned, not inherited**: `podUid()` is
-  `process.getuid()` today, which is correct when builder == server ==
-  one host user, and wrong when the CLI builds for an in-cluster
-  server. The uid becomes the constant 1000 end to end (image `yaac`
-  user, server pod, session pods, fsGroup); a host whose uid differed
-  re-tags images once (see Migration).
+- **Server Deployment.** Apply/roll it to the freshly built server image,
+  after the components it depends on. Upgrading yaac then = `npm update`
+  + `yaac cluster install`.
+- **A pre-install-era cluster is refused** (see Decisions) rather than
+  upgraded in place, once the extraPortMapping the Deployment is published
+  through makes an old cluster genuinely unusable.
+- **Claims and the NFS export** (phase 3): stand the host export up,
+  apply csi-driver-nfs, render the static PV.
 
 ## Where the coupling actually is
 
@@ -198,13 +161,11 @@ assumes a host" suggests. Six load-bearing seams, all already half-built:
    `getDataDir()` today; every helper in `project-paths.ts` is
    classified. Splitting the tiers is a change to three functions plus
    the mount-source decision — not a caller-by-caller migration.
-3. **Host podman.** One trust seam (`images/build-engine.ts` routes
-   `base`/`tools`/`nestable` to the host engine, everything else to
-   runsc builder pods) plus five upstream-image mirror sites
-   (netd, proxy, project-registry's `registry:2`, the gvisor installer's
-   curl image, the builder pod's podman image) and the host image GC.
-   All of it stays host-side under this plan — it just moves from the
-   server process to `yaac cluster install`.
+3. **Host podman.** Already resolved: every image yaac ships is built
+   or mirrored by `yaac cluster install` on the CLI machine, and the
+   server resolves all of them from the registry
+   (docs/trust-split-builds.md). Nothing on the server's path touches a
+   container engine.
 4. **Cluster reachability.** The typed client already falls back to
    in-cluster service-account config (`loadFromDefault()`); all writes
    and execs go through the `kubectl` binary, which works with an SA
@@ -225,7 +186,10 @@ assumes a host" suggests. Six load-bearing seams, all already half-built:
    `dataDirHash()` (= the data-dir *path*) scopes every cluster query.
    Both become *stable constants* once the server is a container —
    run it as uid 1000 and fix the in-pod data-dir path — but both are
-   migration hazards for an existing install (see Migration).
+   migration hazards for an existing install (see Migration). Neither
+   can be pinned before then: the uid is what the SERVER creates
+   hostPath dirs as, so it stops being a free variable only when the
+   server is itself the uid-1000 pod (phase 2).
 
 There are **no filesystem watchers** anywhere in the server: transcript
 and session-start freshness is poll-on-reconcile-tick (`stat` + re-read),
@@ -289,35 +253,6 @@ before the next starts, per the repo's phasing discipline. The final
 gate for each is unchanged from `stock-k8s-multi-node.md`: the e2e
 suite on a multi-node (kind) cluster.
 
-### Phase 1 — `yaac cluster install` + builds move to the CLI
-
-Restructure the CLI surface and the build responsibility before any
-Deployment exists:
-
-- Introduce `yaac cluster install` with the converge semantics above;
-  retire `setup`/`--repair` (alias them through a deprecation window
-  if wanted). No behavior on the cluster changes yet — this is the
-  same ensure-* tail behind one idempotent verb.
-- Move the trusted-layer and proxy image builds from the server
-  process into install: install builds and pushes base/tools/nestable
-  + proxy + netd (+ the upstream mirrors); the server's
-  `build-engine.ts` host route becomes registry-lookup-only with an
-  actionable "run `yaac cluster install`" error, and the server sheds
-  the podman preflight, the tracked-process reaping, and the host
-  image GC (which becomes an install-time sweep).
-- Pin the image uid build-arg (constant 1000) instead of deriving it
-  from the building process's uid, so a CLI build and a server pod
-  agree. On the current single-host backend this is a no-op for the
-  common uid-1000 case; a host whose uid differs re-tags images once
-  (content hash includes the uid — call it out in the changelog).
-
-Pays off standalone: the *server process* no longer needs a container
-engine even in host mode, upgrades get one obvious verb, and repair
-stops being a flag people have to know about.
-
-Verification: full e2e on the current backend with the server process
-denied podman (only install may use it).
-
 ### Phase 2 — server image + Deployment, storage unchanged
 
 Run the server as a pod with **hostPath storage exactly as today**.
@@ -333,6 +268,19 @@ the storage work completely.
   working; no runtime download); uid 1000. Built and pushed by
   install; content-hash tagged; added to `test/global-setup.ts` for
   e2e.
+- **Pin the pod uid to 1000, here and not before.** `podUid()` still
+  mirrors the server's own uid, and must keep doing so while the
+  server is a host process: it is what pre-creates every hostPath a
+  session pod writes (`#domain/worktrees`), so those dirs land owned
+  by whoever runs it, and under gVisor the gofer presents that real
+  ownership — pinning the pod to 1000 on a uid-501 host (macOS's
+  first login uid) leaves every worktree unable to write
+  `/workspace`. Once the server IS the pod that creates them, running
+  as 1000, the constant is simply true, and the two remaining
+  `process.getuid()` mirrors go with it: the pod uid and
+  `proxyRunAsSecurityContext()`. Hosts whose uid was not 1000 re-tag
+  their images once — free here, since the transition already
+  recreates the cluster.
 - **Bind + auth:** a bind-address env (`YAAC_BIND_ADDR`; the pod
   interface in the Deployment manifest); auth keeps today's
   config-keyed rules (see Decisions), so the local install stays
@@ -381,8 +329,8 @@ the storage work completely.
 - **Settled small calls:** the detached teardown `rm -rf` accepts
   pod-lifetime scoping — the reconcile sweeps already retry
   leftovers, so a pod death mid-cleanup costs a pass, not a leak
-  (the other detached-process trick, prewarm builds, dissolves in
-  phase 1 — builder pods already outlive the server).
+  (the other detached-process trick, prewarm builds, already dissolved:
+  builder pods outlive the server).
   `YAAC_USE_TOR` points at the host's SOCKS via
   `YAAC_HOST_TOR_SOCKS_URL` — install computes the host's address on
   the kind network; note Tor must listen on that interface, not just
@@ -532,9 +480,6 @@ is expected to need re-design for any of these — only addition.
   and the server pod hostPath-mounts it at the identical absolute
   path — so `dataDirHash()`, every label, and the DB carry over
   unchanged into the new cluster.
-- The phase-1 uid pinning re-tags images once on hosts whose uid
-  was not 1000 (the content hash includes the uid); the next
-  `yaac cluster install` rebuilds them.
 - `yaac server start` on a k8s data dir becomes an actionable error
   pointing at `yaac cluster install`; the recorded `driver` file is
   the tripwire.

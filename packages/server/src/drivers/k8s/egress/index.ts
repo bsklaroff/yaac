@@ -31,7 +31,6 @@ export {
   ProxyClient,
   drainPendingMamaRequests,
   proxyClient,
-  resolveProxyImageTag,
   type ProxyClientConfig,
 } from './proxy-client'
 export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from './proxy-events'

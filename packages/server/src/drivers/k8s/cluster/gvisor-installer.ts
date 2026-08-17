@@ -10,7 +10,7 @@ import {
 } from '#drivers/k8s/substrate'
 import type { PodToleration } from '#drivers/k8s/substrate'
 import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
-import { testEnv } from '@yaac/shared/env'
+import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 import { assertMirrorArch } from './netd'
 
 /**
@@ -67,20 +67,20 @@ export const GVISOR_INSTALLER_UPSTREAM_IMAGE = `docker.io/curlimages/curl@${CURL
 export const GVISOR_INSTALLER_MIRROR_TAG =
   `curlimages/curl:${CURL_VERSION}-${CURL_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** Mirror the pinned installer image into the local registry. */
-export async function ensureGvisorInstallerImage(
-  requirePrebuilt = testEnv.requirePrebuiltImages,
-): Promise<string> {
+/** The mirrored installer image's in-cluster ref. Lookup-only (see netd's). */
+export async function ensureGvisorInstallerImage(): Promise<string> {
+  if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
+    return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
+  }
+  throw missingPrebuiltImage('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
+}
+
+/** Mirror the pinned installer image into the local registry. Install-time only. */
+export async function mirrorGvisorInstallerImage(): Promise<string> {
   if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
     return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
   }
   if (!await imageExists(GVISOR_INSTALLER_MIRROR_TAG)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `gVisor installer image ${GVISOR_INSTALLER_MIRROR_TAG} is missing. `
-        + 'Restart the test run so the global setup can mirror it.',
-      )
-    }
     await execFileAsync('podman', ['pull', GVISOR_INSTALLER_UPSTREAM_IMAGE], { timeout: 300_000 })
     const { stdout: arch } = await execFileAsync('podman', [
       'image', 'inspect', '--format', '{{.Architecture}}', GVISOR_INSTALLER_UPSTREAM_IMAGE,
@@ -287,7 +287,7 @@ export function buildGvisorInstallerDaemonSetManifest(
  * by the time the classes exist, the nodes they select do too.
  *
  * Idempotent, and the way an existing cluster picks up a runsc version bump:
- * `yaac cluster setup` (full and `--repair`) calls it, the DaemonSet rolls
+ * `yaac cluster install` calls it on every run, the DaemonSet rolls
  * node by node, and each node's script restarts containerd only if the bump
  * actually changed something on it.
  */
