@@ -280,6 +280,12 @@ reattach to, and the next prewarm sweep re-derives what is missing.
 
 ## Server wiring
 
+- The production side lives in `drivers/k8s/install`, a folder no `src/`
+  module may import (an eslint zone enforces it). Each shipped image's
+  *identity* — its digest pin, or the content-hash tag its build context
+  hashes to — stays in `drivers/k8s/cluster` beside the lookup the server
+  does, because both halves need the same name for the same bytes; what
+  the install folder owns is the production, which only the CLI performs.
 - A `BuildEngine` seam (`drivers/k8s/images/build-engine.ts`,
   `engineForLayer` keyed on `ImageLayer.name`): `prebuilt` looks the tag
   up in the registry and refuses to build; `cluster-pod`

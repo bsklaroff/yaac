@@ -1,6 +1,3 @@
-import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import {
   DNS_STUB_PORT,
   NETD_APP_NAME,
@@ -17,21 +14,13 @@ import {
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
 import {
-  buildImage,
   contextHash,
-  failImageBuild,
-  finishImageBuild,
   missingPrebuiltImage,
-  registerImageBuild,
 } from '#drivers/k8s/image-engine'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { NETD_DIR } from '@yaac/shared/project-paths'
-import { testEnv } from '@yaac/shared/env'
-import { serverLog } from '#log'
+import { env, testEnv } from '@yaac/shared/env'
 import { clusterPodCidrs } from './cluster-cidrs'
-import { cniVethPrefix } from './cni-adopt'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * `yaac-netd` — the per-node DaemonSet that steers worktree egress into the
@@ -77,28 +66,24 @@ export const ENVOY_UPSTREAM_IMAGE = `docker.io/envoyproxy/envoy@${ENVOY_PIN}`
 export const ENVOY_MIRROR_TAG =
   `envoyproxy/envoy:${ENVOY_VERSION}-${ENVOY_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** podman's GOARCH name for this host — the node shares it (kind's node is a
- *  container here), so it is also the arch every mirrored image must be. */
-export function hostImageArch(arch: string = process.arch): string {
-  return arch === 'x64' ? 'amd64' : arch
-}
+/**
+ * Interface-name prefix Calico gives every workload veth — the default
+ * when nothing is configured. Deliberately duplicated from
+ * `k8s/netd/routes.ts` (`DEFAULT_VETH_PREFIX`) rather than shared: netd is
+ * its own package built into a container image and the server cannot
+ * import it, which is the same reason netd re-declares the transparent
+ * port numbers as env defaults.
+ */
+export const DEFAULT_VETH_PREFIX = 'cali'
 
 /**
- * Throw when a mirrored upstream image is built for the wrong architecture,
- * naming the likely cause (a pin that points at a child manifest rather than
- * the index). An empty/unknown `actual` is accepted — the check must never be
- * the reason a mirror fails.
+ * The veth prefix netd is told to match on: the operator's configured
+ * value, else Calico's. `--adopt-cni` verifies the result against the
+ * node's real routing table, which is what turns a wrong value into a
+ * refusal instead of a cluster whose worktrees silently have no egress.
  */
-export function assertMirrorArch(
-  image: string,
-  actual: string,
-  expected: string = hostImageArch(),
-): void {
-  if (!actual.trim() || actual.trim() === expected) return
-  throw new Error(
-    `${image} is a ${actual.trim()} image but this host is ${expected}. `
-    + 'Pin the multi-arch index digest, not one platform\'s child manifest.',
-  )
+export function cniVethPrefix(): string {
+  return env.cniVethPrefix ?? DEFAULT_VETH_PREFIX
 }
 
 /** Content-hash tag of the netd image (the k8s/netd build context). */
@@ -117,47 +102,10 @@ export async function ensureNetdImage(): Promise<string> {
   throw missingPrebuiltImage('netd', localTag)
 }
 
-/**
- * Build-or-skip the netd image on host podman and push it. Install-time
- * only: the content-hash tag means an unchanged source tree costs one
- * registry HEAD and nothing more.
- */
-export async function buildNetdImage(): Promise<string> {
-  const localTag = await resolveNetdImageTag(testEnv.netdImage)
-  if (await registryHasTag(localTag)) return registryRef(localTag)
-
-  if (!await imageExists(localTag)) {
-    const id = registerImageBuild({ tag: localTag, layer: 'netd', action: 'build', reason: 'session' })
-    serverLog(`[build] starting ${localTag} (netd)`)
-    try {
-      await buildImage(localTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
-      finishImageBuild(id)
-    } catch (err) {
-      failImageBuild(id, err instanceof Error ? err.message : String(err))
-      throw err
-    }
-  }
-  return pushImageToRegistry(localTag)
-}
-
 /** The mirrored Envoy image's in-cluster ref. Lookup-only, like netd's. */
 export async function ensureEnvoyImage(): Promise<string> {
   if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
   throw missingPrebuiltImage('Envoy', ENVOY_MIRROR_TAG)
-}
-
-/** Mirror the pinned Envoy image into the local registry. Install-time only. */
-export async function mirrorEnvoyImage(): Promise<string> {
-  if (await registryHasTag(ENVOY_MIRROR_TAG)) return registryRef(ENVOY_MIRROR_TAG)
-  if (!await imageExists(ENVOY_MIRROR_TAG)) {
-    await execFileAsync('podman', ['pull', ENVOY_UPSTREAM_IMAGE], { timeout: 600_000 })
-    const { stdout: arch } = await execFileAsync('podman', [
-      'image', 'inspect', '--format', '{{.Architecture}}', ENVOY_UPSTREAM_IMAGE,
-    ]).catch(() => ({ stdout: '' }))
-    assertMirrorArch(ENVOY_UPSTREAM_IMAGE, arch)
-    await execFileAsync('podman', ['tag', ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG])
-  }
-  return pushImageToRegistry(ENVOY_MIRROR_TAG)
 }
 
 export function buildNetdServiceAccountManifest(): Record<string, unknown> {

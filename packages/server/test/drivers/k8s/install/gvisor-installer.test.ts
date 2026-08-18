@@ -21,14 +21,14 @@ vi.mock('#drivers/k8s/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
 }))
 
-import { ensureGvisorRuntime } from '#drivers/k8s/cluster'
+import { ensureGvisorRuntime } from '#drivers/k8s/install'
 // Setup values: the object names and the image pin the assertions compare
 // against.
 import {
   GVISOR_INSTALLER_APP_NAME,
   GVISOR_INSTALLER_MIRROR_TAG,
   GVISOR_INSTALLER_UPSTREAM_IMAGE,
-} from '#drivers/k8s/cluster/gvisor-installer'
+} from '#drivers/k8s/install/gvisor-installer'
 import {
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_NODE_LABEL,

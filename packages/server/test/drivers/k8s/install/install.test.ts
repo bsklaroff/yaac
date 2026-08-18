@@ -18,13 +18,13 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/cluster'
+import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
 // The deps shape is part of the public interface (runClusterInstall takes one);
 // CALICO_VERSION is a pinned setup value for the assertions.
-import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/cluster/install'
+import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
-import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/cluster/check'
+import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
 
 afterEach(() => {
   vi.unstubAllEnvs()

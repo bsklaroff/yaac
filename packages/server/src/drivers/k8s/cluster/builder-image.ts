@@ -1,7 +1,4 @@
 import {
-  execFileAsync,
-  imageExists,
-  pushImageToRegistry,
   registryHasTag,
   registryRef,
 } from '#drivers/k8s/container'
@@ -29,15 +26,4 @@ export const BUILDER_LOCAL_TAG = 'podman-stable:v5.5'
 export async function ensureBuilderImage(): Promise<string> {
   if (await registryHasTag(BUILDER_LOCAL_TAG)) return registryRef(BUILDER_LOCAL_TAG)
   throw missingPrebuiltImage('builder', BUILDER_LOCAL_TAG)
-}
-
-/** Mirror the pinned builder image into the local registry. Install-time only. */
-export async function mirrorBuilderImage(): Promise<string> {
-  if (await registryHasTag(BUILDER_LOCAL_TAG)) return registryRef(BUILDER_LOCAL_TAG)
-  if (!await imageExists(BUILDER_LOCAL_TAG)) {
-    await execFileAsync('podman', ['pull', BUILDER_UPSTREAM_IMAGE], { timeout: 600_000 })
-    await execFileAsync('podman', ['tag', BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG])
-  }
-  await pushImageToRegistry(BUILDER_LOCAL_TAG)
-  return registryRef(BUILDER_LOCAL_TAG)
 }

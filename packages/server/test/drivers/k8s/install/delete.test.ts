@@ -19,7 +19,7 @@ vi.mock('node:readline/promises', () => ({
   },
 }))
 
-import { runClusterDelete } from '#drivers/k8s/cluster'
+import { runClusterDelete } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/kubectl'
 
 const mockRun = vi.mocked(execFileAsync)

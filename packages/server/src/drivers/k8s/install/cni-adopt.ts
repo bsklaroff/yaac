@@ -1,4 +1,8 @@
 import {
+  cniVethPrefix,
+  podCidrSources,
+} from '#drivers/k8s/cluster'
+import {
   NETD_APP_NAME,
   RUNTIME_CLASS_GVISOR,
   isKubectlAbsentError,
@@ -9,7 +13,6 @@ import {
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import type { execFileAsync } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
-import { podCidrSources } from './cluster-cidrs'
 
 /**
  * Adopting a CNI yaac did not install.
@@ -38,25 +41,6 @@ import { podCidrSources } from './cluster-cidrs'
  * otherwise looks adoptable.
  */
 
-/**
- * Interface-name prefix Calico gives every workload veth — the default
- * when nothing is configured. Deliberately duplicated from
- * `k8s/netd/routes.ts` (`DEFAULT_VETH_PREFIX`) rather than shared: netd is
- * its own package built into a container image and the server cannot
- * import it, which is the same reason netd re-declares the transparent
- * port numbers as env defaults.
- */
-export const DEFAULT_VETH_PREFIX = 'cali'
-
-/**
- * The veth prefix netd is told to match on: the operator's configured
- * value, else Calico's. `--adopt-cni` verifies the result against the
- * node's real routing table, which is what turns a wrong value into a
- * refusal instead of a cluster whose worktrees silently have no egress.
- */
-export function cniVethPrefix(): string {
-  return env.cniVethPrefix ?? DEFAULT_VETH_PREFIX
-}
 
 /** Everything the gate reads about the cluster's CNI, in one shape. */
 export interface CniFacts {

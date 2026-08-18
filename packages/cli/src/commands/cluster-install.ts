@@ -1,4 +1,4 @@
-import { ClusterInstallError, runClusterInstall } from '@yaac/server/drivers/k8s/cluster/install'
+import { ClusterInstallError, runClusterInstall } from '@yaac/server/drivers/k8s/install'
 
 export interface ClusterInstallCliOptions {
   /** Raw `--nodes` value; commander hands options through as strings. */

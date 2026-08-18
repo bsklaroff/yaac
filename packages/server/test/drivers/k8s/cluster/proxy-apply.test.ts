@@ -63,6 +63,7 @@ import {
   ensureProxyResources,
   proxyServiceClusterIp,
   resetProxyClusterIpCache,
+  vapAvailable,
 } from '#drivers/k8s/cluster'
 import { proxyDataHostDir } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
@@ -616,6 +617,26 @@ describe('ensureCaConfigMap', () => {
     })
     await ensureCaConfigMap('SAME', 'NEW-BUNDLE')
     expect(mockApply).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('vapAvailable', () => {
+  it('answers by asking the apiserver, and false is the fail-closed case', async () => {
+    // `cluster check`'s vap gate and the builder guard both key on this.
+    // An apiserver with no such resource type errors, and the caller must
+    // read that as "no admission guard here" rather than propagating —
+    // the guard is what reserves the builder label, so its absence is a
+    // reportable condition, not a crash.
+    stageClusterReads()
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    await expect(vapAvailable()).resolves.toBe(true)
+    expect(mockRetry).toHaveBeenCalledWith(
+      ['get', 'validatingadmissionpolicies', '-o', 'name'],
+      expect.objectContaining({ maxAttempts: 1 }),
+    )
+
+    mockRetry.mockRejectedValue(new Error("the server doesn't have a resource type"))
+    await expect(vapAvailable()).resolves.toBe(false)
   })
 })
 

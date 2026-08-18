@@ -201,9 +201,22 @@ speak alone.
   the local registry, the streaming child-process runner). Nothing loose
   sits beside them.
 
-  The assembly can be the barrel — above the nine folders that import the
+  The assembly can be the barrel — above the folders that import the
   contract — precisely because the contract is its own bucket below them:
   the graph runs assembly → folders → contract → nothing.
+
+  One folder is outside that graph entirely: `install`, which is what
+  `yaac cluster install|check|delete` do. It administers the substrate —
+  creates the cluster and its CNI, re-applies the node state a restart
+  drops, produces every image yaac ships, converges the in-cluster layers
+  — from the machine running the CLI, before and independently of any
+  server. So the arrow runs CLI → install → cluster, and nothing under
+  `src/` may import it: an eslint zone bans `#drivers/k8s/install`
+  everywhere in the server, which is what keeps a container engine off
+  every path the server takes (docs/trust-split-builds.md). It is also
+  the one folder of a driver permitted to name a sibling folder, because
+  what it reads from `cluster` is each shipped image's identity — the
+  name the server will later look that image up by.
 
   `contract.ts` and `driver.ts` import nothing but shared types, and an
   eslint zone on those two files alone is what keeps it true. That is

@@ -39,7 +39,7 @@ const UNTIERED_DATA_DIR = [
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|substrate|view|worktrees))|http)/.',
+  regex: '^#(domain/(auth|git|images|projects|skills|titles|worktrees)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|view|worktrees))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -87,6 +87,19 @@ const NO_DRIVER_ABOVE_CONTRACT = {
 const NO_DRIVER_INTERNALS = {
   regex: '^#drivers/(k8s|containerless)/.',
   message: 'A driver has one door: #drivers/k8s or #drivers/containerless. Its modules are internal (docs/layered-server.md).',
+}
+
+// The install feature is the one part of the driver the server never
+// enters: it administers the substrate from the machine running the CLI,
+// before any server exists. Nothing under src/ may import it — not the
+// layers above the driver (NO_DRIVER_INTERNALS already refuses those), and
+// not the driver's own folders, which is what this adds. A cluster module
+// that reached back into it would put the server on a path that needs a
+// container engine, which is exactly the property the split protects
+// (docs/trust-split-builds.md).
+const NO_INSTALL_FROM_SERVER = {
+  regex: '^#drivers/k8s/install(/|$)',
+  message: 'Only the CLI enters #drivers/k8s/install; the server never administers its own substrate (docs/layered-server.md).',
 }
 
 const NO_API_OR_MAIN = {
@@ -166,6 +179,7 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
+            NO_INSTALL_FROM_SERVER,
             NO_DATABASE_DIRECT,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
@@ -196,6 +210,8 @@ export default tseslint.config(
         {
           paths: UNTIERED_DATA_DIR,
           patterns: [
+            NO_DRIVER_ABOVE_CONTRACT,
+            NO_INSTALL_FROM_SERVER,
             RELATIVE_PARENT,
             SEALED_FOLDERS,
             NO_API_OR_MAIN,
@@ -227,6 +243,8 @@ export default tseslint.config(
         {
           paths: UNTIERED_DATA_DIR,
           patterns: [
+            NO_DRIVER_ABOVE_CONTRACT,
+            NO_INSTALL_FROM_SERVER,
             RELATIVE_PARENT,
             {
               regex: '^#',
@@ -307,7 +325,12 @@ export default tseslint.config(
   // is unstatable: every rule here is shared, and a driver must be able to
   // name its own folders.
   ...['k8s', 'containerless'].map((kind) => ({
+    // The install folder is excluded, not exempted: it is the one part of a
+    // driver the server never enters, and it is bound by MORE than this
+    // zone allows (it may name #drivers/k8s/cluster, which a sibling folder
+    // may not) — its own zone below states that.
     files: [`packages/server/src/drivers/${kind}/**/*.ts`],
+    ignores: [`packages/server/src/drivers/${kind}/install/**/*.ts`],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -316,11 +339,23 @@ export default tseslint.config(
           patterns: [
             RELATIVE_PARENT,
             SEALED_FOLDERS,
+            NO_INSTALL_FROM_SERVER,
             NO_DATABASE_DIRECT,
             NO_API_OR_MAIN,
             {
               regex: `^#drivers/${kind === 'k8s' ? 'containerless' : 'k8s'}(/|$)`,
               message: 'A driver cannot see its siblings: put what both need in #drivers/shared (docs/layered-server.md).',
+            },
+            // The specifier ban above is anchored on `#drivers/…`, and a
+            // file at the driver ROOT sits in the same directory as the
+            // folder — so `./install/x` would reach it without ever naming
+            // the specifier. That is the likeliest accidental route into
+            // the one folder the server must not enter, and the assembly
+            // (index.ts, steps.ts, lifecycle.ts) is exactly what lives
+            // there. The zone's `ignores` exempts install/ itself.
+            {
+              regex: '^\\./install(/|$)',
+              message: 'Only the CLI enters the install feature; reach nothing of it from the driver (docs/layered-server.md).',
             },
             {
               regex: '^(#db|#domain|#runtime)(/|$)',
@@ -335,6 +370,44 @@ export default tseslint.config(
       ],
     },
   })),
+
+  // The k8s driver's install feature: the substrate administration the CLI
+  // runs and the server never does. Its own zone because it is bound
+  // differently in both directions — it MAY name `#drivers/k8s/cluster`
+  // (each shipped image's identity, and the in-cluster layers both sides
+  // ensure), which no other folder of a driver may name of a sibling; and
+  // it must still never reach above the contract. Nothing reads back: the
+  // driver zone above bans `#drivers/k8s/install` outright, which is what
+  // keeps a container engine off every path the server takes.
+  {
+    files: ['packages/server/src/drivers/k8s/install/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: UNTIERED_DATA_DIR,
+          patterns: [
+            RELATIVE_PARENT,
+            SEALED_FOLDERS,
+            NO_DATABASE_DIRECT,
+            NO_API_OR_MAIN,
+            {
+              regex: '^#drivers/containerless(/|$)',
+              message: 'A driver cannot see its siblings: put what both need in #drivers/shared (docs/layered-server.md).',
+            },
+            {
+              regex: '^(#db|#domain|#runtime)(/|$)',
+              message: 'A driver names nothing above its contract: no db, no mediators, no machinery (docs/layered-server.md).',
+            },
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'This package may only import @yaac/shared (use "#…" for its own modules).',
+            },
+          ],
+        },
+      ],
+    },
+  },
 
   // What the drivers share with each other and with nothing else
   // (`#drivers/shared`). Its own zone rather than the driver zone above,
@@ -624,8 +697,9 @@ export default tseslint.config(
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
   // @yaac/shared, and the sanctioned host-side modules — exec
   // (drivers/k8s/substrate/exec, attaches/streams via `kubectl exec -it`),
-  // cluster check/install/delete (drivers/k8s/cluster/*, run before any server
-  // exists), and the host driver's own doctor (drivers/containerless/check,
+  // the k8s driver's install door (drivers/k8s/install — cluster
+  // check/install/delete, which run before any server exists), and the host
+  // driver's own doctor (drivers/containerless/check,
   // the same door for the same reason: administering a substrate is
   // substrate-specific by nature). The negation chain re-includes each
   // parent dir (gitignore semantics: a leaf can't be un-ignored while its
@@ -648,14 +722,11 @@ export default tseslint.config(
                 '!@yaac/server/drivers/k8s', '@yaac/server/drivers/k8s/*',
                 '!@yaac/server/drivers/k8s/substrate', '@yaac/server/drivers/k8s/substrate/*',
                 '!@yaac/server/drivers/k8s/substrate/exec',
-                '!@yaac/server/drivers/k8s/cluster', '@yaac/server/drivers/k8s/cluster/*',
-                '!@yaac/server/drivers/k8s/cluster/check',
-                '!@yaac/server/drivers/k8s/cluster/install',
-                '!@yaac/server/drivers/k8s/cluster/delete',
+                '!@yaac/server/drivers/k8s/install',
                 '!@yaac/server/drivers/containerless', '@yaac/server/drivers/containerless/*',
                 '!@yaac/server/drivers/containerless/check',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/{k8s/{substrate/exec,cluster/{check,install,delete}},containerless/check}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/drivers/{k8s/{substrate/exec,install},containerless/check}.',
             },
           ],
         },

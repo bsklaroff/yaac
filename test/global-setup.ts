@@ -5,11 +5,10 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import { contextHash, ensureImageByTag, resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { TRUSTED_PARENT_COMPRESSION } from '@yaac/server/drivers/k8s/cluster/builtin-images'
-import { mirrorRegistryImage } from '@yaac/server/drivers/k8s/cluster/project-registry'
-import { mirrorBuilderImage } from '@yaac/server/drivers/k8s/cluster/builder-image'
-import { mirrorEnvoyImage } from '@yaac/server/drivers/k8s/cluster/netd'
-import { mirrorGvisorInstallerImage } from '@yaac/server/drivers/k8s/cluster/gvisor-installer'
+import {
+  TRUSTED_PARENT_COMPRESSION,
+  mirrorPinnedUpstreams,
+} from '@yaac/server/drivers/k8s/install/builtin-images'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
@@ -221,17 +220,12 @@ export async function setup(): Promise<void> {
     for (const tag of [proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
-    // Per-project registry image (registry:2, digest-pinned mirror) and
-    // the sandboxed builder pods' podman image — pull-or-skip, then push,
-    // same as above.
-    await mirrorRegistryImage()
-    await mirrorBuilderImage()
-    await mirrorEnvoyImage()
-    // The gVisor installer's image (digest-pinned upstream curl). No e2e
-    // runs `cluster install`, so nothing here needs it today — mirrored so
-    // a test that does exercise the installer fails on what it is testing
-    // rather than on a missing image.
-    await mirrorGvisorInstallerImage()
+    // The digest-pinned upstreams every install mirrors: registry:2 for
+    // the per-project registries, netd's Envoy, the builder pods' podman,
+    // and the gVisor installer's curl. Pull-or-skip, then push. The last
+    // is unused by any e2e today — mirrored so a test that does exercise
+    // the installer fails on what it is testing, not a missing image.
+    await mirrorPinnedUpstreams()
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

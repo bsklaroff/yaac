@@ -53,14 +53,14 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
   pushImageToRegistry: mockPush,
 }))
 
-import { buildBuiltinImages } from '#drivers/k8s/cluster'
+import { buildBuiltinImages } from '#drivers/k8s/install'
 import { listImageBuilds, resolveTrustedLayers } from '#drivers/k8s/image-engine'
 // State-reset hook, not a unit under test: the build registry is module
 // state, and these cases assert what one run put in it.
 import { clearAllImageBuildsForTests } from '#drivers/k8s/image-engine/image-builds'
 // Setup values: the compression the trusted pushes must carry and the tag
 // the builder mirror lands under.
-import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/cluster/builtin-images'
+import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/install/builtin-images'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
 
 /** The tag of every `podman build` this run performed, in order. */
