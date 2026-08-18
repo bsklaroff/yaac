@@ -18,7 +18,7 @@ Status and boundaries:
 - The last *runtime* kind coupling is gone: the `podman exec <node>`
   writes in `src/lib/k8s/project-registry.ts` were replaced by one-shot
   in-cluster node-write pods (hostPath + `nodeName`), so kind specificity
-  lives only in `drivers/k8s/cluster/install.ts` and the self-skipping
+  lives only in `drivers/k8s/install/install.ts` and the self-skipping
   node-fixups check.
 - This plan is the spike-and-migrate track. It commits to nothing until
   the spikes pass; kind + podman-libkrun stays the supported backend
@@ -32,7 +32,7 @@ node:
 
 - **sysfs unmask** for userns pods (kind#3436): the kernel refuses sysfs
   mounts in a userns while the node container's `/sys` is masked
-  (`drivers/k8s/cluster/install.ts`). A VM node has a real sysfs.
+  (`drivers/k8s/install/install.ts`). A VM node has a real sysfs.
 - **`DefaultTasksMax=infinity` + vm sysctls + `podman update
   --pids-limit`** (`install.ts`): without them, subagent
   fan-out dies with `fork: resource temporarily unavailable`. The

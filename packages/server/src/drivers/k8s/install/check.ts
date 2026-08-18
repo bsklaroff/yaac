@@ -1,3 +1,11 @@
+import {
+  buildProxyIngressNpManifest,
+  buildWorktreeEgressNpManifest,
+  cniVethPrefix,
+  ensureNamespace,
+  nodeIpBlocks,
+  vapAvailable,
+} from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -22,14 +30,7 @@ import {
   worktreeIdLabels,
 } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
-import {
-  buildProxyIngressNpManifest,
-  buildWorktreeEgressNpManifest,
-} from './policy-manifests'
-import { nodeIpBlocks } from './cluster-cidrs'
-import { assessVethSource, cniVethPrefix, probeWorkloadVeths } from './cni-adopt'
-import { ensureNamespace } from './proxy-apply'
-import { vapAvailable } from './proxy-apply'
+import { assessVethSource, probeWorkloadVeths } from './cni-adopt'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,

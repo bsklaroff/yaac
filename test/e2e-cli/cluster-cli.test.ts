@@ -24,7 +24,7 @@ import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/c
  * gate — which is the part that matters, since an unverified adoption fails
  * silently. The gate's per-refusal reasoning is unit-tested against staged
  * cluster reads in
- * packages/server/test/drivers/k8s/cluster/cluster-install.test.ts.
+ * packages/server/test/drivers/k8s/install/install.test.ts.
  *
  * One test env is shared for the whole file: these tests never write into
  * the data dir (every path fails preflight), and each test that needs a

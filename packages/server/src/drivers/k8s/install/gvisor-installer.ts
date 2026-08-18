@@ -1,7 +1,8 @@
 import {
+} from '#drivers/k8s/cluster'
+import {
   GVISOR_INSTALLER_READY_FILE,
   buildRuntimeClassManifests,
-  execFileAsync,
   gvisorInstallScript,
   gvisorInstallerHostMounts,
   k8sNamespace,
@@ -9,9 +10,8 @@ import {
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
 import type { PodToleration } from '#drivers/k8s/substrate'
-import { imageExists, pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
-import { assertMirrorArch } from './netd'
 
 /**
  * `yaac-gvisor-install` — the privileged DaemonSet that puts the gVisor
@@ -73,22 +73,6 @@ export async function ensureGvisorInstallerImage(): Promise<string> {
     return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
   }
   throw missingPrebuiltImage('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
-}
-
-/** Mirror the pinned installer image into the local registry. Install-time only. */
-export async function mirrorGvisorInstallerImage(): Promise<string> {
-  if (await registryHasTag(GVISOR_INSTALLER_MIRROR_TAG)) {
-    return registryRef(GVISOR_INSTALLER_MIRROR_TAG)
-  }
-  if (!await imageExists(GVISOR_INSTALLER_MIRROR_TAG)) {
-    await execFileAsync('podman', ['pull', GVISOR_INSTALLER_UPSTREAM_IMAGE], { timeout: 300_000 })
-    const { stdout: arch } = await execFileAsync('podman', [
-      'image', 'inspect', '--format', '{{.Architecture}}', GVISOR_INSTALLER_UPSTREAM_IMAGE,
-    ]).catch(() => ({ stdout: '' }))
-    assertMirrorArch(GVISOR_INSTALLER_UPSTREAM_IMAGE, arch)
-    await execFileAsync('podman', ['tag', GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG])
-  }
-  return pushImageToRegistry(GVISOR_INSTALLER_MIRROR_TAG)
 }
 
 export function buildGvisorInstallerServiceAccountManifest(): Record<string, unknown> {

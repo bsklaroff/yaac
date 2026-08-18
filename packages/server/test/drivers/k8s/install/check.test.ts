@@ -29,7 +29,7 @@ vi.mock('#drivers/k8s/container/registry', () => ({
   ),
 }))
 
-import { formatCheckResult, runClusterCheck } from '#drivers/k8s/cluster'
+import { formatCheckResult, runClusterCheck } from '#drivers/k8s/install'
 import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'

@@ -1,3 +1,10 @@
+import {
+  cniVethPrefix,
+  ensureBuilderRoleGuard,
+  ensureMainRegistry,
+  ensureNetd,
+  resetClusterCidrCache,
+} from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -7,17 +14,12 @@ import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
-import { ensureMainRegistry } from './main-registry'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
-import { ensureNetd } from './netd'
 import { buildBuiltinImages } from './builtin-images'
-import { ensureBuilderRoleGuard } from './proxy-apply'
-import { resetClusterCidrCache } from './cluster-cidrs'
 import { ClusterInstallError, MAX_KIND_NODES, resolveNodeCount } from './arg-guards'
 import {
   assessCniAdoption,
   assessVethSource,
-  cniVethPrefix,
   gatherCniFacts,
   probeWorkloadVeths,
 } from './cni-adopt'

@@ -42,7 +42,7 @@ import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
-import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/cluster/arg-guards'
+import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
 
 /**

@@ -5,7 +5,6 @@ import {
   LABEL_WORKTREE_ID,
   PRIORITY_CLASS_INFRA,
   dataDirHash,
-  execFileAsync,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
@@ -14,9 +13,8 @@ import {
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { registryHasTag, registryRef } from '#drivers/k8s/container'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { imageExists } from '#drivers/k8s/container'
 import { projectDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 
@@ -735,16 +733,6 @@ export function buildRegistryGcPodManifest(
 export async function ensureRegistryImage(): Promise<string> {
   if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
   throw missingPrebuiltImage('Registry', REGISTRY_MIRROR_TAG)
-}
-
-/** Mirror the pinned registry:2 image into the local registry. Install-time only. */
-export async function mirrorRegistryImage(): Promise<string> {
-  if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
-  if (!await imageExists(REGISTRY_MIRROR_TAG)) {
-    await execFileAsync('podman', ['pull', REGISTRY_UPSTREAM_IMAGE], { timeout: 300_000 })
-    await execFileAsync('podman', ['tag', REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG])
-  }
-  return pushImageToRegistry(REGISTRY_MIRROR_TAG)
 }
 
 interface RawNodeList {

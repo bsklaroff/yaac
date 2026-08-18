@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
-vi.mock('@yaac/server/drivers/k8s/cluster/install', () => {
+vi.mock('@yaac/server/drivers/k8s/install', () => {
   class ClusterInstallError extends Error {}
-  return { runClusterInstall: vi.fn(), ClusterInstallError } satisfies Partial<typeof clusterInstallModule>
+  return { runClusterInstall: vi.fn(), ClusterInstallError } satisfies Partial<typeof installModule>
 })
 
 import { clusterInstall } from '#commands/cluster-install'
-import { ClusterInstallError, runClusterInstall } from '@yaac/server/drivers/k8s/cluster/install'
-import type * as clusterInstallModule from '@yaac/server/drivers/k8s/cluster/install'
+import { ClusterInstallError, runClusterInstall } from '@yaac/server/drivers/k8s/install'
+import type * as installModule from '@yaac/server/drivers/k8s/install'
 
 const mockRun = vi.mocked(runClusterInstall)
 
