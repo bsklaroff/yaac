@@ -7,6 +7,13 @@ import {
   loadCodexCredentialsFile,
   saveCodexOAuthBundle,
 } from '@yaac/shared/tool-auth'
+import {
+  claudeBundleIsNewer,
+  codexBundleIsNewer,
+  harvestToolCredentials,
+  hostMayRefreshCredentials,
+  runtimeMediatesEgress,
+} from './credential-sync'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
@@ -130,11 +137,23 @@ async function refreshAndPersistClaudeBundle(
   const fresh = await refreshClaudeOAuthBundle(bundle)
   if (!fresh) return null
   try {
-    // Another writer (a session refresh captured by the proxy, `yaac auth
-    // update`) may have replaced the credential while our refresh was in
-    // flight — persist only while ours is still the stored one.
+    // Another writer (a session refresh captured by the proxy or adopted by
+    // the harvest, `yaac auth update`) may have replaced the credential while
+    // our refresh was in flight.
+    //
+    // Losing that race must not mean dropping `fresh` on the floor. The grant
+    // already SPENT the token we started from, so the credential it replaced
+    // is dead whatever we do here — discarding the replacement because the
+    // file moved would leave the install holding a token nothing can refresh,
+    // which is a permanent logout rather than a lost cycle. So the tie is
+    // broken the way every other credential decision here is: newest wins.
+    // A writer that stored something genuinely newer (a fresh login, a
+    // rotation a session did after ours) keeps it; otherwise ours lands.
     const stored = await loadClaudeCredentialsFile()
-    if (stored?.kind === 'oauth' && stored.claudeAiOauth.accessToken === bundle.accessToken) {
+    const current = stored?.kind === 'oauth' ? stored.claudeAiOauth : null
+    if (!current
+        || current.accessToken === bundle.accessToken
+        || claudeBundleIsNewer(fresh, current)) {
       await saveClaudeOAuthBundle(fresh)
     }
   } catch (err) {
@@ -146,26 +165,74 @@ async function refreshAndPersistClaudeBundle(
   return fresh
 }
 
-/** One Claude usage cycle: refresh an expired token first, query usage and
- *  (once per credential) the rate-limit tier, and retry once after a
- *  refresh if an unexpired token comes back unauthorized. */
+/**
+ * Adopt anything a running worktree has refreshed, then re-read the stored
+ * credential — the one to actually spend this cycle.
+ *
+ * Under a mediated runtime this finds nothing (the proxy has already written
+ * every session refresh to the host store) and costs a few file reads. Under
+ * an unmediated one it is the difference between querying with the token an
+ * agent just minted and querying with the superseded one it replaced — and,
+ * more importantly, between refreshing a spent token and not needing to
+ * refresh at all. Never throws: a failure leaves `fallback` in play, which is
+ * exactly where the cycle would have been anyway.
+ */
+async function convergedClaudeBundle(fallback: ClaudeOAuthBundle): Promise<ClaudeOAuthBundle> {
+  // Nothing to converge where a proxy mediates egress: the workspace holds a
+  // sentinel, and the refresh it drives is captured to the host store on the
+  // way out — so `fallback`, read from that store, is already the live token
+  // and sweeping every project would only cost file reads.
+  if (runtimeMediatesEgress()) return fallback
+  try {
+    await harvestToolCredentials({ tool: 'claude' })
+    const stored = await loadClaudeCredentialsFile()
+    if (stored?.kind === 'oauth') return stored.claudeAiOauth
+  } catch (err) {
+    serverLog(`[server] plan-usage: Claude credential harvest failed: ${String(err)}`)
+  }
+  return fallback
+}
+
+/** The Codex twin of `convergedClaudeBundle`, gated for the same reason. */
+async function convergedCodexBundle(fallback: CodexOAuthBundle): Promise<CodexOAuthBundle> {
+  if (runtimeMediatesEgress()) return fallback
+  try {
+    await harvestToolCredentials({ tool: 'codex' })
+    const stored = await loadCodexCredentialsFile()
+    if (stored?.kind === 'oauth') return stored.codexOauth
+  } catch (err) {
+    serverLog(`[server] plan-usage: Codex credential harvest failed: ${String(err)}`)
+  }
+  return fallback
+}
+
+/** One Claude usage cycle: adopt anything a worktree refreshed, refresh an
+ *  expired token if this host is the one that may, query usage and (once per
+ *  credential) the rate-limit tier, and retry once after a refresh if an
+ *  unexpired token comes back unauthorized. */
 async function claudeRefreshOnce(bundle: ClaudeOAuthBundle, state: UsageState): Promise<PlanUsageResult> {
-  let effective = bundle
+  let effective = await convergedClaudeBundle(bundle)
   let tokenRefreshTried = false
-  // An expired access token would only 401: refresh it ourselves first.
-  // Running sessions keep the host token fresh (the proxy captures their
-  // refresh traffic); this covers the no-running-session gap.
-  if (bundle.expiresAt <= Date.now()) {
+  // An expired access token would only 401: refresh it ourselves first —
+  // but only when no live workspace holds a copy of the credential we would
+  // be rotating out from under it (see `hostMayRefreshCredentials`). With a
+  // proxy that never applies; without one, a running agent refreshes on its
+  // own and the harvest above is how we get that token instead.
+  if (effective.expiresAt <= Date.now() && await hostMayRefreshCredentials()) {
     tokenRefreshTried = true
-    effective = await refreshAndPersistClaudeBundle(bundle) ?? bundle
+    effective = await refreshAndPersistClaudeBundle(effective) ?? effective
   }
   let [result, tier] = await Promise.all([
     queryClaudePlanUsage(effective),
     state.rateLimitTier === null ? queryClaudeRateLimitTier(effective) : Promise.resolve(state.rateLimitTier),
   ])
   // Unauthorized despite an unexpired stamp (revoked token, stale expiresAt):
-  // one refresh + retry before surfacing the failure.
-  if (!result.available && result.reason === 'unauthorized' && !tokenRefreshTried) {
+  // one refresh + retry before surfacing the failure — under the same
+  // may-we-rotate gate as the proactive path above, because a 401 here means
+  // a live agent's copy is equally dead and its own refresh is the one that
+  // should mint the replacement.
+  if (!result.available && result.reason === 'unauthorized' && !tokenRefreshTried
+      && await hostMayRefreshCredentials()) {
     const fresh = await refreshAndPersistClaudeBundle(effective)
     if (fresh) {
       ;[result, tier] = await Promise.all([
@@ -185,8 +252,14 @@ async function refreshAndPersistCodexBundle(
   const fresh = await refreshCodexOAuthBundle(bundle)
   if (!fresh) return null
   try {
+    // Same newest-wins tie-break as the Claude twin, and it matters more
+    // here: Codex refresh tokens are single-use, so a discarded rotation is
+    // guaranteed unrecoverable rather than merely likely to be.
     const stored = await loadCodexCredentialsFile()
-    if (stored?.kind === 'oauth' && stored.codexOauth.accessToken === bundle.accessToken) {
+    const current = stored?.kind === 'oauth' ? stored.codexOauth : null
+    if (!current
+        || current.accessToken === bundle.accessToken
+        || codexBundleIsNewer(fresh, current)) {
       await saveCodexOAuthBundle(fresh)
     }
   } catch (err) {
@@ -196,13 +269,16 @@ async function refreshAndPersistCodexBundle(
 }
 
 /** One Codex usage cycle. Unlike Claude, Codex refreshes reactively only —
- *  never proactively on expiry — because its refresh tokens rotate: a running
- *  session keeps the host token fresh through the proxy, so we query with the
- *  stored token and only refresh when it actually comes back unauthorized. */
+ *  never proactively on expiry — because its refresh tokens rotate: a session
+ *  keeps the host token fresh (through the proxy where there is one, through
+ *  the harvest where there is not), so we query with the converged token and
+ *  only refresh when it actually comes back unauthorized, and only when no
+ *  live workspace holds the credential we would rotate. */
 async function codexRefreshOnce(bundle: CodexOAuthBundle): Promise<PlanUsageResult> {
-  let result = await queryCodexPlanUsage(bundle)
-  if (!result.available && result.reason === 'unauthorized') {
-    const fresh = await refreshAndPersistCodexBundle(bundle)
+  const effective = await convergedCodexBundle(bundle)
+  let result = await queryCodexPlanUsage(effective)
+  if (!result.available && result.reason === 'unauthorized' && await hostMayRefreshCredentials()) {
+    const fresh = await refreshAndPersistCodexBundle(effective)
     if (fresh) result = await queryCodexPlanUsage(fresh)
   }
   return result

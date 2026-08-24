@@ -108,6 +108,24 @@ export function readClaudeKeychainPayload(
 }
 
 /**
+ * Read one of the Keychain items yaac's own claude invocations create.
+ *
+ * The scoped twin of `readClaudeKeychainPayload`, and the refusal is the
+ * whole point: a caller passing a service name it computed from a config dir
+ * must never end up reading the USER's own claude install, which is what the
+ * un-suffixed service names. Callers that legitimately want the host item
+ * (the scratch-login watcher) call `readClaudeKeychainPayload` directly.
+ *
+ * Missing items and non-darwin read as null, so a caller treats "no item" and
+ * "not a platform that has one" the same way — which is correct for both:
+ * the credential is then wherever else it can be, or nowhere.
+ */
+export function readScopedClaudeKeychainPayload(service: string): string | null {
+  if (service === CLAUDE_KEYCHAIN_SERVICE) return null
+  return readClaudeKeychainPayload(service)
+}
+
+/**
  * Delete one of the Keychain items yaac's own claude invocations create —
  * live OAuth tokens must not linger in items nothing reads anymore.
  *

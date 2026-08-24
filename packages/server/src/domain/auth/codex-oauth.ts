@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { CodexOAuthBundle } from '@yaac/shared/types'
+import { mayPresentRefreshToken } from './refresh-guard'
 
 /** Codex's ChatGPT OAuth token endpoint — the same one the CLI (and, through
  *  the proxy, running sessions) hit to refresh. */
@@ -55,6 +56,7 @@ function decodeJwtExpMs(jwt: string): number | null {
 export async function refreshCodexOAuthBundle(
   bundle: CodexOAuthBundle,
 ): Promise<CodexOAuthBundle | null> {
+  if (!mayPresentRefreshToken(bundle.refreshToken)) return null
   try {
     const res = await fetch(CODEX_TOKEN_URL, {
       method: 'POST',

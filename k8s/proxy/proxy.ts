@@ -1042,11 +1042,14 @@ function applyInjections(
   return count
 }
 
+/** One body-parameter substitution, resolved and ready to apply. */
+type BodyParamSwap = { name: string; value: string }
+
 function collectBodyInjections(
   requestPath: string,
   rules: InjectionRule[],
-): Array<{ name: string; value: string }> {
-  const params: Array<{ name: string; value: string }> = []
+): BodyParamSwap[] {
+  const params: BodyParamSwap[] = []
   for (const rule of rules) {
     if (!pathMatches(requestPath, rule.pathPattern)) continue
     for (const inj of rule.injections) {
@@ -1061,7 +1064,7 @@ function collectBodyInjections(
 function applyBodyInjections(
   bodyBuffer: Buffer,
   contentType: string | undefined,
-  injections: Array<{ name: string; value: string }>,
+  injections: BodyParamSwap[],
 ): Buffer {
   const bodyStr = bodyBuffer.toString('utf8')
   const isJson = contentType && contentType.includes('application/json')
@@ -1072,9 +1075,7 @@ function applyBodyInjections(
       if (parsed && typeof parsed === 'object') {
         const obj = parsed as Record<string, unknown>
         for (const { name, value } of injections) {
-          if (name in obj) {
-            obj[name] = value
-          }
+          if (name in obj) obj[name] = value
         }
         return Buffer.from(JSON.stringify(obj), 'utf8')
       }
@@ -1086,9 +1087,7 @@ function applyBodyInjections(
   // Default: application/x-www-form-urlencoded
   const params = new URLSearchParams(bodyStr)
   for (const { name, value } of injections) {
-    if (params.has(name)) {
-      params.set(name, value)
-    }
+    if (params.has(name)) params.set(name, value)
   }
   return Buffer.from(params.toString(), 'utf8')
 }
@@ -1336,33 +1335,30 @@ function buildDynamicRules(
     }
   }
 
-  // Claude OAuth token endpoint: swap the placeholder refresh_token for the
-  // real one. refresh_token grants have the key (so it gets swapped),
-  // authorization_code grants don't (so it's a no-op).
-  if (claudeTokenBundle) {
-    rules.push({
-      pathPattern: '*',
-      injections: [{
-        action: 'replace_body_param',
-        name: 'refresh_token',
-        value: claudeTokenBundle.refreshToken,
-      }],
-    })
-  }
-
-  // Codex OAuth token endpoint: same placeholder-swap shape.
-  if (codexTokenBundle) {
-    rules.push({
-      pathPattern: '*',
-      injections: [{
-        action: 'replace_body_param',
-        name: 'refresh_token',
-        value: codexTokenBundle.refreshToken,
-      }],
-    })
-  }
-
   return rules
+}
+
+/**
+ * The outbound half of an OAuth refresh: the real refresh token, to replace
+ * the placeholder the workspace holds.
+ *
+ * Deliberately NOT a dynamic injection rule. The caller applies these only
+ * when the request actually presented our placeholder, and that fact is not
+ * known where rules are built — the body has not been read yet. Keeping the
+ * swap out of the rule list keeps the generic injection pipeline generic and
+ * unconditional, and leaves this endpoint's already-bespoke multi-step flow
+ * (buffer body, swap outbound, capture response, rewrite inbound) owning the
+ * one condition that is its own.
+ *
+ * At most one bundle is ever non-null: which is loaded is decided by the
+ * hostname, and the two endpoints are different hosts.
+ */
+function oauthRefreshSwaps(
+  claudeTokenBundle: ClaudeOAuthBundle | null,
+  codexTokenBundle: CodexOAuthBundle | null,
+): BodyParamSwap[] {
+  const bundle = claudeTokenBundle ?? codexTokenBundle
+  return bundle ? [{ name: 'refresh_token', value: bundle.refreshToken }] : []
 }
 
 // ── Claude OAuth Swap ──────────────────────────────────────────────────
@@ -1772,7 +1768,12 @@ function handleMitm(
       }
     }
 
-    if (bodyInjections.length > 0) {
+    // Buffer the body when something will read or rewrite it: a registered
+    // body rule, or a token endpoint we are mediating. The token case has to
+    // be named explicitly — its swap is no longer a rule, so the rule list
+    // alone would stop buffering the very requests the capture depends on.
+    const mediatingTokenEndpoint = claudeTokenBundle !== null || codexTokenBundle !== null
+    if (bodyInjections.length > 0 || mediatingTokenEndpoint) {
       const chunks: Buffer[] = []
       req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
@@ -1781,15 +1782,30 @@ function handleMitm(
           ? contentTypeHeader
           : Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : undefined
         const inboundBody = Buffer.concat(chunks)
-        // Only capture + persist token-endpoint responses when the inbound
-        // request body carried our placeholder refresh_token. Otherwise an
-        // unrelated authorization_code exchange through the same endpoint
-        // would clobber the host OAuth bundle with wrong credentials.
-        const shouldCaptureTokenResponse =
-          (claudeTokenBundle !== null || codexTokenBundle !== null) &&
-          bodyHasPlaceholderRefreshToken(inboundBody, contentType)
-        const rawBody = applyBodyInjections(inboundBody, contentType, bodyInjections)
-        sendUpstream(rawBody, shouldCaptureTokenResponse)
+
+        // One fact, gating both halves of the refresh. The request presented
+        // the placeholder we issued, so it is one of our workspaces' own
+        // refreshes: swap the real token in on the way out, and capture the
+        // rotation on the way back.
+        //
+        // Anything else travels as itself. That matters in both directions.
+        // Injecting into a request that never held our placeholder would
+        // rotate the account's credential on behalf of whatever process sent
+        // it — any pod can reach this endpoint — while the capture declined
+        // to record the replacement, leaving the host store holding a token
+        // the rotation had already spent and every workspace on it signed
+        // out. And capturing a response we did not cause would clobber the
+        // stored bundle with credentials from an unrelated
+        // authorization_code exchange through the same endpoint.
+        const oursToRefresh = mediatingTokenEndpoint
+          && bodyHasPlaceholderRefreshToken(inboundBody, contentType)
+        const swaps = oursToRefresh
+          ? oauthRefreshSwaps(claudeTokenBundle, codexTokenBundle)
+          : []
+        const rawBody = applyBodyInjections(
+          inboundBody, contentType, [...bodyInjections, ...swaps],
+        )
+        sendUpstream(rawBody, oursToRefresh)
       })
     } else {
       sendUpstream(null, false)

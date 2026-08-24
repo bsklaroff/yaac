@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { ClaudeOAuthBundle } from '@yaac/shared/types'
+import { mayPresentRefreshToken } from './refresh-guard'
 
 /** Claude Code's OAuth token endpoint — the same one session refresh
  *  traffic hits through the proxy. */
@@ -29,6 +30,7 @@ export async function refreshClaudeOAuthBundle(
   bundle: ClaudeOAuthBundle,
 ): Promise<ClaudeOAuthBundle | null> {
   if (!bundle.refreshToken) return null
+  if (!mayPresentRefreshToken(bundle.refreshToken)) return null
   try {
     const res = await fetch(CLAUDE_TOKEN_URL, {
       method: 'POST',

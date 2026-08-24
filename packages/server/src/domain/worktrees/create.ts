@@ -43,15 +43,10 @@ import { getGitUserConfig } from '@yaac/shared/git'
 import { readLock } from '@yaac/shared/lock'
 import {
   loadToolAuthEntry,
-  loadClaudeCredentialsFile,
-  loadCodexCredentialsFile,
-  writeProjectClaudeCredentials,
-  writeProjectClaudePlaceholder,
-  writeProjectCodexAuth,
-  writeProjectCodexPlaceholder,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
+import { seedProjectToolHome } from '#domain/auth'
 import {
   addWorktree,
   fetchOrigin,
@@ -1135,9 +1130,8 @@ export async function createWorktree(
       await writeKnownHostsFile([knownHostsEntry], sshKnownHostsFile)
     }
 
-    // Refresh the per-project credential files from the current host OAuth
-    // bundles. Picks up expiresAt changes since the last worktree. Both
-    // tools are refreshed regardless of the active tool so a prewarmed
+    // Bring the per-project credential files up to what this worktree should
+    // launch with. Both tools regardless of the active one, so a prewarmed
     // spare stays retoolable at claim time.
     //
     // WHICH bundle is written turns on whether the runtime mediates egress.
@@ -1147,22 +1141,13 @@ export async function createWorktree(
     // agent tried to authenticate with; the real bundle goes in instead.
     // That is the containerless bargain: no sandbox, so nothing is withheld
     // from what runs inside it (docs/containerless-driver.md).
-    if (toolAuthByTool.claude?.kind === 'oauth') {
-      const hostClaudeCreds = await loadClaudeCredentialsFile()
-      if (hostClaudeCreds?.kind === 'oauth') {
-        await (mediatedEgress ? writeProjectClaudePlaceholder : writeProjectClaudeCredentials)(
-          projectSlug, hostClaudeCreds.claudeAiOauth,
-        )
-      }
-    }
-    if (toolAuthByTool.codex?.kind === 'oauth') {
-      const hostCodexCreds = await loadCodexCredentialsFile()
-      if (hostCodexCreds?.kind === 'oauth') {
-        await (mediatedEgress ? writeProjectCodexPlaceholder : writeProjectCodexAuth)(
-          projectSlug, hostCodexCreds.codexOauth,
-        )
-      }
-    }
+    //
+    // Unmediated, that write is a convergence rather than an overwrite — the
+    // project's own file may hold a token a running worktree refreshed, which
+    // is NEWER than the host store's, and stamping the host copy over it
+    // would spend the project's rotation and log those worktrees out
+    // (#domain/auth's credential-sync).
+    await seedProjectToolHome(projectSlug, { mediatedEgress })
 
     // Seed every tool's host-side config, not just the active tool's — the
     // dirs are all mounted into every pod anyway, and a retooled spare must

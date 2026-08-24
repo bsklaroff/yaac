@@ -24,7 +24,11 @@ import {
   saveClaudeCredentialsFile,
   loadCodexCredentialsFile,
   saveCodexCredentialsFile,
+  writeProjectClaudeCredentials,
+  PLACEHOLDER_ACCESS_TOKEN,
+  PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
+import { installFakeWorktreeDriver, handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /**
@@ -219,9 +223,17 @@ function useAuthFixture(prefix: string): () => string {
     upstream.install()
     vi.mocked(notifyWorktreeListChanged).mockReset()
     vi.useFakeTimers({ toFake: ['Date'] })
+    // The suite forbids refresh grants outright (vitest-setup says why: from
+    // behind a worktree's proxy, any POST to a token endpoint rotates the
+    // hosting install's real credential). This file is where refresh BEHAVIOR
+    // is asserted, so it opts back in — safely, because `upstream.install()`
+    // above has replaced `fetch` with a stub that throws on any URL it has no
+    // reply queued for. Nothing here can leave the process.
+    vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '')
   })
   afterEach(async () => {
     vi.useRealTimers()
+    vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     await fs.chmod(credentialsDir(), 0o700).catch(() => { /* dir may be gone */ })
     await fs.rm(tmpDir, { recursive: true, force: true })
@@ -446,6 +458,163 @@ describe('planUsageForSnapshot', () => {
     // The expiry is stamped from the grant's own lifetime when it landed.
     expect(stored?.expiresAt).toBeGreaterThanOrEqual(before + 28800 * 1000)
     expect(stored?.expiresAt).toBeLessThan(before + 28800 * 1000 + 60_000)
+  })
+
+  it('adopts a live worktree\'s refreshed token instead of rotating it out from under one', async () => {
+    // The containerless case, and the whole reason credential-sync exists.
+    // The agent in a running worktree refreshed its own OAuth token: the live
+    // credential is in the project's tool home and the host store holds the
+    // spent one. Spending it would fail, and refreshing it would rotate the
+    // token the running agent is using — so the cycle must do neither.
+    installFakeWorktreeDriver({
+      kind: 'containerless',
+      snapshot: () => snapshotFixture([handleFixture({ running: true, terminating: false })]),
+    })
+    await seedClaude({ expiresAt: Date.now() - 1000 })
+    await writeProjectClaudeCredentials('demo', {
+      accessToken: 'tok-from-worktree',
+      refreshToken: 'ref-from-worktree',
+      expiresAt: FAR_FUTURE_MS,
+      scopes: ['user:inference'],
+      subscriptionType: 'max',
+    })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
+
+    // No grant was spent: the harvested token was already good.
+    expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
+    expect(upstream.requestsTo(CLAUDE_USAGE_URL).at(-1)?.headers)
+      .toMatchObject({ Authorization: 'Bearer tok-from-worktree' })
+    // …and the host store caught up, so the next reader is not stale either.
+    expect(await storedClaude()).toMatchObject({
+      accessToken: 'tok-from-worktree',
+      refreshToken: 'ref-from-worktree',
+    })
+  })
+
+  it('holds off refreshing entirely while an unmediated workspace is live', async () => {
+    // Same posture, but nothing has been refreshed anywhere: the stored token
+    // is expired and there is no fresher one to adopt. The host STILL must not
+    // refresh, because the rotation would invalidate the copy the running
+    // agent holds — it refreshes on its own schedule, and that is the one that
+    // counts. A missing usage readout is the acceptable cost.
+    installFakeWorktreeDriver({
+      kind: 'containerless',
+      snapshot: () => snapshotFixture([handleFixture({ running: true })]),
+    })
+    await seedClaude({ expiresAt: Date.now() - 1000 })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, httpStatus(401))
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: false }))
+
+    expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
+    expect(await storedClaude()).toMatchObject({ accessToken: 'tok-123', refreshToken: 'ref-123' })
+  })
+
+  it('never spends a placeholder refresh token, however expired the bundle looks', async () => {
+    // The chained yaac-in-yaac shape: this install's stored credential IS the
+    // sentinel an outer install swaps on the way out, so the real token
+    // belongs to that install. Presenting it would make the outer proxy
+    // substitute the real refresh token and rotate it — while this server
+    // gets sentinels back and stores nothing, leaving the outer holding a
+    // spent token and every worktree on it signed out.
+    await seedClaude({
+      accessToken: PLACEHOLDER_ACCESS_TOKEN,
+      refreshToken: PLACEHOLDER_REFRESH_TOKEN,
+      expiresAt: Date.now() - 1000,
+    })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
+
+    // No grant left this process, and the stored sentinel is untouched.
+    expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
+    expect(await storedClaude()).toMatchObject({
+      accessToken: PLACEHOLDER_ACCESS_TOKEN,
+      refreshToken: PLACEHOLDER_REFRESH_TOKEN,
+    })
+  })
+
+  it('makes every grant a no-op while the suite-wide refresh block is set', async () => {
+    // The blanket guard the whole suite runs under, asserted rather than
+    // assumed: with it set, an expired bundle holding a perfectly real-looking
+    // refresh token still sends nothing. This is what stops a future fixture
+    // from rotating the credential of whatever install hosts the test run.
+    vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '1')
+    await seedClaude({ expiresAt: Date.now() - 1000 })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
+
+    expect(upstream.countTo(CLAUDE_TOKEN_URL)).toBe(0)
+    expect(await storedClaude()).toMatchObject({ accessToken: 'tok-123', refreshToken: 'ref-123' })
+  })
+
+  it('keeps a rotation it won even when another writer moved the file mid-flight', async () => {
+    // Losing the compare-and-set must not mean dropping the rotation. The
+    // grant already SPENT the token we started from, so discarding its
+    // replacement because the file moved leaves the install holding something
+    // nothing can refresh — a permanent logout rather than a lost cycle.
+    await seedClaude({ expiresAt: Date.now() - 1000 })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+    upstream.reply(CLAUDE_TOKEN_URL, async () => {
+      // Another writer lands while the grant is in flight, holding an OLDER
+      // credential than the one we are about to receive.
+      await saveClaudeCredentialsFile({
+        kind: 'oauth',
+        savedAt: '2026-07-09T00:00:00.000Z',
+        claudeAiOauth: {
+          accessToken: 'tok-other', refreshToken: 'ref-other',
+          expiresAt: Date.now() - 500, scopes: ['user:inference'], subscriptionType: 'max',
+        },
+      })
+      return new Response(JSON.stringify({
+        access_token: 'tok-fresh', refresh_token: 'ref-fresh', expires_in: 28800,
+      }), { status: 200 })
+    })
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
+
+    expect(await storedClaude()).toMatchObject({
+      accessToken: 'tok-fresh', refreshToken: 'ref-fresh',
+    })
+  })
+
+  it('yields to a writer that stored something genuinely newer', async () => {
+    // The other half of the tie-break: a fresh login (or a session's later
+    // rotation) landing mid-flight outranks ours and is not clobbered.
+    await seedClaude({ expiresAt: Date.now() - 1000 })
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+    upstream.reply(CLAUDE_TOKEN_URL, async () => {
+      await saveClaudeCredentialsFile({
+        kind: 'oauth',
+        savedAt: '2026-07-09T00:00:00.000Z',
+        claudeAiOauth: {
+          accessToken: 'tok-newer-login', refreshToken: 'ref-newer-login',
+          expiresAt: FAR_FUTURE_MS, scopes: ['user:inference'], subscriptionType: 'max',
+        },
+      })
+      return new Response(JSON.stringify({
+        access_token: 'tok-fresh', refresh_token: 'ref-fresh', expires_in: 28800,
+      }), { status: 200 })
+    })
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
+
+    expect(await storedClaude()).toMatchObject({ accessToken: 'tok-newer-login' })
   })
 
   it('keeps the stored fields a grant response omits', async () => {
@@ -843,7 +1012,12 @@ describe('codexPlanUsageForSnapshot', () => {
     }
   })
 
-  it('does not clobber a codex credential replaced while the refresh was in flight', async () => {
+  it('resolves a codex credential replaced mid-flight by which rotation is newer', async () => {
+    // Codex refresh tokens are single-use, so this tie-break is load-bearing:
+    // the grant below already spent the stored token, and dropping the
+    // replacement because the file moved would leave the install holding
+    // something nothing can refresh. `lastRefresh` is the discriminator, and
+    // ours is stamped now — later than the writer that landed mid-flight.
     await seedCodex()
     upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
     upstream.reply(CODEX_TOKEN_URL, async () => {
@@ -856,7 +1030,27 @@ describe('codexPlanUsageForSnapshot', () => {
 
     expect(upstream.requestsTo(CODEX_USAGE_URL).at(-1)?.headers)
       .toMatchObject({ Authorization: 'Bearer ctok-fresh' })
-    expect(await storedCodex()).toMatchObject({ accessToken: 'ctok-other' })
+    expect(await storedCodex()).toMatchObject({ accessToken: 'ctok-fresh' })
+  })
+
+  it('yields the codex slot to a writer whose rotation is later than ours', async () => {
+    _resetPlanUsageForTests()
+    await seedCodex()
+    upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
+    upstream.reply(CODEX_TOKEN_URL, async () => {
+      // Stamped in the future: a rotation that demonstrably happened after
+      // the one this grant is producing.
+      await seedCodex({
+        accessToken: 'ctok-later', refreshToken: 'cref-later',
+        lastRefresh: '2099-01-01T00:00:00.000Z',
+      })
+      return new Response(JSON.stringify({ access_token: 'ctok-fresh' }), { status: 200 })
+    })
+
+    await codexPlanUsageForSnapshot()
+    await vi.waitFor(async () => expect(await codexPlanUsageForSnapshot()).toMatchObject({ available: true }))
+
+    expect(await storedCodex()).toMatchObject({ accessToken: 'ctok-later' })
   })
 
   it('keeps serving usage when the rotated codex bundle cannot be persisted', async () => {

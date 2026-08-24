@@ -1,7 +1,14 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { authAgentHub, clearAuth, listAuth, requestPlanUsageRefresh } from '#domain/auth'
+import {
+  authAgentHub,
+  clearAuth,
+  fanOutToolCredentials,
+  listAuth,
+  requestPlanUsageRefresh,
+  runtimeMediatesEgress,
+} from '#domain/auth'
 import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#domain/projects'
 import { worktreeDriver } from '#drivers/driver'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
@@ -163,6 +170,12 @@ export const authApp = new Hono()
       const { tool } = c.req.valid('param')
       const body = c.req.valid('json')
       await persistToolAuthPayload(tool, body)
+      // The host store is only half of a sign-in: every project's tool home
+      // holds its own copy, and that is the one an agent reads. What belongs
+      // there depends on the runtime (a sentinel a proxy will swap, or the
+      // real bundle where nothing would), which is why the fan-out lives
+      // here rather than inside the shared persistence call.
+      await fanOutToolCredentials(tool, { mediatedEgress: runtimeMediatesEgress() })
       return c.body(null, 204)
     },
   )

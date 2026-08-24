@@ -255,6 +255,84 @@ plainly. There is no boundary between the agent and this machine, so there
 is nothing to withhold a secret from. If that is not acceptable for a given
 project, that project wants the k8s driver.
 
+### Where the live credential is, and how it gets back
+
+Holding the real bundle means the agent also REFRESHES it. OAuth refresh
+tokens rotate, so the moment an agent does, the project's tool home holds the
+live credential and the host store holds a spent one — and spending a spent
+refresh token does not merely return stale data, it fails, and for Codex
+(single-use) it can strand the chain. Under k8s this never arises: the
+workspace holds a sentinel and every refresh transits the proxy, which writes
+the host store on the way past. There is no proxy here, so the loop is closed
+in the server instead, by `#domain/auth`'s credential-sync.
+
+One rule: **the newest credential wins, and both sides converge on it.**
+Harvest carries a project's refreshed bundle up to the host store; push
+carries the host store's back down to projects that are behind. Seeding a
+project is those two in order, which is what makes it safe to run on every
+worktree create — the write can only ever move a project forward, where a
+plain write of the host copy would spend the rotation of every worktree
+already running there.
+
+Three properties do the work:
+
+- **A sentinel is never a credential.** It cannot be harvested and does not
+  count as a project being up to date. That is what lets the same functions
+  run under either driver — under a mediated one every project reads as
+  having nothing to offer — and it is what keeps a chained yaac-in-yaac
+  install, whose "real" credential IS the outer proxy's sentinel, from being
+  adopted or overwritten.
+- **The Keychain is where a Claude credential ends up on macOS.** claude
+  migrates it into the item its `CLAUDE_CONFIG_DIR` names on first refresh
+  and deletes the file, so a file still sitting there is by definition the
+  older of the two and the harvest reads the item first. Pushing works by
+  subtraction: write the file, then drop the stale scoped item, so claude
+  reads the fresh file and re-migrates it. Nothing mints an item — the
+  account name inside one is claude's to choose.
+- **The host does not refresh a credential something else is holding.** With
+  a workspace live, a host-side rotation would invalidate the copy the
+  running agent is using, so the plan-usage cycle harvests and queries with
+  whatever the agent produced instead, and refreshes only when nothing is
+  live. A briefly missing usage readout is the acceptable cost; logging a
+  running agent out is not.
+
+Convergence runs where staleness would bite rather than from a watcher:
+before a host-side refresh, before seeding a create, on attach, on worktree
+stop, and on the reconcile resync behind a five-minute floor (the sweep reads
+every project, and on macOS that means spawning `security` per project).
+Cross-project divergence heals through the same path — each project keeps its
+own copy, so one project's agent rotating the shared token leaves the others
+behind until the push hands them the winner.
+
+An explicit sign-in is the one write that ignores newest-wins: it is the user
+saying which account this install uses, possibly a different one, so it is
+forced out to every project.
+
+### The one credential this server never refreshes
+
+A refresh grant is the only upstream call that MUTATES a credential — the old
+refresh token is spent and a new one issued — so whoever holds the old copy
+and does not learn the new one is signed out. That makes a placeholder refresh
+token something this server must never present, and the grants themselves
+refuse it (`mayPresentRefreshToken`).
+
+A sentinel means the real credential belongs to an install above this one,
+which hands this server a placeholder and swaps it on the way out — the
+chained yaac-in-yaac shape. Presenting it makes that install's proxy
+substitute the real token and rotate it, while this server receives sentinels
+back and stores nothing; the outer store is left holding a token the rotation
+already spent, and every worktree using it fails on its next refresh.
+Refreshing a credential this install does not own is never its job.
+
+The same mechanism is why the test suite forbids refresh grants outright
+(`YAAC_E2E_NO_TOKEN_REFRESH`, set in the shared vitest setup and in every
+spawned test server's environment). A proxy rewrites the `refresh_token` body
+param of anything POSTed to a token endpoint without checking what the request
+carried, so a suite running inside a worktree rotates the hosting install's
+live credential no matter how obviously fake the token it presented. Fixture
+expiries are not a defense: they decide whether a refresh is attempted, and
+the attempt is already the damage.
+
 Git is where that has to be spelled out, because a workspace here is cut off
 from the credential twice over. The checkout's `origin` is deliberately
 tokenless — the clone strips it, and every server-side call re-injects per

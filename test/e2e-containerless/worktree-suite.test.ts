@@ -719,6 +719,65 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     }
   })
 
+  it('signs in with a real bundle, then lets a running worktree\'s refresh win', async () => {
+    // The credential loop with no proxy in it. Three things have to hold, and
+    // they are asserted in the order they happen to one install.
+    const hostCreds = path.join(testEnv.dataDir, '.credentials', 'claude.json')
+    const projectCreds = path.join(testEnv.dataDir, 'projects', SLUG, 'claude', '.credentials.json')
+    const readBundle = async (p: string): Promise<Record<string, unknown>> => {
+      const parsed = JSON.parse(await fs.readFile(p, 'utf8')) as { claudeAiOauth: Record<string, unknown> }
+      return parsed.claudeAiOauth
+    }
+
+    // 1. A sign-in reaches the project home as the REAL bundle. Under a
+    //    mediated runtime this file would hold `yaac-ph-access`; there is
+    //    nothing here to swap a sentinel back, so a sentinel would simply be
+    //    what the agent authenticated with.
+    const signedIn = {
+      accessToken: 'sk-ant-oat01-signed-in',
+      refreshToken: 'sk-ant-ort01-signed-in',
+      expiresAt: Date.now() + 3_600_000,
+      scopes: ['user:inference'],
+      subscriptionType: 'pro',
+    }
+    const { exitCode: authExit } = await runYaac(
+      { ...serverEnv, YAAC_E2E_CLAUDE_LOGIN: JSON.stringify(signedIn) },
+      'auth', 'update', { stdin: '2\n' },
+    )
+    expect(authExit).toBe(0)
+    expect(await readBundle(projectCreds)).toEqual(signedIn)
+
+    // 2. The agent in the worktree refreshes its own token, because it holds
+    //    a real one. The rotated pair lands in the project home and nowhere
+    //    else — the host store still has the spent one.
+    const refreshed = {
+      ...signedIn,
+      accessToken: 'sk-ant-oat01-refreshed',
+      refreshToken: 'sk-ant-ort01-refreshed',
+      expiresAt: signedIn.expiresAt + 3_600_000,
+    }
+    await fs.writeFile(projectCreds, JSON.stringify({ claudeAiOauth: refreshed }, null, 2))
+
+    // 3. A sibling create in the same project must not stamp the stale host
+    //    copy back over it: that would spend a rotation the running worktree
+    //    is still using and log its agent out.
+    const second = await createWorktree()
+    try {
+      expect(await readBundle(projectCreds)).toMatchObject({
+        accessToken: 'sk-ant-oat01-refreshed',
+        refreshToken: 'sk-ant-ort01-refreshed',
+      })
+      // …and the host store converged on it, so the next reader of it — the
+      // usage poller, the next server, the next project — is not stale.
+      expect(await readBundle(hostCreds)).toMatchObject({
+        accessToken: 'sk-ant-oat01-refreshed',
+        refreshToken: 'sk-ant-ort01-refreshed',
+      })
+    } finally {
+      await runYaac(serverEnv, 'worktree', 'stop', second)
+    }
+  }, 120_000)
+
   // Destroys its subject — keep last.
   it('stops the worktree by taking its tmux server down', async () => {
     const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
