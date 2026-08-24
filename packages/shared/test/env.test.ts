@@ -357,6 +357,20 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
+  describe('noTokenRefresh', () => {
+    it('is true only when its var is exactly "1"', () => {
+      // The suite sets this globally, so an unset case has to be stubbed
+      // rather than assumed — and the exact-"1" rule is what lets the
+      // refresh-grant tests opt back in by stubbing it empty.
+      vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '1')
+      expect(testEnv.noTokenRefresh).toBe(true)
+      vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', '')
+      expect(testEnv.noTokenRefresh).toBe(false)
+      vi.stubEnv('YAAC_E2E_NO_TOKEN_REFRESH', undefined)
+      expect(testEnv.noTokenRefresh).toBe(false)
+    })
+  })
+
   describe('opencodeProviderHook', () => {
     it('is undefined when unset, returns the value when set', () => {
       vi.stubEnv('YAAC_E2E_OPENCODE_PROVIDER', undefined)

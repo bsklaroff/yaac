@@ -3,7 +3,12 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
-import { authAgentHub, refreshPlanUsage } from '#domain/auth'
+import {
+  authAgentHub,
+  refreshPlanUsage,
+  runtimeMediatesEgress,
+  syncToolCredentialsThrottled,
+} from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, openDb } from '#db'
 import { EventHub, type WsLike } from '#api/events'
@@ -584,6 +589,22 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // Started before the startup GCs drain (they run detached), so the
       // server serves the reconcile path right away.
       loopDone = startReconciler({ signal: abortCtrl.signal })
+      // Adopt whatever the last server's worktrees refreshed before anything
+      // reads the host store — the mirror of the k8s driver's placeholder
+      // re-seed, which repairs the same split from the other side. Detached:
+      // it is a repair, not a precondition.
+      //
+      // Throttled and driver-gated to match the reconcile step exactly. The
+      // throttle is what makes this the FIRST sweep rather than an extra one:
+      // it runs immediately (nothing has stamped the clock yet) and the pass
+      // that follows within the minute then correctly skips, instead of
+      // repeating the identical sweep. The gate keeps a mediated server —
+      // including one running in-cluster — from doing credential work the
+      // reconcile pass deliberately has no vocabulary for.
+      if (!runtimeMediatesEgress()) {
+        void syncToolCredentialsThrottled()
+          .catch((err: unknown) => serverLog(`[server] credential sync failed: ${String(err)}`))
+      }
     },
     // Where a driver's egress path reads credential material from. SSH
     // identities live in the credentials store above the runtime but are

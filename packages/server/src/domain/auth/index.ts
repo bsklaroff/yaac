@@ -11,9 +11,22 @@
 // Everything behind those names is internal: the usage and profile
 // endpoints, both OAuth refresh grants, and the masking. They are reached
 // only through the entry points above and are covered through them.
+//
+// Credential convergence adds three more consumers: the create path seeds a
+// project's tool homes, the auth route fans a fresh login out to them, and
+// the reconcile pass (plus the containerless attach and worktree stop)
+// drives the standing sweep. The comparators and the per-project harvest and
+// push are internal to it, exercised through those four.
 
 export { authAgentHub } from './agent'
 export { clearAuth } from './clear'
+export {
+  fanOutToolCredentials,
+  harvestToolCredentials,
+  runtimeMediatesEgress,
+  seedProjectToolHome,
+  syncToolCredentialsThrottled,
+} from './credential-sync'
 export { listAuth } from './list'
 export {
   codexPlanUsageForSnapshot,

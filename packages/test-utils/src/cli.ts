@@ -168,6 +168,13 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     YAAC_DATA_DIR: dataDir,
+    // Spelled out rather than left to the spread. A spawned server is a fresh
+    // process that loads none of the suite's setup files, so this flag is the
+    // only thing standing between it and a real refresh grant — and a grant
+    // from behind a worktree's proxy rotates the hosting install's live
+    // credential whatever token the request carried (see vitest-setup). Too
+    // load-bearing to depend on an ambient var being present.
+    YAAC_E2E_NO_TOKEN_REFRESH: '1',
     GIT_CONFIG_GLOBAL: gitConfigPath,
     YAAC_SERVER_PORT: String(serverPort),
     YAAC_BUILD_ID: 'test-build-id',

@@ -36,6 +36,9 @@ import {
 import {
   claudeKeychainService,
   deleteScopedClaudeKeychainItem,
+  extractClaudeOAuthBundle,
+  extractCodexOAuthBundle,
+  readScopedClaudeKeychainPayload,
   type ToolLoginResult,
 } from '#tool-auth-interactive'
 
@@ -429,18 +432,25 @@ export async function removeToolAuth(tool: AgentTool): Promise<boolean> {
 }
 
 /**
- * Persist the result of a login flow. For Claude OAuth this stores the full
- * bundle (with refresh token + expiry) so the proxy can refresh later.
+ * Persist the result of a login flow into the HOST STORE. For Claude OAuth
+ * this stores the full bundle (with refresh token + expiry) so the credential
+ * can be refreshed later.
+ *
+ * The host store only — reaching every project's tool home is a separate step
+ * (`fanOutToolCredentials` in `#domain/auth`) that this module cannot take,
+ * because what belongs in a project home depends on whether the runtime
+ * mediates egress: a sentinel where a proxy will swap it, the real bundle
+ * where nothing would. That is a fact about the registered driver, which is
+ * above this layer. Callers on the server side go through
+ * `PUT /auth/:tool`, which does both in order.
  */
 export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult): Promise<void> {
   if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
     await saveClaudeOAuthBundle(result.claudeBundle)
-    await fanOutClaudePlaceholders(result.claudeBundle)
     return
   }
   if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
     await saveCodexOAuthBundle(result.codexBundle)
-    await fanOutCodexPlaceholders(result.codexBundle)
     return
   }
   // Selected per tool rather than `piProvider ?? opencodeProvider`: collapsing
@@ -561,6 +571,128 @@ export async function writeProjectClaudeCredentials(
     projectClaudeCredentialsFile(slug),
     JSON.stringify({ claudeAiOauth: bundle }, null, 2) + '\n',
   )
+}
+
+/**
+ * Whether a bundle is one of the sentinels a mediated runtime seeds rather
+ * than a credential that could authenticate anything.
+ *
+ * Read before ever adopting a project-local bundle as the host's. Three
+ * different situations produce one, and all three must be refused: a project
+ * seeded for a proxied runtime, a data dir flipped from k8s to containerless
+ * before anything re-seeded it, and a yaac-in-yaac install whose "real"
+ * credentials ARE the outer proxy's sentinels by design (see
+ * `buildFakeClaudeOAuthBundle`). Adopting one would overwrite a working host
+ * credential with a string that authenticates nothing.
+ *
+ * The access token alone decides it. A placeholder bundle keeps real
+ * non-secret fields (expiry, scopes, account id), so those say nothing about
+ * whether the secret half is a sentinel.
+ */
+export function isPlaceholderClaudeBundle(bundle: ClaudeOAuthBundle): boolean {
+  return bundle.accessToken === PLACEHOLDER_ACCESS_TOKEN
+}
+
+/** The Codex twin of `isPlaceholderClaudeBundle`. */
+export function isPlaceholderCodexBundle(bundle: CodexOAuthBundle): boolean {
+  return bundle.accessToken === PLACEHOLDER_ACCESS_TOKEN
+}
+
+/**
+ * Read back the Claude credential a project's tool home currently holds —
+ * whatever the agent that ran there last wrote.
+ *
+ * The counterpart to `writeProjectClaudeCredentials`, and the reason it
+ * exists: under a runtime with no proxy the agent refreshes its own token,
+ * so the project home (not the host store) is where the live credential
+ * ends up. Reads claude's NATIVE shape, because claude wrote it.
+ *
+ * Two places one can be, and the Keychain wins. On macOS claude migrates the
+ * credential into the item its `CLAUDE_CONFIG_DIR` names on first refresh and
+ * deletes the file it came from, so a file still sitting there is by
+ * definition the older of the two. Elsewhere the scoped read is a no-op and
+ * the file is the only answer.
+ *
+ * Reports what is THERE, sentinels included — null means the project has no
+ * parseable credential at all. Whether a sentinel counts as one is the
+ * caller's question, not this reader's: harvesting must refuse it, while
+ * deciding whether a project still needs seeding must be able to see it.
+ */
+export async function readProjectClaudeBundle(slug: string): Promise<ClaudeOAuthBundle | null> {
+  const fromKeychain = readScopedClaudeKeychainPayload(claudeKeychainService(claudeDir(slug)))
+  const raw = fromKeychain ?? await fs.readFile(projectClaudeCredentialsFile(slug), 'utf8').catch(() => null)
+  if (raw === null) return null
+  return extractClaudeOAuthBundle(raw)
+}
+
+/**
+ * Read back the Codex credential a project's tool home currently holds — the
+ * counterpart to `writeProjectCodexAuth`, for the same reason its Claude twin
+ * above exists, and reporting sentinels the same way. File-only on every
+ * platform: codex keeps no Keychain item.
+ *
+ * A file with no `last_refresh` reads as stamped at the epoch rather than at
+ * now. `extractCodexOAuthBundle` synthesizes "now" for a missing stamp, which
+ * is right where the answer describes a credential just captured from a login
+ * — but here the stamp is a CLOCK that decides which of two credentials
+ * supersedes the other, and a synthesized one would rank a stamp-less file
+ * newest on every read and let it overwrite the live credential. Ranking it
+ * oldest instead means it can never win, and therefore never propagates: the
+ * epoch is only ever compared, never written back anywhere.
+ *
+ * Neither codex nor yaac's own writer omits the field, so this is a guard on
+ * a shape neither produces rather than a case anything reaches today.
+ */
+export async function readProjectCodexBundle(slug: string): Promise<CodexOAuthBundle | null> {
+  const raw = await fs.readFile(projectCodexAuthFile(slug), 'utf8').catch(() => null)
+  if (raw === null) return null
+  const bundle = extractCodexOAuthBundle(raw)
+  if (!bundle) return null
+  return hasCodexRefreshStamp(raw) ? bundle : { ...bundle, lastRefresh: new Date(0).toISOString() }
+}
+
+/** Whether a raw Codex `auth.json` carries its own `last_refresh` stamp. */
+function hasCodexRefreshStamp(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return false
+    const stamp = (parsed as Record<string, unknown>).last_refresh
+    return typeof stamp === 'string' && stamp !== ''
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Every tracked project slug. A missing projects dir reads as none, matching
+ * `forEachProject` — a server with no projects yet is not an error.
+ */
+export async function listCredentialProjectSlugs(): Promise<string[]> {
+  try {
+    return await fs.readdir(getProjectsDir())
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Drop a project's scoped Claude Keychain item so the file becomes the
+ * credential claude reads again.
+ *
+ * The write half of the macOS story, done by subtraction. Pushing a fresh
+ * bundle into a project whose credential has migrated to the Keychain cannot
+ * work by writing the file alone — claude prefers the item, so the new file
+ * would be ignored. Rather than mint an item (whose account name is claude's
+ * to choose, and a wrong guess leaves a duplicate claude ignores), remove the
+ * stale one: with no item to prefer, claude reads the file that was just
+ * written, and its next refresh migrates that back into a fresh item.
+ *
+ * Scoped-only by construction — `deleteScopedClaudeKeychainItem` refuses the
+ * un-suffixed service, so this can never log the user's own claude install
+ * out. A no-op off darwin and when no item exists.
+ */
+export function dropProjectClaudeKeychainItem(slug: string): void {
+  deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(slug)))
 }
 
 /**

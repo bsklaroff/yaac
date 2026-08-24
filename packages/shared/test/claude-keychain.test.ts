@@ -12,6 +12,7 @@ import {
   claudeKeychainService,
   deleteScopedClaudeKeychainItem,
   readClaudeKeychainPayload,
+  readScopedClaudeKeychainPayload,
 } from '#tool-auth-interactive'
 
 const realPlatform = process.platform
@@ -59,6 +60,36 @@ describe('claude keychain access', () => {
       setPlatform('darwin')
       execFileSyncMock.mockImplementation(() => { throw new Error('not found') })
       expect(readClaudeKeychainPayload()).toBeNull()
+    })
+  })
+
+  describe('readScopedClaudeKeychainPayload', () => {
+    it('reads a config-dir-scoped item', () => {
+      setPlatform('darwin')
+      execFileSyncMock.mockReturnValue('{"claudeAiOauth":{}}\n')
+      const service = claudeKeychainService('/data/projects/demo/claude')
+      expect(readScopedClaudeKeychainPayload(service)).toBe('{"claudeAiOauth":{}}')
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'security',
+        ['find-generic-password', '-s', service, '-w'],
+        expect.anything(),
+      )
+    })
+
+    it('refuses the un-suffixed host service — a project sweep never reads the user\'s own install', () => {
+      setPlatform('darwin')
+      expect(readScopedClaudeKeychainPayload('Claude Code-credentials')).toBeNull()
+      expect(execFileSyncMock).not.toHaveBeenCalled()
+    })
+
+    it('reads null on non-darwin and when no item exists', () => {
+      setPlatform('linux')
+      expect(readScopedClaudeKeychainPayload(claudeKeychainService('/tmp/scratch'))).toBeNull()
+      expect(execFileSyncMock).not.toHaveBeenCalled()
+
+      setPlatform('darwin')
+      execFileSyncMock.mockImplementation(() => { throw new Error('not found') })
+      expect(readScopedClaudeKeychainPayload(claudeKeychainService('/tmp/scratch'))).toBeNull()
     })
   })
 

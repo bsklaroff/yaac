@@ -24,6 +24,14 @@ import {
   removeToolAuth,
   buildPlaceholderBundle,
   writeProjectClaudePlaceholder,
+  writeProjectClaudeCredentials,
+  writeProjectCodexAuth,
+  writeProjectCodexPlaceholder,
+  readProjectClaudeBundle,
+  readProjectCodexBundle,
+  isPlaceholderClaudeBundle,
+  isPlaceholderCodexBundle,
+  listCredentialProjectSlugs,
   fanOutClaudePlaceholders,
   persistToolAuthPayload,
   PLACEHOLDER_ACCESS_TOKEN,
@@ -245,6 +253,59 @@ describe('tool-auth', () => {
     it('fan-out is a no-op when no projects exist', async () => {
       await fanOutClaudePlaceholders(SAMPLE_BUNDLE)
       // should not throw
+    })
+  })
+
+  describe('reading back what a project tool home holds', () => {
+    const SAMPLE_CODEX: CodexOAuthBundle = {
+      accessToken: 'codex-access-real',
+      refreshToken: 'codex-refresh-real',
+      idTokenRawJwt: 'eyJhbGciOiJub25lIn0.eyJleHAiOjE3MDB9.',
+      expiresAt: 9999999999999,
+      lastRefresh: '2026-07-09T00:00:00.000Z',
+      accountId: 'acct-1',
+    }
+
+    it('round-trips the real bundle a proxyless runtime writes, and reports a sentinel as-is', async () => {
+      // The read side of the containerless credential loop: an agent refreshes
+      // in place, so the project home is where the live token is.
+      await writeProjectClaudeCredentials('demo', SAMPLE_BUNDLE)
+      expect(await readProjectClaudeBundle('demo')).toEqual(SAMPLE_BUNDLE)
+      expect(isPlaceholderClaudeBundle(SAMPLE_BUNDLE)).toBe(false)
+
+      // A sentinel is reported rather than filtered — whether it counts as a
+      // credential is the caller's question, and seeding has to be able to
+      // see that a project is holding one.
+      await writeProjectClaudePlaceholder('demo', SAMPLE_BUNDLE)
+      const placeholder = await readProjectClaudeBundle('demo')
+      expect(placeholder?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
+      expect(isPlaceholderClaudeBundle(placeholder as ClaudeOAuthBundle)).toBe(true)
+
+      await writeProjectCodexAuth('demo', SAMPLE_CODEX)
+      expect(await readProjectCodexBundle('demo')).toMatchObject({
+        accessToken: SAMPLE_CODEX.accessToken,
+        refreshToken: SAMPLE_CODEX.refreshToken,
+        accountId: SAMPLE_CODEX.accountId,
+      })
+      await writeProjectCodexPlaceholder('demo', SAMPLE_CODEX)
+      const codexPlaceholder = await readProjectCodexBundle('demo')
+      expect(isPlaceholderCodexBundle(codexPlaceholder as CodexOAuthBundle)).toBe(true)
+    })
+
+    it('reads null for a project with no credential, and for an unparseable one', async () => {
+      expect(await readProjectClaudeBundle('missing')).toBeNull()
+      expect(await readProjectCodexBundle('missing')).toBeNull()
+
+      await fs.mkdir(claudeDir('broken'), { recursive: true })
+      await fs.writeFile(projectClaudeCredentialsFile('broken'), '{ not json')
+      expect(await readProjectClaudeBundle('broken')).toBeNull()
+    })
+
+    it('lists every tracked project slug, and none before any project exists', async () => {
+      expect(await listCredentialProjectSlugs()).toEqual([])
+      await fs.mkdir(claudeDir('alpha'), { recursive: true })
+      await fs.mkdir(claudeDir('beta'), { recursive: true })
+      expect((await listCredentialProjectSlugs()).sort()).toEqual(['alpha', 'beta'])
     })
   })
 

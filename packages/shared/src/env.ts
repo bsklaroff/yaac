@@ -398,6 +398,28 @@ export const testEnv = {
     return process.env.YAAC_E2E_SKIP_FETCH === '1'
   },
 
+  /**
+   * `YAAC_E2E_NO_TOKEN_REFRESH` — `1` makes every OAuth refresh grant a no-op.
+   *
+   * Set for the whole test suite, and the one env flag here that exists to
+   * prevent damage rather than to shape behavior. A refresh grant ROTATES the
+   * credential, and a suite run inside a proxy-mediated yaac worktree cannot
+   * keep that local: the egress proxy rewrites the `refresh_token` body param
+   * of anything POSTed to a token endpoint to the REAL stored token, without
+   * checking what the request carried — so a test presenting a sentinel, a
+   * fabricated string, or anything else still rotates the outer install's
+   * live credential. The outer store then keeps the token that rotation
+   * spent, and every worktree using it is signed out.
+   *
+   * Blocking the grant is what makes that unreachable, and it is blocked at
+   * the grant rather than at a call site so no future caller can reintroduce
+   * it. The tests that assert refresh BEHAVIOR unset this per-case; they stub
+   * `fetch`, so nothing they do leaves the process.
+   */
+  get noTokenRefresh(): boolean {
+    return process.env.YAAC_E2E_NO_TOKEN_REFRESH === '1'
+  },
+
   /** `YAAC_E2E_OPENCODE_PROVIDER` — picks the opencode provider for e2e (defaults to openrouter). */
   get opencodeProviderHook(): string | undefined {
     return process.env.YAAC_E2E_OPENCODE_PROVIDER

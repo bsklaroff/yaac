@@ -47,10 +47,19 @@ const CLAUDE_POLL_MS = 500
 
 /**
  * Where a completed login's credentials go. Defaults to the local
- * persistence (data-dir credential files + placeholder fan-out) — right
- * when this code runs inside the machine that owns the data dir. The
+ * persistence — the data-dir credential files, and those alone — which is
+ * right when this code runs inside the machine that owns the data dir. The
  * auth server overrides it with an RPC `PUT /auth/:tool` so bundles land
- * on the (possibly remote) main server instead of this machine.
+ * on the (possibly remote) main server instead of this machine, and that
+ * is the path every production sign-in takes (`runAuthDaemon` installs it
+ * unconditionally; the CLI PUTs directly).
+ *
+ * Which matters, because the route does something this default cannot:
+ * seeding the credential into each project's tool home depends on whether
+ * the server's runtime mediates egress — a sentinel where a proxy will swap
+ * it, the real bundle where nothing would — and that is a fact about the
+ * server, not about this machine. A local consumer of this default would
+ * persist the bundle and seed nothing.
  */
 type PersistToolLogin = typeof persistToolLogin
 let persistResult: PersistToolLogin = persistToolLogin

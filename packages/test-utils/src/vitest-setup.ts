@@ -58,3 +58,24 @@ for (const key of [
 // write into the developer's real ~/.yaac. Tests that need their own
 // data dir override this via setDataDir() in beforeEach.
 setDataDir(path.join(os.tmpdir(), `yaac-test-default-${process.pid}`))
+
+// Forbid OAuth refresh grants for the whole suite. Unlike the data-dir
+// isolation above, this protects something OUTSIDE the machine: a refresh
+// grant spends the stored refresh token and issues a new one, so it is the
+// only upstream call a test can make that damages state a temp dir cannot
+// contain.
+//
+// It matters most exactly where this suite most often runs — inside a yaac
+// worktree. That worktree's egress is mediated, and the proxy rewrites the
+// `refresh_token` body param of anything POSTed to a token endpoint to the
+// real stored token WITHOUT checking what the request carried. So a test
+// presenting a sentinel, or a fabricated string, or a bundle seeded three
+// fixtures ago still rotates the credential of the install hosting the
+// worktree — and, because the response capture IS gated on the sentinel,
+// that install may never learn the new token and is left holding a spent
+// one. Every worktree sharing it is then signed out.
+//
+// Seeded expiries are not a defense: they decide whether a refresh is
+// ATTEMPTED, and the attempt is already the damage. The refresh-grant tests
+// unstub this per-case, behind a stubbed `fetch`.
+process.env.YAAC_E2E_NO_TOKEN_REFRESH = '1'

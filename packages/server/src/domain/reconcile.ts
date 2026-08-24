@@ -6,6 +6,7 @@ import {
   reconcileStaleWorktrees,
 } from '#domain/worktrees'
 import { reconcileGeneratedTitles } from '#domain/titles'
+import { syncToolCredentialsThrottled } from '#domain/auth'
 import { worktreeDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
 
@@ -38,6 +39,21 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   // hold worktrees open to save nothing. The step is dropped rather than
   // made to no-op so a pass over a containerless server has no prewarm
   // vocabulary in it at all.
+  // The standing credential convergence, and the only lane that reaches an
+  // IDLE install: a worktree that refreshed its OAuth token holds the live
+  // credential, and every other reader of it — the next create, the plan-usage
+  // poller, the next server — is looking at the host store. The other triggers
+  // (create, attach, stop, a usage cycle) each cover a moment; this covers the
+  // hours between them, on the resync tick since nothing edges it.
+  //
+  // Dropped entirely where a proxy mediates egress, rather than left to no-op:
+  // there the credential a workspace holds is a sentinel and every refresh it
+  // drives is already captured to the host store on the way out, so there is
+  // nothing to converge and a pass over such a server has no credential
+  // vocabulary in it at all.
+  const credentialSync: ReconcileStep[] = driver.kind !== 'containerless' ? [] : [
+    { name: 'credential-sync', triggers: [], run: () => syncToolCredentialsThrottled() },
+  ]
   const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped worktrees). No-op when the pool size is 0.
@@ -104,6 +120,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // anything, so the sweep can never see a fresher directory than the
     // registry entry that shields it. Self-gating: once per server life.
     { name: 'orphan-modules-gc', triggers: [], run: () => gcOrphanEphemeralModuleDirs() },
+    ...credentialSync,
     // Model-generated titles for untitled worktrees, after the
     // conversation sweep so a freshly captured prompt is eligible the same
     // pass — which means it owes a pass on whatever dirties that sweep.
