@@ -3,7 +3,7 @@ import path from 'node:path'
 import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
 import { attachWorktreePty } from '#commands/ws-terminal'
-import { resolveServerTarget } from '@yaac/shared/server-api'
+import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
@@ -52,10 +52,16 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
   // Local fast-fail on an unknown project slug so the user gets an
   // immediate error instead of a round-trip to the server (and so tests
   // can exercise this path without a running server). The server re-
-  // validates. Skipped against a remote server — the projects dir lives
-  // on the server host, not this machine.
+  // validates.
+  //
+  // Keyed on the origin being LOOPBACK rather than on the target not being
+  // a remote: a local k8s install resolves through `remote.json` as well
+  // (that is how `yaac cluster install` publishes the in-cluster server),
+  // and its projects dir is still this machine's — the pod hostPath-mounts
+  // it. What the check must not do is read this machine's disk to answer
+  // for a server on another one.
   const target = await resolveServerTarget().catch(() => null)
-  if (!target?.remote) {
+  if (target === null || isLoopbackOrigin(target.baseUrl)) {
     try {
       await fs.access(path.join(getProjectsDir(), projectSlug))
     } catch {

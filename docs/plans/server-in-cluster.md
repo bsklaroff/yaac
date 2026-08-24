@@ -105,6 +105,24 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
   freshly provisioned empty subdir. No backup story: the loss mode is
   the host's own disk, which is exactly the risk the data dir already
   carries today.
+- **Server-local tier: a static hostPath PV, for the same reason.**
+  `yaac-server-state` binds a static PV at a fixed path under the data
+  dir, `reclaimPolicy: Retain`, hostPath rather than the export (pglite
+  must not sit on a network FS). NOT the default StorageClass: on the
+  local backend that is `local-path`, which provisions into the node
+  container with `reclaimPolicy: Delete` — so `yaac cluster delete`
+  would take the database with it, and `cluster delete`'s standing
+  promise is that nothing under the data dir is touched. That is the
+  line: dynamic provisioning is right for data a cluster can re-derive
+  (the registry's blobs die with the cluster and cost only re-pushes),
+  and wrong for the one tier that cannot be re-derived at all —
+  worktrees can be re-checked-out, images re-pushed, caches refilled,
+  the DB cannot. Install renders the PV with an explicit `claimRef` so
+  binding is deterministic and a `Released` PV can never be shadowed by
+  a freshly provisioned empty one. What makes hostPath safe here is the
+  same node==host assumption every existing mount already rests on
+  (kind binds `$HOME` into every node); a remote cluster needs a real
+  block volume instead, which is part of the deferred work below.
 - **DB migrations stay exactly today's behavior**: forward-only,
   applied automatically at server start. The in-cluster server
   changes nothing about this, so nothing is required for the move; a
@@ -129,9 +147,15 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
 
 The converge verb exists (docs/cluster-setup.md): substrate if necessary,
 node state, every built-in image built on the CLI machine and pushed, then
-the in-cluster components, finishing with `cluster check`. `--adopt-cni`
-survives as-is; growing it into a full bring-your-own-cluster install mode
-is out of scope (see below).
+the in-cluster components, finishing with `cluster check`.
+
+`--adopt-cni` installs the in-cluster layers and deploys **no server**: an
+adopted cluster has no kind port mapping to publish one through, and a
+server outside the cluster is the containerless driver by construction. So
+adoption is a groundwork mode until the bring-your-own-cluster install
+exists (see "Out of scope"), and it says so at install time rather than
+leaving an adopted cluster looking installed and idle. Whether the flag
+should be refused outright until then is open.
 
 What phases 2–3 add to it, in order:
 
@@ -205,9 +229,12 @@ visibility; `stat()`-polling of a same-host writer lags ~3s on
   server is trusted code; sessions keep gVisor), `runAsUser: 1000` to
   match the pinned image `yaac` uid.
 - **Two claims + a node tier:**
-  - `yaac-server-state` — RWO, default StorageClass: pglite `db/`,
+  - `yaac-server-state` — RWO, a **static hostPath PV** at a fixed path
+    under the data dir with `reclaimPolicy: Retain`: pglite `db/`,
     `server.log`, the lock, `driver`, `build/`, `models/`, caches.
-    Never on a network FS.
+    Never on a network FS, and never dynamically provisioned — see the
+    decision above for why the one irreplaceable tier does not get the
+    default StorageClass.
   - `yaac-shared` — RWX over the host's NFS export via csi-driver-nfs
     (CephFS fallback re-runs `test-storage-probes/` unchanged): the
     `projects/` tree, `.credentials/`, `run/proxy-data`. Mounted by
@@ -253,147 +280,36 @@ before the next starts, per the repo's phasing discipline. The final
 gate for each is unchanged from `stock-k8s-multi-node.md`: the e2e
 suite on a multi-node (kind) cluster.
 
-### Phase 2 — server image + Deployment, storage unchanged
+### Phase 2 — server image + Deployment, storage unchanged — **SHIPPED**
 
-Run the server as a pod with **hostPath storage exactly as today**.
-kind nodes mount `$HOME`, so the server pod can hostPath-mount the
-real data dir at the same absolute path — `dataDirHash()`, every
-existing hostPath mount, and the session-pod view are all
-byte-identical. This isolates the process/network/lifecycle work from
-the storage work completely.
+The whole of it is current-state reference now: docs/server-in-cluster.md
+for the image, the Deployment/Service/RBAC/ingress-policy set, the fixed
+loopback origin, the lease, uid 1000, the Deployment-aware lifecycle verbs,
+the Service dials that replaced every host-side shim, and the e2e tiers that
+deploy the same workload per test file; docs/port-forward-tunnel.md for the
+client-held forwarders; docs/containerless-driver.md and
+docs/cluster-setup.md for what "placement is the driver" means at the two
+commands.
 
-- **Server image** (`dockerfiles/Dockerfile.server` or the images
-  folder's pattern): node + the bundled server + `kubectl`, `git`,
-  tar, and the llama.cpp title binary baked in (auto-titles keep
-  working; no runtime download); uid 1000. Built and pushed by
-  install; content-hash tagged; added to `test/global-setup.ts` for
-  e2e.
-- **Pin the pod uid to 1000, here and not before.** `podUid()` still
-  mirrors the server's own uid, and must keep doing so while the
-  server is a host process: it is what pre-creates every hostPath a
-  session pod writes (`#domain/worktrees`), so those dirs land owned
-  by whoever runs it, and under gVisor the gofer presents that real
-  ownership — pinning the pod to 1000 on a uid-501 host (macOS's
-  first login uid) leaves every worktree unable to write
-  `/workspace`. Once the server IS the pod that creates them, running
-  as 1000, the constant is simply true, and the two remaining
-  `process.getuid()` mirrors go with it: the pod uid and
-  `proxyRunAsSecurityContext()`. Hosts whose uid was not 1000 re-tag
-  their images once — free here, since the transition already
-  recreates the cluster.
-- **Bind + auth:** a bind-address env (`YAAC_BIND_ADDR`; the pod
-  interface in the Deployment manifest); auth keeps today's
-  config-keyed rules (see Decisions), so the local install stays
-  credential-optional. That makes the server pod's **ingress
-  NetworkPolicy load-bearing**: it admits only the node CIDRs
-  (`nodeIpBlocks()`, the main-registry precedent) — NodePort traffic
-  arrives from a node address and is admitted, while a pod dialing
-  the server pod IP directly presents a pod source IP and is
-  dropped. Together with the sessions' egress default-deny it is
-  what keeps untrusted worktree pods off the unauthenticated API —
-  so `cluster check`'s `egress` gate grows one assertion: a
-  worktree-labelled probe pod must fail to dial the server Service
-  and pod IP, proving the wall on every install the way the gate
-  already proves the apiserver and transparent-proxy denials.
-  (The kernel-enforced alternative — bind pod-loopback, reach it
-  only through `kubectl port-forward`, which dials 127.0.0.1 inside
-  the pod netns — is deliberately not taken: it reintroduces a
-  babysat forward process and puts all traffic back on the
-  apiserver streaming path.)
-- **Reachability:** a Service, published to the host as a stable
-  loopback endpoint via NodePort + a kind `extraPortMapping` (host
-  `127.0.0.1:8787` → node port), reserved at cluster creation — the
-  browser, the CLI, and the desktop app connect to a fixed loopback
-  origin with no tunnel process to keep alive. Install writes
-  `remote.json` (url + durable token) as every client's target.
-  Pre-existing clusters are refused, not fallback-supported (see
-  Decisions), so no interim port-forward path exists.
-- **Cluster access:** in-cluster SA config (already the
-  `loadFromDefault()` fallback) + the RBAC manifest; set
-  `YAAC_RELAY_ADDR` to the proxy Service and dial `registryHost()`
-  directly; delete `port-forward.ts`'s server-side consumers and
-  `exec-tunnel.ts` in this mode.
-- **Lifecycle:** install applies/rolls the Deployment (image roll =
-  `Recreate` rollout); `yaac server stop|logs|status` grow
-  Deployment-aware forms. The lock becomes a **lease**: pid liveness
-  is meaningless across pods (every container's pid namespace hands
-  out the same low pids, so "is pid N alive?" answers about the
-  wrong process), so the lock file instead records the instance
-  identity (pod uid) plus a heartbeat the running server renews; a
-  starting server refuses while the heartbeat is fresh and takes
-  over only once it is stale, and a clean shutdown removes it. On
-  real block storage RWO attach + `Recreate` backstops this; on the
-  local kind backend's hostPath volumes there is no attach
-  exclusivity, so the lease IS the single-writer guard for pglite
-  there.
-- **Settled small calls:** the detached teardown `rm -rf` accepts
-  pod-lifetime scoping — the reconcile sweeps already retry
-  leftovers, so a pod death mid-cleanup costs a pass, not a leak
-  (the other detached-process trick, prewarm builds, already dissolved:
-  builder pods outlive the server).
-  `YAAC_USE_TOR` points at the host's SOCKS via
-  `YAAC_HOST_TOR_SOCKS_URL` — install computes the host's address on
-  the kind network; note Tor must listen on that interface, not just
-  loopback, which install checks and reports. `config.bindMounts` and
-  ssh-key git auth are refused under k8s with clear errors (see
-  Decisions).
-- **Worktree port-forwarding** is the one real feature regression: the
-  server can no longer bind ports on the user's machine. The server's
-  relay machinery survives intact — it just stops terminating in a
-  server-local listener and is instead exposed as an authenticated WS
-  endpoint (`/forward/...`, the `/pty/attach` pattern) bridging to the
-  same streamd stream the forwarders use today. The listener moves to
-  the client: `yaac forward` in the CLI, and the **desktop app as the
-  natural resident forwarder** — its main process is long-lived,
-  tray-scoped, already consumes `/events`, so it can bind the
-  configured ports on `127.0.0.1` and pipe each accepted connection
-  over the WS endpoint, keeping the webapp's `127.0.0.1:<port>` links
-  true whenever the desktop (or `yaac forward`) is running. The
-  tunnel client lives in `@yaac/shared` (WS + net only), which is the
-  only package the desktop may import. v1 frames one WS per forwarded
-  TCP connection (the kubectl shape).
-- **Desktop app**: no structural change. It already loads the server
-  origin rather than bundling the SPA, resolves its target through
-  the same `resolveServerTarget` chain as the CLI (`remote.json`
-  first), and mints its session against the resolved origin — an
-  in-cluster server is just another origin. Its additions here are
-  the resident port-forwarder above and dropping its local-server
-  spawn path for k8s installs (`server-process.ts` becomes
-  containerless-only; unreachable server → the install message).
-- **The e2e tiers.** `test/e2e`/`test/api`'s k8s half spawn a host
-  server per file today. They move to the real shape: a dev server
-  image built once in `test/global-setup.ts` (content-hashed like
-  every test image), one Deployment applied per e2e file with the
-  file's data dir passed by env, logs via `kubectl logs`. Apply-to-
-  ready on a warm kind node is seconds — comparable to today's server
-  boot — and the per-file fixture discipline is unchanged.
-
-There is deliberately **no hot-reload dev loop** here (see Decisions):
-developing the k8s server means build + push + roll, and a dev
-shortcut that rebuilds only the server image and rolls the Deployment
-keeps that cycle tight.
-
-The phase ends by **retiring host-mode k8s**: once the in-cluster
-suite is green, `yaac server start --driver k8s` is removed, the
-host-side shims are deleted (not gated), and `yaac server start`
-means containerless.
-
-Verification: the k8s e2e tiers, now running against the deployed
-server on kind.
+Storage was deliberately untouched — the pod hostPath-mounts the real data
+dir at its own absolute path — which is what phase 3 below now splits.
 
 ### Phase 3 — storage: point the tiers at volumes
 
 Now split what phase 2 deliberately left alone.
 
-- **Claims** created by install: `yaac-server-state` (RWO, default
-  StorageClass), and `yaac-shared` (RWX) bound through a **static PV**
-  install renders from the host's NFS export (`reclaimPolicy:
-  Retain`, `actimeo=1` mount options, `mountPermissions`/fsGroup per
-  the spike), with csi-driver-nfs applied by install. The minimal
-  chain is: the host nfsd export (spike settings, restricted to the
-  kind network) → csi-driver-nfs → the static PV + claim. Install
-  owns standing the export up (the spike's `setup-nfs-export.sh` is
-  the prototype).
+- **Claims** created by install, both bound through **static PVs
+  install renders** rather than dynamic provisioning:
+  `yaac-server-state` (RWO) over a hostPath at a fixed path under the
+  data dir, and `yaac-shared` (RWX) over the host's NFS export
+  (`actimeo=1` mount options, `mountPermissions`/fsGroup per the
+  spike), with csi-driver-nfs applied by install. Both carry
+  `reclaimPolicy: Retain` and an explicit `claimRef`, so a recreate
+  rebinds the same bytes and nothing can hand the install an empty
+  volume instead. The shared chain is: the host nfsd export (spike
+  settings, restricted to the kind network) → csi-driver-nfs → the
+  static PV + claim; install owns standing the export up (the spike's
+  `setup-nfs-export.sh` is the prototype).
 - **Roots split** in `paths.ts`, driven by the composition root (env
   set by the Deployment manifest): sharedRoot → the RWX mount,
   serverLocalRoot → the RWO mount, nodeLocalRoot → a fixed node path.
@@ -419,7 +335,14 @@ Now split what phase 2 deliberately left alone.
   `process.getuid()` coupling for the fixed uid + fsGroup.
 - **e2e scratch:** `testTmpBase()` grows a PVC-backed branch for this
   mode (the host/node same-absolute-path contract is exactly what the
-  subPath mount now provides).
+  subPath mount now provides), and the server Deployment the e2e tiers
+  apply per file mounts it the same way.
+- **`config.bindMounts` becomes containerless-only here**, and only here.
+  It still resolves under phase 2 — a bindMount is a hostPath on a node
+  that binds `$HOME`, which is exactly what it was before the server
+  moved — so refusing it earlier would have broken a working feature for
+  nothing. It stops resolving the moment the mounts stop being hostPath,
+  which is this phase, and that is where the refusal belongs.
 - **Check gates:** the hostPath nonce probe becomes an RWX write
   probe, and the spike's `fsprobe.py` semantics chain + `coherence.sh`
   become `cluster check` gates (the storage plan's "the work is
@@ -461,7 +384,9 @@ runsc install, storage-class probe, arch probe, recording the backend
 client-side); ingress/TLS in front of the server Service instead of
 the kind extraPortMapping; an NFS server that is not the host (a
 dedicated same-network VM, firewalled to the nodes — `sec=sys` NFS is
-trust-by-network); off-host backup; a same-arch build machine; and
+trust-by-network); real block storage for `yaac-server-state`, whose
+static hostPath PV only holds where node==host; off-host backup; a
+same-arch build machine; and
 re-measuring the spike's NFS numbers over a real network (every
 current number is a single-node floor). Nothing in the local design
 is expected to need re-design for any of these — only addition.
@@ -479,7 +404,11 @@ is expected to need re-design for any of these — only addition.
   them today; project state is not: the data dir stays on the host,
   and the server pod hostPath-mounts it at the identical absolute
   path — so `dataDirHash()`, every label, and the DB carry over
-  unchanged into the new cluster.
+  unchanged into the new cluster. Phase 3 keeps that property rather
+  than trading it away: both claims are static PVs over host paths
+  with `reclaimPolicy: Retain`, so a recreated cluster rebinds the
+  same directories and a `cluster delete` still touches nothing under
+  the data dir.
 - `yaac server start` on a k8s data dir becomes an actionable error
   pointing at `yaac cluster install`; the recorded `driver` file is
   the tripwire.
@@ -500,8 +429,10 @@ is expected to need re-design for any of these — only addition.
   phase 3.
 - **Pre-migration DB snapshot** (`db-backup-<buildId>`, kept last-N,
   taken cold before `openDb` migrates) — makes an image roll
-  reversible and doubles as the server-state backup primitive.
-  Optional hardening; today's behavior is identical without it.
+  reversible. Hardening against a bad MIGRATION, not against losing
+  the volume: the static hostPath PV is what keeps the database off
+  the cluster's lifecycle, so this stays optional rather than becoming
+  a phase-3 dependency. Today's behavior is identical without it.
 - **O_APPEND invariant into the storage docs** when phase 3 lands: a
   shared-tier file may have many readers but ONE appending writer —
   cross-sandbox O_APPEND on gofer-backed ext4 loses/interleaves ~5%
@@ -512,3 +443,17 @@ is expected to need re-design for any of these — only addition.
   connection (the kubectl shape); a yamux-style mux over one socket
   only if chatty apps ever make the per-connection handshake cost
   visible.
+- **Fence the lock with an OFD/`flock` file** instead of leaving the
+  lease's resume window open. The lease is time-based, so a server
+  stalled past `LEASE_STALE_MS` has its lock taken and then keeps
+  writing until its next heartbeat notices — up to one tick of two
+  open PGlite handles. A kernel lock closes that window outright, and
+  it WOULD hold here: host and node share one kernel and the data dir
+  crosses only a bind mount, so the two processes contend on one
+  inode. Not free, though, and that is why it is deferred rather than
+  folded in: Node has no `flock` in core, so it means a native
+  dependency or a spawned `flock(1)` helper, and it changes the lock
+  protocol for every reader rather than one call site. Nor does phase
+  3 make it redundant the way "RWO claims bring attach exclusivity"
+  suggests — server-state is a static hostPath PV there, and hostPath
+  enforces nothing. Worth doing on its own, against both phases.

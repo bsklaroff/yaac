@@ -947,6 +947,23 @@ describe.skipIf(!CAN_RUN)('containerless recovery across a server restart', () =
  * provisioned — is only exercised here. Containerless because a real create
  * costs a second here and a pod elsewhere.
  */
+describe.skipIf(!CAN_RUN)('yaac forward against a containerless server', () => {
+  it('refuses, because the workspace already binds the host port itself', async () => {
+    // Not a limitation to work around — the ports ARE the host's here, so
+    // what the server offers is the identity mapping over listeners that
+    // already exist. A forwarder would fail every bind against the dev
+    // server holding the port, once per poll, forever
+    // (docs/port-forward-tunnel.md).
+    // No session named: whether this install can be forwarded at all is a
+    // fact about the server, so the refusal must not depend on one — and
+    // this file's worktree has been stopped by the cases above.
+    const { exitCode, stderr } = await runYaac(serverEnv, 'forward')
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/containerless driver/)
+    expect(stderr).toMatch(/nothing to tunnel/)
+  })
+})
+
 describe.skipIf(!CAN_RUN)('yaac worktree create --group', () => {
   it('creates the named group and files the new worktree into it', async () => {
     const before = new Set((await listWorktrees()).map((w) => w.worktreeId))

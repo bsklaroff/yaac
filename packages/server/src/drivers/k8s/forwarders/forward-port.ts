@@ -1,8 +1,9 @@
-import { isPrewarmed, listWorktreePods } from '#drivers/k8s/substrate'
+import { isPrewarmed, listWorktreePods, relayDial } from '#drivers/k8s/substrate'
 import { addWorktreeForwarder } from './port-forwarders'
 import { getUnforwardedPorts } from './port-detector'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
+import type { Duplex } from 'node:stream'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
@@ -57,4 +58,26 @@ export async function forwardWorktreePort(
   }
 
   return mapping
+}
+
+/**
+ * The near end of one forwarded TCP connection: a `tcp` stream through the
+ * pod's streamd, onto the port something inside it is listening on.
+ *
+ * One dial per connection — the kubectl shape, and the reason this takes
+ * no registry and returns no handle beyond the stream itself. Whoever
+ * accepted the connection on the far end owns this one: destroying it is
+ * what ends the pair, and resuming it is what starts it — `relayDial`
+ * pauses the socket after its handshake so the reply's first bytes cannot
+ * outrun the consumer's reader. Unlike `forwardPort` this names an arbitrary port
+ * rather than a surfaced listener, because by the time a client dials, the
+ * decision that the port is forwardable has already been made and recorded
+ * — re-deciding it here would break a forward the moment its dev server
+ * restarted.
+ */
+export function dialWorkspacePort(
+  workspaceId: string,
+  containerPort: number,
+): Promise<Duplex> {
+  return relayDial(workspaceId, { kind: 'tcp', port: containerPort })
 }

@@ -1,4 +1,5 @@
 import { serverLog } from '#log'
+import { env } from '@yaac/shared/env'
 import { invalidatePortForward, resolvePortForward } from '#drivers/k8s/substrate'
 import { runTrackedPodman } from './host-procs'
 import { usesRootfulPodman } from './runtime'
@@ -97,6 +98,12 @@ export function registryRef(tag: string): string {
  * Deployment looks like from here.
  */
 export async function registryEndpoint(): Promise<string> {
+  // In-cluster, the forward's whole reason to exist is gone: the registry's
+  // Service DNS name resolves and routes from the server pod directly, and
+  // it is the same name every image ref already carries. Dialing it removes
+  // a babysat child process and a hop through the apiserver's streaming
+  // path from every push and HEAD.
+  if (env.inCluster) return registryHost()
   const { host, port } = await registryForward()
   return `${host}:${port}`
 }

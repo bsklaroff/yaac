@@ -1,7 +1,7 @@
 import { readBuildId } from '#build-id'
 import { testEnv } from '#env'
 import { readLock } from '#lock'
-import { isLockLive, type ServerLock } from '#server-lock-file'
+import { isLockLive, isSameHostLock, type ServerLock } from '#server-lock-file'
 import { readRemote } from '#remote'
 import { createApiClient, type FetchLike } from '#api-core'
 import type { ServerErrorBody } from '#errors'
@@ -72,17 +72,26 @@ export function createServerFetch(
   return async (input, init = {}) => {
     let active = target ?? (target = await resolveTarget())
     const pathAndSearch = extractPathAndSearch(input)
-    const send = (): Promise<Response> => fetchImpl(
-      `${active.baseUrl}${pathAndSearch}`,
-      withAuth(init, active.secret),
-    )
+    const send = async (): Promise<Response> => {
+      try {
+        return await fetchImpl(`${active.baseUrl}${pathAndSearch}`, withAuth(init, active.secret))
+      } catch (err) {
+        // A transport failure against a configured target is the ordinary
+        // "the server is not up" case once the server is a Deployment
+        // (docs/server-in-cluster.md): the origin is fixed and always
+        // resolvable, so nothing upstream can turn it into the lock
+        // resolution's "not running" message. Undici's bare `fetch failed`
+        // is what that would otherwise surface as.
+        throw new Error(unreachableServerMessage(active.baseUrl, err))
+      }
+    }
 
     let res = await send()
     if (requireBuildMatch && active.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
       buildSkewChecked = true
       const cliBuildId = await readBuildId().catch(() => null)
       const skew = cliBuildId
-        ? describeBuildSkew(res.headers.get('x-yaac-build-id'), cliBuildId)
+        ? describeBuildSkew(res.headers.get('x-yaac-build-id'), cliBuildId, active.baseUrl)
         : null
       if (skew) console.error(skew)
     }
@@ -111,6 +120,20 @@ export function createServerFetch(
     }
     return res
   }
+}
+
+/**
+ * Why a request to `origin` did not go out, and what to do about it.
+ * Loopback gets the local recovery (start it); anything else is a remote
+ * whose reachability is the user's network, not a command of ours.
+ */
+export function unreachableServerMessage(origin: string, cause: unknown): string {
+  const detail = cause instanceof Error ? cause.message : String(cause)
+  const fix = isLoopbackOrigin(origin)
+    ? '\n    Start it with `yaac server start`, or converge the install with '
+      + '`yaac cluster install`.'
+    : ''
+  return `cannot reach the yaac server at ${origin} (${detail})${fix}`
 }
 
 function extractPathAndSearch(input: string): string {
@@ -170,12 +193,40 @@ export function describeLockMismatch(
 export function describeBuildSkew(
   serverBuildId: string | null,
   cliBuildId: string,
+  origin?: string,
 ): string | null {
   if (!serverBuildId || serverBuildId === cliBuildId) return null
-  return (
-    `warning: remote server build (${serverBuildId}) differs from this CLI `
-    + `(${cliBuildId}) — upgrade one of them if commands misbehave`
-  )
+  // A loopback "remote" is this machine's own in-cluster server
+  // (docs/server-in-cluster.md), where the skew has one cause — the bundle
+  // moved and the Deployment has not been rolled onto it — and one fix.
+  // Naming it matters because the local LOCK path treats a skew as a hard
+  // error with a command attached, and this is what replaced it there.
+  const fix = origin !== undefined && isLoopbackOrigin(origin)
+    ? ' — roll the server onto this build with `yaac cluster install`'
+    : ' — upgrade one of them if commands misbehave'
+  return `warning: remote server build (${serverBuildId}) differs from this CLI `
+    + `(${cliBuildId})${fix}`
+}
+
+/**
+ * Whether an origin names a listener on THIS machine.
+ *
+ * Not the same question as `ServerTarget.remote`, which says only that the
+ * target came from `remote.json`. A local k8s install resolves through that
+ * file too — `yaac cluster install` writes it, pointing at the published
+ * loopback origin (docs/server-in-cluster.md) — so "resolved from
+ * remote.json" stopped meaning "on another machine" the moment the server
+ * became a pod. Callers that want the second question ask this one.
+ */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    // `URL.hostname` keeps the brackets on an IPv6 literal, so `[::1]` never
+    // equals `::1` — strip them before comparing.
+    const hostname = new URL(origin).hostname.replace(/^\[|\]$/g, '')
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -213,6 +264,20 @@ export async function resolveServerTarget(
 
   const cliBuildId = opts.requireBuildMatch === false ? null : await readBuildId()
   const existing = await readLock()
+  // A lock written on the other side of a container boundary is not a
+  // target this process can dial: its port is the one the server binds
+  // INSIDE its pod, and `127.0.0.1:<that>` here is some unrelated
+  // listener — quite possibly another yaac, which would answer and be
+  // believed. The in-cluster server is reached through `remote.json`
+  // (step 2), which `yaac cluster install` writes; if we are here, that
+  // file is missing or disabled, so say which command restores it.
+  if (existing && !isSameHostLock(existing)) {
+    throw new Error(
+      `This install's server runs in the cluster (lock held by ${existing.host ?? 'another host'}), `
+      + 'but there is no enabled remote.json pointing at it.\n'
+      + '    Run `yaac cluster install` to converge the cluster and republish the origin.',
+    )
+  }
   const live = existing ? await isLockLive(existing) : false
   const mismatch = describeLockMismatch(existing, live, cliBuildId)
   if (mismatch) throw new Error(mismatch)

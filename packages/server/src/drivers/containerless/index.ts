@@ -112,7 +112,17 @@ export function createContainerlessDriver(): WorktreeDriver {
     unforwardedPorts: () => Promise.resolve([]),
     forwardPort: () => unsupported('forwarding a port'),
     dismissPort: () => false,
-    startForwarders: () => { /* the workspace already holds its own ports */ },
+    // A config's `portForward` names the port its dev server binds, and
+    // that IS the host port here, so declaring one is stating a fact rather
+    // than allocating anything — which is also why nothing may be bound in
+    // its name: the reservation the pod driver used to make would take the
+    // very port the workspace is about to want.
+    declareForwards: (_workspaceId, forwards) =>
+      forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
+    // Nothing to tunnel to: the port is on this machine already, and a
+    // client wanting it dials it directly. A forwarder pointed here would
+    // relay a host port to itself.
+    dialPort: () => unsupported('tunnelling to a port'),
 
     // No images: the whole build feed degrades to "nothing to show"
     // rather than to an error.

@@ -38,9 +38,15 @@ export { sweepLegacyVclusterState } from './legacy-vcluster-sweep'
 export {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
+  buildServerIngressNpManifest,
   buildWorktreeEgressNpManifest,
 } from './policy-manifests'
-export { nodeIpBlocks, podCidrSources, resetClusterCidrCache } from './cluster-cidrs'
+export {
+  clusterPodCidrs,
+  nodeIpBlocks,
+  podCidrSources,
+  resetClusterCidrCache,
+} from './cluster-cidrs'
 export {
   PROJECT_REGISTRY_PORT,
   REGISTRY_MIRROR_TAG,

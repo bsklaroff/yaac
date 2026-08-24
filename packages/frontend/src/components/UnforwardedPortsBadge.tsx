@@ -9,11 +9,13 @@ import { forwardDetectedPort, dismissDetectedPort } from '#lib/portsApi'
  * forwarded; clicking it opens a popover listing the ports. Each row expands
  * to three actions — forward for just this running worktree, forward
  * permanently for the project (persisted to yaac-config.json), or dismiss the
- * offer. The exposure host shown in the header is the server-reported bind
+ * offer. The exposure host shown in the header is the server-reported one
  * (`forwardBindHost` on the snapshot — YAAC_FORWARD_BIND), NOT the page
  * origin: this line is the informed-consent claim, and the page can be
- * reached by a different name than the forward binds (e.g. an SSH tunnel to
- * a server that binds its tailnet IP). Mirrors BlockedHostsBadge: renders its
+ * reached by a different name than the forwarder binds (e.g. an SSH tunnel
+ * to a server whose forwarder binds its tailnet IP). What forwarding a port
+ * does is make the server OFFER it; a client holds the listener
+ * (docs/port-forward-tunnel.md). Mirrors BlockedHostsBadge: renders its
  * own <button>, so inside clickable rows mount it as an overlaid sibling,
  * never nested in the row button.
  */
@@ -27,7 +29,7 @@ export function UnforwardedPortsBadge({
   ports: number[]
   /** The worktree the listeners were detected in — the target of the actions. */
   worktreeId: string
-  /** The bind host forwards actually listen on (snapshot `forwardBindHost`). */
+  /** The host this install's forwarder binds (snapshot `forwardBindHost`). */
   exposeHost: string
   iconSize: number
   /** Positioning and the context-appropriate hover highlight for the trigger. */

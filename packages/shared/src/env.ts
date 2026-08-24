@@ -71,6 +71,42 @@ export const env = {
     return port
   },
 
+  /**
+   * `YAAC_BIND_ADDR` — interface the server's HTTP listener binds. Default
+   * loopback, which is the whole security posture of a host-process
+   * install: nothing off this machine can reach the API, so a credential is
+   * optional.
+   *
+   * The in-cluster server sets `0.0.0.0`, because a pod's loopback is
+   * reachable by nothing at all — its Service and NodePort would have no
+   * backend. What replaces the loopback bind there is the pod's ingress
+   * NetworkPolicy, which admits everything EXCEPT the pod CIDRs (see
+   * docs/server-in-cluster.md): a worktree pod dialing the server pod
+   * directly presents a pod source IP and is dropped. That makes the policy
+   * load-bearing rather than defence in depth, which is why `yaac cluster
+   * check` probes it.
+   */
+  get bindAddr(): string {
+    const raw = process.env.YAAC_BIND_ADDR
+    return raw === undefined || raw.trim() === '' ? '127.0.0.1' : raw.trim()
+  },
+
+  /**
+   * `YAAC_IN_CLUSTER` — set to `1` by the server Deployment manifest, and
+   * by nothing else.
+   *
+   * The server asks this where a host-side shim exists only because the
+   * process was outside the cluster: the registry is dialed by its Service
+   * DNS name instead of through a `kubectl port-forward`, and `yaac server
+   * start` refuses rather than spawning a second server beside the pod.
+   * Declared by the manifest rather than sniffed from
+   * `KUBERNETES_SERVICE_HOST`, which is also injected into every worktree
+   * pod and into anything else that happens to run in a cluster.
+   */
+  get inCluster(): boolean {
+    return process.env.YAAC_IN_CLUSTER === '1'
+  },
+
   /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster install` manages. */
   get kindCluster(): string {
     return process.env.YAAC_KIND_CLUSTER ?? 'yaac'
@@ -185,49 +221,37 @@ export const env = {
   },
 
   /**
-   * `YAAC_DRIVER` — which substrate this server runs worktrees on.
+   * `YAAC_DRIVER` — which substrate this install runs worktrees on.
    *
-   * `k8s` (the default) runs each worktree as a single-pod Job in a local
-   * cluster; `containerless` runs it as a tmux server on this host, in the
-   * worktree checkout itself — no image, no proxy, and no sandbox around
-   * the agent.
+   * NOT what selects it. Placement does that: the server is a pod under
+   * `k8s` and a host process under `containerless`, so the composition root
+   * reads {@link inCluster} and there is no per-start choice to make
+   * (`#main/driver-choice`). The Deployment states this variable so the
+   * pod's environment says out loud what it is, and the test tiers state it
+   * for the same reason.
    *
-   * Read exactly once, by the composition root, and necessarily from the
-   * environment rather than from a row: the driver has to be registered
-   * before anything can ask for one, which is well before the database is
-   * open. `yaac server start --driver <kind>` sets it for the server it
-   * spawns.
+   * What still READS it is the CLI, before any server exists and before a
+   * data dir necessarily does: whether to point podman at the rootful
+   * engine. `k8s` is the default because that is the install kind with a
+   * container engine behind it.
    *
    * A value that is neither throws rather than falling back, so a typo
-   * fails at startup instead of silently running the wrong substrate.
+   * fails immediately instead of silently answering for the wrong
+   * substrate.
    */
   get driver(): DriverKind {
-    return env.driverExplicit ?? 'k8s'
-  },
-
-  /**
-   * The same variable, distinguishing "not set" from "set to the default".
-   *
-   * The server needs the difference: unset means "whatever this install was
-   * already running" (see `#main/driver-choice`), and collapsing that to
-   * `k8s` is what would move a containerless install onto a cluster on the
-   * next bare `yaac server restart`. Everything that only wants an answer
-   * reads `driver`.
-   */
-  get driverExplicit(): DriverKind | undefined {
     const raw = (process.env.YAAC_DRIVER ?? '').trim()
-    if (raw === '') return undefined
+    if (raw === '') return 'k8s'
     if (raw === 'k8s' || raw === 'containerless') return raw
     throw new Error(`YAAC_DRIVER must be "k8s" or "containerless" (got "${raw}")`)
   },
 
   /**
-   * `YAAC_RELAY_ADDR` — explicit `host:port` override for the proxy relay
-   * (stream-relay.ts skips its address resolution entirely). Deployment
-   * escape hatch for hosts with a direct TCP route to the proxy pod
-   * (e.g. a server running on the cluster node itself), which skips the
-   * default kubectl port-forward hop. Unset → a port-forward to the proxy
-   * Deployment.
+   * `YAAC_RELAY_ADDR` — `host:port` of the proxy's stream relay, stated by
+   * the server Deployment. Unset falls back to the proxy Service's own DNS
+   * name in this install's namespace, which is the same address — so this
+   * exists for an install that puts the proxy somewhere else, not for a
+   * placement the driver still supports.
    */
   get relayAddr(): { host: string; port: number } | undefined {
     const raw = process.env.YAAC_RELAY_ADDR

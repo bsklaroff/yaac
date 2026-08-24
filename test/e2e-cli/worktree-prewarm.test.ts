@@ -6,7 +6,6 @@ import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/domain/git'
 import { listWorktreePods, isPrewarmed } from '@yaac/server/drivers/k8s/substrate/pods'
 import { listActiveWorktrees } from '@yaac/server/domain/worktrees/list'
 import { listProjects } from '@yaac/server/domain/projects/list'
-import { isTmuxSessionAlive } from '@yaac/server/runtime/status/liveness'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -28,6 +27,7 @@ import {
   type MockLLM,
   type MockGit,
 } from '@yaac/test-utils/mock-remotes'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -111,6 +111,29 @@ describe('yaac prewarmed sessions', () => {
     await fs.writeFile(testEnv.gitConfigPath, '[user]\n\tname = Test User\n\temail = test@example.com\n')
   }
 
+/**
+ * Is the pod's tmux server up? Asked with `kubectl exec`, the way this
+ * harness asks a pod anything.
+ *
+ * Deliberately not the server's own `isTmuxSessionAlive`: that probes
+ * through the stream relay, which is a dial to the proxy's Service — right
+ * for the server, which is a pod of that namespace, and unreachable from
+ * here (docs/server-in-cluster.md). The question is the same either way:
+ * does `tmux has-session` exit 0 inside the workspace.
+ */
+async function tmuxAliveInPod(jobName: string): Promise<boolean> {
+  try {
+    await execInJob(
+      jobName,
+      ['tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac'],
+      { maxAttempts: 1, timeout: 15_000 },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
   it('warms a hidden spare, claims it on the next create, then refills', async () => {
     await stageProject()
 
@@ -139,9 +162,7 @@ describe('yaac prewarmed sessions', () => {
     const spare = await waitFor(async () => {
       const pods = await listWorktreePods('repo-demo')
       const s = pods.find((p) => isPrewarmed(p) && p.running)
-      if (s && await isTmuxSessionAlive({
-        projectSlug: 'repo-demo', workspaceId: s.worktreeId, jobName: s.jobName,
-      })) return s
+      if (s && await tmuxAliveInPod(s.jobName)) return s
       return undefined
     }, 150_000)
     const spareJob = spare.jobName

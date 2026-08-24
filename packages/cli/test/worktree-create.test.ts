@@ -109,11 +109,6 @@ vi.mock('@yaac/server/lib/allowed-hosts', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/lib/port', () => ({
-  reserveAvailablePort: vi.fn(),
-  startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
-} satisfies Partial<typeof portModule>))
-
 // Spread the real module so its error classes keep their identity:
 // verifyAgentWindowAlive branches on `instanceof RelayExecError`, and a
 // stand-in class would silently send the first test that exercises a relay
@@ -121,7 +116,6 @@ vi.mock('@yaac/server/lib/port', () => ({
 vi.mock('@yaac/server/drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...await importOriginal<typeof streamRelayModule>(),
   bootStreamd: vi.fn().mockResolvedValue(undefined),
-  relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
   podStreamToken: vi.fn().mockResolvedValue('stream-token'),
   podExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   waitForStreamd: vi.fn().mockResolvedValue(undefined),
@@ -227,9 +221,10 @@ vi.mock('@yaac/server/runtime/agents/opencode', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof opencodeAgentModule>))
 
-vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', () => ({
-  registerWorktreeForwarders: vi.fn(),
-  stopWorktreeForwarders: vi.fn(),
+// NOT mocked: declaring a forward is in-memory bookkeeping, so the real
+// allocator runs and what it answers is the honest assertion.
+vi.mock('@yaac/server/drivers/k8s/forwarders/port-forwarders', async (importOriginal) => ({
+  ...await importOriginal<typeof portForwardersModule>(),
 } satisfies Partial<typeof portForwardersModule>))
 
 vi.mock('@yaac/server/lib/status-right', async (importOriginal) => ({
@@ -298,18 +293,20 @@ import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import { resolveAllowedHosts } from '@yaac/server/lib/allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, originRemoteUrl, remoteBranchExists } from '@yaac/server/domain/git'
-import { reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/port'
-import { relayTcpFactory, podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
+import { podExec, waitForStreamd } from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import type * as streamRelayModule from '@yaac/server/drivers/k8s/substrate/stream-relay'
 import { waitForJobPodReady } from '@yaac/server/drivers/k8s/substrate/pod-wait'
-import { registerWorktreeForwarders } from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
+import {
+  declareWorktreeForwards,
+  getWorktreePorts,
+  stopAllWorktreeForwarders,
+} from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import { buildStatusRight } from '@yaac/server/lib/status-right'
 import type * as statusRightModule from '@yaac/server/lib/status-right'
 import { installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
 import { launchWorkspace, prepareWorkspaceSubstrate } from '@yaac/server/drivers/k8s/worktrees/launch'
 import { destroyWorkspace } from '@yaac/server/drivers/k8s/worktrees/teardown'
 import { prepareWorkspaceImage } from '@yaac/server/drivers/k8s/images/workspace-image'
-import { adoptWorktreeForwarders } from '@yaac/server/drivers/k8s/forwarders/adopt'
 import type { WorkspaceRegistration } from '@yaac/server/drivers/contract'
 
 const mockSpawn = vi.mocked(spawn)
@@ -332,10 +329,6 @@ const mockContainerExec = vi.mocked(containerExec)
 const mockPodExec = vi.mocked(podExec)
 const mockWaitForStreamd = vi.mocked(waitForStreamd)
 const mockWaitForPodReady = vi.mocked(waitForJobPodReady)
-const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
-const mockStartForwarders = vi.mocked(startPortForwarders)
-const mockRelayTcpFactory = vi.mocked(relayTcpFactory)
-const mockRegisterSessionForwarders = vi.mocked(registerWorktreeForwarders)
 const mockLoadToolAuth = vi.mocked(loadToolAuthEntry)
 
 function mockAttachedChild(): EventEmitter {
@@ -439,14 +432,10 @@ describe('createWorktree', () => {
     mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
     mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
     mockPodExec.mockResolvedValue({ stdout: '', stderr: '' })
-    mockStartForwarders.mockReturnValue(vi.fn())
-    mockRelayTcpFactory.mockReturnValue((() => ({})) as never)
     vi.mocked(buildStatusRight).mockReturnValue(' stub-status ')
-    mockReserveAvailablePort.mockResolvedValue({
-      containerPort: 3000,
-      hostPort: 3000,
-      server: { close: vi.fn() },
-    } as never)
+    // The declaration registry is process-local and outlives a case, so the
+    // host ports it promised would otherwise be walked past by the next.
+    stopAllWorktreeForwarders()
 
     // createWorktree drives the substrate through the registered runtime,
     // so this file installs the REAL k8s half of it — the code under test
@@ -465,7 +454,7 @@ describe('createWorktree', () => {
       awaitReady: (h) => waitForJobPodReady(h.jobName),
       awaitAgentTransport: (j, o) => waitForStreamd(j, o),
       exec: (j, c, o) => podExec(j, c, o),
-      startForwarders: (id, ports) => adoptWorktreeForwarders(id, ports),
+      declareForwards: (id, forwards) => declareWorktreeForwards(id, forwards),
       destroy: (t, o) => destroyWorkspace(t, o),
     })
   })
@@ -919,24 +908,20 @@ describe('createWorktree', () => {
     expect(messages).toContain('Starting Claude Code...')
   })
 
-  it('reserves, starts, and registers port forwarders for the new job', async () => {
+  it('declares the config\'s forwards against the new job, binding nothing', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
     })
-    const reserved = { containerPort: 3000, hostPort: 3001, server: { close: vi.fn() } }
-    mockReserveAvailablePort.mockResolvedValueOnce(reserved as never)
-    const relayFactory = (() => ({})) as never
-    mockRelayTcpFactory.mockReturnValue(relayFactory)
 
     const result = await createWorktree('demo', { worktreeId: 'abcd1234' })
 
-    expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
-    expect(mockRelayTcpFactory).toHaveBeenCalledWith('abcd1234')
-    expect(mockStartForwarders).toHaveBeenCalledWith(relayFactory, [reserved])
-    expect(mockRegisterSessionForwarders).toHaveBeenCalledWith(
-      'abcd1234', expect.any(Function), [reserved],
-    )
-    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3001 }])
+    // The server is a pod under this driver, so a listener it bound would be
+    // on the pod's loopback: there is no host-forwarding machinery left for
+    // it to reach for (docs/port-forward-tunnel.md).
+    // Read back out of the real registry: this is what the worktree listing
+    // reports, and what a client forwarder binds.
+    expect(getWorktreePorts('abcd1234')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
   })
 
   it('deletes the half-created Job after every failed startup attempt, including the last', async () => {
@@ -1333,7 +1318,6 @@ import type * as imageBuilderModule from '@yaac/server/drivers/k8s/image-engine/
 import type * as buildCoordinatorModule from '@yaac/server/drivers/k8s/images/build-coordinator'
 import type * as kubectlModule from '@yaac/server/drivers/k8s/substrate/kubectl'
 import type * as execModule from '@yaac/server/drivers/k8s/substrate/exec'
-import type * as portModule from '@yaac/server/lib/port'
 import type * as projectConfigModule from '@yaac/server/domain/projects/config'
 import type * as credentialsModule from '@yaac/server/domain/projects/credentials'
 import type * as gitModule from '@yaac/server/domain/git'

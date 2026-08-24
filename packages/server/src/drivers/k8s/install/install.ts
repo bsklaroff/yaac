@@ -36,8 +36,11 @@ import {
 } from './check'
 import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/container'
+import { SERVER_NODE_PORT } from '#drivers/k8s/substrate'
+import { deployServerWorkload } from './server-deploy'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
+import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -217,6 +220,13 @@ export interface ClusterInstallDeps {
   /** Installs the infra/worktree PriorityClasses. Injectable for the same
    *  reason as the two above. */
   ensurePriorityClasses: () => Promise<void>
+  /** Builds, applies and publishes the server Deployment, returning the
+   *  origin it is reachable at (docs/server-in-cluster.md). Injectable for
+   *  the same reason as the steps above — it is the one that needs both a
+   *  container engine and a rolled-out workload. */
+  deployServer: (
+    opts: { torHostAddr?: string; log: (message: string) => void },
+  ) => Promise<string>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -291,6 +301,7 @@ function defaultDeps(): ClusterInstallDeps {
     buildImages: (log) => buildBuiltinImages({ log }),
     ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
+    deployServer: deployServerWorkload,
     check: () => runClusterCheck(),
     platform: process.platform,
     homedir: () => os.homedir(),
@@ -418,12 +429,55 @@ export async function runClusterInstall(
   // hostNetwork and ships iproute2, so it is the node's own view of the
   // routing table.
   if (opts.adoptCni) await verifyAdoptedVethSource(deps)
+  // Last of the workload steps: the server depends on every layer above it
+  // (its images come from the registry, its dials go through the proxy and
+  // netd), and it is the one that starts DOING things with them.
+  //
+  // Not under adoption. The server is published through a kind
+  // `extraPortMapping` written at cluster-create time, which a cluster yaac
+  // did not create does not have — so the Deployment would come up, the
+  // published origin would never answer, and install would fail after 60s
+  // prescribing `yaac cluster delete` on someone else's cluster. What it
+  // would leave behind is worse than the failure: a NodePort Service
+  // publishing a credential-optional API on every address the nodes have,
+  // walled only by an ingress policy whose pod-CIDR exclusion was
+  // snapshotted at install time and goes stale as the cluster's IPAM grows.
+  //
+  // Which leaves adoption with NO server it can run, now that a host
+  // process is the containerless driver by construction and not a k8s one
+  // (docs/server-in-cluster.md). That is a real gap, not a nuance, so this
+  // says the whole of it — including what `yaac server start` will do here
+  // instead — rather than leaving the operator to find out by watching
+  // their adopted cluster sit idle. Closing it is the bring-your-own-cluster
+  // install mode (docs/plans/server-in-cluster.md, "Out of scope"), which is
+  // where ingress and TLS for the server are designed.
+  if (opts.adoptCni) {
+    deps.log(
+      'note: no server was deployed. `--adopt-cni` means yaac did not create '
+      + 'this cluster, so it has no kind port mapping to publish a server '
+      + 'through — and a server outside the cluster is the CONTAINERLESS '
+      + 'driver, which runs worktrees as tmux sessions on this host rather '
+      + 'than on the cluster you just installed into. So `yaac server start` '
+      + 'here gives you a containerless install, not this cluster. Until the '
+      + 'bring-your-own-cluster mode exists, what this command installed is '
+      + 'the in-cluster layers and nothing that drives them.',
+    )
+  } else {
+    await deployServer(deps)
+  }
 
   deps.log('\nVerifying with cluster check...')
   const { ok, results } = await deps.check()
   for (const r of results) deps.log(formatCheckResult(r))
   if (ok) {
-    deps.log('\nCluster is ready for yaac sessions.')
+    // Under adoption the checks pass and the cluster still cannot run a
+    // session, because nothing drives it (see the note above). Saying
+    // "ready for yaac sessions" there would be the one lie this command
+    // tells.
+    deps.log(opts.adoptCni
+      ? '\nThe in-cluster layers are installed and healthy. No yaac server '
+        + 'runs against this cluster — see the note above.'
+      : '\nCluster is ready for yaac sessions.')
     return true
   }
   deps.log('\nCluster is not ready — fix the failures above and re-run `yaac cluster install`.')
@@ -468,10 +522,20 @@ const KIND_NODES_SECTION = /^nodes:\n([\s\S]+)$/m
  */
 export function renderKindConfig(
   raw: string,
-  opts: { homedir: string; nodes: number },
+  opts: { homedir: string; nodes: number; serverHostPort: number },
 ): string {
   const substituted = raw.replaceAll('$HOME', opts.homedir)
-  if (opts.nodes <= 1) return substituted
+  // The server's published loopback endpoint. HOST-scoped, so it belongs to
+  // exactly one node — the control-plane entry the bundled file holds — and
+  // must not ride the worker copies below, where N nodes would race for one
+  // host port and kind would refuse the cluster.
+  const published = `${substituted.trimEnd()}\n`
+    + '  extraPortMappings:\n'
+    + `  - containerPort: ${String(SERVER_NODE_PORT)}\n`
+    + `    hostPort: ${String(opts.serverHostPort)}\n`
+    + '    listenAddress: "127.0.0.1"\n'
+    + '    protocol: TCP\n'
+  if (opts.nodes <= 1) return published
 
   const template = KIND_NODES_SECTION.exec(substituted)?.[1]
   const entries = template?.match(/^- /gm) ?? []
@@ -484,7 +548,7 @@ export function renderKindConfig(
     )
   }
   const worker = `${template.replace(/^- role: control-plane$/m, '- role: worker').trimEnd()}\n`
-  return `${substituted.trimEnd()}\n${worker.repeat(opts.nodes - 1)}`
+  return `${published}${worker.repeat(opts.nodes - 1)}`
 }
 
 interface BinaryVersions {
@@ -663,7 +727,14 @@ async function createKindCluster(
   if (raw === null) {
     throw new ClusterInstallError(`Bundled kind config not found at ${configPath} — broken install?`)
   }
-  const config = renderKindConfig(raw, { homedir: deps.homedir(), nodes })
+  const config = renderKindConfig(raw, {
+    homedir: deps.homedir(),
+    nodes,
+    // The host end of the server's NodePort, reserved here because kind
+    // writes port mappings only when a cluster is CREATED — which is why an
+    // older cluster cannot be converged into publishing one.
+    serverHostPort: resolveServerPort(),
+  })
 
   const topology = nodes === 1
     ? 'single node'
@@ -1003,6 +1074,47 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  * self-heals on first worktree create rather than aborting the whole setup;
  * the cluster check that follows reports it either way.
  */
+/**
+ * Build, deploy and publish the server itself.
+ *
+ * Unlike the layers above it, a failure here is fatal: netd can be retried
+ * by the server, but nothing retries the server. This is also where the
+ * install stops being about a cluster and starts being about an install —
+ * the step it delegates to records the driver this data dir now runs and
+ * writes the `remote.json` every client on this machine resolves through,
+ * so `yaac worktree list` talks to the pod without being told to.
+ */
+async function deployServer(deps: ClusterInstallDeps): Promise<void> {
+  const torHostAddr = env.useTor ? await hostAddrOnKindNetwork(deps) : undefined
+  if (env.useTor && torHostAddr === undefined) {
+    deps.log(
+      "note: YAAC_USE_TOR is set but the host's address on the kind network could "
+      + 'not be determined, so the server pod keeps the configured SOCKS URL. If '
+      + 'that is a loopback address, Tor must be made to listen on the kind bridge '
+      + "instead — a pod's loopback is its own.",
+    )
+  }
+  const origin = await deps.deployServer({ torHostAddr, log: deps.log })
+  deps.log(`The yaac server is serving at ${origin}`)
+}
+
+/**
+ * The host's address on the kind network — where a pod reaches a listener
+ * bound on the host. `undefined` when it cannot be read, which is a
+ * degraded Tor setup rather than a failed install.
+ */
+async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string | undefined> {
+  try {
+    const { stdout } = await deps.run('podman', [
+      'network', 'inspect', 'kind', '--format', '{{range .Subnets}}{{.Gateway}}{{end}}',
+    ])
+    const addr = stdout.trim()
+    return addr === '' ? undefined : addr
+  } catch {
+    return undefined
+  }
+}
+
 async function deployNetd(deps: ClusterInstallDeps): Promise<void> {
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   try {

@@ -16,8 +16,20 @@ Linux (see below) — creates a kind cluster from the bundled
 `k8s/kind-config.yaml` **if there is none**, installs pinned Calico (the CNI
 and NetworkPolicy engine), applies the node fixups to every node, deploys
 the in-cluster image registry, builds and pushes every image yaac ships (see
-"Images are built here, and only here"), and applies the in-cluster layers —
-the gVisor runtime, the PriorityClasses, netd.
+"Images are built here, and only here"), applies the in-cluster layers —
+the gVisor runtime, the PriorityClasses, netd — and finally deploys **the
+yaac server itself** (docs/server-in-cluster.md), publishing it at a fixed
+host loopback origin and writing the `remote.json` every client on this
+machine resolves through.
+
+Under this driver the server is a workload of the cluster, not a process
+beside it, so this command is also how the server is installed and upgraded:
+`npm update`, then `yaac cluster install`. `yaac server start` on such an
+install scales the Deployment rather than spawning anything, and refuses
+outright when there is no Deployment to scale — a host process on a k8s
+data dir would be a second writer of the same database, and there is no
+host-process form of this driver to fall back to. `yaac server start` means
+containerless; this command means k8s.
 
 Nothing in it is destructive: a cluster that already exists is converged,
 never recreated, so it is also what an upgrade runs (`npm update`, then
@@ -33,11 +45,14 @@ cluster and installs no CNI, adopting the Calico that cluster already runs
 ## Images are built here, and only here
 
 Every image yaac itself ships — the base/tools/nestable worktree chain, the
-egress proxy, netd — is built by `podman build` on the machine running the
-yaac CLI and pushed to the in-cluster registry, together with the mirrors of
-the digest-pinned upstreams it uses (registry:2, Envoy, podman-stable, the
-gVisor installer's curl). Content-hash tags make an unchanged source tree
-cost one registry HEAD per image, so re-running install is cheap.
+egress proxy, netd, and the server — is built by `podman build` on the
+machine running the yaac CLI and pushed to the in-cluster registry, together
+with the mirrors of the digest-pinned upstreams it uses (registry:2, Envoy,
+podman-stable, the gVisor installer's curl). Content-hash tags make an
+unchanged source tree cost one registry HEAD per image, so re-running install
+is cheap. The server image's content hash is taken over the BUNDLE (`dist/`),
+which is what makes a rebuilt server a different image and therefore a
+rollout.
 
 The server builds none of them. It resolves each one from the registry by
 content-hash tag, and a tag that is not there is an actionable error naming
@@ -183,8 +198,10 @@ only kind's provider breaks.
    (`yaac-registry.yaac.svc.cluster.local:5000`); the node, which is not a
    cluster-DNS client, matches that host against a containerd `hosts.toml`
    holding the live ClusterIP, written by a one-shot pod per node. The
-   server pushes and queries through a `kubectl port-forward`, so nothing in
-   the image path depends on host↔cluster networking. Blobs live on an RWO
+   server, being a pod itself, pushes and queries through that same Service
+   FQDN; the CLI, which is not, keeps a `kubectl port-forward` for the
+   pushes `yaac cluster install` does — so nothing in the image path depends
+   on host↔cluster networking either way. Blobs live on an RWO
    PVC (`yaac-registry-storage-<install-hash>`, install-keyed so coexisting
    installs never share a store), which binds through the cluster's *default*
    StorageClass — a cluster with none leaves the registry pod Pending. They
@@ -336,6 +353,26 @@ the Calico install; everything else it applies is what the other modes apply
 (PriorityClasses, registry, builder guard, gVisor runtime, netd), so it is
 idempotent and re-runnable. It refuses `--nodes`: there are no nodes for it
 to render, since the adopted cluster brings its own.
+
+**It does not deploy the server**, and says so. The in-cluster server is
+reached through a kind `extraPortMapping` written at cluster-create time
+(docs/server-in-cluster.md), which a cluster yaac did not create does not
+have — so the Deployment would come up and its published origin would never
+answer. What that would leave behind is worse than the failure: a NodePort
+Service publishing a credential-optional API on every address the nodes have,
+walled only by an ingress policy whose pod-CIDR exclusion was snapshotted at
+install time and goes stale as the cluster's IPAM grows.
+
+That leaves adoption with **no server it can run**. A server outside the
+cluster is the containerless driver by construction
+(docs/server-in-cluster.md), so `yaac server start` against an adopted
+install gives tmux worktrees on this host rather than pods on the cluster
+just installed into — which the install now says out loud rather than
+leaving it to be noticed. What `--adopt-cni` gets you today is the
+in-cluster layers and nothing that drives them; the mode that closes the
+gap is the bring-your-own-cluster install
+(docs/plans/server-in-cluster.md, "Out of scope"), where ingress and TLS
+for the server are designed.
 
 There is no datapath change here — the netd redirect (docs/worktree-egress.md)
 works unmodified on any CNI whose pod egress traverses host netfilter and
@@ -500,11 +537,13 @@ owned by whoever runs it. So the worktree image builds its `yaac` user with
 that uid (`YAAC_UID` build arg, baked in automatically and folded into the
 image tag) and the pod runs as it.
 
-`yaac cluster install` builds the images and the server consumes them, so
-the two agree as long as the same user runs both — which is the ordinary
-case. Run install as a different user and the server looks up a tag that
-install never built, and says so, naming the command. If your uid changes,
-images re-tag and rebuild on their own.
+That number is fixed at **1000**, because the server is itself a pod and a
+container has no ambient user to inherit one from (docs/server-in-cluster.md).
+`podUid()` still reports `process.getuid()` — inside the server pod that IS
+1000 — and `yaac cluster install` builds the worktree chain for the SERVER's
+uid rather than its own, since it is building for the server it is about to
+deploy. On a host whose own uid is 1000 (every ordinary Linux first user)
+nothing differs; on one where it is not, the images re-tag once.
 
 Nothing to configure — but a standalone `Dockerfile.yaac` that creates its
 own user should honor `ARG YAAC_UID` the same way
@@ -617,10 +656,9 @@ was a control plane or a worker that just went under disk pressure.
 
 > **Limits:** all nodes must share one filesystem — the hostPath model
 > assumes node == host, which multi-node kind preserves by binding `$HOME`
-> into every node container. The server's control traffic reaches the proxy
-> through a loopback exec tunnel (`kubectl exec` + socat —
-> runtime-agnostic, unlike `kubectl port-forward`, which cannot reach
-> gVisor pods); nothing yaac deploys listens on host interfaces.
+> into every node container. Nothing yaac deploys listens on a host
+> interface: the server's control traffic reaches the proxy as an ordinary
+> pod-to-pod Service dial (docs/server-in-cluster.md).
 
 ## Deleting the cluster
 

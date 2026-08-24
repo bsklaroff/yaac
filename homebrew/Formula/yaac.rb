@@ -19,8 +19,8 @@ class Yaac < Formula
   depends_on "podman"
   depends_on "bsklaroff/yaac/yaac-kind"
 
-  # The containerless driver (`yaac server start --driver containerless`)
-  # runs worktrees as host processes, so what a session image would have
+  # The containerless driver (`yaac server start`, which is what a host
+  # server is) runs worktrees as host processes, so what a session image would have
   # supplied has to be on this machine instead. macOS ships none of these.
   # tmux supervises every worktree and socat carries the ACP chat transport;
   # `yaac host check` reports both, and a create refuses without them.
@@ -79,10 +79,11 @@ class Yaac < Formula
         yaac cluster check
 
       To run worktrees as host processes instead - no cluster, no image and
-      no sandbox - start the server on the containerless driver and verify
-      the host rather than a cluster:
+      no sandbox - just start the server and verify the host rather than a
+      cluster. A host server IS the containerless driver; the k8s one runs
+      in the cluster `yaac cluster install` builds:
 
-        yaac server start --driver containerless
+        yaac server start
         yaac host check
 
       That mode has no session image, so install the agent CLI you want to

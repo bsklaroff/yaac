@@ -9,6 +9,7 @@ import {
   describeBuildSkew,
   describeLockMismatch,
   exitOnApiError,
+  isLoopbackOrigin,
   resolveServerTarget,
   type ServerTarget,
 } from '#server-api'
@@ -179,6 +180,19 @@ describe('createServerFetch', () => {
     })
     await serverFetch('http://server.local/project/list?foo=bar')
     expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:4242/project/list?foo=bar')
+  })
+})
+
+describe('isLoopbackOrigin', () => {
+  it('answers "this machine" for every loopback spelling', () => {
+    expect(isLoopbackOrigin('http://127.0.0.1:8787')).toBe(true)
+    expect(isLoopbackOrigin('http://localhost:8787')).toBe(true)
+    expect(isLoopbackOrigin('http://[::1]:8787')).toBe(true)
+  })
+
+  it('answers no for a named host, and for anything unparseable', () => {
+    expect(isLoopbackOrigin('https://srv.example.ts.net')).toBe(false)
+    expect(isLoopbackOrigin('not a url')).toBe(false)
   })
 })
 

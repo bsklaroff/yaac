@@ -29,7 +29,7 @@ import {
   listActiveWorktrees,
   _clearListActiveInflightForTests,
 } from '#domain/worktrees/list'
-import { registerWorktreeForwarders, stopWorktreeForwarders } from '#drivers/k8s/forwarders/port-forwarders'
+import { declareWorktreeForwards, stopWorktreeForwarders } from '#drivers/k8s/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
 
@@ -195,7 +195,7 @@ describe('listActiveWorktrees', () => {
         labels: {},
       },
     ])
-    registerWorktreeForwarders('withports', () => {}, [{ containerPort: 8787, hostPort: 9787 }])
+    declareWorktreeForwards('withports', [{ containerPort: 8787, hostPortStart: 9787 }])
     try {
       const result = await listActiveWorktrees()
       const bySession = new Map(result.worktrees.map((s) => [s.worktreeId, s]))

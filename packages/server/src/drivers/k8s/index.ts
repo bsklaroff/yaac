@@ -33,7 +33,8 @@ import {
   listImageBuilds,
 } from '#drivers/k8s/image-engine'
 import {
-  adoptWorktreeForwarders,
+  declareWorktreeForwards,
+  dialWorkspacePort,
   dismissWorktreePort,
   forwardWorktreePort,
   getUnforwardedPorts,
@@ -157,7 +158,8 @@ export function createK8sDriver(): WorktreeDriver {
     syncSshIdentities: () => proxyClient.syncSshKeysFromCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
-    startForwarders: (workspaceId, ports) => adoptWorktreeForwarders(workspaceId, ports),
+    declareForwards: (workspaceId, forwards) => declareWorktreeForwards(workspaceId, forwards),
+    dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 
     registerWorkspace: (reg) => registerWorkspace(reg),
     deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),

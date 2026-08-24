@@ -1,121 +1,80 @@
 import fs from 'node:fs/promises'
 import { serverLocalPath } from '@yaac/shared/paths'
+import { recordedDriver } from '@yaac/shared/install-driver'
 import { env } from '@yaac/shared/env'
-import { liveWorkspaceCount } from '#drivers/containerless'
 import { serverLog } from '#log'
 import type { DriverKind } from '@yaac/shared/types'
 
 /**
- * Which substrate an install runs, remembered across restarts.
+ * Which substrate an install runs, and how a process knows.
  *
- * The driver is chosen from the environment, which is right — it has to be
- * settled before the database is open. What is not right is that a shell
- * without `YAAC_DRIVER` therefore selects the DEFAULT, so `yaac server
- * restart` from an ordinary terminal silently moves a containerless install
- * onto k8s. That is not a cosmetic surprise: the k8s driver then sees rows
- * with no pods, reaps them, and its teardown removes the very state dirs
- * this driver's markers live in — leaving the tmux servers and their agents
- * running as the user, holding their checkouts, invisible to yaac and
- * unreapable forever.
+ * **Placement is the driver** (docs/server-in-cluster.md). A server that is
+ * a pod of the cluster it manages runs `k8s`; a server that is a process on
+ * your machine runs `containerless`. There is no third combination, so
+ * there is nothing to choose per start and no flag to choose it with — what
+ * a start does is *notice* which of the two it is, and write it down.
  *
- * So the choice is written down when a server starts, and a start with no
- * explicit choice adopts what is written. An explicit `--driver` still
- * wins: switching a data dir between substrates is a thing you may
- * deliberately do, and it is logged.
+ * Writing it down is still load-bearing, because the answer outlives the
+ * process that gave it. A CLIENT that cannot reach the server has to know
+ * whether the fix is `yaac server start` or `yaac cluster install`, and the
+ * recorded driver is the only thing on disk that says. Reading it back is
+ * `recordedDriver` in `@yaac/shared`, where the desktop shell can see it.
  *
- * With one refusal, and only one — switching AWAY from a substrate that
- * still has live workspaces. It is not a policy about mixing; it is that
- * this particular switch is irreversible. The incoming driver cannot see
- * the outgoing one's workspaces, so it reaps their rows as podless, and its
- * teardown removes the state dirs the outgoing driver's markers live in.
- * After that nothing can find them: a containerless worktree's agents keep
- * running as the user, holding their checkouts, invisible to every future
- * server. Stopping them first costs one command and keeps the switch a
- * decision rather than a trap.
+ * The crossing that USED to need arbitrating here — a start that moved an
+ * install from one substrate to the other, stranding whatever the outgoing
+ * one still ran — cannot be expressed any more. `yaac cluster install` is
+ * the only way to become a k8s install, and it already refuses to run
+ * against a containerless one.
  */
 
 /**
- * Refuse a switch that would strand something still running.
- *
- * `assertDriverSwitchSafe` is the same check run by the PARENT of a
- * detached start, before it spawns anything: a child that throws this dies
- * before its log is wired, so the operator would otherwise wait out the
- * 30s ready poll and be told the server "did not become ready" — which
- * says nothing about the worktrees it was protecting.
- *
- * Only asks the containerless side, and only because only it can be
- * stranded: a pod outlives a server too, but it stays visible to `kubectl`
- * and reapable by the next k8s server, whereas a tmux server whose marker
- * has been deleted is findable by nothing. An outgoing driver that cannot
- * answer lets the switch through — being unable to reach a substrate is a
- * legitimate reason to be switching away from it.
+ * SERVER-LOCAL, beside the lock: the kind of install this data dir is.
+ * Written by whichever side actually stood the server up — this module for
+ * a host process, `yaac cluster install` for the Deployment.
  */
-export async function assertDriverSwitchSafe(): Promise<void> {
-  const explicit = env.driverExplicit
-  const recorded = await recordedDriver()
-  if (explicit === undefined || recorded === undefined || explicit === recorded) return
-  await refuseIfOutgoingHasLiveWorkspaces(recorded, explicit)
-}
-
-async function refuseIfOutgoingHasLiveWorkspaces(
-  outgoing: DriverKind,
-  incoming: DriverKind,
-): Promise<void> {
-  if (outgoing !== 'containerless') return
-  const live = await liveWorkspaceCount().catch(() => 0)
-  if (live === 0) return
-  throw new Error(
-    `Refusing to switch this install from ${outgoing} to ${incoming}: `
-    + `${String(live)} worktree(s) are still running on this host, and a `
-    + `${incoming} server cannot see or stop them — it would reap their rows `
-    + 'and delete the state that makes them findable, leaving their agents '
-    + 'running and unmanageable.\n'
-    + '    Stop them first (`yaac worktree stop <id>`, or `yaac worktree list` '
-    + 'to see them), then start again with --driver.',
-  )
-}
-
-/** SERVER-LOCAL, beside the lock: the choice belongs to this install, not to
- *  a project, and it is not something a worktree's state should carry. */
 function driverFilePath(): string {
   return serverLocalPath('driver')
 }
 
-/** What this install last ran, or undefined if it has never started. */
-export async function recordedDriver(): Promise<DriverKind | undefined> {
-  try {
-    const raw = (await fs.readFile(driverFilePath(), 'utf8')).trim()
-    return raw === 'k8s' || raw === 'containerless' ? raw : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
- * The driver this process should run, and the record of it for the next
- * start.
+ * The driver this process runs, recorded for every later reader.
  *
- * `YAAC_DRIVER` set (by the operator, or by `--driver` publishing it) is an
- * explicit choice and wins. Unset means "whatever this install was already
- * running", which is what makes a bare `yaac server restart` keep serving
- * the worktrees it already has.
+ * `YAAC_IN_CLUSTER` is set by the server Deployment's manifest and by
+ * nothing else, so it is exactly the question "am I the pod?" — which is
+ * exactly the question "which substrate is this". A host process reaching
+ * this point is a containerless server by construction; `assertHostServerAllowed`
+ * is what stops one being started against a k8s install in the first place.
  */
 export async function resolveDriverKind(): Promise<DriverKind> {
-  const explicit = env.driverExplicit
-  const recorded = await recordedDriver()
-  const chosen = explicit ?? recorded ?? 'k8s'
-
-  if (explicit !== undefined && recorded !== undefined && explicit !== recorded) {
-    await refuseIfOutgoingHasLiveWorkspaces(recorded, explicit)
-    serverLog(`[server] driver: switching this install from ${recorded} to ${explicit}`)
-  } else if (explicit === undefined && recorded !== undefined) {
-    serverLog(`[server] driver: ${recorded} (recorded by a previous start)`)
-  }
-
+  const chosen: DriverKind = env.inCluster ? 'k8s' : 'containerless'
   await fs.writeFile(driverFilePath(), `${chosen}\n`).catch((err: unknown) => {
-    // Not fatal, but worth saying: the next restart falls back to the
-    // default, which is the failure this file exists to prevent.
+    // Not fatal for this server, but the next client that cannot reach it
+    // loses the one thing that tells it which command to run.
     serverLog(`[server] driver: could not record the choice: ${String(err)}`)
   })
   return chosen
+}
+
+/**
+ * Refuse to start a host server on a data dir whose install runs in the
+ * cluster.
+ *
+ * Two servers on one data dir is two writers of one PGlite database, and
+ * the host one would additionally see every worktree as podless and reap
+ * it. The recorded driver is the tripwire, and the message names the only
+ * command that starts THIS install's server.
+ *
+ * Run by the PARENT of a detached start as well as by the child: a child
+ * that throws dies before its log is wired, so the operator would otherwise
+ * wait out the ready poll and be told the server "did not become ready".
+ */
+export async function assertHostServerAllowed(): Promise<void> {
+  if (env.inCluster) return
+  if (await recordedDriver() !== 'k8s') return
+  throw new Error(
+    'This install runs its server in the cluster, so there is no host server '
+    + 'to start — starting one would put two writers on this data dir.\n'
+    + '    Converge the cluster instead: `yaac cluster install`. '
+    + '(`yaac server start|stop|restart` act on the Deployment once it exists.)',
+  )
 }

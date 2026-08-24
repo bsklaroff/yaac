@@ -21,7 +21,6 @@
 export { ClusterCache, getActiveClusterCache, setActiveClusterCache } from './cluster-cache'
 export type { DeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
-export { ExecTunnel } from './exec-tunnel'
 export {
   GVISOR_INSTALLER_READY_FILE,
   GVISOR_NODE_LABEL,
@@ -107,6 +106,12 @@ export {
   PROXY_SA_NAME,
   RELAY_PORT,
   ROLE_BUILDER,
+  SERVER_APP_NAME,
+  SERVER_INGRESS_NP_NAME,
+  SERVER_NODE_PORT,
+  SERVER_POD_PORT,
+  SERVER_POD_UID,
+  SERVER_SA_NAME,
   WORKTREE_EGRESS_NP_NAME,
   WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
@@ -115,15 +120,14 @@ export {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
+  proxyServiceHost,
 } from './proxy-constants'
 export {
   RelayExecError,
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
-  invalidateRelayAddr,
   relayDial,
-  relayTcpFactory,
   podExec,
   podStreamToken,
   waitForStreamd,

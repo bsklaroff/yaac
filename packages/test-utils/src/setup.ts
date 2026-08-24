@@ -18,7 +18,9 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_WORKTREE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
+import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
 const execFileAsync = promisify(execFile)
@@ -68,9 +70,33 @@ export function useTestNamespace(): () => void {
  * Proxy sidecar config for e2e tests. Uses the pre-built test image;
  * namespace isolation comes from `YAAC_K8S_NAMESPACE` (see
  * `TEST_NAMESPACE` / `useTestNamespace`), not from the config.
+ *
+ * `controlOrigin` is the part a real install does not have. The server
+ * reaches the proxy's control API at its Service, because the server is a
+ * pod of the same namespace (docs/server-in-cluster.md). These files are
+ * not: they drive the driver's own modules from the HOST, where a ClusterIP
+ * names nothing — so the harness supplies its own reachability, a
+ * `kubectl port-forward` it holds for the life of the file.
+ *
+ * Resolved lazily, and memoized, because the proxy Deployment does not
+ * exist until `ensureRunning` applies it, while the client that will dial
+ * it is constructed at module scope.
  */
 export const TEST_PROXY_CONFIG: ProxyClientConfig = {
   image: 'yaac-test-proxy',
+  controlOrigin: () => testProxyControlOrigin(),
+}
+
+let proxyControlForward: Promise<KubectlForward> | null = null
+
+/** The harness's own way into the proxy's control API — see TEST_PROXY_CONFIG. */
+export async function testProxyControlOrigin(): Promise<string> {
+  proxyControlForward ??= startKubectlForward({
+    namespace: k8sNamespace(),
+    target: `deployment/${PROXY_APP_NAME}`,
+    remotePort: PROXY_PORT,
+  })
+  return (await proxyControlForward).origin
 }
 
 /**

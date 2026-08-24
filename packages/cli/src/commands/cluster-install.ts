@@ -25,6 +25,7 @@ export interface ClusterInstallCliOptions {
  *
  * `--adopt-cni` adopts the CNI an existing cluster already runs instead of
  * creating one.
+
  */
 export async function clusterInstall(options: ClusterInstallCliOptions = {}): Promise<void> {
   try {

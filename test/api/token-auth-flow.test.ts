@@ -65,14 +65,17 @@ describe('durable token auth flow (real server)', () => {
     expect(stat.isDirectory()).toBe(true)
     expect(stat.mode & 0o777).toBe(0o700)
 
-    // List (via the token itself) masks the value. Alongside the durable
-    // token sits the one-time entry the server's start banner minted.
+    // List (via the token itself) masks the value. Alongside it sits the
+    // one-time entry the server's start banner minted, and the install's own
+    // durable token — every install has one, because that is what points a
+    // client at the server (here, the fixture's `remote.json`).
     const list = await fetch(url('/tokens'), {
       headers: { authorization: `Bearer ${entry.token}` },
     })
     expect(list.status).toBe(200)
     const listBody = await list.json() as { tokens: Array<{ name: string; kind: string; masked: string }> }
-    expect(listBody.tokens.filter((t) => t.kind === 'durable')).toHaveLength(1)
+    expect(listBody.tokens.filter((t) => t.kind === 'durable').map((t) => t.name))
+      .toContain('laptop')
     expect(listBody.tokens.filter((t) => t.kind === 'one-time')).toHaveLength(1)
     expect(JSON.stringify(listBody)).not.toContain(entry.token)
 

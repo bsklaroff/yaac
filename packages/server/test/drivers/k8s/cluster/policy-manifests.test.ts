@@ -16,6 +16,7 @@ import {
   LABEL_ROLE,
   PROXY_APP_NAME,
   PROXY_INGRESS_NP_NAME,
+  SERVER_APP_NAME,
   WORKTREE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
 import { LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
@@ -26,11 +27,13 @@ interface Spec {
   egress?: unknown[]
 }
 
-// Three builders leave this folder. The image feature re-applies the
-// install-wide world-deny after a builder pod exits; the other two are what
+// Four builders leave this folder. The image feature re-applies the
+// install-wide world-deny after a builder pod exits; two more are what
 // `cluster check`'s egress gate renders to decide what it should be able to
-// prove. Every other manifest here is internal and asserted where it is
-// applied — the session/proxy set through `ensureProxyResources`.
+// prove; and the server's own ingress is applied by `yaac cluster install`
+// and asserted there (server-deploy.test.ts), where the CIDRs it excludes
+// are resolved. Every other manifest here is internal and asserted where it
+// is applied — the session/proxy set through `ensureProxyResources`.
 //
 // What these cases pin is the ipBlock plumbing, because that is the half
 // that fails silently: a policy rendered from the wrong node addresses
@@ -49,12 +52,15 @@ describe('buildEgressWorldDenyNpManifest', () => {
     expect(spec.policyTypes).toEqual(['Egress'])
   })
 
-  it('exempts only the proxy, session pods, and builders', () => {
+  it('exempts only the proxy, the server, session pods, and builders', () => {
     // NotIn/DoesNotExist also match pods carrying no such label, so
-    // anything added later stays covered by default.
+    // anything added later stays covered by default. The server is exempt
+    // for the same reason the proxy is — it reaches the world on purpose
+    // (git clones, fetches), and it is the thing doing the mediating
+    // rather than a thing to be mediated.
     expect(spec.podSelector).toEqual({
       matchExpressions: [
-        { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
+        { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
         { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: ['builder'] },
       ],

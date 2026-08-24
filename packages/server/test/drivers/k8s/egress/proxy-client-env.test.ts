@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { ProxyClient, PROXY_CA_PATH, PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
 
 describe('ProxyClient.getCaTrustEnv', () => {
@@ -34,8 +34,38 @@ describe('ProxyClient.getCaTrustEnv', () => {
 })
 
 describe('ProxyClient.getCaBundle', () => {
-  it('rejects before the proxy is started (no port-forward yet)', async () => {
-    await expect(new ProxyClient({ image: 'yaac-test-proxy' }).getCaBundle())
-      .rejects.toThrow('Proxy not started')
+  it('dials the proxy Service by name, with no tunnel in between', async () => {
+    // The server is a pod of the proxy's own namespace, so the control API
+    // is an ordinary Service dial (docs/server-in-cluster.md) — there is no
+    // host-side relay to establish first, and so nothing to be "not started".
+    const realFetch = globalThis.fetch
+    const mock = vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve('PEM') })
+    globalThis.fetch = mock as unknown as typeof fetch
+    try {
+      await expect(new ProxyClient({ image: 'yaac-test-proxy' }).getCaBundle())
+        .resolves.toBe('PEM')
+      expect(mock.mock.calls[0][0])
+        .toBe('http://yaac-proxy.yaac.svc.cluster.local:10255/ca-bundle.pem')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('takes a caller-supplied origin when it is handed one', async () => {
+    // The e2e harness drives this client from the HOST, where a ClusterIP
+    // names nothing; `controlOrigin` is how it says where to dial instead.
+    const realFetch = globalThis.fetch
+    const mock = vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve('PEM') })
+    globalThis.fetch = mock as unknown as typeof fetch
+    try {
+      const client = new ProxyClient({
+        image: 'yaac-test-proxy',
+        controlOrigin: () => Promise.resolve('http://127.0.0.1:4444'),
+      })
+      await expect(client.getCaBundle()).resolves.toBe('PEM')
+      expect(mock.mock.calls[0][0]).toBe('http://127.0.0.1:4444/ca-bundle.pem')
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 })

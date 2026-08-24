@@ -175,9 +175,12 @@ hostname over HTTPS, not `ip:8787`), or point a client CLI at it with
 and phone setup, forwarded-port reachability, and the security model.
 
 A worktree's forwarded ports (a dev server, or an inner yaac's own web UI)
-bind the server's loopback by default. To reach them from other tailnet
-devices, set `YAAC_FORWARD_BIND` to the server's tailnet IP (from `tailscale
-ip -4`) and restart; the webapp's port chips then link to
+are offered by the server but bound by a client — `yaac forward`, or the
+desktop app, which does it resident in its tray
+([docs/port-forward-tunnel.md](docs/port-forward-tunnel.md)). To reach them
+from other tailnet devices, run `yaac forward --bind <the server's tailnet
+IP>` on the server (from `tailscale ip -4`) and set `YAAC_FORWARD_BIND` to
+the same address so the webapp's port chips link to
 `http://<host>.<tailnet>.ts.net:<port>`. Those listeners are plain http and
 reachable by any tailnet device (not yaac-token-gated), so keep this to a
 personal tailnet.
@@ -474,7 +477,7 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_WORKTREE_ID` | _(unset)_ | Set automatically in every worktree, under both drivers — not something you set yourself. A yaac started inside one reads it as "reachable only through the outer server's port-forward" and skips the client credential (see docs/remote-hosting.md). |
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
-| `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for worktree port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
+| `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a worktree's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
 
@@ -534,5 +537,5 @@ Layer order: default → Dockerfile.tools (agent CLIs) → Dockerfile.nestable (
 
 Each project gets a plain-HTTP push registry (`registry:2`) reachable from its worktrees as `yaac-reg-<project>.<namespace>.svc:5000`, which is the bus those promoted layers ride: a worktree's salvaged images are pushed there at teardown and pulled by the next one. Only the project's own worktrees can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
 
-**Running yaac inside a worktree** needs no container feature at all: start the inner server with `yaac server start --driver containerless` and its own worktrees are tmux servers in the worktree's checkout.
+**Running yaac inside a worktree** needs no container feature at all: start the inner server with `yaac server start` — a host server is the containerless driver — and its own worktrees are tmux servers in the worktree's checkout.
 

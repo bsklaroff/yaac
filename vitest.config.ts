@@ -156,10 +156,10 @@ export default defineConfig({
           name: 'api-containerless',
           include: [...CONTAINERLESS_API],
           setupFiles: CONTAINERLESS_SETUP,
-          // Reaches a spawned server through `spawnYaacServer`, which
-          // spreads `process.env` into the child — so the child needs the
-          // driver named here rather than inheriting whatever the ambient
-          // environment happens to be.
+          // What `spawnYaacServer` dispatches on: `containerless` means a
+          // host process, anything else means the k8s driver's server,
+          // which is a Deployment (docs/server-in-cluster.md) and needs a
+          // cluster this project deliberately does not have.
           env: { YAAC_DRIVER: 'containerless' },
           // The CLI build and nothing else: still no image, no registry and
           // no namespace, but a file here does spawn a server and cannot do
@@ -178,8 +178,9 @@ export default defineConfig({
         test: {
           name: 'e2e-containerless',
           include: ['test/e2e-containerless/**/*.test.ts'],
-          // Reaches the spawned servers through `spawnYaacServer`, which
-          // spreads `process.env` into the child.
+          // Same as the api-containerless project: this is what makes
+          // `spawnYaacServer` spawn a host process rather than deploying
+          // the k8s driver's server into a cluster.
           env: { YAAC_DRIVER: 'containerless' },
           // NOT cluster-setup: nothing here registers a k8s driver or has a
           // namespace to drop, and loading it would pull the kubernetes

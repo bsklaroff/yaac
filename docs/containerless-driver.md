@@ -14,17 +14,25 @@ the user running yaac, with that user's access to the filesystem, the
 network and everything else. Choosing this driver is consenting to that.
 
 ```
-YAAC_DRIVER=containerless yaac server start     # or: yaac server start --driver containerless
-yaac host check                                 # the parallel of `yaac cluster check`
+yaac server start        # this driver: a host server IS the containerless one
+yaac host check          # the parallel of `yaac cluster check`
 ```
 
-The choice is recorded beside the lock, so a later `yaac server restart` from
-an ordinary shell keeps serving the worktrees it already has. Without that a
-bare restart selects the default, and a k8s server adopting a containerless
-data dir reaps rows whose pods it cannot find — its teardown removing the
-very state dirs the markers live in, leaving the agents running as the user
-and unreachable. An explicit `--driver` still wins and is not refused;
-switching a data dir is something you may deliberately do, and it is logged.
+There is nothing to select. **Placement is the driver**: the k8s server is a
+pod of the cluster it manages (docs/server-in-cluster.md) and this one is a
+process on your machine, so `yaac server start` means containerless and
+`yaac cluster install` means k8s. A start notices which of the two it is and
+records the answer beside the lock, because the answer outlives it — a
+client that cannot reach the server has to know whether the fix is a start
+or an install.
+
+The two kinds never meet on one data dir: a host start against a data dir
+recorded `k8s` is refused, and `yaac cluster install` refuses to run against
+a containerless install. That matters because the crossing is irreversible
+in one direction — a k8s server cannot see a tmux worktree, so it would reap
+rows whose pods it cannot find and its teardown would remove the very state
+dirs the markers live in, leaving the agents running as the user and
+unreachable.
 
 ## What a worktree is here
 

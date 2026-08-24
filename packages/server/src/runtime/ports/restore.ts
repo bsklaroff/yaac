@@ -1,7 +1,5 @@
 import { worktreeDriver } from '#drivers/driver'
 import { isTmuxSessionAlive } from '#runtime/status'
-import { reserveAvailablePort } from '#lib/port'
-import type { ReservedPort } from '#lib/port'
 import { buildStatusRight, setStatusRightCmd } from '#lib/status-right'
 import { serverLog } from '#log'
 import type { PortForwardConfig, PortMapping, YaacConfig } from '@yaac/shared/types'
@@ -38,12 +36,12 @@ async function setWorkspaceStatusRight(
  * one that already has forwarders (nothing was lost), and one whose tmux is
  * gone (the reaper's business, not this pass's).
  *
- * Driver-neutral: reserving a host port and deciding which ports a workspace
- * should carry are the same over any substrate — only putting relays behind
- * the bound sockets is the driver's, and that is `startForwarders`. WHICH
- * ports come from the project's config, so the caller supplies the reader —
- * a plain parameter rather than a `PassContext` accessor, because this runs
- * once as the server attaches and there is no pass to take one from.
+ * Driver-neutral: deciding which ports a workspace should carry is the same
+ * over any substrate, and what each is offered at is the driver's answer
+ * (`declareForwards`). WHICH ports come from the project's config, so the
+ * caller supplies the reader — a plain parameter rather than a `PassContext`
+ * accessor, because this runs once as the server attaches and there is no
+ * pass to take one from.
  */
 export async function restoreAllWorkspaceForwarders(
   projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
@@ -79,13 +77,13 @@ export async function restoreAllWorkspaceForwarders(
 }
 
 /**
- * Reserve host ports, hand them to the driver's forwarders, and refresh the
- * status bar to match.
+ * Re-declare the workspace's forwards with the driver and refresh the status
+ * bar to match.
  *
- * Reservation happens here rather than in the driver for the same reason the
- * launch path binds its own: a bound socket is the only thing that stops
- * another process taking the port, and a caller that gives up must close it
- * rather than start relays.
+ * The declaration is the whole of it: no host port is bound here, because
+ * the listener is a client's on the pod substrate and the workspace's own
+ * under containerless. What the driver answers is what the bar states and
+ * what any client forwarder will bind.
  */
 async function provisionForwarders(
   projectSlug: string,
@@ -93,23 +91,10 @@ async function provisionForwarders(
   jobName: string,
   portForward: PortForwardConfig[] | undefined,
 ): Promise<void> {
-  const reserved: ReservedPort[] = []
-  // A runtime whose workspaces bind host ports themselves needs no relay,
-  // and reserving one here would take the very port the workspace's server
-  // is about to want. What it is listening on is observed instead, so the
-  // status bar is refreshed from the empty set and nothing is bound.
-  const relayed = worktreeDriver().kind !== 'containerless'
-  if (relayed && portForward?.length) {
-    for (const { containerPort, hostPortStart } of portForward) {
-      reserved.push(await reserveAvailablePort(containerPort, hostPortStart))
-    }
-  }
+  const declared = worktreeDriver().declareForwards(worktreeId, portForward ?? [])
 
   // Always refresh status-right — even with no port forwards, the workspace's
   // existing string may carry stale port info from before the restart that
   // has to be cleared.
-  await setWorkspaceStatusRight(jobName, projectSlug, worktreeId, reserved)
-
-  if (reserved.length === 0) return
-  worktreeDriver().startForwarders(worktreeId, reserved)
+  await setWorkspaceStatusRight(jobName, projectSlug, worktreeId, declared)
 }

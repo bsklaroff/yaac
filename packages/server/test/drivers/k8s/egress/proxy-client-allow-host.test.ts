@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { ProxyClient } from '#drivers/k8s/egress/proxy-client'
 
-// allowHost needs a resolved base URL + auth secret, both set only after the
-// port-forward + secret exchange. Inject them directly so the method can be
-// exercised without a live proxy (TS `private`/`readonly` are compile-time only).
+// allowHost needs an auth secret, which is only set by the secret exchange
+// inside ensureRunning; inject it so the method can be exercised without a
+// live proxy (TS `private` is compile-time only). The origin comes in the
+// supported way — `controlOrigin`, the seam the e2e harness uses to reach a
+// proxy it is not a pod beside.
 function makeClient(): ProxyClient {
-  const c = new ProxyClient({ image: 'yaac-test-proxy' })
-  const internals = c as unknown as { authSecret: string; forward: { currentPort: number } }
-  internals.authSecret = 'sekret'
-  internals.forward = { currentPort: 4444 }
+  const c = new ProxyClient({
+    image: 'yaac-test-proxy',
+    controlOrigin: () => Promise.resolve('http://127.0.0.1:4444'),
+  })
+  ;(c as unknown as { authSecret: string }).authSecret = 'sekret'
   return c
 }
 

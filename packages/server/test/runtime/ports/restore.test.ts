@@ -2,12 +2,12 @@
  * The forwarder restore — `restoreAllWorkspaceForwarders`.
  *
  * Mocked at the contract boundary only: the driver answers which workspaces
- * exist, which already have forwarders, and takes the bound sockets. The
- * host-port reservation, the candidate gating and the status-bar refresh all
- * run for real, which is what makes this cover the internals it drives
+ * exist, which already have forwarders, and what each declared forward is
+ * offered at. The candidate gating and the status-bar refresh run for real,
+ * which is what makes this cover the internals it drives
  * (`provisionForwarders`, the bar's format) without testing them directly.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { PortMapping, YaacConfig } from '@yaac/shared/types'
 
 vi.mock('#runtime/status/liveness', () => ({ isTmuxSessionAlive: vi.fn() }))
@@ -15,7 +15,7 @@ vi.mock('#runtime/status/liveness', () => ({ isTmuxSessionAlive: vi.fn() }))
 import { isTmuxSessionAlive } from '#runtime/status/liveness'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports/restore'
 import { handleFixture, installFakeWorktreeDriver } from '@yaac/test-utils/fake-driver'
-import type { ReservedHostPort, RuntimeHandle, WorktreeDriver } from '#drivers/contract'
+import type { RuntimeHandle, WorktreeDriver } from '#drivers/contract'
 
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)
 /** The reader the caller supplies — main, once, as the server attaches. */
@@ -24,9 +24,9 @@ const projectConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
 const list = vi.fn<WorktreeDriver['list']>()
 const forwardedPorts = vi.fn<WorktreeDriver['forwardedPorts']>()
 const exec = vi.fn<WorktreeDriver['exec']>()
-/** Sockets the restore handed over. Held so the test can close them: a real
- *  reservation binds a real listener, and the fake driver never adopts one. */
-let adopted: ReservedHostPort[] = []
+/** Every declaration the restore made, in order, with the workspace it was
+ *  made for — nothing is bound, so this IS the observable effect. */
+let declared: Array<{ workspaceId: string; mapping: PortMapping }> = []
 
 function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return handleFixture({
@@ -43,7 +43,7 @@ const statusRightFor = (jobName: string): string | undefined =>
 
 beforeEach(() => {
   vi.resetAllMocks()
-  adopted = []
+  declared = []
   mockTmuxAlive.mockResolvedValue(true)
   forwardedPorts.mockResolvedValue([])
   exec.mockResolvedValue({ stdout: '', stderr: '' })
@@ -54,16 +54,21 @@ beforeEach(() => {
     list,
     forwardedPorts,
     exec,
-    startForwarders: (_id, ports) => { adopted.push(...ports) },
+    // A real allocator, so two workspaces asking for 3000 get different
+    // answers — which is what the bar assertions below turn on.
+    declareForwards: (workspaceId, forwards) => forwards.map(({ containerPort, hostPortStart }) => {
+      const taken = new Set(declared.map((d) => d.mapping.hostPort))
+      let hostPort = hostPortStart
+      while (taken.has(hostPort)) hostPort++
+      const mapping = { containerPort, hostPort }
+      declared.push({ workspaceId, mapping })
+      return mapping
+    }),
   })
 })
 
-afterEach(() => {
-  for (const p of adopted) p.server.close()
-})
-
 describe('restoreAllWorkspaceForwarders', () => {
-  it('reserves each configured port and hands the bound sockets to the driver', async () => {
+  it('declares each configured port with the driver, and states it on the bar', async () => {
     list.mockResolvedValue([
       workspace({ jobName: 'yaac-proj-s1', workspaceId: 's1' }),
       workspace({ jobName: 'yaac-proj-s2', workspaceId: 's2' }),
@@ -71,20 +76,17 @@ describe('restoreAllWorkspaceForwarders', () => {
 
     await restoreAllWorkspaceForwarders(projectConfig)
 
-    expect(adopted).toHaveLength(2)
-    for (const p of adopted) {
-      expect(p.containerPort).toBe(3000)
-      // Reserved from the configured start, walking up when it is taken —
+    expect(declared).toHaveLength(2)
+    for (const { mapping } of declared) {
+      expect(mapping.containerPort).toBe(3000)
+      // Offered from the configured start, walking up when it is taken —
       // which is exactly what the second workspace hits.
-      expect(p.hostPort).toBeGreaterThanOrEqual(3000)
-      expect(p.server.listening).toBe(true)
+      expect(mapping.hostPort).toBeGreaterThanOrEqual(3000)
     }
     // Each workspace's bar advertises its OWN mapping, not the other's.
-    const mapping = (ports: ReservedHostPort[]): PortMapping[] =>
-      ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
-    const [first, second] = mapping(adopted)
-    expect(statusRightFor('yaac-proj-s1')).toContain(`:${first.hostPort}->3000`)
-    expect(statusRightFor('yaac-proj-s2')).toContain(`:${second.hostPort}->3000`)
+    for (const { workspaceId, mapping } of declared) {
+      expect(statusRightFor(`yaac-proj-${workspaceId}`)).toContain(`:${mapping.hostPort}->3000`)
+    }
   })
 
   it('clears a stale bar for a workspace with no forwards configured', async () => {
@@ -95,7 +97,7 @@ describe('restoreAllWorkspaceForwarders', () => {
 
     await restoreAllWorkspaceForwarders(projectConfig)
 
-    expect(adopted).toEqual([])
+    expect(declared).toEqual([])
     expect(statusRightFor('yaac-proj-sess')).toContain("status-right ' proj sess-1 '")
   })
 
@@ -107,7 +109,7 @@ describe('restoreAllWorkspaceForwarders', () => {
       workspace({ jobName: '' }),
     ])
     await restoreAllWorkspaceForwarders(projectConfig)
-    expect(adopted).toEqual([])
+    expect(declared).toEqual([])
     expect(exec).not.toHaveBeenCalled()
   })
 
@@ -115,20 +117,20 @@ describe('restoreAllWorkspaceForwarders', () => {
     mockTmuxAlive.mockResolvedValue(false)
     list.mockResolvedValue([workspace()])
     await restoreAllWorkspaceForwarders(projectConfig)
-    expect(adopted).toEqual([])
+    expect(declared).toEqual([])
   })
 
   it('skips a workspace that already has forwarders, since nothing was lost', async () => {
     forwardedPorts.mockResolvedValue([{ containerPort: 3000, hostPort: 3000 }])
     list.mockResolvedValue([workspace()])
     await restoreAllWorkspaceForwarders(projectConfig)
-    expect(adopted).toEqual([])
+    expect(declared).toEqual([])
   })
 
   it('continues when the runtime cannot be listed', async () => {
     list.mockRejectedValue(new Error('cluster offline'))
     await expect(restoreAllWorkspaceForwarders(projectConfig)).resolves.toBeUndefined()
-    expect(adopted).toEqual([])
+    expect(declared).toEqual([])
   })
 
   it('swallows one workspace\'s failure so it cannot block the rest', async () => {
@@ -140,8 +142,8 @@ describe('restoreAllWorkspaceForwarders', () => {
 
     await expect(restoreAllWorkspaceForwarders(projectConfig)).resolves.toBeUndefined()
     expect(exec).toHaveBeenCalledTimes(2)
-    // The one that failed reserved a port and never handed it over; the other
-    // still got its forwarders.
-    expect(adopted).toHaveLength(1)
+    // Both declared — the failure is the bar refresh, which is the last
+    // step and cosmetic; only one workspace's bar is left stale.
+    expect(declared).toHaveLength(2)
   })
 })

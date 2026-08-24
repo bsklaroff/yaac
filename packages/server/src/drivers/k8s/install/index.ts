@@ -34,3 +34,12 @@ export { formatCheckResult, runClusterCheck } from './check'
 export { runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { runClusterInstall } from './install'
+export {
+  deployServerWorkload,
+  restartClusterServer,
+  serverDeploymentExists,
+  serverPublishedOrigin,
+  startClusterServer,
+  stopClusterServer,
+  waitForPublishedServer,
+} from './server-deploy'

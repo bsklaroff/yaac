@@ -1,20 +1,16 @@
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
 import { env } from '@yaac/shared/env'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, kubectlGetJson } from './kubectl'
 import { worktreeIdFromJobName } from './pods'
 import { containerExec } from './exec'
-import { invalidatePortForward, resolvePortForward } from './port-forward'
 import {
-  PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   RELAY_PORT,
+  proxyServiceHost,
 } from './proxy-constants'
-import type { RelayFactory } from '#lib/port'
-import { serverLog } from '#log'
 
 /**
  * The server side of the stream relay (docs/stream-relay.md): every
@@ -53,61 +49,33 @@ interface RelayAddr {
   port: number
 }
 
-/** Key the shared port-forward registry files this install's relay child
- *  under (see port-forward.ts). */
-const RELAY_FORWARD_KEY = 'stream-relay'
-
 let cachedSecret: string | null = null
-
-/** Drop the cached relay address so the next dial re-resolves it (a dead
- *  port-forward child gets respawned). */
-export function invalidateRelayAddr(): void {
-  invalidatePortForward(RELAY_FORWARD_KEY)
-}
 
 /** Test-only: reset all module caches. */
 export function _resetRelayCacheForTests(): void {
-  invalidateRelayAddr()
   cachedSecret = null
 }
 
 /**
- * The default top-level relay path: ONE long-lived `kubectl port-forward`
- * to the proxy Deployment serves every stream of this server run (SPDY
- * multiplexes them; a new stream is a cheap stream-open, not an exec
- * round trip). This deliberately keeps the proxy↔host hop on the
- * apiserver: it costs a few Go userspace copies on a loopback-local hop,
- * and buys zero listening host ports, zero kind port mappings, and no
- * cluster-shape dependency — while the wins the relay exists for (no
- * kubectl child per stream, no per-connection exec setup, worktree-pod
- * bytes leaving via netstack networking instead of the gVisor exec
- * machinery) are all preserved. Works because the proxy is a runc pod
- * (CRI port-forward dials localhost in the pod netns, which a gVisor
- * pod's netstack would not answer — see ExecTunnel). Hosts with a direct
- * TCP route to the proxy (a server on the cluster node itself) can skip
- * the hop via YAAC_RELAY_ADDR.
- */
-function startRelayPortForward(): Promise<RelayAddr> {
-  return resolvePortForward(RELAY_FORWARD_KEY, {
-    namespace: k8sNamespace(),
-    target: `deploy/${PROXY_APP_NAME}`,
-    remotePort: RELAY_PORT,
-  })
-}
-
-/**
- * Where this install's relay listens:
- *  1. `YAAC_RELAY_ADDR` — explicit override (a host with a direct TCP
- *     route to the proxy pod).
- *  2. The local listener of a long-lived kubectl port-forward into the
- *     proxy (see startRelayPortForward).
+ * Where this install's relay listens: the proxy's Service, in-cluster.
  *
- * The shared port-forward registry owns both the cache and the child's
- * lifetime, so a child that dies is respawned on the next dial rather than
- * leaving a stale address memoized here.
+ * A plain pod-to-pod dial, because the server is a pod of the same
+ * namespace (docs/server-in-cluster.md) and the proxy's ingress policy
+ * admits its selector on this port. `YAAC_RELAY_ADDR` is what the
+ * Deployment states it as, and it is honoured verbatim so a differently
+ * shaped install can point the relay somewhere else without touching code.
+ *
+ * The default is derived rather than required, so a server started by hand
+ * against a cluster whose proxy sits where it always does still resolves —
+ * and a server that is NOT in the cluster gets a name that does not
+ * resolve, which is the honest answer for a placement this driver no
+ * longer has.
  */
-export async function resolveRelayAddr(): Promise<RelayAddr> {
-  return env.relayAddr ?? startRelayPortForward()
+function resolveRelayAddr(): RelayAddr {
+  if (env.relayAddr) return env.relayAddr
+  const addr = proxyServiceHost(k8sNamespace(), RELAY_PORT)
+  const idx = addr.lastIndexOf(':')
+  return { host: addr.slice(0, idx), port: Number.parseInt(addr.slice(idx + 1), 10) }
 }
 
 /**
@@ -160,8 +128,12 @@ export class RelayDialError extends Error {
  * Open one stream to a worktree's streamd: dial the relay, pipeline the
  * relay auth line + streamd handshake line, await streamd's `{ok}` reply.
  * Resolves with the connected socket, paused, with any bytes past the
- * reply line unshifted. Rejects with RelayDialError on any failure and
- * drops the cached relay address so the next dial re-resolves.
+ * reply line unshifted. Rejects with RelayDialError on any failure.
+ *
+ * Every stream dials the proxy Service independently, so one stream's
+ * failure is one stream's failure — there is no shared child process left
+ * for a bad dial to condemn, and no `sawReplyBytes` bookkeeping deciding
+ * whether to condemn it.
  */
 export async function relayDial(
   worktreeId: string,
@@ -169,8 +141,8 @@ export async function relayDial(
   opts: { timeoutMs?: number } = {},
 ): Promise<net.Socket> {
   const timeoutMs = opts.timeoutMs ?? DIAL_TIMEOUT_MS
-  const [addr, secret, token] = await Promise.all([
-    resolveRelayAddr(),
+  const addr = resolveRelayAddr()
+  const [secret, token] = await Promise.all([
     relaySecret(),
     podStreamToken(worktreeId),
   ]).catch((err: unknown) => {
@@ -186,40 +158,16 @@ export async function relayDial(
     // write, spending the batcher's whole 8ms budget in the kernel.
     socket.setNoDelay(true)
     let settled = false
-    // Anything at all coming back, not just a whole line: a peer that spoke
-    // is a peer that is there, which is what the evidence rule below turns
-    // on. (An oversized reply is protocol corruption on a live transport.)
-    let sawReplyBytes = false
     let buf = Buffer.alloc(0)
 
-    /**
-     * `transportDead` decides whether this one stream's failure recycles
-     * the SHARED transport: `invalidateRelayAddr` kills the single
-     * `kubectl port-forward` that every other stream rides, so every
-     * terminal, status stream and forwarded port on the install dies with
-     * it. Only two signals qualify, both immediate and unambiguous — a
-     * connect error (nothing listening; the forward is gone) and a close
-     * before any reply byte (a dead forward accepts, then drops). A
-     * refusal, which arrives as a reply, proves the transport is fine.
-     *
-     * A TIMEOUT is deliberately none of the above. Waiting is what a
-     * slow-but-live relay looks like: a host busy building images, an
-     * apiserver list behind a pod-index miss, a pod whose ingress policy
-     * is still dropping the proxy's SYNs. Recycling on it made one
-     * stream's patience the whole install's problem — every terminal in
-     * every worktree dropping and reconnecting together.
-     */
-    const fail = (reason: string, transportDead = !sawReplyBytes): void => {
+    const fail = (reason: string): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       socket.destroy()
-      if (transportDead) invalidateRelayAddr()
       reject(new RelayDialError(`stream relay dial (${worktreeId.slice(0, 8)}...): ${reason}`))
     }
-    // A dial timeout is too weak to condemn the shared transport: a
-    // port-forward respawn drops every stream riding it.
-    const timer = setTimeout(() => fail(`timeout after ${timeoutMs}ms`, false), timeoutMs)
+    const timer = setTimeout(() => fail(`timeout after ${timeoutMs}ms`), timeoutMs)
 
     socket.on('error', (err: Error) => fail(err.message))
     socket.on('close', () => fail('connection closed during handshake'))
@@ -230,7 +178,6 @@ export async function relayDial(
       )
     })
     const onData = (chunk: Buffer): void => {
-      sawReplyBytes = true
       buf = Buffer.concat([buf, chunk])
       const nl = buf.indexOf(0x0a)
       if (nl < 0) {
@@ -583,57 +530,6 @@ export function dialPtyStream(
       pending.length = 0
       sock?.destroy()
     },
-  }
-}
-
-/**
- * RelayFactory over `tcp` streams — the per-connection port-forward
- * transport. Returns a child-shaped object whose stdin/stdout are
- * PassThroughs spliced onto the stream once the dial lands, so
- * `startPortForwarders`' wiring (pipe both ways, kill on close) is
- * unchanged.
- */
-export function relayTcpFactory(worktreeId: string): RelayFactory {
-  return (containerPort) => {
-    const stdin = new PassThrough()
-    const stdout = new PassThrough()
-    const emitter = new EventEmitter()
-    let sock: net.Socket | null = null
-    let killed = false
-
-    relayDial(worktreeId, { kind: 'tcp', port: containerPort }).then(
-      (socket) => {
-        if (killed) {
-          socket.destroy()
-          return
-        }
-        sock = socket
-        stdin.pipe(socket)
-        socket.pipe(stdout)
-        socket.on('error', () => { /* 'close' follows */ })
-        socket.on('close', () => emitter.emit('close'))
-        socket.resume()
-      },
-      (err: Error) => {
-        if (killed) return
-        serverLog(`[server] port-forward relay dial failed: ${err.message}`)
-        emitter.emit('close')
-      },
-    )
-
-    return {
-      stdin,
-      stdout,
-      kill: () => {
-        killed = true
-        sock?.destroy()
-        stdin.destroy()
-        stdout.destroy()
-      },
-      on: (event: 'close' | 'error', cb: (...args: unknown[]) => void) => {
-        emitter.on(event, cb)
-      },
-    }
   }
 }
 

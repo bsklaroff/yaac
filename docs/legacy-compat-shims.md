@@ -267,6 +267,47 @@ and it is a `find` rather than a version: `find
 an install that has always run one driver, since a root-owned mountpoint can
 only exist where k8s ran.
 
+## The optional lease fields on the server lock
+
+`ServerLock` gained three fields when the server became a pod
+(docs/server-in-cluster.md): `instance` (identity, since a pid does not
+identify a server across pods), `host` (whose pid namespace `pid` belongs to),
+and `heartbeatAt` (the renewed lease). All three are OPTIONAL in
+`isServerLock`, and `isSameHostLock` reads an absent `host` as this host.
+
+**What it reads:** `.server.lock` in the data dir, written by a server that
+predates the lease.
+
+**What breaks silently if it goes too early:** nothing silently — but the
+loud version is bad. A lock without the fields would stop parsing, so
+`readLock` would return null, `acquireLock` would classify the file as garbage
+and unlink it, and a second server would start beside the one still running —
+two writers on one PGlite directory. That is precisely the window an in-place
+upgrade opens: the CLI is new, the running server is not, and the lock on disk
+is whatever the running server wrote. The fields being optional is what makes
+that upgrade a `yaac server restart` rather than a corrupted database.
+
+**The absent-`host` reading has one reader it is wrong for**, and the guard
+against it is part of this shim rather than separate from it. `isSameHostLock`
+answers "this host" for a legacy lock, which is true for every host-side
+reader and false inside the server POD — which would then judge the lock by
+`pidExists` in its own pid namespace, find the host's pid absent, call a live
+server's lock stale and take it. Nothing in the pod can tell the difference,
+so the check lives where it still works: `deployServerWorkload` refuses to
+apply the Deployment while a host lock is live, on the host, before the pod
+exists. Remove that guard only together with the `undefined` branch above —
+on its own it is the only thing standing between the documented upgrade and
+two writers.
+
+**How to tell it is safe to remove:** every server that could still be holding
+a lock writes the fields, i.e. no install can restart into head with a
+pre-lease server already running. There is no version floor recording that,
+so in practice this goes when a release boundary makes it safe to say so — and
+when it does, `isServerLock` requires all three and `isSameHostLock` loses its
+`undefined` branch together, in one change. Do not tighten one without the
+other: requiring the fields while `isSameHostLock` still special-cases their
+absence leaves a dead branch that reads as deliberate.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just
