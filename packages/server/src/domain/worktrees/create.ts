@@ -2,8 +2,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
 import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
-import { reserveAvailablePort } from '#lib/port'
-import type { ReservedPort } from '#lib/port'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { buildStatusRight } from '#lib/status-right'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
@@ -1429,24 +1427,20 @@ export async function createWorktree(
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
 
-  // Port forwarding: reserve host ports in the server process so no
-  // other process can claim them between discovery and the forwarder
-  // starting up. The server owns the forwarders for the worktree's
-  // lifetime; they are torn down by `deleteSession` and the stale-
-  // worktree reaper.
-  const forwardedPorts: ReservedPort[] = []
-  if (config.portForward?.length) {
-    for (const { containerPort, hostPortStart } of config.portForward) {
-      emit(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`, options)
-      const reserved = await reserveAvailablePort(containerPort, hostPortStart)
-      forwardedPorts.push(reserved)
-      emit(`Forwarding host port ${reserved.hostPort} -> container port ${containerPort}`, options)
-    }
+  // Port forwarding: ask the runtime which host port each of the config's
+  // ports is offered at, BEFORE the launch, because the answer is stamped
+  // into the workspace's own status bar below. A declaration and nothing
+  // more — the server binds no listener on either substrate — so the
+  // runtime holds these for the worktree's lifetime and drops them when
+  // `deleteSession` or the stale-worktree reaper deregisters it.
+  const forwardedPorts = runtime.declareForwards(worktreeId, config.portForward ?? [])
+  for (const { containerPort, hostPort } of forwardedPorts) {
+    emit(`Offering host port ${hostPort} -> container port ${containerPort}`, options)
   }
 
   // Inputs for the postStart setup script (yaac-worktree-init): git
   // identity, the initial agent window name, the tmux status line (embeds
-  // the host ports reserved just above), and the nested-engine switches.
+  // the host ports declared just above), and the nested-engine switches.
   env.push(`YAAC_TOOL=${tool}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
@@ -1641,9 +1635,11 @@ export async function createWorktree(
         emit(`Session startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
         continue
       }
-      // Release any pre-bound host ports so a retry (or the reaper) can
-      // rebind them.
-      for (const p of forwardedPorts) p.server.close()
+      // Let the declared host ports go, so the next create can be offered
+      // the same numbers rather than walking past a workspace that never
+      // came up.
+      await worktreeDriver().deregisterWorkspace(worktreeId)
+        .catch(() => { /* best-effort; the reaper covers what this misses */ })
       if (!options.prewarm) {
         // The staged checkout goes with the failed create. Nothing else
         // would collect it: the rollback below erases the row, and every
@@ -1698,11 +1694,6 @@ export async function createWorktree(
     throw new ServerError('INTERNAL', 'worktree launch reported no handle')
   }
 
-  // The workspace is up — hand the reserved sockets off to long-lived
-  // forwarders owned by the runtime. These stay alive across user
-  // attaches/detaches and come down only with a delete or the reaper.
-  worktreeDriver().startForwarders(worktreeId, forwardedPorts)
-
   // The branch the worktree forked from, now that the (concurrent) checkout
   // has resolved it. A separate report from the one above so recording the
   // worktree never had to wait on provisioning; best-effort, since a missing
@@ -1724,7 +1715,7 @@ export async function createWorktree(
     worktreeId,
     // The runtime's own name for what it started — never derived here.
     jobName: handle.jobName,
-    forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+    forwardedPorts,
     tool,
     mode,
   }

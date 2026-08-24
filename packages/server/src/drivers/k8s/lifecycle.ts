@@ -1,7 +1,6 @@
 import {
   ClusterCache,
   ensurePriorityClasses,
-  invalidateRelayAddr,
   setActiveClusterCache,
   type DeltaSource,
 } from '#drivers/k8s/substrate'
@@ -227,9 +226,7 @@ export function releaseK8sDriver(): void {
   // the forwarder restore. After the reconcile drain, because a reap tick
   // still tears its worktree's forwards down.
   stopAllWorktreeForwarders()
-  // Same for the proxy control tunnel and the stream relay's
-  // `kubectl port-forward` child — the deployed proxy itself stays up
-  // for the next server to adopt.
+  // The proxy client forgets that it verified the deployment; the deployed
+  // proxy itself stays up for the next server to adopt.
   proxyClient.disconnect()
-  invalidateRelayAddr()
 }

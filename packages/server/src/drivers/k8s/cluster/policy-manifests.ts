@@ -11,6 +11,9 @@ import {
   PROXY_PORT,
   RELAY_PORT,
   ROLE_BUILDER,
+  SERVER_APP_NAME,
+  SERVER_INGRESS_NP_NAME,
+  SERVER_POD_PORT,
   WORKTREE_EGRESS_NP_NAME,
   WORKTREE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
@@ -184,8 +187,62 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
         from: [{ podSelector: worktreePodSelector }],
         ports: [udp(DNS_STUB_PORT), tcp(SSH_AGENT_PORT)],
       },
+      {
+        // The in-cluster server, which reaches the same two ports the
+        // host-side server reached through its port-forward — the control
+        // API and the stream relay — but as an ordinary pod-to-pod dial
+        // (docs/server-in-cluster.md). Selected by its app label rather
+        // than admitted through the node CIDRs above, so a worktree pod
+        // still cannot address either port.
+        from: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }],
+        ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)],
+      },
     ],
   })
+}
+
+/**
+ * Server-pod INGRESS: the API, from everything that is not a pod.
+ *
+ * Load-bearing, not hardening. The in-cluster server binds `0.0.0.0` (a
+ * pod's loopback has no reachable backend) and stays credential-optional on
+ * a local install, so this policy is what separates an untrusted worktree
+ * pod from an unauthenticated API. Together with the worktree egress
+ * lockdown it is the whole wall, which is why `yaac cluster check` proves
+ * it on every install rather than trusting that it was applied.
+ *
+ * The shape is `0.0.0.0/0 except <pod CIDRs>`, and it has to be: the
+ * node-address form every other yaac policy uses would drop the very
+ * traffic this admits. A request to the published NodePort is delivered by
+ * kube-proxy's DNAT, but its masquerade to a node address happens in
+ * POSTROUTING — AFTER the filter hook where policy is evaluated — so what
+ * the policy sees is the original off-cluster source (on the local backend,
+ * the host's own address on the node network), which is in no node CIDR.
+ *
+ * Stating the exclusion instead of the admission is also the more honest
+ * rule: what must never reach the server is a POD, and Calico enforces a
+ * workload's source address, so a pod cannot present anything but its own.
+ * Nothing in-cluster wants this port either — a worktree's own `yaac-mama`
+ * calls go to the egress proxy's queue, which the server drains.
+ *
+ * Too narrow a `podCidrs` is the dangerous direction (a pod addressed from
+ * a range nobody listed would be admitted), which is why the caller passes
+ * `clusterPodCidrs()` — the union of every source, never a pick.
+ */
+export function buildServerIngressNpManifest(podCidrs: string[]): Record<string, unknown> {
+  return np(
+    SERVER_INGRESS_NP_NAME,
+    k8sNamespace(),
+    {
+      podSelector: { matchLabels: { app: SERVER_APP_NAME } },
+      policyTypes: ['Ingress'],
+      ingress: [{
+        from: [{ ipBlock: { cidr: '0.0.0.0/0', except: podCidrs } }],
+        ports: [tcp(SERVER_POD_PORT)],
+      }],
+    },
+    { app: SERVER_APP_NAME },
+  )
 }
 
 /**
@@ -200,6 +257,11 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
  * deny.
  *
  *  - the proxy: the one pod that legitimately reaches the internet.
+ *  - the server: its egress is deliberately unrestricted, matching the
+ *    host process it replaces — it clones and fetches git remotes and
+ *    calls out for titles directly, and routing its own traffic through
+ *    the egress proxy is not what the proxy is for (the proxy mediates
+ *    UNTRUSTED code, and the server is the thing doing the mediating).
  *  - worktree pods: governed by buildWorktreeEgressNpManifest.
  *  - builder pods: trust-split image builds fetch upstream packages and
  *    push to a registry (docs/trust-split-builds.md); their own scoped
@@ -212,7 +274,7 @@ export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
   return np(EGRESS_WORLD_DENY_NAME, k8sNamespace(), {
     podSelector: {
       matchExpressions: [
-        { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
+        { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
         { key: LABEL_WORKTREE_ID, operator: 'DoesNotExist' },
         { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
       ],

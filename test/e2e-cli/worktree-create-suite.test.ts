@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
+import net from 'node:net'
 import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
@@ -13,6 +13,7 @@ import {
   createYaacTestEnv,
   spawnYaacServer,
   runYaac,
+  TEST_CLI_ENTRY,
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
@@ -34,7 +35,6 @@ import {
 } from '@yaac/test-utils/mock-remotes'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
-const execFileAsync = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
@@ -123,6 +123,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
   let serverEnv: NodeJS.ProcessEnv
   let base = ''
   let auth: Record<string, string> = {}
+  /** Every `yaac forward` this file spawned, killed in the file's afterAll
+   *  whether or not the case that started one got to its own cleanup. */
+  const forwardChildren: ChildProcess[] = []
 
   beforeAll(async () => {
     await requirePodman()
@@ -220,6 +223,10 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
   })
 
   afterAll(async () => {
+    // Before the server: a forwarder outliving it would hold host ports and
+    // keep dialling a socket nothing answers.
+    for (const child of forwardChildren) child.kill('SIGKILL')
+    forwardChildren.length = 0
     if (server) await server.stop()
     server = null
     await cleanupWorktreeJobs()
@@ -295,6 +302,74 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     return { jobName: (await findWorktreePod(slug)).jobName, stdout }
   }
 
+
+  /**
+   * `yaac forward` as a long-lived child, plus a wait for the lines it
+   * prints when its listeners come up.
+   *
+   * The server binds nothing on either substrate — under k8s it is a pod,
+   * so a port it bound would be on the pod's loopback — so a forward is
+   * only dialable while a client like this holds the listener. That makes
+   * this fixture load-bearing for every HTTP assertion below, not scenery.
+   */
+  function startForwardCli(...args: string[]): {
+    ready: (count: number, timeoutMs?: number) => Promise<string[]>
+    output: () => string
+    stop: () => Promise<void>
+  } {
+    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'forward', ...args], {
+      env: serverEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (c: Buffer) => { out += c.toString('utf8') })
+    child.stderr.on('data', (c: Buffer) => { out += c.toString('utf8') })
+    forwardChildren.push(child)
+    return {
+      output: () => out,
+      ready: async (count, timeoutMs = 30_000) => {
+        const deadline = Date.now() + timeoutMs
+        for (;;) {
+          const lines = out.split('\n').filter((l) => l.startsWith('forwarding '))
+          if (lines.length >= count) return lines
+          if (Date.now() > deadline) {
+            throw new Error(`yaac forward never bound ${String(count)} port(s). Output:\n${out}`)
+          }
+          await sleep(200)
+        }
+      },
+      stop: async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return
+        child.kill('SIGTERM')
+        await new Promise<void>((resolve) => child.once('close', () => resolve()))
+      },
+    }
+  }
+
+  /**
+   * Wait until something on this machine accepts on `hostPort`.
+   *
+   * A newly OFFERED port is not a reachable one: the server declares the
+   * mapping and a client binds it, so between the forward action and the
+   * first working connection sits the resident forwarder's next poll. The
+   * test has to wait for the client, exactly as a user does.
+   */
+  async function waitForLocalListener(hostPort: number, timeoutMs = 20_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const open = await new Promise<boolean>((resolve) => {
+        const socket = net.connect(hostPort, '127.0.0.1')
+        socket.once('connect', () => { socket.destroy(); resolve(true) })
+        socket.once('error', () => { socket.destroy(); resolve(false) })
+      })
+      if (open) return
+      if (Date.now() > deadline) {
+        throw new Error(`nothing bound 127.0.0.1:${String(hostPort)} within ${String(timeoutMs)}ms`)
+      }
+      await sleep(250)
+    }
+  }
+
   /**
    * Spawn an HTTP server inside a session pod (backgrounded with nohup —
    * kubectl exec has no detach mode) and wait (in-container) for it to
@@ -343,10 +418,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       { containerPort: 8084, hostPortStart: 20040 },
     ]
     // Container-port → host-port map, populated from the CLI's
-    // "Forwarding host port ... -> container port ..." progress messages.
+    // "Offering host port ... -> container port ..." progress messages.
     const hostPortFor = new Map<number, number>()
     let jobName = ''
     let worktreeId = ''
+    let forwarder: ReturnType<typeof startForwardCli> | null = null
     let projectPath = ''
     let roDir = ''
     let rwDir = ''
@@ -410,18 +486,31 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const created = await createWorktree('kitchen', '--tool', 'claude')
       jobName = created.jobName
 
-      // Parse the CLI's progress stream for the resolved host ports. Each
+      // Parse the CLI's progress stream for the offered host ports. Each
       // portForward entry produces one such line — this both tells us which
-      // host port to dial and proves the server read our config.
+      // host port to dial and proves the server read our config. Nothing is
+      // bound yet: the server holds no listener on either substrate, so the
+      // resident forwarder started below is what makes these dialable.
       for (const line of created.stdout.split('\n')) {
-        const m = line.match(/Forwarding host port (\d+) -> container port (\d+)/)
+        const m = line.match(/Offering host port (\d+) -> container port (\d+)/)
         if (m) hostPortFor.set(Number(m[2]), Number(m[1]))
       }
       expect(hostPortFor.size).toBe(PORT_FORWARD.length)
 
       worktreeId = (await findWorktreePod('kitchen')).worktreeId
       expect(worktreeId).toBeTruthy()
+
+      // The resident forwarder for this session, held for the whole file:
+      // the server offers the mappings, a client binds them. Every HTTP
+      // assertion below dials through this.
+      forwarder = startForwardCli(worktreeId)
+      await forwarder.ready(PORT_FORWARD.length)
     }, 240_000)
+
+    afterAll(async () => {
+      await forwarder?.stop()
+      forwarder = null
+    })
 
     it('provisions pod, worktree, mounts, git, and tmux', async () => {
       const pod = await findWorktreePod('kitchen')
@@ -536,10 +625,11 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {
-      // Port forwarding runs through the server's per-connection
-      // `kubectl exec nc` relay, not any kubernetes port mapping, so the
-      // pod spec has no port map — status-right is the user-facing surface
-      // for the chosen host ports, alongside the session id.
+      // Port forwarding runs through a per-connection relay stream into
+      // the pod, not any kubernetes port mapping, so the pod spec has no
+      // port map — status-right is the user-facing surface for the offered
+      // host ports, alongside the session id. Stamped at create time from
+      // what the server allocated, before any client bound one.
       const { stdout: statusRight } = await execInJob(jobName, [
         'tmux', '-S', CONTAINER_TMUX_SOCK,
         'show-option', '-t', 'yaac', 'status-right',
@@ -580,7 +670,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(r2.body).toBe('second server')
     }, 30_000)
 
-    it('surfaces the live forwarders on /worktree/list (feeds the webapp snapshot)', async () => {
+    it('surfaces the offered forwards on /worktree/list (feeds the webapp snapshot)', async () => {
       const res = await fetch(`${base}/worktree/list?project=kitchen`, { headers: auth })
       expect(res.status).toBe(200)
       const body = await res.json() as {
@@ -590,6 +680,59 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       // Same mappings the create stream reported, order-insensitive.
       const got = new Map(body.worktrees[0].forwardedPorts.map((p) => [p.containerPort, p.hostPort]))
       expect(got).toEqual(hostPortFor)
+    }, 30_000)
+
+    // ── `yaac forward`'s own surface ────────────────────────────────
+    // The listener is the client's on this substrate, so the command that
+    // holds it is part of the feature rather than a convenience wrapper.
+    // One case per argument and option, all against the session already up.
+
+    it('forwards every running worktree when told no session, on the address asked for', async () => {
+      // Both halves at once: the bare form discovers what to bind from the
+      // server rather than being told, and `--bind` puts it somewhere other
+      // than loopback — which is also what keeps this from colliding with
+      // the resident forwarder already holding these ports on 127.0.0.1.
+      const everything = startForwardCli('--bind', '127.0.0.3')
+      try {
+        const lines = await everything.ready(PORT_FORWARD.length)
+        for (const [containerPort, hostPort] of hostPortFor) {
+          expect(lines.join('\n')).toContain(`127.0.0.3:${hostPort} -> `)
+          expect(lines.join('\n')).toContain(`:${containerPort}`)
+        }
+
+        await startHttpServerInContainer(jobName, 8085, '127.0.0.1', 'hello bind')
+        const res = await httpGet(`http://127.0.0.3:${hostPortFor.get(8080)!}/`)
+        expect(res.status).toBe(200)
+        expect(res.body).toBe('hello ipv4')
+      } finally {
+        await everything.stop()
+      }
+    }, 60_000)
+
+    it('forwards exactly the ports --port names, on the local port it names', async () => {
+      // The escape hatch from what the server offers: a port it has not
+      // heard of, or one wanted on a different local number. Nothing is
+      // polled here — the user said what they wanted.
+      const explicit = startForwardCli(worktreeId, '--port', '8080:20500', '-p', '8081')
+      try {
+        const lines = await explicit.ready(2)
+        expect(lines.join('\n')).toContain('127.0.0.1:20500 -> ')
+        // A bare `-p 8081` means the same port on both sides — and 8081 is
+        // free on the host precisely because the config mapped it to 20010.
+        expect(lines.join('\n')).toContain('127.0.0.1:8081 -> ')
+
+        const res = await httpGet('http://127.0.0.1:20500/')
+        expect(res.status).toBe(200)
+        expect(res.body).toBe('hello ipv4')
+      } finally {
+        await explicit.stop()
+      }
+    }, 60_000)
+
+    it('refuses a session it cannot resolve, rather than binding nothing forever', async () => {
+      const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'forward', 'no-such-session')
+      expect(exitCode).not.toBe(0)
+      expect(`${stdout}${stderr}`).toMatch(/no-such-session|not found/i)
     }, 30_000)
 
     // The review pane's data. The pod-side script resolves the fork point and
@@ -671,9 +814,9 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     }, 30_000)
 
     it('relay accepts sequential requests while the event loop stays responsive', async () => {
-      // Regression: startPortForwarders needs the Node event loop to
-      // accept TCP connections. A wedged event loop would let the first
-      // request through and silently drop the rest.
+      // Regression: the forwarder needs the Node event loop to accept TCP
+      // connections. A wedged event loop would let the first request
+      // through and silently drop the rest.
       await startHttpServerInContainer(jobName, 8084, '127.0.0.1', 'sequential')
       const hostPort = hostPortFor.get(8084)!
       for (let i = 0; i < 3; i++) {
@@ -748,6 +891,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       const mapping = await res.json() as { containerPort: number; hostPort: number }
       expect(mapping.containerPort).toBe(8090)
 
+      await waitForLocalListener(mapping.hostPort)
       const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
       expect(page.status).toBe(200)
       expect(page.body).toBe('detected server')
@@ -791,6 +935,7 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       expect(res.status).toBe(200)
       const mapping = await res.json() as { containerPort: number; hostPort: number }
 
+      await waitForLocalListener(mapping.hostPort)
       const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
       expect(page.body).toBe('persisted server')
 
@@ -1002,34 +1147,31 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       ])
     }, 120_000)
 
-    it('holds its streams with zero kubectl execs into session pods', async () => {
-      // The stream relay's measurable claim: in steady state — status
-      // watcher stream live, forward listeners registered, terminals just
-      // exercised — the server holds NO kubectl exec into any session pod.
-      // The long-lived `kubectl port-forward` children and the control
-      // API's socat execs into the PROXY deployment are expected and
-      // excluded by the job/ filter.
-      const { stdout } = await execFileAsync('ps', ['-A', '-o', 'ppid=,command='])
-      const serverPid = String(server!.lock.pid)
-      const children = stdout.split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.startsWith(`${serverPid} `))
-      const sessionPodExecs = children.filter(
-        (l) => /kubectl\s+exec\b/.test(l) && l.includes('job/'),
-      )
-      expect(sessionPodExecs).toEqual([])
-      // Two forwards, one per purpose — #drivers/k8s/substrate's port-forward keeps
-      // exactly one child per key, single-flighted: the relay's into the
-      // proxy, and the image registry's into its Deployment (the server's
-      // only route to it, spawned on the first push of this run). Matching
-      // the TARGETS rather than counting is what makes this catch a leak: a
-      // second child for either purpose is the failure worth naming, and a
-      // bare count would also fail for a forward that legitimately does not
-      // exist yet.
-      const forwards = children.filter((l) => /kubectl\s+port-forward\b/.test(l))
-      expect(forwards.filter((l) => /deploy\/yaac-proxy\b/.test(l))).toHaveLength(1)
-      expect(forwards.filter((l) => /deploy\/yaac-registry\b/.test(l))).toHaveLength(1)
-      expect(forwards).toHaveLength(2)
+    it('holds its streams with no kubectl child at all', async () => {
+      // The stream relay's measurable claim, read where the server actually
+      // is: in steady state — status watcher stream live, forward listeners
+      // registered, terminals just exercised — the server process holds no
+      // `kubectl exec` into any session pod.
+      //
+      // And now no `kubectl port-forward` either. The two host-side shims
+      // the relay and the registry used to need are gone with host-mode k8s
+      // (docs/server-in-cluster.md): a pod of the install namespace dials
+      // the proxy's Service and the registry's Service by name. A forward
+      // reappearing here means one of those paths fell back to the shape
+      // that only made sense outside the cluster.
+      //
+      // /proc rather than `ps`: the server image carries node, git and
+      // kubectl, not procps, and the question is only "what is running".
+      const { stdout } = await kubectlWithRetry([
+        'exec', '-n', k8sNamespace(), 'deployment/yaac-server', '--',
+        'sh', '-c', 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done',
+      ], { timeout: 60_000 })
+      const cmdlines = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+      // Sanity: we are reading a real process table, not an empty one.
+      expect(cmdlines.some((l) => /node .*cli\.js/.test(l))).toBe(true)
+
+      expect(cmdlines.filter((l) => /kubectl\s+exec\b/.test(l) && l.includes('job/'))).toEqual([])
+      expect(cmdlines.filter((l) => /kubectl\s+port-forward\b/.test(l))).toEqual([])
     })
 
     it('locks streamd ingress to the proxy (session ingress lock policy)', async () => {

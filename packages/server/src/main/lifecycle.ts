@@ -3,12 +3,18 @@ import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { readBuildId } from '@yaac/shared/build-id'
 import { readLock, removeLock } from '@yaac/shared/lock'
-import { isLockLive, isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
+import {
+  isLockLive,
+  isLockReady,
+  isSameHostLock,
+  type ServerLock,
+} from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
-import { assertDriverSwitchSafe, recordedDriver } from '#main/driver-choice'
+import { assertHostServerAllowed } from '#main/driver-choice'
+import { recordedDriver } from '@yaac/shared/install-driver'
 
 /**
  * Entry point for `yaac server start`.
@@ -25,7 +31,7 @@ export async function startServer(): Promise<void> {
   // Before the spawn, so a refusal reaches the operator directly: the
   // detached child dies before its log exists, and they would otherwise
   // wait out the ready poll for a timeout that explains nothing.
-  await assertDriverSwitchSafe()
+  await assertHostServerAllowed()
   const cliBuildId = await readBuildId()
 
   const existing = await readLock()
@@ -83,6 +89,34 @@ export async function stopServer(): Promise<void> {
   if (!await isLockLive(existing)) {
     await removeLock()
     console.error(`[yaac] removed stale lock (pid ${existing.pid})`)
+    return
+  }
+
+  if (!isSameHostLock(existing)) {
+    // The lock belongs to a server in a pod (docs/server-in-cluster.md),
+    // and it is LIVE — the check above judged an off-host lock by its
+    // lease, so getting here means one is being renewed right now.
+    //
+    // Removing it would be the worst available answer. The pod loses the
+    // lease at its next tick and exits, the Deployment restarts it, and
+    // the user who asked for a stop got a restart. Worse, a `yaac server
+    // start` in the same state would spawn a host process onto a data dir
+    // whose lock this command just cleared — the dual-writer the lease
+    // exists to prevent, manufactured by the thing meant to prevent it.
+    //
+    // Scaling the Deployment is what stops that server, and `yaac server
+    // stop` reaches it through `#drivers/k8s/install` before ever getting
+    // here. Getting here therefore means that path did not run — the
+    // cluster could not be asked — so say what is true and change nothing.
+    console.error(
+      `[yaac] this install's server runs in the cluster (lock held by `
+      + `${existing.host ?? 'another host'}, lease still being renewed), and `
+      + 'this command could not reach the cluster to scale it down.\n'
+      + '    Check your kubeconfig and cluster, then try again — or scale it '
+      + 'by hand:\n'
+      + '    kubectl -n <namespace> scale deployment/yaac-server --replicas=0',
+    )
+    process.exitCode = 1
     return
   }
 

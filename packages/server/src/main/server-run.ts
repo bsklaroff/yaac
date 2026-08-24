@@ -17,15 +17,18 @@ import { attachConvergence, releaseConvergence, stopConvergence } from '#main/co
 import { coalesceCalls, onWorktreeListChanged } from '#notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
 import { attachPty, type SocketLike } from '#runtime/terminals'
+import { TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/ports'
 import { attachAcp } from '#runtime/agents'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
+  newLeaseFields,
+  renewLease,
   serverLockPath,
   readLock,
   removeLock,
 } from '@yaac/shared/lock'
-import { isLockLive } from '@yaac/shared/server-lock-file'
+import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
@@ -33,7 +36,7 @@ import { setWorktreeDriver } from '#drivers/driver'
 import { listSshEntries } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
-import { resolveDriverKind } from '#main/driver-choice'
+import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { DriverKind } from '@yaac/shared/types'
@@ -121,8 +124,8 @@ export function torCoverageWarning(driver: DriverKind): string | undefined {
   return 'YAAC_USE_TOR is set, but the containerless driver runs workspaces '
     + 'directly on the host with no egress proxy, so agent traffic and '
     + 'anything a worktree does itself will NOT go through Tor. Only the '
-    + "server's own git operations are routed through it. Start with "
-    + '--driver k8s for Tor-covered workspaces.'
+    + "server's own git operations are routed through it. A cluster install "
+    + '(`yaac cluster install`) is what gives Tor-covered workspaces.'
 }
 
 // `FetchCallback` isn't re-exported from the package entry, so derive the
@@ -130,19 +133,21 @@ export function torCoverageWarning(driver: DriverKind): string | undefined {
 type ServeFetch = Parameters<typeof serve>[0]['fetch']
 
 /**
- * Bind the server's HTTP server on 127.0.0.1, preferring `startPort` and
- * auto-incrementing past any in-use port to the next free one. The actual
- * bound port is returned (and recorded in the lock file), so `yaac open` and
- * the dev-server proxy follow the server wherever it lands. `startPort` 0
- * asks the OS for an ephemeral port.
+ * Bind the server's HTTP server on `env.bindAddr` (loopback unless the
+ * deployment says otherwise), preferring `startPort` and auto-incrementing
+ * past any in-use port to the next free one. The actual bound port is
+ * returned (and recorded in the lock file), so `yaac open` and the
+ * dev-server proxy follow the server wherever it lands. `startPort` 0 asks
+ * the OS for an ephemeral port.
  */
 function bindServer(
   fetch: ServeFetch,
   startPort: number,
 ): Promise<{ server: ServerType; port: number }> {
+  const hostname = env.bindAddr
   return bindWithAutoIncrement(startPort, (port) =>
     new Promise<{ server: ServerType; port: number }>((resolve, reject) => {
-      const s = serve({ fetch, port, hostname: '127.0.0.1' }, (info) => {
+      const s = serve({ fetch, port, hostname }, (info) => {
         resolve({ server: s, port: info.port })
       })
       s.once('error', reject)
@@ -155,7 +160,7 @@ function bindServer(
  *
  * - If another server is already live, print its handshake and exit 0
  *   (idempotent).
- * - Otherwise bind 127.0.0.1:<port> (resolveServerPort: `--port`, else
+ * - Otherwise bind <env.bindAddr>:<port> (resolveServerPort: `--port`, else
  *   YAAC_SERVER_PORT, else DEFAULT_SERVER_PORT), write the lock, serve until
  *   SIGTERM / SIGINT, then unlink the lock and exit. If the preferred port is
  *   already in use it auto-increments to the next free one; the actual bound
@@ -174,12 +179,14 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await preflightHostTor()
   await ensureDataDir()
 
-  // `--driver`/`YAAC_DRIVER` when the operator stated one, else whatever
-  // this install last ran — a bare restart must not move a containerless
-  // install onto a cluster (see `#main/driver-choice`). After the data dir,
-  // because the record lives beside the lock; before anything can ask for a
-  // runtime, which is what makes an unregistered one a startup-order bug
-  // rather than a null branch downstream.
+  // Placement is the driver (see `#main/driver-choice`): a pod runs k8s, a
+  // host process runs containerless, and a host process against a k8s
+  // install is refused rather than allowed to become a second writer of the
+  // same data dir. After the data dir, because both the record and the
+  // refusal read beside the lock; before anything can ask for a runtime,
+  // which is what makes an unregistered one a startup-order bug rather than
+  // a null branch downstream.
+  await assertHostServerAllowed()
   const driverKind = await resolveDriverKind()
   setWorktreeDriver(
     driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
@@ -406,6 +413,50 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     }
   }))
 
+  // Port-forward tunnel: one WebSocket per forwarded TCP connection, the
+  // far end of a listener the CLIENT holds. The server binds no host port
+  // on either substrate — it is a pod under k8s, and under containerless
+  // the workspace binds its own — so `yaac forward` and the desktop app
+  // accept connections on the user's machine and open one of these for
+  // each. Auth rides the upgrade like every WS.
+  app.get('/forward/attach', nodeWs.upgradeWebSocket((c) => {
+    const id = c.req.query('id') ?? ''
+    const port = Number(c.req.query('port'))
+    return {
+      onOpen: (_evt, ws) => {
+        void (async () => {
+          const fail = (message: string): void => {
+            ws.close(TUNNEL_DIAL_FAILED, message)
+          }
+          if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            fail('bad port')
+            return
+          }
+          let workspaceId: string
+          try {
+            workspaceId = (await resolveWorktreeContainer(id, { requireRunning: true })).worktreeId
+          } catch {
+            fail('session not found or not running')
+            return
+          }
+          const raw = ws.raw as RawWebSocket | undefined
+          if (!raw) {
+            ws.close(1011, 'no raw socket')
+            return
+          }
+          attachPortTunnel(workspaceId, port, {
+            // Binary only, in both directions: this carries bytes.
+            send: (data) => raw.send(data),
+            close: (code, reason) => raw.close(code, reason),
+            onMessage: (cb) => raw.on('message', (data, isBinary) =>
+              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
+            onClose: (cb) => raw.on('close', () => cb()),
+          })
+        })()
+      },
+    }
+  }))
+
   // ACP conversation bridge: one chat pane per connection, attached to the
   // live `AcpConversation` the status watcher's driver holds. The PTY route's
   // twin — same auth-on-upgrade, same per-client disposability — but the
@@ -463,12 +514,37 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // the pre-bind fast-path check above; atomic create ensures exactly one
   // winner. Loser closes its server and exits 0 so the existing server
   // stays the source of truth.
-  const outcome = await acquireLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
+  const lease = newLeaseFields()
+  const outcome = await acquireLock({
+    pid: process.pid, port, secret, startedAt: Date.now(), buildId, ...lease,
+  })
   if (!outcome.acquired) {
     serverLog(`[server] already running pid=${outcome.existing.pid} port=${outcome.existing.port}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
+  // Renew the lease for as long as we hold it. This is what makes the lock
+  // readable across a container boundary, where the pid and the loopback
+  // `/health` port it used to be judged by mean nothing: a reader on the
+  // other side asks whether the heartbeat is still moving.
+  //
+  // On the local kind backend the data dir is a hostPath with no attach
+  // exclusivity, so this lease is the ONLY single-writer guard PGlite gets
+  // — losing it is losing the right to be the install's server, and the
+  // process exits rather than keep writing a database another server now
+  // owns. Unref'd so it never holds the loop open by itself.
+  const leaseTimer = setInterval(() => {
+    void renewLease(lease.instance ?? '').then((held) => {
+      if (held) return
+      serverLog('[server] lost the lock lease to another server — exiting')
+      process.exit(1)
+    }).catch((err: unknown) => {
+      // A failed renewal is not a lost lease: the next tick retries, and
+      // the staleness bound is four of them.
+      serverLog(`[server] lease renewal failed: ${String(err)}`)
+    })
+  }, LEASE_HEARTBEAT_MS)
+  leaseTimer.unref?.()
   // Open the DB only now that the lock is held (it is the single-writer
   // guard for PGlite), and restore the persisted tokens into the store built
   // empty above — both before the start banner below mints its exchange
@@ -481,7 +557,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   } catch (err) {
     serverLog(`[server] db init failed: ${String(err)}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
-    await removeLock(process.pid)
+    await removeLock({ pid: process.pid, instance: lease.instance })
     process.exit(1)
   }
   // DB is open and migrated: the server can now serve real requests, not
@@ -490,7 +566,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   ready = true
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
-  serverLog(`[server] ${torPrefix}listening on 127.0.0.1:${port} lock=${serverLockPath()}`)
+  serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
   // Start banner for the webapp. A loopback-only / nested server needs no
   // credential, so print a bare URL; otherwise carry a one-time exchange
   // token (single-use, time-bounded; `yaac open` mints fresh ones).
@@ -510,6 +586,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
     clearInterval(planUsageTimer)
+    clearInterval(leaseTimer)
     // Stop pushing. Teardown mutates plenty that clients can see — every
     // forwarder goes, reap ticks land — and rebuilding a snapshot against a
     // substrate we are in the middle of letting go of buys nothing: the
@@ -568,7 +645,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // Pass our pid so a shutdown that dragged past stopServer's 3s
     // force-remove window (e.g. wedged reconciler) can't unlink a
     // successor server's lock.
-    await removeLock(process.pid)
+    await removeLock({ pid: process.pid, instance: lease.instance })
     process.exit(0)
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))

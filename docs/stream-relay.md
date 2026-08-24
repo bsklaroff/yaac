@@ -24,7 +24,7 @@ browser ── WS ── server ──(A)── proxy pod ──(B)── worktr
                              relay listener :10260   streamd :10300
                              (auth + splice)         (pty/ctrl/exec/tcp)
 
-server = host process, proxy reached via one kubectl port-forward
+server = a pod of the install namespace, dialing the proxy's Service
 ```
 
 ### streamd (`dockerfiles/streamd/`)
@@ -91,9 +91,9 @@ pod-watch reverse index (labelSelector list on a miss), dial
 handshake, its reply, the payload — flows through untouched, so the
 protocol stays end-to-end server↔streamd. Per-stream failures (unknown
 worktree, pod dial failure) are answered with an `{ok:false}` line before
-closing — the server reads a silent close as a dead transport and
-re-establishes its shared port-forward, so a stale worktree's probe must
-not masquerade as one; only a bad auth line closes silently.
+closing — the server reads a silent close as a dead peer, so a stale
+worktree's probe must not masquerade as one; only a bad auth line closes
+silently.
 
 Nor may anything before the splice hang instead of answering. A worktree
 pod whose ingress policy has not yet admitted the proxy *drops* the SYN,
@@ -105,45 +105,29 @@ ordinary refusal instead.
 ### Server transport (`drivers/k8s/substrate/stream-relay.ts`)
 
 `relayDial` opens the TCP connection and pipelines both handshake lines.
-Address resolution, cached per run and re-resolved on transport failure:
+The address is the proxy's Service —
+`yaac-proxy.<namespace>.svc.cluster.local:10260` — dialed directly, because
+the server is a pod of that namespace (docs/server-in-cluster.md) and the
+proxy's ingress policy admits its pod selector on the relay port.
+`YAAC_RELAY_ADDR` is what the Deployment states it as, and it is honoured
+verbatim, so an install that puts the proxy somewhere else says so there
+rather than in code.
 
-1. `YAAC_RELAY_ADDR` — explicit override for hosts with a direct TCP
-   route to the proxy pod (e.g. a server running on the cluster node),
-   which skips the port-forward hop entirely.
-2. Otherwise: the local listener of ONE long-lived `kubectl
-   port-forward` to the proxy Deployment, respawned on death. This
-   deliberately keeps the proxy↔host hop on the apiserver: SPDY
-   multiplexes every stream over the one connection (a new stream is a
-   cheap stream-open, not an exec round trip), the per-byte cost is a
-   few Go userspace copies on a loopback-local hop, and in exchange the
-   host has zero listening ports, the kind config needs no port
-   mappings, and there is no cluster-shape dependency at all. The wins
-   the relay exists for — no kubectl child per stream, no
-   per-connection exec setup, worktree-pod bytes leaving via netstack
-   networking instead of the gVisor exec machinery — are unaffected by
-   this hop. Port-forward works here because the proxy is a runc pod
-   (CRI port-forward dials localhost in the pod netns, which a gVisor
-   pod's netstack would not answer).
-
-Recycling that shared forward drops every other stream with it, so one
-stream's failure tears it down only on evidence about the transport
-itself, and both qualifying signals are immediate: a connect error
-(nothing is listening) and a close before any reply byte (a dead forward
-accepts, then drops). A refusal proves the transport is fine. A timeout
-proves nothing either way — it is equally what a busy host, an apiserver
-list behind a pod-index miss, or an unreachable pod looks like — so it
-fails its own caller and leaves everyone else's streams alone. For the
-same reason a caller's command budget is floored before the dial
-deadline is derived from it: how fast one probe wants an answer is not a
-statement about the transport every worktree shares.
+Nothing is shared between streams, which is what makes failure handling
+trivial: every dial is its own TCP connection to a Service, so a failed one
+fails its own caller and leaves every other terminal, status stream and
+forwarded port untouched. One rule still guards against impatience, though:
+a caller's command budget is floored before the dial deadline is derived
+from it, because how fast one probe wants an answer is not a statement about
+how long a dial across the cluster legitimately takes.
 
 Adapters give each consumer the surface it already used, so the
 respawn/backoff, `bridge()`, forwarder-registry, and frontend WS logic
 are unchanged: `dialCtrlStream` (child-shaped, the status watcher's
-`spawnAttach`), `dialPtyStream` (PtyLike, the terminal bridge),
-`relayTcpFactory` (the port-forward RelayFactory), and `podExec`
-(the one-shot command runner behind tmux probes, terminal listing, view
-cleanup, status-right updates, the changes diff, and the opencode probe).
+`spawnAttach`), `dialPtyStream` (PtyLike, the terminal bridge), and
+`podExec` (the one-shot command runner behind tmux probes, terminal
+listing, view cleanup, status-right updates, the changes diff, and the
+opencode probe).
 
 ## The browser hop
 
@@ -203,11 +187,10 @@ The relay makes proxy→pod dialing real, so pod ingress is locked down
 with it (before, nothing dialed worktree pods and their ingress was
 default-allow by omission):
 
-- Proxy ingress (`buildProxyIngressNpManifest`): the relay port rides
-  the host-only rule. The server's own dials arrive via port-forward —
-  CRI dials localhost inside the pod netns, never traversing policy —
-  so the network-side allowance exists for host-identity dials only
-  (the YAAC_RELAY_ADDR node-local case); worktree pods cannot reach it.
+- Proxy ingress (`buildProxyIngressNpManifest`): the relay port is
+  admitted from the node CIDRs (netd's Envoy, the kubelet probe) and from
+  the SERVER's pod selector, which is how the server's own dials arrive
+  now that it is a pod. Worktree pods match neither and cannot reach it.
 - Worktree ingress lock (`buildWorktreeIngressLockNpManifest`): worktree
   pods accept only `app=yaac-proxy` on 10300, default-denying all other
   ingress.
@@ -218,5 +201,6 @@ default-allow by omission):
   without it — their terminals/status/forwards are dead after the server
   upgrade; restart the worktree. The reaper is unaffected (`unknown`
   probes don't reap; pod-informer evidence still drives cleanup).
-- The proxy control API still rides its kubectl exec tunnel
-  (`ExecTunnel`); moving it onto the relay port is an open follow-up.
+- The proxy control API is a plain Service dial like the relay, on the
+  proxy's own control port. Folding it onto the relay port is an open
+  follow-up; nothing depends on the two being separate.

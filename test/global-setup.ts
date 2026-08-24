@@ -11,7 +11,8 @@ import {
 } from '@yaac/server/drivers/k8s/install/builtin-images'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
-import { TEST_CLI_DIR } from '@yaac/test-utils/cli'
+import { TEST_CLI_DIR } from '@yaac/test-utils/cli-bundle'
+import { buildTestServerImage } from '@yaac/test-utils/deployed-server'
 
 const execFileAsync = promisify(execFile)
 
@@ -132,13 +133,13 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       )
     }
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
-  // netd's ClusterRole/Binding are cluster-scoped, so deleting the
-  // namespace above leaves them behind. Filter on the owning install
-  // namespace — a bare `app=yaac-netd` selector would also match the REAL
-  // install's RBAC and break the developer's own cluster.
+  // netd's and the test server's ClusterRole/Binding are cluster-scoped, so
+  // deleting the namespace above leaves them behind. Filter on the owning
+  // install namespace — a bare `app=yaac-netd` selector would also match the
+  // REAL install's RBAC and break the developer's own cluster.
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'clusterrole,clusterrolebinding', '-l', 'app=yaac-netd',
+      'get', 'clusterrole,clusterrolebinding', '-l', 'app in (yaac-netd,yaac-server)',
       '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout
@@ -226,6 +227,12 @@ export async function setup(): Promise<void> {
     // is unused by any e2e today — mirrored so a test that does exercise
     // the installer fails on what it is testing, not a missing image.
     await mirrorPinnedUpstreams()
+    // --- The dev server (dist-test/) --- the k8s tiers no longer spawn a
+    // host server: their server is a Deployment, exactly as an install's is
+    // (docs/server-in-cluster.md), so its image is a prebuilt like every
+    // other. Built from the frozen CLI bundle above, so the image a worker
+    // deploys is the same bundle its `runYaac` calls run.
+    await buildTestServerImage()
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

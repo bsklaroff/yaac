@@ -77,6 +77,7 @@ import {
   PRIORITY_CLASS_INFRA,
   PRIVILEGED_PSS_LABELS,
   ROLE_BUILDER,
+  SERVER_APP_NAME,
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
 import { nodeIpBlocks } from './cluster-cidrs'
@@ -263,6 +264,13 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  *    this namespace and e2e runs put their builders in per-run ones. The
  *    role label is unforgeable: the builder-role ValidatingAdmissionPolicy
  *    lets no ServiceAccount set it.
+ *  - **The server**, when it is one of this cluster's own pods
+ *    (docs/server-in-cluster.md). It pushes and HEADs here on every image
+ *    resolution, and in-cluster it dials the Service directly rather than
+ *    arriving from a node address through a port-forward — so without this
+ *    rule the server's first registry HEAD fails and every worktree create
+ *    reports the image as unbuilt. Selected across namespaces for the same
+ *    reason builders are: an e2e run puts its server in a per-run one.
  *
  * Worktree pods are deliberately absent. This does NOT stop a builder-origin
  * write (see the module header) — it stops everything that is not a builder
@@ -275,8 +283,8 @@ export function buildMainRegistryServiceManifest(): Record<string, unknown> {
  * hosts.toml beside them, and the fix is the same: `yaac cluster install`
  * re-renders all of it. Note the server's boot ensure does NOT
  * heal this, because it takes the cheap reachable-and-done path — the
- * registry is still reachable from the SERVER, which comes in over a
- * port-forward rather than from a node address. `cluster check`'s probe is
+ * registry is still reachable from the SERVER, which comes in by its own
+ * pod selector rather than from a node address. `cluster check`'s probe is
  * what surfaces it.
  */
 export function buildMainRegistryIngressNetworkPolicyManifest(
@@ -303,6 +311,13 @@ export function buildMainRegistryIngressNetworkPolicyManifest(
           from: [{
             namespaceSelector: {},
             podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
+          }],
+          ports: [registryPort],
+        },
+        {
+          from: [{
+            namespaceSelector: {},
+            podSelector: { matchLabels: { app: SERVER_APP_NAME } },
           }],
           ports: [registryPort],
         },

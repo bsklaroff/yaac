@@ -6,7 +6,7 @@
     "pnpm install",
     "pnpm build",
     "npm install -g .",
-    "yaac server start --driver containerless",
+    "yaac server start",
     "yaac auth fake claude-oauth",
     "yaac auth fake github",
     "yaac project add https://github.com/bsklaroff/yaac.git"

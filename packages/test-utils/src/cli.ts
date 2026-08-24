@@ -1,44 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir, findRepoRoot } from '@yaac/shared/paths'
+import { setDataDir } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
+import { deployTestServer } from '#deployed-server'
+import { TEST_CLI_DIR, TEST_CLI_ENTRY } from '#cli-bundle'
 import { e2eMkdtemp, removeScratchTree } from '#tmp'
 
-const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
-
-/**
- * The suite's own copy of the built CLI, taken from dist/ by
- * `buildCliBundle` (test/global-setup.ts) before any worker starts.
- *
- * A copy rather than dist/ itself because `pnpm watch` builds into dist/ on
- * every save, with `clean: true` — a save landing mid-run would otherwise
- * delete the binary these suites are spawning. Snapshotting once per run
- * decouples them: the watcher can rebuild dist/ as often as it likes and an
- * in-flight run keeps the bundle it started with. 7MB, so the copy costs
- * nothing next to what it buys.
- */
-export const TEST_CLI_DIR = path.join(REPO_ROOT, 'dist-test')
-
-/**
- * The built CLI, not `packages/cli/src/cli.ts` under tsx — every
- * `runYaac`/`spawnYaacServer` here is a fresh process, and tsx re-transpiles
- * the whole graph in each one: 1.3s for a CLI command, 16.4s for a server to
- * report ready, against 0.36s and 5.4s from the bundle. Across the suite's
- * ~160 CLI spawns and ~17 server spawns that is minutes per run.
- *
- * Rebuilt from source before every run, so this can never test a stale
- * bundle. It also means these suites exercise the artifact users actually
- * run — including its bundled-mode paths, where PACKAGE_ROOT is the
- * directory holding cli.js and the migrations, k8s manifests, builtin skills
- * and worktree-bin scripts are read from the copies beside it. That is why
- * the snapshot is the whole of dist/ and not just cli.js.
- */
-export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
+export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 
 /** Local alias — every spawn below runs `node TEST_CLI_ENTRY <args>`. */
 const ENTRY = TEST_CLI_ENTRY
@@ -235,21 +207,26 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
 }
 
 export interface SpawnedServer {
-  child: ChildProcess
   lock: ServerLock
   stop: () => Promise<void>
 }
 
 /**
- * Spawn a real `yaac server run` subprocess under the given env. Polls
- * for the lock file (5s budget) so the caller can read `.lock.port`
- * without races. The server leads its own process group; `stop()`
- * SIGTERMs that group, falling back to a group SIGKILL after 15s so the
- * server's forked children are reaped rather than orphaned.
+ * Give this test file a yaac server, and hand back the two things a file
+ * needs from one: a lock naming a loopback origin it can dial with a bearer
+ * it can present, and a way to stop it.
  *
- * Acquires the cross-worker server mutex before spawning so only one
- * yaac server exists across all parallel vitest workers at any time.
- * `stop()` releases it after the child has exited.
+ * Which KIND of server that is follows the driver, exactly as it does in
+ * production (docs/server-in-cluster.md). A containerless install's server
+ * is a host process, so this spawns one. A k8s install's server is a
+ * Deployment of the cluster it manages — there is no host-process form of
+ * it to spawn — so this applies one into the file's test namespace and
+ * forwards a local port to it (`#deployed-server`). Neither shape leaks
+ * past the return value.
+ *
+ * Acquires the cross-worker server mutex either way, so only one test
+ * server exists across all parallel vitest workers at a time; `stop()`
+ * releases it once the server is really gone.
  */
 export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   const releaseMutex = await acquireServerMutex()
@@ -260,15 +237,45 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
     await releaseMutex()
   }
 
+  let server: SpawnedServer
+  try {
+    server = env.YAAC_DRIVER === 'containerless'
+      ? await spawnHostServer(env)
+      : await deployTestServer({ env })
+  } catch (err) {
+    await releaseOnce()
+    throw err
+  }
+
+  return {
+    lock: server.lock,
+    stop: async (): Promise<void> => {
+      try {
+        await server.stop()
+      } finally {
+        await releaseOnce()
+      }
+    },
+  }
+}
+
+/**
+ * Spawn a real `yaac server run` subprocess under the given env. Polls
+ * for the lock file (60s budget) so the caller can read `.lock.port`
+ * without races. The server leads its own process group; `stop()`
+ * SIGTERMs that group, falling back to a group SIGKILL after 15s so the
+ * server's forked children are reaped rather than orphaned.
+ */
+async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
   const child = spawn(process.execPath, [ENTRY, 'server', 'run', '--port', '0'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
     // Make the server its own process-group leader (setsid) so `stop()`
     // can signal the whole group. The server forks long-lived children
-    // (`kubectl port-forward`/`exec` relays) that inherit this pgid; a
-    // group kill reaps them even on the SIGKILL path, instead of leaving
-    // them orphaned to accumulate across the serialized e2e files until
-    // the cgroup pid ceiling is hit and `fork()` starts returning EAGAIN.
+    // that inherit this pgid; a group kill reaps them even on the SIGKILL
+    // path, instead of leaving them orphaned to accumulate across the
+    // serialized e2e files until the cgroup pid ceiling is hit and
+    // `fork()` starts returning EAGAIN.
     detached: true,
   })
 
@@ -296,44 +303,37 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
     // orphaned servers pile up across the serialized suites until the box
     // runs out of memory.
     killGroup(child, 'SIGKILL')
-    await releaseOnce()
     throw err
   }
 
   const stop = async (): Promise<void> => {
-    try {
-      if (child.exitCode === null) {
-        // SIGTERM the whole group: the server runs its shutdown handler
-        // (which calls `removeLock()`, so lock-cleanup assertions stay
-        // green), and its `kubectl port-forward`/`exec` children get the
-        // signal directly rather than waiting on the server to tear them
-        // down.
-        killGroup(child, 'SIGTERM')
-        await new Promise<void>((resolve) => {
-          // Give the server up to 15s to finish its current background-loop
-          // tick (worktree reconcile, blocked-host persist) before we
-          // force-kill. SIGKILL bypasses the shutdown handler's
-          // `removeLock()` call, so a too-short timeout leaves stale lock
-          // files and flakes tests that assert on lock cleanup.
-          const t = setTimeout(() => {
-            // SIGKILL the group, not just the server: a force-killed server
-            // never reaps its children, so without this they orphan and
-            // leak across the serialized e2e files.
-            killGroup(child, 'SIGKILL')
-            resolve()
-          }, 15000)
-          child.once('exit', () => {
-            clearTimeout(t)
-            resolve()
-          })
-        })
-      }
-    } finally {
-      await releaseOnce()
-    }
+    if (child.exitCode !== null) return
+    // SIGTERM the whole group: the server runs its shutdown handler
+    // (which calls `removeLock()`, so lock-cleanup assertions stay
+    // green), and its forked children get the signal directly rather
+    // than waiting on the server to tear them down.
+    killGroup(child, 'SIGTERM')
+    await new Promise<void>((resolve) => {
+      // Give the server up to 15s to finish its current background-loop
+      // tick (worktree reconcile, blocked-host persist) before we
+      // force-kill. SIGKILL bypasses the shutdown handler's
+      // `removeLock()` call, so a too-short timeout leaves stale lock
+      // files and flakes tests that assert on lock cleanup.
+      const t = setTimeout(() => {
+        // SIGKILL the group, not just the server: a force-killed server
+        // never reaps its children, so without this they orphan and
+        // leak across the serialized e2e files.
+        killGroup(child, 'SIGKILL')
+        resolve()
+      }, 15000)
+      child.once('exit', () => {
+        clearTimeout(t)
+        resolve()
+      })
+    })
   }
 
-  return { child, lock, stop }
+  return { lock, stop }
 }
 
 /**

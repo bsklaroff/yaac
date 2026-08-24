@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll } from 'vitest'
 import { TEST_NAMESPACE } from './setup'
+import { deleteTestServerClusterRbac } from './deployed-server'
 import { installRealWorktreeDriver } from './real-driver'
 
 const execFileAsync = promisify(execFile)
@@ -40,6 +41,11 @@ installRealWorktreeDriver()
  * namespace. A file that never created the namespace deletes nothing.
  */
 afterAll(async () => {
+  // The server's ClusterRole/Binding first: cluster-scoped objects do not
+  // cascade with the namespace that owns them (netd's have the same
+  // problem), so a file that deployed a server would otherwise leave a
+  // binding per run behind for the global sweep to find.
+  await deleteTestServerClusterRbac(TEST_NAMESPACE)
   try {
     await execFileAsync(
       'kubectl',

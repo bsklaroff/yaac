@@ -117,6 +117,61 @@ export const ROLE_BUILDER = 'builder'
 /** ServiceAccount the proxy uses to watch pods (source-IP -> worktree). */
 export const PROXY_SA_NAME = 'yaac-proxy'
 
+/**
+ * Deployment/Service name, ServiceAccount and pod selector label of the
+ * yaac server itself, which under this driver is a pod in the install
+ * namespace rather than a process beside the cluster
+ * (docs/server-in-cluster.md).
+ *
+ * The datapath names it in three places the server's own code applies —
+ * the world-egress default-deny excludes it (a server that cannot reach
+ * github clones nothing), the proxy's ingress admits its control and relay
+ * dials, and its own ingress policy selects it — so the name lives in this
+ * zero-import vocabulary with the rest of the datapath rather than in the
+ * install feature that deploys it.
+ */
+export const SERVER_APP_NAME = 'yaac-server'
+export const SERVER_SA_NAME = 'yaac-server'
+/** NetworkPolicy admitting the server pod's API only from node addresses. */
+export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
+/** Port the server listens on inside its pod (container + Service port). */
+export const SERVER_POD_PORT = 8787
+/**
+ * NodePort the server Service publishes, and the node end of the kind
+ * `extraPortMapping` that makes it a fixed host loopback origin. Fixed
+ * rather than allocator-assigned because the mapping is written into the
+ * cluster's config at CREATE time — the two halves have to agree before
+ * either exists, and coexisting installs are separate clusters, so only
+ * the HOST port has to vary between them.
+ */
+export const SERVER_NODE_PORT = 30787
+/**
+ * The uid the server pod runs as, and therefore the uid every path it
+ * creates for a worktree pod is owned by (`podUid()` is `process.getuid()`,
+ * which IS this number inside the pod). Pinned rather than inherited
+ * because a container has no ambient user to inherit from; the worktree
+ * image chain bakes the same number as its `YAAC_UID` build arg, so a host
+ * whose own uid differs re-tags its images once.
+ */
+export const SERVER_POD_UID = 1000
+
+
+/**
+ * `host:port` of the proxy's Service, in-cluster DNS.
+ *
+ * The one way anything reaches the proxy's own listeners now that the
+ * server is a pod of the same namespace (docs/server-in-cluster.md): the
+ * control API and the stream relay are ordinary pod-to-pod dials, admitted
+ * by the proxy's ingress policy on the server's pod selector.
+ *
+ * A FULL `.svc.cluster.local` name for the same reason the registry uses
+ * one — a worktree resolves it through the proxy's split-horizon DNS, which
+ * forwards only `.cluster.local` to CoreDNS. Namespace is a parameter so
+ * this stays part of the zero-import vocabulary.
+ */
+export function proxyServiceHost(namespace: string, port: number): string {
+  return `${PROXY_APP_NAME}.${namespace}.svc.cluster.local:${String(port)}`
+}
 
 /** Name of the builder-role admission guard (policy + binding). */
 export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'

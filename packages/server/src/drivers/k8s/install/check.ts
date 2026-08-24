@@ -15,6 +15,8 @@ import {
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   PROXY_APP_NAME,
+  SERVER_APP_NAME,
+  SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   TRANSPARENT_HTTPS_PORT,
@@ -1409,6 +1411,30 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         + ' && echo NP_REGISTRY_OPEN || echo NP_REGISTRY_LOCKED'
       : ''
 
+    // Fourth leg, same pod: the SERVER. On a local install the API is
+    // credential-optional and the server pod binds 0.0.0.0, so the ingress
+    // NetworkPolicy — everything EXCEPT the pod CIDRs — is the entire wall
+    // between an untrusted worktree and an unauthenticated control plane
+    // (docs/server-in-cluster.md). That makes it exactly the kind of
+    // property to PROVE on every install rather than assume was applied,
+    // like the apiserver and forgery-lock denials above. Absent Service →
+    // this cluster has not been converged yet (or was created before the
+    // server was published through it), so there is nothing to reach and
+    // nothing to prove; install is what puts one there.
+    let serverIp: string | null = null
+    try {
+      const { stdout } = await execFileAsync('kubectl', [
+        'get', 'svc', SERVER_APP_NAME, '-n', ns, '-o', 'jsonpath={.spec.clusterIP}',
+      ])
+      serverIp = stdout.trim() || null
+    } catch {
+      serverIp = null
+    }
+    const serverCheck = serverIp
+      ? `; nc -w 4 ${serverIp} ${SERVER_POD_PORT} </dev/null >/dev/null 2>&1`
+        + ' && echo NP_SERVER_OPEN || echo NP_SERVER_LOCKED'
+      : ''
+
     const imageRef = await pushImageToRegistry(PROBE_LOCAL_TAG)
     const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
@@ -1431,7 +1457,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           command: [
             'sh', '-c',
             `nc -w 4 ${apiserverIp} 443 </dev/null && echo NP_REACHED || echo NP_BLOCKED`
-            + proxyCheck + registryCheck,
+            + proxyCheck + registryCheck + serverCheck,
           ],
         }],
       },
@@ -1472,6 +1498,20 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
           + 'pods. Restart the yaac server so both policies are re-applied.',
       }
     }
+    if (logs.includes('NP_SERVER_OPEN')) {
+      return {
+        name: 'egress', status: 'fail',
+        detail: 'a session-labeled pod reached the yaac server directly — on a '
+          + 'local install its API is credential-optional, so any session could '
+          + 'drive the control plane that manages every other one',
+        fix: 'The server-ingress NetworkPolicy must admit the server port from '
+          + 'everything EXCEPT the pod CIDRs, so a pod dialing the Service or '
+          + 'pod IP is dropped while NodePort traffic is not. Not the node '
+          + 'CIDRs: kube-proxy masquerades in POSTROUTING, after the filter '
+          + 'hook, so policy sees the original off-cluster source. Re-run '
+          + '`yaac cluster install`, which applies it with the Deployment.',
+      }
+    }
     if (logs.includes('NP_PROXY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
@@ -1491,10 +1531,12 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       const denied: string[] = []
       if (proxyIp) denied.push('a transparent port directly (forgery lock holds)')
       if (registryIp) denied.push('the image registry')
+      if (serverIp) denied.push('the yaac server')
       const deniedHalf = denied.length ? `, and cannot dial ${denied.join(', nor ')}` : ''
       const unverified: string[] = []
       if (!proxyIp) unverified.push('proxy not deployed — forgery-lock half unverified')
       if (!registryIp) unverified.push('registry not deployed — that half unverified')
+      if (!serverIp) unverified.push('server not deployed in-cluster — that half unverified')
       const unverifiedHalf = unverified.length ? ` (${unverified.join('; ')})` : ''
       return {
         name: 'egress', status: 'pass',

@@ -28,6 +28,7 @@ import {
   resolveNetdImageTag,
   resolveProxyImageTag,
 } from '#drivers/k8s/cluster'
+import { SERVER_POD_UID } from '#drivers/k8s/substrate'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
@@ -179,7 +180,11 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   })
 
   const prefix = testEnv.imagePrefix ?? 'yaac'
-  const { base, tools, nestable } = await resolveTrustedLayers(prefix)
+  // Built for the SERVER's uid, not this machine's. The server that resolves
+  // these tags is the in-cluster Deployment, which runs as SERVER_POD_UID —
+  // so a host whose own uid differs (macOS's 501) builds the same images the
+  // server will look up rather than a set only it could use.
+  const { base, tools, nestable } = await resolveTrustedLayers(prefix, SERVER_POD_UID)
 
   deps.log('Ensuring the worktree image chain (base → tools → nestable)...')
   for (const layer of [base, tools, nestable]) {

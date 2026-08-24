@@ -44,12 +44,12 @@ do not assume it succeeded or is still up. Check:
 curl -s http://127.0.0.1:8787/health   # -> {"ok":true,"buildId":...,"ready":true,"driver":...}
 ```
 
-If nothing answers, start it. In a **container** name the driver, since a
-data dir with nothing recorded defaults to `k8s`, which cannot work here:
+If nothing answers, start it. `yaac server start` is always a containerless
+host server — the k8s driver's server is a pod, deployed by `yaac cluster
+install` — so this works in a container as well as on a host:
 
 ```bash
-yaac server start --driver containerless   # container
-yaac server start                          # host: honors the recorded driver
+yaac server start
 ```
 
 Subcommands: `start|stop|restart|logs` — there is no `status`; use `/health`
@@ -152,7 +152,7 @@ If they are set and answering, use them as-is. Otherwise export the whole set
 
 ```bash
 export YAAC_DATA_DIR=/tmp/yaac-dev-$$ YAAC_SERVER_PORT=8890
-yaac server start --driver containerless
+yaac server start
 ```
 
 **k8s** — its own cluster:
@@ -161,8 +161,8 @@ yaac server start --driver containerless
 export YAAC_DATA_DIR="$HOME/.yaac-dev" YAAC_SERVER_PORT=8890 \
        YAAC_K8S_NAMESPACE=yaac-dev YAAC_KIND_CLUSTER=yaac-dev \
        KUBECONFIG="$HOME/.kube/yaac-dev.config"
+# install deploys the server too, as a pod of that cluster
 yaac cluster install && yaac cluster check
-yaac server start --driver k8s
 ```
 
 Never run `cluster install`/`delete` without `YAAC_KIND_CLUSTER` pointed at a

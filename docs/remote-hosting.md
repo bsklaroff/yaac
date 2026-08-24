@@ -47,17 +47,28 @@ yaac auth token create laptop
 ```
 
 Optional — make forwarded dev-server ports reachable from other tailnet
-devices (they bind the server's loopback by default):
+devices. The server offers the mappings but binds nothing
+(docs/port-forward-tunnel.md), so this is two things: a forwarder running
+on that machine, and telling the webapp where it binds.
 
 ```sh
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
+yaac server restart
+yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
 
-With that set, a worktree's forwarded port `19500` is
+With both, a worktree's forwarded port `19500` is
 `http://srv.<tailnet>.ts.net:19500/` from any tailnet device, and the
 webapp's port chips link there automatically. Two caveats: the port is
-reachable by any tailnet device (not yaac-token-gated), and it is no longer
-reachable from the server's own loopback.
+reachable by any tailnet device (not yaac-token-gated), and it is only
+reachable while `yaac forward` runs — give it a systemd unit beside the
+server's.
+
+A client device can hold the listeners instead, and get `localhost:19500`
+of its own: `yaac forward` on a laptop pointed at the remote (`yaac remote
+set`) tunnels over the same authenticated WebSocket, so nothing but the
+server's HTTPS port has to be reachable. That is also what the desktop app
+does automatically once it is attached to the remote.
 
 ## Client setup
 
@@ -166,6 +177,4 @@ Semantics to keep in mind:
 - **Reboot durability** (systemd unit for the server, cluster restart on
   boot) — run `yaac cluster install && yaac server start` after a
   server reboot for now.
-- `yaac port-forward`-style tunnels that preserve `localhost:<port>` on the
-  client.
 - Multi-user access.

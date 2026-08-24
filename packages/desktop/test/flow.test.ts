@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ServerTarget } from '@yaac/shared/server-api'
+import type { DriverKind } from '@yaac/shared/types'
 import type { FlowDeps } from '#flow'
 import { buildWebappUrl, runFlow } from '#flow'
 
@@ -12,6 +13,9 @@ interface FakeOptions {
   ensure?: (target: ServerTarget) => Promise<void>
   mint?: () => Promise<string>
   rendererBaseUrl?: string
+  /** What the data dir records it runs. Undefined is a data dir no server
+   *  has ever started in, which the spawn path has to keep serving. */
+  driver?: DriverKind
 }
 
 function fakeDeps(opts: FakeOptions = {}) {
@@ -26,6 +30,7 @@ function fakeDeps(opts: FakeOptions = {}) {
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next)
     },
     startLocalServer: start,
+    recordedDriver: () => Promise.resolve(opts.driver),
     ensureAuthDaemon: ensure,
     mintToken: opts.mint ?? (() => Promise.resolve('t0ken')),
     onStatus: (text) => {
@@ -57,6 +62,25 @@ describe('runFlow', () => {
     expect(statuses).toContain('Starting the local yaac server…')
     // Ensured against the re-resolved target, after the server came up.
     expect(ensure).toHaveBeenCalledWith(LOCAL)
+  })
+  it('a k8s install is told to converge its cluster, never spawned into', async () => {
+    // Its server is a Deployment, so there is no host process to start —
+    // spawning would at best be a slow no-op and at worst put a second
+    // server on one data dir.
+    const { deps, statuses, start } = fakeDeps({
+      resolve: [new Error('lock held by yaac-server-abc')],
+      driver: 'k8s',
+    })
+
+    const result = await runFlow(deps)
+
+    expect(start).not.toHaveBeenCalled()
+    expect(statuses).not.toContain('Starting the local yaac server…')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    // The recovery command, and the resolve error that explains why.
+    expect(result.error.hint).toContain('yaac cluster install')
+    expect(result.error.detail).toContain('lock held by yaac-server-abc')
   })
   it('a failed auth-daemon ensure never fails the flow', async () => {
     const { deps, ensure } = fakeDeps({

@@ -188,12 +188,20 @@ export interface TrustedLayers {
  * derive their tags from here, so the tag the install pushes is by
  * construction the tag a worktree create looks up.
  */
-export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLayers> {
+export async function resolveTrustedLayers(
+  prefix = 'yaac',
+  forUid?: number,
+): Promise<TrustedLayers> {
   // The uid is a build input (YAAC_UID arg, see podUid) and is folded into
   // the root layer's content hash, so a uid change invalidates the tag just
-  // like a Dockerfile edit — which is also what makes an install and the
-  // server it builds for agree only while they run as the same user.
-  const uid = podUid()
+  // like a Dockerfile edit.
+  //
+  // It defaults to this process's own, which is exactly right for the
+  // server: `podUid()` IS the uid the server creates hostPath dirs as, in a
+  // pod or on a host. `yaac cluster install` passes the SERVER's uid
+  // instead, because it is building for a server it is about to deploy
+  // rather than for itself.
+  const uid = forUid ?? podUid()
 
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseHash = await baseImageHash(baseDockerfile)

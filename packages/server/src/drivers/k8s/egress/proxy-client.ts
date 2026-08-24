@@ -17,7 +17,7 @@ import {
 import {
   PROXY_APP_NAME,
   PROXY_PORT,
-  ExecTunnel,
+  proxyServiceHost,
   k8sNamespace,
   kubectlGetJson,
   kubectlWithRetry,
@@ -142,6 +142,21 @@ export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
 
 export interface ProxyClientConfig {
   image: string
+  /**
+   * Where THIS process reaches the proxy's control API, when that is not
+   * where the server reaches it.
+   *
+   * The server dials the proxy's Service — it is a pod of the same
+   * namespace, and the proxy's ingress policy admits its pod selector on
+   * this port (docs/server-in-cluster.md). Nothing in production sets this.
+   *
+   * What does is the e2e harness, which drives the driver's own modules
+   * from the HOST, where a ClusterIP names nothing: it hands in a loopback
+   * origin of its own making. A resolver rather than a string because the
+   * proxy pod does not exist until `ensureRunning` has applied it, so the
+   * reachability cannot be established before the client is constructed.
+   */
+  controlOrigin?: () => Promise<string>
 }
 
 /**
@@ -162,6 +177,11 @@ export interface ProxyClientConfig {
  */
 const tunnelFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
   fetch(url, { signal: AbortSignal.timeout(15_000), ...init })
+
+/** The proxy's control API, at its Service — where the server dials it. */
+function proxyControlOrigin(): string {
+  return `http://${proxyServiceHost(k8sNamespace(), PROXY_PORT)}`
+}
 
 export class ProxyClient {
   private running = false
@@ -184,7 +204,6 @@ export class ProxyClient {
    */
   private legacySpawnQueue = false
   private authSecret: string | null = null
-  private readonly forward = new ExecTunnel(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
   // callers (e.g. two parallel worktree creates) don't race into two
   // parallel bootstrap passes.
@@ -193,14 +212,12 @@ export class ProxyClient {
   constructor(private config: ProxyClientConfig) {}
 
   /**
-   * Server-side base URL: a loopback exec tunnel into the proxy pod
-   * (kubectl exec + socat — see ExecTunnel for why not `kubectl
-   * port-forward`). The proxy itself is reachable only inside the cluster.
+   * Base URL of the proxy's control API for this process — the proxy's own
+   * Service, unless the caller was handed somewhere else to dial (see
+   * `ProxyClientConfig.controlOrigin`).
    */
-  private get baseUrl(): string {
-    const port = this.forward.currentPort
-    if (!port) throw new Error('Proxy not started — call ensureRunning() first')
-    return `http://127.0.0.1:${port}`
+  private async controlBase(): Promise<string> {
+    return this.config.controlOrigin?.() ?? proxyControlOrigin()
   }
 
   private requireAuthSecret(): string {
@@ -241,7 +258,7 @@ export class ProxyClient {
   }
 
   async getCaCert(): Promise<string> {
-    const res = await tunnelFetch(`${this.baseUrl}/ca.pem`)
+    const res = await tunnelFetch(`${await this.controlBase()}/ca.pem`)
     if (!res.ok) throw new Error(`Failed to fetch CA cert: ${res.status}`)
     return res.text()
   }
@@ -254,7 +271,7 @@ export class ProxyClient {
    * trust set with a superset. See docs/nested-containers.md.
    */
   async getCaBundle(): Promise<string> {
-    const res = await tunnelFetch(`${this.baseUrl}/ca-bundle.pem`)
+    const res = await tunnelFetch(`${await this.controlBase()}/ca-bundle.pem`)
     if (!res.ok) throw new Error(`Failed to fetch CA bundle: ${res.status}`)
     return res.text()
   }
@@ -305,7 +322,7 @@ export class ProxyClient {
     init: Parameters<typeof tunnelFetch>[1],
   ): Promise<Response> {
     const id = encodeURIComponent(worktreeId)
-    return await tunnelFetch(`${this.baseUrl}/worktrees/${id}${suffix}`, init)
+    return await tunnelFetch(`${await this.controlBase()}/worktrees/${id}${suffix}`, init)
   }
 
   async removeWorktree(worktreeId: string): Promise<void> {
@@ -359,7 +376,7 @@ export class ProxyClient {
    * `ProxyEventStream` aborts through `signal` when the pings stop.
    */
   async openEvents(signal: AbortSignal): Promise<Response> {
-    return fetch(`${this.baseUrl}/events`, {
+    return fetch(`${await this.controlBase()}/events`, {
       signal,
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
@@ -371,7 +388,7 @@ export class ProxyClient {
    * worktree's HTTP response open until `postMamaResults` (or its TTL).
    */
   async fetchPendingMamaRequests(): Promise<PendingMamaRequest[]> {
-    const res = await tunnelFetch(`${this.baseUrl}/cmd/pending`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/cmd/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     // A proxy predating the command envelope serves only the spawn queue.
@@ -407,7 +424,7 @@ export class ProxyClient {
         error: r.error,
       }))
       : results
-    const res = await tunnelFetch(`${this.baseUrl}${path}`, {
+    const res = await tunnelFetch(`${await this.controlBase()}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -426,7 +443,7 @@ export class ProxyClient {
    * could express (docs/legacy-compat-shims.md).
    */
   private async fetchLegacyPendingSpawns(): Promise<PendingMamaRequest[]> {
-    const res = await tunnelFetch(`${this.baseUrl}/spawn/pending`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/spawn/pending`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
@@ -462,7 +479,7 @@ export class ProxyClient {
   async attachIfRunning(): Promise<boolean> {
     if (this.running) {
       try {
-        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
         if (res.ok) return true
       } catch {
         this.running = false
@@ -471,8 +488,7 @@ export class ProxyClient {
     try {
       const secret = await readExistingProxyAuthSecret()
       if (!secret) return false
-      await this.forward.ensure()
-      const res = await tunnelFetch(`${this.baseUrl}/healthz`)
+      const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
       if (!res.ok) return false
       this.authSecret = secret
       this.running = true
@@ -490,7 +506,7 @@ export class ProxyClient {
    */
   async uploadSshKey(host: string, keyPath: string, knownHostsEntry: string): Promise<void> {
     const keyPem = await fs.readFile(keyPath, 'utf8')
-    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/agent/keys`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -506,7 +522,7 @@ export class ProxyClient {
 
   /** Clear every identity from the proxy's ssh-agent. */
   async clearSshKeys(): Promise<void> {
-    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/agent/keys`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
@@ -518,7 +534,7 @@ export class ProxyClient {
 
   /** List identities currently loaded into the proxy's ssh-agent. */
   async listAgentKeys(): Promise<Array<{ fingerprint: string; comment: string }>> {
-    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${await this.controlBase()}/agent/keys`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
@@ -584,7 +600,7 @@ export class ProxyClient {
    */
   async listWorktrees(): Promise<string[]> {
     const headers = { 'Authorization': `Bearer ${this.requireAuthSecret()}` }
-    const res = await tunnelFetch(`${this.baseUrl}/worktrees`, { headers })
+    const res = await tunnelFetch(`${await this.controlBase()}/worktrees`, { headers })
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Failed to list proxy worktrees: ${res.status} ${text}`)
@@ -612,7 +628,7 @@ export class ProxyClient {
     // strategy swaps the pod.
     if (this.running) {
       try {
-        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
         if (res.ok) {
           if (this.deployVerifiedCurrent) return
           if (await this.isDeployedProxyCurrent()) {
@@ -633,7 +649,6 @@ export class ProxyClient {
     const imageRef = await this.ensureProxyImage()
     await ensureProxyResources(imageRef)
 
-    await this.forward.ensure()
     await this.waitForHealthy()
     this.running = true
     // The bootstrap just (re)applied the current manifest — no re-check
@@ -704,11 +719,11 @@ export class ProxyClient {
   private async waitForHealthy(): Promise<void> {
     for (let i = 0; i < 30; i++) {
       try {
-        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${await this.controlBase()}/healthz`)
         if (res.ok) return
       } catch {
-        // not ready yet — possibly a dead tunnel; respawn it
-        await this.forward.ensure().catch(() => { /* retried below */ })
+        // not ready yet — the Deployment is still rolling, or its Service
+        // has no endpoint behind it. Both heal on the next tick.
       }
       await new Promise((r) => setTimeout(r, 500))
     }
@@ -716,13 +731,12 @@ export class ProxyClient {
   }
 
   /**
-   * Drop the server-side control tunnel without touching the deployed
-   * proxy. Called from server shutdown — without it the tunnel's exec
-   * relay children outlive the server (orphaned to PID 1) and each
-   * restart stacks more.
+   * Forget that the proxy was verified running, without touching the
+   * deployed proxy. Called from server shutdown, and from anywhere the
+   * control API stops answering: the next call then re-verifies rather
+   * than trusting a cached `running`.
    */
   disconnect(): void {
-    this.forward.stop()
     this.running = false
   }
 
@@ -732,7 +746,7 @@ export class ProxyClient {
    */
   async stop(): Promise<void> {
     console.log('Stopping proxy...')
-    this.forward.stop()
+    this.running = false
     try {
       await kubectlWithRetry([
         'delete', 'deployment', PROXY_APP_NAME,

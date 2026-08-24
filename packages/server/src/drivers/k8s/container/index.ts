@@ -25,11 +25,6 @@
 // `kubectl exec` on it, which is why `runStreamingProcess` is on this barrel
 // while `killGroup` (host-procs' own reaping primitive) stays internal.
 //
-// Host TCP port reservation and relay forwarding are NOT here: they touch no
-// container engine, and keeping them here made #drivers/k8s/substrate (which
-// forwards through them) and this folder (which checks the cluster is up)
-// mutually dependent. They live in #lib/port.
-//
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/drivers/k8s/container/. What is not re-exported — the
 // platform-specific podman install instructions, the registry's readiness

@@ -5,7 +5,6 @@
 // client: handshake pipelining, error surfacing, and each adapter facade.
 import net from 'node:net'
 import crypto from 'node:crypto'
-import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // The relay's own boundary is the socket (a real listener below); its two
@@ -40,9 +39,7 @@ import {
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
-  invalidateRelayAddr,
   relayDial,
-  relayTcpFactory,
   podExec,
   podStreamToken,
   waitForStreamd,
@@ -69,36 +66,6 @@ function serveKubectl(): void {
       : podsPayload),
     stderr: '',
   }))
-}
-
-interface FakeChild {
-  stdout: EventEmitter & { unref: ReturnType<typeof vi.fn> }
-  stderr: EventEmitter & { unref: ReturnType<typeof vi.fn> }
-  on: (event: string, cb: (...args: unknown[]) => void) => void
-  unref: ReturnType<typeof vi.fn>
-  kill: ReturnType<typeof vi.fn>
-}
-
-/**
- * A stand-in for the top-level path's `kubectl port-forward` child: it
- * announces its local port the way the real one does and then just sits
- * there. `kill` is the observable that matters — killing this child is what
- * drops every other stream on the install, so which failures reach it IS
- * the behavior under test.
- */
-function fakePortForward(port: number): FakeChild {
-  const stdout = Object.assign(new EventEmitter(), { unref: vi.fn() })
-  const events = new EventEmitter()
-  setTimeout(() => stdout.emit('data', Buffer.from(`Forwarding from 127.0.0.1:${port} -> 10260\n`)), 0)
-  return {
-    stdout,
-    stderr: Object.assign(new EventEmitter(), { unref: vi.fn() }),
-    on: (event, cb) => { events.on(event, cb) },
-    // The shared port-forward registry unrefs the child and its pipes so a
-    // short-lived process that touched one can still exit.
-    unref: vi.fn(),
-    kill: vi.fn(),
-  }
 }
 
 interface Received {
@@ -226,48 +193,15 @@ describe('relayDial', () => {
       .rejects.toBeInstanceOf(RelayDialError)
   })
 
-  // Which failures recycle the SHARED transport is the load-bearing part:
-  // top-level that means killing the one port-forward every other stream
-  // rides, so a wrong verdict here drops every terminal on the install.
-  it('leaves the shared port-forward alive when a dial times out', async () => {
-    // No reply at all is exactly what a slow-but-live relay looks like, so
-    // it must condemn nothing: a host busy building images would otherwise
-    // take every session's terminals down with one impatient probe.
-    let dials = 0
-    relay = await startFakeRelay((r) => { if (++dials > 1) okThen(r) })
-    const child = fakePortForward(relay.port)
-    spawnMock.mockReturnValue(child)
-
-    await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 200 }))
-      .rejects.toThrow(/timeout after 200ms/)
-    expect(child.kill).not.toHaveBeenCalled()
-
-    // Still the same forward, so the next dial rides it rather than paying
-    // for a respawn (and every live stream on it survived).
-    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(spawnMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('leaves it alive for an oversized reply — bytes came back, so it is there', async () => {
-    relay = await startFakeRelay((r) => r.socket.write('x'.repeat(20 * 1024)))
-    const child = fakePortForward(relay.port)
-    spawnMock.mockReturnValue(child)
-
-    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
-      .rejects.toThrow(/oversized handshake reply/)
-    expect(child.kill).not.toHaveBeenCalled()
-  })
-
-  it('kills the shared port-forward when the relay closes before replying', async () => {
-    // Accept-then-drop with nothing said is what a dead forward does — the
-    // one signal that IS conclusive about the transport.
-    relay = await startFakeRelay((r) => r.socket.destroy())
-    const child = fakePortForward(relay.port)
-    spawnMock.mockReturnValue(child)
-
-    await expect(relayDial(SID, { kind: 'tcp', port: 80 }))
-      .rejects.toBeInstanceOf(RelayDialError)
-    expect(child.kill).toHaveBeenCalled()
+  it('dials the proxy Service when no explicit relay address is set', async () => {
+    // The address the DEPLOYMENT states, derived rather than required: the
+    // server is a pod of the proxy's own namespace, so the relay is an
+    // ordinary Service dial and there is no child process in between for a
+    // bad stream to condemn.
+    vi.stubEnv('YAAC_RELAY_ADDR', '')
+    await expect(relayDial(SID, { kind: 'tcp', port: 80 }, { timeoutMs: 2_000 }))
+      .rejects.toThrow(/yaac-proxy\.test-ns\.svc\.cluster\.local|ENOTFOUND|EAI_AGAIN/)
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 })
 
@@ -495,34 +429,6 @@ describe('dialPtyStream', () => {
   })
 })
 
-describe('relayTcpFactory', () => {
-  it('produces a child-shaped relay that splices stdin/stdout onto a tcp stream', async () => {
-    let handshake: Record<string, unknown> = {}
-    await withRelay((r) => {
-      handshake = r.handshake
-      okThen(r)
-      r.socket.on('data', (c: Buffer) => r.socket.write(c)) // echo
-      if (r.leftover.length > 0) r.socket.write(r.leftover)
-    })
-    const child = relayTcpFactory(SID)(3000)
-    const closed = new Promise<void>((resolve) => child.on('close', () => resolve()))
-    const echoed = new Promise<string>((resolve) => {
-      child.stdout?.on('data', (c: Buffer) => resolve(c.toString('utf8')))
-    })
-    child.stdin?.write('GET / HTTP/1.1\r\n')
-    expect(await echoed).toBe('GET / HTTP/1.1\r\n')
-    expect(handshake).toMatchObject({ kind: 'tcp', port: 3000 })
-    child.kill()
-    await closed
-  })
-
-  it('emits close when the dial fails so the forwarder drops the client', async () => {
-    vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1')
-    const child = relayTcpFactory(SID)(3000)
-    await new Promise<void>((resolve) => child.on('close', () => resolve()))
-  })
-})
-
 describe('waitForStreamd', () => {
   // Fake timers make Date.now() advance through the injected sleep, so the
   // heal threshold and deadline are exercised without real waiting.
@@ -616,24 +522,5 @@ describe('bootStreamd', () => {
     execMock.mockRejectedValue(Object.assign(new Error('kubectl failed'), { stderr: 'not found' }))
     await expect(bootStreamd(JOB)).rejects.toThrow('kubectl failed')
     expect(execMock).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('invalidateRelayAddr', () => {
-  it('drops the port-forward child so the next dial re-establishes it', async () => {
-    // The address has nothing memoized behind it any more — the shared
-    // port-forward registry owns both the cache and the child's lifetime,
-    // so invalidating is what makes the next dial respawn.
-    relay = await startFakeRelay((r) => okThen(r))
-    spawnMock.mockImplementation(() => fakePortForward(relay!.port))
-
-    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(spawnMock).toHaveBeenCalledTimes(1)
-    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(spawnMock).toHaveBeenCalledTimes(1)
-
-    invalidateRelayAddr()
-    ;(await relayDial(SID, { kind: 'tcp', port: 80 })).destroy()
-    expect(spawnMock).toHaveBeenCalledTimes(2)
   })
 })

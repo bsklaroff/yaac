@@ -13,10 +13,12 @@
   "dependencies": {
     "hono": "catalog:",
     "simple-git": "catalog:",
+    "ws": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "@yaac/server": "workspace:*",
     "@yaac/test-utils": "workspace:*"
   }

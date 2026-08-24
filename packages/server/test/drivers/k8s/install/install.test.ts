@@ -25,6 +25,9 @@ import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/in
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { kubectlGetJson } from '#drivers/k8s/substrate/kubectl'
 import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
+// Setup value: the node end of the server's published port, which the
+// rendered kind config has to reserve.
+import { SERVER_NODE_PORT } from '#drivers/k8s/substrate'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -139,6 +142,8 @@ function makeDeps(
     buildImages: overrides.buildImages ?? vi.fn().mockResolvedValue(undefined),
     ensureGvisorRuntime: overrides.ensureGvisorRuntime ?? vi.fn().mockResolvedValue(undefined),
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
+    deployServer: overrides.deployServer
+      ?? vi.fn().mockResolvedValue('http://127.0.0.1:8787'),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
@@ -356,6 +361,20 @@ describe('runClusterInstall', () => {
     expect(createCall).toBeDefined()
     expect(createCall?.[2]?.input).toContain('/home/tester')
     expect(createCall?.[2]?.input).not.toContain('$HOME')
+    // ...carrying the host end of the server's NodePort. Written HERE and
+    // only here: kind adds port mappings when a cluster is created, which
+    // is why an older cluster is refused rather than converged.
+    expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_NODE_PORT)}`)
+    expect(createCall?.[2]?.input).toContain('listenAddress: "127.0.0.1"')
+
+    // The server itself is deployed, after every layer it depends on: its
+    // image comes from the registry, its dials go through the proxy and
+    // netd, and it is the one step that starts USING them.
+    expect(deps.deployServer).toHaveBeenCalledOnce()
+    expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
+    expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.check).mock.invocationCallOrder[0])
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
 
     // Calico applied from the verified manifest, then rolled out and the
@@ -1119,6 +1138,25 @@ describe('runClusterInstall', () => {
     expect(deps.ensureBuilderGuard).toHaveBeenCalledOnce()
     expect(deps.ensureGvisorRuntime).toHaveBeenCalledOnce()
     expect(deps.ensureNetd).toHaveBeenCalledOnce()
+
+    // ...except the server, which is the one layer that cannot work here:
+    // it is published through a kind port mapping written at create time,
+    // and this mode creates nothing. Deploying anyway would fail after 60s
+    // AND leave a NodePort publishing a credential-optional API on every
+    // node address behind it.
+    expect(deps.deployServer).not.toHaveBeenCalled()
+
+    // Which leaves adoption with NO server it can run at all — a host
+    // process is the containerless driver by construction, so the obvious
+    // next command silently gives tmux worktrees on this host instead of
+    // pods on the cluster just installed into. The mode is allowed to be
+    // groundwork; it is not allowed to look finished, so the note says both
+    // halves and the closing banner does not claim readiness.
+    expect(logged(deps)).toContain('no server was deployed')
+    expect(logged(deps)).toContain('CONTAINERLESS')
+    expect(logged(deps)).not.toContain('Cluster is ready for yaac sessions')
+    expect(logged(deps)).toContain('No yaac server runs against this cluster')
+
     // An adopted cluster can still be a kind one (the cheapest rehearsal),
     // so the node-container fixups run where the nodes are podman containers.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)

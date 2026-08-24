@@ -1,4 +1,4 @@
-import type net from 'node:net'
+import type { Duplex } from 'node:stream'
 import type {
   AgentMode,
   AgentTool,
@@ -6,6 +6,7 @@ import type {
   GitAuthFailure,
   ImageBuildEntry,
   PendingMamaRequest,
+  PortForwardConfig,
   PortMapping,
   MamaResultWire,
   WorktreeChanges,
@@ -222,21 +223,6 @@ export interface WorkspaceResources {
   ephemeralStorageLimitBytes: number
 }
 
-/**
- * A host port already bound by the caller, waiting to be relayed into a
- * workspace.
- *
- * Reserved before the workspace exists, and deliberately so: binding early
- * is what stops another process claiming the port between "we picked it"
- * and "the forwarder listens". The caller holds the socket until it hands
- * it over — or closes it, when the launch it was reserved for gave up.
- */
-export interface ReservedHostPort extends PortMapping {
-  /** The bound listener holding the port. Structurally the same as
-   *  `#lib/port`'s `ReservedPort`, declared here rather than imported
-   *  so the contract keeps naming no module of its own. */
-  server: net.Server
-}
 
 /**
  * What a workspace needs standing up around it before it can be launched:
@@ -759,7 +745,8 @@ export interface WorktreeDriver {
    *  holds any for. The display path's form: it renders them all and has no
    *  project list of its own to fan out over. */
   allGitAuthFailures(): Promise<Record<string, GitAuthFailure[]>>
-  /** The host ports currently reaching into this workspace. In-memory and
+  /** The host ports this workspace's ports are offered at — what a client
+   *  forwarder should bind, and what the webapp links to. In-memory and
    *  lost on a restart, which is what the forwarder restore rebuilds. */
   forwardedPorts(workspaceId: string): Promise<PortMapping[]>
   /** Ports this workspace is listening on that nothing reaches yet — the
@@ -827,8 +814,9 @@ export interface WorktreeDriver {
     opts: { fanOutToProject: boolean },
   ): Promise<void>
   /**
-   * Forward one running workspace's container port, live, and answer with
-   * the mapping that reaches it.
+   * Offer one running workspace's container port, live, and answer with
+   * the mapping it is offered at — `declareForwards` for a port nobody
+   * declared up front.
    *
    * Only a port the runtime currently reports as an unforwarded listener
    * may be named — a caller cannot drive this to open an arbitrary one.
@@ -1021,14 +1009,43 @@ export interface WorktreeDriver {
    */
   awaitReady(handle: RuntimeHandle): Promise<void>
   /**
-   * Hand pre-bound host ports to long-lived forwarders into the workspace,
-   * and hold them for its lifetime (`deregisterWorkspace` drops them).
+   * Say which of a workspace's ports should be reachable, and answer with
+   * the host port each should be reached at. Held for the workspace's
+   * lifetime (`deregisterWorkspace` drops them).
    *
-   * Takes the sockets rather than reserving its own: the caller bound them
-   * before the workspace existed, which is the only way to guarantee they
-   * are still free once it does.
+   * A DECLARATION, not a listener: nothing here binds a host port, because
+   * the server is not where the listener lives on either substrate. Under
+   * `containerless` the workspace's own processes bind these ports, so the
+   * mapping is the identity and the declaration only states it; under
+   * `k8s` the listener belongs to a client (`yaac forward`, the desktop
+   * app), which binds the answer given here and tunnels each connection
+   * back through `dialPort`. Called before the workspace launches, because
+   * what it answers is stamped into the workspace's own status bar.
+   *
+   * Synchronous, and the runtime's allocator: it is the only thing that
+   * knows which host ports its other workspaces were already promised, so
+   * two workspaces of one project asking for 3000 get different answers.
+   * What it cannot know is what else on the user's machine holds a port —
+   * that surfaces when the client's listener fails to bind, which is the
+   * only place it can be observed at all.
    */
-  startForwarders(workspaceId: string, ports: ReservedHostPort[]): void
+  declareForwards(workspaceId: string, forwards: PortForwardConfig[]): PortMapping[]
+  /**
+   * Open a byte stream onto one of a running workspace's ports — one TCP
+   * connection's worth, the near end of a forward whose listener is
+   * somewhere else.
+   *
+   * Rejects when the workspace is gone or nothing answers on the port.
+   * Destroying the returned stream is what closes it; the runtime holds no
+   * registry of these, since a caller that drops one has ended the
+   * connection it stood for.
+   *
+   * Handed over PAUSED, and that is part of the contract: a runtime may
+   * have had to read from the connection to set it up, so bytes the far
+   * end sent immediately would otherwise be gone before the caller has
+   * attached a reader. The caller resumes once it is ready.
+   */
+  dialPort(workspaceId: string, containerPort: number): Promise<Duplex>
 
   /** Tell the egress path what a workspace may reach. Idempotent — a
    *  retooled spare re-registers under its new tool. */

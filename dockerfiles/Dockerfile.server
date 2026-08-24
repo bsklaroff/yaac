@@ -1,0 +1,73 @@
+# The yaac server itself, as a container image.
+#
+# Under the k8s driver the server is a single-replica in-cluster Deployment
+# (docs/server-in-cluster.md), so this is the image that Deployment runs.
+# Its build context is the BUNDLE — `dist/`, the one directory the npm
+# tarball ships — which is why the COPY below is a bare `.`: cli.js, the
+# SPA, the drizzle migrations, the build contexts of every other yaac image,
+# and the `package.json` that names the externals cli.js does not bundle
+# (scripts/write-dist-manifest.ts writes it with the catalog pins already
+# resolved, because the machine building this image may have no pnpm).
+#
+# Built and pushed by `yaac cluster install` on the machine running the CLI,
+# never in-cluster (docs/trust-split-builds.md), and tagged by the content
+# hash of that context — so a rebuilt server bundle is a different image and
+# the Deployment rolls onto it.
+FROM docker.io/ubuntu:24.04
+
+# Kept in step with dockerfiles/Dockerfile.default's Node: the server and the
+# worktrees it launches should not disagree about the runtime.
+ARG NODE_VERSION=22.22.2
+# kubectl is how the server writes to and execs into the cluster (the typed
+# client covers reads/watches). Within one minor of the kind node's server,
+# which is the whole supported skew.
+ARG KUBECTL_VERSION=v1.36.1
+# Baked so auto-titles work with no runtime download: the server resolves the
+# runtime under $HOME/.cache (see domain/titles/llama-cpp.ts), and a pod's
+# $HOME does not survive a roll. Passed in by the builder from LLAMA_CPP_TAG
+# so the two can never drift.
+ARG LLAMA_CPP_TAG=b9940
+# The uid the server pod runs as. Everything the server pre-creates for a
+# worktree pod lands owned by it, and the worktree image chain bakes the same
+# number, so this is the one number both sides have to agree on.
+ARG YAAC_UID=1000
+
+# catatonit: node is PID 1 here and would never reap the orphans of the
+# processes the server spawns (kubectl, git). libgomp1: the llama.cpp
+# release links it and does not ship it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates catatonit curl git libgomp1 openssh-client tar xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" | \
+    tar -xJ -C /usr/local --strip-components=1
+
+RUN ARCH="$(dpkg --print-architecture)" && \
+    curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
+    chmod 0755 /usr/local/bin/kubectl && \
+    kubectl version --client
+
+# ubuntu:24.04 ships its own uid-1000 `ubuntu` user, which is exactly the uid
+# we want; drop it first (same idiom as Dockerfile.default).
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${YAAC_UID} -s /bin/bash yaac
+
+RUN mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
+    ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
+    curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-${ARCH}.tar.gz" \
+      | tar -xz -C /home/yaac/.cache/yaac/llama-cpp && \
+    chown -R yaac:yaac /home/yaac
+
+COPY . /opt/yaac/
+# The externals cli.js leaves unbundled, from the manifest that ships beside
+# it. No hand-kept list: the contract is the root manifest, already enforced
+# at build time by scripts/check-cli-externals.ts.
+RUN cd /opt/yaac && npm install --omit=dev --no-audit --no-fund --no-package-lock && \
+    npm cache clean --force && chown -R yaac:yaac /opt/yaac
+
+USER yaac
+ENV HOME=/home/yaac
+WORKDIR /home/yaac
+ENTRYPOINT ["/usr/bin/catatonit", "--", "node", "/opt/yaac/cli.js"]
+CMD ["server", "run"]

@@ -15,8 +15,9 @@ streamd `ports` stream (in-pod /proc/net poll → push on change)
   → snapshot `unforwardedPorts[]` → /events WS
   → UnforwardedPortsBadge (worktree toolbar popover)
   → POST /worktree/:id/forward-port {containerPort, persist}
-  → live single-port relay forward (+ persist: config write + fan-out)
+  → one more declared forward (+ persist: config write + fan-out)
   → fresh snapshot moves the port into `forwardedPorts`, clearing the row
+  → a client forwarder binds it (docs/port-forward-tunnel.md)
 ```
 
 ## Detection
@@ -53,11 +54,12 @@ allow-host. The port must be in the worktree's currently-surfaced
 unforwarded set — the route cannot be driven to forward an arbitrary
 port. `forwardWorktreePort`:
 
-- **persist: false** — reserve one host port (starting at the container
-  port) and start one relay forward on the running pod, appended to the
-  worktree's existing forwarder-registry entry (`addWorktreeForwarder`,
-  which also refreshes tmux status-right). Live-only: gone when the
-  worktree is recreated.
+- **persist: false** — allocate one host port (starting at the container
+  port) and append it to the worktree's forwarder-registry entry
+  (`addWorktreeForwarder`, which also refreshes tmux status-right). A
+  declaration, not a listener: what binds it is a client
+  (docs/port-forward-tunnel.md). Live-only — gone when the worktree is
+  recreated.
 - **persist: true** — first write `{containerPort, hostPortStart:
   containerPort}` into the project's yaac-config.json
   (`addPortForwardToProjectConfig`, de-duped) so future worktrees inherit
@@ -70,17 +72,17 @@ same surfaced-set guard as forward-port (so the dismissed set can't be
 grown for worktrees the sync cleanup never tracked).
 
 A forward that lands during the worktree-create window is safe: the
-forwarder registry merges registrations (the create batch and reactive
-appends accumulate on one entry; teardown runs every stop), and
-`addWorktreeForwarder` re-checks after its reservation so concurrent
-requests for the same port converge on one forward.
+forwarder registry merges declarations (the create batch and reactive
+appends accumulate on one entry; teardown drops them as a set), and
+allocating a host port and recording it are one synchronous step, so
+concurrent requests for the same port converge on one forward.
 
-The forward listener binds `YAAC_FORWARD_BIND` like every other forward
-(loopback locally, the tailnet IP on a remote host). The badge popover
-states the exposure host from the server-reported bind (`forwardBindHost`
-on the snapshot), not the page origin — the page can be reached by a
-different name than the forward binds (an SSH tunnel to a remote server),
-and this line is the informed-consent claim.
+The badge popover states the exposure host from `forwardBindHost` on the
+snapshot (`YAAC_FORWARD_BIND` — loopback locally, the tailnet IP on a
+remote host), not the page origin: the page can be reached by a different
+name than the forwarder binds (an SSH tunnel to a remote server), and this
+line is the informed-consent claim. It states what the forwarder on that
+machine is expected to bind — `yaac forward --bind` is what makes it so.
 
 ## Security model
 

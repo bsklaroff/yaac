@@ -56,10 +56,12 @@ export function proxyRunAsSecurityContext(): Record<string, unknown> {
  * by `ensureProxyResources`.
  *
  * Exposure: ClusterIP Service only — no hostNetwork, no hostPort, no
- * NodePort. The proxy listens inside its pod's network namespace; the
- * server reaches it through a loopback exec tunnel (see ExecTunnel —
- * runtime-agnostic, kept even though the runc proxy could also be
- * port-forwarded, so the tunnel doesn't churn with the runtime tier).
+ * NodePort. The proxy listens inside its pod's network namespace, and the
+ * server reaches it there as an ordinary pod-to-pod Service dial: it is a
+ * pod of the same namespace (docs/server-in-cluster.md), and this Service
+ * is the only address it needs. Nothing off the pod network can reach it,
+ * which is why the control and relay ports carry no auth-by-address
+ * assumption beyond the ingress policy in policy-manifests.ts.
  */
 export function buildProxyDeploymentManifest(imageRef: string): Record<string, unknown> {
   // Every proxy pod carries the install identity — the same data-dir-hash
@@ -307,11 +309,15 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
       selector: { app: PROXY_APP_NAME },
       // port == targetPort throughout: the NetworkPolicy and the in-pod
       // egress filter list the post-translation (transport) port, so a
-      // remap would make policy and Service silently diverge. No relay
-      // entry: the server's port-forward (and a nested server's pod-IP
-      // dial) target the pod port directly, never a Service port.
+      // remap would make policy and Service silently diverge.
       ports: [
         { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
+        // The relay, for the in-cluster server: it has a route to this
+        // Service and none to a host port-forward, so YAAC_RELAY_ADDR names
+        // the Service and the dial follows the proxy pod across a
+        // reschedule. A host-side server still forwards to the pod port
+        // directly and never reads this entry.
+        { name: 'relay', port: RELAY_PORT, targetPort: RELAY_PORT },
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },

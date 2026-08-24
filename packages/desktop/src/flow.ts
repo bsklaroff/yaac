@@ -13,6 +13,7 @@
  * every branch unit-tests without Electron, processes, or a server.
  */
 import type { ServerTarget } from '@yaac/shared/server-api'
+import type { DriverKind } from '@yaac/shared/types'
 import type { RunResult } from '#server-process'
 import type { LaunchError } from '#messages'
 
@@ -21,6 +22,10 @@ export interface FlowDeps {
   resolveTarget(): Promise<ServerTarget>
   /** Run `yaac server start` to completion; rejects only when yaac can't be spawned. */
   startLocalServer(): Promise<RunResult>
+  /** What this data dir runs (`@yaac/shared/install-driver`). A k8s
+   *  install has no host server to spawn — its server is a Deployment —
+   *  so an unreachable one is a message, never a spawn. */
+  recordedDriver(): Promise<DriverKind | undefined>
   /**
    * Best-effort: ensure the machine-local login broker runs against `target`
    * (the same call `yaac open` makes). Fired, never awaited or propagated —
@@ -50,10 +55,23 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   let target: ServerTarget
   try {
     target = await deps.resolveTarget()
-  } catch {
+  } catch (unreachable) {
     // Only the local-lock path throws — an enabled remote always resolves,
     // so a configured remote never triggers a local spawn (same rule as
     // `openWebapp` in packages/server/src/cli.ts).
+    //
+    // And spawning is containerless-only. On a k8s install the server is a
+    // Deployment of the cluster it manages (docs/server-in-cluster.md):
+    // `yaac server start` there scales that Deployment, so spawning would
+    // at best be a slow no-op and at worst put a second server on one data
+    // dir. What such an install needs is a converge, so say so.
+    if (await deps.recordedDriver() === 'k8s') {
+      return failure({
+        title: 'The yaac server is not running in your cluster',
+        detail: message(unreachable),
+        hint: 'Run `yaac cluster install` to converge the cluster and publish the server, then relaunch the app.',
+      })
+    }
     deps.onStatus('Starting the local yaac server…')
     let started: RunResult
     try {

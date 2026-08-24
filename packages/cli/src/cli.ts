@@ -14,6 +14,7 @@ import { worktreeRestart } from '#commands/worktree-restart'
 import { worktreeAttach } from '#commands/worktree-attach'
 import { worktreeShell } from '#commands/worktree-shell'
 import { worktreeMonitor } from '#commands/worktree-monitor'
+import { forward } from '#commands/forward'
 import { worktreeAgents } from '#commands/worktree-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
@@ -44,6 +45,7 @@ import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runt
 import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
 import type { WorktreeMonitorOptions } from '#commands/worktree-monitor'
+import type { ForwardOptions } from '#commands/forward'
 
 /**
  * Reject a `cluster install`/`delete` invocation the flags and environment
@@ -65,44 +67,28 @@ function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstal
   return true
 }
 
-const DRIVER_FLAG_HELP =
-  'Which substrate to run worktrees on: "k8s" (default; one pod per worktree '
-  + 'in a local cluster) or "containerless" (a tmux session per worktree on '
-  + 'this host — no image, no proxy, and no sandbox around the agent)'
-
-/**
- * Publish `--driver` as `YAAC_DRIVER` so the one reader of it — the server's
- * composition root — sees it, including in the detached child `server start`
- * spawns (which inherits this process's environment).
- */
-function applyDriverFlag(driver: string | undefined): void {
-  if (driver === undefined) return
-  if (driver !== 'k8s' && driver !== 'containerless') {
-    console.error(`\n--driver must be "k8s" or "containerless" (got "${driver}")`)
-    process.exit(1)
-  }
-  // eslint-disable-next-line no-process-env -- publishing the flag for the server child to read back through env.driver is the whole point of the flag
-  process.env.YAAC_DRIVER = driver
-}
-
 /**
  * Which substrate the RUNNING server uses, or undefined when none answers.
  *
- * Asked rather than assumed, because the CLI's own environment is not the
- * authority: a server started elsewhere with `--driver containerless` leaves
- * no trace in this shell, and a stray `YAAC_DRIVER` in this shell says
- * nothing about a server that is genuinely running k8s. `/health` is
+ * Asked rather than assumed, because a stray `YAAC_DRIVER` in this shell
+ * says nothing about the server that is genuinely running. `/health` is
  * auth-exempt, so this needs no credential; a server that does not answer
- * (none running, or one predating the field) falls back to the environment,
- * which is also the only answer available to `cluster install` — which
- * legitimately runs before any server exists.
+ * falls back to what this data dir last recorded, which is also the only
+ * answer available to `cluster install` — which legitimately runs before
+ * any server exists.
  */
 async function runningServerDriver(): Promise<string | undefined> {
   try {
-    const { readLock } = await import('@yaac/shared/lock')
-    const lock = await readLock()
-    if (!lock) return undefined
-    const res = await fetch(`http://127.0.0.1:${String(lock.port)}/health`, {
+    // Resolved the way every other command resolves it, rather than
+    // rebuilt from the lock's port: a lock written by the IN-CLUSTER server
+    // carries the port it binds inside its pod, and `127.0.0.1:<that>` on
+    // this machine is some other listener entirely — quite possibly another
+    // yaac. `resolveServerTarget` prefers `remote.json`, which is what
+    // `yaac cluster install` points at the published origin, and falls back
+    // to the lock only where the lock is this host's.
+    const { resolveServerTarget } = await import('@yaac/shared/server-api')
+    const target = await resolveServerTarget({ requireBuildMatch: false })
+    const res = await fetch(`${target.baseUrl}/health`, {
       signal: AbortSignal.timeout(2_000),
     })
     if (!res.ok) return undefined
@@ -111,6 +97,57 @@ async function runningServerDriver(): Promise<string | undefined> {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Run `yaac server start|stop|restart` against a server that is a
+ * Deployment, and report whether it did.
+ *
+ * The k8s driver's server runs IN the cluster (docs/server-in-cluster.md),
+ * so these verbs are a scale and a rollout rather than a spawn and a
+ * SIGTERM — and spawning a host server beside the pod would be the worst of
+ * the available wrong answers, since both would then hold the same data dir.
+ *
+ * The cluster is asked rather than a marker file consulted: "is there a
+ * server Deployment?" is the actual question, it needs no new state to
+ * drift, and it degrades correctly on an install whose server is still a
+ * host process (no Deployment → false → the host path runs unchanged).
+ *
+ * That degradation is only sound for a real "no". `serverDeploymentExists`
+ * distinguishes absent (false) from could-not-ask (throws), and the two
+ * must not be collapsed: an unset kubeconfig, a kubectl off PATH or an
+ * apiserver blip would otherwise read as "no Deployment" and send a k8s
+ * install down the host path — where `stop` clears a live pod's lock and
+ * `start` spawns a second server onto its data dir. On a k8s install the
+ * unanswerable question is a refusal, not a fallback.
+ */
+async function runDeployedServerVerb(verb: 'start' | 'stop' | 'restart'): Promise<boolean> {
+  const { recordedDriver } = await import('@yaac/shared/install-driver')
+  if (await recordedDriver() !== 'k8s') return false
+  const install = await import('@yaac/server/drivers/k8s/install')
+  let deployed: boolean
+  try {
+    deployed = await install.serverDeploymentExists()
+  } catch (err) {
+    throw new Error(
+      'cannot ask the cluster whether this install\'s server is deployed: '
+      + (err instanceof Error ? err.message : String(err))
+      + '\n    This is a k8s install, so falling back to a host server could '
+      + 'put a second server on the same data dir. Fix the cluster access '
+      + '(kubeconfig, kubectl, apiserver) and try again.',
+    )
+  }
+  if (!deployed) return false
+  if (verb === 'stop') {
+    await install.stopClusterServer()
+    console.error('[yaac] server stopped (Deployment scaled to 0)')
+    return true
+  }
+  if (verb === 'start') await install.startClusterServer()
+  else await install.restartClusterServer()
+  console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at `
+    + install.serverPublishedOrigin())
+  return true
 }
 
 /**
@@ -123,9 +160,9 @@ async function rejectClusterOnContainerless(): Promise<boolean> {
   // The running server first, then this shell's explicit choice, then what
   // the install last ran. Only the last of those is available to `cluster
   // setup`, which legitimately runs before any server exists.
-  const { recordedDriver } = await import('@yaac/server/main/driver-choice')
+  const { recordedDriver } = await import('@yaac/shared/install-driver')
   const running = await runningServerDriver()
-  const kind = running ?? env.driverExplicit ?? await recordedDriver()
+  const kind = running ?? await recordedDriver()
   if (kind !== 'containerless') return false
   const where = running !== undefined
     ? 'The running server uses the containerless driver'
@@ -148,6 +185,11 @@ if (env.driver === 'k8s') ensureRootfulPodmanHost()
 /**
  * Show subcommand options nested under each subcommand in help output.
  */
+/** commander's accumulator for a repeatable option. */
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value]
+}
+
 function nestedHelp(cmd: Command, helper: Help): string {
   const termWidth = helper.padWidth(cmd, helper)
   const output: string[] = []
@@ -193,9 +235,7 @@ server
   .command('run')
   .description('Run the server in the foreground (used internally by `start`)')
   .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_SERVER_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
-  .option('--driver <kind>', DRIVER_FLAG_HELP)
-  .action(async (options: { port?: number; driver?: string }) => {
-    applyDriverFlag(options.driver)
+  .action(async (options: { port?: number }) => {
     const { runServer } = await import('@yaac/server/main/server-run')
     await runServer({ port: options.port })
   })
@@ -203,9 +243,8 @@ server
 server
   .command('start')
   .description('Start the server in the background')
-  .option('--driver <kind>', DRIVER_FLAG_HELP)
-  .action(async (options: { driver?: string }) => {
-    applyDriverFlag(options.driver)
+  .action(async () => {
+    if (await runDeployedServerVerb('start')) return
     const { startServer } = await import('@yaac/server/main/lifecycle')
     await startServer()
   })
@@ -214,6 +253,7 @@ server
   .command('stop')
   .description('Stop the running server')
   .action(async () => {
+    if (await runDeployedServerVerb('stop')) return
     const { stopServer } = await import('@yaac/server/main/lifecycle')
     await stopServer()
   })
@@ -221,12 +261,8 @@ server
 server
   .command('restart')
   .description('Restart the server (stop, then start)')
-  // Restart is when a substrate is switched, so the flag belongs here too.
-  // Omitted, it keeps whatever this install was already running — which is
-  // the whole point of recording the choice.
-  .option('--driver <kind>', DRIVER_FLAG_HELP)
-  .action(async (options: { driver?: string }) => {
-    applyDriverFlag(options.driver)
+  .action(async () => {
+    if (await runDeployedServerVerb('restart')) return
     const { restartServer } = await import('@yaac/server/main/lifecycle')
     await restartServer()
   })
@@ -470,6 +506,20 @@ config
   .command('edit-user-dockerfile')
   .description('Open the global ~/.yaac/Dockerfile.user in $EDITOR')
   .action(configEditUserDockerfile)
+
+// Top-level, not under `worktree`: with no session named it forwards for
+// every running one, which is the resident-forwarder shape the desktop
+// app runs in its tray.
+program
+  .command('forward')
+  .description('Bind the ports a worktree offers on this machine, tunnelling each connection to the server')
+  .argument('[worktree-id]', 'Worktree ID, ID prefix, or name — omit to forward every running worktree')
+  .option('-p, --port <container[:host]>', 'Forward this port instead of what the server offers (repeatable)', collect, [])
+  .option('-b, --bind <address>', 'Address to bind (default 127.0.0.1)')
+  .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod — so this holds the listener and tunnels each connection to it.\nRuns until interrupted.')
+  .action(async (worktreeId: string | undefined, options: ForwardOptions) => {
+    await forward(worktreeId, options)
+  })
 
 const remote = program
   .command('remote')

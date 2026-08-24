@@ -163,7 +163,8 @@ export function installFakeWorktreeDriver(
     syncSshIdentities: () => current.syncSshIdentities(),
     launch: (s) => current.launch(s),
     awaitReady: (h) => current.awaitReady(h),
-    startForwarders: (w, p) => current.startForwarders(w, p),
+    declareForwards: (w, f) => current.declareForwards(w, f),
+    dialPort: (w, p) => current.dialPort(w, p),
     registerWorkspace: (r) => current.registerWorkspace(r),
     deregisterWorkspace: (w) => current.deregisterWorkspace(w),
     salvageImages: (t) => current.salvageImages(t),
@@ -272,7 +273,11 @@ function defaultRuntime(): WorktreeDriver {
       state: 'pending',
     })),
     awaitReady: () => Promise.resolve(),
-    startForwarders: () => {},
+    // The identity, which is what a runtime whose workspaces bind their own
+    // ports answers. A case about allocation overrides it.
+    declareForwards: (_w, forwards) =>
+      forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
+    dialPort: () => Promise.reject(new Error('fake driver has no port to dial')),
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
     salvageImages: () => Promise.resolve(),

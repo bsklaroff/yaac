@@ -1,17 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import http from 'node:http'
+import os from 'node:os'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   acquireLock,
+  newLeaseFields,
+  renewLease,
   serverLockPath,
   readLock,
   writeLock,
   removeLock,
 } from '#lock'
 import {
+  LEASE_HEARTBEAT_MS,
+  LEASE_STALE_MS,
+  isLeaseFresh,
   isLockLive,
   isLockReady,
+  isSameHostLock,
   isServerLock,
   parseServerLock,
   type ServerLock,
@@ -78,22 +85,37 @@ describe('server lock', () => {
       await expect(removeLock()).resolves.toBeUndefined()
     })
 
-    it('unlinks when the pid matches expectedPid', async () => {
+    it('unlinks when the expected holder matches', async () => {
       const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
       await writeLock(lock)
-      await removeLock(42)
+      await removeLock({ pid: 42 })
       expect(await readLock()).toBeNull()
     })
 
-    it('leaves the lock alone when expectedPid does not match', async () => {
+    it('leaves the lock alone when the expected holder does not match', async () => {
       const lock: ServerLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
       await writeLock(lock)
-      await removeLock(999)
+      await removeLock({ pid: 999 })
       expect(await readLock()).toEqual(lock)
     })
 
-    it('is a no-op with expectedPid when the lock is missing', async () => {
-      await expect(removeLock(42)).resolves.toBeUndefined()
+    it('is a no-op with an expected holder when the lock is missing', async () => {
+      await expect(removeLock({ pid: 42 })).resolves.toBeUndefined()
+    })
+
+    it('identifies the holder by instance, not pid, once both carry one', async () => {
+      // Two servers of one install can genuinely both be pid 1 (each pod's
+      // pid namespace hands out the same low numbers), so a successor's
+      // lock must survive its predecessor's late cleanup.
+      const successor: ServerLock = {
+        pid: 1, port: 2, secret: 's', startedAt: 9, buildId: 'b',
+        instance: 'successor', host: 'pod-b', heartbeatAt: Date.now(),
+      }
+      await writeLock(successor)
+      await removeLock({ pid: 1, instance: 'predecessor' })
+      expect(await readLock()).toEqual(successor)
+      await removeLock({ pid: 1, instance: 'successor' })
+      expect(await readLock()).toBeNull()
     })
   })
 
@@ -158,6 +180,91 @@ describe('server lock', () => {
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
+    })
+
+    it('judges an off-host lock by its lease, not by a pid or a port here', async () => {
+      // Once the server can be a pod, both local signals lie: every pid
+      // namespace hands out the same low pids, and the lock's port is the
+      // one bound INSIDE the pod — so `127.0.0.1:<that>` on this machine is
+      // an unrelated listener, quite possibly another yaac.
+      const fresh: ServerLock = {
+        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b',
+        instance: 'i', host: 'yaac-server-abc123', heartbeatAt: Date.now(),
+      }
+      expect(await isLockLive(fresh)).toBe(true)
+      expect(await isLockLive({ ...fresh, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 }))
+        .toBe(false)
+      // A foreign lock with no lease at all is takeable rather than
+      // permanently held — there is nothing that could ever refresh it.
+      expect(await isLockLive({ ...fresh, heartbeatAt: undefined })).toBe(false)
+    })
+  })
+
+  describe('isSameHostLock', () => {
+    it('reads a lock with no host as this host — which is what it was', () => {
+      // Locks written before the lease carry none, and they were always
+      // this machine's (see docs/legacy-compat-shims.md).
+      expect(isSameHostLock({ pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b' }))
+        .toBe(true)
+      expect(isSameHostLock({
+        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', host: os.hostname(),
+      })).toBe(true)
+      expect(isSameHostLock({
+        pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b', host: 'some-pod',
+      })).toBe(false)
+    })
+  })
+
+  describe('isLeaseFresh', () => {
+    it('is the cross-host liveness signal, bounded by four missed renewals', () => {
+      const base: ServerLock = { pid: 1, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() })).toBe(true)
+      expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS + 500 })).toBe(true)
+      expect(isLeaseFresh({ ...base, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 })).toBe(false)
+      expect(isLeaseFresh(base)).toBe(false)
+      expect(LEASE_STALE_MS / LEASE_HEARTBEAT_MS).toBe(4)
+    })
+  })
+
+  describe('newLeaseFields', () => {
+    it('mints the three fields together, so a pid is never read out of context', () => {
+      // A lock carrying an instance but no host would be judged by a pid in
+      // whichever namespace happened to write it.
+      const a = newLeaseFields()
+      const b = newLeaseFields()
+      expect(a.instance).not.toBe(b.instance)
+      expect(a.host).toBe(os.hostname())
+      expect(a.heartbeatAt).toBeGreaterThan(0)
+    })
+  })
+
+  describe('renewLease', () => {
+    it('moves the heartbeat forward while we hold the lock', async () => {
+      const lease = newLeaseFields()
+      const lock: ServerLock = {
+        pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b', ...lease,
+        heartbeatAt: Date.now() - 10_000,
+      }
+      await writeLock(lock)
+      expect(await renewLease(lease.instance!)).toBe(true)
+      expect((await readLock())!.heartbeatAt).toBeGreaterThan(lock.heartbeatAt!)
+    })
+
+    it('reports the loss rather than resurrecting us as the owner', async () => {
+      // If another server took the lock over while this one was paused, a
+      // blind rewrite would put a stale identity back on a live install —
+      // and on hostPath storage the lease IS PGlite's single-writer guard,
+      // so the caller has to act on the false rather than retry.
+      await writeLock({
+        pid: 2, port: 1, secret: 's', startedAt: 0, buildId: 'b',
+        instance: 'successor', host: 'other-pod', heartbeatAt: Date.now(),
+      })
+      expect(await renewLease('predecessor')).toBe(false)
+      expect((await readLock())?.instance).toBe('successor')
+    })
+
+    it('reports the loss when the lock is gone entirely', async () => {
+      expect(await renewLease('whatever')).toBe(false)
     })
   })
 

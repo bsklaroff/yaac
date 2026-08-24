@@ -8,6 +8,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { parsePattern, validatePattern, matchPattern } from '@yaac/shared/credentials'
 import { expandTilde } from '@yaac/shared/paths'
+import { env } from '@yaac/shared/env'
 import { serverLog } from '#log'
 import type { ResolvedGitCredential } from '#domain/git'
 import type {
@@ -223,6 +224,35 @@ export async function assertKeyHasNoPassphrase(keyPath: string): Promise<void> {
 }
 
 /**
+ * Refuse an ssh-key credential where the server cannot read the key.
+ *
+ * An ssh entry is a PATH into the user's home, and it is the SERVER that
+ * opens it — to check the passphrase here, and to load the key into the
+ * proxy's in-memory agent on every attach. Once the server is a pod
+ * (docs/server-in-cluster.md) that path names a file in the pod's own
+ * filesystem, which does not have it: the only host directory the pod
+ * mounts is the data dir.
+ *
+ * So the refusal is at ingestion, where it can name the alternative.
+ * Accepting it here would mean storing a credential that resolves to
+ * nothing and surfacing as a git-auth failure on the first fetch of every
+ * project that uses it — the same class of silent-half-broken the plan
+ * makes this an explicit v1 gap over. Restoring parity means accepting key
+ * CONTENT rather than a path, which is a follow-up: nothing about the
+ * proxy-side agent machinery is in the way.
+ */
+function assertSshKeyPathsReadable(): void {
+  if (!env.inCluster) return
+  throw new ServerError(
+    'VALIDATION',
+    'SSH-key git credentials are not supported on a cluster install: the '
+    + 'server runs in a pod and cannot read a key file on your machine. '
+    + 'Use an HTTPS remote with a token credential instead '
+    + '(`yaac auth token`), which needs nothing off the server.',
+  )
+}
+
+/**
  * Add or replace a credential entry. Matches existing by exact pattern.
  */
 export async function addEntry(entry: GitCredentialEntry): Promise<void> {
@@ -236,6 +266,7 @@ export async function addEntry(entry: GitCredentialEntry): Promise<void> {
     throw new ServerError('VALIDATION', 'Token cannot be empty.')
   }
   if (entry.kind === 'ssh') {
+    assertSshKeyPathsReadable()
     if (!entry.privateKeyPath) {
       throw new ServerError('VALIDATION', 'privateKeyPath cannot be empty.')
     }
@@ -293,6 +324,7 @@ export async function replaceEntries(entries: GitCredentialEntry[]): Promise<voi
     if (entry.kind === 'https' && !entry.token) {
       throw new ServerError('VALIDATION', `Empty token for pattern "${entry.pattern}".`)
     }
+    if (entry.kind === 'ssh') assertSshKeyPathsReadable()
     if (entry.kind === 'ssh' && (!entry.privateKeyPath || !entry.knownHostsEntry)) {
       throw new ServerError(
         'VALIDATION',

@@ -19,12 +19,14 @@ import {
 } from 'electron'
 import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
+import { recordedDriver } from '@yaac/shared/install-driver'
 import {
   normalizeRemoteUrl, probeRemote, readRemote, withRemoteActivated, writeRemote,
 } from '@yaac/shared/remote'
 import { env } from '@yaac/shared/env'
 import { AttentionMonitor, badgeText, notificationFor, type WaitingWorktree } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
+import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { runFlow } from '#flow'
 import { appMenuTemplate } from '#menu'
 import { mintWebToken } from '#mint'
@@ -49,6 +51,7 @@ let quitting = false
 // a requested transition is in flight so a double-click can't re-request it.
 const fsGuard = createFsTransitionGuard()
 let events: { stop: () => void } | null = null
+let forwarder: DesktopForwarder | null = null
 // One monitor per attached server: its first-snapshot seeding suppresses a
 // notification burst on launch, and WS reconnects must not re-notify ongoing
 // waits. Replaced only on a server switch, where the new server's ongoing
@@ -146,6 +149,7 @@ async function openWindow(): Promise<boolean> {
   const w = win
   const result = await runFlow({
     resolveTarget,
+    recordedDriver,
     startLocalServer: () => runYaacServerStart(
       resolveYaacCommand(app.isPackaged ? process.resourcesPath : null, ['server', 'start']),
       { hydratePath: app.isPackaged },
@@ -245,12 +249,18 @@ function openEventsSocket(url: string, bearer: string): EventsSocket {
 
 function startEvents(): void {
   events?.stop()
+  forwarder?.stop()
+  // The same stream drives both: a snapshot carries the attention signal
+  // AND the port mappings the server is offering, and this process is the
+  // only long-lived client that can bind them (docs/server-in-cluster.md).
+  forwarder = startForwarder({ resolveTarget })
   events = startEventsMonitor({
     resolveTarget,
     openSocket: openEventsSocket,
     onSnapshot: (snapshot) => {
       const { waitingCount, toNotify } = attention.update(snapshot)
       applyAttention(waitingCount, toNotify)
+      forwarder?.apply(snapshot)
     },
   })
 }

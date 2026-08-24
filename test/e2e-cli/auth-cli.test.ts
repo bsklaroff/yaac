@@ -413,16 +413,23 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(stderr).toMatch(/<host>\/\*/)
     })
 
-    it('saves an SSH credential with a registered key path', async () => {
-      // Reset: the assertion is tokens.toHaveLength(1), and the HTTPS
-      // credential saved two tests ago would otherwise still be present.
+    it('refuses an SSH credential on a cluster install, naming the alternative', async () => {
+      // An ssh entry is a path into YOUR home that the SERVER opens — to
+      // check the passphrase here, and to load the key into the proxy's
+      // agent on every attach. This install's server is a pod, and the only
+      // host directory it mounts is the data dir, so the path names nothing
+      // (docs/server-in-cluster.md). The refusal is at ingestion, where it
+      // can still say what to do instead; accepting it would store a
+      // credential that surfaces as a git-auth failure on the first fetch.
+      //
+      // The whole interactive chain still runs — the refusal comes back from
+      // the server after the last prompt, which is what makes this the
+      // k8s-side counterpart of the containerless save path.
       await resetCreds()
-      // Generate a real ed25519 key so the server's passphrase check passes.
-      // ssh-keygen is a hard host dep for yaac's SSH credential path.
       const keyPath = path.join(testEnv.dataDir, 'test-key')
       const gen = spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', keyPath, '-C', 'yaac-test'])
       expect(gen.status).toBe(0)
-      const { stdout, exitCode } = await runYaac(
+      const { stderr, exitCode } = await runYaac(
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
@@ -434,19 +441,14 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
           ],
         },
       )
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('SSH credential saved for pattern "git.example.com/*"')
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(/not supported on a cluster install/)
+      expect(stderr).toMatch(/yaac auth token/)
 
+      // Nothing was stored: a half-written credential is exactly what the
+      // ingestion-time refusal exists to prevent.
       const credsPath = path.join(testEnv.dataDir, '.credentials', 'github.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as { tokens: Array<Record<string, unknown>> }
-      expect(parsed.tokens).toHaveLength(1)
-      expect(parsed.tokens[0]).toMatchObject({
-        kind: 'ssh',
-        pattern: 'git.example.com/*',
-        privateKeyPath: keyPath,
-        knownHostsEntry: 'git.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTAAAA',
-      })
+      await expect(fs.readFile(credsPath, 'utf8')).rejects.toThrow()
     })
 
     it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {
