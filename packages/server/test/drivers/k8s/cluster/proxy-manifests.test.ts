@@ -53,15 +53,19 @@ describe('buildBuilderRoleGuardPolicyManifest', () => {
       .toContain("object.metadata.labels['yaac.role'] == 'builder'")
   })
 
-  it('admits only the server ServiceAccount, and only gvisor carriers', () => {
+  it('admits only the server ServiceAccount shape, and only gvisor carriers', () => {
     const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
     const exprs = m.spec.validations.map((v) => v.expression)
-    // The server creates every builder pod and runs in-cluster as its own
-    // ServiceAccount, so the guard names that one identity: any other SA
-    // (the identity class untrusted code can hold) and any cert user are
-    // both denied.
+    // Every builder pod is created by a yaac server, which runs in-cluster
+    // as the `yaac-server` SA of its install namespace — so the guard
+    // admits that username shape and denies every other identity: any
+    // other SA (the identity class untrusted code can hold) and any cert
+    // user. SA usernames are `system:serviceaccount:<ns>:<name>` with
+    // RFC1123 segments (no ':'), so the prefix+suffix pair matches exactly
+    // the SAs NAMED yaac-server, in any namespace.
     expect(exprs).toContain(
-      "request.userInfo.username == 'system:serviceaccount:test-ns:yaac-server'",
+      "request.userInfo.username.startsWith('system:serviceaccount:') "
+      + `&& request.userInfo.username.endsWith(':${SERVER_SA_NAME}')`,
     )
     // And the label may only describe an actually-sandboxed pod.
     expect(exprs).toContain(
@@ -69,14 +73,15 @@ describe('buildBuilderRoleGuardPolicyManifest', () => {
     )
   })
 
-  it('names the server SA in the install namespace, not a literal', () => {
-    // k8sNamespace() is mocked to 'test-ns' above, standing in for the
-    // per-file YAAC_K8S_NAMESPACE the e2e tiers install under: a hardcoded
-    // 'yaac' here would deny that install's own server.
+  it('keeps the policy text install-agnostic', () => {
+    // The policy is cluster-scoped under a FIXED name and re-applied by
+    // every install on the cluster (the real one plus a `yaac-test-<id>`
+    // per e2e file). Baking the resolved namespace into the expression —
+    // k8sNamespace() is mocked to 'test-ns' above — would have the last
+    // applier lock every other install's server out of builder-pod
+    // creation.
     const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
-    const expr = m.spec.validations[0].expression
-    expect(expr).toContain(`:test-ns:${SERVER_SA_NAME}'`)
-    expect(expr).not.toContain(':yaac:')
+    expect(JSON.stringify(m)).not.toContain('test-ns')
   })
 })
 

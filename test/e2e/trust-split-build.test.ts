@@ -41,6 +41,11 @@ import {
   kubectlWithRetry,
 } from '@yaac/server/drivers/k8s/substrate/kubectl'
 import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/image-engine/image-builds'
+import {
+  buildServerClusterRoleBindingManifest,
+  buildServerClusterRoleManifest,
+  buildServerServiceAccountManifest,
+} from '@yaac/server/drivers/k8s/install/server-deploy'
 
 /**
  * End-to-end coverage of trust-split builds (docs/trust-split-builds.md):
@@ -91,6 +96,45 @@ const DOCKERFILE_USER = [
 
 let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
+let serverKubeconfigPath: string | null = null
+
+function serverUsername(): string {
+  return `system:serviceaccount:${k8sNamespace()}:${SERVER_SA_NAME}`
+}
+
+/**
+ * A kubeconfig whose user impersonates this run's server ServiceAccount
+ * (kubeconfig `user.as`). This file drives `ensureImage` IN-PROCESS, so
+ * without it every builder pod would be created as the host kubeconfig's
+ * cert admin — an identity the builder-role guard rightly denies, and one
+ * production never uses (there the server itself, running in-cluster as
+ * its SA, creates builder pods). Impersonation needs the cert user's
+ * `impersonate` verb (cluster-admin on a dev cluster has it), and the
+ * requests are then AUTHORIZED as the impersonated SA — which is why the
+ * fixture also applies the server's RBAC in beforeAll.
+ */
+async function writeServerImpersonationKubeconfig(dir: string): Promise<string> {
+  const { stdout } = await kubectlWithRetry(
+    ['config', 'view', '--flatten', '--minify', '-o', 'json'],
+  )
+  const cfg = JSON.parse(stdout) as { users?: Array<{ user?: Record<string, unknown> }> }
+  for (const u of cfg.users ?? []) u.user = { ...u.user, as: serverUsername() }
+  const file = path.join(dir, 'server-impersonation-kubeconfig.json')
+  await fs.writeFile(file, JSON.stringify(cfg))
+  return file
+}
+
+/** Run `fn` with every kubectl subprocess acting as the server's SA. */
+async function asServerIdentity<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.KUBECONFIG
+  process.env.KUBECONFIG = serverKubeconfigPath!
+  try {
+    return await fn()
+  } finally {
+    if (prev === undefined) delete process.env.KUBECONFIG
+    else process.env.KUBECONFIG = prev
+  }
+}
 
 async function writeProjectDockerfile(content: string): Promise<void> {
   const dir = projectBuildDir(PROJECT_SLUG)
@@ -116,7 +160,17 @@ describe('trust-split builds', () => {
     // bootstrap is what does this in production — in here it is the
     // fixture's job.
     await ensureNamespace()
+    // The server's SA and RBAC, exactly as `deployTestServer` applies them
+    // for the tiers that run a real server pod. Here no server pod runs —
+    // the builds below impersonate this identity instead — but the binding
+    // must exist for the impersonated requests to be authorized. The
+    // cluster-scoped pair is namespace-suffixed and swept by
+    // cluster-setup's afterAll.
+    await kubectlApply(buildServerServiceAccountManifest())
+    await kubectlApply(buildServerClusterRoleManifest())
+    await kubectlApply(buildServerClusterRoleBindingManifest())
     tempDataDir = await createTempDataDir()
+    serverKubeconfigPath = await writeServerImpersonationKubeconfig(tempDataDir)
   })
 
   afterAll(async () => {
@@ -195,38 +249,56 @@ describe('trust-split builds', () => {
         { input: JSON.stringify(manifest), maxAttempts: 1 },
       )
 
-    // Control: the SA CAN create an unlabeled pod (RBAC path is open)...
-    // Retried: freshly-written VAP/RBAC objects can lag a moment.
-    let denial = ''
-    for (let i = 0; i < 20 && !denial; i++) {
-      await applyAs(podManifest('faker-control', false), faker)
-      // ...but a builder-labeled pod is rejected by the admission policy.
+    // The guard admits one identity SHAPE, so a cluster operator's cert
+    // user is denied too — even though RBAC would let it create the pod.
+    //
+    // Retried, and FIRST, because this case doubles as the propagation
+    // gate: a freshly-applied VAP lags a moment, and a cluster that
+    // already carried a PREVIOUS revision of the guard keeps enforcing the
+    // old expression until the update propagates. Only this case tells the
+    // two revisions apart — the deny-all-ServiceAccounts revision this one
+    // replaced admitted a cert user's gvisor builder pod, the current one
+    // denies it — so an SA-denial probe would wave the old expression
+    // through and every case below would assert against stale semantics.
+    let adminDenial = ''
+    for (let i = 0; i < 20 && !adminDenial; i++) {
       try {
-        await applyAs(podManifest('faker-builder', true), faker)
-        // Propagation lag: the fake got through — remove it and retry.
-        await kubectlWithRetry(['delete', 'pod', 'faker-builder', '-n', ns, '--ignore-not-found'])
+        await applyAs(podManifest('admin-builder', true))
+        // Propagation lag: the pod got through — remove it and retry.
+        await kubectlWithRetry(['delete', 'pod', 'admin-builder', '-n', ns, '--ignore-not-found'])
         await new Promise((r) => setTimeout(r, 500))
       } catch (err) {
-        denial = (err as { stderr?: string }).stderr ?? String(err)
+        adminDenial = (err as { stderr?: string }).stderr ?? String(err)
       }
     }
-    expect(denial).toContain(BUILDER_ROLE_GUARD_NAME)
-    expect(denial).toContain('reserved')
-
-    // The guard names ONE identity, so a cluster operator's cert user is
-    // denied too — even though RBAC would let it create the pod.
-    const adminDenial = await applyAs(podManifest('admin-builder', true))
-      .then(() => '')
-      .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
+    expect(adminDenial).toContain(BUILDER_ROLE_GUARD_NAME)
     expect(adminDenial).toContain('reserved')
 
+    // Control: the SA CAN create an unlabeled pod (RBAC path is open)...
+    await applyAs(podManifest('faker-control', false), faker)
+    // ...but a builder-labeled pod is rejected by the admission policy.
+    const fakerDenial = await applyAs(podManifest('faker-builder', true), faker)
+      .then(() => '')
+      .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
+    expect(fakerDenial).toContain(BUILDER_ROLE_GUARD_NAME)
+    expect(fakerDenial).toContain('reserved')
+
+    // The direction that actually shipped broken once: the server's own
+    // identity is ADMITTED. A guard that denied everything would pass every
+    // denial case above; this is the assertion that pins the allow side.
+    const server = serverUsername()
+    await applyAs(podManifest('server-builder', true), server)
+    await kubectlWithRetry(['delete', 'pod', 'server-builder', '-n', ns, '--ignore-not-found'])
+
     // And the label may not ride on a non-sandboxed pod even for the one
-    // identity that is allowed to set it.
-    const server = `system:serviceaccount:${ns}:${SERVER_SA_NAME}`
+    // identity that is allowed to set it. 'reserved' must NOT appear: only
+    // the gvisor validation may fail for the server, or the allow side of
+    // the username validation regressed.
     const runcDenial = await applyAs(podManifest('server-runc-builder', true, false), server)
       .then(() => '')
       .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
     expect(runcDenial).toContain('gvisor')
+    expect(runcDenial).not.toContain('reserved')
 
     await kubectlWithRetry(['delete', 'pod', 'faker-control', '-n', ns, '--ignore-not-found'])
   }, 120_000)
@@ -238,7 +310,9 @@ describe('trust-split builds', () => {
     const projectTag1 = chain1.layers.find((l) => l.name === 'project')?.tag
     expect(projectTag1).toBeTruthy()
 
-    const final1 = await ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    // As the server's identity: the guard admits builder pods from the
+    // server SA alone, and production's builds run in-cluster as that SA.
+    const final1 = await asServerIdentity(() => ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX))
     expect(final1).toBe(projectTag1)
     // The product lives in the registry — and only there: the host store
     // never sees a cluster-pod tag.
@@ -261,7 +335,7 @@ describe('trust-split builds', () => {
     expect(projectTag2).not.toBe(projectTag1)
     expect(userTag).toBeTruthy()
 
-    const final2 = await ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    const final2 = await asServerIdentity(() => ensureImage(PROJECT_SLUG, TEST_IMAGE_PREFIX))
     expect(final2).toBe(userTag)
     expect(await registryHasTag(projectTag2!)).toBe(true)
     expect(await registryHasTag(userTag!)).toBe(true)
