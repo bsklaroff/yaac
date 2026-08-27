@@ -12,6 +12,7 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
+  SERVER_SA_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
@@ -196,12 +197,23 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
 }
 
 /**
+ * The server's in-cluster API username. The namespace is read at build
+ * time rather than baked in, so a per-namespace install (the e2e tiers
+ * set `YAAC_K8S_NAMESPACE`) names its own server.
+ */
+function serverServiceAccountUsername(): string {
+  return `system:serviceaccount:${k8sNamespace()}:${SERVER_SA_NAME}`
+}
+
+/**
  * Admission guard making `yaac.role=builder` unfakeable: the label is
  * policy-bearing (the world-deny exclusion above), so nothing untrusted
- * may mint it. The only API identities untrusted code can ever hold are
- * ServiceAccounts — worktree pods carry no token at all. The trusted
- * server and operators act as cert users. So: builder-labeled pods must not be
- * created or updated by any ServiceAccount, and must run under the
+ * may mint it. Builder pods are created by exactly one identity — the
+ * server, which runs in-cluster as the `SERVER_SA_NAME` ServiceAccount in
+ * the install namespace — so the guard names that identity and denies
+ * every other, whether it is another ServiceAccount (the identity class
+ * untrusted code can hold; worktree pods carry no token at all) or a cert
+ * user such as a cluster operator. Carriers must also run under the
  * gvisor RuntimeClass (the label describes a sandboxed builder; a runc
  * pod wearing it is a bug or an attack either way). UPDATE is matched so
  * the label can't be patched onto an existing pod after admission.
@@ -229,10 +241,11 @@ export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
       }],
       validations: [
         {
-          expression: "!request.userInfo.username.startsWith('system:serviceaccount:')",
+          expression:
+            `request.userInfo.username == '${serverServiceAccountUsername()}'`,
           message:
             `the ${LABEL_ROLE}=${ROLE_BUILDER} label is reserved for yaac's `
-            + 'server-created builder pods and may not be set by service accounts',
+            + 'server-created builder pods and may not be set by any other identity',
         },
         {
           expression:

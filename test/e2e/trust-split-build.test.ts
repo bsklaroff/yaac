@@ -14,7 +14,10 @@ import { projectBuildDir, userBuildDir } from '@yaac/server/lib/build-dirs'
 import { writeBuildFile } from '@yaac/server/domain/projects/build-files'
 import { ensureImage } from '@yaac/server/drivers/k8s/images/build-coordinator'
 import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
+import {
+  BUILDER_ROLE_GUARD_NAME,
+  SERVER_SA_NAME,
+} from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { resolveImageChain } from '@yaac/server/drivers/k8s/image-engine/image-builder'
 import { imageExists } from '@yaac/server/drivers/k8s/container/runtime'
 import {
@@ -151,7 +154,7 @@ describe('trust-split builds', () => {
     await expect(registryReachable()).resolves.toBe(true)
   }, 120_000)
 
-  it('reserves yaac.role=builder — a pod-creating ServiceAccount cannot fake it', async () => {
+  it('reserves yaac.role=builder for the server ServiceAccount alone', async () => {
     await ensureBuilderRoleGuard()
 
     // A ServiceAccount WITH pod-create RBAC in this namespace: the guard,
@@ -210,9 +213,17 @@ describe('trust-split builds', () => {
     expect(denial).toContain(BUILDER_ROLE_GUARD_NAME)
     expect(denial).toContain('reserved')
 
-    // The label also may not ride on a non-sandboxed pod, even for the
-    // trusted admin identity.
-    const runcDenial = await applyAs(podManifest('admin-runc-builder', true, false))
+    // The guard names ONE identity, so a cluster operator's cert user is
+    // denied too — even though RBAC would let it create the pod.
+    const adminDenial = await applyAs(podManifest('admin-builder', true))
+      .then(() => '')
+      .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
+    expect(adminDenial).toContain('reserved')
+
+    // And the label may not ride on a non-sandboxed pod even for the one
+    // identity that is allowed to set it.
+    const server = `system:serviceaccount:${ns}:${SERVER_SA_NAME}`
+    const runcDenial = await applyAs(podManifest('server-runc-builder', true, false), server)
       .then(() => '')
       .catch((err: unknown) => (err as { stderr?: string }).stderr ?? String(err))
     expect(runcDenial).toContain('gvisor')

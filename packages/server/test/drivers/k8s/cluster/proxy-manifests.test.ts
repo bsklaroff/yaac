@@ -11,7 +11,10 @@ import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
 } from '#drivers/k8s/cluster'
-import { BUILDER_ROLE_GUARD_NAME } from '#drivers/k8s/substrate/proxy-constants'
+import {
+  BUILDER_ROLE_GUARD_NAME,
+  SERVER_SA_NAME,
+} from '#drivers/k8s/substrate/proxy-constants'
 
 // The builder-role admission guard is the only pair of manifests outside the
 // folder needs — the image feature installs it around its runsc builder pods.
@@ -50,17 +53,30 @@ describe('buildBuilderRoleGuardPolicyManifest', () => {
       .toContain("object.metadata.labels['yaac.role'] == 'builder'")
   })
 
-  it('denies ServiceAccount creators and non-gvisor carriers', () => {
+  it('admits only the server ServiceAccount, and only gvisor carriers', () => {
     const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
     const exprs = m.spec.validations.map((v) => v.expression)
-    // Any untrusted path to pod creation authenticates as an SA;
-    // session pods themselves hold no token. The trusted server is a cert
-    // user, never an SA.
-    expect(exprs).toContain("!request.userInfo.username.startsWith('system:serviceaccount:')")
+    // The server creates every builder pod and runs in-cluster as its own
+    // ServiceAccount, so the guard names that one identity: any other SA
+    // (the identity class untrusted code can hold) and any cert user are
+    // both denied.
+    expect(exprs).toContain(
+      "request.userInfo.username == 'system:serviceaccount:test-ns:yaac-server'",
+    )
     // And the label may only describe an actually-sandboxed pod.
     expect(exprs).toContain(
       "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'",
     )
+  })
+
+  it('names the server SA in the install namespace, not a literal', () => {
+    // k8sNamespace() is mocked to 'test-ns' above, standing in for the
+    // per-file YAAC_K8S_NAMESPACE the e2e tiers install under: a hardcoded
+    // 'yaac' here would deny that install's own server.
+    const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
+    const expr = m.spec.validations[0].expression
+    expect(expr).toContain(`:test-ns:${SERVER_SA_NAME}'`)
+    expect(expr).not.toContain(':yaac:')
   })
 })
 

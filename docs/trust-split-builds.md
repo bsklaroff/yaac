@@ -339,11 +339,14 @@ and the trust split that keeps yaac-shipped layers off that path.
   mechanism nested builds already use.
 - **The `yaac.role=builder` label** (which carves builder pods out of the
   world-deny egress policy) is reserved by a cluster-wide
-  ValidatingAdmissionPolicy (`yaac-builder-role-guard`): no ServiceAccount
-  may create or update a pod carrying it — the only API identities
-  untrusted code can hold — and carriers must run under the `gvisor`
-  RuntimeClass. Applied fail-closed before any builder pod is created, and
-  by `yaac cluster install`.
+  ValidatingAdmissionPolicy (`yaac-builder-role-guard`): only the server's
+  own in-cluster ServiceAccount (`yaac-server` in the install namespace)
+  may create or update a pod carrying it, and carriers must run under the
+  `gvisor` RuntimeClass. The server creates every builder pod, so naming
+  that one identity denies both the other ServiceAccounts — the identity
+  class untrusted code can hold — and cert users such as a cluster
+  operator. Applied fail-closed before any builder pod is created, and by
+  `yaac cluster install`.
 
 ## Open items
 
