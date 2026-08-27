@@ -12,6 +12,7 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
+  SERVER_SA_NAME,
   SSH_AGENT_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
@@ -198,13 +199,30 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
 /**
  * Admission guard making `yaac.role=builder` unfakeable: the label is
  * policy-bearing (the world-deny exclusion above), so nothing untrusted
- * may mint it. The only API identities untrusted code can ever hold are
- * ServiceAccounts — worktree pods carry no token at all. The trusted
- * server and operators act as cert users. So: builder-labeled pods must not be
- * created or updated by any ServiceAccount, and must run under the
- * gvisor RuntimeClass (the label describes a sandboxed builder; a runc
- * pod wearing it is a bug or an attack either way). UPDATE is matched so
- * the label can't be patched onto an existing pod after admission.
+ * may mint it. Builder pods are created by exactly one kind of identity —
+ * a yaac server, which runs in-cluster as the `SERVER_SA_NAME`
+ * ServiceAccount of its install namespace — so the guard admits that
+ * username shape (`system:serviceaccount:<any-ns>:yaac-server`) and denies
+ * every other identity, whether another ServiceAccount (the identity class
+ * untrusted code can hold; worktree pods carry no token at all) or a cert
+ * user such as a cluster operator.
+ *
+ * The shape, deliberately not one install's exact username: this policy is
+ * cluster-scoped under a FIXED name, and one cluster hosts more than one
+ * install (the real `yaac` one plus an ephemeral `yaac-test-<run-id>` per
+ * e2e file — the same reason `serverClusterScopedName()` suffixes the
+ * server's RBAC). Every install re-applies the guard, so its text must be
+ * install-agnostic or the last applier locks everyone else's server out.
+ * Suffixing the policy name instead would not compose either: VAP
+ * validations AND together, so two policies each naming a different server
+ * would deny both. Admitting the shape costs nothing under the threat
+ * model — untrusted code holds no API identity at all, so it can neither
+ * act as nor create a `yaac-server` ServiceAccount in any namespace.
+ *
+ * Carriers must also run under the gvisor RuntimeClass (the label
+ * describes a sandboxed builder; a runc pod wearing it is a bug or an
+ * attack either way). UPDATE is matched so the label can't be patched onto
+ * an existing pod after admission.
  */
 export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
   return {
@@ -229,10 +247,12 @@ export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
       }],
       validations: [
         {
-          expression: "!request.userInfo.username.startsWith('system:serviceaccount:')",
+          expression:
+            "request.userInfo.username.startsWith('system:serviceaccount:') "
+            + `&& request.userInfo.username.endsWith(':${SERVER_SA_NAME}')`,
           message:
             `the ${LABEL_ROLE}=${ROLE_BUILDER} label is reserved for yaac's `
-            + 'server-created builder pods and may not be set by service accounts',
+            + 'server-created builder pods and may not be set by any other identity',
         },
         {
           expression:
