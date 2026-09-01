@@ -266,6 +266,30 @@ export const env = {
   },
 
   /**
+   * `YAAC_SERVER_GIT_NAME` / `YAAC_SERVER_GIT_EMAIL` — the git identity the
+   * SERVER itself commits worktrees under when a caller supplies none, stated
+   * by the server Deployment. `null` unless both halves are set.
+   *
+   * Distinct from `YAAC_GIT_NAME` / `YAAC_GIT_EMAIL`, which the server puts
+   * into a WORKTREE's environment for `yaac-worktree-init` to write into that
+   * checkout's git config. Same pair of values, opposite directions — one
+   * reaches the server, the other leaves it — so they cannot share a name.
+   *
+   * This exists because the fallback it feeds cannot read a host: under the
+   * k8s driver the server is a pod whose `$HOME` is an ephemeral image layer
+   * and whose only mount is the data dir, so `git config --global` there
+   * answers nothing no matter what the user configured on their machine.
+   * `yaac cluster install` resolves the identity on the host and states it
+   * here.
+   */
+  get serverGitUser(): { name: string; email: string } | null {
+    const name = process.env.YAAC_SERVER_GIT_NAME?.trim()
+    const email = process.env.YAAC_SERVER_GIT_EMAIL?.trim()
+    if (name && email) return { name, email }
+    return null
+  },
+
+  /**
    * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the server's
    * Host-header check admits (e.g. the server's `srv.<tailnet>.ts.net`
    * MagicDNS name behind `tailscale serve`). Loopback is always allowed

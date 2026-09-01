@@ -210,6 +210,17 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('serverGitUser', () => {
+    it('needs both halves, since git refuses a half-identity', () => {
+      vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada Lovelace')
+      expect(env.serverGitUser).toBeNull()
+      vi.stubEnv('YAAC_SERVER_GIT_EMAIL', '  ada@example.com  ')
+      expect(env.serverGitUser).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+      vi.stubEnv('YAAC_SERVER_GIT_NAME', '   ')
+      expect(env.serverGitUser).toBeNull()
+    })
+  })
+
   describe('trustProxy', () => {
     it('is true only when YAAC_TRUST_PROXY is exactly "1"', () => {
       vi.stubEnv('YAAC_TRUST_PROXY', '1')

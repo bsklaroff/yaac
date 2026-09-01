@@ -41,6 +41,7 @@ import {
   registryHost,
   registryReachable,
 } from '#drivers/k8s/container'
+import { getGitUserConfig } from '@yaac/shared/git'
 import { sharedRoot } from '@yaac/shared/paths'
 // CheckResult lives in @yaac/shared/types, not here with its producer, so
 // consumers can name the shape without importing the check suite.
@@ -329,7 +330,87 @@ export async function runClusterCheck(
   // gvisor-tier runtimeClassName.
   add(await runRuntimeStampSweep())
 
+  // 12. the server pod's git identity vs this host's (warn-only).
+  add(await runServerGitIdentityCheck())
+
   return { ok: !results.some((r) => r.status === 'fail'), results }
+}
+
+
+/**
+ * Warn-level comparison of the git identity the server Deployment states
+ * against the one this host is configured with. `yaac cluster install` takes
+ * a SNAPSHOT of the host identity into the pod's env; nothing refreshes it
+ * afterwards and nothing else surfaces it, so three drifts are otherwise
+ * invisible until someone reads a commit's author:
+ *
+ *  - the host identity changed since the install, and the pod still commits
+ *    under the old one;
+ *  - a re-install run from a shell whose `$HOME` has no global git config
+ *    STRIPS a previously-working identity, because the apply replaces the
+ *    env with a manifest that no longer names the pair;
+ *  - the original install had no identity to snapshot, and its note scrolled
+ *    away under minutes of image-build output.
+ *
+ * All three read the same here and carry the same remedy, and the whole
+ * check is one deployment read. Warn, never fail: an install can legitimately
+ * run without one (a caller that always supplies its own identity), and a
+ * disagreement is a thing to know, not a broken cluster.
+ */
+async function runServerGitIdentityCheck(): Promise<CheckResult> {
+  const name = 'server-git-identity'
+  let stated: { name?: string; email?: string }
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'deployment', SERVER_APP_NAME, '-n', k8sNamespace(),
+      '-o', 'jsonpath={.spec.template.spec.containers[0].env}',
+    ])
+    const env = stdout.trim() === ''
+      ? []
+      : (JSON.parse(stdout) as Array<{ name: string; value?: string }>)
+    const read = (key: string) => env.find((e) => e.name === key)?.value?.trim() || undefined
+    stated = { name: read('YAAC_SERVER_GIT_NAME'), email: read('YAAC_SERVER_GIT_EMAIL') }
+  } catch {
+    // No Deployment (a cluster-only install, or one mid-provision) is not
+    // this check's business — the server checks above already speak to that.
+    return { name, status: 'skip', detail: 'skipped — no server Deployment to read' }
+  }
+
+  const host = await getGitUserConfig()
+  const statedBoth = stated.name !== undefined && stated.email !== undefined
+
+  if (!statedBoth) {
+    if (!host) {
+      return {
+        name, status: 'warn',
+        detail: 'the server pod states no git identity, and this host has none to give it — '
+          + 'a session created without one refuses',
+        fix: 'Set one (git config --global user.name / user.email), then: yaac cluster install',
+      }
+    }
+    return {
+      name, status: 'warn',
+      detail: `the server pod states no git identity; this host is ${host.name} <${host.email}>`,
+      fix: 'Carry it to the pod with: yaac cluster install',
+    }
+  }
+
+  if (host && (host.name !== stated.name || host.email !== stated.email)) {
+    return {
+      name, status: 'warn',
+      detail: `the server pod commits as ${stated.name} <${stated.email}>, but this host is `
+        + `${host.name} <${host.email}> — the pod's copy is the install-time snapshot`,
+      fix: 'Refresh the pod\'s copy with: yaac cluster install',
+    }
+  }
+
+  // A host with no global config and a pod that has one is not drift: the
+  // install may simply have run somewhere else. The pod's answer is the one
+  // that matters, and it has one.
+  return {
+    name, status: 'pass',
+    detail: `the server pod commits as ${stated.name} <${stated.email}>`,
+  }
 }
 
 /**

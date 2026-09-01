@@ -216,11 +216,24 @@ describe('deployServerWorkload', () => {
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {
-    await deployServerWorkload({ log: vi.fn(), torHostAddr: '10.89.0.1' })
+    await deployServerWorkload({
+      log: vi.fn(),
+      torHostAddr: '10.89.0.1',
+      gitUser: { name: 'Ada Lovelace', email: 'ada@example.com' },
+    })
 
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
+
+    // The git identity non-interactive worktree creation commits under. The
+    // pod cannot read it: `git config --global` there reads a `$HOME` that
+    // is an ephemeral image layer, and the data dir is the only host mount.
+    // Named apart from the `YAAC_GIT_*` pair, which is the same identity
+    // travelling the other way — server into a worktree's environment.
+    expect(env.YAAC_SERVER_GIT_NAME).toBe('Ada Lovelace')
+    expect(env.YAAC_SERVER_GIT_EMAIL).toBe('ada@example.com')
+    expect(env.YAAC_GIT_NAME).toBeUndefined()
 
     // A pod's loopback has no reachable backend, so the bind widens and the
     // ingress policy takes over as the wall.
@@ -235,6 +248,18 @@ describe('deployServerWorkload', () => {
     // client dial Service DNS rather than forward to it.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
     expect(env.YAAC_RELAY_ADDR).toContain('yaac-proxy.test-ns.svc.cluster.local:')
+  })
+
+  it('states no git identity when the host has none', async () => {
+    // An unconfigured host is not a failed install: the CLI resolves (and
+    // prompts for) its own identity per worktree, so only webapp-created
+    // worktrees are affected — and they get the error `createWorktree`
+    // raises rather than a pod committing as somebody else.
+    await deployServerWorkload({ log: vi.fn() })
+
+    const names = deployedPodSpec().containers[0].env.map((e) => e.name)
+    expect(names).not.toContain('YAAC_SERVER_GIT_NAME')
+    expect(names).not.toContain('YAAC_SERVER_GIT_EMAIL')
   })
 
   it('rewrites an IPv6-loopback Tor SOCKS URL to the host, brackets and all', async () => {

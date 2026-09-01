@@ -314,6 +314,23 @@ has neither, and the answer is that it never asks for them.
   With neither running the webapp's `127.0.0.1:<port>` links refuse to
   connect — which is the honest state, and the one thing a pod-side bind
   would have hidden.
+- **The git identity is a snapshot taken at install time.** Worktrees
+  created from the CLI carry the identity the CLI resolved (and prompts for
+  it when there is none), but a worktree created from the webapp sends
+  none, and the server's own fallback — `git config --global` — reads a
+  `$HOME` that is an ephemeral image layer in the pod. So install resolves
+  the host's identity and states it in the Deployment
+  (`YAAC_SERVER_GIT_NAME` / `YAAC_SERVER_GIT_EMAIL`; deliberately not the
+  `YAAC_GIT_*` pair, which is what the server hands a *worktree*). Changing
+  your git identity afterwards therefore needs a re-install to reach the
+  pod, and an install run on a machine with no global identity says so.
+  Because the snapshot is the only copy and nothing else displays it,
+  `yaac cluster check` compares it against the host's current identity and
+  warns on a disagreement — which is also how you notice a re-install run
+  from a shell with no global config, since that apply *strips* the pair.
+  A prewarmed spare bakes its identity in at warm time, so a claim resolves
+  the same chain again and re-keys the checkout it hands over; the pool is
+  never left committing under an identity a re-install has replaced.
 - **`YAAC_USE_TOR`** names a listener on the host, and a pod's loopback is
   its own. Install rewrites the loopback halves of
   `YAAC_HOST_TOR_SOCKS_URL` into the host's address on the kind network —

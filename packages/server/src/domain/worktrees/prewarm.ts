@@ -28,6 +28,7 @@ import simpleGit from 'simple-git'
 import { worktreeDriver } from '#drivers/driver'
 import { cleanupWorktree, deleteWorktreeState } from './cleanup'
 import { applyWorktreeEvent } from '#db'
+import { resolveGitIdentity } from './git-identity'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import { claimSpareWorktree, restoreSpareWorktree } from '#db'
 import type { WorktreeCreateResult } from './create'
@@ -340,24 +341,32 @@ export async function tryClaimPrewarmed(
     await runtime.claimSpare(claimedId, tool)
     mutated = true
 
-    // Re-apply git identity so the claiming user's identity wins over the
-    // server-global one the spare was warmed with. Skipped when the caller
-    // (e.g. the webapp) sends no identity — the warmed-in global is correct.
+    // Re-apply git identity so the identity this claim resolves to wins over
+    // whatever the spare was warmed with. The full chain runs even when the
+    // caller (e.g. the webapp) sends none, because a spare's identity is baked
+    // at WARM time and nothing re-warms the pool: after a user changes their
+    // git identity — and, on a k8s install, re-runs `yaac cluster install` to
+    // carry it to the server pod — the spares already sitting in the pool
+    // still hold the old one. Resolving here is what makes the documented
+    // remedy reach them; skipping on no-caller-identity would let the next
+    // claim per project commit under the stale name, durably.
     //
     // One exec, and non-fatal. This runs PAST the commit point, against a
     // worktree that is already whole, over a transport whose readiness gate
     // may be minutes old by now (a re-branch fetches and resets in between).
     // A hiccup here would otherwise reap a perfectly good claimed worktree
-    // over a step the no-identity path skips outright.
-    if (gitUser) {
+    // over a step that is a correction, not a prerequisite — the spare's
+    // warmed-in identity stands and the claim is still good.
+    const claimIdentity = await resolveGitIdentity(gitUser)
+    if (claimIdentity) {
       await runtime.exec(
         chosen.jobName,
-        `git config --global user.name '${shellEscape(gitUser.name)}'`
-        + ` && git config --global user.email '${shellEscape(gitUser.email)}'`,
+        `git config --global user.name '${shellEscape(claimIdentity.name)}'`
+        + ` && git config --global user.email '${shellEscape(claimIdentity.email)}'`,
       ).catch((err: unknown) => {
         console.warn(
           `Git identity for claimed session ${claimedId} not applied `
-          + `(the warmed-in global stands): ${(err as Error).message}`,
+          + `(the warmed-in one stands): ${(err as Error).message}`,
         )
       })
     }

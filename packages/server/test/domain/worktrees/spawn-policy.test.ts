@@ -54,6 +54,19 @@ describe('decideSpawn', () => {
     await settle()
   })
 
+  it('sends no git identity, so the server’s own is the only source a sibling has', async () => {
+    // A spawn has no interactive caller to resolve one — this is the same
+    // choke point the webapp and `POST /worktrees` reach, and the reason
+    // the server needs an identity of its own rather than one per request.
+    // Asserted separately from the options shape above because a `gitUser`
+    // appearing here would silently paper over that.
+    const create = stubCreate()
+    await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
+    const [, opts] = create.mock.calls[0]
+    expect(opts.gitUser).toBeUndefined()
+    await settle()
+  })
+
   it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
     let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
     stubCreate((_slug, opts) => {

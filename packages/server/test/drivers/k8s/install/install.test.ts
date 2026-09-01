@@ -144,6 +144,8 @@ function makeDeps(
     ensurePriorityClasses: overrides.ensurePriorityClasses ?? vi.fn().mockResolvedValue(undefined),
     deployServer: overrides.deployServer
       ?? vi.fn().mockResolvedValue('http://127.0.0.1:8787'),
+    gitUser: overrides.gitUser
+      ?? vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
@@ -371,6 +373,13 @@ describe('runClusterInstall', () => {
     // image comes from the registry, its dials go through the proxy and
     // netd, and it is the one step that starts USING them.
     expect(deps.deployServer).toHaveBeenCalledOnce()
+    // Carrying the host's git identity, which the pod has no way to read
+    // for itself — its `$HOME` is an image layer and the data dir is its
+    // only host mount, so a worktree created from the webapp would have no
+    // identity to commit under.
+    expect(deps.deployServer).toHaveBeenCalledWith(expect.objectContaining({
+      gitUser: { name: 'Ada', email: 'ada@example.com' },
+    }))
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
       .toBeGreaterThan(vi.mocked(deps.ensureNetd).mock.invocationCallOrder[0])
     expect(vi.mocked(deps.deployServer).mock.invocationCallOrder[0])
@@ -421,6 +430,22 @@ describe('runClusterInstall', () => {
     expect(gvisorOrder).toBeGreaterThan(registryOrder)
 
     expect(deps.check).toHaveBeenCalledOnce()
+  })
+
+  it('installs without a git identity, but says what that costs', async () => {
+    // Not fatal: the CLI resolves (and prompts for) its own identity per
+    // worktree, so only webapp-created worktrees lose anything. Saying so
+    // here is the only chance the user gets — the failure otherwise
+    // surfaces much later, as a create that refuses.
+    const log = vi.fn()
+    const deps = makeDeps({ run: freshRun(), log, gitUser: vi.fn().mockResolvedValue(null) })
+
+    expect(await runClusterInstall({}, deps)).toBe(true)
+    expect(deps.deployServer).toHaveBeenCalledWith(expect.objectContaining({
+      gitUser: undefined,
+    }))
+    const logged = (log.mock.calls as unknown as Array<[string]>).map(([m]) => m).join('\n')
+    expect(logged).toMatch(/no global git user\.name/)
   })
 
   it('aborts when the PriorityClasses cannot be installed', async () => {
