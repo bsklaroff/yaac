@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import type * as sharedGitModule from '@yaac/shared/git'
 
 vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   // The REAL predicate: these suites drive the absent-vs-unevaluable
@@ -16,6 +17,15 @@ vi.mock('#drivers/k8s/substrate/kubectl', async (importOriginal) => ({
   kubectlApply: vi.fn(),
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn(),
+}))
+
+// The bottom of the identity-drift check: what THIS host is configured with.
+// Mocked because a developer machine always has one, which would make both
+// the agreeing and the absent case unreachable.
+const mockGitUserConfig = vi.hoisted(() => vi.fn())
+vi.mock('@yaac/shared/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof sharedGitModule>()),
+  getGitUserConfig: mockGitUserConfig,
 }))
 
 vi.mock('#drivers/k8s/container/registry', () => ({
@@ -163,6 +173,8 @@ let clusterNodes: Array<Record<string, unknown>> = []
  *  `scheduling.tolerations` — i.e. what a session pod inherits, and so what
  *  the check matches node taints against. Empty on a local cluster. */
 let gvisorTolerations: PodToleration[] = []
+/** What the server Deployment states for env, read by the identity check. */
+let serverDeployEnv: Array<{ name: string; value?: string }> = []
 /** Pod name → terminal phase, for probe pods a test wants to fail. */
 let podPhases: Record<string, string> = {}
 /** Per-node probe indices whose pod "ran" without its write reaching the host. */
@@ -198,6 +210,10 @@ async function happyResponses(
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
     return { stdout: JSON.stringify({ items: clusterNodes }), stderr: '' }
+  }
+  // The server Deployment's env, read for the git-identity drift check.
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'deployment') {
+    return { stdout: JSON.stringify(serverDeployEnv), stderr: '' }
   }
   // The check reads the gvisor RuntimeClass object for its handler name and
   // both halves of its scheduling — the nodeSelector the sweep honors and
@@ -373,6 +389,12 @@ describe('runClusterCheck', () => {
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
     gvisorTolerations = []
+    // Default: the pod states exactly what this host is configured with.
+    serverDeployEnv = [
+      { name: 'YAAC_SERVER_GIT_NAME', value: 'A B' },
+      { name: 'YAAC_SERVER_GIT_EMAIL', value: 'a@b.co' },
+    ]
+    mockGitUserConfig.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
     podPhases = {}
     nodeMarkerFails = new Set()
     podEvents = {}
@@ -417,6 +439,7 @@ describe('runClusterCheck', () => {
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
       ['runtime-stamp', 'pass'],
+      ['server-git-identity', 'pass'],
     ])
     expect(ok).toBe(true)
     expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
@@ -1399,6 +1422,73 @@ describe('runClusterCheck', () => {
       status: 'fail',
       detail: expect.stringContaining('stale data') as string,
     })
+  })
+
+  // The server pod's git identity is an install-time SNAPSHOT of the host's,
+  // and nothing else surfaces it: without this item, a drift is invisible
+  // until someone reads the author of a commit a session already pushed.
+  // Warn, never fail — an install can legitimately carry none.
+  it('warns when the pod\'s git identity has drifted from this host\'s', async () => {
+    mockGitUserConfig.mockResolvedValue({ name: 'New Name', email: 'new@b.co' })
+    stage()
+    const { ok, results } = await runClusterCheck()
+
+    // A disagreement is a thing to know, not a broken cluster.
+    expect(ok).toBe(true)
+    const item = byName(results, 'server-git-identity')
+    expect(item?.status).toBe('warn')
+    expect(item?.detail).toContain('A B <a@b.co>')
+    expect(item?.detail).toContain('New Name <new@b.co>')
+    expect(item?.fix).toContain('yaac cluster install')
+  })
+
+  it('warns when a re-install stripped the identity, and when there is none to give', async () => {
+    // An apply from a shell whose $HOME has no global config replaces the
+    // env with a manifest that no longer names the pair — a silent strip.
+    serverDeployEnv = []
+    stage()
+    let item = byName((await runClusterCheck()).results, 'server-git-identity')
+    expect(item?.status).toBe('warn')
+    expect(item?.detail).toContain('A B <a@b.co>')
+    expect(item?.fix).toContain('yaac cluster install')
+
+    // Neither side has one: the create that needs it will refuse, and the
+    // install note that said so has long scrolled away.
+    mockGitUserConfig.mockResolvedValue(null)
+    stage()
+    item = byName((await runClusterCheck()).results, 'server-git-identity')
+    expect(item?.status).toBe('warn')
+    expect(item?.detail).toContain('none to give it')
+    expect(item?.fix).toContain('git config --global')
+  })
+
+  it('skips the identity item when there is no server Deployment to read', async () => {
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'deployment') {
+        return Promise.reject(new Error('deployments.apps "yaac-server" not found'))
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    // A cluster-only install is not this item's business, and must not warn.
+    expect(ok).toBe(true)
+    expect(byName(results, 'server-git-identity')?.status).toBe('skip')
+  })
+
+  it('passes on the pod\'s own identity when this host has none', async () => {
+    // The install may simply have run on another machine; the pod's answer is
+    // the one that matters and it has one.
+    mockGitUserConfig.mockResolvedValue(null)
+    serverDeployEnv = [
+      { name: 'YAAC_SERVER_GIT_NAME', value: 'Pod P' },
+      { name: 'YAAC_SERVER_GIT_EMAIL', value: 'p@pod.co' },
+    ]
+    stage()
+    const item = byName((await runClusterCheck()).results, 'server-git-identity')
+    expect(item?.status).toBe('pass')
+    expect(item?.detail).toContain('Pod P <p@pod.co>')
   })
 })
 

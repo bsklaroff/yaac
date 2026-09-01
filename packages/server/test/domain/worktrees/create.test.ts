@@ -1,11 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import simpleGit from 'simple-git'
+import type * as sharedGitModule from '@yaac/shared/git'
+
+// The one process boundary onto the host's git CONFIG. Mocked because the
+// identity chain's bottom rung is "what this machine has configured", and a
+// developer machine always has something — so the absent case, which is the
+// whole reason the rungs above it exist, is otherwise unreachable.
+const mockGitUserConfig = vi.hoisted(() => vi.fn())
+vi.mock('@yaac/shared/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof sharedGitModule>()),
+  getGitUserConfig: mockGitUserConfig,
+}))
+
 import {
+  createWorktree,
   failedCreateCollectsCheckout,
   launchPermissionMode,
   resolvePermissionMode,
   withUpstreamConfigLock,
 } from '#domain/worktrees/create'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
+import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
+import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import {
   getProjectLastPermissionMode,
@@ -167,5 +184,100 @@ describe('resolvePermissionMode', () => {
     await recordProjectPermissionMode('p', 'plan')
     expect(await resolve()).toBe('plan')
     expect(await resolve({ requested: 'accept-edits' })).toBe('accept-edits')
+  })
+})
+
+/**
+ * The git identity a create commits under, and where it comes from.
+ *
+ * Only the identity gate is exercised: the create is allowed to fail at the
+ * next gate (no credential is configured for the project's remote), and
+ * which of the two errors comes back is what says whether an identity was
+ * found. Precedence is read off `getGitUserConfig` — the process boundary
+ * onto the host's git config, mocked here because a developer machine has a
+ * real one and the "nothing configured" case is otherwise untestable.
+ */
+describe('createWorktree git identity', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    installFakeWorktreeDriver()
+    await fs.mkdir(projectDir('demo'), { recursive: true })
+    // A real repo with an origin, so the create reaches the credential gate
+    // instead of dying on an unreadable remote.
+    await createTestRepo(repoDir('demo'))
+    await simpleGit(repoDir('demo')).addRemote('origin', 'https://github.com/o/r.git')
+    mockGitUserConfig.mockResolvedValue(null)
+  })
+
+  afterEach(async () => {
+    resetWorktreeDriver()
+    // This project does not auto-unstub, and a leaked YAAC_SERVER_GIT_EMAIL
+    // would supply the very identity the next case is about not having.
+    vi.unstubAllEnvs()
+    mockGitUserConfig.mockReset()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  /** The failure that means "an identity was found and the create moved on". */
+  const PAST_THE_GATE = /No git credential configured/
+  const NO_IDENTITY = /No git identity available/
+
+  it('prefers the caller’s identity and never reads a config for one', async () => {
+    await expect(createWorktree('demo', { gitUser: { name: 'Ada', email: 'a@e' } }))
+      .rejects.toThrow(PAST_THE_GATE)
+    expect(mockGitUserConfig).not.toHaveBeenCalled()
+  })
+
+  it('takes the identity its environment states before reading a config', async () => {
+    // The rung that makes the fallback work at all under the k8s driver: the
+    // server is a pod whose `$HOME` is an ephemeral image layer, so the
+    // global config it would otherwise read answers nothing.
+    vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada')
+    vi.stubEnv('YAAC_SERVER_GIT_EMAIL', 'ada@example.com')
+
+    await expect(createWorktree('demo', {})).rejects.toThrow(PAST_THE_GATE)
+    expect(mockGitUserConfig).not.toHaveBeenCalled()
+  })
+
+  it('gets a yaac-mama spawn past the gate on the environment identity alone', async () => {
+    // The option shape `decideSpawn` sends for a spawned sibling: a prompt,
+    // a minted id, no identity. Under the k8s driver this path had no
+    // identity available at all, so an in-session orchestrator could spawn
+    // no worker — which is why it is asserted as its own case rather than
+    // left to the empty-options one above.
+    vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada')
+    vi.stubEnv('YAAC_SERVER_GIT_EMAIL', 'ada@example.com')
+
+    await expect(createWorktree('demo', {
+      tool: 'codex',
+      initialPrompt: 'write the report',
+      worktreeId: 'minted-id',
+    })).rejects.toThrow(PAST_THE_GATE)
+  })
+
+  it('ignores a half-stated environment identity', async () => {
+    // Committing as a name with no email is not a lesser version of having
+    // an identity — git refuses it — so a half-set pair must fall through.
+    vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada')
+
+    await expect(createWorktree('demo', {})).rejects.toThrow(NO_IDENTITY)
+    expect(mockGitUserConfig).toHaveBeenCalled()
+  })
+
+  it('falls back to the global git config, which is the containerless answer', async () => {
+    mockGitUserConfig.mockResolvedValue({ name: 'Ada', email: 'ada@example.com' })
+
+    await expect(createWorktree('demo', {})).rejects.toThrow(PAST_THE_GATE)
+    expect(mockGitUserConfig).toHaveBeenCalled()
+  })
+
+  it('refuses when all three are absent, naming what would supply one', async () => {
+    await expect(createWorktree('demo', {})).rejects.toThrow(NO_IDENTITY)
+    // The remedy has to name the re-install: on a pod install, setting the
+    // global config alone changes nothing the server can see.
+    await expect(createWorktree('demo', {})).rejects.toThrow(/cluster install/)
   })
 })

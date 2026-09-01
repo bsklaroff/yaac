@@ -37,7 +37,6 @@ import {
 } from '@yaac/shared/paths'
 import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
-import { getGitUserConfig } from '@yaac/shared/git'
 import { readLock } from '@yaac/shared/lock'
 import {
   loadToolAuthEntry,
@@ -75,6 +74,7 @@ import {
   setWorktreeGroup,
   setWorktreeMamaTokenHash,
 } from '#db'
+import { gitIdentityMissingMessage, resolveGitIdentity } from './git-identity'
 import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
 import { resolveProxySecrets } from './proxy-secrets'
@@ -735,15 +735,12 @@ export async function createWorktree(
 
   await runtime.ensureRuntimeReachable()
 
-  // Git identity is resolved by the CLI before the call; fall back to the
-  // global git config for non-interactive callers (stream picker).
-  let gitUser: { name: string; email: string } | null = options.gitUser ?? null
-  if (!gitUser) gitUser = await getGitUserConfig()
+  // Which identity this checkout commits under. The chain and its rationale
+  // live in `./git-identity`, because a claimed prewarmed spare must reach the
+  // same answer without coming through here.
+  const gitUser = await resolveGitIdentity(options.gitUser)
   if (!gitUser) {
-    throw new ServerError(
-      'VALIDATION',
-      'Git user.name and user.email must be configured globally for non-interactive session creation.',
-    )
+    throw new ServerError('VALIDATION', gitIdentityMissingMessage)
   }
 
   const repo = repoDir(projectSlug)

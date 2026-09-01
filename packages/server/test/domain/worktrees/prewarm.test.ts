@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as dbModule from '#db'
+import type * as sharedGitModule from '@yaac/shared/git'
+
+// The one process boundary onto the host's git CONFIG — the bottom rung of
+// the identity a claim re-applies. Mocked because a developer machine always
+// has one configured, which would make the absent case unreachable.
+const mockGitUserConfig = vi.hoisted(() => vi.fn())
+vi.mock('@yaac/shared/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof sharedGitModule>()),
+  getGitUserConfig: mockGitUserConfig,
+}))
 
 vi.mock('#db', async (importOriginal) => ({
   ...(await importOriginal<typeof dbModule>()),
@@ -134,6 +144,9 @@ describe('tryClaimPrewarmed', () => {
     mockDefaultBranch.mockResolvedValue('main')
     mockRemoteBranchExists.mockResolvedValue(true)
     mockFetchOrigin.mockResolvedValue(undefined)
+    // Default the chain's bottom rung to "this machine has none", so a case
+    // that asserts on the identity says where it came from.
+    mockGitUserConfig.mockResolvedValue(null)
   })
 
   it('claims a ready spare, re-applies identity, and returns its id', async () => {
@@ -334,7 +347,41 @@ describe('tryClaimPrewarmed', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  it('skips the git-config execs when no identity is supplied', async () => {
+  // A spare's identity is baked at WARM time and nothing re-warms the pool,
+  // so a claim that sends none must still resolve the chain — otherwise the
+  // documented remedy for a changed identity (`yaac cluster install`, which
+  // rolls the server Deployment and nothing else) never reaches a spare, and
+  // the next webapp create per project commits under the stale name.
+  it('re-keys a spare from the server environment when the caller sends none', async () => {
+    vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Pod Server')
+    vi.stubEnv('YAAC_SERVER_GIT_EMAIL', 'pod@server.co')
+    mockList.mockResolvedValue([spare()])
+
+    const result = await tryClaimPrewarmed('p', 'claude', undefined, emit)
+
+    expect(result?.worktreeId).toBe('spare1')
+    expect(mockExec.mock.calls[0][1]).toBe(
+      "git config --global user.name 'Pod Server'"
+      + " && git config --global user.email 'pod@server.co'",
+    )
+    // The rung above it still wins: a caller who states one is not overridden
+    // by the environment the server happens to carry.
+    mockExec.mockClear()
+    await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
+    expect(mockExec.mock.calls[0][1]).toContain("user.name 'A B'")
+    vi.unstubAllEnvs()
+  })
+
+  it('falls through to the global config, and execs nothing when no rung answers', async () => {
+    mockGitUserConfig.mockResolvedValue({ name: 'Host H', email: 'h@host.co' })
+    mockList.mockResolvedValue([spare()])
+    await tryClaimPrewarmed('p', 'claude', undefined, emit)
+    expect(mockExec.mock.calls[0][1]).toContain("user.name 'Host H'")
+
+    // Nothing to re-key with is not a failure: the spare keeps the identity
+    // it was warmed with and the claim still succeeds.
+    mockGitUserConfig.mockResolvedValue(null)
+    mockExec.mockClear()
     mockList.mockResolvedValue([spare()])
     const result = await tryClaimPrewarmed('p', 'claude', undefined, emit)
     expect(result?.worktreeId).toBe('spare1')
