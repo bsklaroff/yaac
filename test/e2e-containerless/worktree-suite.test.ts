@@ -256,12 +256,15 @@ beforeAll(async () => {
     '-C', path.join(testEnv.dataDir, 'projects', SLUG, 'repo'),
     'remote', 'set-url', 'origin', `https://github.com/test/${SLUG}.git`,
   ])
-}, 120_000)
+})
 
 afterAll(async () => {
   if (!CAN_RUN) return
-  await server.stop()
-  await testEnv.cleanup()
+  // Optional-chained because this also runs when the beforeAll above failed
+  // before it got a server: an unguarded call would bury that failure's
+  // cause under a TypeError from the teardown.
+  await server?.stop()
+  await testEnv?.cleanup()
 })
 
 describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no cluster)', () => {

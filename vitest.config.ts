@@ -171,8 +171,8 @@ export default defineConfig({
       },
       // The containerless tier: the same CLI, driven against a server that
       // runs worktrees as tmux sessions on this host. It shares no cluster,
-      // builds no images, and needs no namespace — so it runs in parallel
-      // and its global setup is just the CLI build.
+      // builds no images and needs no namespace, so its global setup is just
+      // the CLI build.
       {
         extends: true,
         test: {
@@ -187,6 +187,14 @@ export default defineConfig({
           // client into every worker for nothing.
           setupFiles: SETUP,
           globalSetup: ['test/global-setup-containerless.ts'],
+          // Serialized for the same reason as the e2e project, arrived at
+          // from the other side: every file here holds the cross-worker
+          // server mutex (packages/test-utils/src/cli.ts) for its whole
+          // duration, so extra workers buy no parallelism at all — they only
+          // put the wait for that mutex INSIDE a beforeAll, where a hook
+          // timeout is counting. One file at a time keeps every hook's clock
+          // measuring the work it names.
+          maxWorkers: 1,
           sequence: { groupOrder: 1 },
         },
       },
