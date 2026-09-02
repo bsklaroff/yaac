@@ -12,6 +12,7 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
 }))
 
 vi.mock('#drivers/k8s/container/registry', () => ({
+  invalidateRegistryEndpoint: vi.fn(),
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
@@ -37,7 +38,11 @@ import {
 } from '#drivers/k8s/substrate'
 import { execFileAsync, kubectlApply, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { imageExists } from '#drivers/k8s/container/runtime'
-import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
+import {
+  invalidateRegistryEndpoint,
+  pushImageToRegistry,
+  registryHasTag,
+} from '#drivers/k8s/container/registry'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockRetry = vi.mocked(kubectlWithRetry)
@@ -45,6 +50,7 @@ const mockExec = vi.mocked(execFileAsync)
 const mockHasTag = vi.mocked(registryHasTag)
 const mockImageExists = vi.mocked(imageExists)
 const mockPush = vi.mocked(pushImageToRegistry)
+const mockInvalidate = vi.mocked(invalidateRegistryEndpoint)
 
 interface Applied {
   kind: string
@@ -184,6 +190,15 @@ describe('ensureGvisorRuntime', () => {
     expect(classApplies.filter((c) => c.kind === 'RuntimeClass').every((c) => c.order > rolloutOrder))
       .toBe(true)
     expect(classApplies.find((c) => c.kind === 'DaemonSet')!.order).toBeLessThan(rolloutOrder)
+
+    // The rollout restarted the node's containerd, which kills every
+    // port-forward into it. The registry forward is dropped AFTER the
+    // rollout has finished (the restart has happened by then, and the
+    // installer's exec probe has proven the runtime is back) so the next
+    // lookup — netd's, on a first install — re-forwards instead of reading
+    // a dead transport as a missing image.
+    expect(mockInvalidate).toHaveBeenCalledTimes(1)
+    expect(mockInvalidate.mock.invocationCallOrder[0]).toBeGreaterThan(rolloutOrder)
 
     const classes = ofKind('RuntimeClass') as unknown as Array<{
       metadata: { name: string }

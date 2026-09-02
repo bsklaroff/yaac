@@ -10,7 +10,7 @@ import {
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
 import type { PodToleration } from '#drivers/k8s/substrate'
-import { registryHasTag, registryRef } from '#drivers/k8s/container'
+import { invalidateRegistryEndpoint, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { missingPrebuiltImage } from '#drivers/k8s/image-engine'
 
 /**
@@ -289,6 +289,15 @@ export async function ensureGvisorRuntime(
     'rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
+  // A pass that changed something restarted the node's containerd, and
+  // every kubectl port-forward into that node died with it — including this
+  // process's route to the registry, whose child may still be cached and
+  // alive with a dead stream. Drop it so the next lookup re-forwards instead
+  // of reading the dead transport as a missing image (`registryHasTag`
+  // fails to `false`, which is what turned a first install's netd deploy
+  // into "build and push it" for an image the install had just pushed).
+  // The same drop ensureRegistry does after rolling the registry pod.
+  invalidateRegistryEndpoint()
   for (const manifest of buildRuntimeClassManifests({ tolerations: opts.tolerations })) {
     await kubectlApply(manifest)
   }
