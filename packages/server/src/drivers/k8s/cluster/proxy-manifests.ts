@@ -18,6 +18,7 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
   dataDirHash,
+  hostUidSecurityContext,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { credentialsDir } from '@yaac/shared/project-paths'
@@ -25,31 +26,19 @@ import { env } from '@yaac/shared/env'
 import { proxyDataHostDir } from '@yaac/shared/project-paths'
 
 /**
- * Pod securityContext running the proxy as the server's own host uid/gid.
- * The proxy reads/writes hostPath dirs the server creates (the CA in
- * /data and the 0700 credentials dir); matching the creator's uid is what
- * makes those accessible. The image's
- * default `node` uid (1000) only worked on applehv, whose virtiofs
- * ignored ownership — libkrun's enforces it, so a uid mismatch is EACCES.
+ * Pod securityContext running the proxy as the host's own uid/gid — see
+ * `hostUidSecurityContext`, which the server's Deployment shares.
  *
- * fsGroup makes the emptyDir-backed HOME (see the deployment) group-
- * writable by the proxy process; it applies only to ownership-managed
- * volumes (emptyDir), never to the hostPath mounts, which stay owned by
- * the host uid. Throws if getuid/getgid are unavailable: the server's
- * whole hostPath/uid model is POSIX-only, and silently emitting an
- * image-default-uid manifest would crash-loop the proxy on a strict
- * virtiofs host with a confusing EACCES instead of failing here.
+ * The proxy reads and writes hostPath dirs the server creates (the CA in
+ * /data and the 0700 credentials dir), so it has to be the same identity
+ * the server is. The image's default `node` uid (1000) only worked on
+ * applehv, whose virtiofs ignored ownership — libkrun's enforces it, so a
+ * uid mismatch is EACCES. Its `fsGroup` half is load-bearing here in a way
+ * it is not for the server: the proxy's HOME is an emptyDir (see the
+ * deployment), and emptyDir is ownership-managed.
  */
 export function proxyRunAsSecurityContext(): Record<string, unknown> {
-  const uid = process.getuid?.()
-  const gid = process.getgid?.()
-  if (uid === undefined || gid === undefined) {
-    throw new Error(
-      'proxyRunAsSecurityContext: process.getuid/getgid unavailable — '
-      + 'the yaac server requires a POSIX host',
-    )
-  }
-  return { securityContext: { runAsUser: uid, runAsGroup: gid, fsGroup: gid } }
+  return { securityContext: hostUidSecurityContext() }
 }
 
 /**

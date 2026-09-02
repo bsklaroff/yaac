@@ -2,7 +2,7 @@
 
 An Electron shell around the yaac webapp. There is no bundled frontend and no
 renderer code: the main process resolves the target server (enabled
-`~/.yaac/remote.json`, else the local `~/.yaac/.server.lock` — without the
+`~/.yaac-client/remote.json`, else the local `~/.yaac/.server.lock` — without the
 CLI's build-id match, since the shell ships no server code to match), spawns
 `yaac server start` when the local daemon is down, ensures the machine-local
 auth-daemon (login broker) best-effort like `yaac open` does, mints a one-time
@@ -57,14 +57,14 @@ pnpm desktop:build   # just the bundle (dist/main.js)
 ```
 
 All of these share one data dir and one server: the boot flow resolves the
-same target an installed build would (enabled `~/.yaac/remote.json`, else the
+same target an installed build would (enabled `~/.yaac-client/remote.json`, else the
 local `~/.yaac/.server.lock`), starting a local server if none is up. A dev
 run differs from the installed app only in spawning `yaac` from PATH rather
 than the bundled Node.
 
 Each window open also fires a best-effort `ensureAuthDaemonSpawned` against
 the resolved target (local or remote — the broker is machine-scoped), sharing
-`~/.yaac/.auth-daemon.lock` with the CLI: no double daemon next to `yaac
+`~/.yaac-client/.auth-daemon.lock` with the CLI: no double daemon next to `yaac
 open`, and a daemon pointed at a stale target (the remote setting flipped) is
 restarted. Fire-and-forget — a failed spawn never blocks or fails the window;
 the SPA's sign-in cards still say what to run by hand.

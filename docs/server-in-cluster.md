@@ -26,7 +26,7 @@ lifecycle half of that — storage is deliberately untouched here (see
 2. **The ingress NetworkPolicy** — before the Service, so the port is
    never published to pods before the wall exists.
 3. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
-   priority, plain runc, `runAsUser: 1000`.
+   priority, plain runc, `runAsUser` = the installing host's uid.
 4. **The Service**: NodePort `30787`, fronted by a kind
    `extraPortMapping` to `127.0.0.1:<server port>` on the host.
 
@@ -186,22 +186,53 @@ no attach exclusivity, so the lease IS the single-writer guard PGlite gets.
 Locks written before the lease parse and behave as they always did; see
 docs/legacy-compat-shims.md.
 
-## uid 1000
+## The uid everything runs as
 
-Under gVisor there is no user namespace, so a hostPath file is presented
-at its real node-side uid and every writer of a shared path has to name
-the same number. That number is the server's, because the server is what
-pre-creates those paths — and a container has no ambient user to inherit
-one from, so the server pod pins `runAsUser: 1000` and the worktree image
-chain bakes the same number as its `YAAC_UID`.
+Under gVisor there is no user namespace, so a hostPath file is presented at
+its real node-side uid and every writer of a shared path has to name the
+same number. Here that is one number for the whole install: the server pod,
+every worktree pod, the proxy, and the `yaac` user baked into the worktree
+image chain all run as **the uid of the machine that ran `yaac cluster
+install`**. `hostUidSecurityContext` renders it into a manifest, `podUid()`
+answers it in code, and it reaches the images as their `YAAC_UID` build arg.
 
-`podUid()` is unchanged and still `process.getuid()`: inside the pod that
-IS 1000, so the constant is simply true rather than asserted. What
-changed is that `yaac cluster install` builds the worktree image chain for
-the **server's** uid rather than its own — it is building for the server
-it is about to deploy. On a host whose uid is already 1000 (every ordinary
-Linux first user) nothing differs; on one where it is not, the images
-re-tag once.
+It is the host's uid rather than a pinned constant because on macOS nothing
+else can work. The data dir reaches the node over virtiofs, and the host end
+of that performs every read and write with the credentials of the user
+running the VM. So a hostPath file is writable from a pod only if it is
+writable by THAT user, which makes the host uid a ceiling nothing in the
+cluster can raise. On a Linux host whose first user is 1000 the pinned and
+discovered values coincide and none of this is visible; on macOS, where the
+first login uid is 501, only the discovered one exists.
+
+Chowning the tree to some other uid does not escape the ceiling, in either
+direction. A `chown` issued inside the node is cosmetic: it reports success
+and `stat` shows the new owner, while the host inode is unchanged and the
+write is still refused. A `chown` issued on the HOST does propagate — the
+node then sees the new owner — but the file becomes writable by nobody at
+all: not a pod, not the host user, and not even root inside the node,
+because root in the guest is not root on the other side of the gofer. That
+last one is the proof that the check is not the guest's to make.
+
+The install is where the number is discovered because it is the only party
+that can: it runs on the machine that owns the data dir, while the pod it
+configures does not. That is also why `baseImageHash` takes the uid as a
+PARAMETER rather than reading `podUid()` — the number has to reach the image
+TAG and not just the build arg. A hash over the builder's uid while the arg
+carries another would let a host find its tag already in the registry and
+silently reuse an image whose `yaac` user is somebody else's number.
+
+None of this is new to the server: `proxyRunAsSecurityContext` has always
+run the proxy as the host's uid, for the same reason and against the same
+wall. The two now share one helper so the decision cannot drift between
+them.
+
+The cost is that the images are per-uid: a macOS host at 501 and a Linux
+host at 1000 build different images under different tags, so they cannot be
+shared or shipped prebuilt. Making the images uid-agnostic instead — a
+fixed uid in the Dockerfile with `HOME` group-owned by gid 0 and `g=u`
+permissions, so `runAsUser` may be anything at runtime — is the way out,
+and it is independent of this.
 
 ## Lifecycle
 
@@ -274,6 +305,40 @@ the worktree-pod view of the world are byte-identical either side of the
 move. Splitting the tiers onto claims is the next phase
 (docs/plans/server-in-cluster.md); nothing above the driver learns
 anything either way.
+
+## Client state lives beside the data dir, not in it
+
+The pod mounts the data dir, so anything inside it is something the pod can
+see and the pod's uid owns. Several files there were never the server's:
+`remote.json` (which origin this machine's clients dial), the auth daemon's
+lock and its `login-*` scratch, the `driver` record, and the installer's own
+caches — the Calico manifest and the podman-pid file. Each is written and
+read only by processes on the USER's machine: the CLI, the auth daemon that
+needs a browser and the vendors' localhost OAuth callbacks, the desktop
+shell, and `yaac cluster install` acting as installer.
+
+They are the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
+rooted at `<dataDir>-client` — `~/.yaac` pairs with `~/.yaac-client`. A
+sibling rather than a subdirectory, because a subdirectory of the data dir is
+by definition inside what the pod mounts; derived from the data dir rather
+than a fixed per-user path, so `YAAC_DATA_DIR` isolation carries for free and
+one install's clients never read another's remote.
+
+Two consequences worth stating:
+
+- **The pod does not record the driver.** `resolveDriverKind` writes the
+  record only for a host process; `yaac cluster install` wrote `k8s` before
+  the Deployment was applied, and there is nothing for the pod to add and
+  nowhere to put it.
+- **`resolveServerTarget` asks the record, not the lock**, when it decides
+  whether to say "this install's server runs in the cluster." The lock is the
+  server's own file — under this driver it belongs to the pod and a client may
+  not be able to read it at all, and `readLock` reports an unreadable lock
+  and an absent one identically. A cross-host lock is still accepted as the
+  same answer, for installs predating the record.
+
+`.server.lock` itself stays SERVER-LOCAL: it is the single-writer guard for
+PGlite and belongs on the same volume as the database.
 
 ## The credential sweep is inert in here
 

@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
-import { serverLocalPath, serverLocalRoot } from '#paths'
+import { clientLocalPath, ensureClientLocalRoot, serverLocalPath } from '#paths'
 
 /**
- * The configured remote servers (`~/.yaac/remote.json`, 0600). `url` /
+ * The configured remote servers (`~/.yaac-client/remote.json`, 0600). `url` /
  * `token` are the active remote and `enabled` is the switch back to the
  * local server without losing the token; `saved` remembers every remote
  * ever set so clients (the desktop shell's server picker) can switch
@@ -21,8 +21,20 @@ export interface RemoteConfig {
   saved: SavedRemote[]
 }
 
-/** SERVER-LOCAL: client-side config for reaching a remote server. */
+/**
+ * CLIENT-LOCAL: which server this machine's clients talk to. Nothing but
+ * clients ever reads it — under the k8s driver the server is a pod, and a
+ * pod has no business knowing the origin its callers dial it on.
+ */
 export function remoteConfigPath(): string {
+  return clientLocalPath('remote.json')
+}
+
+/**
+ * Where this file lived when every tier was one directory — see
+ * docs/legacy-compat-shims.md.
+ */
+function legacyRemoteConfigPath(): string {
   return serverLocalPath('remote.json')
 }
 
@@ -33,8 +45,13 @@ export function remoteConfigPath(): string {
  * known-remotes list.
  */
 export async function readRemote(): Promise<RemoteConfig | null> {
+  return await readRemoteAt(remoteConfigPath())
+    ?? await readRemoteAt(legacyRemoteConfigPath())
+}
+
+async function readRemoteAt(filePath: string): Promise<RemoteConfig | null> {
   try {
-    const raw = await fs.readFile(remoteConfigPath(), 'utf8')
+    const raw = await fs.readFile(filePath, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const cfg = parsed as Record<string, unknown>
@@ -61,15 +78,20 @@ export async function readRemote(): Promise<RemoteConfig | null> {
 
 /** Persist atomically (tmp + rename) at 0600 — the token is a bearer. */
 export async function writeRemote(cfg: RemoteConfig): Promise<void> {
-  await fs.mkdir(serverLocalRoot(), { recursive: true })
+  await ensureClientLocalRoot()
   const p = remoteConfigPath()
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 })
   await fs.rename(tmp, p)
+  // Only once the new one is durable. Leaving it would strand a live bearer
+  // token in the data dir, and a later `clearRemote` that missed it would
+  // read as "no remote" while the file still sat there.
+  await fs.rm(legacyRemoteConfigPath(), { force: true })
 }
 
 export async function clearRemote(): Promise<void> {
   await fs.rm(remoteConfigPath(), { force: true })
+  await fs.rm(legacyRemoteConfigPath(), { force: true })
 }
 
 /**

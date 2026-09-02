@@ -6,7 +6,7 @@ import type { DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/
 /**
  * Desktop-only server picker (Settings → Server). Lists the local server
  * plus every remote the machine has connected to, and takes a new remote
- * (origin + access token). Switching rewrites `~/.yaac/remote.json` — the
+ * (origin + access token). Switching rewrites `~/.yaac-client/remote.json` — the
  * same machine-wide attachment `yaac remote on/off` flips, so the CLI
  * follows — and the shell then relands the window on the new origin, so a
  * successful switch tears this page down mid-flight ("Reconnecting…" is

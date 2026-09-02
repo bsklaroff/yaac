@@ -62,8 +62,11 @@ import {
   SERVER_APP_NAME,
   SERVER_NODE_PORT,
   SERVER_POD_PORT,
-  SERVER_POD_UID,
+  podUid,
 } from '#drivers/k8s/substrate'
+// Setup value: the real hash function, so the expected tag is derived the
+// way the code derives it rather than pasted as a literal.
+import { stringHash } from '#drivers/k8s/image-engine'
 import { readRemote } from '@yaac/shared/remote'
 // Setup value: a lock on the data dir is what the pre-deploy guard reads,
 // and writing one is how a test stands a "server already running" up.
@@ -99,6 +102,7 @@ interface PodSpec {
   securityContext?: Record<string, number>
   volumes: Array<{ hostPath?: { path: string } }>
   containers: Array<{
+    image: string
     env: Array<{ name: string; value: string }>
     volumeMounts: Array<{ mountPath: string }>
   }>
@@ -197,11 +201,22 @@ describe('deployServerWorkload', () => {
     const pod = deployedPodSpec()
     // Trusted yaac code: plain runc, no sentry.
     expect(pod.runtimeClassName).toBeUndefined()
-    // The uid every path it pre-creates for a worktree pod is owned by.
+    // The uid every path it pre-creates for a worktree pod is owned by —
+    // this HOST's, not a pinned constant. The data dir is a hostPath this
+    // machine owns and virtiofs makes that uid a ceiling, so a pod running
+    // as anything else cannot write the directory it was just handed.
     expect(pod.securityContext).toMatchObject({
-      runAsUser: SERVER_POD_UID,
-      fsGroup: SERVER_POD_UID,
+      runAsUser: podUid(),
+      runAsGroup: process.getgid?.(),
+      fsGroup: process.getgid?.(),
     })
+    // And the image it runs is tagged by that uid, not by the bundle alone.
+    // Without the uid in the TAG, a host would find a tag already in the
+    // registry whose `yaac` user is a number this Deployment does not run
+    // as — a pod with no such user and a HOME belonging to someone else.
+    expect(pod.containers[0].image).toBe(
+      `reg.local:5000/yaac-server:${stringHash(`bundlehash:uid=${String(podUid())}`)}`,
+    )
 
     // The whole data dir, at its own absolute path: phase 2 moves the
     // process, not the storage, so everything inside the pod resolves

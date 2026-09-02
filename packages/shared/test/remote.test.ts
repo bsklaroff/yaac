@@ -11,7 +11,7 @@ import {
   withRemoteActivated,
   writeRemote,
 } from '#remote'
-import { setDataDir } from '#paths'
+import { clientLocalRoot, serverLocalPath, setDataDir } from '#paths'
 
 describe('remote config store', () => {
   let dir: string
@@ -55,7 +55,7 @@ describe('remote config store', () => {
 
   it('folds the active remote into saved and drops malformed saved entries', async () => {
     // A file written before `saved` existed.
-    await fs.mkdir(dir, { recursive: true })
+    await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(remoteConfigPath(), JSON.stringify({
       url: 'https://old.ts.net', token: 'tok', enabled: true,
     }))
@@ -71,6 +71,30 @@ describe('remote config store', () => {
       { url: 'https://a.ts.net', token: 'ta' },
       { url: 'https://b.ts.net', token: 'tb' },
     ])
+  })
+
+  it('reads a pre-split remote from the data dir, and migrates it on write', async () => {
+    // Installs that predate the client-local tier wrote remote.json into
+    // the data dir itself. Losing it silently would leave the CLI unable to
+    // reach an in-cluster server with no hint as to why — see
+    // docs/legacy-compat-shims.md.
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(serverLocalPath('remote.json'), JSON.stringify({
+      url: 'https://old.ts.net', token: 'tok', enabled: true,
+    }))
+    expect((await readRemote())?.url).toBe('https://old.ts.net')
+
+    // The first write moves it, and takes the stale bearer token with it —
+    // a live credential left in the old place would outlive `clearRemote`.
+    await writeRemote({ url: 'https://new.ts.net', token: 't2', enabled: true, saved: [] })
+    expect((await readRemote())?.url).toBe('https://new.ts.net')
+    await expect(fs.access(serverLocalPath('remote.json'))).rejects.toThrow()
+
+    // And the new location wins outright while both exist.
+    await fs.writeFile(serverLocalPath('remote.json'), JSON.stringify({
+      url: 'https://stale.ts.net', token: 'x', enabled: true,
+    }))
+    expect((await readRemote())?.url).toBe('https://new.ts.net')
   })
 })
 

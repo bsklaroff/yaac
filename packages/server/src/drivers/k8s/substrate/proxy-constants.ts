@@ -145,16 +145,6 @@ export const SERVER_POD_PORT = 8787
  * the HOST port has to vary between them.
  */
 export const SERVER_NODE_PORT = 30787
-/**
- * The uid the server pod runs as, and therefore the uid every path it
- * creates for a worktree pod is owned by (`podUid()` is `process.getuid()`,
- * which IS this number inside the pod). Pinned rather than inherited
- * because a container has no ambient user to inherit from; the worktree
- * image chain bakes the same number as its `YAAC_UID` build arg, so a host
- * whose own uid differs re-tags its images once.
- */
-export const SERVER_POD_UID = 1000
-
 
 /**
  * `host:port` of the proxy's Service, in-cluster DNS.

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { serverLocalPath, serverLocalRoot } from '#paths'
+import { clientLocalPath, ensureClientLocalRoot, serverLocalPath } from '#paths'
 import { resolveServerTarget, type ServerTarget } from '#server-api'
 
 /** Cold-boot budget shared by automatic connection and explicit startup. */
@@ -27,14 +27,31 @@ export interface AuthDaemonLock {
   startedAt: number
 }
 
-/** SERVER-LOCAL: the daemon runs beside the server, never in a pod. */
+/**
+ * CLIENT-LOCAL: the daemon runs on the user's machine, never in a pod —
+ * it needs the browser and the vendors' localhost OAuth callbacks, which
+ * exist nowhere else. Its `pid` is only meaningful there too.
+ */
 export function authDaemonLockPath(): string {
+  return clientLocalPath('.auth-daemon.lock')
+}
+
+/**
+ * Where this file lived when every tier was one directory — see
+ * docs/legacy-compat-shims.md.
+ */
+function legacyAuthDaemonLockPath(): string {
   return serverLocalPath('.auth-daemon.lock')
 }
 
 export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {
+  return await readAuthDaemonLockAt(authDaemonLockPath())
+    ?? await readAuthDaemonLockAt(legacyAuthDaemonLockPath())
+}
+
+async function readAuthDaemonLockAt(filePath: string): Promise<AuthDaemonLock | null> {
   try {
-    const raw = await fs.readFile(authDaemonLockPath(), 'utf8')
+    const raw = await fs.readFile(filePath, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const lock = parsed as Record<string, unknown>
@@ -50,15 +67,19 @@ export async function readAuthDaemonLock(): Promise<AuthDaemonLock | null> {
 }
 
 export async function writeAuthDaemonLock(lock: AuthDaemonLock): Promise<void> {
-  await fs.mkdir(serverLocalRoot(), { recursive: true })
+  await ensureClientLocalRoot()
   const p = authDaemonLockPath()
   const tmp = `${p}.${process.pid}.tmp`
   await fs.writeFile(tmp, JSON.stringify(lock), { mode: 0o600 })
   await fs.rename(tmp, p)
+  // A daemon left recorded at the old path would be found by an older
+  // client and judged live by a pid this one no longer owns.
+  await fs.rm(legacyAuthDaemonLockPath(), { force: true })
 }
 
 export async function removeAuthDaemonLock(): Promise<void> {
   await fs.rm(authDaemonLockPath(), { force: true })
+  await fs.rm(legacyAuthDaemonLockPath(), { force: true })
 }
 
 export function isPidLive(pid: number): boolean {

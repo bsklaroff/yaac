@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
-import { ensureDataDir, serverLocalRoot } from '@yaac/shared/project-paths'
+import { clientLocalRoot, ensureClientLocalRoot } from '@yaac/shared/project-paths'
 import { persistToolLogin } from '@yaac/shared/tool-auth'
 import {
   claudeKeychainService,
@@ -221,14 +221,13 @@ export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Pro
   const existing = registry.liveForTool(tool)
   if (existing) cancelToolLogin(existing.view.id)
 
-  // Scratch config homes live under the data dir, not /tmp — codex refuses
-  // to set up its helper binaries under a temp dir and warns loudly.
-  // SERVER-LOCAL, and mkdtemp does not create parents: `ensureDataDir()`
-  // only makes the shared projects tree, so this root needs its own mkdir
-  // for the day the two are different volumes.
-  await ensureDataDir()
-  await fs.mkdir(serverLocalRoot(), { recursive: true })
-  const scratchDir = await fs.mkdtemp(path.join(serverLocalRoot(), 'login-'))
+  // Scratch config homes live beside the data dir, not in /tmp — codex
+  // refuses to set up its helper binaries under a temp dir and warns
+  // loudly. CLIENT-LOCAL: the login runs the vendor's own CLI against a
+  // browser on this machine, so nothing off it ever reads this. mkdtemp
+  // does not create parents, hence the explicit root.
+  await ensureClientLocalRoot()
+  const scratchDir = await fs.mkdtemp(path.join(clientLocalRoot(), 'login-'))
   const s = registry.create(
     { id: id ?? crypto.randomUUID(), tool, status: 'running' },
     'Sign-in timed out after 15 minutes.',

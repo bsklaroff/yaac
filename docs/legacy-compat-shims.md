@@ -308,6 +308,50 @@ when it does, `isServerLock` requires all three and `isSameHostLock` loses its
 other: requiring the fields while `isSameHostLock` still special-cases their
 absence leaves a dead branch that reads as deliberate.
 
+## The pre-client-local read fallbacks
+
+`remote.json`, `.auth-daemon.lock` and the `driver` record are CLIENT-LOCAL:
+they live in `<dataDir>-client`, beside the install rather than inside it,
+because the k8s server is a pod that mounts the data dir and none of the three
+is the server's (docs/server-in-cluster.md). Every install created before that
+tier existed has them INSIDE the data dir, so each reader tries the current
+path and falls back to the old one: `readRemote` (`shared/remote.ts`),
+`readAuthDaemonLock` (`shared/auth-daemon.ts`) and `recordedDriver`
+(`shared/install-driver.ts`).
+
+**What they read:** `<dataDir>/remote.json`, `<dataDir>/.auth-daemon.lock` and
+`<dataDir>/driver`, written by a client or an installer that predates the
+split. The two locks are also *deleted* at the old path by their writers, so a
+migrated install cannot be found through a stale one.
+
+**What breaks silently if they go too early:** each one, differently, and all
+three quietly.
+
+- `remote.json` is how every client reaches an in-cluster server. Lose it and
+  `resolveServerTarget` falls through to the local lock, finds no host server,
+  and reports that none is running — for an install whose server is up and
+  healthy. `readRemote` returns null for an unreadable file exactly as for an
+  absent one, so there is no error to read. The recovery is real (`yaac cluster
+  install` rewrites it) but nothing points at it.
+- `.auth-daemon.lock` losing its old path means `ensureAuthDaemon` cannot see
+  a daemon that is already running, and starts a second one against the same
+  server.
+- The `driver` record is the tripwire in `assertHostServerAllowed`. Lose it and
+  a `yaac server start` on a k8s install is no longer refused — it spawns a
+  host server beside the pod, which is two writers on one PGlite directory and
+  a reaper that sees every worktree as podless.
+
+**How to tell it is safe to remove:** every install that could still be read
+has written each file at least once since the split — for `remote.json` and the
+`driver` record that means having run `yaac cluster install` (or, for the
+record under containerless, any server start), and for the daemon lock any
+`yaac auth` flow. There is no version floor recording it, so in practice this
+goes at a release boundary that makes it sayable.
+
+**Order:** the three are independent of each other and may go separately. The
+`driver` fallback is the one to keep longest — it is the only one whose loss
+corrupts a database rather than inconveniencing a client.
+
 ## A note on evidence
 
 No test here can fail. The suite runs against a database and disk it just

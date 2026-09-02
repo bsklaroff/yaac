@@ -91,12 +91,25 @@ export function setDataDir(dir: string): void {
  *                                Becomes the server's own RWO volume (§1)
  *                                — the pglite DB must never sit on a
  *                                network filesystem.
+ *  - CLIENT-LOCAL (`clientLocalRoot`) only processes on the USER's machine
+ *                                — the CLI, the auth daemon, the desktop
+ *                                shell, and `yaac cluster install` acting
+ *                                as installer. Never mounted into a pod
+ *                                and never backed by a cluster volume.
  *
- * All three resolve to `getDataDir()` today. The current single-node
+ * The first three resolve to `getDataDir()` today. The current single-node
  * backend has exactly one filesystem, so every path is byte-identical to
  * what it was before the split: the tier is a declaration of a visibility
  * requirement, not (yet) a different directory. Splitting them is the
  * volume-source work in §2, not something a caller opts into.
+ *
+ * CLIENT-LOCAL is the exception, and it is a different directory ALREADY,
+ * because the boundary it declares is one that already exists: the server
+ * runs as a pod under the k8s driver, so "the machine the user is on" and
+ * "the machine the server is on" are not the same filesystem, the same
+ * process namespace, or the same uid. A client-local path has to be one
+ * the pod never sees — which a subdirectory of the data dir the pod mounts
+ * could not be. See docs/server-in-cluster.md.
  *
  * The classification of every existing path lives in project-paths.ts.
  */
@@ -139,6 +152,32 @@ export function nodeLocalProjectPath(slug: string, ...rest: string[]): string {
 /** A SERVER-LOCAL path: `<serverLocalRoot>/<…rest>`. */
 export function serverLocalPath(...rest: string[]): string {
   return path.join(serverLocalRoot(), ...rest)
+}
+
+/**
+ * Root of the CLIENT-LOCAL tier — see the tier legend above.
+ *
+ * A SIBLING of the data dir rather than an absolute per-user path, so that
+ * `YAAC_DATA_DIR` isolation carries for free: one install's clients never
+ * read another's remote or auth-daemon lock, and parallel test files each
+ * get their own without a second environment variable to set or forget.
+ * `~/.yaac` therefore pairs with `~/.yaac-client`.
+ *
+ * Derived on every call rather than cached, because `setDataDir` may run
+ * after this module is first imported.
+ */
+export function clientLocalRoot(): string {
+  return `${getDataDir()}-client`
+}
+
+/** A CLIENT-LOCAL path: `<clientLocalRoot>/<…rest>`. */
+export function clientLocalPath(...rest: string[]): string {
+  return path.join(clientLocalRoot(), ...rest)
+}
+
+/** Create the client-local root. Callers write into it directly. */
+export async function ensureClientLocalRoot(): Promise<void> {
+  await fs.mkdir(clientLocalRoot(), { recursive: true })
 }
 
 /**

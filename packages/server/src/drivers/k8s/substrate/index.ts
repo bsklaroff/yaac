@@ -58,6 +58,7 @@ export {
   SSH_AGENT_SOCKET_PATH,
   buildPodJobManifest,
   graphrootMountAnnotations,
+  hostUidSecurityContext,
   podUid,
 } from './pod-spec'
 export type { HostPathType, MountSource, PodMount } from './pod-spec'
@@ -110,7 +111,6 @@ export {
   SERVER_INGRESS_NP_NAME,
   SERVER_NODE_PORT,
   SERVER_POD_PORT,
-  SERVER_POD_UID,
   SERVER_SA_NAME,
   WORKTREE_EGRESS_NP_NAME,
   WORKTREE_INGRESS_LOCK_NP_NAME,

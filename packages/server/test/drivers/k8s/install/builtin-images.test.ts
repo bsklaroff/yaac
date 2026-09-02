@@ -62,6 +62,7 @@ import { clearAllImageBuildsForTests } from '#drivers/k8s/image-engine/image-bui
 // the builder mirror lands under.
 import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/install/builtin-images'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
+import { podUid } from '#drivers/k8s/substrate'
 
 /** The tag of every `podman build` this run performed, in order. */
 const built = (): string[] =>
@@ -87,7 +88,11 @@ describe('buildBuiltinImages', () => {
   it('builds the whole trusted chain and pushes it under the tags a create looks up', async () => {
     await buildBuiltinImages({ log: vi.fn() })
 
-    const { base, tools, nestable } = await resolveTrustedLayers('yaac')
+    // Resolved for the uid the install builds for, which is this host's:
+    // the Deployment it applies stamps the same number, so the tags a
+    // create later looks up are the tags built here.
+    const { base, tools, nestable } = await resolveTrustedLayers('yaac', podUid())
+    expect(base.buildArgs?.YAAC_UID).toBe(String(podUid()))
     // In dependency order: each layer is the next one's FROM, so the tags
     // are only derivable — and only buildable — in this sequence.
     expect(built().slice(0, 3)).toEqual([base.tag, tools.tag, nestable.tag])

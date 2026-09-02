@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -179,6 +181,36 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/token rejected/)
       expect(res.stderr).toMatch(/yaac auth token create/)
+    })
+
+    it('reads a pre-split remote.json from the data dir, and migrates it on write', async () => {
+      // remote.json is CLIENT-LOCAL now (beside the data dir), but an
+      // install upgraded from before that tier existed still has one INSIDE
+      // it. Dropping it silently would leave every command unable to reach
+      // an in-cluster server with no hint why — see
+      // docs/legacy-compat-shims.md.
+      await resetRemote()
+      const token = await mintToken('legacy-reader')
+      const legacy = path.join(testEnv.dataDir, 'remote.json')
+      const current = path.join(`${testEnv.dataDir}-client`, 'remote.json')
+      await fs.rm(current, { force: true })
+      await fs.writeFile(legacy, JSON.stringify({
+        url: origin(), token, enabled: true, saved: [],
+      }), { mode: 0o600 })
+
+      // Read through the real CLI, which is the whole point: a client that
+      // resolves its target has to find it at the old path.
+      const status = await runYaac(testEnv.env, 'remote', 'status')
+      expect(status.exitCode, status.stderr).toBe(0)
+      expect(status.stdout).toContain(origin())
+      expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
+
+      // The next write moves it, and takes the bearer token with it.
+      expect((await runYaac(testEnv.env, 'remote', 'off')).exitCode).toBe(0)
+      await expect(fs.access(current)).resolves.toBeUndefined()
+      await expect(fs.access(legacy)).rejects.toThrow()
+
+      await resetRemote()
     })
 
     it('yaac open --no-browser prints the remote-derived URL', async () => {

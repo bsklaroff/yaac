@@ -205,15 +205,16 @@ assumes a host" suggests. Six load-bearing seams, all already half-built:
    in-cluster server needs. Auth hardening is already keyed off
    `YAAC_ALLOWED_HOSTS`/`YAAC_TRUST_PROXY` (setting either turns the
    credential requirement on).
-6. **Identity.** `podUid()` (= the server's own uid) is the pod
+6. **Identity.** `podUid()` (= the install host's uid) is the pod
    `runAsUser`, the image build arg, and part of the base-layer hash;
    `dataDirHash()` (= the data-dir *path*) scopes every cluster query.
-   Both become *stable constants* once the server is a container —
-   run it as uid 1000 and fix the in-pod data-dir path — but both are
-   migration hazards for an existing install (see Migration). Neither
-   can be pinned before then: the uid is what the SERVER creates
-   hostPath dirs as, so it stops being a free variable only when the
-   server is itself the uid-1000 pod (phase 2).
+   The data-dir path becomes a stable constant once the server is a
+   container; the **uid does not**, and cannot while storage is a
+   hostPath — virtiofs makes the host user's uid a ceiling on what any
+   pod can write there (docs/server-in-cluster.md, "The uid everything
+   runs as"). It stops being a free variable only when the storage stops
+   being the host's filesystem, or when the images stop baking a uid at
+   all.
 
 There are **no filesystem watchers** anywhere in the server: transcript
 and session-start freshness is poll-on-reconcile-tick (`stat` + re-read),
@@ -226,8 +227,8 @@ visibility; `stat()`-polling of a same-host writer lags ~3s on
 
 - **Deployment**, `replicas: 1`, `strategy: Recreate` (pglite is
   embedded single-writer), `yaac-infra` PriorityClass, plain runc (the
-  server is trusted code; sessions keep gVisor), `runAsUser: 1000` to
-  match the pinned image `yaac` uid.
+  server is trusted code; sessions keep gVisor), `runAsUser` = the
+  installing host's uid, matching the image `yaac` uid built for it.
 - **Two claims + a node tier:**
   - `yaac-server-state` — RWO, a **static hostPath PV** at a fixed path
     under the data dir with `reclaimPolicy: Retain`: pglite `db/`,
@@ -284,7 +285,7 @@ suite on a multi-node (kind) cluster.
 
 The whole of it is current-state reference now: docs/server-in-cluster.md
 for the image, the Deployment/Service/RBAC/ingress-policy set, the fixed
-loopback origin, the lease, uid 1000, the Deployment-aware lifecycle verbs,
+loopback origin, the lease, the uid model, the Deployment-aware lifecycle verbs,
 the Service dials that replaced every host-side shim, and the e2e tiers that
 deploy the same workload per test file; docs/port-forward-tunnel.md for the
 client-held forwarders; docs/containerless-driver.md and
@@ -314,7 +315,13 @@ Now split what phase 2 deliberately left alone.
   set by the Deployment manifest): sharedRoot → the RWX mount,
   serverLocalRoot → the RWO mount, nodeLocalRoot → a fixed node path.
   Under containerless all three keep resolving to the data dir — the
-  split is inert there.
+  split is inert there. `clientLocalRoot` is NOT one of them and never
+  becomes a volume: it is the user's machine, which is the point of it
+  (docs/server-in-cluster.md, "Client state lives beside the data dir").
+  Moving the client's files out of serverLocalRoot is done — without it
+  this step would have put `remote.json`, the auth-daemon lock and the
+  `driver` record on a claim only the pod can mount, silently breaking
+  `yaac remote`, `yaac auth` and the desktop server switcher.
 - **Mount-source resolution:** the k8s driver maps a mount path by the
   tier root it lives under — under sharedRoot →
   `{pvc: yaac-shared, subPath: <relative>}`, under nodeLocalRoot →

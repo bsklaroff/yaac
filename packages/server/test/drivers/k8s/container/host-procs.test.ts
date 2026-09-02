@@ -6,7 +6,6 @@
 // `process.kill`.
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
-import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 type ExecResult = { stdout: string; stderr: string }
@@ -61,14 +60,23 @@ vi.mock('#log', () => ({
 
 import { pipeToServerLog } from '#log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { clientLocalPath } from '@yaac/shared/paths'
 import { reapOrphanedPodmanProcs, runTrackedPodman } from '#drivers/k8s/container'
 import { _clearTrackedPodmanProcsForTests } from '#drivers/k8s/container/host-procs'
 
 let dataDir: string
 
+/**
+ * CLIENT-LOCAL, beside the data dir: these pids are the user's machine's,
+ * and under k8s the server is a pod with no podman to track.
+ */
+function statePath(): string {
+  return clientLocalPath('host-podman.json')
+}
+
 /** Records an install persists so its successor can reap what it left behind. */
 function readState(): Array<{ pid: number; tag: string; verb: string }> {
-  return JSON.parse(fs.readFileSync(path.join(dataDir, 'host-podman.json'), 'utf8')) as Array<{
+  return JSON.parse(fs.readFileSync(statePath(), 'utf8')) as Array<{
     pid: number
     tag: string
     verb: string
@@ -76,11 +84,11 @@ function readState(): Array<{ pid: number; tag: string; verb: string }> {
 }
 
 function stateExists(): boolean {
-  return fs.existsSync(path.join(dataDir, 'host-podman.json'))
+  return fs.existsSync(statePath())
 }
 
 function writeState(records: Array<{ pid: number; tag: string; verb: string }>): void {
-  fs.writeFileSync(path.join(dataDir, 'host-podman.json'), JSON.stringify(records))
+  fs.writeFileSync(statePath(), JSON.stringify(records))
 }
 
 beforeEach(async () => {
@@ -271,7 +279,7 @@ describe('reapOrphanedPodmanProcs', () => {
     // Nothing was there, so nothing is written — no empty file per boot.
     expect(stateExists()).toBe(false)
 
-    fs.writeFileSync(path.join(dataDir, 'host-podman.json'), '[{"pid":90')
+    fs.writeFileSync(statePath(), '[{"pid":90')
     await reapOrphanedPodmanProcs()
     expect(execFileMock).not.toHaveBeenCalled()
     expect(kill).not.toHaveBeenCalled()

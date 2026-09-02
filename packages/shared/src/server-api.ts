@@ -3,6 +3,7 @@ import { testEnv } from '#env'
 import { readLock } from '#lock'
 import { isLockLive, isSameHostLock, type ServerLock } from '#server-lock-file'
 import { readRemote } from '#remote'
+import { recordedDriver } from '#install-driver'
 import { createApiClient, type FetchLike } from '#api-core'
 import type { ServerErrorBody } from '#errors'
 
@@ -238,7 +239,7 @@ export function isLoopbackOrigin(origin: string): boolean {
  *    writing the shared `~/.yaac/.server.lock`. Production never sets
  *    these. Above remote.json so a test data dir carrying a remote file
  *    can't hijack a hermetic run.
- * 2. An **enabled** `~/.yaac/remote.json` — the configured remote
+ * 2. An **enabled** `~/.yaac-client/remote.json` — the configured remote
  *    server, authenticated by its durable token.
  * 3. The local lock (today's behavior): must be live and build-matched,
  *    else throw with the exact recovery command.
@@ -264,16 +265,26 @@ export async function resolveServerTarget(
 
   const cliBuildId = opts.requireBuildMatch === false ? null : await readBuildId()
   const existing = await readLock()
-  // A lock written on the other side of a container boundary is not a
-  // target this process can dial: its port is the one the server binds
-  // INSIDE its pod, and `127.0.0.1:<that>` here is some unrelated
-  // listener — quite possibly another yaac, which would answer and be
-  // believed. The in-cluster server is reached through `remote.json`
+  // An in-cluster server is not a target this process can dial: the port
+  // in its lock is the one it binds INSIDE its pod, and `127.0.0.1:<that>`
+  // here is some unrelated listener — quite possibly another yaac, which
+  // would answer and be believed. It is reached through `remote.json`
   // (step 2), which `yaac cluster install` writes; if we are here, that
   // file is missing or disabled, so say which command restores it.
-  if (existing && !isSameHostLock(existing)) {
+  //
+  // Asked of the CLIENT-LOCAL driver record rather than of the lock,
+  // because the lock is the server's own file and this process may not be
+  // able to read it at all — under k8s it belongs to the pod's uid, and an
+  // unreadable lock is indistinguishable from an absent one (`readLock`
+  // returns null for both). Keyed off the lock as well for an install that
+  // predates the record: a cross-host lock says the same thing.
+  const inCluster = await recordedDriver() === 'k8s'
+  if (inCluster || (existing && !isSameHostLock(existing))) {
+    const held = existing && !isSameHostLock(existing)
+      ? ` (lock held by ${existing.host ?? 'another host'})`
+      : ''
     throw new Error(
-      `This install's server runs in the cluster (lock held by ${existing.host ?? 'another host'}), `
+      `This install's server runs in the cluster${held}, `
       + 'but there is no enabled remote.json pointing at it.\n'
       + '    Run `yaac cluster install` to converge the cluster and republish the origin.',
     )

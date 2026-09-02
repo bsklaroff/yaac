@@ -28,7 +28,7 @@ import {
   resolveNetdImageTag,
   resolveProxyImageTag,
 } from '#drivers/k8s/cluster'
-import { SERVER_POD_UID } from '#drivers/k8s/substrate'
+import { podUid } from '#drivers/k8s/substrate'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
@@ -180,11 +180,12 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   })
 
   const prefix = testEnv.imagePrefix ?? 'yaac'
-  // Built for the SERVER's uid, not this machine's. The server that resolves
-  // these tags is the in-cluster Deployment, which runs as SERVER_POD_UID —
-  // so a host whose own uid differs (macOS's 501) builds the same images the
-  // server will look up rather than a set only it could use.
-  const { base, tools, nestable } = await resolveTrustedLayers(prefix, SERVER_POD_UID)
+  // Built for the uid the server pod will run as, which is THIS machine's:
+  // the Deployment this install applies stamps the same number, because the
+  // data dir is a hostPath only its owner can write (see `podUid`). Passed
+  // explicitly rather than left to the default so the two decisions read as
+  // the one decision they are.
+  const { base, tools, nestable } = await resolveTrustedLayers(prefix, podUid())
 
   deps.log('Ensuring the worktree image chain (base → tools → nestable)...')
   for (const layer of [base, tools, nestable]) {

@@ -28,6 +28,8 @@ import {
   sharedRoot,
   nodeLocalRoot,
   serverLocalRoot,
+  clientLocalRoot,
+  clientLocalPath,
   proxyDataHostDir,
   sharedPath,
   sharedProjectPath,
@@ -179,11 +181,22 @@ describe('storage tiers', () => {
     setDataDir('/tmp/yaac-path-test')
   })
 
-  it('resolves all three roots to the one data dir (single-node backend)', () => {
+  it('resolves the three in-install roots to the one data dir (single-node backend)', () => {
     setDataDir('/tmp/yaac-test')
     expect(sharedRoot()).toBe('/tmp/yaac-test')
     expect(nodeLocalRoot()).toBe('/tmp/yaac-test')
     expect(serverLocalRoot()).toBe('/tmp/yaac-test')
+  })
+
+  it('puts the client-local root beside the data dir, never inside it', () => {
+    // Beside, because the k8s server is a pod that mounts the data dir:
+    // anything under it is reachable by something that is not a client, and
+    // an install's clients still have to stay isolated per data dir.
+    setDataDir('/tmp/yaac-test')
+    expect(clientLocalRoot()).toBe('/tmp/yaac-test-client')
+    expect(clientLocalPath('remote.json')).toBe('/tmp/yaac-test-client/remote.json')
+    setDataDir('/tmp/other-install')
+    expect(clientLocalRoot()).toBe('/tmp/other-install-client')
   })
 
   it('joins per tier', () => {
@@ -231,9 +244,11 @@ describe('calicoManifestCachePath', () => {
     setDataDir('/tmp/yaac-path-test')
   })
 
-  it('keys the cached manifest by version, under the data dir', () => {
+  it('keys the cached manifest by version, in the client-local root', () => {
+    // Only `yaac cluster install` ever reads it — standing a CNI up is
+    // substrate administration, which no server runs.
     setDataDir('/tmp/yaac-test')
-    expect(calicoManifestCachePath('3.32.1')).toBe('/tmp/yaac-test/cache/calico-3.32.1.yaml')
-    expect(calicoManifestCachePath('3.33.0')).toBe('/tmp/yaac-test/cache/calico-3.33.0.yaml')
+    expect(calicoManifestCachePath('3.32.1')).toBe('/tmp/yaac-test-client/cache/calico-3.32.1.yaml')
+    expect(calicoManifestCachePath('3.33.0')).toBe('/tmp/yaac-test-client/cache/calico-3.33.0.yaml')
   })
 })

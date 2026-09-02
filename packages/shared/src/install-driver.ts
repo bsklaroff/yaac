@@ -1,12 +1,15 @@
 import fs from 'node:fs/promises'
-import { serverLocalPath } from '#paths'
+import { clientLocalPath, serverLocalPath } from '#paths'
 import type { DriverKind } from '#types'
 
 /**
- * Which substrate this data dir runs, as recorded by the last server start.
+ * Which substrate this data dir runs, as recorded by whichever side stood
+ * the server up.
  *
- * SERVER-LOCAL, beside the lock: the choice belongs to this install, not to
- * a project, and it is not something a worktree's state should carry.
+ * CLIENT-LOCAL: the choice belongs to this install, not to a project, and
+ * it is not something a worktree's state should carry — and the only
+ * process that has to ACT on it is a client, which is why it may not live
+ * where a k8s server (a pod) would be the one holding it.
  *
  * Here rather than in the server because the answer decides what a CLIENT
  * should do about a server it cannot reach — a containerless install can be
@@ -16,8 +19,15 @@ import type { DriverKind } from '#types'
  * nothing but `@yaac/shared`.
  */
 export async function recordedDriver(): Promise<DriverKind | undefined> {
+  return await recordedDriverAt(clientLocalPath('driver'))
+    // Where it lived when every tier was one directory — see
+    // docs/legacy-compat-shims.md.
+    ?? await recordedDriverAt(serverLocalPath('driver'))
+}
+
+async function recordedDriverAt(filePath: string): Promise<DriverKind | undefined> {
   try {
-    const raw = (await fs.readFile(serverLocalPath('driver'), 'utf8')).trim()
+    const raw = (await fs.readFile(filePath, 'utf8')).trim()
     return raw === 'k8s' || raw === 'containerless' ? raw : undefined
   } catch {
     return undefined

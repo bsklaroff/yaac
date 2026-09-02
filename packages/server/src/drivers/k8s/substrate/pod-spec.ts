@@ -485,25 +485,58 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
  * every writer of a shared path — the image's `yaac` user, the session pod,
  * and whatever pre-creates the dirs — has to name the same number.
  *
- * Today that number is the SERVER's uid, because the server is what
- * pre-creates them: worktree checkouts, cache and config mounts are
- * `fs.mkdir`ed host-side by the server process (`#domain/worktrees`), so
- * they land owned by whoever runs it. A pod running as anything else could
- * not write them — on macOS especially, where the libkrun requirement
- * exists precisely so virtiofs reports real ownership rather than
- * flattening it to the accessing process (docs/cluster-setup.md).
+ * That number is the INSTALL HOST's uid, and on macOS it cannot be
+ * anything else. The data dir reaches the node over virtiofs, whose host
+ * end performs every read and write as the user running the VM, so a
+ * hostPath file is writable from a pod only if that user could write it —
+ * the host uid is a ceiling, and pinning a container uid above it produces
+ * a directory nothing can write (docs/server-in-cluster.md). It is also
+ * why `proxyRunAsSecurityContext` has always run the proxy this way.
  *
- * It becomes the constant 1000 when the server is a pod that runs as 1000
- * and creates those dirs itself (docs/plans/server-in-cluster.md, phase 2):
- * pinning it before then would break every host whose uid is not 1000 —
- * the first login uid is 501 on macOS — for no gain, since the CLI that
- * builds the images and the server that consumes them are still the same
- * host user.
+ * Inside the server pod this stays true without special-casing: the pod
+ * runs as the uid its install stamped, so `process.getuid()` there IS the
+ * install host's uid, and every path the server pre-creates for a worktree
+ * — checkouts, cache and config mounts, `fs.mkdir`ed by `#domain/worktrees`
+ * — lands owned by the one number the worktree image also bakes.
  *
  * Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
- * server runs as root (uid 0 is taken inside the image).
+ * process runs as root (uid 0 is taken inside the image).
  */
 export function podUid(): number {
   const uid = process.getuid?.() ?? 1000
   return uid > 0 ? uid : 1000
+}
+
+/**
+ * securityContext for a pod that has to read and write this machine's data
+ * dir over a hostPath mount: the server and the proxy.
+ *
+ * Both run as the host's own uid/gid for the reason in {@link podUid} — on
+ * a strict-virtiofs host (libkrun, which is required) any other uid is
+ * EACCES, and no chown escapes it in either direction. One helper because
+ * two copies of a uid decision drift, and the failure when they do is a
+ * crash-looping pod with a confusing permission error rather than anything
+ * that names the mismatch.
+ *
+ * Throws rather than defaulting when getuid/getgid are unavailable: the
+ * hostPath/uid model is POSIX-only, and emitting an image-default-uid
+ * manifest would move the failure to a place that cannot explain it.
+ *
+ * `fsGroup` applies only to ownership-managed volumes (emptyDir), never to
+ * the hostPath mounts, which keep the ownership the host gave them.
+ */
+export function hostUidSecurityContext(): {
+  runAsUser: number
+  runAsGroup: number
+  fsGroup: number
+} {
+  const uid = process.getuid?.()
+  const gid = process.getgid?.()
+  if (uid === undefined || gid === undefined) {
+    throw new Error(
+      'hostUidSecurityContext: process.getuid/getgid unavailable — '
+      + 'the yaac server requires a POSIX host',
+    )
+  }
+  return { runAsUser: uid, runAsGroup: gid, fsGroup: gid }
 }

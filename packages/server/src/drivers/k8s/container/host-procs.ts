@@ -24,7 +24,7 @@
 import { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { serverLocalPath } from '@yaac/shared/paths'
+import { clientLocalPath } from '@yaac/shared/paths'
 import { serverLog } from '#log'
 import { runStreamingProcess } from './streaming-proc'
 import { execFileAsync } from './runtime'
@@ -34,8 +34,10 @@ const TERM_POLL_MS = 200
 const TERM_GRACE_TICKS = 25
 
 /**
- * SERVER-LOCAL: host pids, meaningful only to the server process that
- * spawned them and only on the machine it runs on.
+ * CLIENT-LOCAL: host pids, meaningful only to the process that spawned
+ * them and only on the machine it ran on. That machine is always the
+ * user's — podman is the host image-build engine, and under the k8s driver
+ * the server is a pod with no podman to track.
  */
 const STATE_FILENAME = 'host-podman.json'
 
@@ -50,7 +52,7 @@ interface ProcRecord {
 const live = new Map<number, { child: ChildProcess; record: ProcRecord }>()
 
 function statePath(): string {
-  return serverLocalPath(STATE_FILENAME)
+  return clientLocalPath(STATE_FILENAME)
 }
 
 /**

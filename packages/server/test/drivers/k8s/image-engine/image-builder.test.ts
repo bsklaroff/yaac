@@ -70,16 +70,18 @@ describe('baseImageHash', () => {
     vi.restoreAllMocks()
   })
 
-  it('folds the pod uid and the in-pod daemons into the Dockerfile content hash', async () => {
+  it('folds the uid it is given and the in-pod daemons into the Dockerfile content hash', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-bih-'))
     try {
       const dockerfile = path.join(tmpDir, 'Dockerfile')
       await fs.writeFile(dockerfile, 'FROM scratch')
 
-      vi.spyOn(process, 'getuid').mockReturnValue(501)
-      const hash501 = await baseImageHash(dockerfile)
+      // The uid is the ARGUMENT, never this process's own: a build for a
+      // uid other than the builder's is exactly what `yaac cluster install`
+      // does, and reading getuid() here would tag those images identically.
       vi.spyOn(process, 'getuid').mockReturnValue(1000)
-      const hash1000 = await baseImageHash(dockerfile)
+      const hash501 = await baseImageHash(dockerfile, 501)
+      const hash1000 = await baseImageHash(dockerfile, 1000)
 
       expect(hash501).toMatch(/^[0-9a-f]{16}$/)
       // A uid change must invalidate the tag like a Dockerfile edit would —
@@ -119,6 +121,24 @@ describe('resolveTrustedLayers', () => {
     // The uid is a build input of the layers that create the `yaac` user.
     expect(base.buildArgs?.YAAC_UID).toBe(String(podUid()))
     expect(nestable.buildArgs?.YAAC_UID).toBe(String(podUid()))
+  })
+
+  it('carries the requested uid into the tag, not just into the build arg', async () => {
+    // The bug this guards: the base layer's content hash read the CALLING
+    // process's uid while the build arg carried `forUid`, so an install
+    // building for the server's uid tagged the image with its own — and
+    // then found that tag "already in the registry" and reused an image
+    // whose `yaac` user was somebody else's number.
+    const forServer = await resolveTrustedLayers('yaac', 1000)
+    const forOther = await resolveTrustedLayers('yaac', 501)
+
+    expect(forServer.base.buildArgs?.YAAC_UID).toBe('1000')
+    expect(forOther.base.buildArgs?.YAAC_UID).toBe('501')
+    expect(forServer.base.tag).not.toBe(forOther.base.tag)
+    // And it composes down the chain, so tools/nestable cannot be shared
+    // across uids either.
+    expect(forServer.tools.tag).not.toBe(forOther.tools.tag)
+    expect(forServer.nestable.tag).not.toBe(forOther.nestable.tag)
   })
 
   it('scopes every tag to the prefix, so a test run never collides with the install', async () => {

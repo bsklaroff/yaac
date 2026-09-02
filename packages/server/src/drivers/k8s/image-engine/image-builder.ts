@@ -24,15 +24,24 @@ export async function fileHash(filePath: string): Promise<string> {
  * layer resolution and the test global setup so both derive identical
  * tags.
  */
-export async function baseImageHash(dockerfilePath: string): Promise<string> {
+export async function baseImageHash(dockerfilePath: string, uid: number): Promise<string> {
   // The base build also COPYs the in-pod daemons — dockerfiles/streamd/ (the
   // stream daemon) and dockerfiles/acpd/ (the ACP agent supervisor) — so
   // their sources are part of the layer's content hash: editing either
   // retags the image just like a Dockerfile edit.
+  //
+  // `uid` is the number baked in as the image's `yaac` user (the YAAC_UID
+  // build arg), and it is a PARAMETER rather than this process's own
+  // `podUid()` because the two are not always the same: `yaac cluster
+  // install` builds for the uid the server it is about to deploy will run
+  // as. Reading `podUid()` here would tag an image by the builder's uid
+  // while baking the target's, so a host whose uid differs would find its
+  // tag "already in the registry" and reuse an image built for someone
+  // else's uid.
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
   const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
   return stringHash(
-    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${podUid()}`,
+    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${uid}`,
   )
 }
 
@@ -204,7 +213,7 @@ export async function resolveTrustedLayers(
   const uid = forUid ?? podUid()
 
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseHash = await baseImageHash(baseDockerfile)
+  const baseHash = await baseImageHash(baseDockerfile, uid)
   const base: ImageLayer = {
     tag: `${prefix}-base:${baseHash}`,
     name: 'base',

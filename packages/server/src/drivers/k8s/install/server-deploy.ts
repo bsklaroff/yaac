@@ -28,7 +28,8 @@ import {
   SERVER_APP_NAME,
   SERVER_NODE_PORT,
   SERVER_POD_PORT,
-  SERVER_POD_UID,
+  hostUidSecurityContext,
+  podUid,
   SERVER_SA_NAME,
   dataDirHash,
   k8sNamespace,
@@ -41,6 +42,7 @@ import { buildServerIngressNpManifest, clusterPodCidrs } from '#drivers/k8s/clus
 import {
   contextHash,
   ensureImageByTag,
+  stringHash,
 } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
@@ -49,7 +51,7 @@ import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 // resolves inside the pod exactly as it did on the host. Phase 3 is where
 // the tiers become separate volumes and this becomes three mounts.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir, serverLocalPath, serverLocalRoot } from '@yaac/shared/paths'
+import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
 import { readRemote, writeRemote, withRemoteActivated } from '@yaac/shared/remote'
@@ -76,17 +78,26 @@ function serverDockerfile(context = serverImageContext()): string {
 }
 
 /**
- * The server image's tag: the content hash of the bundle it contains.
+ * The server image's tag: the content hash of the bundle it contains, plus
+ * the uid its `yaac` user is built with.
  *
  * Same contract as every other yaac-shipped image — an unchanged bundle
  * costs one registry HEAD, and a rebuilt one is a different image, which is
  * exactly the signal the Deployment rolls on.
+ *
+ * The uid is in the tag for the same reason it is in `baseImageHash`, and
+ * it is a parameter for the same reason: an image built for one uid must
+ * not answer a lookup for another. Hashing only the bundle would let a
+ * host find a tag already in the registry whose `yaac` user is a number
+ * that host's Deployment does not run as — a pod with no such user, whose
+ * HOME belongs to someone else.
  */
 export async function resolveServerImageTag(
   context = serverImageContext(),
   prefix = testEnv.imagePrefix ?? 'yaac',
+  uid = podUid(),
 ): Promise<string> {
-  return `${prefix}-server:${await contextHash(context)}`
+  return `${prefix}-server:${stringHash(`${await contextHash(context)}:uid=${String(uid)}`)}`
 }
 
 /**
@@ -104,7 +115,10 @@ export async function ensureServerImage(
   context = serverImageContext(),
   prefix = testEnv.imagePrefix ?? 'yaac',
 ): Promise<string> {
-  const tag = await resolveServerImageTag(context, prefix)
+  // One read of the uid for both the tag and the build arg: the two
+  // diverging is precisely the bug this tag exists to prevent.
+  const uid = podUid()
+  const tag = await resolveServerImageTag(context, prefix, uid)
   if (await registryHasTag(tag)) return registryRef(tag)
   const dockerfile = serverDockerfile(context)
   try {
@@ -117,10 +131,11 @@ export async function ensureServerImage(
     )
   }
   // The uid the SERVER POD runs as, which is what the image's own user has
-  // to be — not this machine's uid, which is only what happens to be
-  // running the install.
+  // to be. That uid is this machine's, because the install is what knows
+  // it and the pod cannot: virtiofs makes the host user's uid a ceiling on
+  // what any pod can write in the data dir (see `podUid`).
   await ensureImageByTag(tag, dockerfile, context, {
-    YAAC_UID: String(SERVER_POD_UID),
+    YAAC_UID: String(uid),
   })
   return pushImageToRegistry(tag)
 }
@@ -410,12 +425,10 @@ export function buildServerDeploymentManifest(
           // The uid every path the server pre-creates for a worktree pod is
           // owned by. Under gVisor the gofer presents that real ownership,
           // so the worktree image's `yaac` user is built with the same
-          // number (see SERVER_POD_UID).
-          securityContext: {
-            runAsUser: SERVER_POD_UID,
-            runAsGroup: SERVER_POD_UID,
-            fsGroup: SERVER_POD_UID,
-          },
+          // number. Stamped from the installing host rather than pinned:
+          // the data dir is a hostPath this machine owns, and no pod can
+          // write it as anything else (see `podUid`).
+          securityContext: hostUidSecurityContext(),
           // A rolled server should not sit in the drain while every
           // watcher's connection times out; its shutdown path is bounded to
           // ~6s by design.
@@ -673,8 +686,8 @@ export async function deployServerWorkload(
   // the kind of install this data dir IS, so a later `yaac server start`
   // from an ordinary shell finds the Deployment instead of spawning a
   // second server beside it.
-  await fs.mkdir(serverLocalRoot(), { recursive: true })
-  await fs.writeFile(serverLocalPath('driver'), 'k8s\n')
+  await ensureClientLocalRoot()
+  await fs.writeFile(clientLocalPath('driver'), 'k8s\n')
   return serverPublishedOrigin()
 }
 

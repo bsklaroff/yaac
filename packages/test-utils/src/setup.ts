@@ -7,7 +7,7 @@ import simpleGit from 'simple-git'
 // Test infrastructure: re-exported below so tests can ASSERT against the
 // install root. Not a storage path — tests that write pick a tier helper.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
+import { setDataDir, getDataDir, clientLocalRoot, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import {
@@ -188,14 +188,21 @@ export async function createTempDataDir(): Promise<string> {
   const dir = await e2eMkdtemp('yaac-test-')
   await fs.mkdir(path.join(dir, 'projects'), { recursive: true })
   setDataDir(dir)
+  // The CLIENT-LOCAL root is a SIBLING of the data dir, so mkdtemp does not
+  // make it. Created here rather than by each caller because a test that
+  // seeds a client-local file directly (a remote, a driver record) would
+  // otherwise fail on a missing parent, while production always arrives
+  // through a writer that ensures it.
+  await fs.mkdir(clientLocalRoot(), { recursive: true })
   return dir
 }
 
 /**
- * Removes a temp data dir.
+ * Removes a temp data dir, and the client-local root beside it — which is
+ * outside the tree `dir` names, so it would otherwise leak per test.
  */
 export async function cleanupTempDir(dir: string): Promise<void> {
-  const stuck = await removeScratchTree(dir)
+  const stuck = [...await removeScratchTree(dir), ...await removeScratchTree(`${dir}-client`)]
   if (stuck.length > 0) {
     console.warn(
       `[yaac-test] left ${stuck.length} root-owned path(s) behind under ${dir}; `

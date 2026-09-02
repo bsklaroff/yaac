@@ -1,7 +1,7 @@
 /**
  * The shell's server picker: list the machine's attachment targets (local
  * server + every saved remote), switch between them, and add a new remote.
- * All three operate on the shared `~/.yaac/remote.json` — switching here is
+ * All three operate on the shared `~/.yaac-client/remote.json` — switching here is
  * the same machine-wide move as `yaac remote on/off`, so the CLI follows.
  *
  * The renderer is web content from the (possibly remote) server origin, so

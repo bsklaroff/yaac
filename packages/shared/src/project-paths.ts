@@ -1,6 +1,9 @@
 import path from 'node:path'
 import {
   PACKAGE_ROOT,
+  clientLocalPath,
+  clientLocalRoot,
+  ensureClientLocalRoot,
   ensureDataDir,
   getNodeLocalProjectsDir,
   getProjectsDir,
@@ -25,6 +28,9 @@ import {
 export { getDataDir } from '#paths'
 export {
   PACKAGE_ROOT,
+  clientLocalPath,
+  clientLocalRoot,
+  ensureClientLocalRoot,
   ensureDataDir,
   getNodeLocalProjectsDir,
   getProjectsDir,
@@ -45,18 +51,22 @@ export {
  *
  * Every helper below is tagged with its storage tier — SHARED must be
  * visible from every node, NODE-LOCAL never has to leave the node it was
- * written on, SERVER-LOCAL is touched only by the server process (the
- * legend is in paths.ts). Those tags are the classification's single
- * source: the plan that consumes it (docs/plans/multi-node-storage-plan.md)
- * points here rather than restating a table that would drift.
+ * written on, SERVER-LOCAL is touched only by the server process, and
+ * CLIENT-LOCAL only by processes on the user's own machine (the legend is
+ * in paths.ts). Those tags are the classification's single source: the
+ * plan that consumes it (docs/plans/multi-node-storage-plan.md) points
+ * here rather than restating a table that would drift.
  *
- * All three roots resolve to the same directory today, so this file is a
- * declaration of visibility requirements; the mount machinery that makes
- * them different volumes is docs/plans/stock-k8s-multi-node.md §2.
+ * The first three roots resolve to the same directory today, so for them
+ * this file is a declaration of visibility requirements; the mount
+ * machinery that makes them different volumes is
+ * docs/plans/stock-k8s-multi-node.md §2. CLIENT-LOCAL is already a
+ * different directory, because the boundary it names already exists.
  *
  * A new helper picks a tier by calling `sharedProjectPath` /
- * `nodeLocalProjectPath` / `serverLocalPath` (or a helper built on one).
- * There is deliberately no un-tiered way to reach the data dir here.
+ * `nodeLocalProjectPath` / `serverLocalPath` / `clientLocalPath` (or a
+ * helper built on one). There is deliberately no un-tiered way to reach
+ * the data dir here.
  */
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
@@ -68,14 +78,15 @@ export const NETD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'netd')
 export const CALICO_DIR = path.join(PACKAGE_ROOT, 'k8s', 'calico')
 
 /**
- * SERVER-LOCAL. Where a verified Calico install manifest is cached: the
- * server downloads it and feeds it to the apiserver, so no pod ever reads
- * the file. Under the data dir, not the install: it is downloaded content
- * keyed by version, so it survives yaac upgrades and is dropped by
- * removing the data dir.
+ * CLIENT-LOCAL. Where a verified Calico install manifest is cached:
+ * `yaac cluster install` downloads it and feeds it to the apiserver, so no
+ * pod ever reads the file and no server does either — standing a CNI up is
+ * substrate administration, which only the CLI runs. Beside the data dir,
+ * not in the install: it is downloaded content keyed by version, so it
+ * survives yaac upgrades and is dropped with the install's client state.
  */
 export function calicoManifestCachePath(version: string): string {
-  return serverLocalPath('cache', `calico-${version}.yaml`)
+  return clientLocalPath('cache', `calico-${version}.yaml`)
 }
 
 /**
