@@ -330,6 +330,11 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     ['YAAC_ALLOWED_HOSTS', env.allowedHosts.length > 0 ? env.allowedHosts.join(',') : undefined],
     ['YAAC_TRUST_PROXY', env.trustProxy ? '1' : undefined],
     ['YAAC_REQUIRE_AUTH', env.requireAuth ? '1' : undefined],
+    // The address the snapshot claims a worktree's forwarded ports answer
+    // at. The server binds nothing either way, so this is a display value —
+    // but it is the one a remote-hosting install must change (a tailnet IP,
+    // matching `yaac forward --bind`), and the pod is where it is read.
+    ['YAAC_FORWARD_BIND', env.forwardBind === '127.0.0.1' ? undefined : env.forwardBind],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     // Only meaningful alongside USE_TOR, and only as an address the POD can
     // reach — `torSocksUrlForPod` rewrites the host loopback into the

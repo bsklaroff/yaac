@@ -265,6 +265,43 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_RELAY_ADDR).toContain('yaac-proxy.test-ns.svc.cluster.local:')
   })
 
+  it('carries the remote-hosting posture the install shell was given', async () => {
+    // These belong to the DEPLOYMENT, not to a shell: there is no shell in
+    // a pod to export them in afterwards, and `yaac server restart` only
+    // rolls the pods the Deployment already describes. So a re-run of
+    // `yaac cluster install` is how a tailnet-fronted server gets them,
+    // and the install log says so when they turn the credential gate on.
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    vi.stubEnv('YAAC_FORWARD_BIND', '100.64.0.7')
+    const log = vi.fn()
+
+    await deployServerWorkload({ log })
+
+    const env = Object.fromEntries(
+      deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
+    )
+    expect(env.YAAC_ALLOWED_HOSTS).toBe('srv.tailnet.ts.net')
+    expect(env.YAAC_TRUST_PROXY).toBe('1')
+    // The forwarded-port chips are rendered from the SNAPSHOT, which the
+    // pod composes — so a tailnet bind address that stayed on the host
+    // would leave every chip linking at the viewer's own loopback.
+    expect(env.YAAC_FORWARD_BIND).toBe('100.64.0.7')
+    expect(log.mock.calls.flat().join('\n')).toMatch(/REQUIRE a credential/)
+  })
+
+  it('leaves the loopback defaults off the pod entirely', async () => {
+    await deployServerWorkload({ log: vi.fn() })
+
+    const names = deployedPodSpec().containers[0].env.map((e) => e.name)
+    expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
+    expect(names).not.toContain('YAAC_TRUST_PROXY')
+    // Absent rather than the literal default: `env.forwardBind` answers
+    // `127.0.0.1` for an unset var, so passing it through unconditionally
+    // would pin a value nobody chose into every ordinary install.
+    expect(names).not.toContain('YAAC_FORWARD_BIND')
+  })
+
   it('states no git identity when the host has none', async () => {
     // An unconfigured host is not a failed install: the CLI resolves (and
     // prompts for) its own identity per worktree, so only webapp-created

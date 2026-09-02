@@ -153,7 +153,9 @@ and web app drive the same on-disk state, so you can mix them freely.
 
 To reach the server from another device, run it on an always-on machine and
 join both to a private [Tailscale](https://tailscale.com) tailnet. The server
-keeps binding `127.0.0.1`; a `tailscale serve` proxy terminates TLS on the
+keeps answering only at its loopback origin — a host process bound to
+`127.0.0.1` under `containerless`, the kind port mapping that fronts the
+server pod under `k8s`; a `tailscale serve` proxy terminates TLS on the
 tailnet and forwards to it, so remote access is opt-in and off by default —
 never expose it with `tailscale funnel`. On the server:
 
@@ -162,15 +164,38 @@ tailscale up
 tailscale serve --bg 8787                            # tailnet-only TLS proxy
 export YAAC_ALLOWED_HOSTS=<host>.<tailnet>.ts.net    # admit the tailnet host
 export YAAC_TRUST_PROXY=1                            # trust the proxy's TLS
+```
+
+How those two reach the server depends on which kind of install this is
+(`yaac server start` never chooses — the data dir records it):
+
+```sh
+# containerless — the server is a host process:
 yaac server restart
+
+# k8s (`yaac cluster install`) — the server is a pod of its own cluster:
+yaac cluster install
+```
+
+Under `containerless`, put both vars in the server's permanent environment
+(a systemd unit or shell profile) before restarting — a detached restart
+won't inherit an interactive `export`. Under `k8s` the *Deployment* carries
+them, read from the shell that runs the install, so the export has to be
+live for that command; `yaac server restart` only rolls the pods the
+Deployment already describes and will not pick up a new value. Install is
+idempotent — it converges the cluster it already made — and it prints a note
+that the server now requires a credential, plus the durable token it writes
+into `remote.json` so this machine's own CLI keeps reaching it.
+
+Then, on either:
+
+```sh
 yaac auth token create laptop                        # per-device token (once)
 ```
 
-Put the two env vars in the server's permanent environment (a systemd unit
-or shell profile) and restart it — a detached restart won't inherit an
-interactive `export`. Then browse to `https://<host>.<tailnet>.ts.net` (the
-hostname over HTTPS, not `ip:8787`), or point a client CLI at it with
-`yaac remote set https://<host>.<tailnet>.ts.net --token <token>`. See
+Browse to `https://<host>.<tailnet>.ts.net` (the hostname over HTTPS, not
+`ip:8787`), or point a client CLI at it with `yaac remote set
+https://<host>.<tailnet>.ts.net --token <token>`. See
 [docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
 and phone setup, forwarded-port reachability, and the security model.
 
@@ -181,7 +206,9 @@ desktop app, which does it resident in its tray
 from other tailnet devices, run `yaac forward --bind <the server's tailnet
 IP>` on the server (from `tailscale ip -4`) and set `YAAC_FORWARD_BIND` to
 the same address so the webapp's port chips link to
-`http://<host>.<tailnet>.ts.net:<port>`. Those listeners are plain http and
+`http://<host>.<tailnet>.ts.net:<port>`. That var reaches the server the
+same way the two above do — a restart under `containerless`, a re-run of
+`yaac cluster install` under `k8s`. Those listeners are plain http and
 reachable by any tailnet device (not yaac-token-gated), so keep this to a
 personal tailnet.
 

@@ -26,25 +26,41 @@ same machine.
 ## Server setup
 
 ```sh
-# 1. Install yaac + the cluster (see README "Install"), then:
-yaac cluster install && yaac cluster check
-yaac server start
+# 1. Install yaac (see README "Install"). Under k8s, that is also what
+#    deploys the server; under containerless it is a host process:
+yaac cluster install && yaac cluster check     # k8s installs only
 
 # 2. Join the tailnet and serve the server over TLS — tailnet-only
-#    (`serve`, never `funnel`):
+#    (`serve`, never `funnel`). The backend is the loopback origin the
+#    server already answers at under either placement:
 tailscale up
 tailscale serve --bg https / http://127.0.0.1:8787
 
 # 3. Tell the server to admit its tailnet hostname and trust the proxy's
-#    TLS signal (put these in the server's environment permanently, e.g.
-#    a systemd unit or shell profile, then restart it):
+#    TLS signal:
 export YAAC_ALLOWED_HOSTS=srv.<tailnet>.ts.net
 export YAAC_TRUST_PROXY=1
-yaac server restart
 
-# 4. Mint a durable token for each client device (printed exactly once):
+# 4. Hand them to the server — which differs by placement (see below):
+yaac server restart                            # containerless
+yaac cluster install                           # k8s
+
+# 5. Mint a durable token for each client device (printed exactly once):
 yaac auth token create laptop
 ```
+
+Where those two variables LIVE is the one thing the two placements do not
+share. Under `containerless` they are the server process's environment, so
+they belong in a systemd unit or shell profile — a detached restart does not
+inherit an interactive `export`. Under `k8s` there is no shell in a pod to
+export them in, so the Deployment carries them, read from the shell that
+runs `yaac cluster install` (`buildServerEnv`); the export has to be live
+for that command, and `yaac server restart` — a rollout of the Deployment as
+it already stands — will not pick up a new value. Install is idempotent, so
+re-running it against the cluster it already made is the supported way to
+change the posture; it prints a note that the server now REQUIRES a
+credential and writes the durable token it mints into `remote.json`, which
+is what keeps the CLI on that same machine working.
 
 Optional — make forwarded dev-server ports reachable from other tailnet
 devices. The server offers the mappings but binds nothing
@@ -53,7 +69,8 @@ on that machine, and telling the webapp where it binds.
 
 ```sh
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
-yaac server restart
+yaac server restart                                  # containerless
+yaac cluster install                                 # k8s — same reason as above
 yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
 
