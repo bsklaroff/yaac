@@ -1,31 +1,25 @@
 /**
  * Boot orchestration: resolve which server this launch should land on,
- * bring the local one up if needed, mint a one-time exchange token, and
- * hand back the authed URL to load — `<origin>/?token=…`, the same URL
- * `yaac open` builds. The SPA trades the token for its session cookie at
- * POST /auth/web-session; from then on the window is a plain browser on
- * the server origin, exactly like the webapp (the origin IS the context).
+ * mint a one-time exchange token, and hand back the authed URL to load —
+ * `<origin>/?token=…`, the same URL `yaac open` builds. The SPA trades the
+ * token for its session cookie at POST /auth/web-session; from then on the
+ * window is a plain browser on the server origin, exactly like the webapp
+ * (the origin IS the context).
  *
- * Target resolution and the typed client come verbatim from
- * @yaac/shared/server-api — the desktop main is a Node process, so it
- * reuses the CLI's own machinery (enabled remote.json, else the local
- * lock; prescriptive errors; BAD_BEARER re-resolve). Deps are injected so
- * every branch unit-tests without Electron, processes, or a server.
+ * The shell never starts a server. Every server is reached the same way —
+ * the origin and token this machine has registered in `server.json` — so
+ * there is no local case to spawn into, and an unreachable one is a
+ * failure the window renders as a picker rather than a spawn (see
+ * `#connect-page`). Target resolution and the typed client come verbatim
+ * from @yaac/shared/server-api. Deps are injected so every branch
+ * unit-tests without Electron or a server.
  */
-import type { ServerTarget } from '@yaac/shared/server-api'
-import type { DriverKind } from '@yaac/shared/types'
-import type { RunResult } from '#server-process'
+import { isLoopbackOrigin, type ServerTarget } from '@yaac/shared/server-api'
 import type { LaunchError } from '#messages'
 
 export interface FlowDeps {
-  /** @yaac/shared resolveServerTarget (requireBuildMatch: false): throws (local path only) when the server is down. */
+  /** @yaac/shared resolveServerTarget: throws when no server is selected. */
   resolveTarget(): Promise<ServerTarget>
-  /** Run `yaac server start` to completion; rejects only when yaac can't be spawned. */
-  startLocalServer(): Promise<RunResult>
-  /** What this data dir runs (`@yaac/shared/install-driver`). A k8s
-   *  install has no host server to spawn — its server is a Deployment —
-   *  so an unreachable one is a message, never a spawn. */
-  recordedDriver(): Promise<DriverKind | undefined>
   /**
    * Best-effort: ensure the machine-local login broker runs against `target`
    * (the same call `yaac open` makes). Fired, never awaited or propagated —
@@ -55,52 +49,18 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   let target: ServerTarget
   try {
     target = await deps.resolveTarget()
-  } catch (unreachable) {
-    // Only the local-lock path throws — an enabled remote always resolves,
-    // so a configured remote never triggers a local spawn (same rule as
-    // `openWebapp` in packages/server/src/cli.ts).
-    //
-    // And spawning is containerless-only. On a k8s install the server is a
-    // Deployment of the cluster it manages (docs/server-in-cluster.md):
-    // `yaac server start` there scales that Deployment, so spawning would
-    // at best be a slow no-op and at worst put a second server on one data
-    // dir. What such an install needs is a converge, so say so.
-    if (await deps.recordedDriver() === 'k8s') {
-      return failure({
-        title: 'The yaac server is not running in your cluster',
-        detail: message(unreachable),
-        hint: 'Run `yaac cluster install` to converge the cluster and publish the server, then relaunch the app.',
-      })
-    }
-    deps.onStatus('Starting the local yaac server…')
-    let started: RunResult
-    try {
-      started = await deps.startLocalServer()
-    } catch (err) {
-      return failure({
-        title: 'yaac CLI not found',
-        detail: message(err),
-        hint: 'Install yaac and make sure it is on PATH, then relaunch the app.',
-      })
-    }
-    if (started.code !== 0) {
-      // Verbatim stderr: `yaac server start` already prints the recovery
-      // command (e.g. "Restart it with: yaac server restart").
-      return failure({
-        title: 'yaac server failed to start',
-        detail: started.stderr,
-        hint: 'Fix the reported problem (or run `yaac server start` in a terminal), then relaunch the app.',
-      })
-    }
-    try {
-      target = await deps.resolveTarget()
-    } catch (err) {
-      return failure({
-        title: 'yaac server did not become reachable',
-        detail: message(err),
-        hint: 'Start it with `yaac server start`, then relaunch the app.',
-      })
-    }
+  } catch (err) {
+    // Nothing selected. The resolver's message opens with this same
+    // sentence and then lists the commands, so the heading takes the
+    // sentence and the detail keeps the rest — printing both whole reads
+    // as a stutter. The picker this lands on is itself the fix, so the
+    // hint points at it rather than at a terminal.
+    const title = 'No yaac server selected'
+    return failure({
+      title,
+      detail: withoutHeading(message(err), title),
+      hint: 'Pick a server below, or add one.',
+    })
   }
 
   // Best-effort, fire-and-forget: the SPA's sign-in cards need the login
@@ -113,17 +73,20 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   try {
     token = await deps.mintToken()
   } catch (err) {
-    return failure(target.remote
-      ? {
-          title: 'Could not connect to the remote server',
-          detail: message(err),
-          hint: 'Check it with `yaac remote status`, or switch back to the local server with `yaac remote off`, then relaunch the app.',
-        }
-      : {
-          title: 'Could not connect to the yaac server',
-          detail: message(err),
-          hint: 'Try `yaac server restart`, then relaunch the app.',
-        })
+    // Unreachable, or the token was rejected — the client's own message
+    // says which, verbatim. The hint names a command only for a server on
+    // THIS machine, where there is one to name: this page is now the whole
+    // window for a desktop-only user, so it is where they learn how to
+    // bring their own server back.
+    return failure({
+      title: `Could not connect to ${target.baseUrl}`,
+      detail: message(err),
+      hint: isLoopbackOrigin(target.baseUrl)
+        ? 'Start it with `yaac server start` (or `yaac cluster install`), then '
+          + 'Try again — or pick a different server below.'
+        : 'Check that the server is running, then connect again — or pick a '
+          + 'different server below.',
+    })
   }
 
   // Trailing slashes stripped so both origin shapes compose with the /?token=
@@ -133,7 +96,7 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
   return { ok: true, url: buildWebappUrl(base, token) }
 }
 
-/** Twin of `buildWebappUrl` (packages/server/src/cli.ts); the token is hex, so encoding is defensive only. */
+/** Twin of `buildWebappUrl` (packages/server/src/main/webapp.ts); the token is hex, so encoding is defensive only. */
 export function buildWebappUrl(baseUrl: string, token: string): string {
   return `${baseUrl}/?token=${encodeURIComponent(token)}`
 }
@@ -144,4 +107,13 @@ function failure(error: LaunchError): FlowResult {
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** `text` minus a first line that just restates `heading`. */
+function withoutHeading(text: string, heading: string): string {
+  const [first, ...rest] = text.split('\n')
+  if (rest.length === 0 || first.replace(/[.\s]+$/, '') !== heading) return text
+  // The resolver indents its continuation lines under the heading; without
+  // it they are the whole body, so give them back the left margin.
+  return rest.map((line) => line.replace(/^ {4}/, '')).join('\n').trim()
 }

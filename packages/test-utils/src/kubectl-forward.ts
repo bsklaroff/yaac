@@ -15,7 +15,7 @@ import net from 'node:net'
  *
  *  - **The port outlives the child.** A rollout, a scale to zero, a
  *    `ProxyClient.stop()` — each kills the forward attached to the pod that
- *    went away, while the origin the tests (and `remote.json`) hold is
+ *    went away, while the origin the tests (and `server.json`) hold is
  *    already written. So the port is chosen once and the child is respawned
  *    onto it until the caller stops it.
  *  - **It survives a target that does not exist yet.** A forward can be

@@ -55,7 +55,7 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
   // validates.
   //
   // Keyed on the origin being LOOPBACK rather than on the target not being
-  // a remote: a local k8s install resolves through `remote.json` as well
+  // a remote: a local k8s install resolves through `server.json` as well
   // (that is how `yaac cluster install` publishes the in-cluster server),
   // and its projects dir is still this machine's — the pod hostPath-mounts
   // it. What the check must not do is read this machine's disk to answer

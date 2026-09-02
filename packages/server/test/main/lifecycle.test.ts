@@ -1,18 +1,27 @@
 /**
- * `yaac server stop` against a lock it did not write.
+ * The `yaac server` lifecycle verbs against locks and configs they did not
+ * write.
  *
- * The in-cluster server's lock crosses a container boundary
+ * `stop`: the in-cluster server's lock crosses a container boundary
  * (docs/server-in-cluster.md), and what this command does with one is the
  * difference between stopping a server and manufacturing the dual-writer
- * the whole lease design exists to prevent. Nothing is mocked but the data
- * dir: the lock is a real file and the judgment runs for real.
+ * the whole lease design exists to prevent.
+ *
+ * `start`: it is the command that REGISTERS a host server, so what it
+ * writes into `server.json` is the whole of "clients on this machine can
+ * reach it". Nothing is mocked but the data dir and the server socket: the
+ * lock is a real file, the mint is a real request, and the judgment runs
+ * for real.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import os from 'node:os'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { readLock, writeLock } from '@yaac/shared/lock'
+import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { LEASE_STALE_MS } from '@yaac/shared/server-lock-file'
-import { stopServer } from '#main/lifecycle'
+import { startServer, stopServer } from '#main/lifecycle'
 
 let tmpDir: string
 let stderr: string[]
@@ -100,5 +109,110 @@ describe('stopServer', () => {
 
     expect(await readLock()).toBeNull()
     expect(stderr.join('\n')).toMatch(/stale lock/)
+  })
+})
+
+describe('startServer registration', () => {
+  /**
+   * A stand-in for the running server: `/health` for the liveness probe,
+   * and the `/tokens` pair the durable-token mint uses.
+   */
+  async function fakeServer(opts: { minted?: string | null } = {}) {
+    const requests: string[] = []
+    const srv = http.createServer((req, res) => {
+      requests.push(`${req.method ?? ''} ${req.url ?? ''}`)
+      res.setHeader('content-type', 'application/json')
+      if (req.url === '/tokens' && req.method === 'POST') {
+        if (opts.minted === null) {
+          res.statusCode = 500
+          res.end('{}')
+          return
+        }
+        res.end(JSON.stringify({ token: opts.minted ?? 'minted-token' }))
+        return
+      }
+      res.end('{"ok":true}')
+    })
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    return {
+      port: (srv.address() as AddressInfo).port,
+      requests,
+      close: () => new Promise<void>((resolve) => srv.close(() => resolve())),
+    }
+  }
+
+  it('registers a server that was already running, instead of no-oping', async () => {
+    // "Already running" includes a server the operator started in the
+    // foreground with `yaac server run`, which registers nothing. Without
+    // this, start would print success against a server no client can reach.
+    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
+    const server = await fakeServer()
+    try {
+      await writeLock({
+        pid: process.pid,
+        port: server.port,
+        secret: 'lock-secret',
+        startedAt: Date.now(),
+        buildId: 'test-build',
+      })
+
+      await startServer()
+
+      expect(stderr.join('\n')).toContain('already running')
+      expect(await readServerConfig()).toMatchObject({
+        url: `http://127.0.0.1:${server.port}`,
+        token: 'minted-token',
+        enabled: true,
+        driver: 'containerless',
+      })
+      // Revoke-then-create, and under the lock secret — the only credential
+      // that authenticates as the server itself.
+      expect(server.requests).toContain('DELETE /tokens/local-client')
+      expect(server.requests).toContain('POST /tokens')
+    } finally {
+      await server.close()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('leaves the server up, and says so, when the mint fails', async () => {
+    // The server is fine; only this machine's pointer at it is missing, and
+    // the recovery is to run the command again.
+    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
+    const server = await fakeServer({ minted: null })
+    try {
+      await writeLock({
+        pid: process.pid,
+        port: server.port,
+        secret: 'lock-secret',
+        startedAt: Date.now(),
+        buildId: 'test-build',
+      })
+
+      await startServer()
+
+      // An empty token is written rather than nothing: a credential-optional
+      // install needs none, and refusing to write would point the machine at
+      // no server at all.
+      expect(await readServerConfig()).toMatchObject({
+        url: `http://127.0.0.1:${server.port}`,
+        token: '',
+        driver: 'containerless',
+      })
+    } finally {
+      await server.close()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('refuses to start on a k8s install rather than registering a second server', async () => {
+    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
+    await writeServerConfig({
+      url: 'http://127.0.0.1:9999', token: 't', enabled: true, saved: [], driver: 'k8s',
+    })
+    await expect(startServer()).rejects.toThrow(/yaac cluster install/)
+    // And the refusal did not rewrite the selection on its way out.
+    expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:9999' })
+    vi.unstubAllEnvs()
   })
 })

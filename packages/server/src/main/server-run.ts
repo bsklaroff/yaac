@@ -187,7 +187,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // which is what makes an unregistered one a startup-order bug rather than
   // a null branch downstream.
   await assertHostServerAllowed()
-  const driverKind = await resolveDriverKind()
+  const driverKind = resolveDriverKind()
   setWorktreeDriver(
     driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
   )

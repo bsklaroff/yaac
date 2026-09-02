@@ -14,7 +14,7 @@ import { serverLogPath } from '@yaac/shared/paths'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
-import { recordedDriver } from '@yaac/shared/install-driver'
+import { registerServer } from '@yaac/shared/server-config'
 
 /**
  * Entry point for `yaac server start`.
@@ -38,6 +38,11 @@ export async function startServer(): Promise<void> {
   if (existing && await isLockLive(existing)) {
     if (existing.buildId === cliBuildId) {
       console.error(`[yaac] server already running pid=${existing.pid} port=${existing.port}`)
+      // Registered even here, because "already running" includes a server
+      // someone ran in the foreground with `yaac server run`, which
+      // registers nothing. Without this, `yaac server start` would print
+      // success against a server no client can reach.
+      await registerLocalServer(existing.port)
       return
     }
     throw new Error(
@@ -65,14 +70,44 @@ export async function startServer(): Promise<void> {
       `server buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
     )
   }
+  await registerLocalServer(fresh.port)
   const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
-  // The child resolved the driver and recorded it before it went ready, so
-  // this reads the driver the server actually came up on rather than
-  // re-deriving one. Repeated here because the child said it to its own log
-  // file, which is not where the operator who set the variable is looking.
-  const torGap = torCoverageWarning(await recordedDriver() ?? 'k8s')
+  // A host server is a containerless one by construction (see
+  // `#main/driver-choice`), so this needs no lookup. Repeated here because
+  // the child said it to its own log file, which is not where the operator
+  // who set the variable is looking.
+  const torGap = torCoverageWarning('containerless')
   if (torGap !== undefined) console.error(`[yaac] WARNING: ${torGap}`)
+}
+
+/**
+ * Point this machine's clients at the host server that is now up, and
+ * record that this install is a containerless one — the same registration
+ * `yaac cluster install` performs for the Deployment it applies, so that no
+ * client has a "server on this machine" case at all.
+ *
+ * A failure here leaves the server running and unreachable BY CLIENTS,
+ * which is worth saying plainly: the recovery is to run the command again,
+ * not to hunt for a lock.
+ */
+async function registerLocalServer(port: number): Promise<void> {
+  try {
+    await registerServer(`http://127.0.0.1:${port}`, 'containerless', {
+      log: (message) => console.error(`[yaac] ${message}`),
+      // The same question `isCredentialOptional` asks server-side, and
+      // the same one `yaac cluster install` asks: keyed on CONFIGURATION,
+      // not on the bind address, so an install that sets these (or
+      // inherits them from the shell) hears about a failed mint.
+      credentialRequired: env.allowedHosts.length > 0 || env.trustProxy || env.requireAuth,
+    })
+  } catch (err) {
+    console.error(
+      `[yaac] WARNING: the server is up, but this machine could not be pointed at it: ${
+        err instanceof Error ? err.message : String(err)
+      }\n    Commands will report no server selected until \`yaac server start\` succeeds at this step.`,
+    )
+  }
 }
 
 /**

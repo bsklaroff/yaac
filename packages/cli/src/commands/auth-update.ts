@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
+import { getApiClient, isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
 import { validatePattern, parsePattern } from '@yaac/shared/credentials'
@@ -164,9 +164,14 @@ async function runSshUpdate(): Promise<void> {
   }
 
   // The key is read by the server/proxy on the server host — against a
-  // remote server that means a path on the server, so say so.
+  // server on another machine that means a path over there, so say so.
+  // Keyed on the ORIGIN being loopback, not on where the target was
+  // resolved from: every target comes from `server.json`, including this
+  // machine's own server (docs/server-in-cluster.md).
   const target = await resolveServerTarget().catch(() => null)
-  const where = target?.remote ? `on the server host ${target.baseUrl}` : 'host filesystem'
+  const where = target && !isLoopbackOrigin(target.baseUrl)
+    ? `on the server host ${target.baseUrl}`
+    : 'host filesystem'
   const privateKeyPath = (await rl.question(`Private key path (${where}; e.g. ~/.ssh/id_ed25519): `)).trim()
   if (!privateKeyPath) {
     rl.close()

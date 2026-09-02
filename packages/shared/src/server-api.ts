@@ -1,23 +1,20 @@
 import { readBuildId } from '#build-id'
 import { testEnv } from '#env'
-import { readLock } from '#lock'
-import { isLockLive, isSameHostLock, type ServerLock } from '#server-lock-file'
-import { readRemote } from '#remote'
-import { recordedDriver } from '#install-driver'
+import { readServerConfig } from '#server-config'
 import { createApiClient, type FetchLike } from '#api-core'
 import type { ServerErrorBody } from '#errors'
 
 /**
- * Where a CLI invocation sends its requests. Local lock, configured
- * remote, and the test env hatch all resolve to this one shape.
+ * Where a request goes. Every client resolves the same two things — an
+ * origin and a bearer — whether the server is a host process on this
+ * machine, a pod of this machine's cluster, or a server across the
+ * network. There is no local case (see `resolveServerTarget`).
  */
 export interface ServerTarget {
   /** Origin (no trailing slash), e.g. http://127.0.0.1:8787. */
   baseUrl: string
-  /** Bearer: the lock secret locally, a durable token remotely. */
+  /** Bearer: the durable token this machine holds for the server. */
   secret: string
-  /** True when resolved from remote.json — drives error wording and the build-skew warning. */
-  remote: boolean
 }
 
 export interface ApiClientOptions {
@@ -28,13 +25,12 @@ export interface ApiClientOptions {
   resolveTarget?: () => Promise<ServerTarget>
   fetchImpl?: typeof fetch
   /**
-   * False for pure clients that ship no server code (the desktop
-   * shell): default target resolution skips the build-id match (see
-   * `resolveServerTarget`) and the remote build-skew warning is
-   * suppressed — such clients have no build identity to compare.
-   * Defaults to true.
+   * False for pure clients that ship no server code (the desktop shell,
+   * the auth daemon): they have no build identity to compare, and any
+   * server they can reach serves them its own matching SPA. Defaults to
+   * true.
    */
-  requireBuildMatch?: boolean
+  warnOnBuildSkew?: boolean
   /**
    * Interactive "please re-authenticate" handler. Invoked once when the
    * server replies with `AUTH_REQUIRED`; after it resolves the request
@@ -56,18 +52,18 @@ export interface ApiClientOptions {
 export function createServerFetch(
   opts: ApiClientOptions = {},
 ): (input: string, init?: RequestInit) => Promise<Response> {
-  const requireBuildMatch = opts.requireBuildMatch !== false
-  const resolveTarget = opts.resolveTarget ?? (() => resolveServerTarget({ requireBuildMatch }))
+  const warnOnBuildSkew = opts.warnOnBuildSkew !== false
+  const resolveTarget = opts.resolveTarget ?? resolveServerTarget
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
   // Resolved on the first request, not at construction, so a module can hold
-  // the client as a singleton: the lock/remote target (and any test env
-  // override) is read when the first call goes out, not at import.
+  // the client as a singleton: `server.json` (and any test env override) is
+  // read when the first call goes out, not at import.
   let target: ServerTarget | undefined
-  // Once per client: a remote server and this CLI upgrade independently,
-  // so surface (but don't fail on) a build mismatch. Local targets never
-  // get here skewed — the lock resolution hard-fails first.
+  // Once per client: server and CLI upgrade independently — even on this
+  // machine, where the server may be a Deployment carrying an older bundle
+  // — so surface a mismatch without failing on it.
   let buildSkewChecked = false
 
   return async (input, init = {}) => {
@@ -88,7 +84,7 @@ export function createServerFetch(
     }
 
     let res = await send()
-    if (requireBuildMatch && active.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
+    if (warnOnBuildSkew && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
       buildSkewChecked = true
       const cliBuildId = await readBuildId().catch(() => null)
       const skew = cliBuildId
@@ -102,16 +98,20 @@ export function createServerFetch(
     if (body?.error.code === 'BAD_BEARER') {
       const refreshed = await resolveTarget()
       if (refreshed.secret !== active.secret || refreshed.baseUrl !== active.baseUrl) {
+        // A `yaac server start` or `yaac cluster install` may have
+        // re-registered this machine since the client cached its target.
         target = refreshed
         active = refreshed
         res = await send()
-      } else if (active.remote) {
-        // Re-resolving can't help a remote target (there is no lock to
-        // re-read); tell the user how to fix the token instead.
+      } else {
+        // Nothing changed on disk, so the configured token is genuinely
+        // the wrong one. Say how to replace it for either kind of server.
         throw new Error(
-          `remote server at ${active.baseUrl} rejected the token. `
-          + 'Mint a new one on the server (yaac auth token create <name>) and run: '
-          + `yaac remote set ${active.baseUrl} --token <token>`,
+          `the yaac server at ${active.baseUrl} rejected the token.\n`
+          + '    For a server on this machine, re-register it: `yaac server start` '
+          + '(or `yaac cluster install`).\n'
+          + '    For one elsewhere, mint a token there (`yaac auth token create '
+          + `<name>\`) and run: yaac remote set ${active.baseUrl} --token <token>`,
         )
       }
     } else if (body?.error.code === 'AUTH_REQUIRED') {
@@ -161,35 +161,10 @@ async function peekErrorBody(res: Response): Promise<ServerErrorBody | null> {
 }
 
 /**
- * Pure decision: is this lock usable, and if not, why? Callers surface
- * the message to the user with instructions on how to recover. Kept
- * pure so unit tests can exercise every branch without I/O. A null
- * `cliBuildId` skips the version comparison — client-only callers
- * (`requireBuildMatch: false`) have no build identity to compare.
- */
-export function describeLockMismatch(
-  lock: ServerLock | null,
-  isLive: boolean,
-  cliBuildId: string | null,
-): string | null {
-  if (!lock || !isLive) {
-    return 'yaac server is not running. Start it with: yaac server start'
-  }
-  if (cliBuildId !== null && lock.buildId !== cliBuildId) {
-    return (
-      'yaac server is running an outdated version '
-      + `(server buildId ${lock.buildId}, CLI buildId ${cliBuildId}). `
-      + 'Restart it with: yaac server restart'
-    )
-  }
-  return null
-}
-
-/**
- * Pure sibling of `describeLockMismatch` for remote targets, where a
- * version difference is expected life (client and server upgrade
- * independently) and only worth a warning. Null when the server didn't
- * report a build id or the ids match.
+ * A build-id difference between the server and this client, as a warning.
+ * Never an error on the request path: they upgrade independently, and even
+ * a server on this machine may be a Deployment carrying an older bundle.
+ * Null when the server didn't report a build id or the ids match.
  */
 export function describeBuildSkew(
   serverBuildId: string | null,
@@ -197,27 +172,24 @@ export function describeBuildSkew(
   origin?: string,
 ): string | null {
   if (!serverBuildId || serverBuildId === cliBuildId) return null
-  // A loopback "remote" is this machine's own in-cluster server
-  // (docs/server-in-cluster.md), where the skew has one cause — the bundle
-  // moved and the Deployment has not been rolled onto it — and one fix.
-  // Naming it matters because the local LOCK path treats a skew as a hard
-  // error with a command attached, and this is what replaced it there.
+  // A loopback origin is a server on this machine (docs/server-in-cluster.md),
+  // where the skew has one cause — the bundle moved and the running server
+  // has not been rolled onto it — and one pair of fixes.
   const fix = origin !== undefined && isLoopbackOrigin(origin)
-    ? ' — roll the server onto this build with `yaac cluster install`'
+    ? ' — roll the server onto this build with `yaac server restart` '
+      + '(or `yaac cluster install`)'
     : ' — upgrade one of them if commands misbehave'
-  return `warning: remote server build (${serverBuildId}) differs from this CLI `
+  return `warning: server build (${serverBuildId}) differs from this CLI `
     + `(${cliBuildId})${fix}`
 }
 
 /**
  * Whether an origin names a listener on THIS machine.
  *
- * Not the same question as `ServerTarget.remote`, which says only that the
- * target came from `remote.json`. A local k8s install resolves through that
- * file too — `yaac cluster install` writes it, pointing at the published
- * loopback origin (docs/server-in-cluster.md) — so "resolved from
- * remote.json" stopped meaning "on another machine" the moment the server
- * became a pod. Callers that want the second question ask this one.
+ * The only "is the server local?" question there is. Every target comes
+ * from the same place (`server.json`), so nothing about where a target was
+ * resolved from says which machine it is on — a host server and an
+ * in-cluster one are both registered there, both at a loopback origin.
  */
 export function isLoopbackOrigin(origin: string): boolean {
   try {
@@ -231,70 +203,46 @@ export function isLoopbackOrigin(origin: string): boolean {
 }
 
 /**
- * Resolve the server target for this CLI invocation. Commands call this
- * before every server request. Precedence:
+ * Resolve the server every request goes to. Two steps, no local case:
  *
  * 1. `YAAC_SERVER_URL` + `YAAC_SERVER_SECRET` — the test injection hook:
  *    tests boot an in-process server and point the CLI at it without
- *    writing the shared `~/.yaac/.server.lock`. Production never sets
- *    these. Above remote.json so a test data dir carrying a remote file
- *    can't hijack a hermetic run.
- * 2. An **enabled** `~/.yaac-client/remote.json` — the configured remote
- *    server, authenticated by its durable token.
- * 3. The local lock (today's behavior): must be live and build-matched,
- *    else throw with the exact recovery command.
+ *    writing any config. Production never sets these. Above `server.json`
+ *    so a test data dir carrying one can't hijack a hermetic run.
+ * 2. The **selected** entry of `~/.yaac-client/server.json`, authenticated
+ *    by its durable token.
  *
- * `requireBuildMatch: false` drops the build-match half of step 3: pure
- * clients that ship no server code (the desktop shell) have no build id
- * to read, and any server they can reach serves them the matching SPA —
- * they only need the lock to be live.
+ * A server on this machine is in that file like any other: `yaac server
+ * start` registers the host server it spawns, `yaac cluster install` the
+ * Deployment it applies (`registerServer` in `#server-config`). So no
+ * client reads the lock — which is the server's own file, belongs to the
+ * pod's uid under k8s, and carries a port that means nothing off the pod.
  */
-export async function resolveServerTarget(
-  opts: { requireBuildMatch?: boolean } = {},
-): Promise<ServerTarget> {
+export async function resolveServerTarget(): Promise<ServerTarget> {
   const envUrl = testEnv.serverUrlOverride
   const envSecret = testEnv.serverSecretOverride
   if (envUrl && envSecret) {
-    return { baseUrl: envUrl.replace(/\/+$/, ''), secret: envSecret, remote: false }
+    return { baseUrl: envUrl.replace(/\/+$/, ''), secret: envSecret }
   }
 
-  const remote = await readRemote()
-  if (remote?.enabled) {
-    return { baseUrl: remote.url, secret: remote.token, remote: true }
+  const cfg = await readServerConfig()
+  if (cfg?.enabled && cfg.url !== '') {
+    return { baseUrl: cfg.url, secret: cfg.token }
   }
-
-  const cliBuildId = opts.requireBuildMatch === false ? null : await readBuildId()
-  const existing = await readLock()
-  // An in-cluster server is not a target this process can dial: the port
-  // in its lock is the one it binds INSIDE its pod, and `127.0.0.1:<that>`
-  // here is some unrelated listener — quite possibly another yaac, which
-  // would answer and be believed. It is reached through `remote.json`
-  // (step 2), which `yaac cluster install` writes; if we are here, that
-  // file is missing or disabled, so say which command restores it.
-  //
-  // Asked of the CLIENT-LOCAL driver record rather than of the lock,
-  // because the lock is the server's own file and this process may not be
-  // able to read it at all — under k8s it belongs to the pod's uid, and an
-  // unreadable lock is indistinguishable from an absent one (`readLock`
-  // returns null for both). Keyed off the lock as well for an install that
-  // predates the record: a cross-host lock says the same thing.
-  const inCluster = await recordedDriver() === 'k8s'
-  if (inCluster || (existing && !isSameHostLock(existing))) {
-    const held = existing && !isSameHostLock(existing)
-      ? ` (lock held by ${existing.host ?? 'another host'})`
-      : ''
-    throw new Error(
-      `This install's server runs in the cluster${held}, `
-      + 'but there is no enabled remote.json pointing at it.\n'
-      + '    Run `yaac cluster install` to converge the cluster and republish the origin.',
-    )
-  }
-  const live = existing ? await isLockLive(existing) : false
-  const mismatch = describeLockMismatch(existing, live, cliBuildId)
-  if (mismatch) throw new Error(mismatch)
-  const lock = existing as ServerLock
-  return { baseUrl: `http://127.0.0.1:${lock.port}`, secret: lock.secret, remote: false }
+  throw new Error(NO_SERVER_SELECTED)
 }
+
+/**
+ * What every client says when `server.json` names no server. All three
+ * commands are listed because which one applies is a property of the
+ * install, and this message is precisely what is printed when nothing on
+ * disk says which kind of install it is.
+ */
+export const NO_SERVER_SELECTED =
+  'No yaac server selected.\n'
+  + '    Start one on this machine with `yaac server start` (or `yaac cluster '
+  + 'install` on a k8s install),\n'
+  + '    or point at one with `yaac remote set <url> --token <token>`.'
 
 /**
  * Print the error's message and exit 1. Calls `process.exit` —

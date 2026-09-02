@@ -79,11 +79,11 @@ const MAX_SIDEBAR_WIDTH = 640
 const BRIDGE = () => {
   window.yaacServer = {
     targets: () => Promise.resolve({
-      current: { kind: 'local' },
+      current: 'https://alpha.ts.net',
       saved: ['https://alpha.ts.net'],
     }),
-    switchTo: () => Promise.resolve({ ok: true, changed: false }),
-    addRemote: () => Promise.resolve({ ok: true, changed: false }),
+    switchTo: () => Promise.resolve({ ok: true }),
+    addRemote: () => Promise.resolve({ ok: true }),
   }
 }
 
@@ -144,7 +144,7 @@ async function main() {
   // Clicking opens settings on the Server section — the one place the chit
   // leads, and the reason it is gated on the same bridge that section is.
   await chit.click()
-  await page.getByText('Add a remote server').waitFor({ timeout: 10_000 })
+  await page.getByText('Add a server').waitFor({ timeout: 10_000 })
   check(true, 'clicking the chit opens Settings on the Server section')
   await page.screenshot({ path: path.join(SHOTS, 'server-badge-settings.png') })
   await page.keyboard.press('Escape')

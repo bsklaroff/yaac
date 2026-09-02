@@ -19,7 +19,7 @@ the in-cluster image registry, builds and pushes every image yaac ships (see
 "Images are built here, and only here"), applies the in-cluster layers —
 the gVisor runtime, the PriorityClasses, netd — and finally deploys **the
 yaac server itself** (docs/server-in-cluster.md), publishing it at a fixed
-host loopback origin and writing the `remote.json` every client on this
+host loopback origin and writing the `server.json` every client on this
 machine resolves through.
 
 Under this driver the server is a workload of the cluster, not a process

@@ -16,11 +16,10 @@ import {
   buildServerDeploymentManifest,
   buildServerServiceAccountManifest,
   ensureServerImage,
-  mintInstallToken,
   resolveServerImageTag,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 import { readLock } from '@yaac/shared/lock'
-import { readRemote, writeRemote, withRemoteActivated } from '@yaac/shared/remote'
+import { readServerConfig, registerServer } from '@yaac/shared/server-config'
 import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
 import { testTmpBase } from '#tmp'
@@ -139,9 +138,9 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
 
   // Point this file's CLI invocations at the forward, the way `yaac cluster
   // install` points a real machine's at the published origin: through
-  // `remote.json`, which already outranks the lock in `resolveServerTarget`
-  // — and has to, because the lock on this shared data dir was written by a
-  // pod.
+  // `server.json`, which is the only thing `resolveServerTarget` reads —
+  // and has to be, because the lock on this shared data dir was written by
+  // a pod.
   //
   // A DURABLE token, minted the same way install mints one, and for the same
   // reason: the lock secret is per BOOT, so the moment a file restarts its
@@ -161,19 +160,24 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
 }
 
 /**
- * Mint the install token this file's CLI will authenticate with, and write
- * it into `remote.json` — the whole of "the CLI can find this server".
+ * Register this file's server the way `yaac cluster install` registers a
+ * real one — the whole of "the CLI can find this server".
+ *
+ * The empty-token degradation that is right in production (a
+ * credential-optional install needs none) is a hard failure here: these
+ * suites run auth-on, so a tokenless config means every CLI call in the
+ * file is answered BAD_BEARER the first time the server rolls.
  */
 async function bootstrapRemote(origin: string): Promise<void> {
-  const token = await mintInstallToken(origin)
-  if (token === '') {
+  await registerServer(origin, 'k8s')
+  const cfg = await readServerConfig()
+  if (cfg?.token === undefined || cfg.token === '') {
     throw new Error(
       `could not mint a durable token against ${origin}: the test server is up `
       + 'but would not issue one, so every CLI call in this file would be '
       + 'answered BAD_BEARER the first time the server rolls.',
     )
   }
-  await writeRemote(withRemoteActivated(await readRemote(), origin, token))
 }
 
 /**

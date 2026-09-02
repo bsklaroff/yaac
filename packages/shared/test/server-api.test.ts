@@ -2,19 +2,15 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } 
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import http from 'node:http'
-import type { AddressInfo } from 'node:net'
 import {
   createServerFetch,
   describeBuildSkew,
-  describeLockMismatch,
   exitOnApiError,
   isLoopbackOrigin,
   resolveServerTarget,
   type ServerTarget,
 } from '#server-api'
-import { writeLock } from '#lock'
-import { writeRemote } from '#remote'
+import { writeServerConfig } from '#server-config'
 import { setDataDir } from '#paths'
 
 function jsonResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
@@ -25,7 +21,7 @@ function jsonResponse(body: string, status = 200, headers: Record<string, string
 }
 
 describe('createServerFetch', () => {
-  const target: ServerTarget = { baseUrl: 'http://127.0.0.1:4242', secret: 'shh', remote: false }
+  const target: ServerTarget = { baseUrl: 'http://127.0.0.1:4242', secret: 'shh' }
 
   it('issues requests against the target origin with the bearer header', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -66,8 +62,8 @@ describe('createServerFetch', () => {
     expect(second[0]).toBe('http://127.0.0.1:4243/project/list')
   })
 
-  it('a persistent BAD_BEARER on a remote target throws token-refresh instructions', async () => {
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+  it('a persistent BAD_BEARER throws token-refresh instructions for either kind of server', async () => {
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401),
     ))
@@ -76,15 +72,15 @@ describe('createServerFetch', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await expect(serverFetch('/project/list')).rejects.toThrow(
-      /rejected the token.*yaac auth token create.*yaac remote set https:\/\/srv\.ts\.net/s,
+      /rejected the token.*yaac server start.*yaac auth token create.*yaac remote set https:\/\/srv\.ts\.net/s,
     )
     // No blind retry with the same credential.
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it('warns once (stderr) when a remote server reports a different build id', async () => {
+  it('warns once (stderr) when the server reports a different build id', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
@@ -101,9 +97,9 @@ describe('createServerFetch', () => {
     vi.unstubAllEnvs()
   })
 
-  it('requireBuildMatch: false suppresses the remote build-skew warning', async () => {
+  it('warnOnBuildSkew: false suppresses the build-skew warning', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'local-build')
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
@@ -111,7 +107,7 @@ describe('createServerFetch', () => {
     const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      requireBuildMatch: false,
+      warnOnBuildSkew: false,
     })
     await serverFetch('/project/list')
     expect(errorSpy).not.toHaveBeenCalled()
@@ -119,7 +115,11 @@ describe('createServerFetch', () => {
     vi.unstubAllEnvs()
   })
 
-  it('does not warn about build skew for local targets', async () => {
+  it('warns about build skew on a server on THIS machine too, naming its fix', async () => {
+    // Never an error on the request path: a server on this machine can be a
+    // Deployment carrying an older bundle, and the commands that roll it are
+    // what the warning has to name.
+    vi.stubEnv('YAAC_BUILD_ID', 'local-build')
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
@@ -128,9 +128,11 @@ describe('createServerFetch', () => {
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    await serverFetch('/project/list')
-    expect(errorSpy).not.toHaveBeenCalled()
+    const res = await serverFetch('/project/list')
+    expect(res.status).toBe(200)
+    expect(String(errorSpy.mock.calls[0]?.[0])).toMatch(/yaac server restart.*yaac cluster install/)
     errorSpy.mockClear()
+    vi.unstubAllEnvs()
   })
 
   it('on AUTH_REQUIRED invokes onAuthRequired and retries once', async () => {
@@ -204,9 +206,6 @@ describe('resolveServerTarget', () => {
     setDataDir(dir)
     vi.stubEnv('YAAC_SERVER_URL', undefined)
     vi.stubEnv('YAAC_SERVER_SECRET', undefined)
-    // The local-lock branch compares build ids before reading the lock;
-    // a source checkout has no .build-id file, so inject one.
-    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
   })
 
   afterEach(async () => {
@@ -215,73 +214,39 @@ describe('resolveServerTarget', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  it('the env hatch wins over an enabled remote', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
+  it('the env hatch wins over a selected server', async () => {
+    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
     vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:1234/')
     vi.stubEnv('YAAC_SERVER_SECRET', 'env-secret')
-    const target = await resolveServerTarget()
-    expect(target).toEqual({ baseUrl: 'http://127.0.0.1:1234', secret: 'env-secret', remote: false })
+    expect(await resolveServerTarget())
+      .toEqual({ baseUrl: 'http://127.0.0.1:1234', secret: 'env-secret' })
   })
 
-  it('an enabled remote wins over the local lock', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
-    const target = await resolveServerTarget()
-    expect(target).toEqual({ baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true })
-  })
-
-  it('a disabled remote falls through to the local lock path', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: false, saved: [] })
-    // No lock in the temp data dir → the local branch throws its
-    // "not running" guidance, proving the remote was skipped.
-    await expect(resolveServerTarget()).rejects.toThrow(/yaac server start/)
-  })
-
-  it('with no remote at all, the local lock path is used', async () => {
-    await expect(resolveServerTarget()).rejects.toThrow(/not running/)
-  })
-
-  // A live lock needs a real pid and a /health responder; this process's
-  // pid plus a throwaway HTTP server satisfy isLockLive.
-  async function startHealthServer(): Promise<{ port: number, close: () => Promise<void> }> {
-    const srv = http.createServer((_req, res) => {
-      res.statusCode = 200
-      res.end('{"ok":true}')
+  it('resolves the selected server, wherever it runs', async () => {
+    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
+    expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net', secret: 'tok' })
+    // A server on this machine is resolved the same way — the origin being
+    // loopback is not a different code path.
+    await writeServerConfig({
+      url: 'http://127.0.0.1:8787', token: 'local-tok', enabled: true, saved: [],
+      driver: 'containerless',
     })
-    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
-    const port = (srv.address() as AddressInfo).port
-    return {
-      port,
-      close: () => new Promise((resolve) => srv.close(() => resolve())),
-    }
-  }
-
-  it('by default rejects a live lock whose buildId differs', async () => {
-    const { port, close } = await startHealthServer()
-    try {
-      await writeLock({ pid: process.pid, port, secret: 'shh', startedAt: 1, buildId: 'other-build' })
-      await expect(resolveServerTarget()).rejects.toThrow(/outdated version/)
-    } finally {
-      await close()
-    }
+    expect(await resolveServerTarget())
+      .toEqual({ baseUrl: 'http://127.0.0.1:8787', secret: 'local-tok' })
   })
 
-  it('requireBuildMatch: false accepts any live lock without reading a build id', async () => {
-    // No injected build id: the default path would throw "broken install"
-    // before even reading the lock; client-only mode must never need one.
-    vi.stubEnv('YAAC_BUILD_ID', undefined)
-    const { port, close } = await startHealthServer()
-    try {
-      await writeLock({ pid: process.pid, port, secret: 'shh', startedAt: 1, buildId: 'someone-elses-build' })
-      const target = await resolveServerTarget({ requireBuildMatch: false })
-      expect(target).toEqual({ baseUrl: `http://127.0.0.1:${port}`, secret: 'shh', remote: false })
-    } finally {
-      await close()
-    }
+  it('a deselected server resolves nothing — there is no fallback to look for one', async () => {
+    // A live server could well be listening on this machine right now; with
+    // nothing selected the answer is still "none", because the lock is not a
+    // client's to read.
+    await writeServerConfig({ url: 'https://srv.ts.net', token: 'tok', enabled: false, saved: [] })
+    await expect(resolveServerTarget()).rejects.toThrow(/No yaac server selected/)
   })
 
-  it('requireBuildMatch: false still requires a live lock', async () => {
-    vi.stubEnv('YAAC_BUILD_ID', undefined)
-    await expect(resolveServerTarget({ requireBuildMatch: false })).rejects.toThrow(/not running/)
+  it('with no config at all, names all three ways to get one', async () => {
+    await expect(resolveServerTarget()).rejects.toThrow(
+      /yaac server start.*yaac cluster install.*yaac remote set/s,
+    )
   })
 })
 
@@ -297,43 +262,6 @@ describe('describeBuildSkew', () => {
     expect(msg).toMatch(/remote-x/)
     expect(msg).toMatch(/local-y/)
     expect(msg).toMatch(/^warning:/)
-  })
-})
-
-describe('describeLockMismatch', () => {
-  const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0, buildId: 'abc' }
-
-  it('returns a "not running" message when there is no lock', () => {
-    const msg = describeLockMismatch(null, false, 'abc')
-    expect(msg).toMatch(/not running/)
-    expect(msg).toMatch(/yaac server start/)
-  })
-
-  it('returns a "not running" message when the lock is stale (not live)', () => {
-    const msg = describeLockMismatch(lock, false, 'abc')
-    expect(msg).toMatch(/not running/)
-    expect(msg).toMatch(/yaac server start/)
-  })
-
-  it('returns a version-mismatch message when buildIds differ', () => {
-    const msg = describeLockMismatch(lock, true, 'xyz')
-    expect(msg).toMatch(/outdated version/)
-    expect(msg).toMatch(/abc/)
-    expect(msg).toMatch(/xyz/)
-    expect(msg).toMatch(/yaac server restart/)
-  })
-
-  it('returns null when the live server matches the CLI buildId', () => {
-    expect(describeLockMismatch(lock, true, 'abc')).toBeNull()
-  })
-
-  it('a null cliBuildId skips the version comparison (client-only caller)', () => {
-    expect(describeLockMismatch(lock, true, null)).toBeNull()
-  })
-
-  it('a null cliBuildId still reports a dead server', () => {
-    const msg = describeLockMismatch(lock, false, null)
-    expect(msg).toMatch(/not running/)
   })
 })
 

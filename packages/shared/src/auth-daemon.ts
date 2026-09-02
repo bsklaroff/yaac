@@ -159,9 +159,10 @@ async function agentConnected(baseUrl: string, secret: string): Promise<boolean>
 
 export interface EnsureAuthDaemonSpawnedOptions extends SpawnAuthDaemonOptions {
   /**
-   * Pre-resolved target; defaults to resolveServerTarget(). Pure clients
-   * (the desktop shell) must pass their requireBuildMatch:false target —
-   * the default resolve would readBuildId() and throw in their process.
+   * Pre-resolved target; defaults to resolveServerTarget(). Callers that
+   * have already resolved one (the desktop shell, mid-boot) pass it so the
+   * daemon is pointed at the same server the window is landing on, rather
+   * than at whatever `server.json` says a moment later.
    */
   target?: ServerTarget
   killImpl?: (pid: number, signal: NodeJS.Signals) => void

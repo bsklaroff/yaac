@@ -16,8 +16,8 @@ describe('buildWebappUrl', () => {
   })
 })
 
-const local: ServerTarget = { baseUrl: 'http://127.0.0.1:9999', secret: 's', remote: false }
-const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+const local: ServerTarget = { baseUrl: 'http://127.0.0.1:9999', secret: 's' }
+const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
 
 /**
  * Routes by URL: `/health` reports `authRequired` (default true), `/tokens`
@@ -45,7 +45,6 @@ describe('openWebapp', () => {
     const launch = vi.fn()
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await openWebapp({
-      ensureServer: () => Promise.resolve(),
       resolveTarget: () => Promise.resolve(local),
       fetchImpl: fakeFetch({ token: 'TOKEN123' }),
       launch,
@@ -60,7 +59,6 @@ describe('openWebapp', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fetchImpl = fakeFetch({ authRequired: false })
     await openWebapp({
-      ensureServer: () => Promise.resolve(),
       resolveTarget: () => Promise.resolve(local),
       fetchImpl,
       launch,
@@ -81,7 +79,6 @@ describe('openWebapp', () => {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ token: 'FALLBACK' }) })
     }) as unknown as typeof fetch
     await openWebapp({
-      ensureServer: () => Promise.resolve(),
       resolveTarget: () => Promise.resolve(local),
       fetchImpl,
       launch,
@@ -95,7 +92,6 @@ describe('openWebapp', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await openWebapp({
       noBrowser: true,
-      ensureServer: () => Promise.resolve(),
       resolveTarget: () => Promise.resolve(local),
       fetchImpl: fakeFetch({ token: 'X' }),
       launch,
@@ -105,18 +101,15 @@ describe('openWebapp', () => {
     logSpy.mockRestore()
   })
 
-  it('a resolved remote target skips ensureServer and mints via POST /tokens', async () => {
-    const ensureServer = vi.fn().mockResolvedValue(undefined)
+  it('a server elsewhere mints via POST /tokens exactly as one here does', async () => {
     const launch = vi.fn()
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fetchImpl = fakeFetch({ token: 'R' })
     await openWebapp({
-      ensureServer,
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl,
       launch,
     })
-    expect(ensureServer).not.toHaveBeenCalled()
     expect(launch).toHaveBeenCalledWith('https://srv.ts.net/?token=R')
     const call = tokensCall(fetchImpl)!
     expect(call[0]).toBe('https://srv.ts.net/tokens')
@@ -126,27 +119,13 @@ describe('openWebapp', () => {
     logSpy.mockRestore()
   })
 
-  it('auto-starts the local server when resolution fails, then re-resolves', async () => {
-    const ensureServer = vi.fn().mockResolvedValue(undefined)
+  it('never starts a server — an unresolvable one surfaces, resolved exactly once', async () => {
+    // `yaac server start` is the one starter. Auto-starting here would put a
+    // host process beside whatever the install actually runs.
     const resolveTarget = vi.fn()
-      .mockRejectedValueOnce(new Error('yaac server is not running'))
-      .mockResolvedValueOnce(local)
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    await openWebapp({
-      noBrowser: true,
-      ensureServer,
-      resolveTarget,
-      fetchImpl: fakeFetch({ token: 'Y' }),
-    })
-    expect(ensureServer).toHaveBeenCalledTimes(1)
-    expect(resolveTarget).toHaveBeenCalledTimes(2)
-    logSpy.mockRestore()
-  })
-
-  it('surfaces the resolution error when the server still is not up', async () => {
-    await expect(openWebapp({
-      ensureServer: () => Promise.resolve(),
-      resolveTarget: () => Promise.reject(new Error('yaac server is not running. Start it with: yaac server start')),
-    })).rejects.toThrow(/not running/)
+      .mockRejectedValue(new Error('No yaac server selected. Start one on this machine…'))
+    await expect(openWebapp({ noBrowser: true, resolveTarget }))
+      .rejects.toThrow(/No yaac server selected/)
+    expect(resolveTarget).toHaveBeenCalledTimes(1)
   })
 })

@@ -67,7 +67,7 @@ import {
 // Setup value: the real hash function, so the expected tag is derived the
 // way the code derives it rather than pasted as a literal.
 import { stringHash } from '#drivers/k8s/image-engine'
-import { readRemote } from '@yaac/shared/remote'
+import { readServerConfig } from '@yaac/shared/server-config'
 // Setup value: a lock on the data dir is what the pre-deploy guard reads,
 // and writing one is how a test stands a "server already running" up.
 import { writeLock } from '@yaac/shared/lock'
@@ -224,10 +224,14 @@ describe('deployServerWorkload', () => {
     expect(pod.volumes[0].hostPath?.path).toBe(tmpDir)
     expect(pod.containers[0].volumeMounts[0].mountPath).toBe(tmpDir)
 
-    // The published origin, and the remote.json that makes every client on
-    // this machine resolve it without being told.
+    // The published origin, and the `server.json` that makes every client on
+    // this machine resolve it without being told — including the record that
+    // this data dir is a k8s install, so a later `yaac server start` finds
+    // the Deployment instead of spawning a host server beside it.
     expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-    expect(await readRemote()).toMatchObject({ url: origin, enabled: true })
+    expect(await readServerConfig()).toMatchObject({
+      url: origin, enabled: true, driver: 'k8s',
+    })
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {

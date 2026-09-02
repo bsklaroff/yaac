@@ -1,7 +1,8 @@
 /**
  * User-facing text for the desktop shell: the boot splash (a data: URL, so
- * no bundled assets or renderer build exist at all) and error-dialog copy.
- * Pure functions — main.ts feeds them into loadURL/showErrorBox.
+ * no bundled assets or renderer build exist at all), and the shape a
+ * failure takes on its way to the picker (`#connect-page`). Pure — main.ts
+ * feeds the splash into loadURL.
  */
 
 export interface LaunchError {
@@ -44,9 +45,4 @@ export function splashHtml(status: string): string {
 
 export function splashUrl(status: string): string {
   return `data:text/html;charset=utf-8,${encodeURIComponent(splashHtml(status))}`
-}
-
-/** Body text for dialog.showErrorBox (the title goes in its own argument). */
-export function errorBoxText(error: LaunchError): string {
-  return [error.detail, error.hint].filter(Boolean).join('\n\n')
 }

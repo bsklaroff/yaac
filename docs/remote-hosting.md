@@ -59,7 +59,7 @@ for that command, and `yaac server restart` — a rollout of the Deployment as
 it already stands — will not pick up a new value. Install is idempotent, so
 re-running it against the cluster it already made is the supported way to
 change the posture; it prints a note that the server now REQUIRES a
-credential and writes the durable token it mints into `remote.json`, which
+credential and writes the durable token it mints into `server.json`, which
 is what keeps the CLI on that same machine working.
 
 Optional — make forwarded dev-server ports reachable from other tailnet
@@ -95,10 +95,13 @@ yaac worktree list                   # talks to the server
 yaac open                            # prints/opens an authed webapp URL
 ```
 
-`yaac remote off` switches back to a local server without forgetting the
-token; `yaac remote status` shows what is configured. A revoked or rotated
-token (`yaac auth token revoke laptop` on the server) fails with
-instructions to re-run `yaac remote set`.
+`yaac remote off` deselects it without forgetting the token, and `yaac
+remote on` selects it again; `yaac remote status` shows what is configured.
+With nothing selected a client reaches no server at all — including a server
+on this very machine, which is in the same list and selected the same way
+(docs/server-selection.md). A revoked or rotated token (`yaac auth token
+revoke laptop` on the server) fails with instructions to re-run `yaac remote
+set`.
 
 On the phone: run `yaac open` on the laptop and open the printed
 `https://…/?token=<token>` URL there (the token is single-use; mint a

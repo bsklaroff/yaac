@@ -1002,22 +1002,23 @@ export type ServerEvent =
 
 /**
  * Desktop-shell server picker, over the preload bridge (`window.yaacServer`).
- * The renderer only ever sees origins — remote tokens stay in the main
- * process (remote.json).
+ * The renderer only ever sees origins — tokens stay in the main process
+ * (`server.json`).
  */
-export type DesktopServerSelection =
-  | { kind: 'local' }
-  | { kind: 'remote'; url: string }
+export interface DesktopServerSelection {
+  url: string
+}
 
 export interface DesktopServerTargets {
-  current: DesktopServerSelection
-  /** Origins of every remote ever configured (remote.json `saved`). */
+  /** The selected origin, or null when this machine has none. */
+  current: string | null
+  /** Origins of every server ever configured (`server.json`'s `saved`). */
   saved: string[]
 }
 
-/** `changed: true` means the shell is about to reland the window on the new server. */
+/** Success means the shell is about to reland the window on that server. */
 export type DesktopServerOutcome =
-  | { ok: true; changed: boolean }
+  | { ok: true }
   | { ok: false; error: string }
 
 /**

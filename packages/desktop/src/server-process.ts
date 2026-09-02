@@ -1,25 +1,20 @@
 /**
- * Spawning the yaac CLI from a GUI process. The one wrinkle vs the
- * terminal is PATH: an app launched from Finder (or a desktop launcher)
- * inherits the OS's minimal PATH, not the login shell's. Two spawn shapes:
+ * Spawning the yaac CLI from a GUI process — which the shell does for
+ * exactly one thing: the machine-local auth daemon (the login broker). It
+ * never spawns a SERVER; every server is reached through `server.json`,
+ * and starting one is `yaac server start`'s job.
  *
- *  - dev (`yaac` from PATH): self-healing — try as-is, and only on ENOENT
- *    resolve the login shell's PATH and retry once.
- *  - packaged (bundled node + cli.js under Resources): the bin is absolute so
- *    there is no ENOENT to self-heal on — instead the login-shell PATH is
- *    resolved up front and handed to the child, because the child needs it
- *    to find its own tools (kubectl/podman/tmux for the server,
- *    claude/codex/npm/brew for the auth daemon) from a Finder launch.
+ * The one wrinkle vs the terminal is PATH: an app launched from Finder (or
+ * a desktop launcher) inherits the OS's minimal PATH, not the login
+ * shell's. Packaged, the bin is absolute (bundled node + cli.js under
+ * Resources), so the login-shell PATH is resolved up front and handed to
+ * the child — the daemon's vendor-CLI children (claude/codex/npm/brew)
+ * need it from a Finder launch.
  */
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import path from 'node:path'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
-
-export interface RunResult {
-  code: number | null
-  stderr: string
-}
 
 /** How to invoke the yaac CLI. */
 export interface YaacCommand {
@@ -27,13 +22,11 @@ export interface YaacCommand {
   args: string[]
 }
 
-export type SpawnImpl = typeof spawn
-
 /**
  * The yaac CLI invocation for this install shape. Dev/unpackaged
- * (`resourcesPath` null) spawns `yaac` from PATH; packaged runs the bundled
+ * (`resourcesPath` null) runs `yaac` from PATH; packaged runs the bundled
  * standalone Node against the staged CLI. The bundled pair works detached
- * too: the daemons' own relaunches use process.execPath + argv[1], i.e. the
+ * too: the daemon's own relaunches use process.execPath + argv[1], i.e. the
  * same bundled node + cli.js.
  */
 export function resolveYaacCommand(resourcesPath: string | null, args: string[]): YaacCommand {
@@ -58,62 +51,17 @@ export function loginShellPath(execImpl: typeof execFile = execFile): Promise<st
   })
 }
 
-function run(spawnImpl: SpawnImpl, cmd: YaacCommand, path: string | undefined): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawnImpl(cmd.bin, cmd.args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      // eslint-disable-next-line no-process-env -- forwarded wholesale to the child, not yaac config
-      env: path === undefined ? undefined : { ...process.env, PATH: path },
-    })
-    let stderr = ''
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8')
-    })
-    child.once('error', reject)
-    child.once('close', (code) => resolve({ code, stderr: stderr.trim() }))
-  })
-}
-
-/**
- * Run `yaac server start` to completion (it exits once the detached server
- * daemon is up and healthy). Rejects only when the binary can't be spawned
- * — yaac isn't installed or isn't on any resolvable PATH.
- */
-export async function runYaacServerStart(
-  cmd: YaacCommand = resolveYaacCommand(null, ['server', 'start']),
-  opts: {
-    /** Resolve the login-shell PATH up front (packaged; see module doc). */
-    hydratePath?: boolean
-    spawnImpl?: SpawnImpl
-    resolvePath?: () => Promise<string | null>
-  } = {},
-): Promise<RunResult> {
-  const spawnImpl = opts.spawnImpl ?? spawn
-  const resolvePath = opts.resolvePath ?? loginShellPath
-  if (opts.hydratePath) {
-    return run(spawnImpl, cmd, await resolvePath() ?? undefined)
-  }
-  try {
-    return await run(spawnImpl, cmd, undefined)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-    const path = await resolvePath()
-    if (!path) throw err
-    return run(spawnImpl, cmd, path)
-  }
-}
-
 /**
  * Ensure the machine-local auth daemon (login broker) runs against `target`,
  * with the invocation and (packaged) login-shell PATH this install shape
  * needs — the daemon's vendor-CLI children (claude/codex/npm/brew) inherit
  * that PATH transitively. Throws on spawn failure; the flow swallows it
  * (best-effort — the SPA's sign-in cards say what to run by hand). No dev
- * ENOENT self-heal like `runYaacServerStart`: dev launches come from a
- * terminal where `yaac` is on PATH.
+ * ENOENT self-heal: dev launches come from a terminal where `yaac` is on
+ * PATH.
  */
 export async function ensureAuthDaemonRunning(opts: {
-  /** The flow's requireBuildMatch:false target (the shell has no build id). */
+  /** The resolved server target the daemon should broker for. */
   target: ServerTarget
   /** resolveYaacCommand(resourcesPath, ['auth', 'server', 'run']). */
   command: YaacCommand
