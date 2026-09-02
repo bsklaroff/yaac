@@ -1,10 +1,10 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Neovim — split out of Dockerfile.default so it can be rebuilt independently
-# (via `yaac project rebuild`) to pick up new upstream releases without
-# re-running the slow apt/Node base build. Needs root to write under
-# /usr/local; the base image ends as USER yaac, so switch back afterward.
+# Neovim — split out of Dockerfile.default so bumping the pinned release
+# re-runs only this layer, not the slow apt/Node base build. Needs root to
+# write under /usr/local; the base image ends as USER yaac, so switch back
+# afterward.
 USER root
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-${ARCH}.tar.gz" | \
@@ -26,12 +26,23 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 USER yaac
 ENV EDITOR=nvim
 
-# Agent CLIs and MCP servers. Split out of Dockerfile.default so they can be
-# rebuilt with `--no-cache` (via `yaac project rebuild`) to pick up new
-# upstream versions (e.g. when Claude Code ships a new release) without
-# re-running the slow apt/Node base build.
+# Agent CLIs and MCP servers. Split out of Dockerfile.default so picking up a
+# new upstream version re-runs only this layer, not the slow apt/Node base
+# build. Editing this file re-tags the layer (toolsContentHash), which is what
+# makes the prewarm sweep build it at all — but the tag is only half of it.
+# Builds have no --no-cache path, deliberately (see builderBuildArgs), and the
+# registry step cache is keyed on step TEXT: a step whose text did not change
+# is replayed from cache and reinstalls exactly what it installed last time.
+# So a pinned step upgrades by bumping its pin, and an unpinned one upgrades
+# only if its text changes too — which is what the dated CLAUDE_CODE_REFRESH /
+# CODEX_REFRESH / PI_REFRESH tokens below are for. None is read by the tool it
+# prefixes; each exists solely to be bumped. Cache invalidation cascades, so
+# bumping one also re-runs every step *below* it: bump the topmost step you
+# want refreshed, and the rest come along.
 RUN npm install -g chrome-devtools-mcp@0.24.0
-RUN npm install -g @openai/codex
+# Codex, deliberately unpinned. Bump the date to pull a newer release (this is
+# the topmost unpinned step, so bumping it refreshes pi and claude too).
+RUN CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
 # opencode-ai pinned to 1.0.142: it is the last release whose TUI renders under
 # gVisor. Starting at 1.0.143 opencode's native @opentui/core renderer blocks on
 # a terminal-capability handshake (pixel-resolution query) that our headless
@@ -41,8 +52,10 @@ RUN npm install -g @openai/codex
 # npm-upgrade itself back off this pin. Revisit when the upstream renderer is
 # fixed under gVisor.
 RUN npm install -g opencode-ai@1.0.142
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# pi, deliberately unpinned. Bump the date to pull a newer release.
+RUN PI_REFRESH=2026-09-02 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Claude Code, deliberately unpinned. Bump the date to pull a newer release.
+RUN CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bash
 # The ACP adapter for Claude — the agent side of yaac's `acp` mode. Speaks
 # JSON-RPC over stdio (Agent Client Protocol) instead of rendering a TUI, so
 # the server drives it directly and the webapp renders structured messages in
