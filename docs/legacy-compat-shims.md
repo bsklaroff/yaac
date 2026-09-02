@@ -310,14 +310,14 @@ absence leaves a dead branch that reads as deliberate.
 
 ## The pre-client-local read fallbacks
 
-`remote.json`, `.auth-daemon.lock` and the `driver` record are CLIENT-LOCAL:
+`server.json`, `.auth-daemon.lock` and the `driver` record are CLIENT-LOCAL:
 they live in `<dataDir>-client`, beside the install rather than inside it,
 because the k8s server is a pod that mounts the data dir and none of the three
 is the server's (docs/server-in-cluster.md). Every install created before that
 tier existed has them INSIDE the data dir, so each reader tries the current
-path and falls back to the old one: `readRemote` (`shared/remote.ts`),
-`readAuthDaemonLock` (`shared/auth-daemon.ts`) and `recordedDriver`
-(`shared/install-driver.ts`).
+path and falls back to the old one: `readServerConfig`
+(`shared/server-config.ts`), `readAuthDaemonLock` (`shared/auth-daemon.ts`)
+and `recordedDriver` (`shared/install-driver.ts`).
 
 **What they read:** `<dataDir>/remote.json`, `<dataDir>/.auth-daemon.lock` and
 `<dataDir>/driver`, written by a client or an installer that predates the
@@ -327,12 +327,12 @@ migrated install cannot be found through a stale one.
 **What breaks silently if they go too early:** each one, differently, and all
 three quietly.
 
-- `remote.json` is how every client reaches an in-cluster server. Lose it and
-  `resolveServerTarget` falls through to the local lock, finds no host server,
-  and reports that none is running — for an install whose server is up and
-  healthy. `readRemote` returns null for an unreadable file exactly as for an
-  absent one, so there is no error to read. The recovery is real (`yaac cluster
-  install` rewrites it) but nothing points at it.
+- `remote.json` is how every client reaches the server. Lose it and
+  `resolveServerTarget` reports that no server is selected — for an install
+  whose server is up and healthy. `readServerConfig` returns null for an
+  unreadable file exactly as for an absent one, so there is no error to read.
+  The recovery is real (`yaac server start` or `yaac cluster install` rewrites
+  it) but nothing points at it.
 - `.auth-daemon.lock` losing its old path means `ensureAuthDaemon` cannot see
   a daemon that is already running, and starts a second one against the same
   server.
@@ -343,10 +343,95 @@ three quietly.
 
 **How to tell it is safe to remove:** every install that could still be read
 has written each file at least once since the split — for `remote.json` and the
-`driver` record that means having run `yaac cluster install` (or, for the
-record under containerless, any server start), and for the daemon lock any
-`yaac auth` flow. There is no version floor recording it, so in practice this
-goes at a release boundary that makes it sayable.
+`driver` record that means having run `yaac server start` or `yaac cluster
+install`, and for the daemon lock any `yaac auth` flow. There is no version
+floor recording it, so in practice this goes at a release boundary that makes
+it sayable. The `remote.json` entry here must outlive the `server.json` rename
+fallback below it, or the chain has a hole in the middle: a pre-split install
+is found only by going `server.json` → client-local `remote.json` → data-dir
+`remote.json`, in that order.
+
+## `remote.json` → `server.json`
+
+The client config was named for the only kind of server it could once point
+at. It now names every server — `yaac server start` registers the host server
+it spawns there, exactly as `yaac cluster install` registers the Deployment —
+so it is `server.json`, and it carries the install's `driver` alongside the
+origin and token.
+
+**What it reads:** `<clientLocalRoot>/remote.json`, tried after
+`server.json` and before the data-dir path above (`readServerConfig`). The
+first `writeServerConfig` moves the content to the new name and deletes both
+old files, so a migrated install cannot be found through a stale one — and a
+live bearer token is never left behind at a path `clearServerConfig` would
+later miss.
+
+**What breaks silently if it goes too early:** a machine that has not written
+since the rename resolves no server at all. Every client then reports "No yaac
+server selected" for a server that is up and healthy, with no error naming the
+file it could not find.
+
+**How to tell it is safe to remove:** every install has written the file once
+since the rename — any `yaac server start`, `yaac cluster install`, or `yaac
+remote set` does it. Remove it only after the data-dir fallback above, never
+before.
+
+## The `driver` record inside `server.json`
+
+Which substrate an install runs used to be its own one-word file, written by
+the server process at boot. It is now a field of `server.json`, written by
+whichever COMMAND stood the server up — so the one write that points this
+machine at a server also says what kind of install it is, and a foreground
+`yaac server run` (which registers nothing) no longer half-records an install.
+
+**What it reads:** `<clientLocalRoot>/driver`, then `<dataDir>/driver`, when
+`server.json` carries no `driver` field (`recordedDriver`, via
+`readLegacyDriverRecord`). The standalone files are not deleted on write —
+nothing reads them once the field exists, and leaving them costs a stale word
+on disk rather than a stale credential.
+
+**What breaks silently if it goes too early:** a k8s install whose
+`server.json` has no `driver` stops being refused a host `yaac server start`.
+That is two writers on one PGlite directory, and a reaper that sees every
+worktree as podless. Nothing reports it; the second server simply comes up.
+
+**How to tell it is safe to remove:** every install has written `server.json`
+once since the change — the same condition as the rename above, and it really
+is the same condition, because `writeServerConfig` folds this file into any
+config that lacks the field. That fold is what makes the claim true for the
+selection writers as well as the registrars: `yaac remote set`, `remote
+on|off` and the desktop's add/switch all go through `withServerSelected`,
+which carries `driver` only from an `existing` config that already had it, so
+without the fold a `remote set`-only upgrade would write a `server.json` that
+outranks this file while saying nothing about the install. Do not remove the
+fold and this entry separately: the fold is what retires the file, and
+deleting the fold first strands every install that has not run `yaac server
+start` or `yaac cluster install` since.
+
+## The `cluster-install` token name
+
+The durable token a machine holds for its own server was minted by `yaac
+cluster install` alone, and named for it. Both substrates mint it now, so it is
+`local-client`, and `mintLocalClientToken` revokes BOTH names before creating
+the new one.
+
+**What it reads:** nothing on disk — it issues `DELETE /tokens/cluster-install`
+against the server being registered.
+
+**When it fires:** only on a re-mint, which means only when the saved token was
+REJECTED or there was none. The common upgrade path never reaches it: an
+upgraded k8s install has a `cluster-install` token saved for the published
+origin, `registerServer` probes it, it still authenticates, and it is reused
+under its old name. So on a healthy install this token is not an orphan at
+all — it is the live, selected credential, and it keeps the name indefinitely.
+
+**What breaks silently if it goes too early:** an install that DID re-mint
+(its old token had been revoked) keeps the old-name entry in its store: a
+durable credential nothing references and no one will think to revoke.
+
+**How to tell it is safe to remove:** no install's `server.json` still holds a
+token minted under that name — which, since the reuse path never renames one,
+is in practice a release boundary rather than something a command reports.
 
 **Order:** the three are independent of each other and may go separately. The
 `driver` fallback is the one to keep longest — it is the only one whose loss

@@ -3,14 +3,15 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { clientLocalPath, ensureClientLocalRoot, serverLocalPath, setDataDir } from '@yaac/shared/paths'
+import { writeServerConfig } from '@yaac/shared/server-config'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 
 /**
  * Placement is the driver (docs/server-in-cluster.md), so these two answer
  * the same question from opposite sides: what a start becomes, and what a
- * start is refused for. Both use a real data dir — the recorded driver is a
- * CLIENT-LOCAL file beside it, and the point of the pair is what happens to
- * that file.
+ * start is refused for. The record itself is written by neither — the
+ * COMMAND that stood the server up writes it into `server.json` — so these
+ * seed it the way `yaac server start` and `yaac cluster install` do.
  */
 let dataDir: string
 
@@ -25,40 +26,46 @@ afterEach(async () => {
   await fs.rm(`${dataDir}-client`, { recursive: true, force: true })
 })
 
-async function recorded(): Promise<string> {
-  return (await fs.readFile(clientLocalPath('driver'), 'utf8')).trim()
+/** Seed the record the way `yaac server start` / `yaac cluster install` do. */
+async function record(kind: 'k8s' | 'containerless'): Promise<void> {
+  await writeServerConfig({
+    url: 'http://127.0.0.1:8787', token: 't', enabled: true, saved: [], driver: kind,
+  })
 }
 
-/** Seed the record the way `yaac cluster install` does. */
-async function record(kind: string): Promise<void> {
+/** Seed it the way an install that predates the move into server.json did. */
+async function recordLegacyFile(kind: string): Promise<void> {
   await ensureClientLocalRoot()
   await fs.writeFile(clientLocalPath('driver'), `${kind}\n`)
 }
 
 describe('resolveDriverKind', () => {
-  it('is containerless for a host process, and records it', async () => {
-    expect(await resolveDriverKind()).toBe('containerless')
-    expect(await recorded()).toBe('containerless')
+  it('is containerless for a host process, and writes nothing', () => {
+    // `yaac server run` may be a foreground server the operator drove
+    // directly, which registers nothing — the record belongs to whichever
+    // COMMAND stood the server up.
+    expect(resolveDriverKind()).toBe('containerless')
   })
 
-  it('is k8s inside the server pod, and leaves the record to the installer', async () => {
+  it('is k8s inside the server pod', () => {
     // YAAC_IN_CLUSTER is set by the server Deployment's manifest and by
     // nothing else, so it IS the question "am I the pod?".
     vi.stubEnv('YAAC_IN_CLUSTER', '1')
-    expect(await resolveDriverKind()).toBe('k8s')
-    // The record is CLIENT-LOCAL and deliberately not mounted into the pod,
-    // so the pod does not write it — `yaac cluster install`, which is what
-    // made this pod exist, wrote it before the Deployment was applied.
-    // Attempting it would only produce a warning on every boot.
-    await expect(fs.access(clientLocalPath('driver'))).rejects.toThrow()
+    expect(resolveDriverKind()).toBe('k8s')
   })
 
-  it('ignores YAAC_DRIVER: a host process cannot elect to be a k8s server', async () => {
+  it('records nothing on either substrate', async () => {
+    expect(resolveDriverKind()).toBe('containerless')
+    await expect(fs.access(clientLocalPath('driver'))).rejects.toThrow()
+    await expect(fs.access(clientLocalPath('server.json'))).rejects.toThrow()
+  })
+
+  it('ignores YAAC_DRIVER: a host process cannot elect to be a k8s server', () => {
     // The whole retired mode in one assertion — there is no host-process k8s
     // server to ask for, so asking for one gets the substrate that placement
     // dictates rather than a second writer of a cluster install's data dir.
     vi.stubEnv('YAAC_DRIVER', 'k8s')
-    expect(await resolveDriverKind()).toBe('containerless')
+    expect(resolveDriverKind()).toBe('containerless')
   })
 })
 
@@ -74,10 +81,22 @@ describe('assertHostServerAllowed', () => {
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
   })
 
-  it('still refuses one recorded by a pre-split install, inside the data dir', async () => {
+  it('still refuses one recorded in the standalone file, at both its paths', async () => {
     // Upgrading must not quietly re-enable the second writer this guard
     // exists to stop — see docs/legacy-compat-shims.md.
     await fs.writeFile(serverLocalPath('driver'), 'k8s\n')
+    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
+    await fs.rm(serverLocalPath('driver'))
+    await recordLegacyFile('k8s')
+    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
+  })
+
+  it('refuses even when the selection points at a server on another machine', async () => {
+    // The driver is a property of THIS data dir, not of whatever origin is
+    // currently selected — so `yaac remote set` cannot unlock a host start.
+    await writeServerConfig({
+      url: 'https://elsewhere.ts.net', token: 't', enabled: true, saved: [], driver: 'k8s',
+    })
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
   })
 

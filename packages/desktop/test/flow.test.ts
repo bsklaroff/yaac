@@ -1,36 +1,28 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ServerTarget } from '@yaac/shared/server-api'
-import type { DriverKind } from '@yaac/shared/types'
 import type { FlowDeps } from '#flow'
 import { buildWebappUrl, runFlow } from '#flow'
 
-const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's', remote: false }
-const REMOTE: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't', remote: true }
+const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
+const REMOTE: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't' }
 
 interface FakeOptions {
   resolve?: Array<ServerTarget | Error>
-  start?: () => Promise<{ code: number | null, stderr: string }>
   ensure?: (target: ServerTarget) => Promise<void>
   mint?: () => Promise<string>
   rendererBaseUrl?: string
-  /** What the data dir records it runs. Undefined is a data dir no server
-   *  has ever started in, which the spawn path has to keep serving. */
-  driver?: DriverKind
 }
 
 function fakeDeps(opts: FakeOptions = {}) {
   const resolutions = [...(opts.resolve ?? [LOCAL])]
   const statuses: string[] = []
-  const start = vi.fn(opts.start ?? (() => Promise.resolve({ code: 0, stderr: '' })))
   const ensure = vi.fn(opts.ensure ?? (() => Promise.resolve()))
   const deps: FlowDeps = {
     resolveTarget: () => {
       const next = resolutions.shift()
-      if (!next) return Promise.reject(new Error('yaac server is not running. Start it with: yaac server start'))
+      if (!next) return Promise.reject(new Error('No yaac server selected.'))
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next)
     },
-    startLocalServer: start,
-    recordedDriver: () => Promise.resolve(opts.driver),
     ensureAuthDaemon: ensure,
     mintToken: opts.mint ?? (() => Promise.resolve('t0ken')),
     onStatus: (text) => {
@@ -38,14 +30,13 @@ function fakeDeps(opts: FakeOptions = {}) {
     },
     rendererBaseUrl: opts.rendererBaseUrl,
   }
-  return { deps, statuses, start, ensure }
+  return { deps, statuses, ensure }
 }
 
 describe('runFlow', () => {
-  it('local happy path: resolve, ensure auth daemon, mint, url — no spawn', async () => {
-    const { deps, statuses, start, ensure } = fakeDeps()
+  it('happy path: resolve, ensure auth daemon, mint, url', async () => {
+    const { deps, statuses, ensure } = fakeDeps()
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
-    expect(start).not.toHaveBeenCalled()
     expect(ensure).toHaveBeenCalledTimes(1)
     expect(ensure).toHaveBeenCalledWith(LOCAL)
     expect(statuses).toEqual([
@@ -54,34 +45,85 @@ describe('runFlow', () => {
       `Opening ${LOCAL.baseUrl}…`,
     ])
   })
-  it('server down: starts it, re-resolves, lands', async () => {
-    const { deps, statuses, ensure } = fakeDeps({
-      resolve: [new Error('yaac server is not running. Start it with: yaac server start'), LOCAL],
-    })
-    expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
-    expect(statuses).toContain('Starting the local yaac server…')
-    // Ensured against the re-resolved target, after the server came up.
-    expect(ensure).toHaveBeenCalledWith(LOCAL)
-  })
-  it('a k8s install is told to converge its cluster, never spawned into', async () => {
-    // Its server is a Deployment, so there is no host process to start —
-    // spawning would at best be a slow no-op and at worst put a second
-    // server on one data dir.
-    const { deps, statuses, start } = fakeDeps({
-      resolve: [new Error('lock held by yaac-server-abc')],
-      driver: 'k8s',
-    })
 
+  it('a server elsewhere takes the identical path', async () => {
+    // Nothing in the flow asks where a server runs: it is an origin and a
+    // token either way.
+    const { deps, ensure } = fakeDeps({ resolve: [REMOTE], mint: () => Promise.resolve('rem0te') })
+    expect(await runFlow(deps)).toEqual({ ok: true, url: `${REMOTE.baseUrl}/?token=rem0te` })
+    expect(ensure).toHaveBeenCalledWith(REMOTE)
+  })
+
+  it('nothing selected → the picker failure, with no server ever contacted', async () => {
+    // The shell starts no server. The page this lands on is the fix, so the
+    // hint sends the user there rather than to a terminal.
+    const { deps, ensure } = fakeDeps({
+      resolve: [new Error(
+        'No yaac server selected.\n'
+        + '    Start one on this machine with `yaac server start`,\n'
+        + '    or point at one with `yaac remote set <url> --token <token>`.',
+      )],
+    })
     const result = await runFlow(deps)
-
-    expect(start).not.toHaveBeenCalled()
-    expect(statuses).not.toContain('Starting the local yaac server…')
-    expect(result.ok).toBe(false)
+    expect(result).toMatchObject({
+      ok: false,
+      error: { title: 'No yaac server selected' },
+    })
     if (result.ok) return
-    // The recovery command, and the resolve error that explains why.
-    expect(result.error.hint).toContain('yaac cluster install')
-    expect(result.error.detail).toContain('lock held by yaac-server-abc')
+    // The heading is not repeated as the first line of the body, but the
+    // commands the resolver names survive, un-indented.
+    expect(result.error.detail).not.toMatch(/^No yaac server selected/)
+    expect(result.error.detail).toMatch(/^Start one on this machine/)
+    expect(result.error.detail).toContain('yaac remote set <url> --token <token>')
+    expect(result.error.hint).toMatch(/Pick a server below/)
+    // Nothing resolved, so there is no target to point the daemon at.
+    expect(ensure).not.toHaveBeenCalled()
   })
+
+  it('keeps an unfamiliar resolver message whole', async () => {
+    const { deps } = fakeDeps({ resolve: [new Error('something else entirely')] })
+    const result = await runFlow(deps)
+    if (result.ok) return
+    expect(result.error.detail).toBe('something else entirely')
+  })
+
+  it('an unreachable server → its own failure, naming the origin', async () => {
+    const { deps } = fakeDeps({
+      mint: () => Promise.reject(new Error('cannot reach the yaac server at http://127.0.0.1:8787')),
+    })
+    const result = await runFlow(deps)
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        title: 'Could not connect to http://127.0.0.1:8787',
+        detail: 'cannot reach the yaac server at http://127.0.0.1:8787',
+      },
+    })
+    // A server on THIS machine: the hint names the command that brings it
+    // back, because the picker is now the whole window for that user.
+    if (!result.ok) {
+      expect(result.error.hint).toContain('yaac server start')
+      expect(result.error.hint).toMatch(/pick a different server/)
+    }
+  })
+
+  it('a rejected token surfaces the client message verbatim', async () => {
+    const { deps } = fakeDeps({
+      resolve: [REMOTE],
+      mint: () => Promise.reject(new Error('the yaac server at https://srv.ts.net rejected the token.')),
+    })
+    const result = await runFlow(deps)
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        title: 'Could not connect to https://srv.ts.net',
+        detail: 'the yaac server at https://srv.ts.net rejected the token.',
+      },
+    })
+    // Nothing to start for a server elsewhere, so no command is named.
+    if (!result.ok) expect(result.error.hint).not.toContain('yaac server start')
+  })
+
   it('a failed auth-daemon ensure never fails the flow', async () => {
     const { deps, ensure } = fakeDeps({
       ensure: () => Promise.reject(new Error('spawn yaac ENOENT')),
@@ -89,59 +131,7 @@ describe('runFlow', () => {
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
     expect(ensure).toHaveBeenCalledTimes(1)
   })
-  it('spawn failure → yaac-CLI-not-found error', async () => {
-    const { deps, ensure } = fakeDeps({
-      resolve: [new Error('not running')],
-      start: () => Promise.reject(new Error('spawn yaac ENOENT')),
-    })
-    const result = await runFlow(deps)
-    expect(result).toMatchObject({
-      ok: false,
-      error: { title: 'yaac CLI not found', detail: 'spawn yaac ENOENT' },
-    })
-    // No target ever resolved — nothing to point the auth daemon at.
-    expect(ensure).not.toHaveBeenCalled()
-  })
-  it('non-zero exit → stderr surfaced verbatim', async () => {
-    const { deps } = fakeDeps({
-      resolve: [new Error('outdated')],
-      start: () => Promise.resolve({ code: 1, stderr: 'Restart it with: yaac server restart' }),
-    })
-    const result = await runFlow(deps)
-    expect(result).toMatchObject({
-      ok: false,
-      error: { title: 'yaac server failed to start', detail: 'Restart it with: yaac server restart' },
-    })
-  })
-  it('started but still unresolvable → not-reachable error', async () => {
-    const { deps, ensure } = fakeDeps({ resolve: [new Error('down'), new Error('still down')] })
-    const result = await runFlow(deps)
-    expect(result).toMatchObject({
-      ok: false,
-      error: { title: 'yaac server did not become reachable', detail: 'still down' },
-    })
-    expect(ensure).not.toHaveBeenCalled()
-  })
-  it('remote target: never spawns, mint failure gets remote-flavored error', async () => {
-    const { deps, start } = fakeDeps({
-      resolve: [REMOTE],
-      mint: () => Promise.reject(new Error('remote server at https://srv.ts.net rejected the token')),
-    })
-    const result = await runFlow(deps)
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        title: 'Could not connect to the remote server',
-        detail: 'remote server at https://srv.ts.net rejected the token',
-      },
-    })
-    expect(start).not.toHaveBeenCalled()
-  })
-  it('remote happy path: the auth daemon is ensured against the remote too', async () => {
-    const { deps, ensure } = fakeDeps({ resolve: [REMOTE], mint: () => Promise.resolve('rem0te') })
-    expect(await runFlow(deps)).toEqual({ ok: true, url: `${REMOTE.baseUrl}/?token=rem0te` })
-    expect(ensure).toHaveBeenCalledWith(REMOTE)
-  })
+
   it('rendererBaseUrl overrides the landing origin (Vite dev), not the target', async () => {
     const { deps, statuses } = fakeDeps({ rendererBaseUrl: 'http://localhost:1420/' })
     // The trailing slash is normalized away before /?token= is appended.
@@ -149,15 +139,6 @@ describe('runFlow', () => {
     // Mint still talked to the real target; only the final URL is overridden.
     expect(statuses).toContain(`Connecting to ${LOCAL.baseUrl}…`)
     expect(statuses).toContain('Opening http://localhost:1420…')
-  })
-  it('local mint failure → local-flavored error with restart hint', async () => {
-    const { deps } = fakeDeps({ mint: () => Promise.reject(new Error('fetch failed')) })
-    const result = await runFlow(deps)
-    expect(result).toMatchObject({
-      ok: false,
-      error: { title: 'Could not connect to the yaac server', detail: 'fetch failed' },
-    })
-    if (!result.ok) expect(result.error.hint).toContain('yaac server restart')
   })
 })
 

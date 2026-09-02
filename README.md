@@ -139,8 +139,7 @@ Launch it with:
 yaac open
 ```
 
-This starts the server if needed and opens your browser straight into the
-authenticated app: a live worktree sidebar, the project list, and an embedded
+This opens your browser straight into the authenticated app: a live worktree sidebar, the project list, and an embedded
 terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
 prints the URL instead of launching a browser.
 
@@ -185,7 +184,7 @@ live for that command; `yaac server restart` only rolls the pods the
 Deployment already describes and will not pick up a new value. Install is
 idempotent — it converges the cluster it already made — and it prints a note
 that the server now requires a credential, plus the durable token it writes
-into `remote.json` so this machine's own CLI keeps reaching it.
+into `server.json` so this machine's own CLI keeps reaching it.
 
 Then, on either:
 
@@ -224,8 +223,9 @@ only the shell) and badges the dock for waiting worktrees. It is not part of
 
 No extra prerequisites beyond the repo's `pnpm install` (the `electron` dev
 dependency downloads its binary on install); dev runs also need the `yaac`
-CLI on PATH for local-server and auth-daemon auto-start. Run it from the repo
-root:
+CLI on PATH for the auth-daemon spawn, and a server already registered on
+this machine (`yaac server start` or `yaac cluster install`) — the shell
+starts none. Run it from the repo root:
 
 ```sh
 pnpm desktop:dev     # tsup-bundle the main process, then launch electron
@@ -249,7 +249,7 @@ and auth flow, packaging internals, and the by-hand verification matrix.
 yaac [command]
 
 Commands:
-  open            Open the web app in your browser (starts the server if needed)
+  open            Open the web app in your browser (against the selected server)
   cluster         Manage the kubernetes cluster yaac runs worktrees on
   project         Manage projects
   worktree        Manage worktrees (a git worktree + its container and agents)
@@ -310,11 +310,11 @@ yaac auth <command>
   server <command>    The login broker that runs Claude/Codex sign-ins on this machine
     run|start|stop|status
 
-yaac remote <command>
-  set <url> --token <t>  Configure and enable a remote server (verifies the token)
-  unset                  Forget the remote (commands target the local server)
-  on | off               Toggle the configured remote without re-entering the token
-  status                 Show the configured remote (masked token)
+yaac remote <command>      Which server this machine's clients talk to
+  set <url> --token <t>  Select a server (verifies the token first)
+  unset                  Forget every configured server
+  on | off               Deselect / reselect without re-entering the token
+  status                 Show the selected server (masked token) and the saved ones
 ```
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the

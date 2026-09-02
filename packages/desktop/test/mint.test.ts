@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import { mintWebToken } from '#mint'
 
-const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 'sekrit', remote: false }
+const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 'sekrit' }
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -44,13 +44,13 @@ describe('mintWebToken', () => {
       mintWebToken({ resolveTarget: () => Promise.resolve(TARGET), fetchImpl }),
     ).rejects.toThrow('fetch failed')
   })
-  it('forces requireBuildMatch off — no build-skew warning even with a build id available', async () => {
+  it('forces the build-skew warning off — the shell has no build identity', async () => {
     // With a build id injected and a remote target reporting a different
     // one, the shared client would warn on stderr; the shell must not
     // (it has no build identity — the id here belongs to no shell code).
     vi.stubEnv('YAAC_BUILD_ID', 'shell-build')
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok' }
     const fetchImpl: typeof globalThis.fetch = () => Promise.resolve(
       new Response(JSON.stringify({ name: 'web-1', token: 't0ken', kind: 'one-time' }), {
         status: 201,

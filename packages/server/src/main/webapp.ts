@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
 import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
-import { startServer } from '#main/lifecycle'
 
 export function buildWebappUrl(baseUrl: string, token: string | null): string {
   return token === null ? `${baseUrl}/` : `${baseUrl}/?token=${token}`
@@ -29,7 +28,6 @@ export interface OpenWebappOptions {
   /** Print the URL instead of launching a browser. */
   noBrowser?: boolean
   // Injected for tests; default to the real implementations.
-  ensureServer?: () => Promise<void>
   resolveTarget?: () => Promise<ServerTarget>
   fetchImpl?: typeof fetch
   launch?: (url: string) => void
@@ -42,25 +40,17 @@ export interface OpenWebappOptions {
  * straight into the authenticated webapp — no log-scraping or
  * token-pasting. The URL is always printed (stdout) so it's scriptable.
  *
- * The local server is auto-started only when resolution fails on the
- * local-lock path; a configured remote (or the test hatch) resolves
- * up front and must never trigger a local server spawn.
+ * Never starts a server. Every server is reached the same way — the origin
+ * and token in `server.json` — so there is no local case to auto-start, and
+ * an unreachable one is reported with the command that fixes it rather than
+ * silently spawned beside whatever is already there.
  */
 export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
-  const ensureServer = opts.ensureServer ?? startServer
   const resolveTarget = opts.resolveTarget ?? resolveServerTarget
   const fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
   const launch = opts.launch ?? openBrowser
 
-  let target: ServerTarget
-  try {
-    target = await resolveTarget()
-  } catch {
-    // Only the local-lock branch throws (server down / build mismatch).
-    // Start it and re-resolve; a second failure surfaces to the user.
-    await ensureServer()
-    target = await resolveTarget()
-  }
+  const target = await resolveTarget()
 
   // Best-effort: the webapp's sign-in cards need the login broker on
   // this machine. Never block or fail `yaac open` on it.

@@ -1,8 +1,5 @@
-import fs from 'node:fs/promises'
-import { clientLocalPath, ensureClientLocalRoot } from '@yaac/shared/paths'
 import { recordedDriver } from '@yaac/shared/install-driver'
 import { env } from '@yaac/shared/env'
-import { serverLog } from '#log'
 import type { DriverKind } from '@yaac/shared/types'
 
 /**
@@ -15,9 +12,13 @@ import type { DriverKind } from '@yaac/shared/types'
  * a start does is *notice* which of the two it is, and write it down.
  *
  * Writing it down is still load-bearing, because the answer outlives the
- * process that gave it. A CLIENT that cannot reach the server has to know
- * whether the fix is `yaac server start` or `yaac cluster install`, and the
- * recorded driver is the only thing on disk that says. Reading it back is
+ * process that gave it: a CLIENT that cannot reach the server has to know
+ * whether the fix is `yaac server start` or `yaac cluster install`. But
+ * this process is not what writes it. The record rides in `server.json`
+ * beside the origin and token, written by whichever COMMAND stood the
+ * server up — `yaac server start` for a host process, `yaac cluster
+ * install` for the Deployment — so the one write that points this machine
+ * at a server also says what kind of install it is. Reading it back is
  * `recordedDriver` in `@yaac/shared`, where the desktop shell can see it.
  *
  * The crossing that USED to need arbitrating here — a start that moved an
@@ -28,43 +29,22 @@ import type { DriverKind } from '@yaac/shared/types'
  */
 
 /**
- * CLIENT-LOCAL: the kind of install this data dir is. A record kept FOR
- * clients — it answers "which command stands this server up", which only
- * something on the user's machine ever needs to act on.
- *
- * Written by whichever side actually stood the server up, and those two
- * sides no longer overlap: this module for a host process (containerless,
- * where the server IS on the user's machine), `yaac cluster install` for
- * the Deployment. The pod never writes it — see `resolveDriverKind`.
- */
-function driverFilePath(): string {
-  return clientLocalPath('driver')
-}
-
-/**
- * The driver this process runs — and, when this process is the one that can
- * say so durably, the record of it for every later reader.
+ * The driver this process runs.
  *
  * `YAAC_IN_CLUSTER` is set by the server Deployment's manifest and by
  * nothing else, so it is exactly the question "am I the pod?" — which is
  * exactly the question "which substrate is this". A host process reaching
- * this point is a containerless server by construction; `assertHostServerAllowed`
- * is what stops one being started against a k8s install in the first place.
+ * this point is a containerless server by construction;
+ * `assertHostServerAllowed` is what stops one being started against a k8s
+ * install in the first place.
+ *
+ * Nothing is written here. The record is CLIENT-LOCAL — not mounted into
+ * the pod by design, and not this process's to keep even on a host, where
+ * `yaac server run` may be a foreground server the operator drove directly.
+ * The command that stood the server up records it (see the module doc).
  */
-export async function resolveDriverKind(): Promise<DriverKind> {
-  // The pod does not record it: the record is CLIENT-LOCAL, which is not
-  // mounted in here by design, and `yaac cluster install` — which is what
-  // made this pod exist at all — wrote the answer before the Deployment
-  // was applied. There is nothing for the pod to add and nowhere to put it.
-  if (env.inCluster) return 'k8s'
-
-  await ensureClientLocalRoot()
-  await fs.writeFile(driverFilePath(), 'containerless\n').catch((err: unknown) => {
-    // Not fatal for this server, but the next client that cannot reach it
-    // loses the one thing that tells it which command to run.
-    serverLog(`[server] driver: could not record the choice: ${String(err)}`)
-  })
-  return 'containerless'
+export function resolveDriverKind(): DriverKind {
+  return env.inCluster ? 'k8s' : 'containerless'
 }
 
 /**

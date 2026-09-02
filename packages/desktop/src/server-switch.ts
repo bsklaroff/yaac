@@ -1,28 +1,33 @@
 /**
- * The shell's server picker: list the machine's attachment targets (local
- * server + every saved remote), switch between them, and add a new remote.
- * All three operate on the shared `~/.yaac-client/remote.json` — switching here is
- * the same machine-wide move as `yaac remote on/off`, so the CLI follows.
+ * The shell's server picker: list the servers this machine has configured,
+ * switch between them, and add a new one. All three operate on the shared
+ * `~/.yaac-client/server.json` — switching here is the same machine-wide
+ * move as `yaac remote set/on`, so the CLI follows.
  *
- * The renderer is web content from the (possibly remote) server origin, so
- * it is only ever shown origins — `ServerTargetsView` and the switch
- * selections carry no tokens — and its IPC payloads are re-validated here
+ * There is no local case. A server on this machine is registered in that
+ * file by `yaac server start` (or `yaac cluster install`) exactly as one
+ * elsewhere is by `yaac remote set`, so the picker's rows are origins all
+ * the way down.
+ *
+ * The renderer is web content from the server origin, so it is only ever
+ * shown origins — `DesktopServerTargets` and the selections carry no
+ * tokens — and its IPC payloads are re-validated here
  * (`parseServerSelection`). Deps are injected so every branch unit-tests
  * without fs or network.
  */
-import type { RemoteConfig } from '@yaac/shared/remote'
+import type { ServerConfig } from '@yaac/shared/server-config'
 import type { DesktopServerOutcome, DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/types'
 
 export interface ServerSwitchDeps {
-  /** @yaac/shared readRemote — null when no remote has ever been configured. */
-  readRemote(): Promise<RemoteConfig | null>
-  /** @yaac/shared writeRemote. */
-  writeRemote(cfg: RemoteConfig): Promise<void>
-  /** @yaac/shared withRemoteActivated. */
-  activate(existing: RemoteConfig | null, url: string, token: string): RemoteConfig
-  /** @yaac/shared probeRemote — throws a prescriptive error on any failure. */
-  probeRemote(origin: string, token: string): Promise<unknown>
-  /** @yaac/shared normalizeRemoteUrl — throws on a non-origin URL. */
+  /** @yaac/shared readServerConfig — null when nothing has ever been configured. */
+  readServerConfig(): Promise<ServerConfig | null>
+  /** @yaac/shared writeServerConfig. */
+  writeServerConfig(cfg: ServerConfig): Promise<void>
+  /** @yaac/shared withServerSelected. */
+  select(existing: ServerConfig | null, url: string, token: string): ServerConfig
+  /** @yaac/shared probeServer — throws a prescriptive error on any failure. */
+  probeServer(origin: string, token: string): Promise<unknown>
+  /** @yaac/shared normalizeServerUrl — throws on a non-origin URL. */
   normalizeUrl(raw: string): string
 }
 
@@ -30,48 +35,44 @@ export interface ServerSwitchDeps {
 export function parseServerSelection(raw: unknown): DesktopServerSelection | null {
   if (!raw || typeof raw !== 'object') return null
   const sel = raw as Record<string, unknown>
-  if (sel.kind === 'local') return { kind: 'local' }
-  if (sel.kind === 'remote' && typeof sel.url === 'string') return { kind: 'remote', url: sel.url }
-  return null
+  return typeof sel.url === 'string' && sel.url !== '' ? { url: sel.url } : null
 }
 
 export async function getServerTargets(deps: ServerSwitchDeps): Promise<DesktopServerTargets> {
-  const cfg = await deps.readRemote()
+  const cfg = await deps.readServerConfig()
   return {
-    current: cfg?.enabled ? { kind: 'remote', url: cfg.url } : { kind: 'local' },
+    current: cfg?.enabled && cfg.url !== '' ? cfg.url : null,
     saved: cfg?.saved.map((s) => s.url) ?? [],
   }
 }
 
 /**
- * Point the machine's attachment at `sel`. A remote is re-probed with its
- * saved token before the config flips, so a dead server or revoked token
- * surfaces as an inline error and the shell stays where it is. `changed:
- * false` means the selection was already current (no reland needed).
+ * Point the machine at `sel`. The server is re-probed with its saved token
+ * before the config is written, so a dead server or revoked token surfaces
+ * as an inline error and the shell stays where it is.
+ *
+ * The already-selected server is probed and re-selected like any other,
+ * rather than short-circuited: from the disconnected page, Connect on the
+ * selected-but-unreachable row IS the retry, and answering "no change" to
+ * it would leave the window sitting on the failure forever.
  */
 export async function applyServerSwitch(
   sel: DesktopServerSelection,
   deps: ServerSwitchDeps,
 ): Promise<DesktopServerOutcome> {
-  const cfg = await deps.readRemote()
-  if (sel.kind === 'local') {
-    if (!cfg?.enabled) return { ok: true, changed: false }
-    await deps.writeRemote({ ...cfg, enabled: false })
-    return { ok: true, changed: true }
-  }
-  if (cfg?.enabled && cfg.url === sel.url) return { ok: true, changed: false }
+  const cfg = await deps.readServerConfig()
   const saved = cfg?.saved.find((s) => s.url === sel.url)
-  if (!saved) return { ok: false, error: `unknown remote: ${sel.url}` }
+  if (!saved) return { ok: false, error: `unknown server: ${sel.url}` }
   try {
-    await deps.probeRemote(saved.url, saved.token)
+    await deps.probeServer(saved.url, saved.token)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  await deps.writeRemote(deps.activate(cfg, saved.url, saved.token))
-  return { ok: true, changed: true }
+  await deps.writeServerConfig(deps.select(cfg, saved.url, saved.token))
+  return { ok: true }
 }
 
-/** Validate, probe, and activate a brand-new remote (the desktop `yaac remote set`). */
+/** Validate, probe, and select a brand-new server (the desktop `yaac remote set`). */
 export async function addServerRemote(
   rawUrl: string,
   token: string,
@@ -84,10 +85,10 @@ export async function addServerRemote(
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
   try {
-    await deps.probeRemote(origin, token)
+    await deps.probeServer(origin, token)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  await deps.writeRemote(deps.activate(await deps.readRemote(), origin, token))
-  return { ok: true, changed: true }
+  await deps.writeServerConfig(deps.select(await deps.readServerConfig(), origin, token))
+  return { ok: true }
 }

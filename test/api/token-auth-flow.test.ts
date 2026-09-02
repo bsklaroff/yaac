@@ -68,7 +68,7 @@ describe('durable token auth flow (real server)', () => {
     // List (via the token itself) masks the value. Alongside it sits the
     // one-time entry the server's start banner minted, and the install's own
     // durable token — every install has one, because that is what points a
-    // client at the server (here, the fixture's `remote.json`).
+    // client at the server (here, the fixture's `server.json`).
     const list = await fetch(url('/tokens'), {
       headers: { authorization: `Bearer ${entry.token}` },
     })

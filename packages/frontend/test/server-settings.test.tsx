@@ -16,8 +16,8 @@ function installBridge(targets: DesktopServerTargets): YaacServerBridge & {
 } {
   const bridge = {
     targets: vi.fn().mockResolvedValue(targets),
-    switchTo: vi.fn().mockResolvedValue({ ok: true, changed: true }),
-    addRemote: vi.fn().mockResolvedValue({ ok: true, changed: true }),
+    switchTo: vi.fn().mockResolvedValue({ ok: true }),
+    addRemote: vi.fn().mockResolvedValue({ ok: true }),
   }
   ;(window as unknown as { yaacServer?: unknown }).yaacServer = bridge
   return bridge
@@ -26,36 +26,53 @@ function installBridge(targets: DesktopServerTargets): YaacServerBridge & {
 describe('serverBridge', () => {
   it('returns the preload bridge when present, undefined otherwise', () => {
     expect(serverBridge()).toBeUndefined()
-    const bridge = installBridge({ current: { kind: 'local' }, saved: [] })
+    const bridge = installBridge({ current: null, saved: [] })
     expect(serverBridge()).toBe(bridge)
   })
 })
 
 describe('ServerSettings', () => {
-  it('lists local + saved remotes and marks the current target', async () => {
+  it('lists the saved origins and marks the selected one — no local row', async () => {
     installBridge({
-      current: { kind: 'remote', url: 'https://a.ts.net' },
+      current: 'https://a.ts.net',
       saved: ['https://a.ts.net', 'https://b.ts.net'],
     })
     render(<ServerSettings />)
     await waitFor(() => expect(screen.getByText('https://b.ts.net')).toBeTruthy())
-    expect(screen.getByText('Local server')).toBeTruthy()
+    // A server on this machine appears as its own origin like any other,
+    // registered by `yaac server start`; there is nothing else to pick.
+    expect(screen.queryByText('Local server')).toBeNull()
     const currentRow = screen.getByText('https://a.ts.net').closest('div')!
     expect(currentRow.textContent).toContain('Connected')
   })
 
-  it('switching to a saved remote goes through the bridge', async () => {
-    const bridge = installBridge({ current: { kind: 'local' }, saved: ['https://a.ts.net'] })
+  it('says so when nothing is configured', async () => {
+    installBridge({ current: null, saved: [] })
+    render(<ServerSettings />)
+    await waitFor(() => expect(screen.getByText('No servers configured yet.')).toBeTruthy())
+  })
+
+  it('offers Connect on every row when nothing is selected', async () => {
+    installBridge({ current: null, saved: ['https://a.ts.net'] })
+    render(<ServerSettings />)
+    await waitFor(() => expect(screen.getByText('https://a.ts.net')).toBeTruthy())
+    const row = screen.getByText('https://a.ts.net').closest('div')!
+    expect(row.textContent).not.toContain('Connected')
+    expect(row.querySelector('button')).toBeTruthy()
+  })
+
+  it('switching to a saved server goes through the bridge', async () => {
+    const bridge = installBridge({ current: null, saved: ['https://a.ts.net'] })
     render(<ServerSettings />)
     await waitFor(() => expect(screen.getByText('https://a.ts.net')).toBeTruthy())
     const row = screen.getByText('https://a.ts.net').closest('div')!
     fireEvent.click(row.querySelector('button')!)
-    await waitFor(() => expect(bridge.switchTo).toHaveBeenCalledWith({ kind: 'remote', url: 'https://a.ts.net' }))
+    await waitFor(() => expect(bridge.switchTo).toHaveBeenCalledWith({ url: 'https://a.ts.net' }))
     await waitFor(() => expect(screen.getByText('Reconnecting…')).toBeTruthy())
   })
 
   it('surfaces a failed switch inline and stays put', async () => {
-    const bridge = installBridge({ current: { kind: 'local' }, saved: ['https://a.ts.net'] })
+    const bridge = installBridge({ current: null, saved: ['https://a.ts.net'] })
     bridge.switchTo.mockResolvedValue({ ok: false, error: 'cannot reach https://a.ts.net' })
     render(<ServerSettings />)
     await waitFor(() => expect(screen.getByText('https://a.ts.net')).toBeTruthy())
@@ -64,10 +81,10 @@ describe('ServerSettings', () => {
     expect(screen.queryByText('Reconnecting…')).toBeNull()
   })
 
-  it('adds a new remote via the form', async () => {
-    const bridge = installBridge({ current: { kind: 'local' }, saved: [] })
+  it('adds a new server via the form', async () => {
+    const bridge = installBridge({ current: null, saved: [] })
     render(<ServerSettings />)
-    await waitFor(() => expect(screen.getByText('Local server')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('No servers configured yet.')).toBeTruthy())
     fireEvent.change(screen.getByPlaceholderText('https://host.ts.net'), {
       target: { value: 'https://new.ts.net' },
     })
@@ -78,10 +95,10 @@ describe('ServerSettings', () => {
   })
 
   it('surfaces a rejected add (bad token) inline', async () => {
-    const bridge = installBridge({ current: { kind: 'local' }, saved: [] })
+    const bridge = installBridge({ current: null, saved: [] })
     bridge.addRemote.mockResolvedValue({ ok: false, error: 'token rejected by https://new.ts.net' })
     render(<ServerSettings />)
-    await waitFor(() => expect(screen.getByText('Local server')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('No servers configured yet.')).toBeTruthy())
     fireEvent.change(screen.getByPlaceholderText('https://host.ts.net'), {
       target: { value: 'https://new.ts.net' },
     })

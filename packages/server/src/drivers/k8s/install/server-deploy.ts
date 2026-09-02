@@ -7,7 +7,7 @@
  * one host filesystem. Everything that puts it there lives here: its image,
  * its RBAC, its Deployment and Service, the ingress policy that is the only
  * thing between an untrusted worktree pod and an unauthenticated API, and
- * the `remote.json` that points every client at the published origin.
+ * the `server.json` that points every client at the published origin.
  *
  * Install-only, like the rest of this folder. The server never applies its
  * own Deployment — a workload that rolls itself is a workload that can roll
@@ -51,10 +51,10 @@ import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 // resolves inside the pod exactly as it did on the host. Phase 3 is where
 // the tiers become separate volumes and this becomes three mounts.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { clientLocalPath, ensureClientLocalRoot, getDataDir } from '@yaac/shared/paths'
+import { getDataDir } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
-import { readRemote, writeRemote, withRemoteActivated } from '@yaac/shared/remote'
+import { registerServer } from '@yaac/shared/server-config'
 import { resolveServerPort } from '@yaac/shared/server-port'
 import { env, testEnv } from '@yaac/shared/env'
 
@@ -568,87 +568,27 @@ function isLoopbackOnlyInstall(): boolean {
   return env.allowedHosts.length === 0 && !env.trustProxy && !env.requireAuth
 }
 
-/** Name of the durable token `yaac cluster install` keeps for this machine. */
-export const INSTALL_TOKEN_NAME = 'cluster-install'
-
 /**
- * Point every client on this machine at the published origin.
+ * Point every client on this machine at the published origin, and record
+ * that this install runs its server in the cluster.
  *
- * `remote.json` is already the shape an off-machine server needs (origin +
- * durable token) and already outranks the lock file in
- * `resolveServerTarget`, so writing one is the whole of "the CLI, the
- * desktop app and the auth daemon find the in-cluster server".
- *
- * The token is minted rather than left empty even though a purely-local
- * install needs none. `isCredentialOptional` keys on CONFIGURATION, not on
- * the bind address, so an install that sets `YAAC_ALLOWED_HOSTS` (or
- * inherits one from the shell that ran the install) has the gate on — and
- * an empty token there locks this machine's own CLI out of the server it
- * just deployed. Minting always costs one request and makes the file
- * correct under either posture.
+ * One call, because the two facts are one fact: the file that says where
+ * the server is also says what kind of install put it there, so a client
+ * that cannot reach it knows to converge rather than to spawn. The
+ * registration itself is `@yaac/shared`'s and is shared with `yaac server
+ * start` — an install is not special, it just happens to stand up a
+ * Deployment instead of a process (docs/server-in-cluster.md).
  */
 export async function writeServerRemote(
-  token?: string,
   log: (message: string) => void = () => { /* quiet by default */ },
 ): Promise<void> {
-  const origin = serverPublishedOrigin()
-  const resolved = token ?? await mintInstallToken(origin)
-  // An empty token is right on the loopback install, where nothing checks
-  // it. On a credential-REQUIRING one it is the lockout the note above
-  // promised would not happen — and that note is printed before the mint,
-  // so without this the promise is simply false and nothing says so.
-  if (resolved === '' && !isLoopbackOnlyInstall()) {
-    log(
-      'WARNING: could not mint a durable token for this machine, and this '
-      + 'server REQUIRES a credential — so the CLI here cannot reach it. '
-      + 'Mint one against the server and configure it by hand: `yaac auth '
-      + `token create <name>\`, then \`yaac remote set ${origin} --token <token>\`.`,
-    )
-  }
-  await writeRemote(withRemoteActivated(await readRemote(), origin, resolved))
-}
-
-/**
- * A durable token for this machine, authenticated with the lock secret.
- *
- * The bootstrap works because the lock is on the shared data dir: the
- * server writes it into the hostPath the pod mounts, so the host can read
- * the per-boot secret that authenticates as the server itself. That is the
- * same secret a host-process install's CLI has always used — the only
- * difference is that it now buys a DURABLE token, because a pod restart
- * rotates the secret and `remote.json` has to outlive that.
- *
- * Revoke-then-create: the full token value only ever leaves the server at
- * creation, so a re-install cannot recover the one it minted last time and
- * replaces it instead. Failures degrade to an empty token, which is exactly
- * right on the local install where nothing checks it.
- *
- * `origin` is a parameter rather than `serverPublishedOrigin()` because the
- * e2e fixture stands in for install against a server published at its own
- * forward, and a token minted through the wrong origin is no token at all.
- */
-export async function mintInstallToken(origin: string): Promise<string> {
-  const lock = await readLock()
-  if (!lock) return ''
-  const auth = { authorization: `Bearer ${lock.secret}` }
-  try {
-    await fetch(`${origin}/tokens/${INSTALL_TOKEN_NAME}`, {
-      method: 'DELETE',
-      headers: auth,
-      signal: AbortSignal.timeout(10_000),
-    })
-    const res = await fetch(`${origin}/tokens`, {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ name: INSTALL_TOKEN_NAME }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return ''
-    const entry = await res.json() as { token?: string }
-    return entry.token ?? ''
-  } catch {
-    return ''
-  }
+  await registerServer(serverPublishedOrigin(), 'k8s', {
+    log,
+    // An empty token is right on the loopback install, where nothing
+    // checks it. On a credential-REQUIRING one it is a lockout, and the
+    // note printed before this promised it would not happen.
+    credentialRequired: !isLoopbackOnlyInstall(),
+  })
 }
 
 /**
@@ -680,19 +620,16 @@ export async function deployServerWorkload(
     opts.log(
       'note: this server will REQUIRE a credential — YAAC_ALLOWED_HOSTS / '
       + 'YAAC_TRUST_PROXY is set in this environment and the Deployment '
-      + 'carries it. remote.json below gets a durable token so the CLI on '
+      + 'carries it. server.json below gets a durable token so the CLI on '
       + 'this machine keeps working — and this install says so plainly if '
       + 'that mint fails. Unset them and re-install if it was not intended '
       + '(docs/remote-hosting.md).',
     )
   }
-  await writeServerRemote(undefined, opts.log)
-  // The recorded driver stops being a per-start decision here and becomes
-  // the kind of install this data dir IS, so a later `yaac server start`
-  // from an ordinary shell finds the Deployment instead of spawning a
-  // second server beside it.
-  await ensureClientLocalRoot()
-  await fs.writeFile(clientLocalPath('driver'), 'k8s\n')
+  // Also records that this data dir IS a k8s install, so a later `yaac
+  // server start` from an ordinary shell finds the Deployment instead of
+  // spawning a second server beside it.
+  await writeServerRemote(opts.log)
   return serverPublishedOrigin()
 }
 
@@ -713,7 +650,7 @@ export async function deployServerWorkload(
  *  - `waitForPublishedServer` probes `127.0.0.1:<port>`, and on a cluster
  *    predating the port mapping that is answered by the OLD HOST SERVER.
  *    Install then reports success and mints a token against it, writing a
- *    `remote.json` that points every client at the process it was meant to
+ *    `server.json` that points every client at the process it was meant to
  *    replace — a green banner over a permanent dual-writer.
  *
  * The check belongs here because here is where it still works: install

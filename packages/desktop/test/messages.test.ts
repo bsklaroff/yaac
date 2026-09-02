@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorBoxText, splashHtml, splashUrl } from '#messages'
+import { splashHtml, splashUrl } from '#messages'
 
 describe('splashHtml', () => {
   it('embeds the status text', () => {
@@ -20,12 +20,3 @@ describe('splashUrl', () => {
   })
 })
 
-describe('errorBoxText', () => {
-  it('joins detail and hint with a blank line', () => {
-    expect(errorBoxText({ title: 't', detail: 'exit 1', hint: 'relaunch' })).toBe('exit 1\n\nrelaunch')
-  })
-  it('omits absent parts', () => {
-    expect(errorBoxText({ title: 't', hint: 'relaunch' })).toBe('relaunch')
-    expect(errorBoxText({ title: 't' })).toBe('')
-  })
-})

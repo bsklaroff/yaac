@@ -12,8 +12,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot, WorktreeListEntry } from '@yaac/shared/types'
 
-const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's', remote: false }
-const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't', remote: true }
+const LOCAL: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's' }
+const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't' }
 
 function worktree(worktreeId: string, ports: Array<[number, number]>): WorktreeListEntry {
   return {

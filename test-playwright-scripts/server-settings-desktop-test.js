@@ -2,11 +2,13 @@
  * Verifies the desktop-only "Server" settings section (ServerSettings.tsx):
  * (1) with no `window.yaacServer` bridge (plain browser) the Server entry is
  * absent from the settings nav; (2) with a bridge injected pre-load (standing
- * in for the Electron preload) the section appears, lists the local server +
- * saved remotes with the current one marked Connected, Connect routes the
- * right selection through `switchTo` and shows "Reconnecting…", a failing
- * switch renders its error inline, and the add-remote form passes url+token
- * to `addRemote`. Drives the running yaac server's webapp in real Chromium.
+ * in for the Electron preload) the section appears, lists every configured
+ * server as an origin with the current one marked Connected — there is no
+ * "local server" row, since a server on this machine is registered like any
+ * other (docs/server-selection.md) — Connect routes the right selection
+ * through `switchTo` and shows "Reconnecting…", a failing switch renders its
+ * error inline, and the add form passes url+token to `addRemote`. Drives the
+ * running yaac server's webapp in real Chromium.
  *
  * Run: node test-playwright-scripts/server-settings-desktop-test.js
  * Needs a running server (`yaac server start` / `pnpm watch`).
@@ -91,18 +93,18 @@ async function main() {
     window.__bridgeCalls = []
     window.yaacServer = {
       targets: () => Promise.resolve({
-        current: { kind: 'remote', url: 'https://alpha.ts.net' },
-        saved: ['https://alpha.ts.net', 'https://beta.ts.net'],
+        current: 'https://alpha.ts.net',
+        saved: ['https://alpha.ts.net', 'https://beta.ts.net', 'http://127.0.0.1:8787'],
       }),
       switchTo: (sel) => {
         window.__bridgeCalls.push(['switchTo', sel])
-        return sel.kind === 'local'
-          ? Promise.resolve({ ok: false, error: 'cannot reach local server (scripted failure)' })
-          : Promise.resolve({ ok: true, changed: true })
+        return sel.url === 'http://127.0.0.1:8787'
+          ? Promise.resolve({ ok: false, error: 'cannot reach http://127.0.0.1:8787 (scripted failure)' })
+          : Promise.resolve({ ok: true })
       },
       addRemote: (url, tok) => {
         window.__bridgeCalls.push(['addRemote', url, tok])
-        return Promise.resolve({ ok: true, changed: true })
+        return Promise.resolve({ ok: true })
       },
     }
   })
@@ -113,17 +115,19 @@ async function main() {
   const serverNav = page.locator('button', { hasText: 'Server' }).first()
   check(await serverNav.isVisible(), 'desktop settings nav shows Server entry')
   await serverNav.click()
-  await page.getByText('Add a remote server').waitFor()
+  await page.getByText('Add a server').waitFor()
 
   const alphaRow = page.locator('div', { hasText: 'https://alpha.ts.net' }).last()
-  check((await alphaRow.textContent()).includes('Connected'), 'current remote marked Connected')
-  check(await page.getByText('Local server').isVisible(), 'Local server row listed')
-  check(await page.getByText('https://beta.ts.net').isVisible(), 'other saved remote listed')
+  check((await alphaRow.textContent()).includes('Connected'), 'current server marked Connected')
+  check(!(await page.getByText('Local server').count()), 'no "Local server" row')
+  check(await page.getByText('https://beta.ts.net').isVisible(), 'other saved server listed')
+  // A server on this machine is a row like any other, named by its origin.
+  check(await page.getByText('http://127.0.0.1:8787').isVisible(), 'loopback server listed as an origin')
   await page.screenshot({ path: path.join(SHOTS, 'server-settings-desktop.png') })
 
-  // A failing switch (scripted for kind:local) renders inline, no reconnect.
-  await page.locator('div', { hasText: 'Local server' }).last().locator('button').click()
-  await page.getByText('cannot reach local server (scripted failure)').waitFor()
+  // A failing switch renders inline, no reconnect.
+  await page.locator('div', { hasText: 'http://127.0.0.1:8787' }).last().locator('button').click()
+  await page.getByText('cannot reach http://127.0.0.1:8787 (scripted failure)').waitFor()
   check(true, 'failed switch shows inline error')
   await page.screenshot({ path: path.join(SHOTS, 'server-settings-switch-error.png') })
 
@@ -134,8 +138,8 @@ async function main() {
 
   const calls = await page.evaluate(() => window.__bridgeCalls)
   check(
-    JSON.stringify(calls[0]) === JSON.stringify(['switchTo', { kind: 'local' }])
-      && JSON.stringify(calls[1]) === JSON.stringify(['switchTo', { kind: 'remote', url: 'https://beta.ts.net' }]),
+    JSON.stringify(calls[0]) === JSON.stringify(['switchTo', { url: 'http://127.0.0.1:8787' }])
+      && JSON.stringify(calls[1]) === JSON.stringify(['switchTo', { url: 'https://beta.ts.net' }]),
     `switchTo received the clicked selections (got ${JSON.stringify(calls)})`,
   )
 

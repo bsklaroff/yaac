@@ -79,15 +79,14 @@ function rejectClusterArgs(command: 'install' | 'delete', options: ClusterInstal
  */
 async function runningServerDriver(): Promise<string | undefined> {
   try {
-    // Resolved the way every other command resolves it, rather than
-    // rebuilt from the lock's port: a lock written by the IN-CLUSTER server
-    // carries the port it binds inside its pod, and `127.0.0.1:<that>` on
-    // this machine is some other listener entirely — quite possibly another
-    // yaac. `resolveServerTarget` prefers `remote.json`, which is what
-    // `yaac cluster install` points at the published origin, and falls back
-    // to the lock only where the lock is this host's.
+    // Resolved the way every other command resolves it: the registered
+    // origin in `server.json`, which `yaac server start` and `yaac cluster
+    // install` write. Never rebuilt from the lock's port — a lock written by
+    // the IN-CLUSTER server carries the port it binds inside its pod, and
+    // `127.0.0.1:<that>` on this machine is some other listener entirely,
+    // quite possibly another yaac.
     const { resolveServerTarget } = await import('@yaac/shared/server-api')
-    const target = await resolveServerTarget({ requireBuildMatch: false })
+    const target = await resolveServerTarget()
     const res = await fetch(`${target.baseUrl}/health`, {
       signal: AbortSignal.timeout(2_000),
     })
@@ -279,7 +278,7 @@ server
 
 program
   .command('open')
-  .description('Open the webapp in your browser (starts the server if needed)')
+  .description('Open the webapp in your browser (against the selected server)')
   .option('--no-browser', 'Print the authenticated URL instead of launching a browser')
   .action(async (options: { browser?: boolean }) => {
     const { openWebapp } = await import('@yaac/server/main/webapp')

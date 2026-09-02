@@ -10,19 +10,18 @@ import {
 } from '@yaac/test-utils/cli'
 
 /**
- * Durable tokens and the remote path that consumes them, against one
- * shared server.
+ * Durable tokens and the server-selection commands that consume them,
+ * against one shared server.
  *
- * The remote path needs no second machine: `yaac remote set` points at
- * the spawned server's own loopback origin, authenticated by a durable
- * token instead of the lock secret. The Host header the CLI sends is
- * loopback, which the host check allows unconditionally, so this is the
- * full remote code path minus the network in between — which is also why
- * the two halves share a fixture: the tokens minted below are the ones
- * the remote cases authenticate with.
+ * This needs no second machine: `yaac remote set` points at the spawned
+ * server's own loopback origin, and the code path is identical to one
+ * across the network — every server is an origin plus a durable token, so
+ * there is no separate "local" path to miss. The two halves share a
+ * fixture because the tokens minted below are the ones the selection cases
+ * authenticate with.
  *
  * Every test shares one data dir, so state-sensitive ones reset first
- * (see `resetRemote`) and each mints its token under a distinct name.
+ * (see `resetSelection`) and each mints its token under a distinct name.
  */
 describe('yaac auth token + remote (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
@@ -48,14 +47,28 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
     return `http://127.0.0.1:${server.lock.port}`
   }
 
+  function configPath(): string {
+    return path.join(`${testEnv.dataDir}-client`, 'server.json')
+  }
+
   /**
-   * Drop any remote the previous test configured. Without this a live
-   * remote would route the next test's own `auth token create` through
-   * the remote path instead of the local lock, and the "persists
-   * nothing" assertions would see a leftover origin.
+   * Put the machine back to "pointed at the running server".
+   *
+   * Not `remote unset`: with no server selected NOTHING reaches the
+   * server, not even the `auth token create` the next test starts with —
+   * that is the point of the model, since a client has no lock to fall
+   * back to. And not a restored copy of the file either: a test that
+   * re-registers rotates the durable token, which would leave a snapshot
+   * holding a revoked one. `yaac server start` re-derives it, reusing the
+   * saved token when it still works.
    */
-  async function resetRemote(): Promise<void> {
-    await runYaac(testEnv.env, 'remote', 'unset')
+  async function resetSelection(): Promise<void> {
+    for (const legacy of ['remote.json']) {
+      await fs.rm(path.join(testEnv.dataDir, legacy), { force: true })
+      await fs.rm(path.join(`${testEnv.dataDir}-client`, legacy), { force: true })
+    }
+    const res = await runYaac(testEnv.env, 'server', 'start')
+    expect(res.exitCode, res.stderr).toBe(0)
   }
 
   describe('yaac auth token', () => {
@@ -76,12 +89,13 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(revoke.exitCode, revoke.stderr).toBe(0)
       expect(revoke.stdout).toMatch(/Revoked token 'laptop'/)
 
-      // The start banner always mints a one-time exchange token, so the
-      // list is never empty — assert the durable token is gone instead.
+      // The list is never empty: the start banner mints a one-time exchange
+      // token, and this machine's own `local-client` token is what points it
+      // at the server. Assert the revoked one is gone, not that none remain.
       const empty = await runYaac(testEnv.env, 'auth', 'token', 'list')
       expect(empty.exitCode).toBe(0)
       expect(empty.stdout).not.toContain('laptop')
-      expect(empty.stdout).not.toMatch(/durable/)
+      expect(empty.stdout).toContain('local-client')
     })
 
     it('duplicate create fails with the conflict message', async () => {
@@ -105,36 +119,65 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
   })
 
   describe('yaac remote', () => {
-    it('set → commands run via the token; revoke kills them while the lock stays live', async () => {
-      await resetRemote()
+    it('set → commands run via the token; revoking it breaks them, live lock or not', async () => {
+      await resetSelection()
       const token = await mintToken('remote-laptop')
 
       const set = await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', token)
       expect(set.exitCode, set.stderr).toBe(0)
-      expect(set.stdout).toMatch(/Remote set and enabled/)
+      expect(set.stdout).toMatch(/Server selected/)
 
       const list = await runYaac(testEnv.env, 'project', 'list')
       expect(list.exitCode, list.stderr).toBe(0)
 
-      // Revoking the token breaks the remote path even though the local
-      // lock is still live — proof the remote (not the lock) served it.
+      // Revoking the token breaks every command even though the server is
+      // up and its lock is live on this very machine: a client has no lock
+      // to fall back to, and the message says how to fix it either way.
       const revoke = await runYaac(testEnv.env, 'auth', 'token', 'revoke', 'remote-laptop')
       expect(revoke.exitCode, revoke.stderr).toBe(0)
 
       const broken = await runYaac(testEnv.env, 'project', 'list')
       expect(broken.exitCode).toBe(1)
       expect(broken.stderr).toMatch(/rejected the token/)
+      expect(broken.stderr).toMatch(/yaac server start/)
       expect(broken.stderr).toMatch(/yaac remote set/)
 
-      // remote off → falls back to the local lock and works again.
-      const off = await runYaac(testEnv.env, 'remote', 'off')
-      expect(off.exitCode, off.stderr).toBe(0)
-      const viaLock = await runYaac(testEnv.env, 'project', 'list')
-      expect(viaLock.exitCode, viaLock.stderr).toBe(0)
+      await resetSelection()
+      expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
+    })
+
+    it('`yaac server start` registers the server it finds already running', async () => {
+      // The fixture spawned `yaac server run`, which registers nothing —
+      // exactly like an operator running one in the foreground. `start` is
+      // what points this machine at it, on the already-running path too.
+      await resetSelection()
+      await fs.rm(configPath(), { force: true })
+      const orphaned = await runYaac(testEnv.env, 'project', 'list')
+      expect(orphaned.exitCode).toBe(1)
+      expect(orphaned.stderr).toMatch(/No yaac server selected/)
+
+      const start = await runYaac(testEnv.env, 'server', 'start')
+      expect(start.exitCode, start.stderr).toBe(0)
+      expect(start.stderr).toMatch(/already running/)
+
+      const status = await runYaac(testEnv.env, 'remote', 'status')
+      expect(status.stdout).toContain(origin())
+      expect(status.stdout).toMatch(/selected\s+yes/)
+      // A durable token under the shared name, not the per-boot lock secret.
+      expect((await runYaac(testEnv.env, 'auth', 'token', 'list')).stdout)
+        .toContain('local-client')
+      expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
+
+      // And it is reused rather than rotated on the next start.
+      const before = await fs.readFile(configPath(), 'utf8')
+      expect((await runYaac(testEnv.env, 'server', 'start')).exitCode).toBe(0)
+      expect(await fs.readFile(configPath(), 'utf8')).toBe(before)
+
+      await resetSelection()
     })
 
     it('status shows the masked token; unset forgets it', async () => {
-      await resetRemote()
+      await resetSelection()
       const token = await mintToken('phone')
       const set = await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', token)
       expect(set.exitCode, set.stderr).toBe(0)
@@ -144,77 +187,106 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(status.stdout).toContain(origin())
       expect(status.stdout).toContain(`${token.slice(0, 8)}…`)
       expect(status.stdout).not.toContain(token)
-      expect(status.stdout).toMatch(/enabled\s+yes/)
+      expect(status.stdout).toMatch(/selected\s+yes/)
 
       const unset = await runYaac(testEnv.env, 'remote', 'unset')
       expect(unset.exitCode).toBe(0)
       const after = await runYaac(testEnv.env, 'remote', 'status')
-      expect(after.stdout).toMatch(/No remote configured/)
+      expect(after.stdout).toMatch(/No server configured/)
+      // And with none configured, nothing reaches a server at all.
+      const stranded = await runYaac(testEnv.env, 'project', 'list')
+      expect(stranded.exitCode).toBe(1)
+      expect(stranded.stderr).toMatch(/No yaac server selected/)
+
+      await resetSelection()
     })
 
-    it('on / off toggle the remote without re-entering the token', async () => {
-      await resetRemote()
+    it('on / off deselect and reselect without re-entering the token', async () => {
+      await resetSelection()
       const token = await mintToken('tablet')
       expect((await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', token)).exitCode).toBe(0)
 
       const off = await runYaac(testEnv.env, 'remote', 'off')
       expect(off.exitCode).toBe(0)
-      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/enabled\s+no/)
+      expect(off.stdout).toMatch(/No server selected/)
+      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/selected\s+no/)
+      // Deselected means unreachable — there is no local fallback to find.
+      expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(1)
 
       const on = await runYaac(testEnv.env, 'remote', 'on')
       expect(on.exitCode).toBe(0)
-      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/enabled\s+yes/)
+      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/selected\s+yes/)
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
+
+      await resetSelection()
     })
 
     it('set fails fast on an unreachable URL and persists nothing', async () => {
-      await resetRemote()
+      await resetSelection()
       const res = await runYaac(testEnv.env, 'remote', 'set', 'http://127.0.0.1:1', '--token', 'x')
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/cannot reach http:\/\/127\.0\.0\.1:1/)
-      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/No remote configured/)
+      // Persists nothing: the selection is still the server that was there.
+      const status = await runYaac(testEnv.env, 'remote', 'status')
+      expect(status.stdout).toContain(origin())
+      expect(status.stdout).not.toContain('127.0.0.1:1\n')
     })
 
     it('set rejects a bad token with minting guidance', async () => {
-      await resetRemote()
+      await resetSelection()
       const res = await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', 'f'.repeat(64))
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/token rejected/)
       expect(res.stderr).toMatch(/yaac auth token create/)
+      await resetSelection()
     })
 
-    it('reads a pre-split remote.json from the data dir, and migrates it on write', async () => {
-      // remote.json is CLIENT-LOCAL now (beside the data dir), but an
-      // install upgraded from before that tier existed still has one INSIDE
-      // it. Dropping it silently would leave every command unable to reach
-      // an in-cluster server with no hint why — see
+    it('reads remote.json at both older paths, and migrates them on write', async () => {
+      // The file was `remote.json` before it could name a server on this
+      // machine, and lived INSIDE the data dir before the client-local tier
+      // existed. Dropping either silently would leave every command unable
+      // to reach a running server with no hint why — see
       // docs/legacy-compat-shims.md.
-      await resetRemote()
-      const token = await mintToken('legacy-reader')
-      const legacy = path.join(testEnv.dataDir, 'remote.json')
-      const current = path.join(`${testEnv.dataDir}-client`, 'remote.json')
-      await fs.rm(current, { force: true })
-      await fs.writeFile(legacy, JSON.stringify({
-        url: origin(), token, enabled: true, saved: [],
-      }), { mode: 0o600 })
+      for (const legacy of [
+        path.join(testEnv.dataDir, 'remote.json'),
+        path.join(`${testEnv.dataDir}-client`, 'remote.json'),
+      ]) {
+        await resetSelection()
+        const token = await mintToken(`legacy-${path.basename(path.dirname(legacy))}`)
+        await fs.rm(configPath(), { force: true })
+        await fs.writeFile(legacy, JSON.stringify({
+          url: origin(), token, enabled: true, saved: [],
+        }), { mode: 0o600 })
 
-      // Read through the real CLI, which is the whole point: a client that
-      // resolves its target has to find it at the old path.
-      const status = await runYaac(testEnv.env, 'remote', 'status')
-      expect(status.exitCode, status.stderr).toBe(0)
-      expect(status.stdout).toContain(origin())
-      expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
+        // Read through the real CLI, which is the whole point: a client that
+        // resolves its target has to find it at the old path.
+        const status = await runYaac(testEnv.env, 'remote', 'status')
+        expect(status.exitCode, status.stderr).toBe(0)
+        expect(status.stdout).toContain(origin())
+        expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
 
-      // The next write moves it, and takes the bearer token with it.
-      expect((await runYaac(testEnv.env, 'remote', 'off')).exitCode).toBe(0)
-      await expect(fs.access(current)).resolves.toBeUndefined()
-      await expect(fs.access(legacy)).rejects.toThrow()
+        // The next write moves it to server.json, and takes the bearer
+        // token with it rather than stranding a live credential.
+        expect((await runYaac(testEnv.env, 'remote', 'off')).exitCode).toBe(0)
+        await expect(fs.access(configPath())).resolves.toBeUndefined()
+        await expect(fs.access(legacy)).rejects.toThrow()
+      }
 
-      await resetRemote()
+      await resetSelection()
+    })
+
+    it('the install driver survives `remote unset`, so a k8s install stays refused', async () => {
+      // `driver` shares server.json with the selection. Forgetting the
+      // servers must not forget which command stands this one up.
+      await resetSelection()
+      expect((await runYaac(testEnv.env, 'remote', 'unset')).exitCode).toBe(0)
+      const raw = JSON.parse(await fs.readFile(configPath(), 'utf8')) as { driver?: string }
+      expect(raw.driver).toBe('containerless')
+      await resetSelection()
     })
 
     it('yaac open --no-browser prints the remote-derived URL', async () => {
-      await resetRemote()
+      await resetSelection()
       const token = await mintToken('opener')
       expect((await runYaac(testEnv.env, 'remote', 'set', origin(), '--token', token)).exitCode).toBe(0)
 
@@ -223,6 +295,18 @@ describe('yaac auth token + remote (real CLI + shared server)', () => {
       expect(open.stdout.trim()).toMatch(
         new RegExp(`^${origin().replace(/[.:/]/g, '\\$&')}/\\?token=[0-9a-f]+$`),
       )
+    })
+
+    it('`yaac open` starts nothing when no server is selected', async () => {
+      // It used to auto-start one. Now `yaac server start` is the only
+      // starter, so this reports and exits rather than spawning a process
+      // beside whatever the install actually runs.
+      await resetSelection()
+      await fs.rm(configPath(), { force: true })
+      const open = await runYaac(testEnv.env, 'open', '--no-browser')
+      expect(open.exitCode).toBe(1)
+      expect(open.stderr).toMatch(/No yaac server selected/)
+      await resetSelection()
     })
   })
 })

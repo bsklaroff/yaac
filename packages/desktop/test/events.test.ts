@@ -3,7 +3,7 @@ import { eventsWsUrl, startEventsMonitor, type EventsSocket } from '#events'
 import type { ServerTarget } from '@yaac/shared/server-api'
 
 const target = (port: number): ServerTarget =>
-  ({ baseUrl: `http://127.0.0.1:${port}`, secret: `secret-${port}`, remote: false })
+  ({ baseUrl: `http://127.0.0.1:${port}`, secret: `secret-${port}` })
 
 /** A scriptable fake socket that records its callbacks for the test to fire. */
 class FakeSocket implements EventsSocket {

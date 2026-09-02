@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
+import { readServerConfig, registerServer } from '@yaac/shared/server-config'
 import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
@@ -302,6 +303,25 @@ async function spawnHostServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
     // wrote a usable lock, no `stop()` is returned to the caller, and the
     // orphaned servers pile up across the serialized suites until the box
     // runs out of memory.
+    killGroup(child, 'SIGKILL')
+    throw err
+  }
+
+  // `yaac server run` registers nothing (it may be a foreground server the
+  // operator drove directly), so this fixture does what `yaac server start`
+  // would have: points this worker's clients at the server it just spawned.
+  // Without it every CLI call in the file resolves no server at all.
+  try {
+    await registerServer(`http://127.0.0.1:${lock.port}`, 'containerless')
+    const cfg = await readServerConfig()
+    if (!cfg?.token) {
+      throw new Error(
+        'the test server is up but would not issue a durable token, so every '
+        + 'CLI call in this file would be answered BAD_BEARER (these suites '
+        + 'run with YAAC_REQUIRE_AUTH=1).',
+      )
+    }
+  } catch (err) {
     killGroup(child, 'SIGKILL')
     throw err
   }

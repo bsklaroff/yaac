@@ -1084,7 +1084,7 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
  * by the server, but nothing retries the server. This is also where the
  * install stops being about a cluster and starts being about an install —
  * the step it delegates to records the driver this data dir now runs and
- * writes the `remote.json` every client on this machine resolves through,
+ * writes the `server.json` every client on this machine resolves through,
  * so `yaac worktree list` talks to the pod without being told to.
  */
 async function deployServer(deps: ClusterInstallDeps): Promise<void> {

@@ -14,7 +14,7 @@ import {
 } from '#auth-daemon'
 import { setDataDir } from '#paths'
 
-const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's3cret', remote: false }
+const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's3cret' }
 const INVOCATION = { bin: '/App/Resources/node/node', args: ['/App/Resources/server/dist/cli.js', 'auth', 'server', 'run'] }
 
 interface SpawnCall {
@@ -111,9 +111,9 @@ describe('ensureAuthDaemonSpawned', () => {
     expect(calls).toHaveLength(1)
   })
   it('without a pre-resolved target the default resolution throws off-CLI', async () => {
-    // Documents the desktop trap: no remote.json, no live server lock, and
-    // (in this process) no .build-id — the default resolveServerTarget()
-    // path cannot succeed, so non-CLI callers must pass `target`.
+    // Documents the desktop trap: with no server selected in `server.json`
+    // the default resolveServerTarget() cannot succeed, so a caller that
+    // has already resolved one must pass `target`.
     const { impl, calls } = fakeSpawn()
     await expect(ensureAuthDaemonSpawned({ invocation: INVOCATION, spawnImpl: impl }))
       .rejects.toThrow()

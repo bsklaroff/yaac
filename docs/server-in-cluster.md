@@ -30,8 +30,11 @@ lifecycle half of that — storage is deliberately untouched here (see
 4. **The Service**: NodePort `30787`, fronted by a kind
    `extraPortMapping` to `127.0.0.1:<server port>` on the host.
 
-Then it writes `remote.json` — the published origin plus a durable token —
-and records `k8s` as what this data dir runs.
+Then it registers the server: `server.json` gets the published origin, a
+durable token minted with the lock secret, and `k8s` as what this data dir
+runs. That registration is not install's own — it is the same
+`registerServer` `yaac server start` calls for a host process, because a
+client reaches either server the same way (docs/server-selection.md).
 
 Two things it refuses rather than doing. It will not deploy while a **host**
 server still holds the data dir: the documented upgrade is `npm update` then
@@ -76,8 +79,8 @@ reachable backend, so a Service in front of a loopback-bound server would
 have no working endpoint. The path clients take is
 NodePort → kind `extraPortMapping` → `127.0.0.1:<port>` on the host, and
 the browser, the CLI, the desktop app and the auth daemon all resolve that
-origin through `remote.json`, which already outranks the lock file in
-`resolveServerTarget`.
+origin through `server.json`, which is the only thing `resolveServerTarget`
+reads (docs/server-selection.md).
 
 That loopback origin is a convenience, **not** a confinement: a NodePort
 answers on every address the node has, so the same Service answers on the
@@ -102,10 +105,10 @@ Auth keeps today's rules: `isCredentialOptional` keys on **configuration**
 (`YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`), not on the bind address, so a
 local install stays credential-optional exactly as the host process was,
 and the Host/Origin checks still force loopback-shaped requests. Install
-mints a durable token into `remote.json` regardless, because an install
-that *does* set those (deliberately, or by inheriting them from the shell
-that ran it) would otherwise lock this machine's own CLI out of the server
-it just deployed — and it says so in its output when that happens.
+mints a durable token regardless, because an install that *does* set those
+(deliberately, or by inheriting them from the shell that ran it) would
+otherwise lock this machine's own CLI out of the server it just deployed —
+and it says so in its output when that happens.
 
 What replaces the loopback bind is the server pod's ingress
 NetworkPolicy, and its rule is `0.0.0.0/0` **except the pod CIDRs**: what
@@ -274,7 +277,7 @@ and forwards a local port to it, handing back the `{ lock, stop }` shape a
 containerless spawn also answers — so no test file knows which it got. What the harness
 supplies is what a pod cannot read for itself — a reachable origin (the
 forward's local port is what the returned lock reports, never the port the
-pod binds), a durable token in `remote.json`, RBAC in that namespace, and a
+pod binds), a durable token in `server.json`, RBAC in that namespace, and a
 mount wide enough to cover the file's scratch tree.
 
 Three consequences worth knowing when reading a failure there:
@@ -310,9 +313,9 @@ anything either way.
 
 The pod mounts the data dir, so anything inside it is something the pod can
 see and the pod's uid owns. Several files there were never the server's:
-`remote.json` (which origin this machine's clients dial), the auth daemon's
-lock and its `login-*` scratch, the `driver` record, and the installer's own
-caches — the Calico manifest and the podman-pid file. Each is written and
+`server.json` (which origin this machine's clients dial, and which kind of
+install this is), the auth daemon's lock and its `login-*` scratch, and the
+installer's own caches — the Calico manifest and the podman-pid file. Each is written and
 read only by processes on the USER's machine: the CLI, the auth daemon that
 needs a browser and the vendors' localhost OAuth callbacks, the desktop
 shell, and `yaac cluster install` acting as installer.
@@ -326,16 +329,15 @@ one install's clients never read another's remote.
 
 Two consequences worth stating:
 
-- **The pod does not record the driver.** `resolveDriverKind` writes the
-  record only for a host process; `yaac cluster install` wrote `k8s` before
-  the Deployment was applied, and there is nothing for the pod to add and
-  nowhere to put it.
-- **`resolveServerTarget` asks the record, not the lock**, when it decides
-  whether to say "this install's server runs in the cluster." The lock is the
-  server's own file — under this driver it belongs to the pod and a client may
-  not be able to read it at all, and `readLock` reports an unreadable lock
-  and an absent one identically. A cross-host lock is still accepted as the
-  same answer, for installs predating the record.
+- **No server process records the driver.** `resolveDriverKind` writes
+  nothing; the COMMAND that stands the server up records it, and `yaac
+  cluster install` writes `k8s` alongside the origin and token. There is
+  nothing for the pod to add and nowhere to put it.
+- **`resolveServerTarget` reads neither the record nor the lock.** It reads
+  the origin and token in `server.json` and nothing else
+  (docs/server-selection.md). The lock is the server's own file — under this
+  driver it belongs to the pod, a client may not be able to read it at all,
+  and the port in it is the one bound inside the pod.
 
 `.server.lock` itself stays SERVER-LOCAL: it is the single-writer guard for
 PGlite and belongs on the same volume as the database.

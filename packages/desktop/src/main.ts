@@ -3,11 +3,13 @@
  * the sibling modules (#flow, #mint, #server-process, #messages, #attention,
  * #events, #tray-icon, #menu, #theme-bg, #window-state).
  *
- * The shell is a client of whatever server the target resolution lands on —
- * it never owns the server: close hides to the tray, Quit quits the shell
- * only, and the server keeps running (it was never ours to stop). While in
- * the tray it follows the `/events` stream as a bearer client to surface
- * waiting worktrees (dock badge, tray status, notifications). Each window
+ * The shell is a client of whatever server `server.json` names — it never
+ * owns one, and never starts one: close hides to the tray, Quit quits the
+ * shell only, and the server keeps running (it was never ours to stop).
+ * With no server reachable the window shows the picker (`#connect-page`)
+ * rather than an error dialog over nothing. While in the tray it follows
+ * the `/events` stream as a bearer client to surface waiting worktrees
+ * (dock badge, tray status, notifications). Each window
  * open also ensures the auth-daemon best-effort, like `yaac open` — and
  * like the server, Quit leaves it running (machine-scoped, shared with the
  * CLI; never ours to stop).
@@ -19,19 +21,19 @@ import {
 } from 'electron'
 import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
-import { recordedDriver } from '@yaac/shared/install-driver'
 import {
-  normalizeRemoteUrl, probeRemote, readRemote, withRemoteActivated, writeRemote,
-} from '@yaac/shared/remote'
+  normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
+} from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
 import { AttentionMonitor, badgeText, notificationFor, type WaitingWorktree } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { runFlow } from '#flow'
+import { connectPageUrl } from '#connect-page'
 import { appMenuTemplate } from '#menu'
 import { mintWebToken } from '#mint'
-import { errorBoxText, splashUrl } from '#messages'
-import { ensureAuthDaemonRunning, resolveYaacCommand, runYaacServerStart } from '#server-process'
+import { splashUrl, type LaunchError } from '#messages'
+import { ensureAuthDaemonRunning, resolveYaacCommand } from '#server-process'
 import {
   addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, type ServerSwitchDeps,
 } from '#server-switch'
@@ -57,12 +59,15 @@ let forwarder: DesktopForwarder | null = null
 // waits. Replaced only on a server switch, where the new server's ongoing
 // waits deserve the same silence.
 let attention = new AttentionMonitor()
+// True while the window is showing the picker rather than a server's SPA.
+// A window in that state is not a window to merely re-show: whatever the
+// user did about the failure (started a server, ran `yaac remote set`)
+// happened OUTSIDE it, and only re-running the flow can notice.
+let onConnectPage = false
 
-function resolveTarget(): ReturnType<typeof resolveServerTarget> {
-  // The shell ships no server code, so it has no build id to match
-  // against the lock — it only needs the server to be live.
-  return resolveServerTarget({ requireBuildMatch: false })
-}
+// The one place a target comes from, shared by the flow, the mint, the
+// events socket and the forwarder: `server.json`, like every other client.
+const resolveTarget = resolveServerTarget
 
 function windowStateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
@@ -139,21 +144,17 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 /**
- * Run the resolve → start-if-dead → mint flow and land the window on the
- * authed URL. Re-run in full whenever the window must be (re)created: the
- * exchange token is single-use, so each landing needs a fresh mint, and
- * re-running also revives a server that died while the shell sat in the tray.
+ * Run the resolve → mint flow and land the window on the authed URL, or on
+ * the picker when there is no server to land on. Re-run in full whenever
+ * the window must be (re)created: the exchange token is single-use, so each
+ * landing needs a fresh mint, and re-running also picks up a server that
+ * came back while the shell sat in the tray.
  */
 async function openWindow(): Promise<boolean> {
   if (!win || win.isDestroyed()) win = await createWindow()
   const w = win
   const result = await runFlow({
     resolveTarget,
-    recordedDriver,
-    startLocalServer: () => runYaacServerStart(
-      resolveYaacCommand(app.isPackaged ? process.resourcesPath : null, ['server', 'start']),
-      { hydratePath: app.isPackaged },
-    ),
     ensureAuthDaemon: (target) => ensureAuthDaemonRunning({
       target,
       command: resolveYaacCommand(
@@ -169,11 +170,16 @@ async function openWindow(): Promise<boolean> {
     rendererBaseUrl: env.desktopRendererUrl,
   })
   if (!result.ok) {
-    dialog.showErrorBox(result.error.title, errorBoxText(result.error))
+    await showConnectPage(w, result.error)
     return false
   }
   try {
     await w.loadURL(result.url)
+    onConnectPage = false
+    // Only now: a shell with no server has nothing to subscribe to, and a
+    // retry loop against a target that does not resolve would spin for as
+    // long as the window sat on the picker.
+    startEvents()
     return true
   } catch (err) {
     dialog.showErrorBox('Could not open yaac', err instanceof Error ? err.message : String(err))
@@ -181,15 +187,38 @@ async function openWindow(): Promise<boolean> {
   }
 }
 
+/**
+ * Put the window on the picker. Everything that follows a server goes
+ * quiet first — there is no server to follow, and a stale badge would
+ * claim worktrees are waiting on a server this shell cannot reach.
+ */
+async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<void> {
+  onConnectPage = true
+  events?.stop()
+  events = null
+  forwarder?.stop()
+  forwarder = null
+  attention = new AttentionMonitor()
+  applyAttention(0, [])
+  const targets = await getServerTargets(serverSwitchDeps)
+  await w.loadURL(connectPageUrl({ error, targets }))
+    .catch((err: unknown) => {
+      dialog.showErrorBox(error.title, err instanceof Error ? err.message : String(err))
+    })
+}
+
 function showWindow(): void {
   if (win && !win.isDestroyed()) {
     win.show()
     win.focus()
+    // Re-resolve when the window is sitting on the picker: the user very
+    // likely just went and started a server, and showing them the same
+    // stale failure again is the one thing that cannot help.
+    if (onConnectPage) void openWindow()
     return
   }
-  // Window gone (e.g. a renderer crash destroyed it) — full re-open. A
-  // failure here shows its error box and leaves the shell in the tray for
-  // another try, unlike the first boot (which quits).
+  // Window gone (e.g. a renderer crash destroyed it) — full re-open, which
+  // lands on the picker if the server is gone.
   void openWindow()
 }
 
@@ -267,31 +296,40 @@ function startEvents(): void {
 
 /**
  * After a server switch: clear the badge/tray, seed a fresh attention
- * monitor, point the events socket at the new target, and re-run the boot
- * flow so the window lands authed on the new origin.
+ * monitor (the new server's ongoing waits deserve the same launch
+ * silence), and re-run the boot flow so the window lands authed on the new
+ * origin. `openWindow` restarts the events socket on success and shows the
+ * picker again on failure, so a switch to a server that dies between the
+ * probe and the mint lands somewhere useful.
  */
 function relandOnNewServer(): void {
   attention = new AttentionMonitor()
   applyAttention(0, [])
-  startEvents()
   void openWindow()
 }
 
 // The SPA's Server settings section (desktop-only) drives these. Handlers
 // reply with the outcome before the reland tears the calling renderer down.
 const serverSwitchDeps: ServerSwitchDeps = {
-  readRemote,
-  writeRemote,
-  activate: withRemoteActivated,
-  probeRemote,
-  normalizeUrl: normalizeRemoteUrl,
+  readServerConfig,
+  writeServerConfig,
+  select: withServerSelected,
+  probeServer,
+  normalizeUrl: normalizeServerUrl,
 }
 ipcMain.handle('server:targets', () => getServerTargets(serverSwitchDeps))
+// The picker's "Try again": re-run the whole flow. On success the window
+// lands on the SPA; on failure it re-renders the picker with the current
+// failure and the current rows, so a server registered meanwhile shows up.
+ipcMain.handle('server:retry', async () => {
+  const ok = await openWindow()
+  return ok ? { ok: true } : { ok: false, error: 'still no server' }
+})
 ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   const sel = parseServerSelection(raw)
   if (!sel) return { ok: false, error: 'invalid selection' }
   const outcome = await applyServerSwitch(sel, serverSwitchDeps)
-  if (outcome.ok && outcome.changed) setImmediate(() => relandOnNewServer())
+  if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
 ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => {
@@ -299,7 +337,7 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => 
     return { ok: false, error: 'invalid arguments' }
   }
   const outcome = await addServerRemote(url, token, serverSwitchDeps)
-  if (outcome.ok && outcome.changed) setImmediate(() => relandOnNewServer())
+  if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
 
@@ -349,12 +387,11 @@ async function boot(): Promise<void> {
   // Role-based menus: the app presents under its own name and Cmd-C/V/
   // Select-All reach the embedded xterm terminals via editMenu.
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
-  if (!await openWindow()) {
-    app.quit()
-    return
-  }
+  // No quit-on-failure: a shell that cannot reach a server still has
+  // something to offer — the picker that fixes it — and the tray is what
+  // keeps it alive while the user goes and starts one.
+  await openWindow()
   createTray()
-  startEvents()
 }
 
 void app.whenReady().then(boot)
