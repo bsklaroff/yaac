@@ -59,7 +59,6 @@ export {
   buildPodJobManifest,
   graphrootMountAnnotations,
   hostUidSecurityContext,
-  podUid,
 } from './pod-spec'
 export type { HostPathType, MountSource, PodMount } from './pod-spec'
 export {

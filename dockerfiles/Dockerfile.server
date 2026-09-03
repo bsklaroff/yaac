@@ -27,10 +27,6 @@ ARG KUBECTL_VERSION=v1.36.1
 # $HOME does not survive a roll. Passed in by the builder from LLAMA_CPP_TAG
 # so the two can never drift.
 ARG LLAMA_CPP_TAG=b9940
-# The uid the server pod runs as. Everything the server pre-creates for a
-# worktree pod lands owned by it, and the worktree image chain bakes the same
-# number, so this is the one number both sides have to agree on.
-ARG YAAC_UID=1000
 
 # catatonit: node is PID 1 here and would never reap the orphans of the
 # processes the server spawns (kubectl, git). libgomp1: the llama.cpp
@@ -49,25 +45,38 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     chmod 0755 /usr/local/bin/kubectl && \
     kubectl version --client
 
-# ubuntu:24.04 ships its own uid-1000 `ubuntu` user, which is exactly the uid
-# we want; drop it first (same idiom as Dockerfile.default).
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${YAAC_UID} -s /bin/bash yaac
+# ubuntu:24.04 ships its own uid-1000 `ubuntu` user, which is the uid this
+# image bakes; drop it first (same idiom as Dockerfile.default).
+#
+# The uid is FIXED, and the pod's is not it: like the worktree chain, this
+# image is uid-agnostic (docs/arbitrary-uid-images.md). `yaac` has primary
+# group 0 and everything it owns is group-writable, so the pod's host uid —
+# which carries a supplementary group 0 — can write it all. /etc/passwd is
+# group-writable so the entrypoint can re-point the entry at that uid.
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -g 0 -s /bin/bash yaac && \
+    chmod -R g=u /home/yaac && \
+    chgrp 0 /etc/passwd && chmod g=u /etc/passwd
 
 RUN mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
     ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
     curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-${ARCH}.tar.gz" \
       | tar -xz -C /home/yaac/.cache/yaac/llama-cpp && \
-    chown -R yaac:yaac /home/yaac
+    chown -R yaac:0 /home/yaac && chmod -R g=u /home/yaac
 
 COPY . /opt/yaac/
 # The externals cli.js leaves unbundled, from the manifest that ships beside
 # it. No hand-kept list: the contract is the root manifest, already enforced
 # at build time by scripts/check-cli-externals.ts.
 RUN cd /opt/yaac && npm install --omit=dev --no-audit --no-fund --no-package-lock && \
-    npm cache clean --force && chown -R yaac:yaac /opt/yaac
+    npm cache clean --force && \
+    chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac && \
+    chmod 0755 /opt/yaac/dockerfiles/server-entrypoint.sh
 
 USER yaac
 ENV HOME=/home/yaac
 WORKDIR /home/yaac
-ENTRYPOINT ["/usr/bin/catatonit", "--", "node", "/opt/yaac/cli.js"]
+# The entrypoint re-points the `yaac` passwd entry at the uid the pod runs as
+# before starting the server; see the script. It execs catatonit, which stays
+# PID 1 to reap the orphans of what the server spawns (kubectl, git).
+ENTRYPOINT ["/opt/yaac/dockerfiles/server-entrypoint.sh"]
 CMD ["server", "run"]

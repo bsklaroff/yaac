@@ -23,6 +23,44 @@
 # sessions YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
 set -eu
 
+# Give the running uid the image's `yaac` identity, before anything that
+# depends on it.
+#
+# Worktree images are uid-agnostic (docs/arbitrary-uid-images.md) — the `yaac`
+# user is a fixed uid 1000 — while the pod runs as the install host's uid.
+# getpwuid() then has no answer for the running uid, and the things that ask
+# do not degrade: ssh exits 255 ("No user exists for uid") rather than
+# connecting, sudo stops matching the image's NOPASSWD line (which names the
+# user, not the number), and `zsh`/`git`/node's os.userInfo() report a bare
+# number. /etc/passwd is group-0 writable (see dockerfiles/Dockerfile.default)
+# precisely so this can happen.
+#
+# Runs here rather than in the image ENTRYPOINT for two reasons: the kubelet
+# orders a container's entrypoint and its postStart hook not at all, and this
+# hook's own `sudo -n` (the nested engine, below) would race it; and staging
+# it with the rest of worktree-bin makes it independent of which image a
+# worktree runs, including a standalone Dockerfile.yaac with an entrypoint of
+# its own. Same rewrite, same two rules as dockerfiles/server-entrypoint.sh:
+#
+#   REPLACE the entry, never append a second one. getpwnam("yaac") and
+#   getpwuid(running uid) have to resolve to each other, or the engine start
+#   below chowns the podman socket to uid 1000 instead of to us.
+#
+#   Truncate in place rather than `sed -i`, which renames a temp file over
+#   /etc/passwd and so needs write permission on /etc, which we lack.
+#
+# A no-op on a host whose uid is 1000. A failure to write is a warning, not a
+# fatal: most of a worktree works without the entry, and the hook failing
+# would fail the pod.
+if [ "$(id -un 2>/dev/null)" != yaac ]; then
+  if passwd_file=$(sed "s/^yaac:x:[0-9]*:[0-9]*:/yaac:x:$(id -u):$(id -g):/" /etc/passwd) \
+    && printf '%s\n' "$passwd_file" > /etc/passwd
+  then :; else
+    echo "yaac: could not re-point the yaac passwd entry at uid $(id -u);" \
+      "sudo and git over ssh will fail" >&2
+  fi
+fi
+
 # Keep in sync with CONTAINER_TMUX_SOCK (packages/shared/src/paths.ts): the
 # socket lives on the host-mounted tmux dir so host-side probes can find it.
 TMUX="tmux -S /tmp/yaac-tmux/server"

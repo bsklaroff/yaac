@@ -16,7 +16,7 @@ getting it wrong is how a rename turns into a second rename.
 | **pod** | the Kubernetes object a worktree currently runs in | `#drivers/k8s/substrate` and nothing above it |
 
 The pod tier is the one that reads as a distinction without a difference until
-it bites. `PodInfo`, `PodMount`, `podExec` and `podUid` describe the pod, not
+it bites. `PodInfo`, `PodMount` and `podExec` describe the pod, not
 the worktree — naming them `Worktree*` would put the old conflation back under
 a new spelling. The calls that enumerate an install's pods do say what they
 enumerate (`listWorktreePods`, `worktreePodSelector`), because that is what

@@ -45,12 +45,12 @@ describe('resolveImageChain', () => {
       return `${l.tag}${args ? ` [${args}]` : ''}`
     })
     expect(described).toEqual([
-      // The uid is the server's — it is what pre-creates the hostPath dirs
-      // the pod writes (see podUid).
-      expect.stringMatching(new RegExp(`^yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`)),
+      // No build args at all on the root layer: nothing about the building
+      // host reaches an image (docs/arbitrary-uid-images.md).
+      expect.stringMatching(new RegExp(`^yaac-base:${HASH_RE}$`)),
       expect.stringMatching(new RegExp(`^yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`)),
       expect.stringMatching(
-        new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE},YAAC_UID=\\d+\\]$`),
+        new RegExp(`^yaac-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
       expect.stringMatching(
         new RegExp(`^yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
@@ -76,7 +76,9 @@ describe('resolveImageChain', () => {
     const { resolveImageChain } = await h.load()
     const { layers } = await resolveImageChain('myproject', 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['project'])
-    expect(layers[0].buildArgs?.YAAC_UID).toMatch(/^\d+$/)
+    // A standalone Dockerfile.yaac owns its own user setup, so it is handed
+    // no build arg — not even a uid.
+    expect(layers[0].buildArgs).toBeUndefined()
   })
 
   it('treats a Dockerfile.yaac with FROM yaac-base (no ARG) as standalone', async () => {

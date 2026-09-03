@@ -62,7 +62,6 @@ import {
   SERVER_APP_NAME,
   SERVER_NODE_PORT,
   SERVER_POD_PORT,
-  podUid,
 } from '#drivers/k8s/substrate'
 // Setup value: the real hash function, so the expected tag is derived the
 // way the code derives it rather than pasted as a literal.
@@ -105,6 +104,7 @@ interface PodSpec {
     image: string
     env: Array<{ name: string; value: string }>
     volumeMounts: Array<{ mountPath: string }>
+    securityContext?: { allowPrivilegeEscalation?: boolean }
   }>
 }
 
@@ -204,18 +204,23 @@ describe('deployServerWorkload', () => {
     // The uid every path it pre-creates for a worktree pod is owned by —
     // this HOST's, not a pinned constant. The data dir is a hostPath this
     // machine owns and virtiofs makes that uid a ceiling, so a pod running
-    // as anything else cannot write the directory it was just handed.
+    // as anything else cannot write the directory it was just handed. Group
+    // 0 is what makes the image's own files writable at that uid.
     expect(pod.securityContext).toMatchObject({
-      runAsUser: podUid(),
+      runAsUser: process.getuid?.(),
       runAsGroup: process.getgid?.(),
-      fsGroup: process.getgid?.(),
+      supplementalGroups: [0],
     })
-    // And the image it runs is tagged by that uid, not by the bundle alone.
-    // Without the uid in the TAG, a host would find a tag already in the
-    // registry whose `yaac` user is a number this Deployment does not run
-    // as — a pod with no such user and a HOME belonging to someone else.
+    // No fsGroup: the data dir is the only volume, and hostPath ownership
+    // is not the kubelet's to manage.
+    expect(pod.securityContext).not.toHaveProperty('fsGroup')
+    // And no setuid path to real root: group 0 plus a group-writable
+    // /etc/passwd would otherwise reach it through `su`.
+    expect(pod.containers[0].securityContext).toEqual({ allowPrivilegeEscalation: false })
+    // The image is tagged by the bundle ALONE — no uid. One server image
+    // per bundle, whoever built it (docs/arbitrary-uid-images.md).
     expect(pod.containers[0].image).toBe(
-      `reg.local:5000/yaac-server:${stringHash(`bundlehash:uid=${String(podUid())}`)}`,
+      `reg.local:5000/yaac-server:${stringHash('bundlehash')}`,
     )
 
     // The whole data dir, at its own absolute path: phase 2 moves the

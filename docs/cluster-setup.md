@@ -530,23 +530,19 @@ CPU cost is what matters at fleet scale.
 Under gVisor there is no user namespace and no idmap, so hostPath files are
 presented at their real node-side uids (the gofer preserves them), and every
 writer of a shared path has to name the same number. That number is **the
-server's uid**, because the server is what pre-creates those paths:
-worktree checkouts, cache and config mounts are made host-side and land
-owned by whoever runs it. So the worktree image builds its `yaac` user with
-that uid (`YAAC_UID` build arg, baked in automatically and folded into the
-image tag) and the pod runs as it.
+uid of the machine that ran the install**, because it is what pre-creates
+those paths: worktree checkouts, cache and config mounts are made host-side
+and land owned by whoever runs the server. Every yaac pod — the server, the
+worktrees, the proxy, the probes — is stamped with it, and on macOS it
+cannot be anything else, since virtiofs makes the host user's uid a ceiling
+(docs/server-in-cluster.md).
 
-That number is **the uid of the machine that ran `yaac cluster install`**
-(docs/server-in-cluster.md, "The uid everything runs as"): the server pod
-runs as it, `podUid()` reports it on the host and inside the pod alike, and
-install bakes it into the worktree chain it builds. It cannot be a pinned
-constant while the data dir reaches the node over virtiofs, where the host
-user's uid is a ceiling on what any pod can write.
-
-Nothing to configure — but a standalone `Dockerfile.yaac` that creates its
-own user should honor `ARG YAAC_UID` the same way
-`dockerfiles/Dockerfile.default` does, or its writes to `/workspace` will
-fail with `Permission denied`.
+The images know nothing about that number: they bake a fixed `yaac` user
+and run correctly at any uid, so one image set serves every host
+(docs/arbitrary-uid-images.md). Nothing to configure — but a standalone
+`Dockerfile.yaac` that creates its own user has to follow the same pattern,
+or its writes will fail with `Permission denied` on any host whose uid is
+not 1000. The README's "Custom images" section spells that out.
 
 ## Verifying
 

@@ -513,8 +513,6 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
 
-`YAAC_UID` is a Docker **build arg** (not a runtime variable) — see [Custom images](#custom-images).
-
 ### Internal & testing
 
 These are set by the build or the test harness; production reads several of them only via their defaults.
@@ -547,7 +545,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
     FROM ${BASE_IMAGE}
     # Rest of Dockerfile...
     ```
-  - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped.
+  - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped, and must create its user the way the default image does (below).
 
   Place at `~/.yaac/projects/<repo-name>/config/Dockerfile.yaac`, or open it in `$EDITOR` with `yaac config edit-dockerfile <project>`.
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
@@ -558,6 +556,24 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
   ```
 
 Layer order: default → Dockerfile.tools (agent CLIs) → Dockerfile.nestable (only when `nestedContainers` is on) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools (+ nestable) layers entirely.
+
+### Writing a custom layer: the uid rule
+
+yaac images are **uid-agnostic**: they bake a `yaac` user at a fixed uid 1000 whose *primary group is 0*, and the pod runs as whatever uid owns your data dir (on macOS that is 501, never 1000). The pod reaches the image's files through group 0, so anything your layer writes has to be group-writable. In practice that is one line per step:
+
+```dockerfile
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+RUN umask 002 && npm install -g my-tool     # anything writing under /home/yaac
+```
+
+A step that skips it works on a Linux host whose uid is 1000 and fails with `Permission denied` everywhere else. Fixing it up afterwards with a `chgrp -R 0 && chmod -R g=u` layer is not equivalent: it copies the whole tree it touches into that layer (~1GB, in the case of the browser dir).
+
+There is **no `yaac` group** — the user's primary group is 0 — so a layer that says `chown -R yaac:yaac` or `COPY --chown=yaac:yaac` no longer builds. Spell it `yaac:0`.
+
+A **standalone** `Dockerfile.yaac` owns its own user setup, so it owns all of this: create the user with primary group 0 (`useradd -m -u 1000 -g 0 ...`), make its home group-writable (`chmod -R g=u /home/<user>`), and make `/etc/passwd` group-writable (`chgrp 0 /etc/passwd && chmod g=u /etc/passwd`) so yaac can point the entry at the running uid — without that, `sudo` and git-over-ssh fail inside the worktree.
+
+If a standalone image also sets its own `ENTRYPOINT`, that entrypoint must not depend on the `yaac` identity. yaac re-points the passwd entry from the pod's postStart hook, and the kubelet does not order the two, so an entrypoint calling `sudo`, `ssh` or `os.userInfo()` can still see the stale one.
 
 ## Nested containers
 

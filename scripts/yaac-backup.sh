@@ -241,8 +241,8 @@ cmd_restore() {
   # Without it a umask 022 extract makes every stored token world-readable.
   # -o (--no-same-owner) because both GNU tar and bsdtar restore the archived
   # uid when extracting as root: under sudo that would chown everything to
-  # the origin host's uid, while session images are rebuilt with *this*
-  # server's uid (YAAC_UID). Files must belong to whoever runs the server.
+  # the origin host's uid, while pods here run as *this* server's uid.
+  # Files must belong to whoever runs the server.
   echo "restoring ${archive} -> ${target}"
   tar -xzpof "${archive}" -C "${staging}"
   rm -f "${staging}/.yaac-dump-meta"

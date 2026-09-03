@@ -411,10 +411,9 @@ async function launchWithSetup(params: WorktreeSetupParams): Promise<RuntimeHand
   await Promise.race([transportReady, worktreeFailure])
 
   // No ownership fixup is needed for server-created hostPath mounts: the
-  // image's yaac user is built with the server's uid (YAAC_UID build arg,
-  // see podUid). Under gVisor there is no userns and no idmapped mount, so
-  // numeric uids pass through raw — server-owned dirs are yaac-writable
-  // as-is.
+  // pod runs as the server's own uid (hostUidSecurityContext). Under gVisor
+  // there is no userns and no idmapped mount, so numeric uids pass through
+  // raw — server-owned dirs are writable as-is.
 
   // The worktree checkout has been running concurrently with the pod boot;
   // everything below reads /workspace, so join it now. Its failures are the

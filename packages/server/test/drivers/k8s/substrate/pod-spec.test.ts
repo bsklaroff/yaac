@@ -6,7 +6,7 @@ import {
   SSH_AGENT_SOCKET_PATH,
   buildPodJobManifest,
   graphrootMountAnnotations,
-  podUid,
+  hostUidSecurityContext,
 } from '#drivers/k8s/substrate'
 // Internals, for fixtures and bounds only: the in-container cert dir, the
 // sentry tmpfs cap, and the params the builder takes.
@@ -134,9 +134,21 @@ describe('buildPodJobManifest', () => {
     expect(spec.enableServiceLinks).toBe(false)
   })
 
-  it('hardens the pod: default seccomp profile', () => {
+  it('hardens the pod: default seccomp profile, and runs as the host identity', () => {
     const spec = build().spec.template.spec
-    expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+    // The image bakes a fixed uid and the pod overrides it with this host's,
+    // which is the only uid that can write the checkout the server just
+    // created. Group 0 is what makes the image's files writable at that uid
+    // (docs/arbitrary-uid-images.md).
+    expect(spec.securityContext).toEqual({
+      seccompProfile: { type: 'RuntimeDefault' },
+      runAsUser: process.getuid?.(),
+      runAsGroup: process.getgid?.(),
+      supplementalGroups: [0],
+    })
+    // No fsGroup: the only emptyDir that matters here is the nested
+    // engine's graphroot, which is root's.
+    expect(spec.securityContext).not.toHaveProperty('fsGroup')
   })
 
   it('host pod: stamps the gvisor RuntimeClass and no user namespace', () => {
@@ -359,7 +371,14 @@ describe('buildPodJobManifest', () => {
       expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
 
       const spec = build().spec.template.spec
-      expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+      // The host identity is unconditional; what `nested` adds is the
+      // graphroot volume, the annotations and the engine's caps.
+      expect(spec.securityContext).toEqual({
+        seccompProfile: { type: 'RuntimeDefault' },
+        runAsUser: process.getuid?.(),
+        runAsGroup: process.getgid?.(),
+        supplementalGroups: [0],
+      })
       expect(spec.initContainers).toBeUndefined()
       expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
       // No graphroot-tmpfs annotations on a non-nested pod.
@@ -396,7 +415,12 @@ describe('buildPodJobManifest', () => {
       const spec = build({ nested }).spec.template.spec
       // seccompProfile stays RuntimeDefault (runsc installs its own host
       // seccomp regardless); no fsGroup — the rootful graphroot is root-owned.
-      expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+      expect(spec.securityContext).toEqual({
+        seccompProfile: { type: 'RuntimeDefault' },
+        runAsUser: process.getuid?.(),
+        runAsGroup: process.getgid?.(),
+        supplementalGroups: [0],
+      })
       expect(spec.containers[0].securityContext).toEqual({
         capabilities: {
           add: [
@@ -491,21 +515,28 @@ describe('graphrootMountAnnotations', () => {
   })
 })
 
-describe('podUid', () => {
+describe('hostUidSecurityContext', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('mirrors the server process uid', () => {
-    // The server is what pre-creates the hostPath dirs a pod writes, so
-    // until it is itself a pod running as 1000 the pod has to name the uid
-    // those dirs actually landed under (macOS's first login uid is 501).
+  it('mirrors the host uid and gid, and joins group 0 for the image', () => {
+    // The uid is the one that pre-created the hostPath dirs the pod writes
+    // — never a pinned constant, since macOS's first login uid is 501 and
+    // virtiofs makes it a ceiling. Group 0 is the image half: yaac images
+    // bake a fixed `yaac` user with primary group 0 and group-writable
+    // files, so one image runs at any uid (docs/arbitrary-uid-images.md).
     vi.spyOn(process, 'getuid').mockReturnValue(501)
-    expect(podUid()).toBe(501)
+    vi.spyOn(process, 'getgid').mockReturnValue(20)
+    expect(hostUidSecurityContext()).toEqual({
+      runAsUser: 501,
+      runAsGroup: 20,
+      supplementalGroups: [0],
+    })
   })
 
-  it('falls back to 1000 when the server runs as root (uid 0 is taken in the image)', () => {
-    vi.spyOn(process, 'getuid').mockReturnValue(0)
-    expect(podUid()).toBe(1000)
+  it('refuses to invent a uid when the platform has none', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(undefined as unknown as number)
+    expect(() => hostUidSecurityContext()).toThrow(/POSIX/)
   })
 })

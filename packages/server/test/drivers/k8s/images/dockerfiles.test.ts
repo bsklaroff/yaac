@@ -1,9 +1,10 @@
 /**
  * Contract tests for the images feature's shipped build inputs — the
- * Dockerfiles in DOCKERFILES_DIR that `resolveImageChain` assigns the
- * trusted `base` / `tools` / `nestable` layer names to. They cover files,
- * not a module, so the one-describe-per-barrel-function rule that governs
- * the sealed folder's module tests does not apply here.
+ * Dockerfiles in DOCKERFILES_DIR: the ones `resolveImageChain` assigns the
+ * trusted `base` / `tools` / `nestable` layer names to, plus the server's
+ * own. They cover files, not a module, so the one-describe-per-barrel-
+ * function rule that governs the sealed folder's module tests does not
+ * apply here.
  */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
@@ -12,6 +13,39 @@ import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 
 const read = (name: string): Promise<string> =>
   fs.readFile(path.join(DOCKERFILES_DIR, name), 'utf8')
+
+/**
+ * Every line that STARTS a `RUN` instruction, paired with the `USER` in
+ * effect there. Continuation lines and heredoc bodies belong to the
+ * instruction above them and are skipped, so a `RUN` inside a heredoc
+ * cannot masquerade as a step.
+ */
+function runSteps(content: string): Array<{ user: string; line: string }> {
+  const steps: Array<{ user: string; line: string }> = []
+  let user = 'root'
+  let continued = false
+  let heredoc: string | null = null
+  for (const line of content.split('\n')) {
+    if (heredoc !== null) {
+      if (line.trimEnd() === heredoc) heredoc = null
+      continue
+    }
+    const startsStep = !continued
+    continued = /\\\s*$/.test(line)
+    const opened = /<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?/.exec(line)
+    if (opened && !continued) heredoc = opened[1]
+    if (!startsStep) continue
+    const asUser = /^USER\s+(\S+)/.exec(line)
+    if (asUser) user = asUser[1]
+    else if (/^RUN\s/.test(line)) steps.push({ user, line })
+  }
+  return steps
+}
+
+/** Every shipped Dockerfile, in the order a chain builds them. */
+const SHIPPED = [
+  'Dockerfile.default', 'Dockerfile.tools', 'Dockerfile.nestable', 'Dockerfile.server',
+] as const
 
 describe('Dockerfile.default', () => {
   it('ships the pinned upstream base and the session toolbelt, and installs no engine', async () => {
@@ -34,13 +68,26 @@ describe('Dockerfile.default', () => {
     expect(content).not.toContain('podman')
   })
 
-  it('runs as the non-root yaac user, built with the injected YAAC_UID', async () => {
+  it('runs as a non-root yaac user whose uid the pod may override', async () => {
     const content = await read('Dockerfile.default')
     expect(content).toContain('USER yaac')
-    // The uid is a build arg so idmapped hostPath writes line up with the
-    // server process that owns the data dir.
-    expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
-    expect(content).toContain('useradd -m -u ${YAAC_UID}')
+    // A FIXED uid with primary group 0, and a home group 0 can write: the
+    // pod supplies its own uid at runtime and picks the grant up through
+    // group 0 (docs/arbitrary-uid-images.md). Nothing about the building
+    // host may reach the image — that is what makes one image serve every
+    // host and lets the chain be shipped prebuilt.
+    expect(content).toContain('useradd -m -u 1000 -g 0')
+    expect(content).toContain('chmod -R g=u /home/yaac')
+    expect(content).not.toContain('YAAC_UID')
+  })
+
+  it('leaves /etc/passwd writable so the running uid can claim the yaac name', async () => {
+    const content = await read('Dockerfile.default')
+    // getpwuid() has no answer for an arbitrary uid, and the things that
+    // ask do not degrade: ssh exits 255, and sudo stops matching the
+    // NOPASSWD line (which names the user, not the number). The rewrite
+    // itself lives in worktree-bin/yaac-worktree-init.
+    expect(content).toContain('chgrp 0 /etc/passwd && chmod g=u /etc/passwd')
   })
 
   it('uses catatonit as PID 1 to reap zombies', async () => {
@@ -54,6 +101,15 @@ describe('Dockerfile.default', () => {
 })
 
 describe('Dockerfile.tools', () => {
+  it('bakes its support files in group-writable too', async () => {
+    const content = await read('Dockerfile.tools')
+    // opencode rewrites this catalog in place when it refreshes, so the
+    // COPY has to land it group-0 writable like everything else — a
+    // `--chown=yaac:yaac` would not even resolve, since the image has no
+    // `yaac` group.
+    expect(content).toContain('COPY --chown=yaac:0 --chmod=0664 opencode-models.json')
+  })
+
   it('installs the agent CLIs as a layer on top of the base', async () => {
     const content = await read('Dockerfile.tools')
     expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
@@ -134,5 +190,64 @@ describe('Dockerfile.nestable', () => {
     // The engine is started by a detached server exec, not an entrypoint
     // override — the image keeps the base catatonit keepalive.
     expect(content).not.toMatch(/^ENTRYPOINT/m)
+  })
+})
+
+describe('Dockerfile.server', () => {
+  it('runs the server as the same uid-agnostic yaac user', async () => {
+    const content = await read('Dockerfile.server')
+    // The server pod runs as the install host's uid exactly like a worktree
+    // pod, so its image takes the same shape and the same fixed uid — and,
+    // like the worktree chain, bakes nothing about the host that built it.
+    expect(content).toContain('useradd -m -u 1000 -g 0')
+    expect(content).toContain('chgrp 0 /etc/passwd && chmod g=u /etc/passwd')
+    expect(content).not.toContain('YAAC_UID')
+  })
+
+  it('starts through the entrypoint that claims the running uid', async () => {
+    const content = await read('Dockerfile.server')
+    // A Deployment has no postStart hook, so the passwd rewrite a worktree
+    // gets from yaac-worktree-init has to ride the entrypoint here. It
+    // still execs catatonit, which stays PID 1 to reap what the server
+    // spawns.
+    expect(content).toContain('ENTRYPOINT ["/opt/yaac/dockerfiles/server-entrypoint.sh"]')
+    expect(content).toContain('CMD ["server", "run"]')
+
+    const entrypoint = await read('server-entrypoint.sh')
+    expect(entrypoint).toContain('exec /usr/bin/catatonit -- node /opt/yaac/cli.js "$@"')
+    // REPLACE the entry, never append: getpwnam and getpwuid have to agree
+    // or a later `chown yaac` lands on uid 1000 instead of on the pod.
+    expect(entrypoint).toContain('s/^yaac:x:[0-9]*:[0-9]*:/yaac:x:$(id -u):$(id -g):/')
+    // And truncate in place: `sed -i` renames a temp file over /etc/passwd,
+    // which needs write permission on /etc, which the pod does not have.
+    const code = entrypoint.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')
+    expect(code).toContain('> /etc/passwd')
+    expect(code).not.toContain('sed -i')
+  })
+})
+
+describe('every shipped Dockerfile', () => {
+  it('sets umask 002 on every RUN step that runs as yaac', async () => {
+    // The arbitrary-uid pattern's one rule for image AUTHORS
+    // (docs/arbitrary-uid-images.md): a step running as `yaac` must create
+    // group-writable files, because the pod that reads them runs as a
+    // different uid and reaches them through group 0. A `chgrp -R` sweep in
+    // a later layer is not an alternative — it copies the whole tree up.
+    //
+    // This is where the pattern silently rots: a new `RUN` without the umask
+    // builds fine, works on a uid-1000 Linux host, and fails with EACCES
+    // everywhere else. So the walk covers all four rather than the two that
+    // have such steps today — nestable and the server image end on `USER
+    // yaac`, and a `RUN` added after that is exactly the case this catches.
+    let walked = 0
+    for (const name of SHIPPED) {
+      for (const { line } of runSteps(await read(name)).filter((s) => s.user === 'yaac')) {
+        expect(line, `${name}: ${line}`).toMatch(/^RUN umask 002 &&/)
+        walked++
+      }
+    }
+    // The walk is only worth anything if it is finding steps at all — a
+    // parser that silently matched nothing would pass every assertion above.
+    expect(walked).toBeGreaterThan(10)
   })
 })

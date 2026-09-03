@@ -10,7 +10,6 @@ import {
   resolveTrustedLayers,
   toolsContentHash,
 } from '#drivers/k8s/image-engine/image-builder'
-import { podUid } from '#drivers/k8s/substrate'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -70,27 +69,25 @@ describe('baseImageHash', () => {
     vi.restoreAllMocks()
   })
 
-  it('folds the uid it is given and the in-pod daemons into the Dockerfile content hash', async () => {
+  it('folds the in-pod daemons into the content hash, and the uid into nothing', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-bih-'))
     try {
       const dockerfile = path.join(tmpDir, 'Dockerfile')
       await fs.writeFile(dockerfile, 'FROM scratch')
 
-      // The uid is the ARGUMENT, never this process's own: a build for a
-      // uid other than the builder's is exactly what `yaac cluster install`
-      // does, and reading getuid() here would tag those images identically.
       vi.spyOn(process, 'getuid').mockReturnValue(1000)
-      const hash501 = await baseImageHash(dockerfile, 501)
-      const hash1000 = await baseImageHash(dockerfile, 1000)
+      const onLinux = await baseImageHash(dockerfile)
+      vi.spyOn(process, 'getuid').mockReturnValue(501)
+      const onMac = await baseImageHash(dockerfile)
 
-      expect(hash501).toMatch(/^[0-9a-f]{16}$/)
-      // A uid change must invalidate the tag like a Dockerfile edit would —
-      // the pod runs as that uid, so an image baked for another one cannot
-      // write the dirs the server pre-created.
-      expect(hash501).not.toBe(hash1000)
-      // The COPY'd streamd/acpd sources are in there too, so the tag is
-      // never just the Dockerfile's own hash.
-      expect(hash501).not.toBe(await fileHash(dockerfile))
+      expect(onLinux).toMatch(/^[0-9a-f]{16}$/)
+      // The point of the whole arbitrary-uid pattern: a macOS host at 501
+      // and a Linux host at 1000 resolve the SAME tag, so one image set can
+      // be shared, cached and shipped prebuilt.
+      expect(onMac).toBe(onLinux)
+      // The COPY'd streamd/acpd sources are in there, so the tag is never
+      // just the Dockerfile's own hash.
+      expect(onLinux).not.toBe(await fileHash(dockerfile))
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
@@ -98,6 +95,10 @@ describe('baseImageHash', () => {
 })
 
 describe('resolveTrustedLayers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('names the three yaac-shipped layers, each built FROM the one above it', async () => {
     const { base, tools, nestable } = await resolveTrustedLayers('yaac')
 
@@ -118,27 +119,24 @@ describe('resolveTrustedLayers', () => {
       expect(layer.tag).toMatch(/^yaac-(base|tools|nestable):[0-9a-f]{16}$/)
       expect(layer.tag.endsWith(layer.contentHash)).toBe(true)
     }
-    // The uid is a build input of the layers that create the `yaac` user.
-    expect(base.buildArgs?.YAAC_UID).toBe(String(podUid()))
-    expect(nestable.buildArgs?.YAAC_UID).toBe(String(podUid()))
+    // The parent tag is the ONLY build arg in the chain. Nothing about the
+    // building host reaches an image (docs/arbitrary-uid-images.md).
+    expect(base.buildArgs).toBeUndefined()
+    expect(nestable.buildArgs).toEqual({ BASE_IMAGE: tools.tag })
   })
 
-  it('carries the requested uid into the tag, not just into the build arg', async () => {
-    // The bug this guards: the base layer's content hash read the CALLING
-    // process's uid while the build arg carried `forUid`, so an install
-    // building for the server's uid tagged the image with its own — and
-    // then found that tag "already in the registry" and reused an image
-    // whose `yaac` user was somebody else's number.
-    const forServer = await resolveTrustedLayers('yaac', 1000)
-    const forOther = await resolveTrustedLayers('yaac', 501)
+  it('resolves the same chain whatever uid the builder runs as', async () => {
+    // The payoff, and the regression this guards: while the uid was a build
+    // input, a macOS host and a Linux host built different images under
+    // different tags and could not share a registry at all.
+    vi.spyOn(process, 'getuid').mockReturnValue(1000)
+    const onLinux = await resolveTrustedLayers('yaac')
+    vi.spyOn(process, 'getuid').mockReturnValue(501)
+    const onMac = await resolveTrustedLayers('yaac')
 
-    expect(forServer.base.buildArgs?.YAAC_UID).toBe('1000')
-    expect(forOther.base.buildArgs?.YAAC_UID).toBe('501')
-    expect(forServer.base.tag).not.toBe(forOther.base.tag)
-    // And it composes down the chain, so tools/nestable cannot be shared
-    // across uids either.
-    expect(forServer.tools.tag).not.toBe(forOther.tools.tag)
-    expect(forServer.nestable.tag).not.toBe(forOther.nestable.tag)
+    expect(onMac.base.tag).toBe(onLinux.base.tag)
+    expect(onMac.tools.tag).toBe(onLinux.tools.tag)
+    expect(onMac.nestable.tag).toBe(onLinux.nestable.tag)
   })
 
   it('scopes every tag to the prefix, so a test run never collides with the install', async () => {

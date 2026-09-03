@@ -46,7 +46,7 @@ vi.mock('simple-git', () => ({
 }))
 
 // Stubbed to keep podman off the import path; nothing on the create path
-// calls into it (podUid, the one name it used to supply, is in pod-spec).
+// calls into it.
 vi.mock('@yaac/server/drivers/k8s/image-engine/image-builder', () => ({
 } satisfies Partial<typeof imageBuilderModule>))
 
@@ -907,10 +907,9 @@ describe('createWorktree', () => {
   it('never chowns mounts in-container — uid alignment makes server dirs writable', async () => {
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
-    // The image's yaac user carries the server's uid (YAAC_UID build arg),
-    // so server-created hostPath dirs are writable without privileged
-    // fixups. A chown here would also corrupt host-side ownership on
-    // Linux (idmapped mounts write the pod's userns uid through).
+    // The pod runs as the server's own uid (hostUidSecurityContext), so
+    // server-created hostPath dirs are writable without privileged fixups.
+    // A chown here would also corrupt host-side ownership on Linux.
     const cmds = [...mockContainerExec.mock.calls, ...mockPodExec.mock.calls].map((c) => c[1])
     expect(cmds.some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
   })

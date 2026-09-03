@@ -33,12 +33,16 @@ import { proxyDataHostDir } from '@yaac/shared/project-paths'
  * /data and the 0700 credentials dir), so it has to be the same identity
  * the server is. The image's default `node` uid (1000) only worked on
  * applehv, whose virtiofs ignored ownership — libkrun's enforces it, so a
- * uid mismatch is EACCES. Its `fsGroup` half is load-bearing here in a way
- * it is not for the server: the proxy's HOME is an emptyDir (see the
- * deployment), and emptyDir is ownership-managed.
+ * uid mismatch is EACCES.
+ *
+ * `fsGroup` on top of that shared identity, as on the server's Deployment
+ * and for the same reason: the proxy's HOME is an emptyDir (see the
+ * deployment), and emptyDir is the one volume kind whose ownership the
+ * kubelet manages.
  */
 export function proxyRunAsSecurityContext(): Record<string, unknown> {
-  return { securityContext: hostUidSecurityContext() }
+  const identity = hostUidSecurityContext()
+  return { securityContext: { ...identity, fsGroup: identity.runAsGroup } }
 }
 
 /**
