@@ -1,9 +1,12 @@
-import { getAgentSessionModel, transcriptStamp } from '#runtime/agents'
-import type { AgentTool } from '@yaac/shared/types'
+import { transcriptStamp } from '#runtime/agents'
 
 /**
- * The model a conversation is answering as, re-read from its transcript when
- * the transcript has moved.
+ * The model a conversation is answering as, re-read from the file that records
+ * it when that file has moved.
+ *
+ * WHICH file, and how it is read, is the caller's: a `tui` conversation is read
+ * from the transcript its tool writes, an `acp` one from the record acpd keeps.
+ * Only the caching is shared, because only the caching is the same problem.
  *
  * The sibling of `prompt-capture`, and deliberately NOT the same shape. An
  * opening message is read once and is then true forever, so that one caches
@@ -32,23 +35,21 @@ import type { AgentTool } from '@yaac/shared/types'
 const known = new Map<string, { mtimeMs: number; size: number; model?: string }>()
 
 export async function captureModel(
-  projectSlug: string,
-  tool: AgentTool,
-  agentSessionId: string,
-  transcriptPath: string | undefined,
+  key: string,
+  filePath: string | undefined,
+  read: (path: string) => Promise<string | undefined>,
 ): Promise<string | undefined> {
-  if (transcriptPath === undefined) return undefined
-  const stamp = await transcriptStamp(transcriptPath)
+  if (filePath === undefined) return undefined
+  const stamp = await transcriptStamp(filePath)
   // No transcript to read — a conversation whose file has not appeared yet, or
   // whose pod wrote it somewhere this install cannot resolve. Nothing is
   // cached: the next tick tries again.
   if (stamp === undefined) return undefined
 
-  const key = `${projectSlug}/${tool}/${agentSessionId}`
   const cached = known.get(key)
   if (cached?.mtimeMs === stamp.mtimeMs && cached.size === stamp.size) return cached.model
 
-  const model = await getAgentSessionModel(tool, transcriptPath).catch(() => undefined)
+  const model = await read(filePath).catch(() => undefined)
   known.set(key, { ...stamp, ...(model !== undefined ? { model } : {}) })
   return model
 }

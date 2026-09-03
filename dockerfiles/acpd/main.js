@@ -11,7 +11,8 @@ import { createAcpd } from './acpd.js'
 
 function usage(msg) {
   console.error(`[acpd] ${msg}`)
-  console.error('[acpd] usage: acpd --sock <path> [--log <path>] [--cwd <path>] -- <agent argv...>')
+  console.error('[acpd] usage: acpd --sock <path> [--log <path>] [--append] [--cwd <path>]'
+    + ' -- <agent argv...>')
   process.exit(2)
 }
 
@@ -26,10 +27,15 @@ let logPath
 // spawned this in is already the right one; passing it makes the launch
 // command say so rather than depending on what it inherited.
 let cwd
+// Keep the record's existing contents instead of truncating. Passed for an
+// adapter whose `session/load` replays nothing, where the record is the
+// conversation's only history (see acpd.js's header).
+let append = false
 for (let i = 0; i < sep; i++) {
   if (args[i] === '--sock') sockPath = args[++i]
   else if (args[i] === '--log') logPath = args[++i]
   else if (args[i] === '--cwd') cwd = args[++i]
+  else if (args[i] === '--append') append = true
   else usage(`unknown option ${args[i]}`)
 }
 const argv = args.slice(sep + 1)
@@ -39,6 +45,7 @@ if (argv.length === 0) usage('no agent command given')
 const daemon = createAcpd({
   sockPath,
   argv,
+  append,
   ...(logPath ? { logPath } : {}),
   ...(cwd ? { cwd } : {}),
 })

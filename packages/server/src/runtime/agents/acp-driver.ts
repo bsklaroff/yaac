@@ -44,8 +44,11 @@ import { agentWindowTool } from './agent-tools'
 import {
   acpConversationByHandle,
   registerAcpConversation,
+  stashAcpLaunchModel,
+  takeAcpLaunchModel,
   unregisterAcpConversation,
 } from './acp-registry'
+import { acpAdapterFor, acpLaunchModel } from './acp-adapters'
 import type { JsonRpcTransport } from './acp-jsonrpc'
 import type {
   AgentConnectDeps,
@@ -76,11 +79,6 @@ function acpSockPath(paths: Pick<WorkspacePaths, 'acpSockDir'>, handle: string):
  *  CONVERSATION rather than its window — see `launchCmd` for why. */
 function acpLogPath(paths: Pick<WorkspacePaths, 'acpLogDir'>, name: string): string {
   return `${paths.acpLogDir}/${name}.jsonl`
-}
-
-/** Where the ACP adapter for each tool lives on the session image's PATH. */
-const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = {
-  claude: 'claude-agent-acp',
 }
 
 /** How often the connection re-enumerates the pod's ACP windows, picking up a
@@ -135,15 +133,6 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
 
 /** Deadline for the in-pod window enumeration. */
 const DEFAULT_COMMAND_MS = 10_000
-
-/**
- * True when this tool can run in ACP mode. Checked at create time so a
- * request for an unsupported combination fails before anything is
- * provisioned, rather than as a window that exits on startup.
- */
-export function acpAdapterFor(tool: AgentTool): string | undefined {
-  return ACP_ADAPTERS[tool]
-}
 
 /**
  * Wrap a streamd `ctrl` stream as the duplex the JSON-RPC peer wants. The
@@ -381,10 +370,30 @@ class AcpConnection implements AgentConnection {
     // conversation registered until the window closed.
     const entry: Attached = { handle, tool, child }
     this.attached.set(handle, entry)
+    // The id this conversation was LAUNCHED under, which is what a launch-time
+    // model was parked against: the recorded id on a resume, the worktree's own
+    // on a fresh create (see the `launching` list session create builds).
+    const launchId = resumeSessionId ?? this.session.worktreeId
+    const profile = acpAdapterFor(tool)
+    // Only an adapter that cannot be launched with a model has one waiting,
+    // and only its first attach takes it.
+    const launchModel = profile.modelVia === 'protocol'
+      ? takeAcpLaunchModel(launchId)
+      : undefined
+    if (profile.modelVia === 'protocol' && launchModel === undefined && resumeSessionId === undefined) {
+      // A fresh conversation whose launch parked no model: this server did not
+      // author the launch (it restarted between the two), so the adapter keeps
+      // whatever its own settings name — for pi, a provider whose key the
+      // egress proxy never swapped. Worth a line, since nothing else says so.
+      this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: no launch model`
+        + ' was parked for this conversation — the agent runs its own default')
+    }
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       cwd: worktreeDriver().workspacePaths(this.session.jobName).workspaceDir,
       permissionMode: () => this.permissionMode,
+      profile,
+      ...(launchModel !== undefined ? { launchModel } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a conversation we can already name has a record to read, and it
@@ -561,25 +570,31 @@ export const acpDriver: AgentDriver = {
    * The tmux window's command: acpd supervising the tool's ACP adapter, with
    * the conversation's socket named for the window it runs in.
    *
+   * What differs per adapter — the argv, the environment that carries a model
+   * or a posture, whether the record may be truncated — is the adapter's
+   * profile, not a branch here. The whole string is embedded in a
+   * single-quoted `respawn-window '<cmd>'`, so it deliberately contains no
+   * quotes of its own beyond the escaped ones inside an env JSON value.
+   *
    * No `--resume` flag: resuming an ACP conversation is a protocol call
    * (`session/load`) the client makes after connecting, not a launch argument.
-   * The whole string is embedded in a single-quoted `respawn-window '<cmd>'`,
-   * so it deliberately contains no quotes.
    *
-   * No permission posture either, and `spec.permissionMode` is unread here on
-   * purpose — but not because there isn't one. A posture is something the
+   * No permission posture on the command line either, except where the tool
+   * reads one from its environment (opencode). A posture is something the
    * adapter is *told* (`session/set_mode`, once the handshake has a session to
-   * set it on), not something it is launched with, and the connection that
-   * tells it is rebuilt on every reattach long after this string was written.
-   * Putting it on the command line as well would give a reconnect two sources
-   * for one answer, and only one of them refreshed.
+   * set it on), and the connection that tells it is rebuilt on every reattach
+   * long after this string was written; putting it here as well would give a
+   * reconnect two sources for one answer, and only one of them refreshed.
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)
-    if (adapter === undefined) {
-      throw new Error(`no ACP adapter for ${spec.tool}`)
+    // An adapter that can only be told its model over the protocol is handed
+    // one here anyway: the launch is where the worktree's provider default is
+    // known, and the handshake is where it can be delivered.
+    if (adapter.modelVia === 'protocol') {
+      const model = acpLaunchModel(spec)
+      if (model !== undefined) stashAcpLaunchModel(spec.agentSessionId, model)
     }
-    const model = spec.model !== undefined ? ` --model ${spec.model}` : ''
     // The record is named for the CONVERSATION, not the window: a window name
     // is a slot, and a restart that drops an earlier conversation shifts every
     // later one down a slot — which under slot-naming would truncate a live
@@ -590,9 +605,19 @@ export const acpDriver: AgentDriver = {
     // `--cwd` is the workspace the adapter runs in, named rather than
     // inherited: it is the one thing here that differs per runtime, and acpd
     // is shared code that cannot know a checkout's path.
-    return `node ${spec.paths.acpdEntry} --sock ${acpSockPath(spec.paths, spec.windowName)}`
-      + ` --log ${acpLogPath(spec.paths, spec.agentSessionId)}`
-      + ` --cwd ${spec.paths.workspaceDir} -- ${adapter}${model}`
+    // `--append` for an adapter whose `session/load` replays nothing: there the
+    // record is the conversation's only history, so a new agent life must add
+    // to it rather than start it over.
+    return [
+      ...adapter.env(spec),
+      `node ${spec.paths.acpdEntry}`,
+      `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
+      `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
+      `--cwd ${spec.paths.workspaceDir}`,
+      ...(adapter.replaysOnLoad ? [] : ['--append']),
+      '--',
+      ...adapter.argv(spec),
+    ].join(' ')
   },
 
   connect(session, sink, deps = {}): AgentConnection {

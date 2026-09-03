@@ -269,23 +269,38 @@ describe('NewWorktreeButton', () => {
     expect(screen.getByText('Claude').closest('button')).toHaveProperty('disabled', false)
   })
 
-  it('offers a chat worktree under every posture its tool supports', async () => {
+  it('offers a chat worktree under every posture its ADAPTER supports', async () => {
     // A conversation enforces a posture by telling its adapter and asking the
-    // pane about whatever the mode does not settle, so the chat button is gated
-    // on the same thing the terminal one is — not on `bypass`.
+    // pane about whatever the mode does not settle, so the chat button is
+    // gated on a posture rather than on `bypass`. On the ACP column, though,
+    // not the tool's: codex has plan mode and codex-acp does not, so under
+    // `plan` codex is a terminal worktree only — offering a chat button there
+    // would open a create the server refuses.
     vi.mocked(getAuthList).mockResolvedValue({
       gitCredentials: [],
       toolAuth: [
         { tool: 'claude', kind: 'oauth', keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z' },
+        { tool: 'codex', kind: 'oauth', keyPreview: '***x', savedAt: '2026-01-01T00:00:00.000Z' },
       ],
     })
     snapshot.mockReturnValue({ driver: 'k8s', projects: [] })
     await openMenu()
-    expect(screen.getByText('chat')).toBeTruthy()
+    const chatFor = (tool: string): boolean =>
+      screen.getByText(tool).closest('div')?.textContent?.includes('chat') === true
 
-    for (const mode of ['plan', 'manual', 'accept-edits']) {
+    expect(chatFor('Claude')).toBe(true)
+    expect(chatFor('Codex')).toBe(true)
+
+    for (const mode of ['manual', 'accept-edits']) {
       fireEvent.change(screen.getByRole('combobox'), { target: { value: mode } })
-      expect(screen.getByText('chat')).toBeTruthy()
+      expect(chatFor('Claude'), mode).toBe(true)
     }
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
+    expect(chatFor('Claude')).toBe(true)
+    expect(chatFor('Codex')).toBe(false)
+    // The terminal button is untouched — codex runs plan mode perfectly well,
+    // just not through its adapter.
+    expect(screen.getByText('Codex').closest('button')).toHaveProperty('disabled', false)
   })
 })

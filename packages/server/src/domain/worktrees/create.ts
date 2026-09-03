@@ -55,7 +55,6 @@ import {
 } from '#domain/git'
 import { serverLog } from '#log'
 import {
-  acpAdapterFor,
   agentDriver,
   AgentLaunchDeadError,
   agentWindowName,
@@ -96,7 +95,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import {
   defaultPermissionMode,
-  SUPPORTED_PERMISSION_MODES,
+  supportedPermissionModes,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -641,28 +640,42 @@ async function reportCreateFailed(
  * build would otherwise make the worktree unrestartable, and stranding a
  * checkout is worse than launching it at this tool's default.
  *
- * Both modes answer the same way. An ACP conversation honors its posture by
- * telling the adapter (`session/set_mode`) and putting the asks it still makes
- * in front of the user in the chat pane, so there is no posture it can be
- * given that it would silently fail to keep.
+ * The two agent modes do NOT always answer the same way, because a posture is
+ * a launch flag for a TUI and an advertised session mode for an adapter, and
+ * the adapters offer fewer: codex-acp collapses codex's approval × sandbox
+ * grid into three modes with no `plan` and no `manual` among them. A posture
+ * an adapter cannot express is refused here rather than clamped to a
+ * neighbour, for the same reason the TUI refuses one: the caller asked for a
+ * restraint, and launching with a weaker one is the failure worth being loud
+ * about.
+ *
+ * What an ACP conversation never fails to keep is a posture it WAS given: it
+ * tells the adapter (`session/set_mode`) and puts the asks it still makes in
+ * front of the user in the chat pane.
  */
 export function launchPermissionMode(args: {
   tool: AgentTool
   driver: DriverKind
   requested?: PermissionMode
   resume?: boolean
+  agentMode?: AgentMode
 }): PermissionMode {
   const { tool, driver, requested } = args
+  const agentMode = args.agentMode ?? 'tui'
   const fallback = defaultPermissionMode(driver, tool)
   if (requested === undefined) return fallback
   if (args.resume === true) {
-    return toolSupportsPermissionMode(tool, requested) ? requested : fallback
+    return toolSupportsPermissionMode(tool, requested, agentMode) ? requested : fallback
   }
-  if (!toolSupportsPermissionMode(tool, requested)) {
-    const supported = SUPPORTED_PERMISSION_MODES[tool].join(', ')
+  if (!toolSupportsPermissionMode(tool, requested, agentMode)) {
+    const supported = supportedPermissionModes(tool, agentMode).join(', ')
+    // Named only when it is the reason: `codex has no "plan" permission mode`
+    // sends someone to codex's docs, where plan mode plainly exists — it is
+    // codex's ACP adapter that has no mode for it.
+    const where = agentMode === 'acp' ? ' under acp' : ''
     throw new ServerError(
       'VALIDATION',
-      `${tool} has no "${requested}" permission mode; it supports: ${supported}`,
+      `${tool} has no "${requested}" permission mode${where}; it supports: ${supported}`,
     )
   }
   return requested
@@ -691,14 +704,16 @@ export async function resolvePermissionMode(args: {
   tool: AgentTool
   driver?: DriverKind
   requested?: PermissionMode
+  agentMode?: AgentMode
 }): Promise<PermissionMode> {
   const { projectSlug, tool, requested } = args
+  const agentMode = args.agentMode ?? 'tui'
   const driver = args.driver ?? worktreeDriver().kind
   if (requested !== undefined) {
-    return launchPermissionMode({ tool, driver, requested })
+    return launchPermissionMode({ tool, driver, requested, agentMode })
   }
   const remembered = await getProjectLastPermissionMode(projectSlug)
-  if (remembered !== undefined && toolSupportsPermissionMode(tool, remembered)) {
+  if (remembered !== undefined && toolSupportsPermissionMode(tool, remembered, agentMode)) {
     return remembered
   }
   return defaultPermissionMode(driver, tool)
@@ -804,14 +819,7 @@ export async function createWorktree(
   // any resource is provisioned.
   const initWindows = validateInitWindows(config)
 
-  // Resolved (and rejected) before anything is provisioned, like the init
-  // windows above: only some tools ship an ACP adapter, and a bad combination
-  // must fail the create rather than become a tmux window that exits on
-  // startup with nobody watching.
   const mode: AgentMode = options.mode ?? 'tui'
-  if (mode === 'acp' && acpAdapterFor(tool) === undefined) {
-    throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
-  }
   // And whether THIS runtime can run it: an image either ships the tool and
   // its adapter or does not, but a host has whatever the user installed, and
   // a launch command that execs nothing ends the worktree seconds after a
@@ -830,6 +838,7 @@ export async function createWorktree(
   const permissionMode = launchPermissionMode({
     tool,
     driver: runtime.kind,
+    agentMode: mode,
     resume: options.resume === true,
     ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
   })

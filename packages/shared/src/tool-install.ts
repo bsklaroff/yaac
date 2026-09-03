@@ -19,7 +19,7 @@
  * into a directory the server's environment never searches — which reads,
  * to every check here, as an install that did nothing.
  */
-import { AGENT_TOOLS, type AgentTool } from '#types'
+import { ACP_ADAPTERS, AGENT_TOOLS, type AgentTool } from '#types'
 
 export const AGENT_INSTALL: Record<AgentTool, string> = {
   claude: 'npm install -g @anthropic-ai/claude-code',
@@ -30,11 +30,35 @@ export const AGENT_INSTALL: Record<AgentTool, string> = {
   pi: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
 }
 
-/** Keyed by the adapter's BINARY name — what `--mode acp` execs and what a
- *  PATH probe looks for — not by the tool it adapts. */
-export const ACP_ADAPTER_INSTALL: Record<string, string> = {
-  'claude-agent-acp': 'npm install -g @agentclientprotocol/claude-agent-acp',
-}
+/**
+ * Keyed by the adapter's BINARY name — what `--mode acp` execs and what a PATH
+ * probe looks for — not by the tool it adapts, and derived from `ACP_ADAPTERS`
+ * so the version a host installs is the version yaac's description of that
+ * adapter was verified against. That is the opposite of the agent CLIs above,
+ * and deliberately: what yaac reads off an adapter is its advertised session
+ * modes, and an adapter that stops advertising one runs in its default rather
+ * than failing.
+ *
+ * opencode is absent because its adapter IS its CLI (`opencode acp`), so
+ * `AGENT_INSTALL` already answers for it — unpinned, on the CLI's own terms.
+ * `installCommandFor` checks the tools first, which is what makes that fall
+ * through correctly.
+ *
+ * `--ignore-scripts` because neither package has a lifecycle script to run and
+ * a future one would be fetching a platform binary the image already has. It
+ * does NOT keep codex-acp's dependency on `@openai/codex` from landing a
+ * second copy of the codex binary: that arrives as an optionalDependency,
+ * which the flag does not skip. Harmless — codex-acp execs `CODEX_PATH ??
+ * "codex"`, i.e. the one already on PATH.
+ */
+export const ACP_ADAPTER_INSTALL: Record<string, string> = Object.fromEntries(
+  AGENT_TOOLS
+    .filter((tool) => ACP_ADAPTERS[tool].binary !== tool)
+    .map((tool) => {
+      const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
+      return [binary, `npm install -g --ignore-scripts ${pkg}@${verified}`]
+    }),
+)
 
 /**
  * The install command for an agent binary or ACP adapter binary, or

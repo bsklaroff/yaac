@@ -4,7 +4,9 @@ import path from 'node:path'
 import os from 'node:os'
 import {
   readAcpFirstPrompt,
+  readAcpInFlight,
   readAcpLog,
+  readAcpModel,
   readAcpPendingPermissions,
   replayAcpLog,
   tailAcpLog,
@@ -539,5 +541,99 @@ describe('replayAcpLog', () => {
         ],
       },
     })
+  })
+})
+
+describe('readAcpModel', () => {
+  const write = async (name: string, lines: string[]): Promise<string> => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-model-'))
+    dirs.push(dir)
+    const file = path.join(dir, `${name}.jsonl`)
+    await fs.writeFile(file, lines.join('\n') + '\n')
+    return file
+  }
+  const newSession = (result: unknown): string[] => [
+    line({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} }),
+    line({ jsonrpc: '2.0', id: 2, result }),
+  ]
+
+  it('reads the handshake reply in either shape an adapter reports it', async () => {
+    // Two shapes because the adapters disagree: codex and opencode answer with
+    // a `models` block, claude and pi with a `configOptions` entry. The record
+    // is the only source that answers for all four, so it reads both.
+    const models = await write('models', newSession({
+      sessionId: 'c1',
+      models: { currentModelId: 'opencode/big-pickle' },
+    }))
+    expect(await readAcpModel(models)).toBe('opencode/big-pickle')
+
+    const options = await write('options', newSession({
+      sessionId: 'c1',
+      configOptions: [{ id: 'thought_level', currentValue: 'medium' }, { id: 'model', currentValue: 'gpt-5.6-sol' }],
+    }))
+    expect(await readAcpModel(options)).toBe('gpt-5.6-sol')
+
+    const loaded = await write('loaded', [
+      life('l1'),
+      line({ jsonrpc: '2.0', id: 3, method: 'session/load', params: { sessionId: 'c1' } }),
+      line({ jsonrpc: '2.0', id: 3, result: { models: { currentModelId: 'claude-fable-5-1' } } }),
+    ])
+    expect(await readAcpModel(loaded)).toBe('claude-fable-5-1')
+  })
+
+  it('takes the last model that was actually accepted', async () => {
+    // A change is read from the REQUEST, because `session/set_model` answers
+    // with an empty object — the new value exists only in what was asked. And
+    // only from one whose reply carried no error: a refusal changed nothing,
+    // and reading it would show a model the agent is not using.
+    const file = await write('changed', [
+      ...newSession({ sessionId: 'c1', models: { currentModelId: 'first' } }),
+      line({ jsonrpc: '2.0', id: 5, method: 'session/set_model', params: { sessionId: 'c1', modelId: 'second' } }),
+      line({ jsonrpc: '2.0', id: 5, result: {} }),
+      line({ jsonrpc: '2.0', id: 6, method: 'session/set_config_option', params: { sessionId: 'c1', configId: 'model', value: 'third' } }),
+      line({ jsonrpc: '2.0', id: 6, result: {} }),
+      line({ jsonrpc: '2.0', id: 7, method: 'session/set_model', params: { sessionId: 'c1', modelId: 'refused' } }),
+      line({ jsonrpc: '2.0', id: 7, error: { code: -32602, message: 'unknown model' } }),
+    ])
+    expect(await readAcpModel(file)).toBe('third')
+  })
+
+  it('ignores a config option about anything else, and a record with no model at all', async () => {
+    const other = await write('other', [
+      ...newSession({ sessionId: 'c1' }),
+      line({ jsonrpc: '2.0', id: 5, method: 'session/set_config_option', params: { configId: 'thought_level', value: 'high' } }),
+      line({ jsonrpc: '2.0', id: 5, result: {} }),
+    ])
+    expect(await readAcpModel(other)).toBeUndefined()
+    // A conversation whose record has not appeared yet is not a failure.
+    expect(await readAcpModel(path.join(os.tmpdir(), 'yaac-no-such-record.jsonl'))).toBeUndefined()
+  })
+})
+
+describe('readAcpInFlight', () => {
+  const write = async (name: string, lines: string[]): Promise<string> => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-acp-life-'))
+    dirs.push(dir)
+    const file = path.join(dir, `${name}.jsonl`)
+    await fs.writeFile(file, lines.join('\n') + '\n')
+    return file
+  }
+
+  it('forgets what a previous life left open when the record spans several', async () => {
+    // Under `--append` — an adapter whose `session/load` replays nothing, so
+    // its record is the conversation's only history — one file holds several
+    // agent lives. An agent killed rather than shut down leaves its last
+    // prompt unanswered and its last ask unsettled; read as still in flight,
+    // they would pin the NEW life `running` with nothing behind it, and offer
+    // a Stop for a turn no process is running.
+    const turn = await write('turn', [life('l1'), prompt('go'), life('l2')])
+    expect(await readAcpInFlight(turn)).toBe(false)
+
+    const asks = await write('asks', [life('l1'), ask(42), life('l2')])
+    expect(await readAcpPendingPermissions(asks)).toEqual([])
+
+    // The current life's own unanswered prompt still counts.
+    const live = await write('live', [life('l1'), prompt('a'), life('l2'), prompt('b')])
+    expect(await readAcpInFlight(live)).toBe(true)
   })
 })

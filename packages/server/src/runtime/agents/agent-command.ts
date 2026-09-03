@@ -12,7 +12,8 @@ import {
   type PermissionMode,
   type YaacConfig,
 } from '@yaac/shared/types'
-import { shellEscape } from '#lib/shell'
+import { envJsonAssignment, shellEscape } from '#lib/shell'
+import { opencodePermissionRules } from './opencode'
 
 /**
  * Every `tmux` invocation this file authors routes through this prefix so
@@ -109,55 +110,6 @@ export interface AgentCmdSpec {
 function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
   if (toolSupportsPermissionMode(tool, mode)) return mode
   return tool === 'opencode' ? 'accept-edits' : 'bypass'
-}
-
-/**
- * opencode's approval posture is config, not flags. `OPENCODE_PERMISSION`
- * takes the same JSON as the config file's `permission` block and is read per
- * process, which is what makes it per-worktree — the `opencode.json` session
- * create writes is shared by every worktree in the project.
- *
- * **Every posture is stated in full, and only in keys opencode actually
- * has.** Its permission config is a plain zod object over exactly `edit`,
- * `bash`, `webfetch`, `doom_loop` and `external_directory` — no top-level
- * wildcard — and a plain zod object *strips* what it does not know. An
- * unrecognized key is therefore not a partial posture but an empty one, which
- * `mergeAgentPermissions` then fills with `edit: allow`, `webfetch: allow`,
- * `bash: {"*": "allow"}`. A posture spelled wrong here does not fail: it runs
- * unrestrained, silently, on a containerless worktree's real filesystem.
- *
- * That is also why `bypass` states allow-everything rather than passing no
- * config at all. Inheriting opencode's near-permissive defaults happens to
- * land in the right place today, but `doom_loop` and `external_directory`
- * already default to `ask`, and a future default that tightens would quietly
- * stop meaning bypass with nothing to signal it.
- */
-const OPENCODE_PERMISSION_RULES: Partial<Record<PermissionMode, Record<string, string>>> = {
-  bypass: {
-    edit: 'allow', bash: 'allow', webfetch: 'allow',
-    doom_loop: 'allow', external_directory: 'allow',
-  },
-  // The two left at opencode's own `ask` default are the point of the mode:
-  // edits inside the worktree land unprompted, stepping outside it does not.
-  'accept-edits': { edit: 'allow', bash: 'ask', webfetch: 'allow' },
-  manual: {
-    edit: 'ask', bash: 'ask', webfetch: 'ask',
-    doom_loop: 'ask', external_directory: 'ask',
-  },
-}
-
-/**
- * The value for `OPENCODE_PERMISSION`, escaped for the launch command.
- *
- * Double-quoted with escaped inner quotes rather than single-quoted: the whole
- * command is embedded in `respawn-window '<cmd>'`, so a single quote would end
- * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
- * than hand-written so the escaping cannot drift from the shape.
- */
-function opencodePermissionArg(mode: PermissionMode): string | undefined {
-  const rules = OPENCODE_PERMISSION_RULES[mode]
-  if (rules === undefined) return undefined
-  return `OPENCODE_PERMISSION="${JSON.stringify(rules).replace(/"/g, '\\"')}"`
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
@@ -259,8 +211,9 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // continue, session, prompt, agent, port and hostname, and its parser is
     // non-strict — an invented flag is dropped without a word, leaving the
     // posture as whatever the defaults say.
+    const rules = opencodePermissionRules(mode)
     return [
-      opencodePermissionArg(mode) ?? '',
+      rules !== undefined ? envJsonAssignment('OPENCODE_PERMISSION', rules) : '',
       'opencode',
       mode === 'plan' ? '--agent plan' : '',
       '--port 4096 --hostname 127.0.0.1',

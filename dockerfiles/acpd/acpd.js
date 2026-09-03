@@ -50,6 +50,12 @@
  * A restart's `session/load` replays the whole conversation, so the fresh file
  * ends up complete again rather than double-appending history it already had.
  *
+ * `--append` is for the adapter that does not replay: opencode's
+ * `session/load` returns the session's models and modes and re-emits nothing,
+ * so truncating would leave a reconnected conversation blank. There the record
+ * is the only copy of the history and a new life adds to it, its life line
+ * landing mid-file rather than at byte 0.
+ *
  * ## Attach semantics
  *
  * At most one client at a time; a new connection displaces the old (a stale
@@ -87,6 +93,10 @@ export function createAcpd({
   sockPath,
   argv,
   logPath,
+  // Keep what the record already holds rather than starting it over. For an
+  // adapter whose `session/load` replays nothing (see the header), the file is
+  // the conversation's only history.
+  append = false,
   env = process.env,
   // The directory tmux opened this window in, which every driver pins to the
   // workspace (`new-session -c`). A literal path here would be one runtime's
@@ -127,9 +137,10 @@ export function createAcpd({
 
   /**
    * Append-only record of everything relayed. Opened with 'w' so a new life
-   * starts a new file (see the header comment), and written with no encoding
-   * translation: the bytes on the wire are the bytes on disk, so the server
-   * parses one format rather than two.
+   * starts a new file — or 'a' under `--append`, where the history the file
+   * holds is the only copy there is (see the header comment). Written with no
+   * encoding translation: the bytes on the wire are the bytes on disk, so the
+   * server parses one format rather than two.
    */
   let logFd = null
   /**
@@ -153,7 +164,21 @@ export function createAcpd({
     if (!logPath) return true
     try {
       fs.mkdirSync(path.dirname(logPath), { recursive: true })
-      logFd = fs.openSync(logPath, 'w')
+      // 'a+' rather than 'a': appending still has to READ one byte (below),
+      // and an append-only fd is write-only.
+      logFd = fs.openSync(logPath, append ? 'a+' : 'w')
+      // Under append, the previous life may have died mid-write and left a
+      // partial line. Without this the life header lands on the end of it and
+      // the reader drops BOTH as unparseable — so the boundary is never seen,
+      // and the dead life's unanswered prompt or permission ask is inherited
+      // by this one, which then shows as working (or waiting on a person) for
+      // a turn no process is running.
+      const existing = append ? fs.fstatSync(logFd).size : 0
+      if (existing > 0) {
+        const tail = Buffer.alloc(1)
+        fs.readSync(logFd, tail, 0, 1, existing - 1)
+        if (tail[0] !== 0x0a) fs.writeSync(logFd, '\n')
+      }
       fs.writeSync(logFd, `${JSON.stringify({
         jsonrpc: '2.0',
         method: '_acpd/life',

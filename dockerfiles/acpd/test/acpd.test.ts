@@ -153,6 +153,49 @@ describe('createAcpd', () => {
     expect(recorded).toContain('while detached')
   })
 
+  it('starts the record over by default, and keeps it under --append', async () => {
+    // Truncating is right for an adapter that replays: its `session/load`
+    // re-emits the whole conversation into the fresh file, so the record ends
+    // up complete rather than holding two copies. It is wrong for one that
+    // does not — opencode's load returns models and modes and re-emits
+    // nothing — where the file IS the only history and a new life must add to
+    // it, its life line landing mid-file rather than at byte 0.
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    fs.writeFileSync(logPath, '{"from":"an earlier life"}\n')
+
+    const fresh = await start(['cat'], { logPath })
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('_acpd/life'))
+    expect(fs.readFileSync(logPath, 'utf8')).not.toContain('an earlier life')
+    fresh.daemon.close()
+
+    fs.writeFileSync(logPath, '{"from":"an earlier life"}\n')
+    await start(['cat'], { logPath, append: true })
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('_acpd/life'))
+    const kept = fs.readFileSync(logPath, 'utf8').split('\n')
+    expect(kept[0]).toContain('an earlier life')
+    expect(kept[1]).toContain('_acpd/life')
+  })
+
+  it('starts the appended life on its own line even after a torn write', async () => {
+    // A life that was killed mid-write leaves a partial line. Appending the
+    // header onto it makes ONE unparseable line, and a reader that drops it
+    // never sees the boundary — so the dead life's unanswered prompt or
+    // permission ask is inherited by this one, which then shows as working, or
+    // waiting on a person, for a turn no process is running.
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    fs.writeFileSync(logPath, '{"id":7,"method":"session/prom')
+
+    await start(['cat'], { logPath, append: true })
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('_acpd/life'))
+    const lines = fs.readFileSync(logPath, 'utf8').split('\n')
+    // The torn line is left as it is — nothing can repair it — but the header
+    // is a line of its own, which is all a reader needs.
+    expect(lines[0]).toBe('{"id":7,"method":"session/prom')
+    expect(JSON.parse(lines[1]).method).toBe('_acpd/life')
+  })
+
   it('does not replay to a new client — the record is what it missed', async () => {
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
     tmpDirs.push(path.dirname(logPath))

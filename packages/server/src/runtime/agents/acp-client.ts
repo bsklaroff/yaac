@@ -47,7 +47,6 @@ import {
   ACP,
   ACPD,
   ACP_PROTOCOL_VERSION,
-  acpModeId,
   acpModeOffered,
   chooseAllowOption,
   clientCapabilities,
@@ -56,8 +55,10 @@ import {
   type AcpInitializeResult,
   type AcpNewSessionResult,
   type AcpPromptResult,
+  type AcpLoadSessionResult,
   type AcpSessionModes,
 } from './acp-protocol'
+import type { AcpAdapterProfile } from './acp-adapters'
 import { serverLog } from '#log'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
@@ -115,6 +116,20 @@ export interface AcpConversationDeps {
    * opposite answers.
    */
   permissionMode?: () => PermissionMode | undefined
+  /**
+   * What this conversation's adapter can be told, and how. Absent for a
+   * caller that has no adapter in hand — a test driving the protocol directly
+   * — which reads as "tell it nothing": no mode is set and no model is sent,
+   * leaving the adapter in its own default, which is the strict one.
+   */
+  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'modelVia' | 'forwardAsksUnderBypass'>
+  /**
+   * The model this conversation was launched to run, for an adapter that can
+   * only be told one over the protocol. Sent once, after `session/new` —
+   * never after a `session/load`, which lands on an adapter that already holds
+   * a model the user may since have changed.
+   */
+  launchModel?: string
   /**
    * An ask started or stopped blocking the agent. Separate from `onBusy`
    * because it is a different question about the same turn: `busy` says a turn
@@ -380,7 +395,12 @@ export class AcpConversation {
    */
   private onRequest(method: string, params: unknown, id: string | number): Promise<unknown> {
     if (method === ACP.requestPermission) {
-      if (this.permissionMode() === 'bypass') {
+      // `bypass` waives permission prompts, and for most adapters that is all
+      // an ask can be. pi is the exception: it has no permission system, so
+      // what arrives on this method are its extensions' own questions — a
+      // choice a person is being asked to make, which auto-answering would
+      // make for them.
+      if (this.permissionMode() === 'bypass' && !this.forwardsAsksUnderBypass()) {
         // See chooseAllowOption: a bypassed session grants rather than prompts.
         // `selected` with no option id would be malformed, so an agent that
         // offered none is refused instead.
@@ -419,6 +439,11 @@ export class AcpConversation {
   private permissionMode(): PermissionMode | undefined {
     if (this.deps.permissionMode === undefined) return 'bypass'
     return this.deps.permissionMode()
+  }
+
+  /** Whether this adapter's asks reach the user even under `bypass`. */
+  private forwardsAsksUnderBypass(): boolean {
+    return this.deps.profile?.forwardAsksUnderBypass === true
   }
 
   /** Say what this conversation's status is now, since a pending ask changes
@@ -553,10 +578,14 @@ export class AcpConversation {
 
       const canLoad = init.agentCapabilities?.loadSession === true
       if (this.sessionId !== undefined && canLoad) {
-        // Replays the whole conversation as `session/update` notifications,
-        // which is exactly the pane's history — so a restarted worktree comes
-        // back with its transcript already on screen.
-        const loaded = await this.peer.request<{ modes?: AcpSessionModes }>(ACP.sessionLoad, {
+        // For most adapters this replays the whole conversation as
+        // `session/update` notifications, which is exactly the pane's history
+        // — so a restarted worktree comes back with its transcript already on
+        // screen. For one that replays nothing (opencode) the history is in
+        // the record instead, which is why acpd was told to keep it
+        // (`--append`); either way the pane reads the record, so the two look
+        // the same from here.
+        const loaded = await this.peer.request<AcpLoadSessionResult>(ACP.sessionLoad, {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,
           mcpServers: [],
@@ -576,6 +605,7 @@ export class AcpConversation {
         this.sessionId = created.sessionId
         this.sessionModes = created.modes
         this.deps.onSessionId(created.sessionId)
+        await this.applyLaunchModel()
       }
       await this.applyPermissionMode()
       this.markReady()
@@ -625,11 +655,19 @@ export class AcpConversation {
         + ' — leaving the session in the adapter default and forwarding its asks')
       return
     }
-    const modeId = acpModeId(mode)
+    const modeId = this.deps.profile?.modeIds[mode]
+    if (modeId === undefined) {
+      // Either this adapter has no mode for this posture and is not meant to —
+      // the posture rides its launch environment instead (opencode), or the
+      // tool has no permission system to put in a mode (pi) — or no adapter
+      // was named at all, which is a caller driving the protocol directly.
+      // Create refuses any posture a tool cannot express, so there is nothing
+      // to report here.
+      return
+    }
     if (this.sessionModes?.currentModeId === modeId) return
     if (!acpModeOffered(this.sessionModes, modeId)) {
-      this.log(`[server] acp: adapter does not offer mode ${modeId} for "${mode}"`
-        + ` — leaving the session in ${this.sessionModes?.currentModeId ?? 'its default'}`)
+      this.reportModeNotSet(mode, modeId, 'offers no such mode')
       return
     }
     try {
@@ -637,8 +675,63 @@ export class AcpConversation {
       this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
       this.log(`[server] acp: session mode set to ${modeId} for "${mode}"`)
     } catch (err) {
-      this.log(`[server] acp: could not set mode ${modeId}: ${
-        err instanceof Error ? err.message : String(err)}`)
+      // The same news as an unadvertised mode, and it has to be said the same
+      // way. An adapter's own default is not always at least as strict as what
+      // was asked — codex-acp's is `agent`, where a reviewer model approves
+      // most actions, so an `accept-edits` conversation that lands here is
+      // running looser than the create asked for. Logging alone would leave
+      // that visible only to whoever reads the server's log, which is not the
+      // person who chose the posture.
+      this.reportModeNotSet(mode, modeId, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /**
+   * Tell the pane, and the log, that this conversation is not in the posture
+   * it was created with.
+   *
+   * Deliberately says only what is true in every case it covers: which mode
+   * the session is actually in. What happens to the agent's asks from here
+   * varies — under `bypass` this client still answers them itself, and codex's
+   * fallback `agent` mode has a reviewer model answering most of them — so
+   * promising they will all arrive in the pane would be wrong twice over.
+   */
+  private reportModeNotSet(mode: PermissionMode, modeId: string, why: string): void {
+    const message = `The agent would not switch to "${modeId}" for the ${mode} posture`
+      + ` (${why}) — running in ${this.sessionModes?.currentModeId ?? 'its own default'} instead.`
+    this.log(`[server] acp: ${message}`)
+    this.emit({ type: 'error', message })
+  }
+
+  /**
+   * Name the model on a freshly created session, for an adapter that takes one
+   * no other way.
+   *
+   * Only after `session/new`. A `session/load` lands on an adapter that is
+   * already holding a model — the one this conversation set when it was
+   * created, or one the user has changed since — and re-asserting the launch
+   * value there would quietly undo their choice on the next relay hiccup, the
+   * same reason the posture is not re-asserted on a reattach.
+   *
+   * A refusal is reported and survived. The model is a preference, and losing
+   * the conversation over one the adapter will not take (a provider with no
+   * credential, an id retired upstream) would be worse than running the
+   * adapter's own default — which the pane says out loud, because a worktree
+   * created with `--model` and silently running another is a bill nobody
+   * expects.
+   */
+  private async applyLaunchModel(): Promise<void> {
+    const model = this.deps.launchModel
+    if (model === undefined || this.sessionId === undefined) return
+    try {
+      await this.peer.request(ACP.sessionSetModel, { sessionId: this.sessionId, modelId: model })
+      this.log(`[server] acp: session model set to ${model}`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      const message = `The agent would not switch to the model "${model}"`
+        + ` — running its own default instead (${detail}).`
+      this.log(`[server] acp: ${message}`)
+      this.emit({ type: 'error', message })
     }
   }
 

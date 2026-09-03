@@ -16,7 +16,7 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
 // is the only place its firing (or its silence) can be asserted.
 vi.mock('#log', () => ({ serverLog: vi.fn(), pipeToServerLog: vi.fn() }))
 import { closeDb } from '#db/client'
-import { claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
+import { acpLogDir, claudeDir, worktreeSessionStartsPath } from '@yaac/shared/project-paths'
 import {
   reconcileAgentSessions,
   reconcileWorktreeAgentSessions,
@@ -25,7 +25,6 @@ import {
   listWorktreeAgentSessions,
   recordAgentSessions,
 } from '#db/agent-session-store'
-import { absoluteTranscriptPath } from '#domain/worktrees/agent-session-paths'
 import { _resetModelCaptureForTests } from '#domain/worktrees/model-capture'
 import { _resetPromptCaptureForTests } from '#domain/worktrees/prompt-capture'
 import { recordWorktreeCreated, recordWorktreeLife } from '#db/worktree-store'
@@ -270,30 +269,45 @@ describe('reconcileWorktreeAgentSessions', () => {
     expect(await states()).toEqual([])
   })
 
-  it('records an acp conversation off the live set, with its transcript', async () => {
+  it('records an acp conversation off the live set, reading the record for the rest', async () => {
     // ACP mode has no hook and no log to fold: the server IS the ACP client, so
-    // `session/new` hands it the id and the live set carries it. The adapter
-    // still writes the tool's usual transcript, and naming it is what gives
-    // the conversation a last-activity time for the stopped listing — which
-    // outlives the pod and so cannot ask the conversation anything.
-    const transcripts = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(transcripts, { recursive: true })
-    await fs.writeFile(path.join(transcripts, 'acp-1.jsonl'), '{"type":"user"}\n')
+    // `session/new` hands it the id and the live set carries it. Everything
+    // else comes from acpd's record, which is the one source that answers for
+    // every tool — three of the four leave no transcript this side of the pod
+    // can find — and which outlives the pod, so a stopped worktree can still
+    // be labelled and ordered.
+    await fs.mkdir(acpLogDir('demo', 'wt-1'), { recursive: true })
+    await fs.writeFile(path.join(acpLogDir('demo', 'wt-1'), 'acp-1.jsonl'), [
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'session/new', params: {} }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        result: { sessionId: 'acp-1', configOptions: [{ id: 'model', currentValue: 'gpt-5.6-sol' }] },
+      }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'session/prompt',
+        params: { prompt: [{ type: 'text', text: 'ship the thing' }] },
+      }),
+      '',
+    ].join('\n'))
     setLiveAgents('demo', 'wt-1', [
-      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
+      { handle: 'codex', tool: 'codex', agentSessionId: 'acp-1' },
     ])
 
-    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'claude', 'acp')
+    await reconcileWorktreeAgentSessions('demo', 'wt-1', 'codex', 'acp')
 
     const [link] = await listWorktreeAgentSessions('demo', 'wt-1')
     expect(link).toMatchObject({ agentSessionId: 'acp-1', mode: 'acp', active: true })
     // The handle is the acpd window, not a pane id — that is what the status
     // store keys this conversation's busy/idle by.
-    expect(link.paneId).toBe('claude')
-    // Recorded in the column's portable form, and resolvable back to the file
-    // the adapter actually wrote — the round trip every reader depends on.
-    expect(link.transcriptPath).toBe(path.join('claude', 'projects', '-workspace', 'acp-1.jsonl'))
-    expect(absoluteTranscriptPath(link)).toBe(path.join(transcripts, 'acp-1.jsonl'))
+    expect(link.paneId).toBe('codex')
+    expect(link.firstPrompt).toBe('ship the thing')
+    // codex names its rollouts by a thread id yaac never sees, so a transcript
+    // reader would answer nothing here. The record answers both.
+    expect(link.model).toBe('gpt-5.6-sol')
+    expect(link.transcriptPath).toBeUndefined()
     expect(link.lastActiveAt).toBeInstanceOf(Date)
   })
 
