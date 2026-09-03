@@ -46,19 +46,26 @@ export function worktreeModulesDir(projectSlug: string, worktreeId: string): str
  * Remove everything on disk that belongs to one worktree, in one call.
  *
  * The counterpart to a create: the checkout, git's admin dir for it, the
- * in-pod hook's session-starts log, and the
- * per-worktree opencode database. Every one of them is keyed by the worktree
- * id, which is what makes this a single function rather than a list each
- * caller has to remember — and `opencode-data` is here because until now
- * nothing removed it at all.
+ * in-pod hook's session-starts log, the per-worktree opencode database, and
+ * both the state roots and the ephemeral-modules dir that back its mounts.
+ * Every one of them is keyed by the worktree id, which is what makes this a
+ * single function rather than a list each caller has to remember.
+ *
+ * The last two are also removed by `cleanupWorktree`, gated on the runtime
+ * being confirmed gone, because they are mount sources a workspace that is
+ * still shutting down may be reading. Here they need no gate: every caller
+ * has already established that nothing is running (a reaped spare, a create
+ * that gave up, a worktree the user discarded), which is the same
+ * establishment that lets the CHECKOUT go.
  *
  * NOT called by an ordinary stop. A stopped worktree is a checkout still on
  * disk, diff and all, waiting to be restarted; this is for the cases where the
- * worktree itself goes away — an unclaimed spare being reaped, and the two
- * failures that leave a checkout no row will ever name again: a fresh create
- * that gave up, and a claim that failed after mutating its spare. (A failed
- * *resume* is not one of those: its row is put back as the restart found it,
- * and its checkout is the work the user came back for.)
+ * worktree itself goes away — an unclaimed spare being reaped, a stopped
+ * worktree the user has discarded, and the two failures that leave a checkout
+ * no row will ever name again: a fresh create that gave up, and a claim that
+ * failed after mutating its spare. (A failed *resume* is not one of those: its
+ * row is put back as the restart found it, and its checkout is the work the
+ * user came back for.)
  *
  * The admin dir needs its `locked` file cleared first: worktree setup writes it
  * precisely so `git worktree prune` can never reap a live worktree from
@@ -96,6 +103,10 @@ export async function deleteWorktreeState(
     fs.rm(path.join(adminDir, 'locked'), { force: true })
       .then(() => fs.rm(adminDir, { recursive: true, force: true })),
     fs.rm(opencodeDataDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    fs.rm(worktreeModulesDir(projectSlug, worktreeId), { recursive: true, force: true }),
+    ...worktreeStateRoots(projectSlug, worktreeId).map(
+      (dir) => fs.rm(dir, { recursive: true, force: true }),
+    ),
     deleteSessionStartsLog(projectSlug, worktreeId),
   ].map((p) => p.then(() => true, (err: unknown) => {
     serverLog(`[server] delete worktree state ${projectSlug}/${worktreeId}: ${String(err)}`)

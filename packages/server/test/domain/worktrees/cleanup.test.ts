@@ -257,19 +257,25 @@ describe('deleteWorktreeState', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('removes the checkout, its git admin dir and its log, and confirms it', async () => {
+  it('removes everything the worktree owns on disk, and confirms it', async () => {
     const slug = 'dws'
     const wt = path.join(dataDir, 'projects', slug, 'worktrees', 'w1')
     const admin = path.join(dataDir, 'projects', slug, 'repo', '.git', 'worktrees', 'w1')
-    await fs.mkdir(wt, { recursive: true })
-    await fs.mkdir(admin, { recursive: true })
+    const modules = worktreeModulesDir(slug, 'w1')
+    const state = worktreeStateRoots(slug, 'w1')
+    for (const dir of [wt, admin, modules, ...state]) await fs.mkdir(dir, { recursive: true })
     // Worktree setup writes this precisely so `git worktree prune` can't reap
     // a live worktree; it has to be cleared or it outlives what it protects.
     await fs.writeFile(path.join(admin, 'locked'), 'yaac\n')
 
     await expect(deleteWorktreeState(slug, 'w1')).resolves.toBe(true)
-    await expect(fs.access(wt)).rejects.toThrow()
-    await expect(fs.access(admin)).rejects.toThrow()
+    // The mount sources go too. `cleanupWorktree` removes those gated on the
+    // runtime being confirmed gone; every caller of THIS has already
+    // established that nothing is running, which is the same establishment
+    // that lets the checkout go.
+    for (const dir of [wt, admin, modules, ...state]) {
+      await expect(fs.access(dir)).rejects.toThrow()
+    }
   })
 
   // Structural rather than incidental: every id that reaches this today is a
