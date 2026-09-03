@@ -827,6 +827,36 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     expect(windows).toContain('claude')
     await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
   }, 180_000)
+
+  // The end of the line, and the only thing in the product that reclaims a
+  // worktree's disk: every case above leaves a checkout carrying its own
+  // installed dependencies, and `stop` is defined by keeping it.
+  //
+  // Truly last — it removes the subject the whole describe shares.
+  it('deletes the stopped worktree: its checkout goes, and it stops being listed', async () => {
+    const dir = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId)
+    await expect(fs.stat(dir)).resolves.toBeDefined()
+
+    // The stop above is detached, and a delete refuses a worktree the
+    // substrate still reports — deliberately, since the bytes it removes are
+    // the directory a live workspace works in. So wait for the teardown to
+    // land rather than racing it.
+    await vi.waitFor(
+      async () => { expect((await listWorktrees()).map((w) => w.worktreeId)).not.toContain(worktreeId) },
+      { timeout: 30_000, interval: 250 },
+    )
+
+    const { stdout, stderr, exitCode } = await runYaac(
+      serverEnv, 'worktree', 'delete', worktreeId,
+    )
+    expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+    await expect(fs.stat(dir)).rejects.toThrow()
+
+    // And the row went with the bytes: a worktree still listed as stopped is
+    // one the user would try to restart into a directory that is gone.
+    const stopped = await runYaac(serverEnv, 'worktree', 'list', '-s', SLUG, '-a')
+    expect(stopped.stdout).not.toContain(worktreeId)
+  }, 60_000)
 })
 
 /**

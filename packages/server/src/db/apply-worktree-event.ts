@@ -15,6 +15,25 @@ import { serverLog } from '#log'
 import type { WorktreeEvent, WorktreeCreateFailed, WorktreeCreated } from './events'
 
 /**
+ * Erase a worktree: its links, every conversation it was the last worktree
+ * holding, and the row itself.
+ *
+ * The links go first and their failure is caught separately so it cannot
+ * skip the row delete — the row is what makes the worktree visible, and
+ * leaking it is far worse than leaking a conversation nothing lists.
+ *
+ * The two events that end here are the only two that erase a worktree: a
+ * fresh create rolling back its own insert, and a stopped worktree the user
+ * has discarded.
+ */
+async function forgetWorktree(projectSlug: string, worktreeId: string): Promise<void> {
+  try {
+    await deleteWorktreeAgentSessions(projectSlug, worktreeId)
+  } catch { /* best-effort */ }
+  await deleteWorktreeRow(projectSlug, worktreeId)
+}
+
+/**
  * The one door through which observed facts become rows: persist what an
  * observer found.
  *
@@ -64,6 +83,12 @@ async function applyEvent(event: WorktreeEvent): Promise<void> {
       return
     case 'worktree-stopped':
       await recordWorktreeStopped(event.projectSlug, event.worktreeId, event.cause)
+      return
+    case 'worktree-forgotten':
+      // Propagates, like the life stamp above: the emitter has already
+      // removed the bytes, so a row left behind would list a worktree whose
+      // restart resolves into a directory that is no longer there.
+      await forgetWorktree(event.projectSlug, event.worktreeId)
       return
   }
 }
@@ -124,13 +149,8 @@ async function applyCreateFailed(event: WorktreeCreateFailed): Promise<void> {
     if (!resume) {
       // The links go with the row, and the conversations behind them: a
       // create that never came up should leave nothing, and nothing else
-      // prunes either. Caught separately so a failure here cannot skip the
-      // row delete below — the row is what makes the worktree visible, and
-      // leaking it is far worse than leaking a conversation nothing lists.
-      try {
-        await deleteWorktreeAgentSessions(projectSlug, worktreeId)
-      } catch { /* best-effort */ }
-      await deleteWorktreeRow(projectSlug, worktreeId)
+      // prunes either.
+      await forgetWorktree(projectSlug, worktreeId)
     } else if (prior) {
       // Exactly as the restart found it — including the cause it died of and
       // whether the user had already seen that death.

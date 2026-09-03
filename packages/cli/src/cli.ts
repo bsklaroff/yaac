@@ -9,6 +9,7 @@ import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
 import { worktreeCreate } from '#commands/worktree-create'
 import { worktreeList } from '#commands/worktree-list'
 import { worktreeRename } from '#commands/worktree-rename'
+import { worktreeDelete } from '#commands/worktree-delete'
 import { worktreeStop } from '#commands/worktree-stop'
 import { worktreeRestart } from '#commands/worktree-restart'
 import { worktreeAttach } from '#commands/worktree-attach'
@@ -439,6 +440,12 @@ worktree
   .action(async (worktreeId: string) => {
     await worktreeRestart(worktreeId)
   })
+
+worktree
+  .command('delete')
+  .description('Delete a stopped worktree: remove its checkout, its diff and its record (stop it first; the branch is kept)')
+  .argument('<worktree-id>', 'Worktree ID or ID prefix, as "worktree list -s" shows it')
+  .action(worktreeDelete)
 
 worktree
   .command('agents')

@@ -17,7 +17,16 @@ message stays the label, with no write-once rule to enforce.
 
 A row is 1-1 with a git worktree, and that is why stopping keeps it: teardown
 prunes the worktree dir but never `worktreeDir`, so a stopped row is a checkout
-still on disk, diff and all, waiting to be restarted.
+still on disk, diff and all, waiting to be restarted. The other thing you can
+do with a stopped worktree is say you never will — `worktree delete`
+(`#domain/worktrees`'s `deleteWorktree`, the overlay's Delete action) removes
+the checkout and everything else keyed by that worktree id, then the row. It
+is the only path that reclaims one worktree's disk, and a project
+accumulates a checkout per worktree it has ever run, each carrying its own
+installed dependencies. It refuses a worktree the substrate still reports,
+and fails closed on a substrate that cannot answer: the bytes it removes are
+the directory a live workspace's agents are working in. The BRANCH is left —
+the commits are in the project's one clone rather than in the checkout.
 
 That correspondence is also the limit of what can be collected. A checkout
 whose row is gone answers to nothing — every sweep is row-driven — so the
@@ -84,14 +93,19 @@ goes through them, and they are the only writers.
   cause from the previous life; the title and the sidebar group survive,
   because they belong to the worktree rather than to one of its lives — which
   is what puts a restarted worktree back in the group its ghost row was
-  sitting in. The two
-  deletes are scoped to something other than a running worktree going away:
-  `project remove`, which takes the checkouts and transcripts with it (rows
-  left behind would list worktrees whose restart resolves into a directory that
-  no longer exists), and a create rolling back its own insert — which takes
-  its staged checkout with it for the same reason the claim above does, and
-  only for a *fresh* create: a failed resume is put back as stopped, and its
-  checkout is the work the user came back for.
+  sitting in. The deletes are scoped to something other than a running
+  worktree going away: `project remove`, which takes the checkouts and
+  transcripts with it (rows left behind would list worktrees whose restart
+  resolves into a directory that no longer exists); a create rolling back its
+  own insert — which takes its staged checkout with it for the same reason the
+  claim above does, and only for a *fresh* create, since a failed resume is
+  put back as stopped and its checkout is the work the user came back for; and
+  `worktree delete`, the user saying they are finished with a stopped one.
+  That last is the only one a person asks for, and it takes the same order the
+  claim does — bytes, then row — because the row is the last name anything has
+  for the checkout: a delete that could not remove every byte keeps the row,
+  so the worktree stays listed and the delete stays retryable rather than
+  stranding what is left.
 - Writes are best-effort (a failed write degrades a listing, never blocks a
   create or a teardown); reads propagate their errors.
 

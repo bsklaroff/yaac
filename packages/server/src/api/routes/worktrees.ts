@@ -4,6 +4,7 @@ import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   allowWorktreeHost,
+  deleteWorktree,
   dismissWorktreePort,
   forwardWorktreePort,
   getAgentSessionTranscript,
@@ -267,6 +268,19 @@ export const worktreeApp = new Hono()
     async (c) => {
       const { worktreeId } = c.req.valid('json')
       const info = await stopWorktree(worktreeId)
+      return c.json(info)
+    },
+  )
+  // Discard a stopped worktree: its checkout, everything else it holds on
+  // disk, and the row that named it. The counterpart to /stop, which keeps
+  // all of it — this is the only route that reclaims one worktree's bytes,
+  // and it refuses a worktree that still has a runtime rather than stopping
+  // it first.
+  .post(
+    '/delete',
+    zv('json', z.object({ worktreeId: z.string().min(1) })),
+    async (c) => {
+      const info = await deleteWorktree(c.req.valid('json').worktreeId)
       return c.json(info)
     },
   )

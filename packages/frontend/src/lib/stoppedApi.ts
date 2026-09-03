@@ -25,6 +25,20 @@ export async function getStoppedWorktrees(
 }
 
 /**
+ * Discard a stopped worktree for good — its checkout, its diff, and the
+ * record that listed it. The one action in the app that reclaims a
+ * worktree's disk; restart is the other thing you can do with a stopped one,
+ * and this is what says you never will.
+ *
+ * Errors propagate, unlike the acknowledgements below: the caller is showing
+ * a destructive confirmation, and a delete that silently did nothing would
+ * leave the row on screen with no explanation.
+ */
+export async function deleteStoppedWorktree(worktreeId: string): Promise<void> {
+  await api.worktree.delete.$post({ json: { worktreeId } })
+}
+
+/**
  * Mark an abnormal death as seen — the user viewed its detail in the deleted
  * overlay, so the notification dot / row highlight should clear. Persisted on
  * the server (worktree row) so the acknowledgement is durable and

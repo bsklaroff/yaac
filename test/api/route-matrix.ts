@@ -118,6 +118,10 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // starts and a failure travels in the stream rather than in the code.
   { method: 'POST', path: '/worktree/restart', body: { worktreeId: 'nope' }, k8s: 200, containerless: 200 },
   { method: 'POST', path: '/worktree/stop', body: { worktreeId: 'nope' }, k8s: [404, 503], containerless: MISSING },
+  // Both drivers resolve the substrate's own word before they touch a row,
+  // so an empty server answers "no such worktree" — and k8s adds the 503 it
+  // gets when there is no cluster to ask.
+  { method: 'POST', path: '/worktree/delete', body: { worktreeId: 'nope' }, k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/worktree/mark-death-seen', body: { projectSlug: 'nope', worktreeId: 'nope' }, k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'POST', path: '/worktree/mark-all-deaths-seen', body: { projectSlug: 'nope' }, k8s: [200, 204], containerless: [200, 204] },
   // The in-worktree command channel. Only the runtime whose workspaces can

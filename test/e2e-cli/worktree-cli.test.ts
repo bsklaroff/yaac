@@ -311,6 +311,14 @@ describe('validation errors (no state created)', () => {
     expect(stderr).toMatch(/No worktree found/i)
   })
 
+  it('worktree delete errors with NOT_FOUND when no worktree matches the id', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'worktree', 'delete', 'definitely-no-such-session',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/No stopped worktree found/i)
+  })
+
   it('worktree restart errors with NOT_FOUND when no worktree matches the id', async () => {
     const { stderr, exitCode } = await runYaac(
       testEnv.env, 'worktree', 'restart', 'definitely-no-such-session',
@@ -525,6 +533,70 @@ describe('with seeded projects', () => {
       )
       expect(exitCode).not.toBe(0)
       expect(stderr.toLowerCase()).toContain('not found')
+    })
+  })
+
+  /**
+   * `yaac worktree delete`, the end of a worktree's life and the only thing
+   * that reclaims its disk. Its subject is recorded state plus the bytes
+   * keyed by the worktree id, so a seeded stop stands in for a real one — a
+   * stopped worktree is exactly a row and a checkout with no pod.
+   */
+  describe('yaac worktree delete (real CLI + real server)', () => {
+    const DELETE_SLUG = 'proj-delete'
+    const deleteId = crypto.randomUUID()
+    const keepId = crypto.randomUUID()
+    const checkoutOf = (id: string): string =>
+      path.join(testEnv.dataDir, 'projects', DELETE_SLUG, 'worktrees', id)
+
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, DELETE_SLUG)
+      await createTestRepo(repo)
+      await addTestProject(repo)
+      // The checkouts a create would have left — what the delete is FOR, and
+      // what makes "the row went" a weaker claim than "the bytes went".
+      for (const id of [deleteId, keepId]) {
+        await fs.mkdir(checkoutOf(id), { recursive: true })
+        await fs.writeFile(path.join(checkoutOf(id), 'uncommitted.txt'), 'wip\n')
+      }
+      await server.stop()
+      setDataDir(testEnv.dataDir)
+      for (const id of [deleteId, keepId]) {
+        await recordWorktreeCreated({ projectSlug: DELETE_SLUG, worktreeId: id })
+        await recordAgentSessions(DELETE_SLUG, id, [
+          { tool: 'claude', agentSessionId: crypto.randomUUID() },
+        ])
+        await recordWorktreeStopped(DELETE_SLUG, id)
+      }
+      await closeDb()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('removes the checkout and drops the worktree from the stopped listing', async () => {
+      const { stdout, stderr, exitCode } = await runYaac(
+        testEnv.env, 'worktree', 'delete', deleteId,
+      )
+      expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+      expect(stdout).toContain(deleteId)
+      await expect(fs.stat(checkoutOf(deleteId))).rejects.toThrow()
+
+      // The row went with the bytes — a worktree still listed as stopped is
+      // one the user would try to restart into a directory that is gone —
+      // and only that worktree's.
+      const listed = await runYaac(testEnv.env, 'worktree', 'list', DELETE_SLUG, '--stopped')
+      expect(listed.stdout).not.toContain(deleteId.slice(0, 8))
+      expect(listed.stdout).toContain(keepId.slice(0, 8))
+      await expect(fs.stat(checkoutOf(keepId))).resolves.toBeDefined()
+    })
+
+    // The id resolves, the worktree is gone: the second delete has nothing
+    // to name rather than reporting success over an empty rm.
+    it('404s a worktree it has already deleted', async () => {
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'worktree', 'delete', deleteId,
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/No stopped worktree found/i)
     })
   })
 
