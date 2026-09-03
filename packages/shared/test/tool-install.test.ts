@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { AGENT_INSTALL, ACP_ADAPTER_INSTALL, installCommandFor } from '#tool-install'
-import { AGENT_TOOLS } from '#types'
+import { ACP_ADAPTERS, AGENT_TOOLS } from '#types'
 
 describe('installCommandFor', () => {
   it('answers for every agent tool and every adapter binary', () => {
@@ -19,6 +19,21 @@ describe('installCommandFor', () => {
     // the caller runs it through a shell.
     expect(installCommandFor('toString')).toBeUndefined()
     expect(installCommandFor('constructor')).toBeUndefined()
+  })
+
+  it('installs the adapter version its behavior was verified against', () => {
+    // The agent CLIs above are deliberately unpinned — a host wants the
+    // current release. Adapters are the opposite: what yaac reads off one is
+    // the set of session modes it advertises, and an adapter that stops
+    // advertising a posture's mode does not fail, it silently runs in its own
+    // default. So a host installs the version that was actually checked.
+    for (const tool of AGENT_TOOLS) {
+      const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
+      // opencode's adapter is its own CLI (`opencode acp`), installed on the
+      // CLI's unpinned terms by `AGENT_INSTALL`.
+      if (binary === tool) continue
+      expect(installCommandFor(binary), binary).toContain(`${pkg}@${verified}`)
+    }
   })
 
   it('installs through npm, whose global bin the server can actually see', () => {

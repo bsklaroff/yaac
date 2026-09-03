@@ -1,5 +1,8 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
+  ACP_ADAPTERS,
   AGENT_TOOLS,
   defaultPermissionMode,
   normalizeTool,
@@ -87,6 +90,27 @@ describe('toolSupportsPermissionMode', () => {
         expect(toolSupportsPermissionMode(tool, fallback, 'acp'), `${driver}/${tool}`).toBe(true)
         expect(toolSupportsPermissionMode(tool, fallback, 'tui'), `${driver}/${tool}`).toBe(true)
       }
+    }
+  })
+})
+
+describe('ACP_ADAPTERS', () => {
+  it('names the version the worktree image installs', () => {
+    // `verified` is what yaac's description of each adapter was checked
+    // against — above all the session modes it advertises, which are read as
+    // permission postures. An adapter that stops advertising one does not
+    // fail; the session silently runs in its default. So nothing but this
+    // catches an image bump that moved the vocabulary out from under
+    // `ACP_SUPPORTED_PERMISSION_MODES` and the driver's mode ids: re-verify
+    // against the new version, then move `verified` here.
+    const dockerfile = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
+      'utf8',
+    )
+    for (const tool of AGENT_TOOLS) {
+      const { package: pkg, verified } = ACP_ADAPTERS[tool]
+      const installed = new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`).exec(dockerfile)?.[1]
+      expect(installed, `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(verified)
     }
   })
 })

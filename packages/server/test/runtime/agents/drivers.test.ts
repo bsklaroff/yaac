@@ -17,6 +17,12 @@ import { installFakeWorktreeDriver, workspacePathsFixture } from '@yaac/test-uti
 import type { StreamChild, WorktreeDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
+import {
+  ACP_SUPPORTED_PERMISSION_MODES,
+  AGENT_TOOLS,
+  PERMISSION_MODES,
+} from '@yaac/shared/types'
+import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
 import type { PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 
@@ -221,6 +227,33 @@ describe('agentDriver', () => {
     expect(acp).not.toContain('resume')
     // A single-quoted respawn-window wrapper carries it, so no quotes.
     expect(acp).not.toContain("'")
+  })
+
+  it('offers a mode id for exactly the postures create will let through', () => {
+    // The two halves of a posture actually being honored. Create refuses a
+    // posture outside the ACP column, and the adapter is told the mode id for
+    // one that is in it — so a posture in the column with NO mode id has to be
+    // carried some other way, and the profile is where that is said: opencode's
+    // ride `OPENCODE_PERMISSION` at launch (asserted in the launch case below),
+    // and pi has no permission system at all.
+    //
+    // The profiles are read here as a policy constant, not as a unit under
+    // test: what drives them is the launch command and the handshakes in this
+    // same describe.
+    for (const tool of AGENT_TOOLS) {
+      const withModeId = PERMISSION_MODES.filter(
+        (m) => _ACP_PROFILES[tool].modeIds[m] !== undefined,
+      )
+      // Never a mode id for a posture create would refuse: that would be one
+      // reachable only by a caller who bypassed the refusal.
+      const supported = ACP_SUPPORTED_PERMISSION_MODES[tool]
+      expect(withModeId.filter((m) => !supported.includes(m)), tool).toEqual([])
+    }
+    // The carried-elsewhere cases, stated so a silent change to either table
+    // has to be deliberate.
+    expect(PERMISSION_MODES.filter((m) => _ACP_PROFILES.claude.modeIds[m] === undefined)).toEqual([])
+    expect(_ACP_PROFILES.opencode.modeIds).toEqual({ plan: 'plan' })
+    expect(_ACP_PROFILES.pi.modeIds).toEqual({})
   })
 
   it("launches each tool's adapter the way that adapter takes its configuration", () => {
