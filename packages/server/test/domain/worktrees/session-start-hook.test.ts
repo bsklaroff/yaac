@@ -159,7 +159,7 @@ describe('the SessionStart hook', () => {
     // What a containerless workspace looks like: the tool home in its private
     // HOME is a link to the project's shared one, and a tool that resolves its
     // own paths reports the transcript under the physical directory. The
-    // project-relative form has to come out the same either way, or the herd
+    // project-relative form has to come out the same either way, or the server
     // cannot find the transcript it names.
     const linked = path.join(workspaceHome, '.claude')
     await fs.symlink(home, linked)
