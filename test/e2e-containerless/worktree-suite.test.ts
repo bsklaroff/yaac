@@ -94,7 +94,10 @@ async function installFakeAgents(binDir: string): Promise<void> {
   await fs.mkdir(binDir, { recursive: true })
   for (const tool of ['claude', 'opencode', 'pi']) {
     const file = path.join(binDir, tool)
-    await fs.writeFile(file, '#!/bin/sh\nexec sleep infinity\n')
+    // A count, not `infinity`: the BSD `sleep` on a macOS host rejects that
+    // spelling, so the stub would exit at once and the respawned window would
+    // close — the very failure this stub exists to prevent.
+    await fs.writeFile(file, '#!/bin/sh\nexec sleep 2147483647\n')
     await fs.chmod(file, 0o755)
   }
   const broken = path.join(binDir, 'codex')
