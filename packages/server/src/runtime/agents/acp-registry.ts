@@ -98,7 +98,8 @@ export function _resetAcpRegistryForTests(): void {
  * changed it since — re-asserting the launch value on a relay hiccup would
  * silently undo their choice. A server that restarts between the launch and the
  * first attach therefore loses the override and the conversation runs the
- * adapter's default, which is logged.
+ * adapter's default; the driver logs that when a fresh attach finds nothing
+ * parked.
  */
 const launchModels = new Map<string, string>()
 

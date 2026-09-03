@@ -164,7 +164,21 @@ export function createAcpd({
     if (!logPath) return true
     try {
       fs.mkdirSync(path.dirname(logPath), { recursive: true })
-      logFd = fs.openSync(logPath, append ? 'a' : 'w')
+      // 'a+' rather than 'a': appending still has to READ one byte (below),
+      // and an append-only fd is write-only.
+      logFd = fs.openSync(logPath, append ? 'a+' : 'w')
+      // Under append, the previous life may have died mid-write and left a
+      // partial line. Without this the life header lands on the end of it and
+      // the reader drops BOTH as unparseable — so the boundary is never seen,
+      // and the dead life's unanswered prompt or permission ask is inherited
+      // by this one, which then shows as working (or waiting on a person) for
+      // a turn no process is running.
+      const existing = append ? fs.fstatSync(logFd).size : 0
+      if (existing > 0) {
+        const tail = Buffer.alloc(1)
+        fs.readSync(logFd, tail, 0, 1, existing - 1)
+        if (tail[0] !== 0x0a) fs.writeSync(logFd, '\n')
+      }
       fs.writeSync(logFd, `${JSON.stringify({
         jsonrpc: '2.0',
         method: '_acpd/life',

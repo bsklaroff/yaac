@@ -377,14 +377,22 @@ class AcpConnection implements AgentConnection {
     const profile = acpAdapterFor(tool)
     // Only an adapter that cannot be launched with a model has one waiting,
     // and only its first attach takes it.
-    const launchModel = profile?.modelVia === 'protocol'
+    const launchModel = profile.modelVia === 'protocol'
       ? takeAcpLaunchModel(launchId)
       : undefined
+    if (profile.modelVia === 'protocol' && launchModel === undefined && resumeSessionId === undefined) {
+      // A fresh conversation whose launch parked no model: this server did not
+      // author the launch (it restarted between the two), so the adapter keeps
+      // whatever its own settings name — for pi, a provider whose key the
+      // egress proxy never swapped. Worth a line, since nothing else says so.
+      this.log(`[server] acp-driver ${this.session.worktreeId}/${handle}: no launch model`
+        + ' was parked for this conversation — the agent runs its own default')
+    }
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       cwd: worktreeDriver().workspacePaths(this.session.jobName).workspaceDir,
       permissionMode: () => this.permissionMode,
-      ...(profile !== undefined ? { profile } : {}),
+      profile,
       ...(launchModel !== undefined ? { launchModel } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
@@ -580,9 +588,6 @@ export const acpDriver: AgentDriver = {
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)
-    if (adapter === undefined) {
-      throw new Error(`no ACP adapter for ${spec.tool}`)
-    }
     // An adapter that can only be told its model over the protocol is handed
     // one here anyway: the launch is where the worktree's provider default is
     // known, and the handshake is where it can be delivered.

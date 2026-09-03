@@ -667,17 +667,7 @@ export class AcpConversation {
     }
     if (this.sessionModes?.currentModeId === modeId) return
     if (!acpModeOffered(this.sessionModes, modeId)) {
-      // Said out loud, in the pane as well as the log. Create refuses a
-      // posture the tool cannot express, so reaching this means the session
-      // clamped one it normally offers (`auto` on a model with no classifier,
-      // `bypassPermissions` for an adapter running as root outside a sandbox)
-      // — the conversation is now running under a posture nobody chose, and
-      // the one place that is visible to whoever chose is the chat pane.
-      const message = `The agent offers no "${modeId}" mode for the ${mode} posture`
-        + ` — running in ${this.sessionModes?.currentModeId ?? 'its default'} instead,`
-        + ' with every permission request forwarded here.'
-      this.log(`[server] acp: ${message}`)
-      this.emit({ type: 'error', message })
+      this.reportModeNotSet(mode, modeId, 'offers no such mode')
       return
     }
     try {
@@ -685,9 +675,32 @@ export class AcpConversation {
       this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
       this.log(`[server] acp: session mode set to ${modeId} for "${mode}"`)
     } catch (err) {
-      this.log(`[server] acp: could not set mode ${modeId}: ${
-        err instanceof Error ? err.message : String(err)}`)
+      // The same news as an unadvertised mode, and it has to be said the same
+      // way. An adapter's own default is not always at least as strict as what
+      // was asked — codex-acp's is `agent`, where a reviewer model approves
+      // most actions, so an `accept-edits` conversation that lands here is
+      // running looser than the create asked for. Logging alone would leave
+      // that visible only to whoever reads the server's log, which is not the
+      // person who chose the posture.
+      this.reportModeNotSet(mode, modeId, err instanceof Error ? err.message : String(err))
     }
+  }
+
+  /**
+   * Tell the pane, and the log, that this conversation is not in the posture
+   * it was created with.
+   *
+   * Deliberately says only what is true in every case it covers: which mode
+   * the session is actually in. What happens to the agent's asks from here
+   * varies — under `bypass` this client still answers them itself, and codex's
+   * fallback `agent` mode has a reviewer model answering most of them — so
+   * promising they will all arrive in the pane would be wrong twice over.
+   */
+  private reportModeNotSet(mode: PermissionMode, modeId: string, why: string): void {
+    const message = `The agent would not switch to "${modeId}" for the ${mode} posture`
+      + ` (${why}) — running in ${this.sessionModes?.currentModeId ?? 'its own default'} instead.`
+    this.log(`[server] acp: ${message}`)
+    this.emit({ type: 'error', message })
   }
 
   /**

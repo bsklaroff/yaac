@@ -38,7 +38,6 @@ export {
   type DrivenWorktree,
   type LiveAgent,
 } from './drivers'
-export { acpAdapterFor } from './acp-adapters'
 export { attachAcp, type AcpSocket } from './acp-bridge'
 export { acpConversation } from './acp-registry'
 export { readAcpFirstPrompt, readAcpLog, readAcpModel } from './acp-log'

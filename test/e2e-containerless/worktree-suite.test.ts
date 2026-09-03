@@ -18,9 +18,9 @@ import {
   workspaceHome,
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
-import { ACP_ADAPTERS, toolSupportsPermissionMode } from '@yaac/shared/types'
+import { ACP_ADAPTERS, AGENT_TOOLS, toolSupportsPermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
-import type { AcpTool, AgentSessionEntry } from '@yaac/shared/types'
+import type { AgentSessionEntry, AgentTool } from '@yaac/shared/types'
 import { PLACEHOLDER_GH_TOKEN } from '@yaac/shared/tool-auth'
 
 const execFileAsync = promisify(execFile)
@@ -109,9 +109,10 @@ async function installFakeAgents(binDir: string): Promise<void> {
   }
   await write('codex', '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
 
-  for (const [tool, binary] of Object.entries(ACP_ADAPTERS)) {
-    if (binary.binary === 'opencode') continue
-    await write(binary.binary, fakeAcpAdapter(tool as AcpTool))
+  for (const tool of AGENT_TOOLS) {
+    const { binary } = ACP_ADAPTERS[tool]
+    if (binary === tool) continue
+    await write(binary, fakeAcpAdapter(tool))
   }
   // opencode wears both hats. `exec`ing the adapter keeps acpd's child the
   // process that speaks the protocol, so a wrapper cannot swallow its stdio.
@@ -142,7 +143,7 @@ async function installFakeAgents(binDir: string): Promise<void> {
  * onto — an adapter offering something else is how a posture silently stops
  * being enforced, and the real ones are checked against these at their pins.
  */
-const ACP_MODES: Record<AcpTool, string[]> = {
+const ACP_MODES: Record<AgentTool, string[]> = {
   claude: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
   codex: ['read-only', 'agent', 'agent-full-access'],
   opencode: ['build', 'plan'],
@@ -150,7 +151,7 @@ const ACP_MODES: Record<AcpTool, string[]> = {
   pi: ['off', 'medium', 'high'],
 }
 
-const fakeAcpAdapter = (tool: AcpTool): string => `#!/usr/bin/env node
+const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
 let buf = ''
 const reply = (id, result) => {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
@@ -889,7 +890,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
    * for each so a tool that breaks it is named.
    */
   const CASES: Array<{
-    tool: AcpTool
+    tool: AgentTool
     posture: string
     /** The mode id the adapter should be told, or undefined where the posture
      *  is carried some other way (opencode's environment, pi's nothing). */

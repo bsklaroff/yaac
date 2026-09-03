@@ -177,6 +177,25 @@ describe('createAcpd', () => {
     expect(kept[1]).toContain('_acpd/life')
   })
 
+  it('starts the appended life on its own line even after a torn write', async () => {
+    // A life that was killed mid-write leaves a partial line. Appending the
+    // header onto it makes ONE unparseable line, and a reader that drops it
+    // never sees the boundary — so the dead life's unanswered prompt or
+    // permission ask is inherited by this one, which then shows as working, or
+    // waiting on a person, for a turn no process is running.
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    fs.writeFileSync(logPath, '{"id":7,"method":"session/prom')
+
+    await start(['cat'], { logPath, append: true })
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('_acpd/life'))
+    const lines = fs.readFileSync(logPath, 'utf8').split('\n')
+    // The torn line is left as it is — nothing can repair it — but the header
+    // is a line of its own, which is all a reader needs.
+    expect(lines[0]).toBe('{"id":7,"method":"session/prom')
+    expect(JSON.parse(lines[1]).method).toBe('_acpd/life')
+  })
+
   it('does not replay to a new client — the record is what it missed', async () => {
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
     tmpDirs.push(path.dirname(logPath))

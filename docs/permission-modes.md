@@ -93,13 +93,23 @@ person is being asked to make — so those are forwarded to the pane even under
 `bypass`, where every other adapter's asks are answered for them. `bypass`
 waives permission prompts; it does not answer questions.
 
-A mode id a profile names but the adapter did not advertise is reported in the
-pane as well as the log, and the conversation continues in whatever mode the
-adapter is holding. Not fatal, because every launch-time floor is at least as
-strict as what was asked (an adapter's own default asks about everything, and
-codex's is `read-only`), but not silent either: the conversation is running
-under a posture nobody chose, and the pane is the one place that is visible to
-whoever chose.
+A mode a conversation could not be put in — one the adapter never advertised,
+or one it refused — is reported **in the pane** as well as the log, naming the
+mode the session is actually in. It is not fatal: losing a worktree over a
+posture would be worse than running in the adapter's default, and the pane says
+which that is.
+
+Reporting it is not a nicety, because an adapter's default is not always at
+least as strict as what was asked. codex-acp's is `agent` — a reviewer model
+approving most actions — not the codex CLI's `read-only` preset, so an
+`accept-edits` codex conversation that lands there is running *looser* than the
+create asked for. That is the one cell where it matters: under `bypass` yaac
+answers the asks itself, and `auto` is the fallback.
+
+The message says only which mode the session is in, and deliberately promises
+nothing about what happens to the asks from there — `bypass` answers them here,
+and codex's `agent` fallback has a reviewer answering most of them, so
+"forwarded to the pane" would be wrong in both.
 
 ## Resolution
 

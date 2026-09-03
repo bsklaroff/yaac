@@ -54,31 +54,55 @@ export type AgentMode = 'tui' | 'acp'
 export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
 
 /**
- * The ACP adapter each tool is driven through in `acp` mode, and whether the
- * tool's own CLI has to be there beside it.
+ * The ACP adapter each tool is driven through in `acp` mode.
  *
- * The one table every other list derives from — the image's install steps, the
- * host preflight, `yaac host check`'s advice, the driver's launch commands and
- * the webapp's chat button. Hand-kept copies of "which tools can do acp" is how
- * a tool ends up offered a mode whose adapter nothing installs.
+ * The one record every other list derives from — the image's install steps,
+ * the host preflight and its install advice, and the driver's per-tool launch
+ * profile. Hand-kept copies of these facts are how an adapter ends up
+ * installed at one version and described at another.
  *
  * `needsCli` says the adapter is a front end rather than an implementation:
  * codex-acp drives `codex app-server` and pi-acp drives `pi --mode rpc`, so
  * both need the CLI on PATH, while claude's adapter bundles its own SDK.
  * opencode is its own adapter — `opencode acp` is a subcommand — so its binary
- * IS the tool.
+ * IS the tool, and its `package` is the CLI's.
+ *
+ * `verified` is the version yaac's description of that adapter was checked
+ * against: the session modes it advertises, which yaac reads as permission
+ * postures. It matters more than a normal pin because an adapter that stops
+ * advertising a mode does not fail — the session silently runs in its default
+ * — so a test ties this to what `dockerfiles/Dockerfile.tools` installs, and
+ * the host install commands are pinned to it too.
  */
 export const ACP_ADAPTERS = {
-  claude: { binary: 'claude-agent-acp', needsCli: false },
-  codex: { binary: 'codex-acp', needsCli: true },
-  opencode: { binary: 'opencode', needsCli: true },
-  pi: { binary: 'pi-acp', needsCli: true },
-} as const satisfies Record<AgentTool, { binary: string; needsCli: boolean }>
-
-export type AcpTool = keyof typeof ACP_ADAPTERS
-
-/** Tools with an ACP adapter in the worktree image. */
-export const ACP_TOOLS: readonly AcpTool[] = Object.keys(ACP_ADAPTERS) as AcpTool[]
+  claude: {
+    binary: 'claude-agent-acp',
+    package: '@agentclientprotocol/claude-agent-acp',
+    verified: '0.65.0',
+    needsCli: false,
+  },
+  codex: {
+    binary: 'codex-acp',
+    package: '@agentclientprotocol/codex-acp',
+    verified: '1.8.0',
+    needsCli: true,
+  },
+  opencode: {
+    binary: 'opencode',
+    package: 'opencode-ai',
+    verified: '1.0.142',
+    needsCli: true,
+  },
+  pi: {
+    binary: 'pi-acp',
+    package: 'pi-acp',
+    verified: '0.0.33',
+    needsCli: true,
+  },
+} as const satisfies Record<
+  AgentTool,
+  { binary: string; package: string; verified: string; needsCli: boolean }
+>
 
 /**
  * How much the agent may do before it stops to ask. Orthogonal to both
@@ -138,10 +162,11 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
  *
  * - claude's adapter offers a mode for all five, one per flag.
  * - codex-acp collapses codex's approval × sandbox grid into three modes:
- *   `read-only` (ask before editing outside the workspace or reaching the
- *   network — codex's own default preset, i.e. `accept-edits`), `agent` (a
- *   reviewer model adjudicates — `auto`), and `agent-full-access` (`bypass`).
- *   Nothing there is `plan` or `manual`, so neither is offered.
+ *   `read-only` (on-request approval over a workspace-write sandbox with no
+ *   network — the codex CLI's own default preset, i.e. `accept-edits`),
+ *   `agent` (a reviewer model adjudicates — `auto`, and the ADAPTER's default,
+ *   which is not the CLI's), and `agent-full-access` (`bypass`). Nothing
+ *   there is `plan` or `manual`, so neither is offered.
  * - opencode's ACP "modes" are its AGENTS (`build`, `plan`), not postures;
  *   everything but `plan` is carried by `OPENCODE_PERMISSION` at launch,
  *   exactly as the TUI does, so the same four postures survive.
@@ -151,7 +176,7 @@ export const SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMo
  * a different way to drive the same tool, never a way to get a posture the tool
  * does not have.
  */
-export const ACP_SUPPORTED_PERMISSION_MODES: Record<AcpTool, readonly PermissionMode[]> = {
+export const ACP_SUPPORTED_PERMISSION_MODES: Record<AgentTool, readonly PermissionMode[]> = {
   claude: PERMISSION_MODES,
   codex: ['bypass', 'auto', 'accept-edits'],
   opencode: ['bypass', 'accept-edits', 'plan', 'manual'],
@@ -168,7 +193,7 @@ export function supportedPermissionModes(
   agentMode: AgentMode = 'tui',
 ): readonly PermissionMode[] {
   return agentMode === 'acp'
-    ? ACP_SUPPORTED_PERMISSION_MODES[tool as AcpTool] ?? []
+    ? ACP_SUPPORTED_PERMISSION_MODES[tool]
     : SUPPORTED_PERMISSION_MODES[tool]
 }
 

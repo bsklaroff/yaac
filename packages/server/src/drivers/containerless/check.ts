@@ -1,10 +1,8 @@
-import { MissingToolError, ServerError } from '@yaac/shared/errors'
+import { MissingToolError } from '@yaac/shared/errors'
 import { AGENT_INSTALL, installCommandFor } from '@yaac/shared/tool-install'
 import {
   ACP_ADAPTERS,
-  ACP_TOOLS,
   AGENT_TOOLS,
-  type AcpTool,
   type AgentMode,
   type AgentTool,
   type CheckResult,
@@ -141,12 +139,7 @@ export async function assertHostCanLaunch(opts: {
     alternative: null,
   })
   if (mode === 'acp') {
-    const adapter = ACP_ADAPTERS[tool as AcpTool] as { binary: string; needsCli: boolean } | undefined
-    if (adapter === undefined) {
-      // Create rejects this combination before it ever reaches a runtime;
-      // reachable only from a caller that skipped it.
-      throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
-    }
+    const adapter = ACP_ADAPTERS[tool]
     // Before the adapter, and for the reason the ordering above exists: the
     // adapter is installed BY npm and run BY node, so on a host without one
     // the adapter's own install advice is unrunnable too.
@@ -367,14 +360,14 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     if (await onPath(tool)) agents.push(tool)
   }
   // The adapters are what `--mode acp` runs, and mostly they are separate
-  // packages from the agents themselves. Reported per TOOL rather than as one
-  // list of binaries: with four adapters, "some adapter is installed" is not
-  // an answer to "can I create a chat worktree with codex", and a row that
-  // said `pass` on the strength of another tool's adapter would be answering
-  // a question nobody asked.
+  // packages from the agents themselves. Named per TOOL rather than listed as
+  // bare binaries, because "some adapter is installed" is not an answer to
+  // "can I create a chat worktree with codex" — the row passes once any
+  // adapter is here (acp works on this host) and its `fix` names what to
+  // install for the tools that are not.
   const adapters: string[] = []
   const missing: string[] = []
-  for (const tool of ACP_TOOLS) {
+  for (const tool of AGENT_TOOLS) {
     const { binary } = ACP_ADAPTERS[tool]
     if (await onPath(binary)) adapters.push(`${tool}: ${binary}`)
     else missing.push(installCommandFor(binary) ?? binary)

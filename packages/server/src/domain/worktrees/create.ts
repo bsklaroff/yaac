@@ -55,7 +55,6 @@ import {
 } from '#domain/git'
 import { serverLog } from '#log'
 import {
-  acpAdapterFor,
   agentDriver,
   AgentLaunchDeadError,
   agentWindowName,
@@ -820,14 +819,7 @@ export async function createWorktree(
   // any resource is provisioned.
   const initWindows = validateInitWindows(config)
 
-  // Resolved (and rejected) before anything is provisioned, like the init
-  // windows above: only some tools ship an ACP adapter, and a bad combination
-  // must fail the create rather than become a tmux window that exits on
-  // startup with nobody watching.
   const mode: AgentMode = options.mode ?? 'tui'
-  if (mode === 'acp' && acpAdapterFor(tool) === undefined) {
-    throw new ServerError('VALIDATION', `${tool} has no ACP adapter; use --mode tui`)
-  }
   // And whether THIS runtime can run it: an image either ships the tool and
   // its adapter or does not, but a host has whatever the user installed, and
   // a launch command that execs nothing ends the worktree seconds after a

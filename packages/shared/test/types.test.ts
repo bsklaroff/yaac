@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACP_TOOLS,
+  AGENT_TOOLS,
+  defaultPermissionMode,
   normalizeTool,
   PERMISSION_MODES,
   SUPPORTED_PERMISSION_MODES,
@@ -67,9 +68,24 @@ describe('toolSupportsPermissionMode', () => {
   it('never offers a posture over acp that the tool itself does not have', () => {
     // acp is a different way to drive the same tool, never a way to reach a
     // restraint the tool has no notion of.
-    for (const tool of ACP_TOOLS) {
+    for (const tool of AGENT_TOOLS) {
       for (const mode of supportedPermissionModes(tool, 'acp')) {
         expect(toolSupportsPermissionMode(tool, mode, 'tui'), `${tool}/${mode}`).toBe(true)
+      }
+    }
+  })
+
+  it('never defaults a create into a posture its adapter cannot take', () => {
+    // A create that names no posture takes `defaultPermissionMode`, which is
+    // not checked against either column — it is the answer of last resort. So
+    // every cell of it has to be a posture the adapter actually has, or a
+    // containerless create for that tool would launch into the adapter's own
+    // default with nothing refusing it and nothing saying so.
+    for (const driver of ['k8s', 'containerless'] as const) {
+      for (const tool of AGENT_TOOLS) {
+        const fallback = defaultPermissionMode(driver, tool)
+        expect(toolSupportsPermissionMode(tool, fallback, 'acp'), `${driver}/${tool}`).toBe(true)
+        expect(toolSupportsPermissionMode(tool, fallback, 'tui'), `${driver}/${tool}`).toBe(true)
       }
     }
   })

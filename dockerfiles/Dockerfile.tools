@@ -76,9 +76,14 @@ RUN CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bas
 # opencode has no line here: `opencode acp` is a subcommand of the CLI
 # installed above, so its adapter is pinned by that pin.
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
-# Drives `codex app-server` as a child, so it needs the codex CLI above.
-# --ignore-scripts because it is plain JavaScript whose dependency would
-# otherwise fetch a second copy of the codex binary this image already has.
+# Drives `codex app-server` as a child — resolved as `CODEX_PATH ?? "codex"`,
+# i.e. the unpinned CLI installed above, which makes the app-server protocol
+# the unpinned half of this pair.
+# --ignore-scripts because the package has no lifecycle script worth running
+# and a future one would be fetching a platform binary this image already has.
+# It does NOT avoid the second codex copy its dependency brings: that arrives
+# as an optionalDependency, which the flag does not skip. Harmless — nothing
+# execs it.
 RUN npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.8.0
 # Drives `pi --mode rpc` as a child, so it needs the pi CLI above — and the
 # pinned one specifically (see that step).

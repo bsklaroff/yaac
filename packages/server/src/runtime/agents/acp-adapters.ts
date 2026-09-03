@@ -10,14 +10,14 @@
  * advertises. Read together they are a description of an adapter; read apart
  * they are four `if (tool === …)` chains that drift.
  *
- * Every value here was verified against the version named in
- * `verifiedAgainst`, which is the version `dockerfiles/Dockerfile.tools`
- * installs (a test pins the two together). That matters more than it looks:
- * an adapter that stops advertising a mode does not fail, it silently runs in
- * its default one, so nothing but a version check tells us the table went
- * stale.
+ * Every value here was verified against `ACP_ADAPTERS[tool].verified`, which
+ * is both the version `dockerfiles/Dockerfile.tools` installs and the one a
+ * host install pins to (a test ties the record to the Dockerfile). That
+ * matters more than it looks: an adapter that stops advertising a mode does
+ * not fail, it silently runs in its default one, so nothing but a version
+ * check tells us the table went stale.
  */
-import { ACP_ADAPTERS, type AcpTool, type AgentTool, type PermissionMode } from '@yaac/shared/types'
+import { ACP_ADAPTERS, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { opencodePermissionRules } from './opencode'
@@ -60,9 +60,6 @@ export interface AcpAdapterProfile {
    * answer *for* the user rather than spare them.
    */
   forwardAsksUnderBypass: boolean
-  /** The adapter version this profile was verified against, as
-   *  `dockerfiles/Dockerfile.tools` pins it. */
-  verifiedAgainst: string
 }
 
 /** The model an ACP conversation should run, for the profiles that need one
@@ -75,7 +72,7 @@ export function acpLaunchModel(spec: AgentLaunchSpec): string | undefined {
   return spec.model ?? piProviderInfo(spec.piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
 }
 
-const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
+const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   /**
    * claude's adapter takes the model on its command line and names a mode for
    * every posture — the case every other profile is a departure from.
@@ -101,7 +98,6 @@ const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
     modelVia: 'argv',
     replaysOnLoad: true,
     forwardAsksUnderBypass: false,
-    verifiedAgainst: '0.65.0',
   },
 
   /**
@@ -121,6 +117,11 @@ const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
    * Its three modes are codex's approval × sandbox grid, collapsed: nothing
    * there is `plan` or `manual`, which is why neither is a posture codex can
    * be created with under acp.
+   *
+   * Its own default is `agent` — NOT the codex CLI's `read-only` preset — so
+   * this is the one adapter where failing to set a mode lands somewhere weaker
+   * than an `accept-edits` create asked for. That is why a failed
+   * `session/set_mode` is reported in the pane rather than only logged.
    */
   codex: {
     argv: () => [ACP_ADAPTERS.codex.binary],
@@ -138,7 +139,6 @@ const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
     modelVia: 'env',
     replaysOnLoad: true,
     forwardAsksUnderBypass: false,
-    verifiedAgainst: '1.8.0',
   },
 
   /**
@@ -169,10 +169,14 @@ const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
       ]
     },
     modeIds: { plan: 'plan' },
+    // Model only: `OPENCODE_CONFIG_CONTENT` is merged after the project's
+    // `opencode.json` but BEFORE any `.opencode/` directory config, so a repo
+    // that names a `model` there wins over `--model` under acp — where the
+    // TUI's flag would have won outright. `OPENCODE_PERMISSION` is read last,
+    // after everything, so the posture is not exposed to the same shadowing.
     modelVia: 'env',
     replaysOnLoad: false,
     forwardAsksUnderBypass: false,
-    verifiedAgainst: '1.0.142',
   },
 
   /**
@@ -200,17 +204,17 @@ const PROFILES: Record<AcpTool, AcpAdapterProfile> = {
     modelVia: 'protocol',
     replaysOnLoad: true,
     forwardAsksUnderBypass: true,
-    verifiedAgainst: '0.0.33',
   },
 }
 
 /**
- * The adapter profile for a tool, or undefined for one that has no ACP adapter
- * — which is what create checks to refuse `--mode acp` before anything is
- * provisioned, rather than as a window that exits on startup.
+ * The adapter profile for a tool. Total: every tool has an adapter, so there
+ * is no "this tool cannot do acp" case for a caller to handle — what a create
+ * can still be refused for is a POSTURE the adapter has no mode for
+ * (`ACP_SUPPORTED_PERMISSION_MODES`).
  */
-export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile | undefined {
-  return PROFILES[tool as AcpTool] as AcpAdapterProfile | undefined
+export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
+  return PROFILES[tool]
 }
 
 /** Test-only: the table itself, to check it against the shared adapter list
