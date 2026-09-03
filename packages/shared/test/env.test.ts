@@ -210,14 +210,53 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('serverGitUser', () => {
+  describe('legacyServerGitUser', () => {
     it('needs both halves, since git refuses a half-identity', () => {
       vi.stubEnv('YAAC_SERVER_GIT_NAME', 'Ada Lovelace')
-      expect(env.serverGitUser).toBeNull()
+      expect(env.legacyServerGitUser).toBeNull()
       vi.stubEnv('YAAC_SERVER_GIT_EMAIL', '  ada@example.com  ')
-      expect(env.serverGitUser).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+      expect(env.legacyServerGitUser).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
       vi.stubEnv('YAAC_SERVER_GIT_NAME', '   ')
-      expect(env.serverGitUser).toBeNull()
+      expect(env.legacyServerGitUser).toBeNull()
+    })
+  })
+
+  describe('secrets', () => {
+    it('parses a versioned key set, newest first', () => {
+      vi.stubEnv('YAAC_SECRETS', ' 2:newer , 1:older ')
+      expect(env.secrets).toEqual([
+        { version: 2, value: 'newer' },
+        { version: 1, value: 'older' },
+      ])
+    })
+
+    it('is null when unset or empty, so the server generates its own key', () => {
+      expect(env.secrets).toBeNull()
+      vi.stubEnv('YAAC_SECRETS', '   ')
+      expect(env.secrets).toBeNull()
+    })
+
+    it('throws rather than dropping an entry it cannot read', () => {
+      // A key silently missing from the set is a row that silently stops
+      // opening, which is the failure this refuses to cause.
+      vi.stubEnv('YAAC_SECRETS', 'no-version-here')
+      expect(() => env.secrets).toThrow('"<version>:<secret>"')
+      vi.stubEnv('YAAC_SECRETS', 'x:value')
+      expect(() => env.secrets).toThrow('non-negative integer')
+      vi.stubEnv('YAAC_SECRETS', '1:')
+      expect(() => env.secrets).toThrow('empty secret')
+      vi.stubEnv('YAAC_SECRETS', '1:a,1:b')
+      expect(() => env.secrets).toThrow('repeats version 1')
+    })
+  })
+
+  describe('secret', () => {
+    it('trims, and treats empty as unset', () => {
+      expect(env.secret).toBeUndefined()
+      vi.stubEnv('YAAC_SECRET', '  hunter2  ')
+      expect(env.secret).toBe('hunter2')
+      vi.stubEnv('YAAC_SECRET', '   ')
+      expect(env.secret).toBeUndefined()
     })
   })
 

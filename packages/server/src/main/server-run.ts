@@ -10,7 +10,8 @@ import {
   syncToolCredentialsThrottled,
 } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
-import { closeDb, openDb } from '#db'
+import { closeDb, getGitIdentity, listProjectRows, openDb, setGitIdentity } from '#db'
+import { sweepSshKeyScratch } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
@@ -33,7 +34,13 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver } from '#drivers/driver'
-import { listSshEntries } from '#domain/projects'
+import {
+  importLegacyProjectConfig,
+  importLegacySshKeys,
+  legacySecretImportPending,
+  listSshEntries,
+  resolveProjectEnv,
+} from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -560,6 +567,20 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock({ pid: process.pid, instance: lease.instance })
     process.exit(1)
   }
+  // Bring an install upgraded from an older build up to date, once, while
+  // nothing is serving yet: the env settings a project kept in its
+  // yaac-config.json, the ssh keys a credentials file named by path, and a
+  // git identity a k8s Deployment still states in its environment. All three
+  // are one-shot migrations of state whose old home no longer works for a
+  // remote client (docs/legacy-compat-shims.md). None is fatal — an install
+  // that fails one is missing a setting, not broken.
+  await importLegacyState()
+
+  // Any short-lived ssh key file a previous server was SIGKILLed before it
+  // could remove. Startup is the only moment every one of them is certainly
+  // finished with (`withSshKeyFile`).
+  await sweepSshKeyScratch()
+
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
   // control returns to the event loop and any queued request is processed.
@@ -692,5 +713,67 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // this process (the api tests build the Hono app in-process) supplies
     // none and gets "no ssh injection", which is what they want.
     sshIdentities: listSshEntries,
+    // Same shape of reader, same reason: the values live only in the
+    // proxy's memory, so a replaced pod is restored on the driver's
+    // schedule with no caller present.
+    listProxySecrets: async (projectSlug?: string) => {
+      const out: Array<{ projectSlug: string; secrets: Record<string, string> }> = []
+      // One project when the caller named one: every value has to be
+      // decrypted to be read, so an edit-time sync asking for all of them
+      // would decrypt every project's secrets to use one project's.
+      const slugs = projectSlug !== undefined
+        ? [{ slug: projectSlug }]
+        : await listProjectRows()
+      for (const { slug } of slugs) {
+        const { secrets } = await resolveProjectEnv(slug)
+        const values = Object.fromEntries(
+          Object.entries(secrets).map(([name, { value }]) => [name, value]),
+        )
+        if (Object.keys(values).length > 0) out.push({ projectSlug: slug, secrets: values })
+      }
+      return out
+    },
+    // What the runtime asks before deleting the old plaintext secrets file:
+    // a config too broken to parse is skipped by the import, so a start can
+    // finish with values still only written down there.
+    legacySecretImportPending,
   })
+}
+
+/**
+ * The one-shot migrations an upgraded install needs, each logged and none
+ * fatal (docs/legacy-compat-shims.md).
+ */
+async function importLegacyState(): Promise<void> {
+  for (const [what, run] of [
+    ['project env settings', importLegacyProjectConfig],
+    ['ssh keys', importLegacySshKeys],
+    ['git identity', seedLegacyGitIdentity],
+  ] as const) {
+    try {
+      await run()
+    } catch (err) {
+      serverLog(`[server] legacy ${what} import failed: ${String(err)}`)
+    }
+  }
+}
+
+/**
+ * Adopt the git identity an older k8s Deployment states in its environment.
+ *
+ * `yaac cluster install` used to snapshot the host's `git config` into
+ * `YAAC_SERVER_GIT_*`, which is why changing your name needed a re-install
+ * from a shell on that machine. The setting replaced it; this carries the
+ * snapshot over so an install that upgrades without re-running install keeps
+ * committing under the name it always did.
+ */
+async function seedLegacyGitIdentity(): Promise<void> {
+  const stated = env.legacyServerGitUser
+  if (!stated) return
+  if (await getGitIdentity()) return
+  await setGitIdentity(stated)
+  serverLog(
+    `[legacy] adopted the git identity from this deployment's environment `
+    + `(${stated.name} <${stated.email}>); it is a setting now — Settings → General`,
+  )
 }

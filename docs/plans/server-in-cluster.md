@@ -52,8 +52,8 @@ split**, with `actimeo=1` on the mount, `fsGroup` (or StorageClass
   - `driver-choice.ts` simplifies: the recorded driver stops being a
     per-start decision and becomes "which kind of install this data
     dir is"; `--driver` disappears from `yaac server start`.
-  - `config.bindMounts` and every other "the server can see your
-    files" affordance is containerless-only by construction.
+  - Every "the server can see your files" affordance is containerless-only
+    by construction.
 - **Built-in images build on the CLI machine, always.** Every image
   yaac itself owns is built by host podman on the machine running the
   yaac CLI and pushed to the in-cluster registry, never in-cluster —
@@ -344,12 +344,6 @@ Now split what phase 2 deliberately left alone.
   mode (the host/node same-absolute-path contract is exactly what the
   subPath mount now provides), and the server Deployment the e2e tiers
   apply per file mounts it the same way.
-- **`config.bindMounts` becomes containerless-only here**, and only here.
-  It still resolves under phase 2 — a bindMount is a hostPath on a node
-  that binds `$HOME`, which is exactly what it was before the server
-  moved — so refusing it earlier would have broken a working feature for
-  nothing. It stops resolving the moment the mounts stop being hostPath,
-  which is this phase, and that is where the refusal belongs.
 - **Check gates:** the hostPath nonce probe becomes an RWX write
   probe, and the spike's `fsprobe.py` semantics chain + `coherence.sh`
   become `cluster check` gates (the storage plan's "the work is

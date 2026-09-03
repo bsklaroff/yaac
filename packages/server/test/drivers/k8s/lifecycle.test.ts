@@ -106,17 +106,31 @@ describe('startK8sDriver', () => {
     expect(reported.triggers).toContain('workspaces')
   })
 
-  it('wires a supplied identity reader, and leaves it unwired without one', async () => {
+  it('wires the supplied credential readers, and leaves them unwired without', async () => {
     await startK8sDriver(sinks(), {})
     expect(configureProxyCredentials).not.toHaveBeenCalled()
 
+    // Half-wired counts as unwired: each of these restores or guards
+    // something a replaced proxy pod lost, and registering one alone would
+    // leave another's absence looking like "this install has none".
     const sshIdentities = vi.fn().mockResolvedValue([])
     await startK8sDriver(sinks(), { sshIdentities })
-    // Absent must degrade to "no ssh injection" rather than clearing what a
-    // live proxy is using, so nothing is registered when nothing was handed
-    // in — which is what an entrypoint that composes a driver without being
-    // the server gets.
-    expect(configureProxyCredentials).toHaveBeenCalledWith({ listSshEntries: sshIdentities })
+    expect(configureProxyCredentials).not.toHaveBeenCalled()
+
+    const proxySecrets = vi.fn().mockResolvedValue([])
+    await startK8sDriver(sinks(), { sshIdentities, proxySecrets })
+    expect(configureProxyCredentials).not.toHaveBeenCalled()
+
+    const legacySecretImportPending = vi.fn().mockResolvedValue(false)
+    await startK8sDriver(sinks(), { sshIdentities, proxySecrets, legacySecretImportPending })
+    // Absent must degrade to "no injection" rather than clearing what a live
+    // proxy is using — which is what an entrypoint that composes a driver
+    // without being the server gets.
+    expect(configureProxyCredentials).toHaveBeenCalledWith({
+      listSshEntries: sshIdentities,
+      listProxySecrets: proxySecrets,
+      legacySecretImportPending,
+    })
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {

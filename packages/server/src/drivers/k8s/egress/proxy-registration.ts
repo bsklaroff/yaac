@@ -1,7 +1,7 @@
-import { buildRulesFromConfig, proxyClient } from './proxy-client'
+import { buildRulesFromSecrets, proxyClient } from './proxy-client'
 import type { InjectionRule, UpstreamRedirect } from './proxy-client'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
-import type { AgentTool, YaacConfig } from '@yaac/shared/types'
+import type { AgentTool, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type { WorkspaceRegistration } from '#drivers/contract'
 
 /**
@@ -60,20 +60,22 @@ export function parseUpstreamRedirectsEnv(
 
 /**
  * Assemble a worktree's proxy registration from already-loaded inputs.
- * Pure given (config, remoteUrl, tool, secretNames, env).
+ * Pure given (config, remoteUrl, tool, secretRules, env).
  *
- * `secretNames` says which of the config's proxied env vars have a value
- * behind them, and the caller is the only one who can say — the values
- * themselves never come through here, which is what keeps the payload safe
- * for the proxy to persist. `env` is left only for the e2e redirect wiring,
- * which is the driver's own test seam rather than anything about a secret.
+ * `secretRules` is the project's proxied secrets — which hosts and headers
+ * each name applies to — and only the caller can supply it, since a secret
+ * is a row it owns and it is the one that knows which have a value behind
+ * them. The values themselves never come through here, which is what keeps
+ * the payload safe for the proxy to persist. `env` is left only for the e2e
+ * redirect wiring, which is the driver's own test seam rather than anything
+ * about a secret.
  */
 export function buildWorktreeRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
   projectSlug: string
-  secretNames: string[]
+  secretRules: Record<string, SecretProxyRule>
   env?: NodeJS.ProcessEnv
 }): WorktreeRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
@@ -89,9 +91,7 @@ export function buildWorktreeRegistration(input: {
     allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
   }
   return {
-    rules: input.config.envSecretProxy
-      ? buildRulesFromConfig(input.config.envSecretProxy, input.secretNames)
-      : [],
+    rules: buildRulesFromSecrets(input.projectSlug, input.secretRules),
     allowedHosts,
     repoUrl: input.remoteUrl,
     tool: input.tool,
@@ -120,7 +120,7 @@ export async function registerWorkspace(reg: WorkspaceRegistration): Promise<voi
       remoteUrl: reg.remoteUrl,
       tool: reg.tool,
       projectSlug: reg.projectSlug,
-      secretNames: reg.proxySecretNames,
+      secretRules: reg.proxySecretRules,
     }),
   )
 }

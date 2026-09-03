@@ -283,15 +283,6 @@ export interface ServerEnvOptions {
    * one — where install has already warned.
    */
   torHostAddr?: string
-  /**
-   * The git identity non-interactive worktree creation commits under. Read
-   * off the host by install, because the pod has no host to read: its
-   * `$HOME` is an image layer and the data dir is its only mount, so
-   * `git config --global` in there answers nothing. Absent leaves the
-   * server with no fallback, and a UI-created worktree then fails with the
-   * message `createWorktree` raises.
-   */
-  gitUser?: { name: string; email: string }
 }
 
 /**
@@ -347,11 +338,14 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     ['YAAC_POD_CIDRS', env.podCidrs.length > 0 ? env.podCidrs.join(',') : undefined],
     ['YAAC_KUBE_PROXY_EXTERNAL', env.kubeProxyExternal ? '1' : undefined],
     ['YAAC_E2E_SKIP_FETCH', testEnv.e2eSkipFetch ? '1' : undefined],
-    // Resolved by the caller, not read from this process's environment:
-    // the identity lives in the host's git config, which is not an env var
-    // and is unreachable from the pod.
-    ['YAAC_SERVER_GIT_NAME', opts.gitUser?.name],
-    ['YAAC_SERVER_GIT_EMAIL', opts.gitUser?.email],
+    // The encryption key for stored secrets, when the operator states one
+    // rather than letting the server generate its own into the data dir.
+    // A pod has no shell to export it in, so this is the only way it can
+    // arrive — same reason as the two host-header knobs above.
+    ['YAAC_SECRETS', env.secrets === null
+      ? undefined
+      : env.secrets.map((s) => `${String(s.version)}:${s.value}`).join(',')],
+    ['YAAC_SECRET', env.secret],
   ]
   for (const [name, value] of passThrough) {
     if (value !== undefined && value !== '') vars.push({ name, value })

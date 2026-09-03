@@ -4,6 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
+import { serverLocalPath } from '@yaac/shared/paths'
 
 /**
  * How a resolved credential becomes a git invocation the host can run:
@@ -25,7 +26,7 @@ import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
  */
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
-  | { kind: 'ssh'; privateKeyPath: string; knownHostsEntry: string }
+  | { kind: 'ssh'; privateKey: string; knownHostsEntry: string }
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)
@@ -83,6 +84,29 @@ export function buildHostSideGitSshCommand(keyPath: string, knownHostsPath: stri
   ])
 }
 
+/** Where the short-lived key files go: server-local, so nothing else
+ *  mounts it and a sweep can own the whole directory. */
+function sshKeyScratchDir(): string {
+  return serverLocalPath('run', 'ssh-keys')
+}
+
+async function sshKeyScratchRoot(): Promise<string> {
+  const dir = sshKeyScratchDir()
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+  return dir
+}
+
+/**
+ * Empty the key scratch root. Called once at startup, which is the only
+ * moment every file under it is certainly finished with: a key survives
+ * `withSshKeyFile` only when the process died before its `finally`, and a
+ * server that is starting has no git operation in flight.
+ */
+export async function sweepSshKeyScratch(): Promise<void> {
+  await fs.rm(sshKeyScratchDir(), { recursive: true, force: true })
+    .catch(() => { /* nothing there, or a permission hiccup — best effort */ })
+}
+
 /**
  * Write a known_hosts file atomically with mode 0600. Idempotent.
  */
@@ -95,20 +119,56 @@ export async function writeKnownHostsFile(entries: string[], destPath: string): 
 }
 
 /**
+ * Run `fn` with the private key written to a file only this process can
+ * read, and remove it afterwards — including when `fn` throws.
+ *
+ * `ssh` and `ssh-keygen` take a key as a PATH, so a key the server holds in
+ * memory has to reach the filesystem to be used at all. What makes that
+ * acceptable is how briefly: a 0600 file in a 0700 directory that exists for
+ * one git invocation. The durable copy is the sealed row, and nothing else
+ * on disk ever holds key material.
+ *
+ * The `finally` cannot run if the process is SIGKILLed mid-clone, so the
+ * files go under one server-local root that {@link sweepSshKeyScratch}
+ * empties at startup — the only moment at which every one of them is
+ * certainly finished with. Under `os.tmpdir()` a survivor would sit there
+ * until the OS reaped it, which on a long-lived host is never.
+ */
+export async function withSshKeyFile<T>(
+  privateKey: string,
+  fn: (keyPath: string) => Promise<T>,
+): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(await sshKeyScratchRoot(), 'key-'))
+  await fs.chmod(dir, 0o700)
+  const keyPath = path.join(dir, 'id')
+  // OpenSSH rejects a key file whose final line has no newline.
+  await fs.writeFile(keyPath, privateKey.endsWith('\n') ? privateKey : `${privateKey}\n`, {
+    mode: 0o600,
+  })
+  try {
+    return await fn(keyPath)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => { /* best effort */ })
+  }
+}
+
+/**
  * Build the env object to pass to `simpleGit.env(...)` for a given
- * credential. For SSH, we also need a known_hosts path on disk so the
- * GIT_SSH_COMMAND can point at it. Caller is responsible for writing
- * the file first.
+ * credential. For SSH, both the key and the known_hosts entry need a path on
+ * disk for the GIT_SSH_COMMAND to point at; the caller writes them first
+ * (`withSshKeyFile`, `ensureKnownHostsFileForCredential`) and passes them in.
  */
 export function gitEnvForCredential(
   credential: ResolvedGitCredential | null,
   knownHostsPath?: string,
+  keyPath?: string,
 ): NodeJS.ProcessEnv | undefined {
   // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess when Tor is off (torEnv spreads it when on)
   const base = torEnv() ?? { ...process.env }
   if (credential?.kind === 'ssh') {
     if (!knownHostsPath) throw new Error('SSH credentials require a knownHostsPath')
-    base.GIT_SSH_COMMAND = buildHostSideGitSshCommand(credential.privateKeyPath, knownHostsPath)
+    if (!keyPath) throw new Error('SSH credentials require a key file path')
+    base.GIT_SSH_COMMAND = buildHostSideGitSshCommand(keyPath, knownHostsPath)
     return base
   }
   // HTTPS or no credential: Tor env (if any) is enough; otherwise simple-git

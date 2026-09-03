@@ -44,6 +44,8 @@ function fireChange(source: ReconcileTrigger): void {
 export async function attachConvergence(opts: {
   onAttached: () => void
   sshIdentities?: DriverDeps['sshIdentities']
+  listProxySecrets?: DriverDeps['proxySecrets']
+  legacySecretImportPending?: DriverDeps['legacySecretImportPending']
 }): Promise<void> {
   // The ACP driver needs a worktree's already-recorded conversations to
   // re-address a live agent (and to `session/load` after a restart), and
@@ -97,6 +99,10 @@ export async function attachConvergence(opts: {
     attached: opts.onAttached,
   }, {
     ...(opts.sshIdentities !== undefined ? { sshIdentities: opts.sshIdentities } : {}),
+    ...(opts.listProxySecrets !== undefined ? { proxySecrets: opts.listProxySecrets } : {}),
+    ...(opts.legacySecretImportPending !== undefined
+      ? { legacySecretImportPending: opts.legacySecretImportPending }
+      : {}),
   })
 }
 

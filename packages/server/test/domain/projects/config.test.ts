@@ -64,71 +64,62 @@ describe('resolveProjectConfig', () => {
     const origWarn = console.warn
     console.warn = (msg: string) => warns.push(msg)
     try {
-      expect(await roundTrip({ envPassthrough: ['TERM'], unknownField: true }))
-        .toEqual({ envPassthrough: ['TERM'] })
+      expect(await roundTrip({ initCommands: ['pnpm install'], unknownField: true }))
+        .toEqual({ initCommands: ['pnpm install'] })
     } finally {
       console.warn = origWarn
     }
     expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
   })
 
-  describe('env', () => {
-    it('round-trips envPassthrough and env, leaving $VAR in env values literal', async () => {
-      expect(await roundTrip({
-        envPassthrough: ['TERM', 'LANG'],
-        env: { FOO: 'bar', LITERAL: '$HOME/stuff' },
-      })).toEqual({
-        envPassthrough: ['TERM', 'LANG'],
-        env: { FOO: 'bar', LITERAL: '$HOME/stuff' },
-      })
-    })
-
-    it('rejects a malformed envPassthrough or env', async () => {
-      await expect(roundTrip({ envPassthrough: 'not-an-array' }))
-        .rejects.toThrow('envPassthrough must be a string array')
-      await expect(roundTrip({ env: ['FOO=bar'] }))
-        .rejects.toThrow('env must be an object of string values')
-      await expect(roundTrip({ env: 'FOO=bar' }))
-        .rejects.toThrow('env must be an object of string values')
-      await expect(roundTrip({ env: { FOO: 42 } }))
-        .rejects.toThrow('env.FOO must be a string')
-    })
-  })
-
-  describe('envSecretProxy', () => {
-    it('round-trips header, bodyParam, path, and prefix rules', async () => {
-      const config = {
-        envSecretProxy: {
-          GITHUB_TOKEN: { hosts: ['api.github.com', 'github.com'] },
-          ANTHROPIC_API_KEY: { hosts: ['api.anthropic.com'], header: 'x-api-key', prefix: 'Bearer ' },
-          GITHUB_CLIENT_ID: {
-            hosts: ['github.com'],
-            path: '/login/oauth/*',
-            bodyParam: 'client_id',
-          },
-        },
+  describe('retired keys', () => {
+    // A retired key is not an unknown one: the generic "unknown field"
+    // warning reads like a typo, and would leave someone whose worktrees
+    // silently stopped getting their environment with nothing to search for.
+    const warningsFor = async (config: object): Promise<string[]> => {
+      const warns: string[] = []
+      const origWarn = console.warn
+      console.warn = (msg: string) => warns.push(msg)
+      try {
+        await roundTrip(config)
+      } finally {
+        console.warn = origWarn
       }
-      expect(await roundTrip(config)).toEqual(config)
+      return warns
+    }
+
+    it('names where a project environment lives now', async () => {
+      const warns = await warningsFor({
+        env: { FOO: 'bar' },
+        envPassthrough: ['TERM'],
+        envSecretProxy: { MY_KEY: { hosts: ['api.example.com'] } },
+      })
+      for (const key of ['env', 'envPassthrough', 'envSecretProxy']) {
+        expect(warns.some((w) => w.includes(`"${key}" is no longer supported`))).toBe(true)
+      }
+      expect(warns.join('\n')).toContain('Settings → Project Config → Environment')
     })
 
-    it('rejects a malformed rule', async () => {
-      await expect(roundTrip({ envSecretProxy: 'not-an-object' }))
-        .rejects.toThrow('envSecretProxy must be an object')
-      await expect(roundTrip({ envSecretProxy: { GITHUB_TOKEN: 'not-an-object' } }))
-        .rejects.toThrow('envSecretProxy.GITHUB_TOKEN must be an object')
-      await expect(roundTrip({ envSecretProxy: { MY_KEY: { hosts: [] } } }))
-        .rejects.toThrow('envSecretProxy.MY_KEY.hosts must be a non-empty string array')
-      await expect(roundTrip({ envSecretProxy: { MY_KEY: { hosts: ['a.com'], path: 5 } } }))
-        .rejects.toThrow('envSecretProxy.MY_KEY.path must be a string')
-      await expect(roundTrip({ envSecretProxy: { MY_KEY: { hosts: ['a.com'], header: 5 } } }))
-        .rejects.toThrow('envSecretProxy.MY_KEY.header must be a string')
-      await expect(roundTrip({ envSecretProxy: { MY_KEY: { hosts: ['a.com'], prefix: 5 } } }))
-        .rejects.toThrow('envSecretProxy.MY_KEY.prefix must be a string')
-      await expect(roundTrip({ envSecretProxy: { MY_KEY: { hosts: ['a.com'], bodyParam: 5 } } }))
-        .rejects.toThrow('envSecretProxy.MY_KEY.bodyParam must be a string')
-      await expect(roundTrip({
-        envSecretProxy: { MY_KEY: { hosts: ['a.com'], header: 'x-key', bodyParam: 'key' } },
-      })).rejects.toThrow('envSecretProxy.MY_KEY cannot have both header and bodyParam')
+    it('names cacheVolumes as what replaced bindMounts', async () => {
+      const warns = await warningsFor({
+        bindMounts: [{ hostPath: '/data', containerPath: '/mnt/data', mode: 'ro' }],
+      })
+      expect(warns.some((w) => w.includes('"bindMounts" is no longer supported'))).toBe(true)
+      expect(warns.join('\n')).toContain('cacheVolumes')
+    })
+
+    it('drops them from the parsed config rather than carrying them through', async () => {
+      const origWarn = console.warn
+      console.warn = () => { /* the messages are asserted above */ }
+      try {
+        expect(await roundTrip({
+          env: { FOO: 'bar' },
+          bindMounts: [{ hostPath: '/data', containerPath: '/mnt/data', mode: 'ro' }],
+          initCommands: ['pnpm install'],
+        })).toEqual({ initCommands: ['pnpm install'] })
+      } finally {
+        console.warn = origWarn
+      }
     })
   })
 
@@ -207,85 +198,6 @@ describe('resolveProjectConfig', () => {
         .rejects.toThrow(/commands must be a non-empty array/)
       await expect(roundTrip({ initCommands: [{ name: 'be', commands: ['x'], hidePane: 'yes' }] }))
         .rejects.toThrow(/hidePane must be a boolean/)
-    })
-  })
-
-  describe('bindMounts', () => {
-    it('round-trips absolute host/container paths with a mode', async () => {
-      const config = {
-        bindMounts: [
-          { hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'ro' },
-          { hostPath: '/opt/tools', containerPath: '/opt/tools', mode: 'rw' },
-        ],
-      }
-      expect(await roundTrip(config)).toEqual(config)
-    })
-
-    it('expands $VAR and ${VAR} in hostPath', async () => {
-      process.env.YAAC_TEST_DIR = '/opt/data'
-      const origHome = process.env.HOME
-      process.env.HOME = '/home/testuser'
-      try {
-        const result = await roundTrip({
-          bindMounts: [
-            { hostPath: '$HOME/datasets', containerPath: '/mnt/datasets', mode: 'ro' },
-            { hostPath: '${YAAC_TEST_DIR}/models', containerPath: '/mnt/models', mode: 'rw' },
-            { hostPath: '$YAAC_TEST_DIR/${YAAC_TEST_DIR}', containerPath: '/mnt/both', mode: 'ro' },
-            { hostPath: '/plain/path', containerPath: '/mnt/plain', mode: 'ro' },
-          ],
-        })
-        expect(result?.bindMounts?.map((m) => m.hostPath)).toEqual([
-          '/home/testuser/datasets',
-          '/opt/data/models',
-          '/opt/data//opt/data',
-          '/plain/path',
-        ])
-      } finally {
-        process.env.HOME = origHome
-        delete process.env.YAAC_TEST_DIR
-      }
-    })
-
-    it('rejects an unset variable, and a path still relative after expansion', async () => {
-      delete process.env.YAAC_NONEXISTENT_VAR
-      await expect(roundTrip({
-        bindMounts: [{ hostPath: '$YAAC_NONEXISTENT_VAR/data', containerPath: '/mnt/data' }],
-      })).rejects.toThrow(
-        'bindMounts[0].hostPath: environment variable "YAAC_NONEXISTENT_VAR" is not set',
-      )
-
-      process.env.YAAC_TEST_REL = 'relative/path'
-      try {
-        await expect(roundTrip({
-          bindMounts: [{ hostPath: '$YAAC_TEST_REL/data', containerPath: '/mnt/data' }],
-        })).rejects.toThrow('must be an absolute path (after expanding env vars')
-      } finally {
-        delete process.env.YAAC_TEST_REL
-      }
-    })
-
-    it('rejects malformed entries and relative or missing paths', async () => {
-      await expect(roundTrip({ bindMounts: 'not-an-array' }))
-        .rejects.toThrow('bindMounts must be an array')
-      await expect(roundTrip({ bindMounts: ['not-an-object'] }))
-        .rejects.toThrow('bindMounts[0] must be an object')
-      await expect(roundTrip({ bindMounts: [{ hostPath: 'relative/path', containerPath: '/mnt/data' }] }))
-        .rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
-      await expect(roundTrip({ bindMounts: [{ containerPath: '/mnt/data' }] }))
-        .rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
-      await expect(roundTrip({ bindMounts: [{ hostPath: '/home/user/data', containerPath: 'rel' }] }))
-        .rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
-      await expect(roundTrip({ bindMounts: [{ hostPath: '/home/user/data' }] }))
-        .rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
-    })
-
-    it('requires an explicit ro/rw mode', async () => {
-      await expect(roundTrip({
-        bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'yes' }],
-      })).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
-      await expect(roundTrip({
-        bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data' }],
-      })).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
     })
   })
 

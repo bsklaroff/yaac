@@ -5,6 +5,7 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import {
   ensureKnownHostsFileForCredential,
   gitEnvForCredential,
+  withSshKeyFile,
   injectTokenIntoUrl,
   torEnv,
 } from './transport'
@@ -41,8 +42,10 @@ export async function cloneRepo(
   }
   if (credential?.kind === 'ssh') {
     const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
-    const env = gitEnvForCredential(credential, knownHostsPath)
-    await gitWithCredentialEnv(undefined, env).clone(remoteUrl, destPath)
+    await withSshKeyFile(credential.privateKey, async (keyPath) => {
+      const env = gitEnvForCredential(credential, knownHostsPath, keyPath)
+      await gitWithCredentialEnv(undefined, env).clone(remoteUrl, destPath)
+    })
     return
   }
   // No credential: unauthenticated clone (works for public HTTPS repos).
@@ -146,8 +149,10 @@ export async function fetchOrigin(
     }
     if (credential?.kind === 'ssh') {
       const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
-      const env = gitEnvForCredential(credential, knownHostsPath)
-      await gitWithCredentialEnv(repoPath, env).fetch('origin')
+      await withSshKeyFile(credential.privateKey, async (keyPath) => {
+        const env = gitEnvForCredential(credential, knownHostsPath, keyPath)
+        await gitWithCredentialEnv(repoPath, env).fetch('origin')
+      })
       return
     }
     await gitWithCredentialEnv(repoPath, torEnv()).fetch('origin')

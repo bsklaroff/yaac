@@ -100,3 +100,17 @@ export async function getUserDockerfile(): Promise<string> {
 export async function saveUserDockerfile(content: string): Promise<void> {
   await api.config['user-dockerfile'].$put({ json: { content } })
 }
+
+/** The git identity this server's worktrees commit under (null when unset). */
+export async function getGitIdentity(): Promise<{ name: string; email: string } | null> {
+  const { identity } = await api.config['git-identity'].$get()
+  return identity
+}
+
+/** Set it. Both halves are required; the server validates the email's shape. */
+export async function setGitIdentity(
+  identity: { name: string; email: string },
+): Promise<{ name: string; email: string }> {
+  const saved = await api.config['git-identity'].$put({ json: identity })
+  return saved.identity
+}

@@ -17,7 +17,7 @@ import {
   opencodeConfigDir,
   worktreesDir,
   worktreeDir,
-  proxySecretsCredentialsPath,
+  secretKeyPath,
   ensureDataDir,
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
@@ -121,9 +121,11 @@ describe('paths', () => {
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
   })
 
-  it('returns correct proxy-secrets credentials path', () => {
+  it('puts the secret key in the server-local tier, not beside the credentials', () => {
     setDataDir('/tmp/yaac-test')
-    expect(proxySecretsCredentialsPath()).toBe('/tmp/yaac-test/.credentials/proxy-secrets.json')
+    // Deliberately NOT under .credentials: that directory is mounted into
+    // the proxy pod, and a key beside the ciphertext it opens is no key.
+    expect(secretKeyPath()).toBe('/tmp/yaac-test/secret.key')
   })
 
   it('ensureDataDir creates projects directory', async () => {

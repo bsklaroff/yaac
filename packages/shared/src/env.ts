@@ -23,9 +23,9 @@ import type { AgentTool, DriverKind } from '#types'
  * defaults.
  *
  * Note: variables read for a different reason than yaac configuration — env
- * forwarded wholesale to a subprocess (`{ ...process.env }`), and the
- * user-driven `envPassthrough` / `$VAR` expansion that look up arbitrary names
- * — intentionally stay at their call sites with an inline `no-process-env`
+ * forwarded wholesale to a subprocess (`{ ...process.env }`), and the legacy
+ * import's lookup of an arbitrary name a retired config key once carried —
+ * intentionally stay at their call sites with an inline `no-process-env`
  * disable. They are not yaac config and don't belong here.
  */
 
@@ -266,27 +266,87 @@ export const env = {
   },
 
   /**
-   * `YAAC_SERVER_GIT_NAME` / `YAAC_SERVER_GIT_EMAIL` — the git identity the
-   * SERVER itself commits worktrees under when a caller supplies none, stated
-   * by the server Deployment. `null` unless both halves are set.
+   * `YAAC_SERVER_GIT_NAME` / `YAAC_SERVER_GIT_EMAIL` — a git identity an
+   * OLDER install's server Deployment still states. `null` unless both
+   * halves are set.
+   *
+   * The identity a worktree commits under is a server SETTING now
+   * (`getGitIdentity`, a preferences row a client seeds and the webapp
+   * edits), because a value only a host shell can set is a value a remote
+   * user cannot. This accessor survives only to seed that row once on a
+   * server whose pod was deployed before the setting existed
+   * (docs/legacy-compat-shims.md); nothing else reads it, and it goes when
+   * that shim does.
    *
    * Distinct from `YAAC_GIT_NAME` / `YAAC_GIT_EMAIL`, which the server puts
    * into a WORKTREE's environment for `yaac-worktree-init` to write into that
    * checkout's git config. Same pair of values, opposite directions — one
    * reaches the server, the other leaves it — so they cannot share a name.
-   *
-   * This exists because the fallback it feeds cannot read a host: under the
-   * k8s driver the server is a pod whose `$HOME` is an ephemeral image layer
-   * and whose only mount is the data dir, so `git config --global` there
-   * answers nothing no matter what the user configured on their machine.
-   * `yaac cluster install` resolves the identity on the host and states it
-   * here.
    */
-  get serverGitUser(): { name: string; email: string } | null {
+  get legacyServerGitUser(): { name: string; email: string } | null {
     const name = process.env.YAAC_SERVER_GIT_NAME?.trim()
     const email = process.env.YAAC_SERVER_GIT_EMAIL?.trim()
     if (name && email) return { name, email }
     return null
+  },
+
+  /**
+   * `YAAC_SECRETS` — the keys the server encrypts stored secrets with, as
+   * `"<version>:<secret>,<version>:<secret>"`. The FIRST entry is the one
+   * new writes are sealed under; the rest exist so an older row still opens,
+   * which is what makes rotation a restart rather than a re-encrypt pass.
+   *
+   * Unset is the ordinary case: the server generates a key of its own into
+   * the data dir instead (`db/secret-key.ts`). This is for an operator who
+   * wants the key to live in their own secret manager rather than beside the
+   * database — the same shape better-auth's `BETTER_AUTH_SECRETS` has, since
+   * the scheme here is a port of theirs.
+   *
+   * A malformed entry throws rather than being dropped: a key silently
+   * missing from the set is a row that silently stops opening.
+   */
+  get secrets(): Array<{ version: number; value: string }> | null {
+    const raw = process.env.YAAC_SECRETS
+    if (raw === undefined || raw.trim() === '') return null
+    const entries = raw.split(',').map((entry) => {
+      const trimmed = entry.trim()
+      const colon = trimmed.indexOf(':')
+      if (colon === -1) {
+        throw new Error(
+          `YAAC_SECRETS entry "${trimmed}" must be "<version>:<secret>"`,
+        )
+      }
+      const version = Number(trimmed.slice(0, colon))
+      if (!Number.isInteger(version) || version < 0) {
+        throw new Error(
+          `YAAC_SECRETS version "${trimmed.slice(0, colon)}" must be a non-negative integer`,
+        )
+      }
+      const value = trimmed.slice(colon + 1).trim()
+      if (value === '') {
+        throw new Error(`YAAC_SECRETS has an empty secret for version ${String(version)}`)
+      }
+      return { version, value }
+    })
+    const seen = new Set<number>()
+    for (const { version } of entries) {
+      if (seen.has(version)) {
+        throw new Error(`YAAC_SECRETS repeats version ${String(version)}; each must be unique`)
+      }
+      seen.add(version)
+    }
+    return entries
+  },
+
+  /**
+   * `YAAC_SECRET` — a single encryption key, for an install that has never
+   * rotated one. Alongside `YAAC_SECRETS` it becomes the fallback for a
+   * payload written before versioning (the bare-hex form), which is exactly
+   * the role `BETTER_AUTH_SECRET` plays beside `BETTER_AUTH_SECRETS`.
+   */
+  get secret(): string | undefined {
+    const raw = process.env.YAAC_SECRET?.trim()
+    return raw === undefined || raw === '' ? undefined : raw
   },
 
   /**

@@ -19,8 +19,7 @@ interface WorktreeRestartResult {
  * the worktree stopped — each in its own window.
  */
 export async function worktreeRestart(worktreeId: string): Promise<string | undefined> {
-  const gitUser = await ensureGitIdentity()
-  if (!gitUser) {
+  if (!await ensureGitIdentity()) {
     process.exitCode = 1
     return
   }
@@ -28,7 +27,6 @@ export async function worktreeRestart(worktreeId: string): Promise<string | unde
   const res = await api.worktree.restart.$post({
     json: {
       worktreeId,
-      gitUser,
     },
   })
 

@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises'
 import type {
   AgentTool,
   PendingMamaRequest,
@@ -23,7 +22,12 @@ import {
   kubectlWithRetry,
 } from '#drivers/k8s/substrate'
 import { registryRef } from '#drivers/k8s/container'
-import { proxySshEntries } from './credential-providers'
+import {
+  legacySecretImportPending,
+  proxySecretValues,
+  proxySshEntries,
+} from './credential-providers'
+import { proxySecretRef, sweepLegacyProxySecretsFile } from './secret-refs'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 
@@ -34,11 +38,15 @@ export interface Injection {
   name: string
   value?: string
   /**
-   * Reference to an entry in the proxy-secrets credentials file (keyed by
-   * env var name) instead of a literal `value`. The proxy resolves it at
-   * injection time from its credentials mount, which keeps registrations
-   * secret-free — a hard requirement for the proxy persisting them to its
-   * /data volume across pod replacements.
+   * `<projectSlug>/<NAME>`, naming one of the secrets the server pushed to
+   * the proxy, instead of a literal `value`. The proxy resolves it at
+   * injection time from the map it holds in memory, which keeps
+   * registrations secret-free — a hard requirement for the proxy persisting
+   * them to its /data volume across pod replacements.
+   *
+   * Scoped by project because the map is shared: an unscoped name would let
+   * one project's rule have another project's secret injected into requests
+   * to a host of its choosing.
    */
   secretRef?: string
   /** Prefix prepended to the resolved secret (e.g. "Bearer "). */
@@ -63,45 +71,38 @@ export interface UpstreamRedirect {
 }
 
 /**
- * Build proxy injection rules from yaac-config.json's envSecretProxy field.
- * Each entry maps an env var name to a SecretProxyRule that describes how to
- * inject the secret (as a header or body parameter).
+ * Build proxy injection rules from a project's proxied secrets. Each entry
+ * maps a variable name to the rule describing how the secret is injected (as
+ * a header or a body parameter).
  *
- * Rules carry the env var name as a `secretRef`, never the value — the proxy
- * resolves it per request from the proxy-secrets file, so registrations stay
- * secret-free and a value updated on disk applies to live worktrees
- * immediately.
+ * Rules carry a `secretRef`, never the value — the proxy resolves it per
+ * request from what the server pushed it, so registrations stay secret-free
+ * and a rotation applies to live worktrees immediately. The ref is scoped by
+ * project, so one project's rule cannot resolve another's secret.
  *
- * `availableNames` is the subset that has a value behind it, resolved by the
- * caller (see `WorkspaceRegistration.proxySecretNames`). A rule for a name
- * with nothing behind it would inject an empty header, so those are skipped
- * and said out loud.
+ * Only secrets with a value behind them are passed in; the caller is the one
+ * that can tell, since it holds the rows.
  */
-export function buildRulesFromConfig(
-  envSecretProxy: Record<string, SecretProxyRule>,
-  availableNames: readonly string[],
+export function buildRulesFromSecrets(
+  projectSlug: string,
+  secretRules: Record<string, SecretProxyRule>,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
-  const available = new Set(availableNames)
 
-  for (const [envVar, rule] of Object.entries(envSecretProxy)) {
-    if (!available.has(envVar)) {
-      console.warn(`Warning: ${envVar} has no value available, skipping proxy rule`)
-      continue
-    }
-
+  for (const [envVar, rule] of Object.entries(secretRules)) {
+    const secretRef = `${projectSlug}/${envVar}`
     const pathPattern = rule.path ?? '/*'
 
     let injections: Injection[]
     if (rule.bodyParam) {
-      injections = [{ action: 'replace_body_param', name: rule.bodyParam, secretRef: envVar }]
+      injections = [{ action: 'replace_body_param', name: rule.bodyParam, secretRef }]
     } else {
       const headerName = rule.header ?? 'authorization'
       const prefix = rule.prefix ?? (rule.header ? '' : 'Bearer ')
       injections = [{
         action: 'set_header',
         name: headerName,
-        secretRef: envVar,
+        secretRef,
         ...(prefix ? { prefix } : {}),
       }]
     }
@@ -499,13 +500,103 @@ export class ProxyClient {
   }
 
   /**
+   * Hand the proxy secret values for its `secretRef` rules to resolve.
+   *
+   * Merged, never replaced: one call carries one project's secrets, and the
+   * proxy holds every project's. Values live only in that process's memory,
+   * which is why {@link reconcileProxySecrets} exists.
+   */
+  async putSecrets(secrets: Record<string, string>): Promise<void> {
+    const res = await tunnelFetch(`${await this.controlBase()}/secrets`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
+      },
+      body: JSON.stringify({ secrets }),
+    })
+    if (!res.ok) {
+      throw new Error(`Failed to store proxy secrets: ${res.status} ${await res.text()}`)
+    }
+  }
+
+  /** Drop one secret the server no longer holds, so a live worktree stops
+   *  injecting it. */
+  async deleteSecret(ref: string): Promise<void> {
+    const res = await tunnelFetch(
+      `${await this.controlBase()}/secrets/${encodeURIComponent(ref)}`,
+      {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
+      },
+    )
+    if (!res.ok) {
+      throw new Error(`Failed to remove proxy secret ${ref}: ${res.status} ${await res.text()}`)
+    }
+  }
+
+  /** Which refs the proxy currently holds values for — names only. */
+  async listSecretNames(): Promise<string[]> {
+    const res = await tunnelFetch(`${await this.controlBase()}/secrets/names`, {
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
+    })
+    if (!res.ok) {
+      throw new Error(`Failed to list proxy secrets: ${res.status} ${await res.text()}`)
+    }
+    return await res.json() as string[]
+  }
+
+  /**
+   * Bring the proxy's secret values in line with what the server holds.
+   *
+   * Two failures to heal, not one. A replaced pod comes back holding NOTHING
+   * — the values are memory-only by design, and `attachIfRunning` can
+   * re-attach to a fresh pod without the bootstrap path running — so every
+   * running worktree's injections stop resolving until this puts them back.
+   * And a value the server no longer has may still be held there: pushes
+   * merge, so nothing else ever removes one, and a proxy that went on
+   * injecting a deleted credential is the worse of the two failures.
+   *
+   * So this diffs both ways: push everything the server has, then forget
+   * every ref it cannot account for. A healthy tick costs one PUT and one
+   * GET.
+   */
+  async reconcileProxySecrets(): Promise<void> {
+    if (!this.running) return
+    const projects = await proxySecretValues()
+    // Unwired (an entrypoint that composed a runtime without being the
+    // server) is not the same as "this install has none" — changing anything
+    // on the strength of it would wipe what a live proxy is using.
+    if (projects === undefined) return
+
+    const wanted = new Map<string, string>()
+    for (const { projectSlug, secrets } of projects) {
+      for (const [name, value] of Object.entries(secrets)) {
+        wanted.set(proxySecretRef(projectSlug, name), value)
+      }
+    }
+    if (wanted.size > 0) await this.putSecrets(Object.fromEntries(wanted))
+    for (const ref of await this.listSecretNames()) {
+      if (!wanted.has(ref)) await this.deleteSecret(ref)
+    }
+    // The proxy answered these routes, so it is one that resolves secrets
+    // from what it is pushed rather than from the file an older one mounted
+    // — the proof that nothing still READS the file, and the only place that
+    // proof exists. The second condition is that nothing still needs to be
+    // read OUT of it: an overlay too broken to parse is skipped by the
+    // importer, so sweeping while one still carries `envSecretProxy` would
+    // take values no start has recovered yet
+    // (docs/legacy-compat-shims.md).
+    if (!await legacySecretImportPending()) await sweepLegacyProxySecretsFile()
+  }
+
+  /**
    * Upload an SSH private key to the proxy's ssh-agent. `knownHostsEntry`
    * is required so the proxy can populate its known_hosts before invoking
    * `ssh-add -h <host>` — without it ssh-add can't encode the destination
    * constraint and fails with "No host keys for destination".
    */
-  async uploadSshKey(host: string, keyPath: string, knownHostsEntry: string): Promise<void> {
-    const keyPem = await fs.readFile(keyPath, 'utf8')
+  async uploadSshKey(host: string, keyPem: string, knownHostsEntry: string): Promise<void> {
     const res = await tunnelFetch(`${await this.controlBase()}/agent/keys`, {
       method: 'PUT',
       headers: {
@@ -564,7 +655,7 @@ export class ProxyClient {
     await this.clearSshKeys()
     for (const entry of entries) {
       try {
-        await this.uploadSshKey(entry.host, entry.privateKeyPath, entry.knownHostsEntry)
+        await this.uploadSshKey(entry.host, entry.privateKey, entry.knownHostsEntry)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         serverLog(`[server] proxy ssh-agent: failed to load key for ${entry.host}: ${msg}`)
@@ -663,10 +754,16 @@ export class ProxyClient {
     const caBundle = await this.getCaBundle()
     await ensureCaConfigMap(caPem, caBundle)
 
-    // Load ssh-agent identities (cold start: agent is empty; restart:
-    // re-sync in case the proxy pod was replaced out-of-band).
+    // Load the two things a proxy pod holds only in memory (cold start: it
+    // has neither; restart: re-sync in case the pod was replaced
+    // out-of-band). Detached and non-fatal: an ensureRunning that failed
+    // here would fail the create that triggered it, over state the
+    // `proxy-ssh-keys` reconcile step heals on its own tick anyway.
     this.syncSshKeysFromCredentials().catch((err: Error) => {
       serverLog(`[server] proxy ssh-agent sync failed: ${err.message}`)
+    })
+    this.reconcileProxySecrets().catch((err: Error) => {
+      serverLog(`[server] proxy secret sync failed: ${err.message}`)
     })
   }
 

@@ -27,9 +27,9 @@ vi.mock('#drivers/k8s/substrate/priority-classes', async (importOriginal) => ({
 
 const mockEnsureRunning = vi.hoisted(() => vi.fn())
 const mockRegisterWorktree = vi.hoisted(() => vi.fn())
-const mockWriteProxySecrets = vi.hoisted(() => vi.fn())
+const mockPushProxySecrets = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/egress/proxy-secrets', () => ({
-  writeProxySecrets: mockWriteProxySecrets,
+  pushProxySecrets: mockPushProxySecrets,
 }))
 vi.mock('#drivers/k8s/egress/proxy-client', () => ({
   proxyClient: {
@@ -37,7 +37,7 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
     registerWorktree: mockRegisterWorktree,
     getCaTrustEnv: () => ['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'],
   },
-  buildRulesFromConfig: () => [],
+  buildRulesFromSecrets: () => [],
 }))
 
 // The cluster half is a whole subprocess tree per call (registry pods,
@@ -79,6 +79,7 @@ const INTENT = {
   remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
   proxySecrets: {},
+  proxySecretRules: {},
 }
 
 function specOf(
@@ -140,18 +141,18 @@ function containerEnv(): Record<string, string> {
 beforeEach(() => {
   vi.clearAllMocks()
   mockProxyClusterIp.mockResolvedValue('10.96.0.5')
-  mockWriteProxySecrets.mockResolvedValue(undefined)
+  mockPushProxySecrets.mockResolvedValue(undefined)
   mockRegisterWorktree.mockResolvedValue(undefined)
   mockStoreMount.mockResolvedValue(undefined)
 })
 
 describe('prepareWorkspaceSubstrate', () => {
-  it('stores the caller-resolved secrets before the rules that name them', async () => {
+  it('pushes the caller-resolved secrets before the rules that name them', async () => {
     // The registration's secretRefs must resolve from the proxy's first
     // request onward, so the values land first — and the registration
-    // carries only their NAMES, since the proxy persists it.
+    // carries only their names and rules, since the proxy persists it.
     const order: string[] = []
-    mockWriteProxySecrets.mockImplementation(() => {
+    mockPushProxySecrets.mockImplementation(() => {
       order.push('secrets')
       return Promise.resolve()
     })
@@ -162,19 +163,21 @@ describe('prepareWorkspaceSubstrate', () => {
 
     await prepareWorkspaceSubstrate({
       ...INTENT,
-      config: { envSecretProxy: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } } },
+      proxySecretRules: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } },
       proxySecrets: { TOKEN: 'sekrit' },
     })
 
     expect(order).toEqual(['secrets', 'register'])
-    expect(mockWriteProxySecrets).toHaveBeenCalledExactlyOnceWith({ TOKEN: 'sekrit' })
+    expect(mockPushProxySecrets).toHaveBeenCalledExactlyOnceWith('proj', { TOKEN: 'sekrit' })
     expect(mockEnsureRunning).toHaveBeenCalled()
     expect(mockRegisterWorktree).toHaveBeenCalledWith('s1', expect.objectContaining({
       tool: 'claude',
       projectSlug: 'proj',
       repoUrl: 'https://github.com/example/repo.git',
     }))
-    // Values reach the proxy by the file, never the payload.
+    // The value travels its own way and never enters the payload the proxy
+    // persists. What that payload says instead — a project-scoped secretRef
+    // — is the rule builder's, and asserted where it is built.
     expect(JSON.stringify(mockRegisterWorktree.mock.calls)).not.toContain('sekrit')
   })
 

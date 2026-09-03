@@ -22,6 +22,7 @@ import {
   readAllGitAuthFailures,
   readGitAuthFailures,
   registerWorkspace,
+  syncProjectProxySecrets,
 } from '#drivers/k8s/egress'
 import {
   prepareWorkspaceImage,
@@ -156,6 +157,7 @@ export function createK8sDriver(): WorktreeDriver {
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncSshIdentities: () => proxyClient.syncSshKeysFromCredentials(),
+    syncProxySecrets: (projectSlug) => syncProjectProxySecrets(projectSlug),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),
     declareForwards: (workspaceId, forwards) => declareWorktreeForwards(workspaceId, forwards),

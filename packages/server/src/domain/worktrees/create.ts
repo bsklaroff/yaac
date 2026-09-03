@@ -35,7 +35,7 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -77,7 +77,6 @@ import {
 import { gitIdentityMissingMessage, resolveGitIdentity } from './git-identity'
 import { reportAgentLaunchFailure } from './provisioning'
 import { ensureSessionStartsLog, sessionStartsLogSize } from './session-starts'
-import { resolveProxySecrets } from './proxy-secrets'
 import {
   adoptLegacyClaudeJson,
   prepareEphemeralMounts,
@@ -205,7 +204,6 @@ export interface WorktreeCreateOptions {
    * Git identity to use inside the container. The CLI resolves this
    * up-front (prompting when missing) and passes it in.
    */
-  gitUser?: { name: string; email: string }
   /**
    * Initial prompt typed into the agent's tmux pane once the agent window
    * is up (pasted + submitted, not passed on the agent's command line).
@@ -738,7 +736,7 @@ export async function createWorktree(
   // Which identity this checkout commits under. The chain and its rationale
   // live in `./git-identity`, because a claimed prewarmed spare must reach the
   // same answer without coming through here.
-  const gitUser = await resolveGitIdentity(options.gitUser)
+  const gitUser = await resolveGitIdentity()
   if (!gitUser) {
     throw new ServerError('VALIDATION', gitIdentityMissingMessage)
   }
@@ -747,6 +745,13 @@ export async function createWorktree(
 
   // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
+
+  // The project's environment: plain variables, and the secrets the egress
+  // path injects. Rows rather than config keys, because a row carries its own
+  // value — a client on another machine cannot write the SERVER's process
+  // environment, and under `k8s` that holds only what the Deployment states
+  // (docs/remote-hosting.md).
+  const projectEnv = await resolveProjectEnv(projectSlug)
 
   // Resolve the git credential (HTTPS token or SSH key) for this project's
   // remote URL and parse the remote so we know the scheme and host.
@@ -1043,7 +1048,12 @@ export async function createWorktree(
     config,
     remoteUrl,
     nestedContainers,
-    proxySecrets: resolveProxySecrets(config),
+    proxySecrets: Object.fromEntries(
+      Object.entries(projectEnv.secrets).map(([name, { value }]) => [name, value]),
+    ),
+    proxySecretRules: Object.fromEntries(
+      Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
+    ),
     onProgress: (m) => emit(m, options),
   })
   substrateTask.catch(() => { /* awaited at the join */ })
@@ -1249,11 +1259,11 @@ export async function createWorktree(
   // The worktree this pod runs. Read by the zsh prompt in Dockerfile.default,
   // and — load-bearing — by a yaac started in here: its presence is what tells
   // that inner server nothing outside the machine can address it, so it needs
-  // no client credential (see isCredentialOptional). Pushed first, and
-  // `envPassthrough`/`config.env` are applied after it and win, so a project
-  // config setting `YAAC_WORKTREE_ID` to empty puts the credential gate back
-  // on inside its own worktrees. That is the explicit-clear semantics working
-  // as written, not a hole — but it is the one config that unstamps this.
+  // no client credential (see isCredentialOptional). Pushed first, and the
+  // project's own variables are applied after it and win, so a project with a
+  // `YAAC_WORKTREE_ID` set to empty puts the credential gate back on inside
+  // its own worktrees. That is the explicit-clear semantics working as
+  // written, not a hole — but it is the one setting that unstamps this.
   env.push(`YAAC_WORKTREE_ID=${worktreeId}`)
 
   // How this workspace's `yaac-mama` reaches the server, where it has to
@@ -1286,31 +1296,16 @@ export async function createWorktree(
     if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
   }
 
-  // Passthrough env vars
-  if (config.envPassthrough) {
-    for (const name of config.envPassthrough) {
-      // eslint-disable-next-line no-process-env -- user-configured passthrough; name comes from project config, not a fixed yaac var
-      const val = process.env[name]
-      if (val !== undefined) {
-        env.push(`${name}=${val}`)
-      }
-    }
-  }
-
-  // Hardcoded env vars from config — applied after passthrough so literal
-  // values win on conflict.
-  if (config.env) {
-    for (const [name, val] of Object.entries(config.env)) {
-      env.push(`${name}=${val}`)
-    }
+  // The project's plain environment variables.
+  for (const [name, value] of Object.entries(projectEnv.plain)) {
+    env.push(`${name}=${value}`)
   }
 
   // Proxied secrets. With a proxy, only a sentinel goes in and the egress
   // path holds the value; with none, the sentinel would be what the tool
   // actually sent, so the value itself goes in. Same question the egress
   // path is handed the answer to, so it is resolved once either way.
-  const proxiedSecrets = resolveProxySecrets(config)
-  for (const [name, value] of Object.entries(proxiedSecrets)) {
+  for (const [name, { value }] of Object.entries(projectEnv.secrets)) {
     env.push(`${name}=${mediatedEgress ? 'placeholder' : value}`)
   }
 
@@ -1363,12 +1358,12 @@ export async function createWorktree(
   // PAT yaac already manages — no separate `gh auth login`. An SSH remote has
   // no HTTPS token to inject, so gh stays unauthenticated there.
   //
-  // Skipped when the user already wires a GitHub token themselves — an explicit
-  // GH_TOKEN (envPassthrough/config.env) or an envSecretProxy entry for
-  // GH_TOKEN/GITHUB_TOKEN — so their configuration wins.
+  // Skipped when the user already wires a GitHub token themselves — a
+  // GH_TOKEN variable, or a proxied secret named GH_TOKEN/GITHUB_TOKEN — so
+  // their configuration wins.
   const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
-    || Boolean(config.envSecretProxy?.GH_TOKEN)
-    || Boolean(config.envSecretProxy?.GITHUB_TOKEN)
+    || projectEnv.secrets.GH_TOKEN !== undefined
+    || projectEnv.secrets.GITHUB_TOKEN !== undefined
   if (credential.kind === 'https'
     && ghApiHostForGitHost(parsedRemote.host) !== null
     && !userWiresGithubToken) {
@@ -1456,8 +1451,6 @@ export async function createWorktree(
   //   emptyDir   — the subset of NODE-LOCAL that nothing outside the pod
   //                ever opens and nothing needs after it dies. Only the
   //                tmux socket dir qualifies today.
-  // User bindMounts are outside every tier: they name paths on the user's
-  // own machine, so they are hostPath by definition.
   const mounts: WorkspaceMount[] = [
     // SHARED.
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
@@ -1504,13 +1497,6 @@ export async function createWorktree(
       source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
       mountPath: containerPath,
     })),
-    // User bindMounts may point at files or directories — omit `type` so
-    // the kubelet mounts whatever exists.
-    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): WorkspaceMount => ({
-      source: { kind: 'hostPath', path: hostPath, type: '' },
-      mountPath: containerPath,
-      readOnly: mode === 'ro',
-    })),
     // NODE-LOCAL: the ephemeral module dirs live under the pnpm store.
     ...ephemeralMounts.map((m): WorkspaceMount => ({
       source: { kind: 'hostPath', path: m.hostBacking },
@@ -1534,7 +1520,7 @@ export async function createWorktree(
   if (!mediatedEgress) {
     gitCredential = credential.kind === 'https'
       ? { kind: 'https', host: parsedRemote.host, token: credential.token }
-      : { kind: 'ssh', privateKeyPath: credential.privateKeyPath }
+      : { kind: 'ssh', privateKey: credential.privateKey }
   }
 
   const spec: WorkspaceSpec = {

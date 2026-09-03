@@ -185,7 +185,7 @@ describe('yaac config (real CLI + real server)', () => {
   it('config edit round-trips yaac-config.json through the server (validated)', async () => {
     await seedProject('demo-edit')
 
-    const editor = await writeStubEditor('config', '{ "env": { "MARKER": "1" } }')
+    const editor = await writeStubEditor('config', '{ "initCommands": ["echo MARKER"] }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'demo-edit',
@@ -193,8 +193,8 @@ describe('yaac config (real CLI + real server)', () => {
     expect(exitCode, stderr).toBe(0)
 
     const target = path.join(testEnv.dataDir, 'projects', 'demo-edit', 'config', 'yaac-config.json')
-    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { env?: Record<string, string> }
-    expect(saved.env).toEqual({ MARKER: '1' })
+    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
+    expect(saved.initCommands).toEqual(['echo MARKER'])
   })
 
   it('config edit rejects invalid JSON, keeps the edits, and leaves the server file alone', async () => {
@@ -253,14 +253,14 @@ describe('yaac config (real CLI + real server)', () => {
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
 
-    const editor = await writeStubEditor('repair', '{ "env": { "REPAIRED": "1" } }')
+    const editor = await writeStubEditor('repair', '{ "initCommands": ["echo REPAIRED"] }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'demo-malformed',
     )
     expect(exitCode, stderr).toBe(0)
-    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { env?: Record<string, string> }
-    expect(saved.env).toEqual({ REPAIRED: '1' })
+    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
+    expect(saved.initCommands).toEqual(['echo REPAIRED'])
   })
 
   it('accepts the nestedContainers key through the config-write route', async () => {

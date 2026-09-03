@@ -21,6 +21,7 @@ import {
   cancelToolLogin,
   clearToolAuth,
   getDefaultTool,
+  getGitIdentity,
   getToolInstall,
   getToolLogin,
   getUserDockerfile,
@@ -28,6 +29,7 @@ import {
   saveUserDockerfile,
   sendToolLoginInput,
   setDefaultTool,
+  setGitIdentity as setGitIdentityApi,
   setShortcutOverride,
   setToolApiKey,
   startToolInstall,
@@ -276,6 +278,7 @@ export function SettingsButton(
                     />
                   </button>
                 </Field>
+                <GitIdentityField />
               </section>
             )}
 
@@ -1014,6 +1017,91 @@ function Row({ left, right }: { left: string; right: string }): JSX.Element {
       <span className="truncate font-mono text-text-dim">{left}</span>
       <span className="ml-2 shrink-0 font-mono text-text-faint">{right}</span>
     </div>
+  )
+}
+
+/**
+ * The git identity this server's worktrees commit under.
+ *
+ * A server setting rather than something read off its host: under `k8s` the
+ * server is a pod with no git config to read, and on a remote install the
+ * host's belongs to whoever runs it, not to whoever is here. The yaac CLI
+ * and the auth server seed it from your own machine's git config the first
+ * time either talks to this server, so this is usually already filled in.
+ */
+function GitIdentityField(): JSX.Element {
+  const [identity, setIdentity] = useState<{ name: string; email: string } | null | undefined>()
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getGitIdentity()
+      .then((v) => {
+        if (cancelled) return
+        setIdentity(v)
+        setName(v?.name ?? '')
+        setEmail(v?.email ?? '')
+      })
+      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
+    return () => { cancelled = true }
+  }, [])
+
+  const save = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    try {
+      setIdentity(await setGitIdentityApi({ name: name.trim(), email: email.trim() }))
+      setSaved(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const inputClass = 'flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
+    + 'text-xs text-text outline-none focus:border-border-strong'
+
+  return (
+    <Field
+      label="Git identity"
+      hint={identity === null
+        ? 'Not set — worktrees cannot be created until it is. The yaac CLI and '
+          + 'the auth server fill this in from your machine\'s git config.'
+        : 'What worktrees on this server commit as.'}
+    >
+      <form onSubmit={(e) => void save(e)}>
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(e) => { setName(e.target.value); setSaved(false) }}
+            placeholder="Your Name"
+            className={inputClass}
+          />
+          <input
+            value={email}
+            onChange={(e) => { setEmail(e.target.value); setSaved(false) }}
+            placeholder="you@example.com"
+            className={inputClass}
+          />
+          <button
+            type="submit"
+            disabled={busy || name.trim() === '' || email.trim() === ''}
+            className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
+              hover:bg-border-strong disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : saved ? 'Saved' : 'Save'}
+          </button>
+        </div>
+        {error !== null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      </form>
+    </Field>
   )
 }
 

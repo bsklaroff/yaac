@@ -254,15 +254,11 @@ dimension):
 **Changes scoping semantics** (today's scope is wrong for multi-user, and
 two are dubious even single-user):
 
-- **`envSecretProxy` resolution is unscoped.** Secrets live in one flat
-  `{ENV_VAR: value}` map (`.credentials/proxy-secrets.json`, merged on
-  write, name-collisions last-writer-wins), and a worktree's injection
-  rules resolve any `secretRef` name against the whole map — so a project
-  config can have another project's secret injected into requests to a
-  host of its choosing. Storage and resolution both become scoped (per
-  project at least, per owner where the value is user-supplied). Worth
-  fixing ahead of multi-user; it is a cross-*project* exfiltration path
-  today.
+- **Proxied secrets are per-project, not per-owner.** The cross-*project*
+  half is fixed: secrets are rows on the project, encrypted at rest, and a
+  `secretRef` is scoped `<projectSlug>/<NAME>`, so one project's rule can no
+  longer resolve another's value. What tenancy adds is the owner dimension
+  where the value is user-supplied.
 - **Persistent allow-host approvals fan out project-wide.** `persist:true`
   writes the host into the project config and widens every running sibling
   worktree — under ownership, that is a project *write* (owner/team-gated);

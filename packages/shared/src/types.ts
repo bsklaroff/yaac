@@ -305,15 +305,11 @@ export interface PortForwardConfig {
   hostPortStart: number
 }
 
-export interface BindMountConfig {
-  /** Absolute path on the host to mount */
-  hostPath: string
-  /** Absolute path inside the container */
-  containerPath: string
-  /** Mount mode: "ro" for read-only, "rw" for read-write */
-  mode: 'ro' | 'rw'
-}
-
+/**
+ * How the egress proxy injects one secret: which hosts and paths it applies
+ * to, and where in the request the value goes. Stored on a project's secret
+ * env-var row (`ProjectEnvVar.rule`), never in the workspace.
+ */
 export interface SecretProxyRule {
   /** Hostnames to match (exact or wildcard like *.example.com) */
   hosts: string[]
@@ -343,10 +339,19 @@ export interface InitCommandSpec {
   hidePane?: boolean
 }
 
+/**
+ * A project's config overlay (`config/yaac-config.json`), edited through the
+ * server so a client needs no shell on its host.
+ *
+ * What is NOT here is as deliberate as what is. A worktree's environment and
+ * its proxied secrets are rows (`ProjectEnvVar`) rather than keys, so that
+ * setting one needs nothing but the API — a value named here would have to
+ * be resolved against the server's own process environment, which only
+ * someone with a shell on that machine can write. Nothing here mounts a host
+ * directory either, for the same reason: a path on the server is not
+ * something a remote user can name.
+ */
 export interface YaacConfig {
-  envPassthrough?: string[]
-  env?: Record<string, string>
-  envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
   /**
    * Run an in-pod rootful podman so `docker build` / `docker run` /
@@ -360,7 +365,6 @@ export interface YaacConfig {
    *  Mixing the two forms is rejected by the config parser. */
   initCommands?: string[] | InitCommandSpec[]
   portForward?: PortForwardConfig[]
-  bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
   addAllowedUrls?: string[]
   setAllowedUrls?: string[]
@@ -381,6 +385,26 @@ export interface YaacConfig {
   referenceBranch?: string
 }
 
+/**
+ * One of a project's environment variables, as a client sees it.
+ *
+ * A secret's value never comes back out — `hasValue` is what the UI shows
+ * instead, and it is false both for a secret nobody has supplied yet and for
+ * one whose stored value no longer decrypts (a rotated-away key), because in
+ * both cases the answer the user needs is "type it again".
+ */
+export interface ProjectEnvVar {
+  id: string
+  name: string
+  secret: boolean
+  /** Plain variables only; absent for a secret. */
+  value?: string
+  /** Whether a usable value is stored. Always true for a plain variable. */
+  hasValue: boolean
+  /** Secrets only: how the proxy injects it. */
+  rule?: SecretProxyRule
+}
+
 export interface HttpsGitCredentialEntry {
   kind: 'https'
   /** Pattern: "<host>/*", "<host>/<path>", or "<host>/<prefix>/*" */
@@ -392,8 +416,13 @@ export interface HttpsGitCredentialEntry {
 export interface SshGitCredentialEntry {
   kind: 'ssh'
   pattern: string
-  /** Host path to the private key; may start with '~'. yaac never copies it. */
-  privateKeyPath: string
+  /**
+   * The private key PEM itself, not a path to it: the SERVER is what opens a
+   * key, so a path only resolves when the server runs on the same machine as
+   * the client. The content travels over the authenticated API like an HTTPS
+   * token does, and the server keeps it sealed (`git_ssh_keys`).
+   */
+  privateKey: string
   /** One OpenSSH known_hosts line: '<host>[:port] <keytype> <base64>'. */
   knownHostsEntry: string
 }
@@ -403,9 +432,14 @@ export type GitCredentialEntry = HttpsGitCredentialEntry | SshGitCredentialEntry
 /**
  * Shape of `~/.yaac/.credentials/github.json` (path retained for back-compat).
  * Legacy entries (no `kind`, bare-pattern) are normalized on load.
+ *
+ * HTTPS entries only: an ssh entry carries key material, and this file is
+ * bind-mounted into the proxy pod, so those are sealed rows instead. An
+ * older file may still hold some, which the credential store imports and
+ * strips (docs/legacy-compat-shims.md).
  */
 export interface GitCredentialsFile {
-  tokens: GitCredentialEntry[]
+  tokens: HttpsGitCredentialEntry[]
 }
 
 // ---------------------------------------------------------------------------

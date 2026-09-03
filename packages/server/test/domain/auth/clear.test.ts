@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { clearAuth } from '#domain/auth'
+import { closeDb, listGitSshKeys, upsertGitSshKey } from '#db'
 import { addEntry, loadCredentials } from '#domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
@@ -67,13 +68,24 @@ describe('clearAuth', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  it('clear "all" wipes git tokens, every tool bundle, and both placeholders', async () => {
+  it('clear "all" wipes both git stores, every tool bundle, and both placeholders', async () => {
+    // Two stores, not one: https tokens live in the credentials file and ssh
+    // keys in the database, and the half a clear must not leave behind is
+    // the one that is actual key material.
+    await upsertGitSshKey({
+      pattern: 'git.example.com/*',
+      privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n',
+      knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+    })
+
     await clearAuth('all')
 
     expect((await loadCredentials()).tokens).toEqual([])
+    expect(await listGitSshKeys()).toEqual([])
     expect(await loadClaudeCredentialsFile()).toBeNull()
     expect(await loadCodexCredentialsFile()).toBeNull()
     expect(await loadToolAuthEntry('opencode')).toBeNull()

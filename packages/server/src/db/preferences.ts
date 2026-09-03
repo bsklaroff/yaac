@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDb } from './client'
 import { preferences, shortcutOverrides } from './schema'
 import { ServerError } from '@yaac/shared/errors'
@@ -29,6 +29,10 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
 
 /** `preferences` row key for the default session tool. */
 export const DEFAULT_TOOL_KEY = 'default_tool'
+
+/** `preferences` row keys for the git identity worktrees commit under. */
+export const GIT_USER_NAME_KEY = 'git_user_name'
+export const GIT_USER_EMAIL_KEY = 'git_user_email'
 
 export async function getDefaultTool(): Promise<AgentTool | undefined> {
   const db = await getDb()
@@ -91,4 +95,43 @@ export async function setDefaultToolChecked(toolName: string): Promise<AgentTool
   }
   await setDefaultTool(toolName)
   return toolName
+}
+
+/**
+ * The git identity this server's worktrees commit under, or null when
+ * either half is unset.
+ *
+ * A server setting rather than something read off a host, because the host
+ * is not where the user is: under `k8s` the server is a pod whose `$HOME` is
+ * an image layer with no git config in it, and under `containerless` the
+ * host's config belongs to whoever runs the server, not to whoever is
+ * driving it from another machine. Clients seed this from their own shell
+ * (`seedGitIdentityFromShell`) and the webapp edits it, so both ways of
+ * reaching a server can answer the question.
+ *
+ * Two rows rather than one JSON blob, to match every other preference here;
+ * the pair is only ever read together, and half of one is no identity at all.
+ */
+export async function getGitIdentity(): Promise<{ name: string; email: string } | null> {
+  const db = await getDb()
+  const rows = await db.select().from(preferences)
+    .where(inArray(preferences.key, [GIT_USER_NAME_KEY, GIT_USER_EMAIL_KEY]))
+  const byKey = new Map(rows.map((r) => [r.key, r.value]))
+  const name = byKey.get(GIT_USER_NAME_KEY)?.trim()
+  const email = byKey.get(GIT_USER_EMAIL_KEY)?.trim()
+  if (name && email) return { name, email }
+  return null
+}
+
+/** Set both halves. Validation (non-empty, email-shaped) is the caller's. */
+export async function setGitIdentity(identity: { name: string; email: string }): Promise<void> {
+  const db = await getDb()
+  for (const [key, value] of [
+    [GIT_USER_NAME_KEY, identity.name],
+    [GIT_USER_EMAIL_KEY, identity.email],
+  ] as const) {
+    await db.insert(preferences)
+      .values({ key, value })
+      .onConflictDoUpdate({ target: preferences.key, set: { value } })
+  }
 }

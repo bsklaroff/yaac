@@ -238,20 +238,19 @@ describe('deployServerWorkload', () => {
     await deployServerWorkload({
       log: vi.fn(),
       torHostAddr: '10.89.0.1',
-      gitUser: { name: 'Ada Lovelace', email: 'ada@example.com' },
     })
 
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
 
-    // The git identity non-interactive worktree creation commits under. The
-    // pod cannot read it: `git config --global` there reads a `$HOME` that
-    // is an ephemeral image layer, and the data dir is the only host mount.
-    // Named apart from the `YAAC_GIT_*` pair, which is the same identity
-    // travelling the other way — server into a worktree's environment.
-    expect(env.YAAC_SERVER_GIT_NAME).toBe('Ada Lovelace')
-    expect(env.YAAC_SERVER_GIT_EMAIL).toBe('ada@example.com')
+    // No git identity: it is a server SETTING now, in the database the pod
+    // already mounts, rather than a snapshot install took off whichever host
+    // it happened to run on. `YAAC_GIT_*` stays absent for its own reason —
+    // that pair is the same identity travelling the other way, server into a
+    // worktree's environment.
+    expect(env.YAAC_SERVER_GIT_NAME).toBeUndefined()
+    expect(env.YAAC_SERVER_GIT_EMAIL).toBeUndefined()
     expect(env.YAAC_GIT_NAME).toBeUndefined()
 
     // A pod's loopback has no reachable backend, so the bind widens and the

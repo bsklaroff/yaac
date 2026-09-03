@@ -195,9 +195,16 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
 /** See `WorktreeDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks, deps: DriverDeps): Promise<void> {
   // Where the egress path reads credential material from. Left unwired when
-  // the caller supplies nothing, which degrades to "no ssh injection"
-  // rather than clearing what a live proxy is using.
-  if (deps.sshIdentities) configureProxyCredentials({ listSshEntries: deps.sshIdentities })
+  // the caller supplies nothing, which degrades to "no ssh injection" and
+  // "no secret restore" rather than clearing what a live proxy is using.
+  const { sshIdentities, proxySecrets, legacySecretImportPending } = deps
+  if (sshIdentities && proxySecrets && legacySecretImportPending) {
+    configureProxyCredentials({
+      listSshEntries: sshIdentities,
+      listProxySecrets: proxySecrets,
+      legacySecretImportPending,
+    })
+  }
 
   await attachNow(sinks)
 }

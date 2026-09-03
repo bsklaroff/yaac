@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type JSX } from 'react'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
+import { ProjectEnv } from '#components/settings/ProjectEnv'
 import {
   getProjectConfig,
   saveProjectConfig,
@@ -56,6 +57,10 @@ export function ProjectSettings(): JSX.Element {
   // and no build context — the editors below would write files nothing
   // ever builds.
   const buildsImages = useSnapshot()?.driver !== 'containerless'
+  // The same driver, asked a different question: whether an egress proxy
+  // stands between a worktree and the network, which is what decides
+  // whether a secret's value can be kept out of the worktree at all.
+  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
 
   const loadDockerfile = useCallback(
     (): Promise<string> => (slug ? getProjectDockerfile(slug) : Promise.resolve('')),
@@ -86,6 +91,10 @@ export function ProjectSettings(): JSX.Element {
                 <option key={p.slug} value={p.slug}>{p.slug}</option>
               ))}
             </select>
+          </div>
+
+          <div className="mt-6">
+            <ProjectEnv key={`env:${slug}`} slug={slug} mediatedEgress={mediatedEgress} />
           </div>
 
           <div className="mt-6">

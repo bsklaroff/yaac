@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { notifyWorktreeListChanged } from '#notify'
 import { serverLog } from '#log'
 import { runHostCheck } from './check'
-import { runHost } from './host'
-import { containerlessJobName, containerlessWorkspacePaths } from './paths'
+import { isSshAgentFor, killPids, runHost } from './host'
+import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from './paths'
 import {
   listWorkspaces,
   observeLiveness,
@@ -55,6 +57,7 @@ async function recoverWorkspaces(): Promise<void> {
         detail: 'the worktree\'s tmux server is no longer running '
           + '(host reboot, or it was killed)',
       })
+    if (!alive) await sweepDeadWorkspaceSecrets(marker)
   }
   if (markers.length > 0) {
     const live = listWorkspaces().filter((w) => w.running).length
@@ -62,6 +65,40 @@ async function recoverWorkspaces(): Promise<void> {
       `[server] containerless: recovered ${String(markers.length)} worktree(s), `
       + `${String(live)} still running`,
     )
+  }
+}
+
+/**
+ * Take the credentials off a workspace that is no longer running.
+ *
+ * A dead workspace's state dir survives until someone presses stop, and it
+ * holds the two things this driver has to hand a workspace in the clear
+ * because there is no proxy to inject them: the git credential store, and an
+ * ssh-agent holding the private key. The tmux server is gone, but the agent
+ * is NOT its child — it was started beside it, detached — so a worktree
+ * whose tmux died while the host stayed up leaves one running with the key
+ * in memory until reboot. That is the case the per-worktree agent exists to
+ * prevent, so it is ended here rather than waiting for a stop that may never
+ * come. A restart re-realizes both from the database.
+ */
+async function sweepDeadWorkspaceSecrets(marker: WorkspaceMarker): Promise<void> {
+  const paths = containerlessWorkspacePaths(
+    containerlessJobName(marker.projectSlug, marker.worktreeId),
+  )
+  // Verified before signalling: a pid recorded before a host reboot names
+  // some unrelated process of this user by now, and the socket path in the
+  // agent's own argv is what tells the two apart.
+  if (marker.sshAgentPid !== undefined
+    && await isSshAgentFor(marker.sshAgentPid, paths.sshAgentSock)) {
+    killPids([marker.sshAgentPid], 'SIGTERM')
+  }
+  const home = workspaceHome(marker.projectSlug, marker.worktreeId)
+  for (const file of [path.join(home, '.git-credentials'), paths.sshAgentSock]) {
+    await fs.rm(file, { force: true }).catch((err: unknown) => {
+      serverLog(
+        `[server] containerless: could not clear ${file} for a dead worktree: ${String(err)}`,
+      )
+    })
   }
 }
 

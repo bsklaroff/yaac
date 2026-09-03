@@ -45,25 +45,15 @@ describe('decideSpawn', () => {
     const create = stubCreate()
     const decision = await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
     expect(decision).toEqual({ ok: true, workspaceId: 'minted-id' })
+    // The exact options, so nothing identity-shaped can creep back in: a
+    // spawn has no interactive caller to resolve one, which is the reason
+    // the identity a worktree commits under is the server's own setting.
     expect(create).toHaveBeenCalledWith('proj', {
       tool: 'codex', // the caller's own tool, absent an explicit request
       initialPrompt: 'write the report',
       worktreeId: 'minted-id',
       onProgress: expect.any(Function) as (message: string) => void,
     })
-    await settle()
-  })
-
-  it('sends no git identity, so the server’s own is the only source a sibling has', async () => {
-    // A spawn has no interactive caller to resolve one — this is the same
-    // choke point the webapp and `POST /worktrees` reach, and the reason
-    // the server needs an identity of its own rather than one per request.
-    // Asserted separately from the options shape above because a `gitUser`
-    // appearing here would silently paper over that.
-    const create = stubCreate()
-    await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
-    const [, opts] = create.mock.calls[0]
-    expect(opts.gitUser).toBeUndefined()
     await settle()
   })
 

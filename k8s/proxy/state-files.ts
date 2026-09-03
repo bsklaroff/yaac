@@ -38,3 +38,35 @@ export function readJsonOrNull(filePath: string): unknown {
     return null
   }
 }
+
+/**
+ * Give a persisted registration's bare `secretRef`s their project scope.
+ *
+ * A ref used to be the variable NAME alone, resolved against one flat map
+ * shared by every project; it is `<projectSlug>/<NAME>` now. A registration
+ * written before that — reloaded here after a pod replacement — therefore
+ * names refs the server will never push again, and its injections would stop
+ * resolving silently until the worktree was recreated.
+ *
+ * The rewrite is exact rather than a guess: a registration carries the
+ * project it belongs to, and a bare ref in it could only ever have meant that
+ * project's secret of that name. Doing it on the way IN is also what keeps
+ * the fix from reopening what the scope closed — nothing resolves a bare ref
+ * at injection time.
+ *
+ * Lives here rather than in proxy.ts for this module's own reason: a read
+ * that goes wrong fails silently, with the proxy running and the credential
+ * simply not arriving.
+ */
+export function scopeLegacySecretRefs<
+  R extends { injections: Array<{ secretRef?: string }> },
+>(rules: R[], projectSlug: string | undefined): R[] {
+  if (projectSlug === undefined || projectSlug === '') return rules
+  return rules.map((rule) => ({
+    ...rule,
+    injections: rule.injections.map((inj) =>
+      inj.secretRef !== undefined && !inj.secretRef.includes('/')
+        ? { ...inj, secretRef: `${projectSlug}/${inj.secretRef}` }
+        : inj),
+  }))
+}

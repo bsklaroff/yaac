@@ -72,9 +72,10 @@ export function isLoopbackOnlyDeployment(): boolean {
  * remote-fronted for direct external access:
  *   - a pure loopback deployment (`isLoopbackOnlyDeployment`), or
  *   - a yaac running inside a worktree (`YAAC_WORKTREE_ID`): it can pick up
- *     the outer install's `allowedHosts`/`trustProxy` through the project's
- *     `envPassthrough` — ambient env, not a remote-fronting of this inner
- *     server, because nothing outside the machine addresses it unmediated.
+ *     the outer install's `allowedHosts`/`trustProxy` through a project
+ *     environment variable of the same name — ambient env, not a
+ *     remote-fronting of this inner server, because nothing outside the
+ *     machine addresses it unmediated.
  *     Under k8s the only path in is the outer server's port-forward, already
  *     tailnet-gated like any forwarded port; under containerless the inner
  *     server binds host loopback, which this model already trusts. Keyed on

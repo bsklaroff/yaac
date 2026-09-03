@@ -144,15 +144,19 @@ export function piCredentialsPath(): string {
 }
 
 /**
- * SHARED — see {@link credentialsDir}. File holding envSecretProxy values
- * (env var name -> secret), written by the server before each worktree
- * registration. Injection rules sent to the proxy reference these entries
- * by key (`secretRef`) instead of embedding the value, which keeps
- * registrations secret-free so the proxy can persist them across pod
- * replacements.
+ * SERVER-LOCAL. The key the server seals stored secrets with, generated on
+ * first use when the operator states none (`YAAC_SECRETS` / `YAAC_SECRET`).
+ *
+ * Deliberately NOT under {@link credentialsDir}: that directory is
+ * bind-mounted into the proxy pod, and a key mounted beside the ciphertext
+ * it opens is not a key. This tier is the server's alone — nothing else
+ * mounts it, and on a multi-node cluster nothing else needs to.
+ *
+ * Losing this file means every sealed row is unreadable, so it belongs in
+ * whatever backs up the data dir (see README, "Secrets at rest").
  */
-export function proxySecretsCredentialsPath(): string {
-  return path.join(credentialsDir(), 'proxy-secrets.json')
+export function secretKeyPath(): string {
+  return serverLocalPath('secret.key')
 }
 
 /**

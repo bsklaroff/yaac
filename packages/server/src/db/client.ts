@@ -5,6 +5,7 @@ import { migrate } from 'drizzle-orm/pglite/migrator'
 import type { PGlite } from '@electric-sql/pglite'
 import { env, testEnv } from '@yaac/shared/env'
 import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
+import { forgetSecretConfig } from './secret-key'
 
 /**
  * The server's on-disk PGlite database (embedded Postgres, WAL-backed).
@@ -162,6 +163,10 @@ export async function _freshDbForTests(): Promise<void> {
 export async function closeDb(): Promise<void> {
   const prev = cached
   cached = null
+  // The encryption key is resolved per data dir like the handle is, so the
+  // two caches are dropped together — otherwise a test that moves to a new
+  // data dir would seal its rows under the previous dir's generated key.
+  forgetSecretConfig()
   // Shared-instance mode: the handle outlives every data dir that borrows
   // it, so closing it here would strand the next test with a dead postgres.
   // Dropping the cache is the whole job — the next dir wipes on arrival.

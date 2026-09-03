@@ -79,7 +79,6 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
 }
 
 export interface RestartWorktreeOptions {
-  gitUser?: { name: string; email: string }
   onProgress?: (message: string) => void
 }
 
@@ -177,7 +176,6 @@ export async function restartWorktree(
       tool,
       mode: active[0]?.mode ?? 'tui',
       resumeAgentSessions: resume,
-      gitUser: opts.gitUser,
       ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
       onProgress,
     })

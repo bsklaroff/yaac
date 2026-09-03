@@ -30,6 +30,13 @@
 // they share (`toAgentSessionEntry`): the entry it builds is half row and
 // half live observation, and what this layer speaks is rows.
 //
+// It is also where the install's SECRETS live — a project's proxied
+// env-var values and the ssh keys git authenticates with — sealed on the
+// way in and opened on the way out (better-auth's `symmetricEncrypt`, under
+// the key `secret-key.ts` resolves). Sealing stays inside this folder for
+// the same reason the handle does: a layer that could reach past it could
+// store a secret without it, and every path that ought to encrypt is here.
+//
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/db/.
 
@@ -70,12 +77,29 @@ export {
   DEFAULT_TOOL_KEY,
   clearShortcutOverrides,
   getDefaultTool,
+  getGitIdentity,
   getShortcutOverrides,
   isSerializedChord,
   isValidTool,
   setDefaultToolChecked,
+  setGitIdentity,
   setShortcutOverride,
 } from './preferences'
+export {
+  deleteGitSshKey,
+  deleteAllGitSshKeys,
+  listGitSshKeys,
+  upsertGitSshKey,
+  type GitSshKeyRow,
+} from './git-ssh-key-store'
+export {
+  deleteProjectEnvVar,
+  deleteProjectEnvVars,
+  listProjectEnvVars,
+  upsertProjectEnvVar,
+  type ProjectEnvVarInput,
+  type ProjectEnvVarRow,
+} from './project-env-store'
 export {
   deleteProjectRow,
   getProjectLastPermissionMode,

@@ -246,17 +246,6 @@ describe('restartWorktree', () => {
     }))
   })
 
-  it('forwards gitUser into createWorktree', async () => {
-    listSpy.mockResolvedValueOnce([pod()])
-
-    await restartWorktree('abcd1234', {
-      gitUser: { name: 'A', email: 'a@b' },
-    })
-
-    expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
-      gitUser: { name: 'A', email: 'a@b' },
-    }))
-  })
 })
 
 describe('worktreeRestart (CLI shim)', () => {

@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectEnvVar, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 
 /** Clone a git repo as a new project. Throws ServerError (e.g. AUTH_REQUIRED). */
 export async function addProject(remoteUrl: string): Promise<{ slug: string }> {
@@ -23,6 +23,32 @@ export async function getProjectConfig(slug: string): Promise<YaacConfig | null>
 export async function saveProjectConfig(slug: string, config: unknown): Promise<YaacConfig> {
   const saved = await api.project[':slug'].config.$put({ param: { slug }, json: { config } })
   return saved.config
+}
+
+/** Read a project's environment: plain variables with their values, secrets
+ *  with only the fact that a value is stored. */
+export async function getProjectEnv(slug: string): Promise<ProjectEnvVar[]> {
+  const { vars } = await api.project[':slug'].env.$get({ param: { slug } })
+  return vars
+}
+
+/**
+ * Create or replace one variable. Omit `value` for a secret whose rule is
+ * being edited but whose value should stay as it is — the server refuses it
+ * for a secret that has none yet.
+ */
+export async function setProjectEnvVar(slug: string, input: {
+  name: string
+  value?: string
+  secret: boolean
+  rule?: SecretProxyRule
+}): Promise<ProjectEnvVar> {
+  const saved = await api.project[':slug'].env.$put({ param: { slug }, json: input })
+  return saved.var
+}
+
+export async function deleteProjectEnvVar(slug: string, id: string): Promise<void> {
+  await api.project[':slug'].env[':id'].$delete({ param: { slug, id } })
 }
 
 export interface ProjectBranches {

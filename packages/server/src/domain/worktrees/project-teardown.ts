@@ -1,11 +1,13 @@
 import { purgeProjectBytes } from './project-purge'
 import {
   deleteProjectAgentSessions,
+  deleteProjectEnvVars,
   deleteProjectRow,
   deleteProjectWorktreeGroups,
   deleteProjectWorktrees,
   getProjectRow,
 } from '#db'
+import { worktreeDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 
 /**
@@ -39,6 +41,12 @@ export async function removeProject(slug: string): Promise<void> {
   // The sidebar groups those worktrees were filed under have nothing left to
   // file.
   await deleteProjectWorktreeGroups(slug)
+  // The project's environment, secrets included — and then the copy of those
+  // secrets the egress path is holding, which nothing else would ever drop:
+  // the proxy keeps them until told, and a project that no longer exists
+  // will never tell it again.
+  await deleteProjectEnvVars(slug)
+  await worktreeDriver().syncProxySecrets(slug)
   // The project's own record goes last: while it exists the project exists,
   // so dropping it first would make a teardown that then failed leave a
   // clone nothing can list, remove, or re-add.

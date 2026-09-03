@@ -38,6 +38,17 @@ export interface WorkspaceMarker {
    *  is advisory: pids are recycled, so it is only ever used alongside a
    *  liveness check that proves the socket still answers. */
   tmuxPid?: number
+  /**
+   * The ssh-agent started for this workspace, when its project authenticates
+   * over SSH. Recorded because the agent holds a private key in memory and
+   * must not outlive the worktree: teardown signals this, and a recovery
+   * scan that finds the workspace dead sweeps it.
+   *
+   * Advisory in the same way `tmuxPid` is — a pid can be recycled — so it is
+   * only ever signalled alongside evidence the workspace was actually
+   * running.
+   */
+  sshAgentPid?: number
 }
 
 /** The in-memory half: the marker plus what observation has since decided. */
@@ -282,4 +293,16 @@ export function restoreWorkspace(
   deathCause: WorktreeDeathCause,
 ): void {
   entries.set(marker.worktreeId, { marker, running, deathCause, terminating: false })
+}
+
+/**
+ * The ssh-agent pid a workspace's marker records, if it started one.
+ *
+ * Read by teardown, which has to end the process holding this worktree's
+ * private key. Off the in-memory entry rather than the file so it answers
+ * for a workspace recovered after a server restart too — `readMarkers`
+ * repopulates the same entries.
+ */
+export function sshAgentPidOf(workspaceId: string): number | undefined {
+  return entries.get(workspaceId)?.marker.sshAgentPid
 }

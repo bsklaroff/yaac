@@ -92,7 +92,7 @@ vi.mock('@yaac/server/drivers/k8s/egress/proxy-client', () => ({
     getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
     getCaCert: vi.fn().mockResolvedValue('cert'),
   },
-  buildRulesFromConfig: vi.fn().mockReturnValue([]),
+  buildRulesFromSecrets: vi.fn().mockReturnValue([]),
   collectProxySecrets: vi.fn().mockReturnValue({}),
   // NOT tsc-guarded: the mocked `proxyClient` is a deliberate 4-method subset
   // of the 26-member `ProxyClient` class, which `satisfies Partial<…>` rejects
@@ -167,6 +167,12 @@ vi.mock('@yaac/server/domain/projects/config', () => ({
   ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 } satisfies Partial<typeof projectConfigModule>))
 
+// The project's environment: rows, so the create asks for them rather than
+// reading the server's own process env as the retired config keys did.
+vi.mock('@yaac/server/domain/projects/env', () => ({
+  resolveProjectEnv: vi.fn().mockResolvedValue({ plain: {}, secrets: {} }),
+}))
+
 vi.mock('@yaac/server/domain/projects/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
   parseGitRemote: (url: string) => {
@@ -182,10 +188,11 @@ vi.mock('@yaac/server/domain/projects/credentials', () => ({
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
 } satisfies Partial<typeof credentialsModule>))
 
-// The proxy-secrets write-through, at the process boundary: the create runs
-// for real, and what the proxy would read is not this test's subject.
+// The push of secret values to the proxy, at the process boundary: the
+// create runs for real, and what the proxy holds is not this test's subject.
 vi.mock('@yaac/server/drivers/k8s/egress/proxy-secrets', () => ({
-  writeProxySecrets: vi.fn().mockResolvedValue(undefined),
+  pushProxySecrets: vi.fn().mockResolvedValue(undefined),
+  syncProjectProxySecrets: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@yaac/shared/tool-auth', () => ({
@@ -246,6 +253,12 @@ vi.mock('@yaac/server/db/worktree-store', () => ({
   restoreWorktreeStop: vi.fn(),
 } satisfies Partial<typeof storeModule>))
 
+// The git identity a create commits under: a preferences row on the server.
+vi.mock('@yaac/server/db/preferences', async (importOriginal) => ({
+  ...(await importOriginal<typeof preferencesModule>()),
+  getGitIdentity: vi.fn(),
+}))
+
 vi.mock('@yaac/server/db/agent-session-store', () => ({
   recordAgentSessions: vi.fn(),
   setActiveAgentSessions: vi.fn(),
@@ -288,6 +301,8 @@ import { containerExec } from '@yaac/server/drivers/k8s/substrate/exec'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { proxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/domain/projects/config'
+import { resolveProjectEnv } from '@yaac/server/domain/projects/env'
+import { getGitIdentity } from '@yaac/server/db/preferences'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/domain/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
@@ -412,7 +427,8 @@ describe('createWorktree', () => {
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
     vi.mocked(originRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
     vi.mocked(remoteBranchExists).mockResolvedValue(true)
-    vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
+    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
+    vi.mocked(getGitIdentity).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     mockLoadToolAuth.mockResolvedValue(null)
     vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
     /* eslint-disable @typescript-eslint/unbound-method */
@@ -862,8 +878,11 @@ describe('createWorktree', () => {
     expect(envNames).not.toContain('GH_TOKEN')
   })
 
-  it('does not override an explicit GH_TOKEN from project config', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({ env: { GH_TOKEN: 'ghp_user' } })
+  it('does not override a GH_TOKEN the project sets itself', async () => {
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: { GH_TOKEN: 'ghp_user' },
+      secrets: {},
+    })
 
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
@@ -871,10 +890,13 @@ describe('createWorktree', () => {
     expect(env.find((e) => e.name === 'GH_TOKEN')?.value).toBe('ghp_user')
   })
 
-  it('defers to an envSecretProxy GITHUB_TOKEN rule instead of auto-wiring gh', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      envSecretProxy: { GITHUB_TOKEN: { hosts: ['api.github.com'] } },
-    } as never)
+  it('defers to a proxied GITHUB_TOKEN secret instead of auto-wiring gh', async () => {
+    vi.mocked(resolveProjectEnv).mockResolvedValue({
+      plain: {},
+      secrets: {
+        GITHUB_TOKEN: { value: 'sekrit', rule: { hosts: ['api.github.com'] } },
+      },
+    })
 
     await createWorktree('demo', { worktreeId: 'abcd1234' })
 
@@ -1219,6 +1241,7 @@ describe('retoolSpare', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
+    vi.mocked(resolveProjectEnv).mockResolvedValue({ plain: {}, secrets: {} })
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     vi.mocked(originRemoteUrl).mockResolvedValue('https://github.com/example/repo.git')
     installRuntime()
@@ -1328,17 +1351,30 @@ import type * as gitModule from '@yaac/server/domain/git'
 import type * as portForwardersModule from '@yaac/server/drivers/k8s/forwarders/port-forwarders'
 import type * as storeModule from '@yaac/server/db/worktree-store'
 import type * as agentStoreModule from '@yaac/server/db/agent-session-store'
+import type * as preferencesModule from '@yaac/server/db/preferences'
 import type * as cleanupModule from '@yaac/server/domain/worktrees/cleanup'
 
 // worktreeCreate posts to the streaming /worktree/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only
 // unwraps JSON routes), which `consumeNdjsonStream` reads.
-const { mockPost } = vi.hoisted(() => ({ mockPost: vi.fn() }))
+const { mockPost, mockQuestion } = vi.hoisted(() => ({
+  mockPost: vi.fn(),
+  mockQuestion: vi.fn(),
+}))
 vi.mock('#commands/api', () => ({
   api: { worktree: { create: { $post: mockPost } } },
 }))
 
-import { getGitUserConfig as getGitUserConfigShared } from '@yaac/shared/git'
+// The identity is a server setting; the shim's job before a create is to
+// seed it from this machine and prompt only when neither side has one.
+vi.mock('@yaac/shared/git-identity-seed', () => ({
+  seedGitIdentityFromShell: vi.fn(),
+}))
+vi.mock('node:readline/promises', () => ({
+  default: { createInterface: () => ({ question: mockQuestion, close: vi.fn() }) },
+}))
+
+import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
 
 function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
   const enc = new TextEncoder()
@@ -1364,7 +1400,7 @@ describe('worktreeCreate (CLI shim)', () => {
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test', email: 't@x.io' })
+    vi.mocked(seedGitIdentityFromShell).mockResolvedValue({ name: 'Test', email: 't@x.io' })
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockPost.mockResolvedValue(streamingResponse([
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
@@ -1381,7 +1417,7 @@ describe('worktreeCreate (CLI shim)', () => {
     ]))
   })
 
-  it('POSTs /worktree/create with pre-resolved gitUser and returns the worktreeId', async () => {
+  it('POSTs /worktree/create and returns the worktreeId', async () => {
     const result = await worktreeCreate('demo', {})
     expect(result).toBe('sess-123')
     expect(mockPost).toHaveBeenCalledTimes(1)
@@ -1391,9 +1427,26 @@ describe('worktreeCreate (CLI shim)', () => {
         // No --tool → omitted so the server resolves the configured default
         // (and matches the prewarmed spare it keeps for that tool).
         tool: undefined,
-        gitUser: { name: 'Test', email: 't@x.io' },
       }) as unknown,
     }))
+    // The identity does not ride the request: it is a server setting, which
+    // this seeds from the local git config before asking for a worktree.
+    expect(seedGitIdentityFromShell).toHaveBeenCalled()
+    const [{ json }] = mockPost.mock.calls[0] as [{ json: Record<string, unknown> }]
+    expect(json.gitUser).toBeUndefined()
+  })
+
+  it('refuses to create when neither the server nor this machine has an identity', async () => {
+    // Failing here, where a prompt can fix it, rather than inside the server
+    // where nothing can.
+    vi.mocked(seedGitIdentityFromShell).mockResolvedValue(null)
+    mockQuestion.mockResolvedValue('')
+
+    await worktreeCreate('demo', {})
+
+    expect(mockPost).not.toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
+    process.exitCode = 0
   })
 
   it('forwards an explicit --tool unchanged', async () => {

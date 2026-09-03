@@ -186,6 +186,9 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
     // Beside the socket rather than under the state dir, for the sun_path
     // reason above: an acpd socket is addressed the same way tmux's is.
     acpSockDir: path.join(tmuxSockDir(), shortId(worktreeId)),
+    // Same reason again: an ssh-agent socket is a UNIX socket path, and a
+    // state-dir one would blow the same sun_path limit.
+    sshAgentSock: path.join(tmuxSockDir(), `${shortId(worktreeId)}-ssh.sock`),
     // The one path here that is NOT this driver's own: the conversation record
     // is read by the layers above (the chat pane's tail, the registry's
     // first-prompt scan, the stopped worktree's transcript) at the shared

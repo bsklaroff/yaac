@@ -23,7 +23,9 @@ const httpsCredentialSchema = z.object({
 const sshCredentialSchema = z.object({
   kind: z.literal('ssh'),
   pattern: z.string(),
-  privateKeyPath: z.string().min(1),
+  /** The key itself. A path once, which only a server on the user's own
+   *  machine could ever open (docs/legacy-compat-shims.md). */
+  privateKey: z.string().min(1),
   knownHostsEntry: z.string().min(1),
 })
 

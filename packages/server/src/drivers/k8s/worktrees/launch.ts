@@ -23,7 +23,7 @@ import {
 import {
   proxyClient,
   registerWorkspace,
-  writeProxySecrets,
+  pushProxySecrets,
   workspaceSshTransport,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
@@ -148,21 +148,21 @@ export async function prepareWorkspaceSubstrate(
   // proxy reaches streamd, and the token only opens the pod's OWN daemon.
   const streamToken = await podStreamToken(workspaceId)
 
-  // Register this workspace's state (envSecretProxy rules, allowlist, repo
+  // Register this workspace's state (secret-injection rules, allowlist, repo
   // URL) with the proxy. GitHub / Claude / Codex auth is handled
   // dynamically by the proxy from the mounted credentials dir — no
-  // per-workspace rule is needed for those. envSecretProxy rules reference
-  // their values by name; the values (resolved by the caller, which owns
-  // where they come from) land in the proxy-secrets file FIRST so the
-  // registration's secretRefs resolve from the proxy's first request onward.
-  await writeProxySecrets(intent.proxySecrets)
+  // per-workspace rule is needed for those. The rules reference their values
+  // by name; the values (resolved by the caller, which owns where they come
+  // from) are pushed into the proxy's memory FIRST so the registration's
+  // secretRefs resolve from the proxy's first request onward.
+  await pushProxySecrets(projectSlug, intent.proxySecrets)
   await registerWorkspace({
     workspaceId,
     projectSlug,
     tool: intent.tool,
     config,
     remoteUrl: intent.remoteUrl,
-    proxySecretNames: Object.keys(intent.proxySecrets),
+    proxySecretRules: intent.proxySecretRules,
   })
 
   const receipt: K8sWorkspaceSubstrate = {

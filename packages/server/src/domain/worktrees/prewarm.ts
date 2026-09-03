@@ -195,7 +195,6 @@ export function resolveRebranchTarget(params: {
 export async function tryClaimPrewarmed(
   projectSlug: string,
   tool: AgentTool,
-  gitUser: { name: string; email: string } | undefined,
   emit: (message: string) => void,
   branch?: string,
   /** Model override for the agent's launch command. Spares boot their
@@ -357,7 +356,7 @@ export async function tryClaimPrewarmed(
     // A hiccup here would otherwise reap a perfectly good claimed worktree
     // over a step that is a correction, not a prerequisite — the spare's
     // warmed-in identity stands and the claim is still good.
-    const claimIdentity = await resolveGitIdentity(gitUser)
+    const claimIdentity = await resolveGitIdentity()
     if (claimIdentity) {
       await runtime.exec(
         chosen.jobName,

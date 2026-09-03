@@ -40,9 +40,9 @@ async function seedOverlay(raw: string): Promise<void> {
 
 describe('writeProjectConfig', () => {
   it('writes the parsed config to disk and returns it', async () => {
-    const saved = await writeProjectConfig(slug, { envPassthrough: ['A'] })
-    expect(saved).toEqual({ envPassthrough: ['A'] })
-    expect(await readOverlay()).toEqual({ envPassthrough: ['A'] })
+    const saved = await writeProjectConfig(slug, { initCommands: ['pnpm install'] })
+    expect(saved).toEqual({ initCommands: ['pnpm install'] })
+    expect(await readOverlay()).toEqual({ initCommands: ['pnpm install'] })
   })
 
   it('throws NOT_FOUND when the project does not exist', async () => {
@@ -50,7 +50,7 @@ describe('writeProjectConfig', () => {
   })
 
   it('throws VALIDATION for malformed config', async () => {
-    await expect(writeProjectConfig(slug, { envPassthrough: 'not-array' }))
+    await expect(writeProjectConfig(slug, { initCommands: 'not-array' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
   })
 })
@@ -76,7 +76,7 @@ describe('removeProjectConfig', () => {
   })
 
   it('removes only yaac-config.json, keeping the rest of the config dir', async () => {
-    await writeProjectConfig(slug, { envPassthrough: ['B'] })
+    await writeProjectConfig(slug, { initCommands: ['pnpm build'] })
     const dockerfile = path.join(projectConfigDir(slug), 'build', 'Dockerfile.yaac')
     await fs.mkdir(path.dirname(dockerfile), { recursive: true })
     await fs.writeFile(dockerfile, 'FROM ubuntu\n')

@@ -60,6 +60,7 @@ export function workspacePathsFixture(
     repoGitDir: '/repo/.git',
     scratchDir: '/tmp',
     acpSockDir: '/tmp/yaac-acp',
+    sshAgentSock: '/tmp/yaac-ssh-agent.sock',
     acpLogDir: '/home/yaac/.yaac-acp',
     acpdEntry: '/opt/yaac/acpd/main.js',
     ...overrides,
@@ -161,6 +162,7 @@ export function installFakeWorktreeDriver(
     prepareImage: (o) => current.prepareImage(o),
     prepareSubstrate: (i) => current.prepareSubstrate(i),
     syncSshIdentities: () => current.syncSshIdentities(),
+    syncProxySecrets: (slug) => current.syncProxySecrets(slug),
     launch: (s) => current.launch(s),
     awaitReady: (h) => current.awaitReady(h),
     declareForwards: (w, f) => current.declareForwards(w, f),
@@ -258,6 +260,7 @@ function defaultRuntime(): WorktreeDriver {
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
     syncSshIdentities: () => Promise.resolve(),
+  syncProxySecrets: () => Promise.resolve(),
     // Echoes the spec back as a handle, the way a real launch does: a
     // mediator that goes on to exec into what it just launched addresses
     // the workspace it asked for rather than the fixture's default one.

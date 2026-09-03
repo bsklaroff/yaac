@@ -154,6 +154,119 @@ progress stream, so the person who hits it is unlikely to read it.
 — nothing records which configs still carry the key. A season after release,
 once no project config in use still names it.
 
+## `importLegacyProjectConfig`, and the retired env keys beside it
+
+`importLegacyProjectConfig` (`domain/projects/legacy-config-import.ts`) runs
+once per server start, over every project. Where a project's
+`yaac-config.json` still carries `env`, `envPassthrough` or `envSecretProxy`,
+it moves what it can into `project_env_vars` rows, strips the three keys from
+the file, and logs what moved. `RETIRED_KEYS` in `domain/projects/config.ts`
+carries the four warnings for a config edited afterwards — those three plus
+`bindMounts`, which is not imported at all.
+
+**What it reads:** the overlay files, and — for the two passthrough-shaped
+keys — this server process's own environment, which is the last reader of an
+arbitrary name out of it. That is also the reason the import can only do so
+much: the values it is recovering came from a shell on the server's machine,
+and under `k8s` the pod's environment holds nothing but what its Deployment
+states. A secret whose value it cannot find is imported as a valueless row
+with its RULE intact and named in the log, because the rule is the half a
+user cannot reconstruct from memory.
+
+It also READS `.credentials/proxy-secrets.json` as the value source for any
+secret the environment cannot answer for — which under `k8s` is every one of
+them, since a pod's environment holds only what its Deployment states. That
+file is the merged map of every value `envSecretProxy` ever resolved, and it
+is the last copy: importing valueless rows while deleting it would lose them
+outright.
+
+Deleting it is a separate shim with a different trigger,
+`sweepLegacyProxySecretsFile` (`drivers/k8s/egress/proxy-secrets.ts`), called
+from the reconcile that pushes secrets. Nothing rolls the proxy when a server
+starts, so for a while after an upgrade the pod serving live worktrees is the
+OLD one, resolving every injection out of exactly this file — deleting it at
+startup would take every running worktree's credentials with it. A proxy that
+has just answered the `/secrets` routes is a new one, and that is the only
+place the proof exists.
+
+The proxy carries the third piece: `scopeLegacySecretRefs`
+(`k8s/proxy/proxy.ts`) rewrites a persisted registration's bare `NAME` ref to
+`<projectSlug>/NAME` when it reloads one after a pod replacement. Refs were
+unscoped before; without the rewrite, a registration written by an older
+server names refs the new one never pushes, and its injections stop resolving
+until the worktree is recreated. The rewrite is exact rather than a guess — a
+registration carries the project it belongs to.
+
+**What breaks silently if it is deleted too early:** an install that upgrades
+loses its worktrees' environment at the next create, with the config file
+still sitting there looking like it says what should happen — the parser
+warns, but `console.warn` lands in the server log rather than in the create's
+progress stream. The proxy-secrets file is the other half: deleting the sweep
+leaves that plaintext on disk indefinitely, which is the thing storing
+secrets encrypted was for.
+
+**What breaks silently if it is deleted too early** (the sweep): the file
+stays, and it is a plaintext copy of every secret the install ever proxied,
+in the directory the proxy pod mounts — which is what storing them encrypted
+was for.
+
+**How to tell it is safe to remove:** every install has started once on a
+build carrying the importer, and — for the sweep and the proxy-side ref
+rewrite — has had its proxy pod replaced at least once since. Nothing records
+either, so in practice this goes at a release boundary. The importer and the
+three env warnings go together; the `bindMounts` warning can outlive them,
+since it imports nothing and is purely a message. The ref rewrite must go
+LAST of the three: dropping it while a pre-upgrade registration is still in
+some proxy's `/data` turns that worktree's injections off silently.
+
+## `importLegacySshKeys`
+
+`importLegacySshKeys` (`domain/projects/credentials.ts`), called from the same
+startup step, reads any `kind: 'ssh'` entry left in
+`.credentials/github.json`, loads the key at the path it names, seals it into
+a `git_ssh_keys` row, and rewrites the file without it.
+
+**What it reads:** those entries, and the key files they point at. Only a
+containerless install can have a working one — a cluster install refused ssh
+credentials outright, because the pod cannot open a path in your home — so
+this is a narrow case by construction.
+
+**What breaks silently if it is deleted too early:** nothing reads an ssh
+entry from that file any more, so an install that upgrades without this
+simply stops authenticating to its SSH remotes, with no error until the first
+fetch and nothing on screen tying it to the upgrade. Leaving the entry in
+place would be worse than removing it, since the file would go on looking
+authoritative.
+
+**How to tell it is safe to remove:** no `github.json` in use still carries a
+`kind: 'ssh'` entry. An entry is stripped only once its key is sealed, so a
+read that fails for a passing reason — a home not mounted yet, a permission
+hiccup — is retried on the next start rather than lost; a single successful
+start per install is what finishes it.
+
+## The `YAAC_SERVER_GIT_*` identity seed
+
+`seedLegacyGitIdentity` (`main/server-run.ts`) writes `YAAC_SERVER_GIT_NAME`
+/ `YAAC_SERVER_GIT_EMAIL` into the git-identity preference rows when the
+server has none, and `env.legacyServerGitUser` (`shared/src/env.ts`) is the
+accessor it reads them through — the only reader left.
+
+**What it reads:** the environment of a server pod deployed before the
+identity became a setting. `yaac cluster install` used to snapshot the host's
+`git config` into those variables, which is why changing your name needed a
+re-install from a shell on that machine; install states neither any more.
+
+**What breaks silently if it is deleted too early:** an install that upgrades
+its bundle without re-running `yaac cluster install` has a Deployment still
+stating the pair and a database with no identity in it — so every
+webapp-created worktree refuses, naming a setting the user has never had to
+touch. Loud rather than silent, but for a reason nobody would guess.
+
+**How to tell it is safe to remove:** every k8s install has re-run `yaac
+cluster install` on a build that no longer states the pair, at which point
+the variables are gone from the Deployment and this reads nothing. The
+accessor and the seed go together.
+
 ## `adoptLegacyClaudeJson`
 
 `adoptLegacyClaudeJson` (`domain/worktrees/seed.ts`), called once per create,

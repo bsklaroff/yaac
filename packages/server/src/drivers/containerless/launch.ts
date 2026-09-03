@@ -13,7 +13,7 @@ import {
   workspaceHome,
   workspaceStateDir,
 } from './paths'
-import { rememberWorkspace, writeMarker, type WorkspaceMarker } from './registry'
+import { rememberWorkspace, sshAgentPidOf, writeMarker, type WorkspaceMarker } from './registry'
 import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
 import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
@@ -122,8 +122,8 @@ function workspaceBinDir(home: string): string {
  * writes one today, and the alternative names the wrong directory.
  *
  * Deliberately scoped to a DECLARED mount rather than rewriting anything that
- * looks container-absolute. `envPassthrough` and `config.env` values are the
- * user's own, and a yaac dev host runs as a user whose home is literally
+ * looks container-absolute. A project's environment variables are the user's
+ * own, and a yaac dev host runs as a user whose home is literally
  * `/home/yaac` — a blanket rewrite would silently redirect a real host path
  * they passed in. A path under a mount this workspace asked for can only have
  * meant this workspace's copy of it.
@@ -335,9 +335,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // this is the moment it takes effect, and a create is what the user is
   // watching. `yaac host check` answers the same question ahead of time.
   // Only what the workspace actually ends up without: a spec that re-supplies
-  // one of these (envPassthrough, config.env) has overruled the host itself,
-  // and announcing a value the agent is about to receive would be a lie about
-  // the one thing this notice exists to report.
+  // one of these — a project environment variable of that name — has
+  // overruled the host itself, and announcing a value the agent is about to
+  // receive would be a lie about the one thing this notice exists to report.
   const overridden = overriddenToolHomeVars().filter((key) => env[key] === undefined)
   if (overridden.length > 0) {
     const message = `Ignoring ${overridden.join(', ')} from this host's environment `
@@ -359,10 +359,15 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // Authentication is the half a pod does NOT write, because a pod never
   // holds a credential to write; here the workspace is handed the real one
   // and this is where it lands (see `git-auth`).
+  const priorAgentPid = sshAgentPidOf(spec.workspaceId)
   const gitAuth = await realizeGitAuth({
     home,
     credential: spec.gitCredential,
     knownHostsFile: spec.ssh?.knownHostsFile,
+    agentSock: paths.sshAgentSock,
+    // A relaunch (a retried create, a restart) must end the agent the last
+    // one left running rather than orphan it holding this worktree's key.
+    ...(priorAgentPid !== undefined ? { priorAgentPid } : {}),
   })
   const gitName = env.YAAC_GIT_NAME ?? env.GIT_AUTHOR_NAME
   const gitEmail = env.YAAC_GIT_EMAIL ?? env.GIT_AUTHOR_EMAIL
@@ -448,6 +453,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     prewarm: spec.prewarm,
     createdAtMs: Date.now(),
     ...(await tmuxServerPid(paths.tmuxSock, env)),
+    // Recorded so teardown can end the agent holding this worktree's ssh
+    // key. Absent for a project with no SSH remote, which starts none.
+    ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
   }
   await writeMarker(marker)
   return rememberWorkspace(marker, env)

@@ -38,7 +38,8 @@ let keyDir: string | null = null
 const client = new ProxyClient(TEST_PROXY_CONFIG)
 
 interface TestKey {
-  privateKeyPath: string
+  /** The key itself: what the server holds sealed, and what it uploads. */
+  privateKey: string
   fingerprint: string
   knownHostsEntry: string
 }
@@ -60,7 +61,11 @@ async function makeTestKey(dir: string, host: string, name: string): Promise<Tes
 
   const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
   const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
-  return { privateKeyPath, fingerprint, knownHostsEntry: `${host} ${keyType} ${keyBlob}` }
+  return {
+    privateKey: await fs.readFile(privateKeyPath, 'utf8'),
+    fingerprint,
+    knownHostsEntry: `${host} ${keyType} ${keyBlob}`,
+  }
 }
 
 beforeAll(async () => {
@@ -90,9 +95,9 @@ describe('proxy ssh-agent key management', () => {
     keyA = await makeTestKey(keyDir!, HOST_A, 'key-a')
     keyB = await makeTestKey(keyDir!, HOST_B, 'key-b')
 
-    await client.uploadSshKey(HOST_A, keyA.privateKeyPath, keyA.knownHostsEntry)
+    await client.uploadSshKey(HOST_A, keyA.privateKey, keyA.knownHostsEntry)
     // A second host exercises the known_hosts rewrite accumulating entries.
-    await client.uploadSshKey(HOST_B, keyB.privateKeyPath, keyB.knownHostsEntry)
+    await client.uploadSshKey(HOST_B, keyB.privateKey, keyB.knownHostsEntry)
 
     const listed = await client.listAgentKeys()
     const fingerprints = listed.map((k) => k.fingerprint)
@@ -108,7 +113,7 @@ describe('proxy ssh-agent key management', () => {
   it('re-uploads after a clear (the syncSshKeysFromCredentials cycle)', async () => {
     // syncSshKeysFromCredentials always runs clear-then-upload; make sure a
     // cleared agent (and rewritten empty known_hosts) accepts keys again.
-    await client.uploadSshKey(HOST_A, keyA.privateKeyPath, keyA.knownHostsEntry)
+    await client.uploadSshKey(HOST_A, keyA.privateKey, keyA.knownHostsEntry)
     const listed = await client.listAgentKeys()
     expect(listed.map((k) => k.fingerprint)).toContain(keyA.fingerprint)
   }, 60_000)
