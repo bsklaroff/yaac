@@ -1154,16 +1154,20 @@ describe('buildAgentCmd', () => {
     expect(resume).toBe('codex --yolo resume sid-abc')
   })
 
-  it('returns the claude respawn command unchanged', () => {
+  // The `env -u TMUX` prefix is load-bearing — it is what keeps claude
+  // animating its title, which is the whole status signal for its pane (see
+  // buildAgentCmd). Pinned on the respawn command too, because a respawn that
+  // dropped it would leave a restarted worktree reading `waiting` forever.
+  it('returns the claude respawn command unchanged, $TMUX hidden', () => {
     const fresh = buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'bypass' })
     expect(fresh).toBe(
-      'CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
+      'env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sid-abc',
     )
     const resume = buildAgentCmd({
       tool: 'claude', worktreeId: 'sid-abc', resume: true, permissionMode: 'bypass',
     })
     expect(resume).toBe(
-      'CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
+      'env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sid-abc',
     )
   })
 
@@ -1174,7 +1178,7 @@ describe('buildAgentCmd', () => {
     expect(buildAgentCmd({ tool: 'codex', worktreeId: 'sid-abc', permissionMode: 'manual' }))
       .toBe('codex --ask-for-approval untrusted')
     expect(buildAgentCmd({ tool: 'claude', worktreeId: 'sid-abc', permissionMode: 'manual' }))
-      .toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
+      .toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode manual --session-id sid-abc')
   })
 
   it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {

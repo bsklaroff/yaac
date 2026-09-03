@@ -14,6 +14,24 @@ import { scanJsonlBackward, scanJsonlForward } from './jsonl'
  * Code does not persist the blocking assistant tool_use until the user
  * answers).
  *
+ * The title only animates because the launch command hides `$TMUX` from the
+ * process (`env -u TMUX`, see `buildAgentCmd`). Claude Code checks that
+ * variable to decide whether it is under a multiplexer and, as of 2.1.259,
+ * pins the prefix to the idle glyph for the whole session when it is
+ * (`tengu_static_title_under_mux`, on by default) — the fixtures below were
+ * taken from 2.1.229, which still animated under tmux, so it landed between
+ * the two — which reads as a
+ * permanently `waiting` worktree, with nothing logged, failed or counted.
+ * If that ever stops working, the fallbacks in descending order are: claude's
+ * own record at `~/.claude/sessions/<pid>.json`, which publishes
+ * `status` (busy/idle/waiting) and `waitingFor` as data rather than as
+ * rendering, but is a per-*project* directory mounted into every worktree pod
+ * of that project, so telling one pod's pids from another's needs a staged
+ * per-pane script; or a content search over the pane, which is what opencode
+ * and pi use, but claude's footer phrases are load-bearing there and at least
+ * one of them ("Waiting for … to finish") also shows while the pane is idle
+ * with a monitor running.
+ *
  * The spinner's glyphs are NOT stable across Claude Code releases, so the
  * prefix accepts every set we have seen a release animate a title with:
  *

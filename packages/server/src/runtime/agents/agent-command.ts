@@ -287,8 +287,34 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     plan: 'plan',
     manual: 'manual',
   }[mode]
+  // `env -u TMUX` is what keeps the pane title readable, and it is the whole
+  // reason claude's status still works — see `SPINNER_PREFIX` in claude.ts.
+  // Claude Code animates its spinner into the title only when it does NOT
+  // detect a multiplexer, and it detects one by reading `$TMUX`; inside a yaac
+  // pane that is always set, so the title would sit on the idle glyph for the
+  // life of the session and every worktree would read `waiting` forever.
+  // Hiding the variable from the process restores the animation, and the OSC
+  // title still reaches tmux — the escape is written to the pty either way,
+  // so `#{pane_title}` is set exactly as before.
+  //
+  // Only `TMUX` is dropped. `TMUX_PANE` stays, because the agent-links hook
+  // reads it to record which pane a conversation started in
+  // (worktree-bin/yaac-agent-links) — dropping it would silently cost
+  // conversation discovery.
+  //
+  // What claude gives up, largest first:
+  //  - Agent teams lose the tmux pane backend. Claude picks it by the same
+  //    `$TMUX` read (`isInProcessEnabled` is `!insideTmux && !inITerm2`), so
+  //    teammates now run in-process instead of splitting panes in the yaac
+  //    window. Nothing yaac renders depends on those panes — an agent pane is
+  //    classified by its window name, and a teammate split carries no status
+  //    of its own — but a user who ran teams here would see them stop
+  //    appearing as panes.
+  //  - Its tmux clipboard path, falling back to OSC 52, which is what reaches
+  //    the browser terminal anyway.
+  //  - A scrollback hint in its footer.
   return [
-    `CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
+    `env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
     resume ? `--resume ${worktreeId}` : `--session-id ${worktreeId}`,
   ].filter(Boolean).join(' ')

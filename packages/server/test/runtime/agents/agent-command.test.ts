@@ -118,24 +118,29 @@ describe('buildAgentCmd', () => {
   })
 
   describe('claude tool', () => {
-    it('omits prompt flags', () => {
+    // `env -u TMUX` is load-bearing, not cosmetic: claude animates the spinner
+    // into its title only when it cannot see `$TMUX`, and that title is the
+    // whole status signal for a claude pane. If this prefix is dropped, every
+    // claude worktree reads `waiting` forever and nothing fails — so it is
+    // asserted on every claude launch shape below, not just once.
+    it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', permissionMode: 'bypass' })
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
     })
 
     it('swaps --session-id for --resume when resuming', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, permissionMode: 'bypass' })
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
+      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
     })
 
     it('inserts --model when a model override is given', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
+      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
       const cmd = buildAgentCmd({ tool: 'claude', worktreeId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
+      expect(cmd).toBe('env -u TMUX CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
     })
   })
 
