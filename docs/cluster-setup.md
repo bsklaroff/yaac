@@ -251,8 +251,8 @@ only kind's provider breaks.
    interleaving with it — they must pin the same gVisor version.
    The installer image is upstream `curlimages/curl`,
    digest-pinned and mirrored into the local registry like Envoy and
-   registry:2. See `docs/plans/stock-k8s-multi-node.md` §3 for why the
-   privilege is accepted and where a dedicated worktrees node pool fits.
+   registry:2. See docs/plans/cloud-k8s.md for why the privilege is
+   accepted and where a dedicated worktrees node pool fits.
 
    Every pod hosting untrusted code carries a RuntimeClass explicitly:
    plain worktrees run on `gvisor`, and nested-containers worktrees run the
@@ -370,9 +370,8 @@ install gives tmux worktrees on this host rather than pods on the cluster
 just installed into — which the install now says out loud rather than
 leaving it to be noticed. What `--adopt-cni` gets you today is the
 in-cluster layers and nothing that drives them; the mode that closes the
-gap is the bring-your-own-cluster install
-(docs/plans/server-in-cluster.md, "Out of scope"), where ingress and TLS
-for the server are designed.
+gap is the bring-your-own-cluster install (docs/plans/cloud-k8s.md),
+where the server's fronting and TLS are designed.
 
 There is no datapath change here — the netd redirect (docs/worktree-egress.md)
 works unmodified on any CNI whose pod egress traverses host netfilter and
@@ -537,13 +536,12 @@ owned by whoever runs it. So the worktree image builds its `yaac` user with
 that uid (`YAAC_UID` build arg, baked in automatically and folded into the
 image tag) and the pod runs as it.
 
-That number is fixed at **1000**, because the server is itself a pod and a
-container has no ambient user to inherit one from (docs/server-in-cluster.md).
-`podUid()` still reports `process.getuid()` — inside the server pod that IS
-1000 — and `yaac cluster install` builds the worktree chain for the SERVER's
-uid rather than its own, since it is building for the server it is about to
-deploy. On a host whose own uid is 1000 (every ordinary Linux first user)
-nothing differs; on one where it is not, the images re-tag once.
+That number is **the uid of the machine that ran `yaac cluster install`**
+(docs/server-in-cluster.md, "The uid everything runs as"): the server pod
+runs as it, `podUid()` reports it on the host and inside the pod alike, and
+install bakes it into the worktree chain it builds. It cannot be a pinned
+constant while the data dir reaches the node over virtiofs, where the host
+user's uid is a ceiling on what any pod can write.
 
 Nothing to configure — but a standalone `Dockerfile.yaac` that creates its
 own user should honor `ARG YAAC_UID` the same way

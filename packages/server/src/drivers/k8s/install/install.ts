@@ -449,8 +449,8 @@ export async function runClusterInstall(
   // says the whole of it — including what `yaac server start` will do here
   // instead — rather than leaving the operator to find out by watching
   // their adopted cluster sit idle. Closing it is the bring-your-own-cluster
-  // install mode (docs/plans/server-in-cluster.md, "Out of scope"), which is
-  // where ingress and TLS for the server are designed.
+  // install mode (docs/plans/cloud-k8s.md), which is where the server's
+  // fronting and TLS are designed.
   if (opts.adoptCni) {
     deps.log(
       'note: no server was deployed. `--adopt-cni` means yaac did not create '

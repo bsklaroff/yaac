@@ -305,9 +305,8 @@ The pod mounts the real data dir, by hostPath, at its own absolute path.
 kind binds `$HOME` into every node, so this resolves to the same bytes the
 host process wrote, and `dataDirHash()`, every existing hostPath mount and
 the worktree-pod view of the world are byte-identical either side of the
-move. Splitting the tiers onto claims is the next phase
-(docs/plans/server-in-cluster.md); nothing above the driver learns
-anything either way.
+move. Splitting the tiers onto claims is docs/plans/cloud-k8s.md; nothing
+above the driver learns anything either way.
 
 ## Client state lives beside the data dir, not in it
 

@@ -223,7 +223,7 @@ describe('buildPodJobManifest', () => {
   })
 
   it('renders every mount source, leaving the container-side paths identical', () => {
-    // The seam docs/plans/stock-k8s-multi-node.md §2 needs: the source is
+    // The seam docs/plans/cloud-k8s.md needs: the source is
     // the only thing that varies, so the same in-pod layout can be served
     // from node disk, an RWX claim, or pod-local scratch. Nothing selects
     // `pvc` yet — it is rendered here and nowhere else.

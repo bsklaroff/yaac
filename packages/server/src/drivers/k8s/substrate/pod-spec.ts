@@ -159,8 +159,7 @@ export type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrC
  *  - `pvc` — a subPath of a claim: the RWX volume that carries the SHARED
  *    tier on a multi-node cluster, where the server pod and the worktree pod
  *    mount the same claim. Rendered here, but nothing selects it yet — the
- *    claims and the in-cluster server that provisions them are
- *    docs/plans/stock-k8s-multi-node.md §1–2.
+ *    claims install provisions are docs/plans/cloud-k8s.md.
  *  - `emptyDir` — pod-local scratch: a NODE-LOCAL path that nothing outside
  *    the pod ever opens needs no node identity at all, so it never has to
  *    survive the pod or be found again. The tmux socket dir is the standing

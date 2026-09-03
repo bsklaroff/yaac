@@ -54,13 +54,13 @@ export {
  * written on, SERVER-LOCAL is touched only by the server process, and
  * CLIENT-LOCAL only by processes on the user's own machine (the legend is
  * in paths.ts). Those tags are the classification's single source: the
- * plan that consumes it (docs/plans/multi-node-storage-plan.md) points
- * here rather than restating a table that would drift.
+ * plan that consumes it (docs/plans/cloud-k8s.md) points here rather than
+ * restating a table that would drift.
  *
  * The first three roots resolve to the same directory today, so for them
  * this file is a declaration of visibility requirements; the mount
- * machinery that makes them different volumes is
- * docs/plans/stock-k8s-multi-node.md §2. CLIENT-LOCAL is already a
+ * machinery that makes them different volumes is docs/plans/cloud-k8s.md.
+ * CLIENT-LOCAL is already a
  * different directory, because the boundary it names already exists.
  *
  * A new helper picks a tier by calling `sharedProjectPath` /
@@ -252,7 +252,7 @@ export function acpLogDir(slug: string, worktreeId: string): string {
  * module dirs under it, mounted at `/home/yaac/.cached-packages`. A store
  * on a network filesystem turns every `link(2)`/stat into a round trip,
  * and the hardlinks it hands out must stay on one filesystem
- * (multi-node-storage-plan.md: per-node store, duplicate downloads
+ * (docs/plans/cloud-k8s.md: per-node store, duplicate downloads
  * accepted). Nothing outside the worktree's own node reads it — except the
  * orphan-modules GC, which is the server-side sweep that has to learn to
  * enumerate per node.
@@ -305,9 +305,9 @@ export function opencodeConfigDir(slug: string): string {
  * Node-local because SQLite forbids WAL on a network filesystem and
  * opencode has a confirmed NFS-corruption issue (anomalyco/opencode#14970).
  * The server never opens the file (opencode-status.ts probes the in-pod
- * HTTP API), so the only consequence is that resuming a worktree has to
- * land back on the node holding this dir — the restart node-affinity in
- * multi-node-storage-plan.md.
+ * HTTP API), so the only consequence is that a resume on another node
+ * has to find the DB somewhere — the shared-tier checkpoint in
+ * docs/plans/cloud-k8s.md.
  */
 export function opencodeDataDir(slug: string, worktreeId: string): string {
   return nodeLocalProjectPath(slug, 'opencode-data', worktreeId)

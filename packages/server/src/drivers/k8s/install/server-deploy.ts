@@ -17,7 +17,7 @@
  * data dir at the same absolute path the host process used, so
  * `dataDirHash()`, every existing hostPath mount and the worktree-pod view
  * of the world are byte-identical either side of the move. Turning those
- * into claims is phase 3 of the plan.
+ * into claims is docs/plans/cloud-k8s.md.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -46,10 +46,11 @@ import {
 } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-// The install root itself, not a place to put bytes: what the pod mounts in
-// phase 2 is the WHOLE data dir at its own absolute path, so that every tier
-// resolves inside the pod exactly as it did on the host. Phase 3 is where
-// the tiers become separate volumes and this becomes three mounts.
+// The install root itself, not a place to put bytes: what the pod mounts
+// today is the WHOLE data dir at its own absolute path, so that every tier
+// resolves inside the pod exactly as it did on the host. The storage step
+// of docs/plans/cloud-k8s.md is where the tiers become separate volumes and
+// this becomes three mounts.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'

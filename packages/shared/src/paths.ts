@@ -83,12 +83,12 @@ export function setDataDir(dir: string): void {
  *  - SHARED (`sharedRoot`)       the server AND worktree pods — which on a
  *                                multi-node cluster may land on any node.
  *                                Becomes an RWX volume (PVC + subPath):
- *                                docs/plans/stock-k8s-multi-node.md §2.
+ *                                docs/plans/cloud-k8s.md.
  *  - NODE-LOCAL (`nodeLocalRoot`) one pod, or one node's scratch. Nobody
  *                                off that node ever reads it, so it never
  *                                has to travel: emptyDir or node disk.
  *  - SERVER-LOCAL (`serverLocalRoot`) only the server process itself.
- *                                Becomes the server's own RWO volume (§1)
+ *                                Becomes the server's own RWO volume
  *                                — the pglite DB must never sit on a
  *                                network filesystem.
  *  - CLIENT-LOCAL (`clientLocalRoot`) only processes on the USER's machine
@@ -101,7 +101,8 @@ export function setDataDir(dir: string): void {
  * backend has exactly one filesystem, so every path is byte-identical to
  * what it was before the split: the tier is a declaration of a visibility
  * requirement, not (yet) a different directory. Splitting them is the
- * volume-source work in §2, not something a caller opts into.
+ * volume-source work in docs/plans/cloud-k8s.md, not something a caller
+ * opts into.
  *
  * CLIENT-LOCAL is the exception, and it is a different directory ALREADY,
  * because the boundary it declares is one that already exists: the server

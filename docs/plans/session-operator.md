@@ -19,9 +19,8 @@ trigger conditions are the plans already on the shelf:
 
 - **Remote hosting** (`docs/remote-hosting.md`): a server detached
   from the cluster needs convergence to happen cluster-side.
-- **Multi-node** (`docs/plans/multi-node-storage-plan.md`,
-  `docs/plans/moving-off-kind.md`): scheduling and healing across nodes wants a
-  resident controller, not a laptop process.
+- **Multi-node** (`docs/plans/cloud-k8s.md`): scheduling and healing across
+  nodes wants a resident controller, not a laptop process.
 - **Sessions governed while no server runs**: today reaping, kubeconfig
   heal, and prewarm maintenance stop when the server stops (sleep,
   upgrade, crash) and resume on restart.

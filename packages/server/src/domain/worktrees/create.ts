@@ -1440,7 +1440,7 @@ export async function createWorktree(
   if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
   // Every mount declares its SOURCE, not just a host path — the seam the
-  // stock-k8s backend needs (docs/plans/stock-k8s-multi-node.md §2). What
+  // cloud backend needs (docs/plans/cloud-k8s.md). What
   // drives each choice is the storage tier the path already declares in
   // project-paths.ts, so this list invents no second classification:
   //   SHARED     — the server and the worktree pod must see the same bytes.
