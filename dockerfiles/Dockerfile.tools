@@ -52,17 +52,37 @@ RUN CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
 # npm-upgrade itself back off this pin. Revisit when the upstream renderer is
 # fixed under gVisor.
 RUN npm install -g opencode-ai@1.0.142
-# pi, deliberately unpinned. Bump the date to pull a newer release.
-RUN PI_REFRESH=2026-09-02 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# pi, PINNED — unlike codex and claude above. Its ACP adapter (pi-acp, below)
+# is a bridge onto `pi --mode rpc`, pi's own JSON protocol, and tracks its event
+# shapes rather than a stable API; a pi release that moved them would break
+# `--mode acp` worktrees with nothing to catch it. Bump the two together, and
+# re-run the acp e2e tier after.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 # Claude Code, deliberately unpinned. Bump the date to pull a newer release.
 RUN CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bash
-# The ACP adapter for Claude — the agent side of yaac's `acp` mode. Speaks
-# JSON-RPC over stdio (Agent Client Protocol) instead of rendering a TUI, so
-# the server drives it directly and the webapp renders structured messages in
-# a chat pane rather than attaching a PTY. Launched under acpd (see
-# /opt/yaac/acpd in the base image), never on its own. Pinned like every other
-# agent CLI here so a session's behavior can't change under it mid-release.
+# The ACP adapters — the agent side of yaac's `acp` mode. Each speaks JSON-RPC
+# over stdio (Agent Client Protocol) instead of rendering a TUI, so the server
+# drives it directly and the webapp renders structured messages in a chat pane
+# rather than attaching a PTY. Launched under acpd (see /opt/yaac/acpd in the
+# base image), never on their own.
+#
+# All pinned, and pinned harder than the CLIs above: yaac reads each adapter's
+# advertised session modes as the tool's permission postures (see
+# packages/server/src/runtime/agents/acp-adapters.ts), and an adapter that
+# stops advertising one does not fail — it silently runs in its default. A unit
+# test ties each pin here to the version that table was verified against, so a
+# bump is a test failure until the modes have been re-checked.
+#
+# opencode has no line here: `opencode acp` is a subcommand of the CLI
+# installed above, so its adapter is pinned by that pin.
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
+# Drives `codex app-server` as a child, so it needs the codex CLI above.
+# --ignore-scripts because it is plain JavaScript whose dependency would
+# otherwise fetch a second copy of the codex binary this image already has.
+RUN npm install -g --ignore-scripts @agentclientprotocol/codex-acp@1.8.0
+# Drives `pi --mode rpc` as a child, so it needs the pi CLI above — and the
+# pinned one specifically (see that step).
+RUN npm install -g --ignore-scripts pi-acp@0.0.33
 
 # Agent-session discovery hook. The script body lives once in
 # worktree-bin/yaac-agent-links, which the server stages per worktree and

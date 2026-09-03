@@ -18,7 +18,9 @@ import {
   workspaceHome,
 } from '@yaac/server/drivers/containerless/paths'
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
-import type { AgentSessionEntry } from '@yaac/shared/types'
+import { ACP_ADAPTERS, toolSupportsPermissionMode } from '@yaac/shared/types'
+import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
+import type { AcpTool, AgentSessionEntry } from '@yaac/shared/types'
 import { PLACEHOLDER_GH_TOKEN } from '@yaac/shared/tool-auth'
 
 const execFileAsync = promisify(execFile)
@@ -84,26 +86,42 @@ const CAN_RUN_ACP = CAN_RUN
  * `codex` is the deliberate exception: it stands in for an agent that is
  * installed but cannot run (a broken or half-installed binary), which is
  * exactly the launch failure a PATH check cannot predict. Nothing else in
- * this file creates a codex worktree, so one tool can be the sick one.
+ * this file creates a codex TUI worktree, so one tool can be the sick one —
+ * and its ACP adapter is a different binary, so acp mode is unaffected.
  *
- * `claude-agent-acp` is the adapter `--mode acp` runs — a different program
- * from the CLI of the same tool, and the reason the preflight asks for it by
- * name (see `FAKE_ACP_ADAPTER`).
+ * The adapters are stood in for too, one per binary `--mode acp` can run
+ * (`fakeAcpAdapter`). They are separate programs from the CLIs of the same
+ * name, which is why the preflight asks for them by name — except opencode,
+ * whose adapter IS its CLI under an `acp` subcommand, so its stand-in has to
+ * be both: an adapter when called that way and a TUI that holds its window
+ * otherwise.
  */
 async function installFakeAgents(binDir: string): Promise<void> {
   await fs.mkdir(binDir, { recursive: true })
-  for (const tool of ['claude', 'opencode', 'pi']) {
-    const file = path.join(binDir, tool)
-    await fs.writeFile(file, '#!/bin/sh\nexec sleep infinity\n')
+  const write = async (name: string, body: string): Promise<string> => {
+    const file = path.join(binDir, name)
+    await fs.writeFile(file, body)
     await fs.chmod(file, 0o755)
+    return file
   }
-  const broken = path.join(binDir, 'codex')
-  await fs.writeFile(broken, '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
-  await fs.chmod(broken, 0o755)
+  for (const tool of ['claude', 'pi']) {
+    await write(tool, '#!/bin/sh\nexec sleep infinity\n')
+  }
+  await write('codex', '#!/bin/sh\necho "codex: cannot execute" >&2\nexit 127\n')
 
-  const adapter = path.join(binDir, 'claude-agent-acp')
-  await fs.writeFile(adapter, FAKE_ACP_ADAPTER)
-  await fs.chmod(adapter, 0o755)
+  for (const [tool, binary] of Object.entries(ACP_ADAPTERS)) {
+    if (binary.binary === 'opencode') continue
+    await write(binary.binary, fakeAcpAdapter(tool as AcpTool))
+  }
+  // opencode wears both hats. `exec`ing the adapter keeps acpd's child the
+  // process that speaks the protocol, so a wrapper cannot swallow its stdio.
+  await write('opencode-acp-impl', fakeAcpAdapter('opencode'))
+  await write(
+    'opencode',
+    '#!/bin/sh\n'
+    + 'if [ "$1" = "acp" ]; then shift; exec opencode-acp-impl "$@"; fi\n'
+    + 'exec sleep infinity\n',
+  )
 }
 
 /**
@@ -117,8 +135,22 @@ async function installFakeAgents(binDir: string): Promise<void> {
  * adapter knows and nothing else can prove: acpd has to spawn it in the
  * worktree's checkout, and a wrong directory fails the spawn as if the
  * binary were missing.
+ *
+ * Per tool, because what yaac says to an adapter differs per adapter: the
+ * session id it mints names the tool (so a record proves WHICH adapter ran),
+ * and the modes it advertises are the ones that tool's profile maps a posture
+ * onto — an adapter offering something else is how a posture silently stops
+ * being enforced, and the real ones are checked against these at their pins.
  */
-const FAKE_ACP_ADAPTER = `#!/usr/bin/env node
+const ACP_MODES: Record<AcpTool, string[]> = {
+  claude: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
+  codex: ['read-only', 'agent', 'agent-full-access'],
+  opencode: ['build', 'plan'],
+  // pi advertises thinking levels, not postures — nothing yaac ever sets.
+  pi: ['off', 'medium', 'high'],
+}
+
+const fakeAcpAdapter = (tool: AcpTool): string => `#!/usr/bin/env node
 let buf = ''
 const reply = (id, result) => {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
@@ -136,15 +168,13 @@ process.stdin.on('data', (chunk) => {
       reply(msg.id, { protocolVersion: 1, agentCapabilities: { loadSession: false } })
     } else if (msg.method === 'session/new') {
       reply(msg.id, {
-        sessionId: 'e2e-acp-session',
+        sessionId: 'e2e-acp-${tool}',
         cwd: process.cwd(),
         modes: {
-          currentModeId: 'default',
-          availableModes: [
-            { id: 'default', name: 'Ask' },
-            { id: 'acceptEdits', name: 'Accept edits' },
-          ],
+          currentModeId: ${JSON.stringify(ACP_MODES[tool][0])},
+          availableModes: ${JSON.stringify(ACP_MODES[tool].map((id) => ({ id })))},
         },
+        configOptions: [{ id: 'model', currentValue: 'e2e-model' }],
       })
     } else {
       reply(msg.id, {})
@@ -177,9 +207,14 @@ async function listWorktrees(): Promise<Array<{ worktreeId: string; status: stri
  *  worktree (it would have attached to it), so it is read back from the
  *  server's own listing. */
 async function createWorktree(...extra: string[]): Promise<string> {
+  return createWorktreeWith('claude', ...extra)
+}
+
+/** The same, for a case that cares which tool runs. */
+async function createWorktreeWith(tool: string, ...extra: string[]): Promise<string> {
   const before = new Set((await listWorktrees()).map((w) => w.worktreeId))
   const { stdout, stderr, exitCode } = await runYaac(
-    serverEnv, 'worktree', 'create', SLUG, '--tool', 'claude', ...extra,
+    serverEnv, 'worktree', 'create', SLUG, '--tool', tool, ...extra,
   )
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -846,70 +881,163 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
  * adapter present cannot also ask what happens when it is absent.
  */
 describe.skipIf(!CAN_RUN_ACP)('containerless worktrees in acp mode', () => {
-  it('supervises the adapter under acpd and handshakes a conversation', async () => {
-    const id = await createWorktree('--mode', 'acp')
-    // The record opens under the WORKTREE id and is renamed once `session/new`
-    // answers, so its final name is itself the assertion that the handshake
-    // completed and the server adopted the session it minted.
-    const record = path.join(
-      testEnv.dataDir, 'projects', SLUG, 'acp', id, 'e2e-acp-session.jsonl',
-    )
-    await vi.waitFor(async () => {
-      expect(await fs.readFile(record, 'utf8')).toContain('initialize')
-    }, { timeout: 30_000, interval: 250 })
+  /**
+   * One case per tool, because what differs between them is exactly what this
+   * tier can check on a host: which binary acpd execs, what the launch command
+   * carries to it, and which posture reaches it over the protocol. The rest of
+   * the path — the socket, the record, the row — is shared, and is asserted
+   * for each so a tool that breaks it is named.
+   */
+  const CASES: Array<{
+    tool: AcpTool
+    posture: string
+    /** The mode id the adapter should be told, or undefined where the posture
+     *  is carried some other way (opencode's environment, pi's nothing). */
+    modeId?: string
+    /** Fragments the tmux window's command must carry. */
+    launch: string[]
+    /** The model the row should end up showing: what the handshake reported,
+     *  unless something changed it afterwards. */
+    model: string | undefined
+  }> = [
+    {
+      tool: 'claude',
+      posture: 'accept-edits',
+      modeId: 'acceptEdits',
+      launch: ['-- claude-agent-acp'],
+      model: 'e2e-model',
+    },
+    {
+      tool: 'codex',
+      posture: 'auto',
+      modeId: 'agent',
+      launch: ['NO_BROWSER=1', '-- codex-acp'],
+      model: 'e2e-model',
+    },
+    {
+      // opencode's posture rides its environment, and its record must survive
+      // a restart because its `session/load` replays nothing.
+      tool: 'opencode',
+      posture: 'accept-edits',
+      launch: ['OPENCODE_PERMISSION=', '--append', '-- opencode acp'],
+      model: 'e2e-model',
+    },
+    {
+      // pi takes no model at launch, so the provider default reaches it as a
+      // `session/set_model` after the handshake — and the row shows THAT,
+      // because the record's later answer is the true one. This is the whole
+      // round trip: without it a pi worktree runs whatever pi's shared
+      // settings name, against a provider whose key the proxy never swapped.
+      tool: 'pi',
+      posture: 'bypass',
+      launch: ['-- pi-acp'],
+      model: piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel,
+    },
+  ]
 
-    // acpd tees both directions, so the adapter's own answers are in here.
-    const relayed = (await fs.readFile(record, 'utf8')).trim().split('\n')
-      .flatMap((line) => {
-        try {
-          return [JSON.parse(line) as { result?: { sessionId?: string; cwd?: string } }]
-        } catch {
-          return []
+  it.each(CASES)('supervises $tool\'s adapter under acpd and handshakes a conversation',
+    async ({ tool, posture, modeId, launch, model }) => {
+      const id = await createWorktreeWith(tool, '--mode', 'acp', '--permission-mode', posture)
+      // The record opens under the WORKTREE id and is renamed once
+      // `session/new` answers, so its final name is itself the assertion that
+      // the handshake completed and the server adopted the session it minted.
+      const record = path.join(
+        testEnv.dataDir, 'projects', SLUG, 'acp', id, `e2e-acp-${tool}.jsonl`,
+      )
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(record, 'utf8')).toContain('initialize')
+      }, { timeout: 30_000, interval: 250 })
+
+      // acpd tees both directions, so the adapter's own answers are in here.
+      const relayed = (await fs.readFile(record, 'utf8')).trim().split('\n')
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as {
+              method?: string
+              params?: { modeId?: string }
+              result?: { sessionId?: string; cwd?: string }
+            }]
+          } catch {
+            return []
+          }
+        })
+
+      // The adapter's OWN working directory, reported by the adapter — not the
+      // one the client asked for, which would be true whatever acpd did with
+      // it. acpd spawns it there, and a directory that does not exist on this
+      // host fails that spawn exactly as a missing binary would, which is how
+      // a container path in code both runtimes share took the worktree down.
+      const created = relayed.find((m) => m.result?.sessionId === `e2e-acp-${tool}`)
+      // Against the resolved path: `process.cwd()` reports the symlink-free
+      // one, so a data dir reached through a symlink would fail a comparison
+      // with the path this test composed rather than with the directory it
+      // names.
+      expect(created?.result?.cwd).toBe(
+        await fs.realpath(path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', id)),
+      )
+
+      // The posture, over the protocol rather than on the command line — and
+      // only where the adapter has a mode for it. Sending one it never
+      // advertised is how a create that asked for a restraint runs without it.
+      const setMode = relayed.find((m) => m.method === 'session/set_mode')
+      expect(setMode?.params?.modeId).toBe(modeId)
+
+      // What the window actually execs, which is where a per-adapter launch
+      // goes wrong invisibly: a posture in the wrong variable or a missing
+      // `--append` leaves a conversation that works today and loses its
+      // history on the next restart.
+      const startCmd = await tmux(id, 'display', '-p', '-t', `yaac:${tool}`, '#{pane_start_command}')
+      for (const fragment of launch) expect(startCmd).toContain(fragment)
+
+      // And the window is still there: an adapter that dies takes acpd, the
+      // window and the tmux server down with it.
+      const windows = await tmux(id, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
+      expect(windows).toContain(tool)
+
+      // The server knows about the conversation, which is the half the record
+      // alone cannot show. Nothing on this substrate reports a workspace into
+      // existence — no informer, no pod event — so a create that fails to
+      // announce itself leaves the worktree running and unobserved: the
+      // handshake above never happens, and this list stays empty for the life
+      // of the server.
+      // Polled, because the row trails the handshake rather than accompanying
+      // it: adoption renames the record, and the conversation reaches
+      // `worktree_agent_sessions` a reconcile tick later. Asserting straight
+      // after the window check reads whichever side of that the host happens
+      // to be on.
+      await vi.waitFor(async () => {
+        const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
+        const { worktrees } = await res.json() as {
+          worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
         }
-      })
+        const row = worktrees.find((w) => w.worktreeId === id)
+        expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
+        expect(row?.agentSessions[0]?.mode).toBe('acp')
+        // Read from the record, which is the only source that answers for
+        // every tool: three of the four leave no transcript this host can find.
+        expect(row?.agentSessions[0]?.model).toBe(model)
+      }, { timeout: 30_000, interval: 250 })
 
-    // The adapter's OWN working directory, reported by the adapter — not the
-    // one the client asked for, which would be true whatever acpd did with it.
-    // acpd spawns it there, and a directory that does not exist on this host
-    // fails that spawn exactly as a missing binary would, which is how a
-    // container path in code both runtimes share took the worktree down.
-    const created = relayed.find((m) => m.result?.sessionId === 'e2e-acp-session')
-    // Against the resolved path: `process.cwd()` reports the symlink-free
-    // one, so a data dir reached through a symlink would fail a comparison
-    // with the path this test composed rather than with the directory it
-    // names.
-    expect(created?.result?.cwd).toBe(
-      await fs.realpath(path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', id)),
+      await runYaac(serverEnv, 'worktree', 'stop', id)
+    }, 180_000)
+
+  it('refuses a posture the adapter has no mode for, before provisioning anything', async () => {
+    // codex has plan mode; codex-acp does not — it collapses codex's approval
+    // × sandbox grid into three. Refusing is the point: quietly launching the
+    // nearest neighbour would hand back a worktree with a weaker restraint
+    // than the one that was asked for.
+    const before = (await listWorktrees()).length
+    const { exitCode, stderr, stdout } = await runYaac(
+      serverEnv, 'worktree', 'create', SLUG,
+      '--tool', 'codex', '--mode', 'acp', '--permission-mode', 'plan',
     )
-
-    // And the window is still there: an adapter that dies takes acpd, the
-    // window and the tmux server down with it.
-    const windows = await tmux(id, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
-    expect(windows).toContain('claude')
-
-    // The server knows about the conversation, which is the half the record
-    // alone cannot show. Nothing on this substrate reports a workspace into
-    // existence — no informer, no pod event — so a create that fails to
-    // announce itself leaves the worktree running and unobserved: the
-    // handshake above never happens, and this list stays empty for the life
-    // of the server.
-    // Polled, because the row trails the handshake rather than accompanying
-    // it: adoption renames the record, and the conversation reaches
-    // `worktree_agent_sessions` a reconcile tick later. Asserting straight
-    // after the window check reads whichever side of that the host happens
-    // to be on.
-    await vi.waitFor(async () => {
-      const res = await fetch(`${origin()}/worktree/list`, { headers: authHeader() })
-      const { worktrees } = await res.json() as {
-        worktrees: Array<{ worktreeId: string; agentSessions: AgentSessionEntry[] }>
-      }
-      const row = worktrees.find((w) => w.worktreeId === id)
-      expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain('e2e-acp-session')
-      expect(row?.agentSessions[0]?.mode).toBe('acp')
-    }, { timeout: 30_000, interval: 250 })
-
-    await runYaac(serverEnv, 'worktree', 'stop', id)
-  }, 180_000)
+    expect(exitCode).not.toBe(0)
+    expect(`${stdout}${stderr}`).toMatch(/plan.*permission mode under acp/)
+    expect((await listWorktrees()).length).toBe(before)
+    // The same posture through the same tool's TUI is fine, which is what
+    // makes this the adapter's limit rather than codex's.
+    expect(toolSupportsPermissionMode('codex', 'plan', 'tui')).toBe(true)
+  }, 60_000)
 })
 
 // Runs last in the file: it replaces the shared server, and the worktree it

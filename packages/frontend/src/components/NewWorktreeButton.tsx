@@ -13,6 +13,7 @@ import { useUiStore } from '#store'
 import { useSnapshot } from '#lib/useSnapshot'
 import {
   ACP_TOOLS,
+  type AcpTool,
   defaultPermissionMode,
   PERMISSION_MODE_COPY,
   PERMISSION_MODES,
@@ -269,11 +270,13 @@ export function NewWorktreeButton(
                 </button>
                 {/* The same tool, driven over ACP instead of its TUI: the
                     worktree opens with a chat pane rather than a terminal.
-                    Only offered for tools whose adapter ships in the image,
-                    and gated on the posture exactly as the TUI button is —
-                    a chat conversation honors every posture its tool has,
-                    asking in the pane for whatever the mode does not settle. */}
-                {ACP_TOOLS.includes(t) && toolSupportsPermissionMode(t, modeShown) && (
+                    Gated on the posture separately from the TUI button, and
+                    against the ACP column: an adapter offers fewer postures
+                    than its CLI (codex-acp has no plan mode), so the two
+                    buttons genuinely disagree — codex under `plan` is a
+                    terminal worktree only. */}
+                {ACP_TOOLS.includes(t as AcpTool)
+                  && toolSupportsPermissionMode(t, modeShown, 'acp') && (
                   <button
                     type="button"
                     title={`Run ${TOOL_LABEL[t]} as a chat pane (Agent Client Protocol)`}

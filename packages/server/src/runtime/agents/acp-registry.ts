@@ -78,4 +78,36 @@ export function acpConversationByHandle(
 /** Test-only: drop every entry. */
 export function _resetAcpRegistryForTests(): void {
   byName.clear()
+  launchModels.clear()
+}
+
+/**
+ * The model a conversation was launched to run, for the adapters that can only
+ * be told one over the protocol (`modelVia: 'protocol'`).
+ *
+ * A launch command is authored in one place and the handshake that must carry
+ * its model runs in another, seconds later and driven by a different object —
+ * so the value is parked here between them rather than threaded through a
+ * launch spec, a database column and a connection dep that nothing else would
+ * use. Keyed by the conversation's launch id, which is unique by construction:
+ * a fresh conversation is launched under its worktree's id, a resumed one under
+ * the id the agent minted.
+ *
+ * Taken once, then forgotten: a reattach must NOT re-send it. The adapter is
+ * already holding the model from the first attach, and the user may have
+ * changed it since — re-asserting the launch value on a relay hiccup would
+ * silently undo their choice. A server that restarts between the launch and the
+ * first attach therefore loses the override and the conversation runs the
+ * adapter's default, which is logged.
+ */
+const launchModels = new Map<string, string>()
+
+export function stashAcpLaunchModel(launchId: string, model: string): void {
+  launchModels.set(launchId, model)
+}
+
+export function takeAcpLaunchModel(launchId: string): string | undefined {
+  const model = launchModels.get(launchId)
+  launchModels.delete(launchId)
+  return model
 }

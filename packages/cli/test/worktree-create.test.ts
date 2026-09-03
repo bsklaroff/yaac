@@ -224,7 +224,10 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/runtime/agents/opencode', () => ({
+// Partial: only the config write touches disk. The permission rules beside it
+// are the real ones the launch command is built from, in both agent modes.
+vi.mock('@yaac/server/runtime/agents/opencode', async (importOriginal) => ({
+  ...await importOriginal<typeof opencodeAgentModule>(),
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof opencodeAgentModule>))
 

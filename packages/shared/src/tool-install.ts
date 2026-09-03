@@ -30,10 +30,23 @@ export const AGENT_INSTALL: Record<AgentTool, string> = {
   pi: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent',
 }
 
-/** Keyed by the adapter's BINARY name — what `--mode acp` execs and what a
- *  PATH probe looks for — not by the tool it adapts. */
+/**
+ * Keyed by the adapter's BINARY name — what `--mode acp` execs and what a
+ * PATH probe looks for — not by the tool it adapts.
+ *
+ * opencode is absent on purpose: `opencode acp` is a subcommand, so its adapter
+ * IS the CLI and `AGENT_INSTALL` already answers for it. `installCommandFor`
+ * checks the tools first, which is what makes that fall through correctly.
+ *
+ * `--ignore-scripts` where the package's postinstall fetches a platform binary
+ * it does not need (the same reason pi's own install carries it): both adapters
+ * are plain JavaScript that resolve their native pieces through the tool they
+ * drive.
+ */
 export const ACP_ADAPTER_INSTALL: Record<string, string> = {
   'claude-agent-acp': 'npm install -g @agentclientprotocol/claude-agent-acp',
+  'codex-acp': 'npm install -g --ignore-scripts @agentclientprotocol/codex-acp',
+  'pi-acp': 'npm install -g --ignore-scripts pi-acp',
 }
 
 /**

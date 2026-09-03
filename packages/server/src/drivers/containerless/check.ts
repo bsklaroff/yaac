@@ -1,17 +1,17 @@
 import { MissingToolError, ServerError } from '@yaac/shared/errors'
 import { AGENT_INSTALL, installCommandFor } from '@yaac/shared/tool-install'
-import { AGENT_TOOLS, type AgentMode, type AgentTool, type CheckResult } from '@yaac/shared/types'
+import {
+  ACP_ADAPTERS,
+  ACP_TOOLS,
+  AGENT_TOOLS,
+  type AcpTool,
+  type AgentMode,
+  type AgentTool,
+  type CheckResult,
+} from '@yaac/shared/types'
 import { WorkspaceExecError } from '#drivers/contract'
 import { onPath, runHost } from './host'
 import { overriddenToolHomeVars } from './tool-homes'
-
-/** The adapter binaries `--mode acp` can run. Kept here rather than
- *  imported from `#runtime/agents`, which a driver may not name. */
-const ACP_ADAPTER_BINARIES = ['claude-agent-acp'] as const
-
-/** The host binary each tool's ACP adapter installs as — the same table, by
- *  the tool that needs it. */
-const ACP_ADAPTERS: Partial<Record<AgentTool, string>> = { claude: 'claude-agent-acp' }
 
 /**
  * `yaac host check`: whether this machine can run worktrees without
@@ -141,7 +141,7 @@ export async function assertHostCanLaunch(opts: {
     alternative: null,
   })
   if (mode === 'acp') {
-    const adapter = ACP_ADAPTERS[tool]
+    const adapter = ACP_ADAPTERS[tool as AcpTool] as { binary: string; needsCli: boolean } | undefined
     if (adapter === undefined) {
       // Create rejects this combination before it ever reaches a runtime;
       // reachable only from a caller that skipped it.
@@ -155,7 +155,16 @@ export async function assertHostCanLaunch(opts: {
       manual: 'apt install nodejs / brew install node',
       alternative: 'create the worktree with --mode tui',
     })
-    await requireBinary(adapter, `--mode acp runs ${adapter}`, opts)
+    await requireBinary(adapter.binary, `--mode acp runs ${adapter.binary}`, opts)
+    // An adapter that is a front end rather than an implementation needs the
+    // tool beside it: codex-acp drives `codex app-server` and pi-acp drives
+    // `pi --mode rpc`, so a host with the adapter and no CLI fails at the
+    // first prompt instead of at the launch. claude's adapter bundles its own
+    // SDK and needs nothing, and opencode IS its own adapter — asking for it
+    // twice would be the same probe under two names.
+    if (adapter.needsCli && adapter.binary !== tool) {
+      await requireBinary(tool, `${adapter.binary} drives ${tool}`, opts)
+    }
     await requireBinary('socat', "the chat transport dials acpd's socket with it", {
       ...opts,
       manual: 'apt install socat / brew install socat',
@@ -357,20 +366,25 @@ export async function runHostCheck(): Promise<CheckResult[]> {
   for (const tool of AGENT_TOOLS) {
     if (await onPath(tool)) agents.push(tool)
   }
-  // The adapters are what `--mode acp` runs, and they are separate packages
-  // from the agents themselves. Reported so a user who wants a chat pane
-  // learns it here rather than from a worktree that vanishes.
+  // The adapters are what `--mode acp` runs, and mostly they are separate
+  // packages from the agents themselves. Reported per TOOL rather than as one
+  // list of binaries: with four adapters, "some adapter is installed" is not
+  // an answer to "can I create a chat worktree with codex", and a row that
+  // said `pass` on the strength of another tool's adapter would be answering
+  // a question nobody asked.
   const adapters: string[] = []
-  for (const adapter of ACP_ADAPTER_BINARIES) {
-    if (await onPath(adapter)) adapters.push(adapter)
+  const missing: string[] = []
+  for (const tool of ACP_TOOLS) {
+    const { binary } = ACP_ADAPTERS[tool]
+    if (await onPath(binary)) adapters.push(`${tool}: ${binary}`)
+    else missing.push(installCommandFor(binary) ?? binary)
   }
   results.push({
     name: 'ACP adapters',
     status: adapters.length > 0 ? 'pass' : 'warn',
     detail: adapters.length > 0 ? adapters.join(', ') : 'none found on PATH',
-    ...(adapters.length > 0 ? {} : {
-      fix: 'Install an ACP adapter to create worktrees with --mode acp '
-        + `(${ACP_ADAPTER_BINARIES.map((a) => installCommandFor(a) ?? a).join('; ')}); `
+    ...(missing.length === 0 ? {} : {
+      fix: `Install an ACP adapter to create worktrees with --mode acp (${missing.join('; ')}); `
         + 'tui-mode worktrees do not need one.',
     }),
   })

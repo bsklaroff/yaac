@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { worktreeDriver } from '#drivers/driver'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /**
  * Status markers + first-message lookup for opencode sessions.
@@ -34,6 +35,59 @@ interface OpencodeSessionRow {
   directory?: string
   parentID?: string
   time?: { created?: number; updated?: number }
+}
+
+/**
+ * opencode's approval posture is config, not flags, and it is the same
+ * config in both agent modes — the TUI and `opencode acp` read the same
+ * variable, so one table answers for both. `OPENCODE_PERMISSION`
+ * takes the same JSON as the config file's `permission` block and is read per
+ * process, which is what makes it per-worktree — the `opencode.json` session
+ * create writes is shared by every worktree in the project.
+ *
+ * **Every posture is stated in full, and only in keys opencode actually
+ * has.** Its permission config is a plain zod object over exactly `edit`,
+ * `bash`, `webfetch`, `doom_loop` and `external_directory` — no top-level
+ * wildcard — and a plain zod object *strips* what it does not know. An
+ * unrecognized key is therefore not a partial posture but an empty one, which
+ * `mergeAgentPermissions` then fills with `edit: allow`, `webfetch: allow`,
+ * `bash: {"*": "allow"}`. A posture spelled wrong here does not fail: it runs
+ * unrestrained, silently, on a containerless worktree's real filesystem.
+ *
+ * That is also why `bypass` states allow-everything rather than passing no
+ * config at all. Inheriting opencode's near-permissive defaults happens to
+ * land in the right place today, but `doom_loop` and `external_directory`
+ * already default to `ask`, and a future default that tightens would quietly
+ * stop meaning bypass with nothing to signal it.
+ */
+const OPENCODE_PERMISSION_RULES: Partial<Record<PermissionMode, Record<string, string>>> = {
+  bypass: {
+    edit: 'allow', bash: 'allow', webfetch: 'allow',
+    doom_loop: 'allow', external_directory: 'allow',
+  },
+  // The two left at opencode's own `ask` default are the point of the mode:
+  // edits inside the worktree land unprompted, stepping outside it does not.
+  'accept-edits': { edit: 'allow', bash: 'ask', webfetch: 'allow' },
+  manual: {
+    edit: 'ask', bash: 'ask', webfetch: 'ask',
+    doom_loop: 'ask', external_directory: 'ask',
+  },
+}
+
+/**
+ * The permission rules for a posture, or undefined for one opencode expresses
+ * some other way — `plan`, which is one of its own AGENTS (`--agent plan` for
+ * the TUI, the `plan` session mode over ACP) whose rules are stronger than
+ * anything worth restating: `edit: deny` plus a curated read-only bash
+ * allowlist. Stating rules here as well would not add a floor under it, it
+ * would REPLACE it: opencode merges the user's `permission` config over the
+ * agent's own, so an all-ask block would turn plan's `edit: deny` into
+ * `edit: ask` — a weaker plan mode, arrived at by trying to harden it.
+ */
+export function opencodePermissionRules(
+  mode: PermissionMode,
+): Record<string, string> | undefined {
+  return OPENCODE_PERMISSION_RULES[mode]
 }
 
 export const OPENCODE_BUSY_MARKERS: readonly string[] = [

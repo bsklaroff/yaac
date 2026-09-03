@@ -2,7 +2,9 @@ import { worktreeDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { classifyWorkspaces, liveAgents, probeTmuxLiveness } from '#runtime/status'
 import {
+  getAgentSessionModel,
   readAcpFirstPrompt,
+  readAcpModel,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
@@ -226,7 +228,11 @@ export async function reconcileWorktreeAgentSessions(
     const firstPrompt = l.firstPrompt === undefined
       ? await captureFirstPrompt(projectSlug, l.tool, l.agentSessionId, transcript, jobName)
       : undefined
-    const model = await captureModel(projectSlug, l.tool, l.agentSessionId, transcript)
+    const model = await captureModel(
+      `${projectSlug}/${l.tool}/${l.agentSessionId}`,
+      transcript,
+      (file) => getAgentSessionModel(l.tool, file),
+    )
     const capture = {
       ...(firstPrompt !== undefined ? { firstPrompt } : {}),
       ...(model !== undefined && model !== l.model ? { model } : {}),
@@ -360,43 +366,30 @@ async function reconcileAcpAgentSessions(
       .filter((a) => a.agentSessionId !== undefined)
       .map(async (a) => {
         const agentSessionId = a.agentSessionId as string
-        // The ACP adapter is the tool's own SDK under a different front end, so
-        // where it leaves a transcript it leaves it where the TUI would. Naming
-        // it here is what gives an ACP conversation a last-activity time and
-        // keeps it legible to every path that reads transcripts — the stopped
-        // listing above all, which outlives the pod and so cannot ask the
-        // conversation anything. Resolution is best-effort: a conversation with
-        // no locatable transcript records none and loses only that timestamp.
-        const transcriptPath = await sessionTranscriptPath(projectSlug, agentSessionId, a.tool)
-        const lastActiveMs = transcriptPath !== undefined
-          ? await transcriptLastActiveMs(transcriptPath)
-          : undefined
-        // The opening message, from the record rather than a live conversation:
-        // the record is on disk whether or not anything is attached, so a
-        // worktree can be labelled without one.
-        const firstPrompt = await readAcpFirstPrompt(
-          path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`),
-        )
-        // From the transcript, not the conversation: the ACP stream carries no
-        // model, and the adapter is the tool's own SDK writing the same file
-        // its TUI would — so this is the same read the tui branch makes.
-        const model = await captureModel(projectSlug, a.tool, agentSessionId, transcriptPath)
+        const record = path.join(acpLogDir(projectSlug, worktreeId), `${agentSessionId}.jsonl`)
+        // Everything below comes from the record, and that is the point: it is
+        // the one source that answers for every tool. A TUI conversation is
+        // read from the transcript its tool writes, but under ACP three of the
+        // four leave nothing yaac can find — codex names its rollouts by a
+        // thread id we never see, opencode keeps its history in a
+        // container-side database, and pi's log is named for an id its adapter
+        // minted rather than the one we asked for. The record is on disk
+        // whether or not anything is attached, and it outlives the pod, which
+        // is what lets a stopped worktree still be labelled and ordered.
+        const firstPrompt = await readAcpFirstPrompt(record)
+        const model = await captureModel(`${projectSlug}/acp/${agentSessionId}`, record, readAcpModel)
+        const lastActiveMs = await transcriptLastActiveMs(record)
         return {
           tool: a.tool,
           agentSessionId,
           paneId: a.handle,
           mode: 'acp' as const,
           ...(firstPrompt !== undefined ? { firstPrompt } : {}),
-          ...(transcriptPath !== undefined ? { transcriptPath } : {}),
           ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
           ...(model !== undefined ? { model } : {}),
         }
       }),
   )
-  // Through the same conversion the tui branch uses: `sessionTranscriptPath`
-  // hands back an absolute path, and an absolute path must never cross the
-  // convention — it names one machine's layout and re-pins the row to
-  // this data dir.
   const reported = live.map((c) => toReported(projectSlug, c))
   if (reported.length > 0) {
     await applyWorktreeEvent({

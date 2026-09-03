@@ -49,9 +49,11 @@ export async function getAgentSessionFirstMessage(
  * model mid-conversation. Each tool records it somewhere different, and each
  * reader takes the LAST occurrence rather than the first.
  *
- * The transcript is the one source that answers for both agent modes: an ACP
- * conversation is the tool's own SDK under a different front end and writes
- * the same file its TUI would, so nothing here branches on mode.
+ * The TUI reader, and only that. An ACP conversation's model is read from
+ * acpd's record instead (`readAcpModel`), which is the one source that answers
+ * for every tool: under ACP three of the four leave no transcript this side of
+ * the pod can find, and the id an adapter mints is not the one that names the
+ * file anyway.
  *
  * opencode is the exception it always is, and here it is a permanent one:
  * its history lives in a container-side sqlite DB, and unlike a first message

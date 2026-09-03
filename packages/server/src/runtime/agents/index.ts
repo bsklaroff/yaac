@@ -38,10 +38,10 @@ export {
   type DrivenWorktree,
   type LiveAgent,
 } from './drivers'
-export { acpAdapterFor } from './acp-driver'
+export { acpAdapterFor } from './acp-adapters'
 export { attachAcp, type AcpSocket } from './acp-bridge'
 export { acpConversation } from './acp-registry'
-export { readAcpFirstPrompt, readAcpLog } from './acp-log'
+export { readAcpFirstPrompt, readAcpLog, readAcpModel } from './acp-log'
 // A tui claude conversation as the events an acp one produces, so a stopped
 // worktree's history reads the same either way. The translation is the ACP
 // adapter's own, run as a library — see the module header.

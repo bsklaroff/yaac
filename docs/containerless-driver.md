@@ -551,8 +551,13 @@ startup rather than letting a create fail with a spawn error:
 - **socat**: required for `--mode acp` — the chat transport dials acpd's
   socket by spawning one — and unused by `--mode tui`. `yaac host check` warns
   rather than fails for that reason; a create in acp mode refuses.
-- **an ACP adapter** (`claude-agent-acp`) for `--mode acp`: it ships in the
-  image under the pod driver, and has to be installed here.
+- **an ACP adapter** for `--mode acp` — `claude-agent-acp`, `codex-acp`,
+  `pi-acp`, or (for opencode) the `opencode` CLI itself, whose adapter is a
+  subcommand. They ship in the image under the pod driver and have to be
+  installed here, and `yaac host check` reports them per tool: having one says
+  nothing about the rest. Two of them are front ends rather than
+  implementations — codex-acp drives `codex app-server`, pi-acp drives
+  `pi --mode rpc` — so those creates ask for the tool's CLI as well.
 - **an agent CLI** on `PATH` (claude, codex, opencode, pi) — there is no
   image to have installed one.
 - **lsof**: port detection; without it worktrees run fine and report no ports.
