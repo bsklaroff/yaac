@@ -5,6 +5,8 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 
 vi.mock('#lib/settingsApi', () => ({
   getDefaultTool: vi.fn().mockResolvedValue('claude'),
+  getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
+  setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   getAuthList: vi.fn().mockResolvedValue({ gitCredentials: [], toolAuth: [] }),
   setDefaultTool: vi.fn().mockResolvedValue(undefined),
   addGitCredential: vi.fn().mockResolvedValue(undefined),

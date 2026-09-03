@@ -74,6 +74,9 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/project/:slug/config/raw', request: '/project/nope/config/raw', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/project/:slug/config', request: '/project/nope/config', body: { config: {} }, k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/project/:slug/config', request: '/project/nope/config', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/project/:slug/env', request: '/project/nope/env', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/project/:slug/env', request: '/project/nope/env', body: { name: 'A', value: '1' }, k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/project/:slug/env/:id', request: '/project/nope/env/abc', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/branches', request: '/project/nope/branches', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/project/:slug/reference-branch', request: '/project/nope/reference-branch', body: { branch: 'main' }, k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/project/:slug/skills', request: '/project/nope/skills', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
@@ -92,6 +95,11 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/project/:slug/build-files/file', request: '/project/nope/build-files/file', body: { path: 'a', content: '' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'POST', path: '/project/:slug/build-files/rename', request: '/project/nope/build-files/rename', body: { from: 'a', to: 'b' }, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
   { method: 'DELETE', path: '/project/:slug/build-files/file', request: '/project/nope/build-files/file?path=a', why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
+  // The git identity worktrees commit under. Not image-gated: every
+  // substrate makes commits, and this is the setting that replaced reading
+  // one off whichever host the server happened to be installed from.
+  { method: 'GET', path: '/config/git-identity', k8s: 200, containerless: 200 },
+  { method: 'PUT', path: '/config/git-identity', body: { name: 'A', email: 'a@b.co' }, k8s: 200, containerless: 200 },
   { method: 'GET', path: '/config/user-dockerfile', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/config/user-dockerfile', body: { content: '' }, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/config/user-build-files', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },

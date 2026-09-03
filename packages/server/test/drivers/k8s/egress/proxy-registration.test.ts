@@ -8,23 +8,23 @@ describe('buildWorktreeRegistration', () => {
     vi.clearAllMocks()
   })
 
-  it('builds secret-free reference rules from envSecretProxy', () => {
+  it('builds secret-free, project-scoped reference rules from the secrets', () => {
     const reg = buildWorktreeRegistration({
-      config: {
-        envSecretProxy: {
-          MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
-        },
-      },
+      config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
       projectSlug: 'acme-repo',
-      secretNames: ['MY_KEY'],
+      secretRules: {
+        MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
+      },
       env: {},
     })
+    // The ref is scoped by project: one project's rule must not be able to
+    // resolve another's secret out of the proxy's shared map.
     expect(reg.rules).toEqual([{
       hostPattern: 'api.example.com',
       pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'x-api-key', secretRef: 'MY_KEY' }],
+      injections: [{ action: 'set_header', name: 'x-api-key', secretRef: 'acme-repo/MY_KEY' }],
     }])
     // The registration is persisted by the proxy — it never sees a value,
     // which is now true by construction: only names reach this function.
@@ -40,7 +40,7 @@ describe('buildWorktreeRegistration', () => {
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
       projectSlug: 'acme-repo',
-      secretNames: [],
+      secretRules: {},
       env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
@@ -50,18 +50,18 @@ describe('buildWorktreeRegistration', () => {
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
     expect(buildWorktreeRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildWorktreeRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -78,7 +78,7 @@ describe('buildWorktreeRegistration', () => {
   it('still appends the pull hosts on top of addAllowedUrls', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -87,7 +87,7 @@ describe('buildWorktreeRegistration', () => {
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
     const reg = buildWorktreeRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -95,7 +95,7 @@ describe('buildWorktreeRegistration', () => {
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildWorktreeRegistration({
       config: {},
-      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretNames: [], env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -108,7 +108,7 @@ describe('buildWorktreeRegistration', () => {
       remoteUrl: 'u',
       tool: 'opencode',
       projectSlug: 'p',
-      secretNames: [],
+      secretRules: {},
       env: {
         YAAC_E2E_UPSTREAM_REDIRECTS:
           '{"api.anthropic.com":{"host":"mock.yaac-test.svc","port":8080}}',
@@ -140,7 +140,7 @@ describe('registerWorkspace', () => {
       tool: 'codex',
       config: { addAllowedUrls: ['api.example.com'] },
       remoteUrl: 'https://github.com/example/repo.git',
-      proxySecretNames: [],
+      proxySecretRules: {},
     })
 
     expect(mockRegister).toHaveBeenCalledTimes(1)
@@ -171,7 +171,7 @@ describe('registerWorkspace', () => {
       tool: 'claude',
       config: {},
       remoteUrl: '',
-      proxySecretNames: [],
+      proxySecretRules: {},
     })).rejects.toThrow('proxy down')
   })
 })

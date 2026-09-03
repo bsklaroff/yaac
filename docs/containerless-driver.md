@@ -349,10 +349,22 @@ invocation — and the private `HOME` hides the user's own `~/.gitconfig` and
 in flight. So the launch is handed the resolved credential on the spec and
 writes it into the workspace's own home: an HTTPS token becomes a line in
 git's credential store (`$HOME/.git-credentials`, which is the store's
-default file, so the helper needs no argument), and an SSH key becomes a
-`GIT_SSH_COMMAND` naming that key with `-i` where a pod gets the proxy's
-forwarded agent. Host verification is unchanged — the same project-scoped
-known_hosts the pod path writes.
+default file, so the helper needs no argument).
+
+An SSH key does not go into the home at all. The launch starts an
+**ssh-agent per worktree**, detached beside the tmux server, and pipes the
+key into `ssh-add -` — so the private half exists in two process memories
+and in neither filesystem. What lands in the home is the PUBLIC half, which
+`GIT_SSH_COMMAND` names with `-i` under `IdentitiesOnly` to pin ssh to that
+identity (naming none would let it offer every key the agent holds against a
+host that may lock the account out). The agent's pid goes in the workspace
+marker, so teardown ends it and a recovery scan can tell a live one from a
+stale socket; the key therefore lives exactly as long as the worktree. That
+matters because a state dir OUTLIVES a workspace whose host rebooted, until
+somebody presses stop — which is also why the recovery scan clears the
+credential store of a workspace it finds dead. Under a pod none of this
+applies: the proxy forwards its own agent. Host verification is unchanged
+either way — the same project-scoped known_hosts the pod path writes.
 
 Two details keep that deterministic rather than dependent on the host. The
 helper list is reset before `store` is added, so a system-wide credential

@@ -1,51 +1,118 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { writeProxySecrets } from '#drivers/k8s/egress/proxy-secrets'
-import { proxySecretsCredentialsPath } from '@yaac/shared/project-paths'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { pushProxySecrets, syncProjectProxySecrets } from '#drivers/k8s/egress/proxy-secrets'
+import { proxyClient } from '#drivers/k8s/egress/proxy-client'
+import { configureProxyCredentials, resetProxyCredentials } from '#drivers/k8s/egress/credential-providers'
 
-let tmpDir: string
+/**
+ * Secret VALUES reach the proxy over its control API and live only in that
+ * process's memory — never in a file under the mounted credentials dir,
+ * which would be a durable plaintext copy of every secret the install
+ * proxies. So the boundary these tests mock is the control API, and what
+ * they pin is what crosses it.
+ */
 
-beforeEach(async () => {
-  tmpDir = await createTempDataDir()
+const putSecrets = vi.fn<(secrets: Record<string, string>) => Promise<void>>()
+const deleteSecret = vi.fn<(ref: string) => Promise<void>>()
+const listSecretNames = vi.fn<() => Promise<string[]>>()
+
+const attachIfRunning = vi.fn<() => Promise<boolean>>()
+
+beforeEach(() => {
+  putSecrets.mockReset().mockResolvedValue(undefined)
+  deleteSecret.mockReset().mockResolvedValue(undefined)
+  listSecretNames.mockReset().mockResolvedValue([])
+  attachIfRunning.mockReset().mockResolvedValue(true)
+  vi.spyOn(proxyClient, 'putSecrets').mockImplementation(putSecrets)
+  vi.spyOn(proxyClient, 'deleteSecret').mockImplementation(deleteSecret)
+  vi.spyOn(proxyClient, 'listSecretNames').mockImplementation(listSecretNames)
+  vi.spyOn(proxyClient, 'attachIfRunning').mockImplementation(attachIfRunning)
 })
 
-afterEach(async () => {
-  await cleanupTempDir(tmpDir)
+afterEach(() => {
+  vi.restoreAllMocks()
+  resetProxyCredentials()
 })
 
-describe('writeProxySecrets', () => {
-  async function readSecretsFile(): Promise<Record<string, string>> {
-    const raw = JSON.parse(await fs.readFile(proxySecretsCredentialsPath(), 'utf8')) as {
-      secrets: Record<string, string>
-    }
-    return raw.secrets
-  }
-
-  it('writes secrets keyed by env var name with 0600 mode', async () => {
-    await writeProxySecrets({ MY_KEY: 'sekrit' })
-    expect(await readSecretsFile()).toEqual({ MY_KEY: 'sekrit' })
-    expect((await fs.stat(proxySecretsCredentialsPath())).mode & 0o777).toBe(0o600)
+describe('pushProxySecrets', () => {
+  it('scopes every ref by project, so one project cannot resolve another’s', async () => {
+    await pushProxySecrets('demo', { MY_KEY: 'sekrit', OTHER: 'x' })
+    expect(putSecrets).toHaveBeenCalledWith({ 'demo/MY_KEY': 'sekrit', 'demo/OTHER': 'x' })
   })
 
-  it('merges into existing entries instead of replacing them', async () => {
-    await writeProxySecrets({ A: '1', B: '2' })
-    await writeProxySecrets({ B: 'updated', C: '3' })
-    expect(await readSecretsFile()).toEqual({ A: '1', B: 'updated', C: '3' })
+  it('says nothing at all for a project that proxies none', async () => {
+    await pushProxySecrets('demo', {})
+    expect(putSecrets).not.toHaveBeenCalled()
+  })
+})
+
+describe('syncProjectProxySecrets', () => {
+  it('pushes what the server holds and forgets what it no longer does', async () => {
+    configureProxyCredentials({
+      listSshEntries: () => Promise.resolve([]),
+      legacySecretImportPending: () => Promise.resolve(false),
+      listProxySecrets: () => Promise.resolve([
+        { projectSlug: 'demo', secrets: { KEPT: 'v1' } as Record<string, string> },
+        { projectSlug: 'other', secrets: { THEIRS: 'v2' } as Record<string, string> },
+      ]),
+    })
+    // What the proxy is holding: one this project still has, one it dropped,
+    // and one belonging to a different project that must be left alone.
+    listSecretNames.mockResolvedValue(['demo/KEPT', 'demo/DROPPED', 'other/THEIRS'])
+
+    await syncProjectProxySecrets('demo')
+
+    expect(putSecrets).toHaveBeenCalledWith({ 'demo/KEPT': 'v1' })
+    expect(deleteSecret).toHaveBeenCalledExactlyOnceWith('demo/DROPPED')
   })
 
-  it('no-ops on an empty secrets map', async () => {
-    await writeProxySecrets({})
-    await expect(fs.access(proxySecretsCredentialsPath())).rejects.toThrow()
+  it('forgets a project’s last secret, rather than leaving it injected', async () => {
+    configureProxyCredentials({
+      listSshEntries: () => Promise.resolve([]),
+      legacySecretImportPending: () => Promise.resolve(false),
+      listProxySecrets: () => Promise.resolve([]),
+    })
+    listSecretNames.mockResolvedValue(['demo/GONE'])
+
+    await syncProjectProxySecrets('demo')
+
+    expect(putSecrets).not.toHaveBeenCalled()
+    expect(deleteSecret).toHaveBeenCalledExactlyOnceWith('demo/GONE')
   })
 
-  it('starts fresh when the existing file is corrupt or the wrong shape', async () => {
-    await fs.mkdir(path.dirname(proxySecretsCredentialsPath()), { recursive: true })
-    for (const bad of ['{not json', 'null', '{"secrets": "nope"}', '{"secrets": {"A": 5, "B": ""}}']) {
-      await fs.writeFile(proxySecretsCredentialsPath(), bad)
-      await writeProxySecrets({ Z: '1' })
-      expect(await readSecretsFile()).toEqual({ Z: '1' })
-    }
+  it('changes nothing when no source is registered', async () => {
+    // An entrypoint that composed a runtime without wiring the reader is
+    // saying it has no opinion, not that there are no secrets — deleting on
+    // the strength of that would wipe what a live proxy is using.
+    await syncProjectProxySecrets('demo')
+    expect(putSecrets).not.toHaveBeenCalled()
+    expect(deleteSecret).not.toHaveBeenCalled()
+  })
+
+  it('reports a proxy that will not answer rather than swallowing it', async () => {
+    // The row is written either way, so the temptation is to swallow — but a
+    // failed DELETE leaves the proxy injecting a credential the user has
+    // just revoked while being told it is gone. The caller turns this into
+    // an answer that says the running worktrees have not caught up.
+    configureProxyCredentials({
+      listSshEntries: () => Promise.resolve([]),
+      legacySecretImportPending: () => Promise.resolve(false),
+      listProxySecrets: () => Promise.resolve([{ projectSlug: 'demo', secrets: { A: '1' } }]),
+    })
+    putSecrets.mockRejectedValue(new Error('proxy is down'))
+
+    await expect(syncProjectProxySecrets('demo')).rejects.toThrow('proxy is down')
+  })
+
+  it('does nothing when no proxy is attached — there is nothing live to update', async () => {
+    configureProxyCredentials({
+      listSshEntries: () => Promise.resolve([]),
+      legacySecretImportPending: () => Promise.resolve(false),
+      listProxySecrets: () => Promise.resolve([{ projectSlug: 'demo', secrets: { A: '1' } }]),
+    })
+    attachIfRunning.mockResolvedValue(false)
+
+    await expect(syncProjectProxySecrets('demo')).resolves.toBeUndefined()
+    expect(putSecrets).not.toHaveBeenCalled()
+    expect(deleteSecret).not.toHaveBeenCalled()
   })
 })

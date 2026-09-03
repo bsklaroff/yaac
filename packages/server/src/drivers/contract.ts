@@ -9,6 +9,7 @@ import type {
   PortForwardConfig,
   PortMapping,
   MamaResultWire,
+  SecretProxyRule,
   WorktreeChanges,
   WorktreeDeathCause,
   YaacConfig,
@@ -158,28 +159,33 @@ export interface WorkspaceRegistration {
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   /**
-   * Which of the config's proxied env-var secrets actually have a value —
-   * NAMES only, never values.
+   * The project's proxied secrets as INJECTION RULES — which hosts, paths
+   * and headers each name applies to. Never values.
    *
-   * The runtime cannot answer this itself: where a secret's value comes
-   * from is the caller's (the process environment today, rows once they
-   * move there), and a rule for a name with nothing behind it would inject
-   * an empty header. Values reach the egress path by their own route
+   * The runtime cannot answer this itself: a secret is a row the mediators
+   * own, and only they can say which of them have a value behind them (a
+   * rule for a name with nothing behind it would inject an empty header).
+   * Values reach the egress path by their own route
    * (`SubstrateIntent.proxySecrets`), which is what keeps a registration
    * safe to persist.
    */
-  proxySecretNames: string[]
+  proxySecretRules: Record<string, SecretProxyRule>
 }
 
 /**
- * One SSH remote the egress path can act as. The private key stays a PATH:
- * key bytes are read at upload time and never held, which is also why an
- * agent identity does not survive a proxy replacement.
+ * One SSH remote the egress path can act as.
+ *
+ * The key material itself, because there is no file to name: keys are sealed
+ * rows now, and the only copies outside the database are the ones a runtime
+ * puts somewhere a process can use them — the proxy's in-memory ssh-agent,
+ * or a per-worktree agent under a driver with no proxy. Which is also why an
+ * agent identity does not survive a proxy replacement: nothing on the
+ * proxy's filesystem ever held it.
  */
 export interface SshCredentialEntry {
   pattern: string
   host: string
-  privateKeyPath: string
+  privateKey: string
   knownHostsEntry: string
 }
 
@@ -256,6 +262,13 @@ export interface SubstrateIntent {
    * database. Empty for a project that proxies none.
    */
   proxySecrets: Record<string, string>
+  /**
+   * The same secrets' injection rules, which the runtime registers and the
+   * values above resolve against. Two fields rather than one because they
+   * travel differently: rules are persisted by the egress path and reloaded
+   * after a replacement, values never leave memory.
+   */
+  proxySecretRules: Record<string, SecretProxyRule>
   onProgress?: (message: string) => void
 }
 
@@ -284,13 +297,15 @@ export interface WorkspaceSubstrate {
  * the real thing (docs/containerless-driver.md). Either way the driver is
  * handed the answer instead of reaching for it.
  *
- * The SSH variant names a key on the host rather than carrying its material:
- * a driver that cannot read that path is a driver that mediates egress, and
- * so is not handed this at all.
+ * The SSH variant carries the key material, because there is no path to
+ * name: a key lives sealed in the database and reaches a process only where
+ * one is about to use it. What the driver does with it is the driver's —
+ * the containerless one loads it into a per-worktree ssh-agent, so the
+ * workspace can sign with the key without ever holding a copy of it.
  */
 export type WorkspaceGitCredential =
   | { kind: 'https'; host: string; token: string }
-  | { kind: 'ssh'; privateKeyPath: string }
+  | { kind: 'ssh'; privateKey: string }
 
 /**
  * A workspace to run, described in decisions rather than in any
@@ -548,8 +563,8 @@ export interface DriverSinks {
  */
 export interface DriverDeps {
   /**
-   * Every configured SSH remote this server may act as, with key paths
-   * already expanded.
+   * Every configured SSH remote this server may act as, with its key
+   * material.
    *
    * A reader rather than a value because it is re-read on the DRIVER's own
    * schedule — an attach to a replaced egress pod, a reconnect heal — so
@@ -560,6 +575,19 @@ export interface DriverDeps {
    * nothing".
    */
   sshIdentities?: () => Promise<SshCredentialEntry[]>
+  /**
+   * Every project's proxied secret values, read the same way and for the
+   * same reason: a runtime whose egress path holds them only in memory has
+   * to restore them after a replacement, on its own schedule, with no
+   * caller present to hand them over.
+   */
+  proxySecrets?: (
+    projectSlug?: string,
+  ) => Promise<Array<{ projectSlug: string; secrets: Record<string, string> }>>
+  /** Whether any project's config overlay still carries a retired
+   *  `envSecretProxy` key — read by the runtime that owns when the old
+   *  plaintext secrets file may finally be deleted. */
+  legacySecretImportPending?: () => Promise<boolean>
 }
 
 /**
@@ -629,6 +657,12 @@ export interface WorkspacePaths {
   scratchDir: string
   /** Where acpd puts one socket per ACP conversation. */
   acpSockDir: string
+  /**
+   * Where a workspace's own ssh-agent binds, on a substrate that gives it
+   * one. A runtime whose egress path holds the identities instead (the pod
+   * driver: the proxy forwards its agent) never reads this.
+   */
+  sshAgentSock: string
   /** Where an ACP conversation's JSONL log is written. */
   acpLogDir: string
   /** acpd's entry module, for the launch command that supervises an agent. */
@@ -990,6 +1024,20 @@ export interface WorktreeDriver {
    * degrade, never fail a credential write that already succeeded.
    */
   syncSshIdentities(): Promise<void>
+  /**
+   * A project's proxied secrets changed — deliver the new set to wherever
+   * the runtime resolves injections from, and forget what it dropped.
+   *
+   * The push half of `DriverDeps.proxySecrets`, exactly as
+   * `syncSshIdentities` is for the pull half above. Named per project
+   * because that is the granularity of an edit, and because the values of
+   * other projects are none of this call's business.
+   *
+   * A runtime that mediates no egress resolves without doing anything: it
+   * hands the values to the workspace directly at launch, so there is
+   * nothing running to update.
+   */
+  syncProxySecrets(projectSlug: string): Promise<void>
   /**
    * Start the workspace, and answer with the handle that addresses it.
    *

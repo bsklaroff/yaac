@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { installFakeWorktreeDriver, resetWorktreeDriver } from '@yaac/test-utils/fake-driver'
 
 import { removeProject } from '#domain/worktrees'
 import { listWorktreeRows, recordWorktreeCreated } from '#db/worktree-store'
 import { listProjectRows } from '#db/project-store'
+import { listProjectEnvVars, upsertProjectEnvVar } from '#db/project-env-store'
 import { closeDb } from '#db/client'
 import { projectDir, projectRoots } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
@@ -22,6 +24,10 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  // The teardown tells the runtime to forget the project's proxied secrets:
+  // the egress path holds them until told, and a project that no longer
+  // exists will never tell it again.
+  installFakeWorktreeDriver()
   purged.length = 0
   rowsAtPurge = []
   vi.mocked(purgeProjectBytes).mockReset().mockImplementation(async (slug: string) => {
@@ -37,6 +43,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  resetWorktreeDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -59,6 +66,8 @@ describe('removeProject', () => {
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'a' })
     await recordWorktreeCreated({ projectSlug: 'demo', worktreeId: 'b' })
     await recordWorktreeCreated({ projectSlug: 'keeper', worktreeId: 'c' })
+    await upsertProjectEnvVar('demo', { name: 'MINE', value: 'x', secret: false })
+    await upsertProjectEnvVar('keeper', { name: 'THEIRS', value: 'y', secret: false })
 
     await removeProject('demo')
 
@@ -71,6 +80,10 @@ describe('removeProject', () => {
     // the worktrees they point at went with the bytes.
     expect((await listWorktreeRows()).map((r) => r.worktreeId)).toEqual(['c'])
     expect((await listProjectRows()).map((p) => p.slug)).toEqual(['keeper'])
+    // Including its environment — the secrets among those are the reason
+    // this cannot be left to the reaper.
+    expect(await listProjectEnvVars('demo')).toEqual([])
+    expect((await listProjectEnvVars('keeper')).map((v) => v.name)).toEqual(['THEIRS'])
   })
 
   it('throws NOT_FOUND for an unknown project, touching nothing', async () => {

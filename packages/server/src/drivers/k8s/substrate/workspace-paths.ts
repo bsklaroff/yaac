@@ -26,6 +26,10 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     repoGitDir: '/repo/.git',
     scratchDir: '/tmp',
     acpSockDir: CONTAINER_ACP_DIR,
+    // The pod's ssh identities come from the egress proxy's forwarded agent,
+    // so nothing in a workspace here binds one of its own. Named for the
+    // contract's sake; no k8s path reads it.
+    sshAgentSock: '/run/yaac/ssh-agent.sock',
     acpLogDir: CONTAINER_ACP_LOG_DIR,
     acpdEntry: '/opt/yaac/acpd/main.js',
   }

@@ -1,3 +1,5 @@
+import { getGitIdentity } from '#db'
+
 /**
  * The one answer to "which git identity does this worktree commit under".
  *
@@ -5,22 +7,21 @@
  * prewarmed spare — and both must reach the same identity, so the chain lives
  * here rather than in either of them. Its rungs, in order:
  *
- *  1. what the caller supplied. The interactive CLI resolves (and prompts
- *     for) an identity before calling; non-interactive callers — the webapp's
- *     stream picker, a `yaac-mama` spawn, `POST /worktrees` — send none.
- *  2. the identity the server's own environment states
- *     (`YAAC_SERVER_GIT_*`, put there by `yaac cluster install`).
- *  3. the host's global git config.
+ *  1. what the caller supplied. Nothing routinely does: the CLI resolves an
+ *     identity and SETS it (below) rather than passing one per create, so
+ *     this is left for a caller that genuinely has a one-off answer.
+ *  2. the server's own setting — a preferences row, edited in the webapp and
+ *     seeded from a client's shell by the CLI and the auth server.
  *
- * Rungs 2 and 3 are both needed because only one answers per placement. Under
- * `k8s` the server is a pod whose `$HOME` is an ephemeral image layer with no
- * git config to read, and only the env var answers; under `containerless` it
- * is a host process that is never given the env var, and the global config is
- * the answer.
+ * A setting rather than something read off a host, because the host is not
+ * where the user is. Under `k8s` the server is a pod whose `$HOME` is an
+ * ephemeral image layer with no git config in it at all, so an install-time
+ * snapshot into the Deployment's environment was the only way to answer —
+ * which meant changing your name needed a re-install, from a shell on that
+ * machine, which a remote user does not have. Under `containerless` the
+ * host's global config belongs to whoever runs the server, not to whoever is
+ * driving it from a laptop. A row answers for both.
  */
-import { env as yaacEnv } from '@yaac/shared/env'
-import { getGitUserConfig } from '@yaac/shared/git'
-
 export type GitIdentity = { name: string; email: string }
 
 /**
@@ -31,17 +32,15 @@ export async function resolveGitIdentity(
   supplied?: GitIdentity,
 ): Promise<GitIdentity | null> {
   if (supplied) return supplied
-  if (yaacEnv.serverGitUser) return yaacEnv.serverGitUser
-  return await getGitUserConfig()
+  return await getGitIdentity()
 }
 
 /**
- * What to tell a user when every rung came up empty. Names both remedies
- * because the one that works depends on the placement, which the user knows
- * and this code does not need to branch on.
+ * What to tell a user when no rung answers. Names the webapp first because
+ * that is the remedy every client has, and the CLI second because it is the
+ * one that fills the setting in without anybody typing it twice.
  */
 export const gitIdentityMissingMessage =
-  'No git identity available for non-interactive session creation. '
-  + 'Configure one globally (git config --global user.name / user.email), '
-  + 'then, on a k8s install, re-run `yaac cluster install` so the server '
-  + 'pod is given it.'
+  'No git identity is set on this server, so a worktree would commit as nobody. '
+  + 'Set one in Settings \u2192 General, or run a `yaac` command from a machine whose '
+  + 'git config has one (`yaac worktree create` and the auth server both seed it).'

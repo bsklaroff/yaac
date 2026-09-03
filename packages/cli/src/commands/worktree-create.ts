@@ -71,10 +71,10 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
     }
   }
 
-  // Resolve git identity locally so we can prompt when it's missing.
-  // The server gets the already-resolved pair.
-  const gitUser = await ensureGitIdentity()
-  if (!gitUser) {
+  // Make sure the server has an identity to commit under, seeding it from
+  // this machine's git config — so a create fails here, where a prompt can
+  // fix it, rather than inside the server where nothing can.
+  if (!await ensureGitIdentity()) {
     process.exitCode = 1
     return
   }
@@ -87,7 +87,6 @@ export async function worktreeCreate(projectSlug: string, options: WorktreeCreat
       project: projectSlug,
       tool: options.tool,
       branch: options.branch,
-      gitUser,
       prompt: options.prompt,
       model: options.model,
       mode: options.mode,

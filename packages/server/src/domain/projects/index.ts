@@ -33,7 +33,20 @@ export {
   resolveProjectConfig,
 } from './config'
 export {
+  listProjectEnv,
+  parseSecretProxyRule,
+  removeProjectEnvVar,
+  resolveProjectEnv,
+  setProjectEnvVar,
+  type ResolvedProjectEnv,
+} from './env'
+export {
+  importLegacyProjectConfig,
+  legacySecretImportPending,
+} from './legacy-config-import'
+export {
   addEntry,
+  importLegacySshKeys,
   listEntries,
   listSshEntries,
   loadKnownHostsEntryForHost,

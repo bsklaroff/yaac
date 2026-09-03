@@ -12,6 +12,7 @@ import {
 } from '@yaac/shared/auth-daemon'
 import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
+import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
 import { maskToken } from '@yaac/shared/mask'
 
 /**
@@ -48,6 +49,20 @@ export async function runAuthDaemon(): Promise<void> {
       json: buildAuthPayload(tool, result),
     })
   })
+
+  // The other thing this machine knows that the server cannot: who the user
+  // is, per their git config. Seeded here because the auth server is what
+  // runs on a laptop even when the CLI is not being used — the desktop app
+  // and `yaac open` both start it — so a webapp-only user still gets an
+  // identity without typing one. Never overwrites (see the helper), and
+  // never fatal: a server that already has one, or a machine with no git
+  // config, are both ordinary.
+  try {
+    const identity = await seedGitIdentityFromShell()
+    if (identity) log(`git identity: ${identity.name} <${identity.email}>`)
+  } catch (err) {
+    log(`could not seed the git identity: ${err instanceof Error ? err.message : String(err)}`)
+  }
 
   await writeAuthDaemonLock({ pid: process.pid, baseUrl: target.baseUrl, startedAt: Date.now() })
   log(`lock=${authDaemonLockPath()} target=${target.baseUrl} token=${maskToken(target.secret)}`)

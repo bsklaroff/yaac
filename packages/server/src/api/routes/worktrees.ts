@@ -100,7 +100,6 @@ export const worktreeApp = new Hono()
       // Omitted → the project's referenceBranch config default, else the
       // remote default branch.
       branch: z.string().min(1).optional(),
-      gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
       // Initial prompt typed into the agent pane once it's up.
       prompt: z.string().min(1).max(10000).optional(),
       // Model override for the agent's launch command (`--model <model>`;
@@ -176,7 +175,7 @@ export const worktreeApp = new Hono()
         const claimed = body.mode === 'acp' || permissionMode !== 'bypass'
           ? undefined
           : await tryClaimPrewarmed(
-            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
+            body.project, tool, onProgress, body.branch, body.model,
           )
         if (claimed) {
           // A claimed spare already has its row, so its group is filed here
@@ -198,7 +197,6 @@ export const worktreeApp = new Hono()
           tool, // resolved default applies when --tool was omitted
         }
         if (body.branch) opts.branch = body.branch
-        if (body.gitUser) opts.gitUser = body.gitUser
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         if (body.model !== undefined) opts.model = body.model
         if (body.mode !== undefined) opts.mode = body.mode
@@ -233,8 +231,9 @@ export const worktreeApp = new Hono()
       // No `mode` here, deliberately: a worktree comes back the way it went
       // down, so restart resolves it from `agent_sessions` rather than from
       // the caller. Accepting one would advertise a choice this route does
-      // not have — it would be silently ignored.
-      gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
+      // not have — it would be silently ignored. No `gitUser` either: the
+      // identity a worktree commits under is a server setting now, so a
+      // caller sending one would be a second answer to a settled question.
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -258,7 +257,7 @@ export const worktreeApp = new Hono()
         })
       }
       return streamProvisioned(c, body.worktreeId, (onProgress) =>
-        restartWorktree(body.worktreeId, { gitUser: body.gitUser, onProgress }))
+        restartWorktree(body.worktreeId, { onProgress }))
     },
   )
   .post(

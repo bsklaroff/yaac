@@ -1,8 +1,7 @@
 import { originRemoteUrl } from '#domain/git'
 import { worktreeDriver } from '#drivers/driver'
 import { repoDir } from '@yaac/shared/project-paths'
-import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
-import { resolveProxySecrets } from './proxy-secrets'
+import { resolveProjectConfig, resolveEphemeralModulesPaths, resolveProjectEnv } from '#domain/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { shellEscape } from '#lib/shell'
 import {
@@ -54,7 +53,10 @@ export async function retoolSpare(
     tool,
     config,
     remoteUrl,
-    proxySecretNames: Object.keys(resolveProxySecrets(config)),
+    proxySecretRules: Object.fromEntries(
+      Object.entries((await resolveProjectEnv(spare.projectSlug)).secrets)
+        .map(([name, { rule }]) => [name, rule]),
+    ),
   })
   // Written to tolerate having already run, so the dial retries stay on:
   // by the time a claim gets here any throw reaps the spare, and a blip on
@@ -108,10 +110,10 @@ export interface RebranchPrepCommands {
 /**
  * Workspace-relative paths that are live mount points inside the pod —
  * ephemeral-modules redirects (`/workspace/node_modules` by default), plus
- * any cacheVolumes / bindMounts targeting a path under /workspace. `git
- * clean` must skip them: in a repo that doesn't gitignore them they're
- * untracked directories, and removing a mount point fails (EBUSY), which
- * would taint every re-branch.
+ * any cacheVolumes targeting a path under /workspace. `git clean` must skip
+ * them: in a repo that doesn't gitignore them they're untracked directories,
+ * and removing a mount point fails (EBUSY), which would taint every
+ * re-branch.
  */
 function workspaceMountPaths(config: YaacConfig, workspaceDir: string): string[] {
   const prefix = `${workspaceDir}/`
@@ -120,7 +122,6 @@ function workspaceMountPaths(config: YaacConfig, workspaceDir: string): string[]
   return [
     ...resolveEphemeralModulesPaths(config),
     ...Object.values(config.cacheVolumes ?? {}).map(underWorkspace),
-    ...(config.bindMounts ?? []).map((b) => underWorkspace(b.containerPath)),
   ].filter((p): p is string => p !== null && p.length > 0)
 }
 

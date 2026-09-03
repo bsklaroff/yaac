@@ -418,31 +418,6 @@ Example `yaac-config.json` with all options:
 
 ```json
 {
-  "envPassthrough": ["TERM", "LANG"],
-  "env": {
-    "NODE_ENV": "development",
-    "MY_FLAG": "1"
-  },
-  "envSecretProxy": {
-    "MY_API_KEY": {
-      "hosts": ["api.example.com"],
-      "header": "x-api-key"
-    },
-    "OAUTH_CLIENT_ID": {
-      "hosts": ["auth.example.com"],
-      "path": "/oauth/*",
-      "bodyParam": "client_id"
-    },
-    "OAUTH_CLIENT_SECRET": {
-      "hosts": ["auth.example.com"],
-      "path": "/oauth/*",
-      "bodyParam": "client_secret"
-    }
-  },
-  "bindMounts": [
-    { "hostPath": "$HOME/datasets", "containerPath": "/mnt/datasets", "mode": "ro" },
-    { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "mode": "rw" }
-  ],
   "cacheVolumes": {
     "pip-cache": "/home/yaac/.cache/pip"
   },
@@ -453,21 +428,6 @@ Example `yaac-config.json` with all options:
 }
 ```
 
-- **envPassthrough** — environment variables passed directly from your host to the container.
-- **env** — environment variables hardcoded with literal values, baked into the container at worktree creation. Applied after `envPassthrough`, so a name listed in both takes the literal value here. Values are not expanded — `"$HOME"` is passed through as the literal string `$HOME`.
-- **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests. The actual secret value never enters the container. Each entry specifies how the secret is injected:
-  - **`hosts`** — hostnames to intercept (required).
-  - **`header`** — inject as this HTTP header (default: `"authorization"`). When using the default header, the value is automatically prefixed with `"Bearer "`. Use `prefix` to override.
-  - **`bodyParam`** — instead of a header, replace this form/JSON body parameter. Useful for OAuth client credentials that are sent in POST bodies.
-  - **`path`** — only inject on matching URL paths (default `"/*"`). Supports `*` wildcards.
-
-  Each entry must have either `header` or `bodyParam` (not both).
-
-  Note: GitHub authentication (`github.com` and `api.github.com`) is handled automatically using your stored PAT — you do not need to add `GITHUB_TOKEN` to `envSecretProxy`.
-- **bindMounts** — host directories mounted into the container. Each entry specifies:
-  - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
-  - **`containerPath`** — absolute path inside the container (required).
-  - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
 - **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across worktrees. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across worktrees), so you don't need a `cacheVolumes` entry for pnpm's store.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every worktree, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
@@ -487,6 +447,49 @@ Example `yaac-config.json` with all options:
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the worktree exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers](#nested-containers).
 - **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new worktree worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac worktree create --branch <branch>`, or the branch typeahead in the webapp's new-worktree popover (which can also pin a new default). Changing it affects new worktrees only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
+A project's **environment variables and secrets** are not in this file: they
+are stored with the project and edited in the webapp under Settings → Project
+Config → Environment, so a client with no shell on the server can set them.
+
+A variable is either plain or a **secret**. A plain one is placed in every
+worktree's environment as it is. A secret is stored encrypted, and where a
+worktree is sandboxed (the `k8s` driver) its value never enters the worktree
+at all: the workspace gets a sentinel, and the egress proxy swaps in the real
+value on requests matching the rule you give it — hosts to intercept, an
+HTTP header (default `authorization`, auto-prefixed `Bearer `; override with
+a prefix) or a form/JSON body parameter, and an optional path glob. Under
+`containerless` there is no proxy, so the value is placed in the environment
+directly.
+
+GitHub authentication (`github.com` and `api.github.com`) is handled
+automatically from your stored PAT — you do not need a `GITHUB_TOKEN` secret
+for it.
+
+There is no way to mount a host directory into a worktree: a path on the
+server is not something a client on another machine can name. Use
+`cacheVolumes` for a directory that should persist across worktrees, or bake
+the contents into the project image.
+
+## Secrets at rest
+
+Everything secret this server stores is encrypted in its database: a
+project's proxied secrets, and the SSH private keys git authenticates with.
+The cipher is [better-auth](https://better-auth.com)'s `symmetricEncrypt`:
+XChaCha20-Poly1305 with a random nonce per value, keyed by the SHA-256 of a
+secret string, and a versioned envelope so a key can be rotated without
+re-encrypting anything.
+
+By default the server generates a key for itself at `~/.yaac/secret.key`
+(mode 0600) on first use. **Back that file up with the data dir** — without
+it every stored secret is unreadable, and the UI will ask you to enter them
+again. To keep the key somewhere else instead, set `YAAC_SECRET` to it, or
+`YAAC_SECRETS` to a versioned set:
+
+```sh
+# Rotate: state the new key first, keep the old one so existing rows open.
+export YAAC_SECRETS="1:$(openssl rand -base64 32),0:$(cat ~/.yaac/secret.key)"
+```
+
 ## Environment variables
 
 Every yaac variable is read in one place — [`packages/shared/src/env.ts`](packages/shared/src/env.ts) — which owns its default and validation. The rest of the codebase imports the typed `env` / `testEnv` accessors instead of touching `process.env`.
@@ -505,6 +508,8 @@ Every yaac variable is read in one place — [`packages/shared/src/env.ts`](pack
 | `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
 | `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the webapp claims a worktree's forwarded ports are reachable at; a remote-hosting server sets its tailnet IP. The server binds nothing itself — match this with `yaac forward --bind <same address>` on that machine. |
+| `YAAC_SECRET` | _(unset)_ | Key the server encrypts stored secrets with. Unset → it generates one into `~/.yaac/secret.key` (see "Secrets at rest"). |
+| `YAAC_SECRETS` | _(unset)_ | Versioned keys, `"<version>:<secret>,…"`, newest first — how a key is rotated without re-encrypting anything. `YAAC_SECRET` alongside it opens payloads written before versioning. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
 

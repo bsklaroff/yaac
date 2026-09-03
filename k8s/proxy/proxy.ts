@@ -36,7 +36,7 @@ import {
   splitHostHeader,
 } from './transparent'
 import { parsePp2Header } from './pp2'
-import { readJsonOrNull, writeJsonAtomic } from './state-files'
+import { readJsonOrNull, scopeLegacySecretRefs, writeJsonAtomic } from './state-files'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodWorktreeIndex, fetchPodIpByWorktreeId, fetchWorktreeByPodIp, startPodWatch } from './pod-watch'
 import {
@@ -155,7 +155,6 @@ const CLAUDE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'claude.json')
 const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
 const OPENCODE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'opencode.json')
 const PI_CREDS_FILE = path.join(CREDENTIALS_DIR, 'pi.json')
-const PROXY_SECRETS_FILE = path.join(CREDENTIALS_DIR, 'proxy-secrets.json')
 
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -234,12 +233,12 @@ type Injection =
 
 /**
  * Injection as registered via PUT /worktrees/:id. Instead of a literal
- * `value`, it may carry a `secretRef` naming an entry in the mounted
- * proxy-secrets credentials file (plus an optional header `prefix`, e.g.
+ * `value`, it may carry a `secretRef` naming one of the secrets the server
+ * pushed to `PUT /secrets` (plus an optional header `prefix`, e.g.
  * "Bearer "). References keep registrations secret-free so they can be
- * persisted to /data; the real value is resolved per request from
- * `/yaac-credentials/proxy-secrets.json`, which also means rotation via
- * the server applies to live worktrees immediately.
+ * persisted to /data; the real value is resolved per request from the
+ * in-memory map, which also means a rotation the server pushes applies to
+ * live worktrees immediately.
  */
 type RegisteredInjection = {
   action: Injection['action']
@@ -506,34 +505,29 @@ function readPiCreds(): PiCreds | null {
 }
 
 /**
- * Read the server-maintained envSecretProxy values (env var name -> secret)
- * from the mounted credentials dir. Written by worktree-create before each
- * registration; injection rules reference entries by key via `secretRef`.
+ * The values behind a registration's `secretRef` rules, keyed
+ * `<projectSlug>/<NAME>`.
+ *
+ * IN MEMORY ONLY, like the ssh-agent's identities and for the same reason:
+ * these are a user's own secrets, and a file of them in the mounted
+ * credentials dir is a plaintext copy of every one this install proxies,
+ * sitting on disk for as long as the install exists. The server pushes them
+ * over the control API (`PUT /secrets`) before the registration that
+ * references them, and re-pushes after a pod replacement — which it can
+ * detect, because a replaced pod comes back with this map empty and says so
+ * (`GET /secrets/names`).
+ *
+ * Registrations themselves stay persistable: they carry the ref, never the
+ * value.
  */
-function readProxySecrets(): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(PROXY_SECRETS_FILE, 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return {}
-    const secrets = (parsed as Record<string, unknown>).secrets
-    if (!secrets || typeof secrets !== 'object') return {}
-    const out: Record<string, string> = {}
-    for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
-      if (typeof value === 'string' && value) out[key] = value
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
+const proxySecrets = new Map<string, string>()
 
 /**
  * Resolve registration-time injections into concrete value injections.
- * The secrets file is read lazily (once per call, only when a rule
- * actually carries a secretRef). Injections whose reference doesn't
- * resolve are dropped — never inject an empty or placeholder credential.
+ * Injections whose reference doesn't resolve are dropped — never inject an
+ * empty or placeholder credential.
  */
 function resolveRegisteredRules(rules: HostInjectionRule[]): InjectionRule[] {
-  let secrets: Record<string, string> | null = null
   const out: InjectionRule[] = []
   for (const rule of rules) {
     const injections: Injection[] = []
@@ -544,8 +538,7 @@ function resolveRegisteredRules(rules: HostInjectionRule[]): InjectionRule[] {
       }
       let value = inj.value
       if (typeof value !== 'string' && inj.secretRef) {
-        secrets ??= readProxySecrets()
-        const secret = secrets[inj.secretRef]
+        const secret = proxySecrets.get(inj.secretRef)
         if (secret !== undefined) value = (inj.prefix ?? '') + secret
       }
       if (typeof value !== 'string') {
@@ -783,7 +776,7 @@ interface GitAuthFailureRecord {
 // proxy pod reloads them at boot and self-heals without server help.
 // Registrations are safe to persist because injection rules carry
 // credential *references* (`secretRef`), never secret values — the values
-// live in the mounted credentials dir and are resolved at injection time.
+// are pushed separately, held in memory, and resolved at injection time.
 
 const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
 const GIT_AUTH_FAILURES_FILE = path.join(DATA_DIR, 'git-auth-failures.json')
@@ -901,7 +894,7 @@ function loadWorktrees(): void {
     if (!raw || typeof raw !== 'object') continue
     const s = raw as PersistedWorktree
     if (!Array.isArray(s.rules) || !Array.isArray(s.allowedHosts)) continue
-    worktreeRules.set(sid, s.rules)
+    worktreeRules.set(sid, scopeLegacySecretRefs(s.rules, s.projectSlug))
     worktreeAllowedHosts.set(sid, s.allowedHosts)
     if (s.repoUrl) worktreeRepoUrl.set(sid, s.repoUrl)
     worktreeTool.set(sid, s.tool)
@@ -2268,6 +2261,55 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     persistWorktrees()
     if (hadBlockedHosts) persistBlockedHosts()
     console.log(`[proxy] Removed worktree ${worktreeId.slice(0, 8)}... (found: ${deleted})`)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, deleted }))
+    return
+  }
+
+  // Secret values for the registrations' `secretRef` rules. Same posture as
+  // the ssh keys below: pushed by the server, held in memory, gone with the
+  // pod. `GET /secrets/names` is how the server notices a replacement lost
+  // them — it returns the keys, never the values.
+  if (req.method === 'PUT' && req.url === '/secrets') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    let body = ''
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    req.on('end', () => {
+      let parsed: { secrets?: unknown }
+      try {
+        parsed = JSON.parse(body) as typeof parsed
+      } catch {
+        res.writeHead(400); res.end('Invalid JSON'); return
+      }
+      if (!parsed.secrets || typeof parsed.secrets !== 'object' || Array.isArray(parsed.secrets)) {
+        res.writeHead(400); res.end('Need {secrets: {ref: value}}'); return
+      }
+      // Merge, not replace: each push carries one project's secrets and must
+      // not drop another project's. A value the server no longer has is
+      // removed by name through DELETE below.
+      let count = 0
+      for (const [ref, value] of Object.entries(parsed.secrets as Record<string, unknown>)) {
+        if (typeof value !== 'string' || value === '') continue
+        proxySecrets.set(ref, value)
+        count++
+      }
+      console.log(`[proxy] Stored ${count} secret value(s)`)
+      res.writeHead(200); res.end('ok')
+    })
+    return
+  }
+
+  if (req.method === 'GET' && req.url === '/secrets/names') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify([...proxySecrets.keys()]))
+    return
+  }
+
+  if (req.method === 'DELETE' && req.url?.startsWith('/secrets/')) {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    const ref = decodeURIComponent(req.url.slice('/secrets/'.length))
+    const deleted = proxySecrets.delete(ref)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
     return

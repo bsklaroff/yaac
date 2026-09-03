@@ -21,6 +21,8 @@
 export {
   buildHostSideGitSshCommand,
   gitEnvForCredential,
+  sweepSshKeyScratch,
+  withSshKeyFile,
   injectTokenIntoUrl,
   isGitAuthError,
   torEnv,

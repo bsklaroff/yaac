@@ -14,17 +14,24 @@ import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 import type * as hostModule from '#drivers/containerless/host'
 
 const mockRunHost = vi.hoisted(() => vi.fn())
+const mockRunHostWithInput = vi.hoisted(() => vi.fn())
 const mockOnPath = vi.hoisted(() => vi.fn())
+const mockSpawnSshAgent = vi.hoisted(() => vi.fn())
+const mockKillPids = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
+  runHostWithInput: mockRunHostWithInput,
   onPath: mockOnPath,
+  spawnSshAgent: mockSpawnSshAgent,
+  killPids: mockKillPids,
 }))
 import { launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
 const UUID = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
+const PRIVATE_KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n'
 let dataDir: string
 
 /** Every tmux invocation the launch made, as flat argv arrays. */
@@ -56,7 +63,18 @@ beforeEach(() => {
   setDataDir(dataDir)
   _resetRegistryForTests()
   mockRunHost.mockReset()
+  // '4242' answers both the tmux server pid probe and `ssh-add -L`; the
+  // agent case overrides the latter where the public key matters.
   mockRunHost.mockResolvedValue({ stdout: '4242', stderr: '' })
+  mockRunHost.mockImplementation((argv: string[]) =>
+    argv[0] === 'ssh-add' && argv[1] === '-L'
+      ? Promise.resolve({ stdout: 'ssh-ed25519 AAAAPUBLIC yaac\n', stderr: '' })
+      : Promise.resolve({ stdout: '4242', stderr: '' }))
+  mockRunHostWithInput.mockReset()
+  mockRunHostWithInput.mockResolvedValue({ stdout: '', stderr: '' })
+  mockSpawnSshAgent.mockReset()
+  mockSpawnSshAgent.mockResolvedValue(4242)
+  mockKillPids.mockReset()
   mockOnPath.mockReset()
   mockOnPath.mockResolvedValue(true)
   fs.mkdirSync(worktreeDir('demo', UUID), { recursive: true })
@@ -291,34 +309,81 @@ describe('launchWorkspace', () => {
     expect((await fsp.stat(creds)).mode & 0o777).toBe(0o600)
   })
 
-  it('points git at the registered key and host list for an SSH remote', async () => {
-    // A pod gets its identity from the proxy's forwarded ssh-agent; the key
-    // is a file on this host and the workspace is a process on it, so there
-    // is nothing to forward it over.
+  it('holds an SSH key in a per-worktree agent, never in the workspace', async () => {
+    // A pod gets its identity from the proxy's forwarded ssh-agent. There is
+    // no proxy here, so the workspace gets an agent of its own — and the key
+    // reaches it over stdin, so a stopped worktree (or one whose host
+    // rebooted before anyone pressed stop) leaves no usable private key on
+    // disk. What lands in the home is the public half.
     const knownHosts = path.join(dataDir, 'projects', 'demo', 'known_hosts')
     await launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKeyPath: '/home/ada/.ssh/id_ed25519' },
+      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
       ssh: { knownHostsFile: knownHosts },
     }))
 
+    // Piped in, never written: this is the whole point of the agent.
+    expect(mockRunHostWithInput).toHaveBeenCalledWith(
+      ['ssh-add', '-'], PRIVATE_KEY, expect.anything(),
+    )
+    const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const pub = path.join(home, '.ssh', 'id.pub')
+    expect(await fsp.readFile(pub, 'utf8')).toBe('ssh-ed25519 AAAAPUBLIC yaac\n')
+
     const env = mockRunHost.mock.calls
       .find((c) => (c[0] as string[]).includes('new-session'))?.[1] as { env: NodeJS.ProcessEnv }
+    expect(env.env.SSH_AUTH_SOCK).toContain('-ssh.sock')
     const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
-    expect(sshCmd).toContain('-i /home/ada/.ssh/id_ed25519')
+    // `-i` on the PUBLIC key under IdentitiesOnly is how ssh is pinned to
+    // this agent identity without the private half ever being on disk.
+    expect(sshCmd).toContain(`-i ${pub}`)
+    expect(sshCmd).toContain('IdentitiesOnly=yes')
     // Host verification is not weakened by having no sandbox: an unknown key
     // fails here exactly as it does in a pod.
     expect(sshCmd).toContain(`UserKnownHostsFile=${knownHosts}`)
     expect(sshCmd).toContain('StrictHostKeyChecking=yes')
-    // Nothing to store for a key-based remote.
-    await expect(fsp.stat(path.join(
-      dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home', '.git-credentials',
-    ))).rejects.toThrow()
+
+    // Nothing under the workspace's home holds the private key — not the
+    // credential store, and not a stray copy of the key itself.
+    for (const entry of await fsp.readdir(home, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      const body = await fsp.readFile(path.join(entry.parentPath, entry.name), 'utf8')
+      expect(body).not.toContain('PRIVATE KEY')
+    }
+  })
+
+  it('ends the agent a previous life left running before binding a new one', async () => {
+    // Unlinking the socket alone would leave that agent running and
+    // unreachable, still holding the key — the one thing the arrangement
+    // exists to prevent. A relaunch is ordinary: a retried create, a restart.
+    const sshSpec = (): WorkspaceSpec => spec({
+      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      ssh: { knownHostsFile: path.join(dataDir, 'projects', 'demo', 'known_hosts') },
+    })
+    await launchWorkspace(sshSpec())
+    mockSpawnSshAgent.mockResolvedValue(4343)
+    mockKillPids.mockClear()
+
+    await launchWorkspace(sshSpec())
+
+    expect(mockKillPids).toHaveBeenCalledWith([4242], 'SIGTERM')
+  })
+
+  it('records the agent pid so teardown can end the process holding the key', async () => {
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      ssh: { knownHostsFile: path.join(dataDir, 'projects', 'demo', 'known_hosts') },
+    }))
+
+    const marker = JSON.parse(await fsp.readFile(path.join(
+      dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json',
+    ), 'utf8')) as { sshAgentPid?: number }
+    expect(marker.sshAgentPid).toBe(4242)
   })
 
   it('refuses an SSH credential with no host list rather than skipping the check', async () => {
     // The degraded worktree would be one that verifies no host key at all.
     await expect(launchWorkspace(spec({
-      gitCredential: { kind: 'ssh', privateKeyPath: '/home/ada/.ssh/id_ed25519' },
+      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
     }))).rejects.toThrow(/known_hosts/)
   })
 

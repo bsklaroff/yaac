@@ -45,8 +45,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  *
  * One server + one mock-LLM/mock-Git pair serves the whole file, and one
  * "kitchen-sink" claude session carries every orthogonal per-session feature
- * (envPassthrough, cacheVolumes, initCommands, portForward, bindMounts,
- * node_modules redirect) so we don't pay a pod bring-up per
+ * (project env vars and proxied secrets, cacheVolumes, initCommands,
+ * portForward, node_modules redirect) so we don't pay a pod bring-up per
  * feature. This file replaces the former session-create-happy / -claude /
  * -codex / -opencode / -features, session-status, port-forward, the PTY half
  * of server-ws, and the hand-off half of session-provisioning.
@@ -213,8 +213,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }),
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
-      // Set once at server startup so the envPassthrough test can observe
-      // it without needing to restart the server. Harmless for other tests.
       YAAC_TEST_VAR: 'hello-from-host',
     }
     server = await spawnYaacServer(serverEnv)
@@ -424,18 +422,8 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
     let worktreeId = ''
     let forwarder: ReturnType<typeof startForwardCli> | null = null
     let projectPath = ''
-    let roDir = ''
-    let rwDir = ''
 
     beforeAll(async () => {
-      roDir = path.join(testEnv.scratchDir, 'ro-data')
-      rwDir = path.join(testEnv.scratchDir, 'rw-data')
-      for (const d of [roDir, rwDir]) {
-        await fs.mkdir(d, { recursive: true })
-      }
-      await fs.writeFile(path.join(roDir, 'readme.txt'), 'read-only content')
-      await fs.writeFile(path.join(rwDir, 'data.txt'), 'writable content')
-
       projectPath = await setupProject('kitchen', {
         // Real Node projects gitignore node_modules; seed the same so
         // `git status` stays clean once the bind mount is populated.
@@ -445,7 +433,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         // already there.
         files: { '.gitignore': 'node_modules\n', 'frontends/app.txt': 'app\n' },
         yaacConfig: {
-          envPassthrough: ['YAAC_TEST_VAR'],
           // Both shapes of ephemeral redirect at once: the root default and
           // a nested path whose target dir sits under a tracked one.
           ephemeralModulesPaths: ['node_modules', 'frontends/node_modules'],
@@ -458,12 +445,31 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
           // triggers a retry loop in session-create.
           initCommands: ['touch /tmp/init-ran && sleep 30'],
           portForward: PORT_FORWARD,
-          bindMounts: [
-            { hostPath: roDir, containerPath: '/mnt/ro-data', mode: 'ro' },
-            { hostPath: rwDir, containerPath: '/mnt/rw-data', mode: 'rw' },
-          ],
         },
       })
+
+      // The project's environment: rows, set over the API, because a row
+      // carries its own value — a client on another machine cannot write the
+      // SERVER's process environment, and under this driver that holds only
+      // what the Deployment states. A plain variable is placed in the
+      // workspace; a secret is not, and the egress proxy injects it in
+      // flight.
+      for (const body of [
+        { name: 'YAAC_TEST_VAR', value: 'hello-from-host' },
+        {
+          name: 'KITCHEN_SECRET',
+          value: 'the-real-secret',
+          secret: true,
+          rule: { hosts: ['api.github.com'], header: 'x-kitchen-key' },
+        },
+      ]) {
+        const res = await fetch(`${base}/project/kitchen/env`, {
+          method: 'PUT',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        expect(res.status).toBe(200)
+      }
 
       // Pre-seed claude-code's onboarding state so the first-run wizard is
       // skipped. These mount as /home/yaac/.claude.json and
@@ -571,9 +577,22 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       }
     }, 60_000)
 
-    it('passes envPassthrough vars to the container', async () => {
+    it('puts a plain project variable in the container', async () => {
       const { stdout } = await execInJob(jobName, ['env'])
       expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
+    }, 60_000)
+
+    it('keeps a proxied secret out of the container entirely', async () => {
+      // The sentinel is what the workspace holds; the proxy swaps in the real
+      // value on requests matching the rule, so the agent can spend the
+      // credential without ever being able to read it.
+      const { stdout } = await execInJob(jobName, ['env'])
+      expect(stdout).toContain('KITCHEN_SECRET=placeholder')
+      expect(stdout).not.toContain('the-real-secret')
+      const { stdout: grepped } = await execInJob(jobName, [
+        'sh', '-c', 'grep -rl the-real-secret /workspace /home/yaac 2>/dev/null || true',
+      ])
+      expect(grepped.trim()).toBe('')
     }, 60_000)
 
     it('mounts named cacheVolumes from config', async () => {
@@ -600,28 +619,6 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
         }
       }
       expect(ran).toBe(true)
-    }, 60_000)
-
-    it('mounts bindMounts read-only and read-write per config mode', async () => {
-      const { stdout: roContent } = await execInJob(jobName, [
-        'cat', '/mnt/ro-data/readme.txt',
-      ])
-      expect(roContent.trim()).toBe('read-only content')
-      await expect(execInJob(jobName, [
-        'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
-      ])).rejects.toThrow()
-
-      const { stdout: rwContent } = await execInJob(jobName, [
-        'cat', '/mnt/rw-data/data.txt',
-      ])
-      expect(rwContent.trim()).toBe('writable content')
-      await execInJob(jobName, [
-        'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
-      ])
-      const { stdout: newContent } = await execInJob(jobName, [
-        'cat', '/mnt/rw-data/new.txt',
-      ])
-      expect(newContent.trim()).toBe('new-data')
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {
@@ -1524,55 +1521,69 @@ describe('yaac worktree create suite (real CLI + real server + mocked remotes)',
       //   3. "Introducing GPT-5.4 … 1. Try new model, 2. Use existing model"
       //      — Down + Enter ("Use existing model") so the test isn't coupled
       //      to a specific default model name in the mock.
-      // Dialogs render synchronously after codex's startup HTTP probes, but
-      // we don't know which is on screen at a given moment, so watch the
-      // pane and dispatch until the chat-composer prompt appears.
-      let sawTrust = false
-      let sawUpgrade = false
-      let sawHooks = false
-      let inChat = false
+      // Codex greets a new session with modal prompts, and they do not all
+      // arrive before the chat UI does — the trust dialog can pop AFTER the
+      // composer has rendered. So the pane is watched and driven until the
+      // prompt is verifiably in the composer, rather than dispatched at once.
+      //
+      // The composer is recognised by its placeholder, never by the banner
+      // and never by a bare `\u203a`: codex paints its
+      // `>_ OpenAI Codex … YOLO mode` header before the first modal, and
+      // every dialog marks its selected option with `\u203a`. Either would
+      // match while a modal still owns the screen, and a prompt typed there
+      // is swallowed by the menu.
+      const DIALOGS = [
+        { name: 'trust', match: /Do you trust the contents of this directory/i, keys: ['Enter'] },
+        { name: 'hooks', match: /Hooks need review|Trust all and continue/i, keys: ['Down', 'Enter'] },
+        { name: 'upgrade', match: /Introducing GPT|Try new model|Use existing model/i, keys: ['Down', 'Enter'] },
+      ] as const
+      const seen = new Set<string>()
+      // One loop, not "dismiss dialogs" then "type": the trust dialog can
+      // appear AFTER the composer has already rendered, so no single moment
+      // is safely "ready". Dismiss whatever modal is on screen, type when
+      // the composer is up, and stop only once the characters have actually
+      // echoed — which is the one state that proves the prompt landed in
+      // the composer rather than being swallowed by a menu.
+      let typed = false
       let lastPane = ''
-      for (let i = 0; i < 60 && !inChat; i++) {
+      // Polls to wait after typing before assuming the text was eaten and
+      // re-typing; without it a slow render turns into "hello mockhello mock".
+      let cooldown = 0
+      for (let i = 0; i < 120 && !typed; i++) {
         lastPane = await capturePane()
-        if (/Do you trust the contents of this directory/i.test(lastPane)) {
-          if (!sawTrust) {
-            await send('Enter')
-            sawTrust = true
-          }
-        } else if (/Hooks need review|Trust all and continue/i.test(lastPane)) {
-          if (!sawHooks) {
-            await send('Down', 'Enter')
-            sawHooks = true
-          }
-        } else if (/Introducing GPT|Try new model|Use existing model/i.test(lastPane)) {
-          if (!sawUpgrade) {
-            await send('Down', 'Enter')
-            sawUpgrade = true
-          }
-        } else if (/OpenAI Codex|gpt-5|YOLO mode/i.test(lastPane)) {
-          inChat = true
-          break
+        if (lastPane.includes('hello mock')) { typed = true; break }
+        const dialog = DIALOGS.find((d) => d.match.test(lastPane))
+        if (dialog) {
+          seen.add(dialog.name)
+          await send(...dialog.keys)
+          // Anything typed before this modal went to the modal.
+          cooldown = 0
+        } else if (/Ask Codex to do anything/i.test(lastPane)) {
+          if (cooldown === 0) {
+            await send('hello mock')
+            cooldown = 6
+          } else cooldown--
         }
         await sleep(500)
       }
-      if (!inChat) {
-        console.error('chat composer never appeared (trust=' + sawTrust + ', hooks=' + sawHooks + ', upgrade=' + sawUpgrade + ')')
+      if (!typed) {
+        console.error('composer never echoed the prompt (dialogs seen: '
+          + (Array.from(seen).join(', ') || 'none') + ')')
         console.error('final pane:\n' + lastPane)
       }
-      expect(inChat).toBe(true)
-      // Let the chat UI fully render.
-      await sleep(1000)
-
-      await send('hello mock')
-      await sleep(500)
+      expect(typed).toBe(true)
       await send('Enter')
 
       // Poll for codex rendering the mock's response text in its pane.
+      // As in the claude case above, an Enter can still be swallowed while
+      // the UI settles, so re-send it periodically rather than making every
+      // run wait out a worst-case startup.
       let pane = ''
       let hitMockText = false
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 60; i++) {
         pane = await capturePane()
         if (pane.includes('Hello from mock')) { hitMockText = true; break }
+        if (i > 0 && i % 3 === 0) await send('Enter')
         await sleep(500)
       }
 

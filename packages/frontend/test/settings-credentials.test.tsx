@@ -7,6 +7,8 @@ import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 vi.mock('#lib/settingsApi', () => ({
   getDefaultTool: vi.fn().mockResolvedValue('claude'),
+  getGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
+  setGitIdentity: vi.fn().mockResolvedValue({ name: 'Ada', email: 'ada@example.com' }),
   getAuthList: vi.fn(),
   setDefaultTool: vi.fn().mockResolvedValue(undefined),
   addGitCredential: vi.fn().mockResolvedValue(undefined),

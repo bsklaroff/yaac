@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readJsonOrNull, writeJsonAtomic } from 'yaac-proxy-sidecar/state-files'
+import { readJsonOrNull, scopeLegacySecretRefs, writeJsonAtomic } from 'yaac-proxy-sidecar/state-files'
 
 let dir: string
 const current = (): string => path.join(dir, 'worktrees.json')
@@ -44,5 +44,33 @@ describe('readJsonOrNull', () => {
   it('returns null for a corrupt file rather than throwing', () => {
     fs.writeFileSync(current(), '{not json')
     expect(readJsonOrNull(current())).toBeNull()
+  })
+})
+
+describe('scopeLegacySecretRefs', () => {
+  const rule = (secretRef: string | undefined) => ({
+    hostPattern: 'api.example.com',
+    pathPattern: '/*',
+    injections: [{ action: 'set_header' as const, name: 'authorization', secretRef }],
+  })
+
+  it('scopes a bare ref to the registration’s own project', () => {
+    // A registration written before refs were scoped names one the server
+    // will never push again; its injections would stop resolving silently
+    // after this pod replaced the last one.
+    expect(scopeLegacySecretRefs([rule('MY_KEY')], 'demo')[0].injections[0].secretRef)
+      .toBe('demo/MY_KEY')
+  })
+
+  it('leaves an already-scoped ref alone', () => {
+    expect(scopeLegacySecretRefs([rule('other/MY_KEY')], 'demo')[0].injections[0].secretRef)
+      .toBe('other/MY_KEY')
+  })
+
+  it('leaves an injection with no ref, and a registration with no project, alone', () => {
+    expect(scopeLegacySecretRefs([rule(undefined)], 'demo')[0].injections[0].secretRef)
+      .toBeUndefined()
+    const rules = [rule('MY_KEY')]
+    expect(scopeLegacySecretRefs(rules, undefined)).toBe(rules)
   })
 })

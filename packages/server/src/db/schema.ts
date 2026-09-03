@@ -1,4 +1,4 @@
-import { boolean, integer, primaryKey, snakeCase, text, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's on-disk PGlite database — the home for
@@ -299,3 +299,73 @@ export const tokens = snakeCase.table('tokens', {
   createdAt: text().notNull(),
   expiresAt: text(),
 })
+
+/**
+ * A project's environment: the variables every worktree of it launches with,
+ * and the secrets the egress proxy injects on its behalf.
+ *
+ * Rows rather than config keys because a value has to arrive over the same
+ * authenticated API as everything else: a client may have no shell on the
+ * server's machine, and under `k8s` that machine is a pod whose environment
+ * holds only what its Deployment states (docs/remote-hosting.md).
+ *
+ * A uuid key rather than the (project, name) pair, so a row keeps its
+ * identity when it is renamed; the pair is a unique index, which is what the
+ * upsert conflicts on.
+ *
+ * `value` and `sealedValue` are exclusive: a plain variable stores its value
+ * as it is, and a secret stores it encrypted (better-auth's cipher, keyed by
+ * `secret-key.ts`) because a secret at rest in a readable column is a secret
+ * the database backup publishes. Which one is set follows `secret`, and the store is the only
+ * code that sees either — everything above it is handed plaintext or, for a
+ * secret it must not learn, nothing at all.
+ */
+export const projectEnvVars = snakeCase.table('project_env_vars', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectSlug: text().notNull(),
+  name: text().notNull(),
+  /** Plain variables only; null for a secret. */
+  value: text(),
+  /** Secrets only; null for a plain variable. Sealed, never the raw value. */
+  sealedValue: text(),
+  /**
+   * Whether the workspace is given the value or a sentinel. With mediated
+   * egress a secret's value never enters the workspace at all: the proxy
+   * swaps the sentinel for it in flight, per `rule`. Without one (the
+   * containerless driver has no proxy) the value itself goes in, because a
+   * sentinel would be what the tool actually sent.
+   */
+  secret: boolean().notNull().default(false),
+  /** `SecretProxyRule` — which hosts, path and header/body param the proxy
+   *  injects into. Required for a secret; null for a plain variable. */
+  rule: jsonb(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.projectSlug, t.name)])
+
+/**
+ * The SSH keys yaac authenticates git with, one row per repo pattern.
+ *
+ * The key material lives here, sealed like any other secret, and is handed
+ * to whatever needs it: the egress proxy's in-memory ssh-agent, a
+ * per-worktree agent under the containerless driver, or a short-lived file
+ * for a host-side `git` invocation. A row rather than a path into the user's
+ * home, because the SERVER is what opens it — and a path only resolves when
+ * the server runs on that same machine.
+ *
+ * HTTPS credentials stay in `.credentials/github.json` for now: the proxy
+ * pod reads that file off its mount and writes refreshed OAuth bundles back
+ * to it, so moving them needs a push channel this table does not.
+ */
+export const gitSshKeys = snakeCase.table('git_ssh_keys', {
+  id: uuid().primaryKey().defaultRandom(),
+  /** `<host>/*`, `<host>/<path>` or `<host>/<prefix>/*`, as the https
+   *  entries use — `resolveCredentialForUrl` matches both the same way. */
+  pattern: text().notNull(),
+  /** The private key PEM, sealed. Opened only to hand the bytes to an
+   *  ssh-agent or a temporary file, never to store them anywhere else. */
+  sealedPrivateKey: text().notNull(),
+  /** One OpenSSH known_hosts line: '<host>[:port] <keytype> <base64>'. */
+  knownHostsEntry: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.pattern)])

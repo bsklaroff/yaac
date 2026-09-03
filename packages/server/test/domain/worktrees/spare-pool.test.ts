@@ -26,11 +26,11 @@ describe('buildRebranchPrep', () => {
       sha: 'abc123',
       config: {
         ephemeralModulesPaths: ['packages/web/node_modules'],
-        cacheVolumes: { pip: '/workspace/.pip-cache', home: '/home/yaac/.cache/x' },
-        bindMounts: [
-          { hostPath: '/data', containerPath: '/workspace/data', mode: 'ro' },
-          { hostPath: '/models', containerPath: '/mnt/models', mode: 'rw' },
-        ],
+        cacheVolumes: {
+          pip: '/workspace/.pip-cache',
+          data: '/workspace/data',
+          home: '/home/yaac/.cache/x',
+        },
       },
       worktreeId: 's1',
       respawnTool: null, paths: PATHS,
@@ -39,7 +39,6 @@ describe('buildRebranchPrep', () => {
     expect(prep.resetExec).toContain(" -e '.pip-cache'")
     expect(prep.resetExec).toContain(" -e 'data'")
     // Mounts outside /workspace are unreachable by the clean — not excluded.
-    expect(prep.resetExec).not.toContain('models')
     expect(prep.resetExec).not.toContain('.cache/x')
   })
 

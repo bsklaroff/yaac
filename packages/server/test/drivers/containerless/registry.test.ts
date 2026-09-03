@@ -14,6 +14,8 @@ import {
   listWorkspaces,
   readMarkers,
   rememberWorkspace,
+  restoreWorkspace,
+  sshAgentPidOf,
   writeMarker,
   type WorkspaceMarker,
 } from '#drivers/containerless/registry'
@@ -158,5 +160,26 @@ describe('writeMarker', () => {
     await writeMarker(marker(A, { tmuxPid: 4242, declaredTool: 'codex' }))
     const raw = JSON.parse(await fsp.readFile(markerPath('demo', A), 'utf8')) as WorkspaceMarker
     expect(raw).toMatchObject({ worktreeId: A, tmuxPid: 4242, declaredTool: 'codex' })
+  })
+})
+
+describe('sshAgentPidOf', () => {
+  it('answers for a live workspace and for one recovered after a restart', async () => {
+    // Teardown reads this to end the process holding the worktree's ssh key,
+    // so it has to answer for a workspace this server did not launch — a
+    // restart repopulates the same entries from the markers on disk.
+    rememberWorkspace(marker(A, { sshAgentPid: 777 }))
+    expect(sshAgentPidOf(A)).toBe(777)
+
+    _resetRegistryForTests()
+    await writeMarker(marker(A, { sshAgentPid: 777 }))
+    for (const m of await readMarkers()) restoreWorkspace(m, true, { reason: 'pod-stopped' })
+    expect(sshAgentPidOf(A)).toBe(777)
+  })
+
+  it('is undefined for a project with no SSH remote, and for an unknown id', () => {
+    rememberWorkspace(marker(A))
+    expect(sshAgentPidOf(A)).toBeUndefined()
+    expect(sshAgentPidOf('nobody')).toBeUndefined()
   })
 })

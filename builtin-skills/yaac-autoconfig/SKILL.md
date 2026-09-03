@@ -174,11 +174,7 @@ Every option is optional. Include only what the project needs.
 | `initCommands` | `string[]` \| `{name, commands[], hidePane?}[]` | Commands run in every session after the container starts. String form: chained with `&&` in one `init` tmux window. Object form: one window per entry (parallel), `name` must not be a reserved window name (`claude`/`codex`/`opencode`/`pi`/`init`/`yaac`). |
 | `portForward` | `{containerPort, hostPortStart}[]` | Forward an in-container port to the host. `hostPortStart` is the preferred host port; yaac scans upward if it's busy. |
 | `hideInitPane` | `boolean` (default `false`) | When `true`, close the init tmux pane after commands finish/error instead of keeping it (with `remain-on-exit`) for inspection. Per-window override via each object entry's `hidePane`. |
-| `env` | `Record<string,string>` | Literal env vars baked into the container at create. **Not** expanded — `"$HOME"` stays the literal string. Applied after `envPassthrough` (wins on name clashes). |
-| `envPassthrough` | `string[]` | Names of host env vars to copy into the container as-is. |
-| `envSecretProxy` | `Record<string, {hosts[], header?, prefix?, bodyParam?, path?}>` | Inject a secret into outbound HTTPS via the MITM proxy so the value never enters the container. Each rule needs `hosts`; supply **either** `header` (default `authorization`, auto-prefixed `Bearer ` unless `prefix` overrides) **or** `bodyParam` (form/JSON body key), not both; optional `path` glob (default `/*`). GitHub auth is handled automatically — don't add a token here for it. |
 | `cacheVolumes` | `Record<string,string>` | Per-project persistent caches that survive across sessions. Key = cache name, value = absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
-| `bindMounts` | `{hostPath, containerPath, mode}[]` | Mount host dirs into the container. `hostPath` absolute (`$HOME`/`${HOME}` expanded), `containerPath` absolute, `mode` `"ro"`\|`"rw"`. |
 | `addAllowedUrls` | `string[]` | Extra host patterns to allow past the egress proxy, on top of the default allowlist. Exact (`api.example.com`) or wildcard (`*.example.com`). Mutually exclusive with `setAllowedUrls`. |
 | `setAllowedUrls` | `string[]` | **Replace** the default allowlist entirely. `["*"]` allows all (disables filtering); `[]` blocks all egress. Warns if it omits `api.anthropic.com`/`github.com`. Mutually exclusive with `addAllowedUrls`. |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
@@ -197,5 +193,13 @@ Every option is optional. Include only what the project needs.
 - **Bind matters only for non-loopback servers.** The relay dials `localhost`
   inside the pod, so `127.0.0.1`/`::1`/`0.0.0.0` are all fine; a private-only
   bind needs `--host 0.0.0.0`.
-- **`env` values are literal** — for host-derived values use `envPassthrough`.
+- **Environment variables are not in this file.** They are stored with the
+  project and edited in the web app under Settings → Project Config →
+  Environment (a secret there is encrypted, and under the k8s driver its value
+  is injected by the egress proxy rather than placed in the container). If the
+  project needs any, say which in your summary rather than writing a config key
+  for them — there is none.
+- **There is no way to mount a host directory.** Use `cacheVolumes` for a
+  directory that should persist across sessions, or bake the contents into the
+  project image.
 - **docker-compose projects need `nestedContainers: true`**.

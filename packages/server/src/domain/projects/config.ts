@@ -4,7 +4,7 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'referenceBranch'])
+const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'referenceBranch'])
 
 /**
  * Keys yaac used to honor, mapped to what to tell the author now. A
@@ -12,7 +12,33 @@ const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVol
  * reads like a typo, and would leave someone whose worktrees silently
  * stopped getting a feature with nothing to search for.
  */
+const ENV_SETTINGS_HINT =
+  'Set it under Settings → Project Config → Environment (or `yaac config edit` no '
+  + 'longer carries it), where the value is stored with the server instead of '
+  + "being read from the server host's own environment."
+
 const RETIRED_KEYS: Record<string, (obj: Record<string, unknown>) => string> = {
+  // The three env keys named variables whose VALUES the server read out of
+  // its own process environment. That only ever worked for someone with a
+  // shell on the server's machine, and not even then under `k8s`, where the
+  // server is a pod holding only what its Deployment states. The startup
+  // importer moves what it can find into rows; this says where the rest
+  // went, for a config someone edits afterwards.
+  env: () => 'yaac-config.json: "env" is no longer supported — a project\'s '
+    + `environment variables are stored with the project now. ${ENV_SETTINGS_HINT}`,
+  envPassthrough: () => 'yaac-config.json: "envPassthrough" is no longer supported — '
+    + "a worktree's environment no longer comes from the server host's shell. "
+    + `${ENV_SETTINGS_HINT}`,
+  envSecretProxy: () => 'yaac-config.json: "envSecretProxy" is no longer supported — '
+    + 'proxied secrets are stored with the project, encrypted, and their injection '
+    + `rules with them. ${ENV_SETTINGS_HINT}`,
+  // No replacement, deliberately: the key named a path on the server's
+  // filesystem, which a client on another machine can neither browse nor
+  // create. `cacheVolumes` covers the case it was mostly used for.
+  bindMounts: () => 'yaac-config.json: "bindMounts" is no longer supported — a host '
+    + 'path is not something a client of a remote server can name. Use '
+    + '"cacheVolumes" for a directory that should persist across worktrees, or '
+    + 'bake the contents into the project image (Settings → Docker).',
   virtualCluster: (obj) => {
     const head = 'yaac-config.json: "virtualCluster" is no longer supported — '
       + 'per-worktree virtual clusters were removed. '
@@ -163,19 +189,6 @@ export function parseReferenceBranch(raw: unknown): string {
   return raw
 }
 
-/** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
-export function expandEnvVars(s: string): string {
-  return s.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, plain) => {
-    const name = (braced ?? plain) as string
-    // eslint-disable-next-line no-process-env -- user-driven $VAR expansion; name comes from the config string, not a fixed yaac var
-    const value = process.env[name]
-    if (value === undefined) {
-      throw new Error(`environment variable "${name}" is not set`)
-    }
-    return value
-  })
-}
-
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -194,58 +207,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
   }
 
   const config: YaacConfig = {}
-
-  if (obj.envPassthrough !== undefined) {
-    if (!Array.isArray(obj.envPassthrough) || !obj.envPassthrough.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: envPassthrough must be a string array')
-    }
-    config.envPassthrough = obj.envPassthrough
-  }
-
-  if (obj.env !== undefined) {
-    if (typeof obj.env !== 'object' || obj.env === null || Array.isArray(obj.env)) {
-      throw new Error('yaac-config.json: env must be an object of string values')
-    }
-    const envObj = obj.env as Record<string, unknown>
-    for (const [key, val] of Object.entries(envObj)) {
-      if (typeof val !== 'string') {
-        throw new Error(`yaac-config.json: env.${key} must be a string`)
-      }
-    }
-    config.env = envObj as Record<string, string>
-  }
-
-  if (obj.envSecretProxy !== undefined) {
-    if (typeof obj.envSecretProxy !== 'object' || obj.envSecretProxy === null || Array.isArray(obj.envSecretProxy)) {
-      throw new Error('yaac-config.json: envSecretProxy must be an object')
-    }
-    const proxy = obj.envSecretProxy as Record<string, unknown>
-    for (const [key, val] of Object.entries(proxy)) {
-      if (typeof val !== 'object' || val === null || Array.isArray(val)) {
-        throw new Error(`yaac-config.json: envSecretProxy.${key} must be an object with hosts, and either header or bodyParam`)
-      }
-      const rule = val as Record<string, unknown>
-      if (!Array.isArray(rule.hosts) || !rule.hosts.every((v) => typeof v === 'string') || rule.hosts.length === 0) {
-        throw new Error(`yaac-config.json: envSecretProxy.${key}.hosts must be a non-empty string array`)
-      }
-      if (rule.path !== undefined && typeof rule.path !== 'string') {
-        throw new Error(`yaac-config.json: envSecretProxy.${key}.path must be a string`)
-      }
-      if (rule.header !== undefined && typeof rule.header !== 'string') {
-        throw new Error(`yaac-config.json: envSecretProxy.${key}.header must be a string`)
-      }
-      if (rule.prefix !== undefined && typeof rule.prefix !== 'string') {
-        throw new Error(`yaac-config.json: envSecretProxy.${key}.prefix must be a string`)
-      }
-      if (rule.bodyParam !== undefined && typeof rule.bodyParam !== 'string') {
-        throw new Error(`yaac-config.json: envSecretProxy.${key}.bodyParam must be a string`)
-      }
-      if (rule.header && rule.bodyParam) {
-        throw new Error(`yaac-config.json: envSecretProxy.${key} cannot have both header and bodyParam`)
-      }
-    }
-    config.envSecretProxy = proxy as YaacConfig['envSecretProxy']
-  }
 
   if (obj.cacheVolumes !== undefined) {
     if (typeof obj.cacheVolumes !== 'object' || obj.cacheVolumes === null || Array.isArray(obj.cacheVolumes)) {
@@ -291,42 +252,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
         throw new Error(`yaac-config.json: portForward[${i}].hostPortStart must be an integer between 1 and 65535`)
       }
       config.portForward.push({ containerPort: entry.containerPort, hostPortStart: entry.hostPortStart })
-    }
-  }
-
-  if (obj.bindMounts !== undefined) {
-    if (!Array.isArray(obj.bindMounts)) {
-      throw new Error('yaac-config.json: bindMounts must be an array of {hostPath, containerPath, mode} objects')
-    }
-    config.bindMounts = []
-    for (let i = 0; i < obj.bindMounts.length; i++) {
-      const entry = obj.bindMounts[i] as Record<string, unknown>
-      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        throw new Error(`yaac-config.json: bindMounts[${i}] must be an object with hostPath and containerPath`)
-      }
-      if (typeof entry.hostPath !== 'string' || entry.hostPath.length === 0) {
-        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath must be an absolute path`)
-      }
-      let resolvedHostPath: string
-      try {
-        resolvedHostPath = expandEnvVars(entry.hostPath)
-      } catch (err) {
-        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath: ${(err as Error).message}`)
-      }
-      if (!resolvedHostPath.startsWith('/')) {
-        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath must be an absolute path (after expanding env vars: "${resolvedHostPath}")`)
-      }
-      if (typeof entry.containerPath !== 'string' || !entry.containerPath.startsWith('/')) {
-        throw new Error(`yaac-config.json: bindMounts[${i}].containerPath must be an absolute path`)
-      }
-      if (entry.mode !== 'ro' && entry.mode !== 'rw') {
-        throw new Error(`yaac-config.json: bindMounts[${i}].mode must be "ro" or "rw"`)
-      }
-      config.bindMounts.push({
-        hostPath: resolvedHostPath,
-        containerPath: entry.containerPath,
-        mode: entry.mode,
-      })
     }
   }
 

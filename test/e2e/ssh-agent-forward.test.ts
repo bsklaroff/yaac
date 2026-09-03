@@ -66,7 +66,7 @@ let proxyHost = ''
 let fingerprint = ''
 
 /** A client keypair plus the host key that becomes SSH_HOST's known_hosts. */
-async function makeTestKey(dir: string): Promise<{ keyPath: string; fingerprint: string; knownHostsEntry: string }> {
+async function makeTestKey(dir: string): Promise<{ privateKey: string; fingerprint: string; knownHostsEntry: string }> {
   const keyPath = path.join(dir, 'id')
   const hostKeyPath = path.join(dir, 'hostkey')
   await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-q'])
@@ -75,7 +75,8 @@ async function makeTestKey(dir: string): Promise<{ keyPath: string; fingerprint:
   const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
   const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
   return {
-    keyPath,
+    // The key itself: what the server holds sealed, and what it uploads.
+    privateKey: await fs.readFile(keyPath, 'utf8'),
     fingerprint: stdout.trim().split(/\s+/)[1],
     knownHostsEntry: `${SSH_HOST} ${keyType} ${keyBlob}`,
   }
@@ -223,7 +224,7 @@ beforeAll(async () => {
   const key = await makeTestKey(keyDir)
   fingerprint = key.fingerprint
   await client.clearSshKeys()
-  await client.uploadSshKey(SSH_HOST, key.keyPath, key.knownHostsEntry)
+  await client.uploadSshKey(SSH_HOST, key.privateKey, key.knownHostsEntry)
 
   // The entitlement the proxy gates on is the session's registered remote:
   // an SSH one is exactly when session-create provisions SSH_AUTH_SOCK.

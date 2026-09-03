@@ -48,7 +48,7 @@ describe('getProjectDetail', () => {
     await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(
       path.join(projectConfigDir('foo'), 'yaac-config.json'),
-      JSON.stringify({ envPassthrough: ['B'] }),
+      JSON.stringify({ initCommands: ['pnpm build'] }),
     )
     count.mockResolvedValue(2)
 
@@ -57,7 +57,7 @@ describe('getProjectDetail', () => {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
       worktreeCount: 2,
-      config: { envPassthrough: ['B'] },
+      config: { initCommands: ['pnpm build'] },
     })
     expect(count).toHaveBeenCalledWith('foo')
   })
@@ -87,10 +87,10 @@ describe('resolveProjectConfigWithSource', () => {
     await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(
       path.join(projectConfigDir('foo'), 'yaac-config.json'),
-      JSON.stringify({ envPassthrough: ['B'] }),
+      JSON.stringify({ initCommands: ['pnpm build'] }),
     )
     const result = await resolveProjectConfigWithSource('foo')
-    expect(result.config).toEqual({ envPassthrough: ['B'] })
+    expect(result.config).toEqual({ initCommands: ['pnpm build'] })
   })
 
   it('ignores yaac-config.json checked into the cloned repo', async () => {

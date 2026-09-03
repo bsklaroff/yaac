@@ -6,11 +6,14 @@ import {
   assertProjectExists,
   getProjectBranches,
   getProjectDetail,
+  listProjectEnv,
   listProjects,
   readProjectConfigRaw,
   readProjectDockerfile,
   removeProjectConfig,
+  removeProjectEnvVar,
   resolveProjectConfigWithSource,
+  setProjectEnvVar,
   setProjectReferenceBranch,
   writeProjectConfig,
   writeProjectDockerfile,
@@ -23,6 +26,35 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { requireDriverFeature } from '#http'
+import { worktreeDriver } from '#drivers/driver'
+
+/**
+ * Deliver a project's changed secrets to whatever is running now.
+ *
+ * A live worktree resolves an injection per request, so an edit reaches it
+ * without a restart — but only if the runtime is told. A failure here is
+ * reported rather than swallowed, and the message says what DID happen,
+ * because the two halves diverge: the row is written either way, so a caller
+ * told nothing would read a failed delete as "the credential is gone" while
+ * the egress path went on injecting it.
+ *
+ * The reconcile step heals this on its own tick; what the caller needs is to
+ * know it has not happened yet.
+ */
+async function syncRunningWorktrees(slug: string, applied: string): Promise<void> {
+  try {
+    await worktreeDriver().syncProxySecrets(slug)
+  } catch (err) {
+    throw new ServerError(
+      'RUNTIME_UNAVAILABLE',
+      `${applied}, but the egress proxy could not be updated, so worktrees `
+      + 'running right now still use the previous value: '
+      + `${err instanceof Error ? err.message : String(err)}. `
+      + 'New worktrees are unaffected, and running ones catch up when the '
+      + 'proxy is reachable again.',
+    )
+  }
+}
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -62,6 +94,33 @@ export const projectApp = new Hono()
   )
   .delete('/:slug/config', async (c) => {
     await removeProjectConfig(c.req.param('slug'))
+    return c.body(null, 204)
+  })
+  // The project's environment: the variables its worktrees launch with, and
+  // the secrets the egress proxy injects. A secret's value is write-only —
+  // it goes in through the PUT and never comes back out of the GET.
+  .get('/:slug/env', async (c) => c.json({ vars: await listProjectEnv(c.req.param('slug')) }))
+  .put(
+    '/:slug/env',
+    zv('json', z.object({
+      name: z.string().min(1),
+      // Optional so a secret's rule can be edited without the secret
+      // travelling again; the domain refuses it for a secret that has none.
+      value: z.string().optional(),
+      secret: z.boolean().optional(),
+      rule: z.unknown().optional(),
+    })),
+    async (c) => {
+      const slug = c.req.param('slug')
+      const saved = await setProjectEnvVar(slug, c.req.valid('json'))
+      await syncRunningWorktrees(slug, `${saved.name} was saved`)
+      return c.json({ var: saved })
+    },
+  )
+  .delete('/:slug/env/:id', async (c) => {
+    const slug = c.req.param('slug')
+    await removeProjectEnvVar(slug, c.req.param('id'))
+    await syncRunningWorktrees(slug, 'the variable was removed')
     return c.body(null, 204)
   })
   // Branch data for the new-worktree picker: local remote-tracking refs

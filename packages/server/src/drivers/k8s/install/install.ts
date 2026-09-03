@@ -42,7 +42,6 @@ import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
-import { getGitUserConfig } from '@yaac/shared/git'
 
 /**
  * `yaac cluster install` — ONE idempotent verb that converges this machine
@@ -228,7 +227,6 @@ export interface ClusterInstallDeps {
   deployServer: typeof deployServerWorkload
   /** The host's global git identity, `null` when unconfigured. Injectable
    *  so unit tests are not judged by the machine's git config. */
-  gitUser: () => Promise<{ name: string; email: string } | null>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -304,7 +302,6 @@ function defaultDeps(): ClusterInstallDeps {
     ensureGvisorRuntime: () => ensureGvisorRuntime(),
     ensurePriorityClasses,
     deployServer: deployServerWorkload,
-    gitUser: getGitUserConfig,
     check: () => runClusterCheck(),
     platform: process.platform,
     homedir: () => os.homedir(),
@@ -1097,20 +1094,7 @@ async function deployServer(deps: ClusterInstallDeps): Promise<void> {
       + "instead — a pod's loopback is its own.",
     )
   }
-  // The pod cannot read a git config off the host, so the identity worktrees
-  // created from the webapp commit under has to be resolved here and stated
-  // in the Deployment. Missing is not fatal — every other install step, and
-  // CLI-created worktrees (which send their own identity), work without it.
-  const gitUser = await deps.gitUser() ?? undefined
-  if (!gitUser) {
-    deps.log(
-      'note: no global git user.name / user.email on this machine, so the '
-      + 'server pod gets no git identity and creating a worktree from the '
-      + 'webapp will fail. Set them (`git config --global user.name ...`) and '
-      + 're-run `yaac cluster install`.',
-    )
-  }
-  const origin = await deps.deployServer({ torHostAddr, gitUser, log: deps.log })
+  const origin = await deps.deployServer({ torHostAddr, log: deps.log })
   deps.log(`The yaac server is serving at ${origin}`)
 }
 

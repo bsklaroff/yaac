@@ -104,6 +104,10 @@ export function createContainerlessDriver(): WorktreeDriver {
     allGitAuthFailures: () => Promise.resolve({}),
     allowHost: () => Promise.resolve(),
     syncSshIdentities: () => Promise.resolve(),
+    // No proxy to hold them: a workspace here is handed its secrets' values
+    // in its own environment at launch, so a change reaches it the next time
+    // it is created rather than through a live update.
+    syncProxySecrets: () => Promise.resolve(),
 
     // A workspace binds host ports itself, so what it is listening on is
     // already reachable and the mapping is the identity. Nothing is left to

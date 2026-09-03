@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
 import { preferences, shortcutOverrides } from '#db/schema'
-import { DEFAULT_TOOL_KEY, clearShortcutOverrides, getDefaultTool, getShortcutOverrides, isSerializedChord, isValidTool, setDefaultToolChecked, setShortcutOverride } from '#db'
+import { DEFAULT_TOOL_KEY, clearShortcutOverrides, getDefaultTool, getGitIdentity, getShortcutOverrides, isSerializedChord, isValidTool, setDefaultToolChecked, setGitIdentity, setShortcutOverride } from '#db'
 // Shape of a stored chord, for building fixtures. Not under test here.
 import type { SerializedChord } from '#db/preferences'
 import { ServerError } from '@yaac/shared/errors'
@@ -131,5 +131,39 @@ describe('clearShortcutOverrides', () => {
   it('is a no-op when none are set', async () => {
     await clearShortcutOverrides()
     expect(await getShortcutOverrides()).toEqual({})
+  })
+})
+
+describe('getGitIdentity', () => {
+  it('is null until both halves are set', async () => {
+    // Committing as a name with no email is not a lesser identity — git
+    // refuses it — so a half-written pair must read as none at all.
+    expect(await getGitIdentity()).toBeNull()
+
+    const db = await getDb()
+    await db.insert(preferences).values({ key: 'git_user_name', value: 'Ada' })
+    expect(await getGitIdentity()).toBeNull()
+  })
+
+  it('trims, and treats whitespace as unset', async () => {
+    const db = await getDb()
+    await db.insert(preferences).values([
+      { key: 'git_user_name', value: '  Ada Lovelace  ' },
+      { key: 'git_user_email', value: '  ada@example.com  ' },
+    ])
+    expect(await getGitIdentity()).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+
+    await db.update(preferences).set({ value: '   ' })
+    expect(await getGitIdentity()).toBeNull()
+  })
+})
+
+describe('setGitIdentity', () => {
+  it('round-trips, and replaces rather than accumulating', async () => {
+    await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
+    expect(await getGitIdentity()).toEqual({ name: 'Ada', email: 'ada@example.com' })
+
+    await setGitIdentity({ name: 'Grace', email: 'grace@example.com' })
+    expect(await getGitIdentity()).toEqual({ name: 'Grace', email: 'grace@example.com' })
   })
 })

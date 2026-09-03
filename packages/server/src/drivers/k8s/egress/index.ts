@@ -15,11 +15,13 @@
 // builder and the redirect parser stay internal so a caller cannot assemble
 // a half-registration of its own.
 //
-// Secrets travel in one direction only: a registration names them, and the
-// values arrive already resolved (`writeProxySecrets`) because where a
-// secret comes from is never the runtime's question. SSH identities are the
-// same question read the other way round, which is why the reader for those
-// is composed in (`configureProxyCredentials`) rather than imported.
+// Secrets travel in one direction only: a registration names them and
+// carries their injection rules, and the values arrive already resolved
+// (`pushProxySecrets`) because where a secret comes from is never the
+// runtime's question. Neither the values nor the ssh keys ever reach the
+// proxy's filesystem — both are pushed into its memory, which is why both
+// need a reader composed in (`configureProxyCredentials`) to restore them
+// after a pod replacement.
 //
 // Adding a name here widens the interface and obliges a unit test in
 // packages/server/test/features/egress/.
@@ -37,7 +39,7 @@ export { PROXY_CHANGE_SOURCES, ProxyEventStream, type ProxyChangeSource } from '
 export { reconcileProxySshKeys } from './proxy-reconcile'
 export { workspaceSshTransport } from './ssh-transport'
 export { buildWorktreeRegistration, registerWorkspace } from './proxy-registration'
-export { writeProxySecrets } from './proxy-secrets'
+export { pushProxySecrets, syncProjectProxySecrets } from './proxy-secrets'
 export {
   configureProxyCredentials,
   type ProxyCredentialSources,

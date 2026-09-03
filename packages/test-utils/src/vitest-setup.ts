@@ -40,15 +40,22 @@ delete process.env.GIT_WORK_TREE
 // the credential gate, so leaving it to e2e would leave the posture under
 // test depending on where the suite runs.
 //
-// YAAC_SERVER_GIT_NAME / YAAC_SERVER_GIT_EMAIL join the set because they are
-// a rung of the identity chain a worktree commits under: exported in the
-// ambient shell — the natural move for anyone debugging that very feature —
-// they turn the absent-identity cases green-to-red, since `vi.unstubAllEnvs`
-// restores an inherited value rather than clearing it. A test that wants the
-// pair stubs it per-case.
+// YAAC_SERVER_GIT_NAME / YAAC_SERVER_GIT_EMAIL join the set because a server
+// start still adopts them into the git-identity setting when it has none
+// (docs/legacy-compat-shims.md): exported in the ambient shell — the natural
+// move for anyone debugging that very feature — they would give a server an
+// identity the test meant it not to have, since `vi.unstubAllEnvs` restores
+// an inherited value rather than clearing it. A test that wants the pair
+// stubs it per-case.
+//
+// YAAC_SECRET / YAAC_SECRETS for the same reason one step further in: they
+// decide which key stored secrets are sealed under, so an exported one would
+// change what a store test finds in the column while every assertion about
+// the value still passed.
 for (const key of [
   'YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS', 'YAAC_REQUIRE_AUTH', 'YAAC_FORWARD_BIND',
   'YAAC_WORKTREE_ID', 'YAAC_SERVER_GIT_NAME', 'YAAC_SERVER_GIT_EMAIL',
+  'YAAC_SECRET', 'YAAC_SECRETS',
 ] as const) {
   delete process.env[key]
 }

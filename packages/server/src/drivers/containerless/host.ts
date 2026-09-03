@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { access as fsAccess } from 'node:fs/promises'
 import { WorkspaceExecError } from '#drivers/contract'
 
 /**
@@ -83,6 +84,118 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
       ))
     })
   })
+}
+
+/**
+ * Run a command with something on its stdin, and collect its output.
+ *
+ * The one caller is `ssh-add -`, and the reason it exists is the reason that
+ * caller does: a private key handed over a pipe never becomes a file, so
+ * there is nothing on disk to forget to delete.
+ */
+export function runHostWithInput(
+  argv: string[],
+  input: string,
+  opts: RunOpts = {},
+): Promise<RunResult> {
+  const [cmd, ...args] = argv
+  if (cmd === undefined) return Promise.reject(new Error('runHostWithInput: empty argv'))
+  return new Promise<RunResult>((resolve, reject) => {
+    let child: ChildProcess
+    try {
+      child = spawn(cmd, args, {
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.env !== undefined ? { env: opts.env } : {}),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)))
+      return
+    }
+    let stdout = ''
+    let stderr = ''
+    let timer: NodeJS.Timeout | undefined
+    if (opts.timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(`${cmd} timed out after ${String(opts.timeoutMs)}ms`))
+      }, opts.timeoutMs)
+    }
+    child.stdout?.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
+    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer)
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+      reject(new WorkspaceExecError(
+        `${cmd} exited ${String(code)}: ${stderr.trim()}`,
+        code ?? 1,
+        stdout,
+        stderr,
+      ))
+    })
+    child.stdin?.end(input)
+  })
+}
+
+/**
+ * Start an ssh-agent bound to `sock`, detached, and answer with its pid.
+ *
+ * `-D` keeps it in the foreground of its own process so the pid we get is
+ * the agent itself rather than a parent that forked and exited — which is
+ * what makes the pid recorded in the workspace marker the one teardown can
+ * signal. Detached and `unref`ed for the same reason the tmux server is: it
+ * belongs to the worktree, not to the server that created it, and must
+ * survive a server restart.
+ *
+ * Resolves once the socket exists, so the `ssh-add` that follows cannot race
+ * the bind.
+ */
+export async function spawnSshAgent(sock: string): Promise<number> {
+  const child = spawn('ssh-agent', ['-D', '-a', sock], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  child.unref()
+  // Attached BEFORE anything can throw, as `runHost` does. A spawn failure
+  // (no `ssh-agent` on this host) surfaces as an 'error' event on the next
+  // tick, and an unhandled one on a ChildProcess is an uncaught exception —
+  // which this process has no handler for, so a single SSH project on a host
+  // without ssh-agent would take the whole server down rather than failing
+  // its create.
+  let spawnError: Error | undefined
+  child.on('error', (err) => { spawnError = err })
+
+  const pid = child.pid
+  if (pid === undefined) {
+    // The event has not necessarily fired yet; one tick is enough for it,
+    // and its message names the actual cause.
+    await new Promise((r) => setTimeout(r, 0))
+    throw spawnError ?? new Error('ssh-agent did not start')
+  }
+
+  const deadline = Date.now() + 5_000
+  for (;;) {
+    if (spawnError) throw spawnError
+    try {
+      await fsAccess(sock)
+      return pid
+    } catch {
+      if (Date.now() >= deadline) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch { /* already gone */ }
+        throw new Error(`ssh-agent did not bind ${sock} within 5s`)
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
 }
 
 /**
@@ -185,5 +298,30 @@ export function killPids(pids: number[], signal: NodeJS.Signals): void {
     } catch {
       // Already gone, or not ours — either way there is nothing to do.
     }
+  }
+}
+
+/**
+ * Whether `pid` is this workspace's ssh-agent, rather than whatever process
+ * has since inherited that number.
+ *
+ * A recorded pid is advisory — the same reason the tmux one is — but "do not
+ * signal it" is the wrong conclusion for this one: the process holds a
+ * private key in memory, and leaving it alive until the host reboots is the
+ * failure the per-worktree agent exists to prevent. So the identity is
+ * checked instead of assumed, against the socket path no other agent binds.
+ *
+ * Never throws: a `ps` that fails answers "not ours", which loses only a
+ * best-effort kill.
+ */
+export async function isSshAgentFor(pid: number, sock: string): Promise<boolean> {
+  try {
+    const { stdout } = await runHost(
+      ['ps', '-o', 'args=', '-p', String(pid)],
+      { timeoutMs: 5_000 },
+    )
+    return stdout.includes('ssh-agent') && stdout.includes(sock)
+  } catch {
+    return false
   }
 }

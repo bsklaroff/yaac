@@ -4,11 +4,12 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getApiClient, isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
+import { getApiClient } from '@yaac/shared/server-api'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
 import { validatePattern, parsePattern } from '@yaac/shared/credentials'
 import { torSshOpts } from '@yaac/shared/git'
+import { expandTilde } from '@yaac/shared/paths'
 import {
   buildAuthPayload,
   promptForApiKey,
@@ -163,19 +164,38 @@ async function runSshUpdate(): Promise<void> {
     process.exit(1)
   }
 
-  // The key is read by the server/proxy on the server host — against a
-  // server on another machine that means a path over there, so say so.
-  // Keyed on the ORIGIN being loopback, not on where the target was
-  // resolved from: every target comes from `server.json`, including this
-  // machine's own server (docs/server-in-cluster.md).
-  const target = await resolveServerTarget().catch(() => null)
-  const where = target && !isLoopbackOrigin(target.baseUrl)
-    ? `on the server host ${target.baseUrl}`
-    : 'host filesystem'
-  const privateKeyPath = (await rl.question(`Private key path (${where}; e.g. ~/.ssh/id_ed25519): `)).trim()
-  if (!privateKeyPath) {
+  // A path on THIS machine: the key's content is what travels, so the server
+  // never has to be able to open the file — which is what makes an SSH
+  // credential work against a server on another machine at all.
+  const keyPathAnswer = (await rl.question(
+    'Private key path on this machine (e.g. ~/.ssh/id_ed25519): ',
+  )).trim()
+  if (!keyPathAnswer) {
     rl.close()
     console.error('Private key path cannot be empty.')
+    process.exit(1)
+  }
+  let privateKey: string
+  try {
+    privateKey = await fs.readFile(expandTilde(keyPathAnswer), 'utf8')
+  } catch (err) {
+    rl.close()
+    console.error(`Could not read ${keyPathAnswer}: ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  }
+  if (privateKey.includes('PUBLIC KEY') || keyPathAnswer.endsWith('.pub')) {
+    rl.close()
+    console.error('That is the public half — yaac needs the private key (the file without ".pub").')
+    process.exit(1)
+  }
+  // Checked here as well as on the server so the complaint arrives next to
+  // the prompt that caused it, before anything is sent.
+  if (!await keyHasNoPassphrase(expandTilde(keyPathAnswer))) {
+    rl.close()
+    console.error(
+      'That key is passphrase-protected. yaac does not prompt for passphrases; '
+      + 'use an unencrypted key, or remove the passphrase with `ssh-keygen -p -f <key>`.',
+    )
     process.exit(1)
   }
 
@@ -209,7 +229,7 @@ async function runSshUpdate(): Promise<void> {
 
   const client = getApiClient()
   await client.auth.git.credentials.$post({
-    json: { kind: 'ssh', pattern, privateKeyPath, knownHostsEntry },
+    json: { kind: 'ssh', pattern, privateKey, knownHostsEntry },
   })
   console.log(`SSH credential saved for pattern "${pattern}".`)
 }
@@ -257,4 +277,23 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   const client = getApiClient()
   await client.auth[':tool'].$put({ param: { tool }, json: payload })
   console.log(`${label} credentials saved.`)
+}
+
+/**
+ * Whether the key at `keyPath` loads without a passphrase.
+ *
+ * `ssh-keygen -y -P ''` prints the public half of an unencrypted key and
+ * exits nonzero for one that needs a passphrase. The server runs the same
+ * check on the content it receives; this one exists so the answer arrives
+ * while the user is still standing at the prompt.
+ */
+async function keyHasNoPassphrase(keyPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const child = childProcess.spawn('ssh-keygen', ['-y', '-P', '', '-f', keyPath], {
+      stdio: 'ignore',
+    })
+    // ssh-keygen missing is not a verdict about the key — let the server say.
+    child.on('error', () => { resolve(true) })
+    child.on('close', (code) => { resolve(code === 0) })
+  })
 }

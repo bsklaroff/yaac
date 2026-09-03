@@ -1,4 +1,5 @@
 import { saveCredentials } from '#domain/projects'
+import { deleteAllGitSshKeys } from '#db'
 import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,
@@ -12,6 +13,10 @@ export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode' | 'pi'
  * every git credential plus every tool bundle; individual tool values
  * only touch that tool's bundle + its per-project placeholders.
  *
+ * "Every git credential" is two stores: the https tokens in the credentials
+ * file, and the ssh keys in the database. A clear that took only the first
+ * would leave the keys behind — the half that is actual key material.
+ *
  * Per-pattern git credential removal goes through the dedicated
  * `DELETE /auth/git/credentials/:pattern` route so this helper doesn't
  * need to care about partial git clears.
@@ -23,6 +28,7 @@ export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode' | 'pi'
 export async function clearAuth(target: ClearAuthTarget): Promise<void> {
   if (target === 'all') {
     await saveCredentials({ tokens: [] })
+    await deleteAllGitSshKeys()
     await removeToolAuth('claude')
     await removeToolAuth('codex')
     await removeToolAuth('opencode')

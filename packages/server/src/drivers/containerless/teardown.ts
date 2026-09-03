@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
-import { descendantPids, killPids, runHost } from './host'
+import { descendantPids, isSshAgentFor, killPids, runHost } from './host'
 import {
   containerlessWorkspacePaths,
   workspaceStateDir,
@@ -11,6 +11,7 @@ import {
   forgetWorkspace,
   markTerminating,
   removeMarker,
+  sshAgentPidOf,
   tmuxPidOf,
 } from './registry'
 import type { TeardownTarget } from '#drivers/contract'
@@ -41,6 +42,10 @@ export async function destroyWorkspace(
   // Whether this workspace was observed RUNNING, read before the terminating
   // mark. It gates the stray sweep below, and nothing else here.
   const wasRunning = findWorkspace(workspaceId)?.running === true
+  // Read before the marker is removed below: this is the process holding
+  // the worktree's ssh key in memory, and losing the pid would leave it
+  // running with nothing left on disk to say it exists.
+  const agentPid = sshAgentPidOf(workspaceId)
   markTerminating(workspaceId)
   const paths = containerlessWorkspacePaths(target.unitName)
   // Captured BEFORE the kill: afterwards the tmux server is gone and there
@@ -62,6 +67,15 @@ export async function destroyWorkspace(
   }
 
   const gone = await confirmGone(paths.tmuxSock)
+  // The ssh-agent, before the strays: it is not a descendant of the tmux
+  // server (it was started beside it, detached), so nothing else here would
+  // reach it. UNLIKE the stray sweep, this is not gated on having seen the
+  // workspace running — a worktree whose tmux died while the host stayed up
+  // would otherwise leave an agent holding the private key until reboot,
+  // which is the failure the per-worktree agent exists to prevent. What
+  // replaces the gate is checking the pid is still this agent, which the
+  // socket path in its argv answers exactly.
+  await killWorkspaceSshAgent(agentPid, paths.sshAgentSock)
   if (strays.length > 0) {
     // TERM first, and no KILL follow-up: everything here is a descendant of
     // a shell the user's own config started, and a hard kill of a build or
@@ -78,13 +92,29 @@ export async function destroyWorkspace(
     await removeMarker(projectSlug, workspaceId).catch((err: unknown) => {
       serverLog(`[server] containerless: marker cleanup for ${workspaceId}: ${String(err)}`)
     })
-    // The socket and the acp dir outlive the server that bound them.
+    // The sockets and the acp dir outlive the servers that bound them.
     await fs.rm(paths.tmuxSock, { force: true }).catch(() => { /* already gone */ })
+    await fs.rm(paths.sshAgentSock, { force: true }).catch(() => { /* already gone */ })
     await fs.rm(paths.acpSockDir, { recursive: true, force: true })
       .catch(() => { /* already gone */ })
     forgetWorkspace(workspaceId)
   }
   return gone
+}
+
+/**
+ * End the agent holding this workspace's ssh key, if it is still that agent.
+ *
+ * Best-effort in both directions: a pid that now names something else is
+ * left alone, and a `ps` that will not answer loses only the kill.
+ */
+async function killWorkspaceSshAgent(
+  agentPid: number | undefined,
+  sock: string,
+): Promise<void> {
+  if (agentPid === undefined) return
+  if (!await isSshAgentFor(agentPid, sock)) return
+  killPids([agentPid], 'SIGTERM')
 }
 
 async function confirmGone(sock: string): Promise<boolean> {
@@ -119,11 +149,29 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
   // `rm -rf` into removals of two paths nobody named. The caller composes
   // its own quoted `rm`s into the same script (`cleanup.ts`), so this half
   // has to hold up the same way.
-  // The socket file and the acp dir outlive the tmux server that bound
-  // them; nothing else would ever collect them, so a long-lived host would
-  // accumulate one pair per worktree it ever ran until a reboot.
-  return `tmux -S ${shellQuote(paths.tmuxSock)} kill-server 2>/dev/null || true; `
+  // The socket files and the acp dir outlive the servers that bound them;
+  // nothing else would ever collect them, so a long-lived host would
+  // accumulate a set per worktree it ever ran until a reboot.
+  //
+  // The ssh-agent is killed by matching its own socket path in `ps` output
+  // rather than by a recorded pid: this script runs detached, with no
+  // registry to read, and the process holds a private key in memory — so
+  // leaving it for the reboot is the one thing this must not do.
+  //
+  // Two guards against the script matching ITSELF, which would kill the
+  // shell mid-teardown and skip every command after this one. `sh -c` puts
+  // the whole script in the shell's own argv, so `ps` lists it: the
+  // `[s]sh-agent` idiom is what keeps it out — the pattern matches the
+  // string "ssh-agent" while the script's own text does not contain it — and
+  // `$1 != me` excludes the shell by pid regardless, so a later edit that
+  // reintroduces the literal cannot bring the bug back. `pkill -f` is not
+  // used for the same reason: it would match this command line too.
+  return 'ps -eo pid=,args= 2>/dev/null '
+    + `| grep '[s]sh-agent' | grep -F ${shellQuote(paths.sshAgentSock)} `
+    + '| awk -v me=$$ \'$1 != me {print $1}\' | xargs -r kill 2>/dev/null || true; '
+    + `tmux -S ${shellQuote(paths.tmuxSock)} kill-server 2>/dev/null || true; `
     + `rm -f ${shellQuote(paths.tmuxSock)} 2>/dev/null || true; `
+    + `rm -f ${shellQuote(paths.sshAgentSock)} 2>/dev/null || true; `
     + `rm -rf ${shellQuote(paths.acpSockDir)} 2>/dev/null || true; `
     + `rm -rf ${shellQuote(state)} 2>/dev/null || true`
 }

@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import simpleGit from 'simple-git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { addEntry, loadCredentials } from '@yaac/server/domain/projects/credentials'
+import { addEntry, listEntries, loadCredentials } from '@yaac/server/domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
@@ -166,6 +169,8 @@ async function writeProject(slug: string): Promise<void> {
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
 }
 
+const execFileAsync = promisify(execFile)
+
 describe('write routes', () => {
   let tmpDir: string
 
@@ -232,15 +237,15 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].config.$put({
         param: { slug: 'demo' },
-        json: { config: { envPassthrough: ['X'] } },
+        json: { config: { initCommands: ['pnpm install'] } },
       })
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ config: { envPassthrough: ['X'] } })
+      expect(await res.json()).toEqual({ config: { initCommands: ['pnpm install'] } })
       const raw = await fs.readFile(
         path.join(projectConfigDir('demo'), 'yaac-config.json'),
         'utf8',
       )
-      expect(JSON.parse(raw)).toEqual({ envPassthrough: ['X'] })
+      expect(JSON.parse(raw)).toEqual({ initCommands: ['pnpm install'] })
     })
   })
 
@@ -256,6 +261,96 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].config.$delete({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
+    })
+  })
+
+  describe('project env routes', () => {
+    it('round-trips a plain variable and never gives a secret back', async () => {
+      await writeProject('demo')
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+
+      await client.project[':slug'].env.$put({
+        param: { slug: 'demo' },
+        json: { name: 'NODE_ENV', value: 'development' },
+      })
+      await client.project[':slug'].env.$put({
+        param: { slug: 'demo' },
+        json: {
+          name: 'API_KEY',
+          value: 'sekrit',
+          secret: true,
+          rule: { hosts: ['api.example.com'], header: 'x-api-key' },
+        },
+      })
+
+      const { vars } = await (await client.project[':slug'].env.$get({ param: { slug: 'demo' } })).json()
+      expect(vars).toEqual([
+        expect.objectContaining({ name: 'API_KEY', secret: true, hasValue: true }),
+        expect.objectContaining({ name: 'NODE_ENV', value: 'development', secret: false }),
+      ])
+      // Write-only by design: the value goes in and never comes back out.
+      expect(JSON.stringify(vars)).not.toContain('sekrit')
+    })
+
+    it('surfaces a rule the proxy could not act on as VALIDATION', async () => {
+      await writeProject('demo')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo/env', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ name: 'K', value: 'v', secret: true, rule: { hosts: [] } }),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('deletes by id, and 404s for one the project does not have', async () => {
+      await writeProject('demo')
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const saved = await (await client.project[':slug'].env.$put({
+        param: { slug: 'demo' },
+        json: { name: 'A', value: '1' },
+      })).json()
+
+      expect((await client.project[':slug'].env[':id'].$delete({
+        param: { slug: 'demo', id: '00000000-0000-4000-8000-000000000000' },
+      })).status).toBe(404)
+
+      expect((await client.project[':slug'].env[':id'].$delete({
+        param: { slug: 'demo', id: saved.var.id },
+      })).status).toBe(204)
+      expect((await (await client.project[':slug'].env.$get({
+        param: { slug: 'demo' },
+      })).json()).vars).toEqual([])
+    })
+  })
+
+  describe('GET/PUT /config/git-identity', () => {
+    it('is null until set, then round-trips', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      expect((await (await client.config['git-identity'].$get()).json()).identity).toBeNull()
+
+      const saved = await (await client.config['git-identity'].$put({
+        json: { name: '  Ada Lovelace ', email: ' ada@example.com ' },
+      })).json()
+      expect(saved.identity).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+      expect((await (await client.config['git-identity'].$get()).json()).identity)
+        .toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+    })
+
+    it('refuses a half-identity or a non-address', async () => {
+      // Committing as a name with no email is not a lesser identity — git
+      // refuses it — so neither is this.
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      for (const body of [
+        { name: 'Ada', email: '' },
+        { name: '   ', email: 'ada@example.com' },
+        { name: 'Ada', email: 'not-an-address' },
+      ]) {
+        const res = await app.request('/config/git-identity', withAuth({
+          method: 'PUT',
+          body: JSON.stringify(body),
+        }))
+        expect(res.status).toBe(400)
+      }
     })
   })
 
@@ -598,7 +693,6 @@ describe('write routes', () => {
       const res = await client.worktree.create.$post({
         json: {
           project: 'demo',
-          gitUser: { name: 'A', email: 'a@b' },
         },
       })
       expect(res.status).toBe(200)
@@ -622,7 +716,6 @@ describe('write routes', () => {
         },
       ])
       expect(mockCreateWorktree).toHaveBeenCalledWith('demo', expect.objectContaining({
-        gitUser: { name: 'A', email: 'a@b' },
       }))
     })
 
@@ -723,7 +816,6 @@ describe('write routes', () => {
       const res = await client.worktree.restart.$post({
         json: {
           worktreeId: 'sess-x',
-          gitUser: { name: 'A', email: 'a@b' },
         },
       })
       expect(res.status).toBe(200)
@@ -746,7 +838,6 @@ describe('write routes', () => {
         },
       ])
       expect(mockRestartSession).toHaveBeenCalledWith('sess-x', expect.objectContaining({
-        gitUser: { name: 'A', email: 'a@b' },
       }))
     })
 
@@ -969,6 +1060,47 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials.$post({
         json: { kind: 'https', pattern: '*', token: 'ghp_x' },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('takes an ssh key as content, and keeps it out of the file', async () => {
+      // A path once, which only a server on the user's own machine could
+      // open. The key travels like an https token does and is stored sealed,
+      // so nothing under the credentials dir — the directory the proxy pod
+      // mounts — ever holds it.
+      const keyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-api-ssh-'))
+      const keyPath = path.join(keyDir, 'id_ed25519')
+      await execFileAsync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', '', '-f', keyPath])
+      const privateKey = await fs.readFile(keyPath, 'utf8')
+
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git.credentials.$post({
+        json: {
+          kind: 'ssh',
+          pattern: 'git.example.com/*',
+          privateKey,
+          knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+        },
+      })
+
+      expect(res.status).toBe(204)
+      expect(await listEntries()).toEqual([
+        { kind: 'ssh', pattern: 'git.example.com/*', preview: 'key stored on server (encrypted)' },
+      ])
+      expect((await loadCredentials()).tokens).toEqual([])
+      await fs.rm(keyDir, { recursive: true, force: true })
+    })
+
+    it('refuses a key that is really a path, or the public half', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git.credentials.$post({
+        json: {
+          kind: 'ssh',
+          pattern: 'git.example.com/*',
+          privateKey: '~/.ssh/id_ed25519',
+          knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+        },
       })
       expect(res.status).toBe(400)
     })
