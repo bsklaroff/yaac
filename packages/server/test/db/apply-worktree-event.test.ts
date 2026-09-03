@@ -50,6 +50,11 @@ describe('applyWorktreeEvent', () => {
       type: 'worktree-create-failed', projectSlug: 'proj', worktreeId, ...extra,
     })
 
+  const forgotten = (worktreeId: string): Promise<void> =>
+    applyWorktreeEvent({
+      type: 'worktree-forgotten', projectSlug: 'proj', worktreeId,
+    })
+
   it('records a reported worktree, with the branch when the emitter knew it', async () => {
     await created('wt-new', { baseBranch: 'main' })
 
@@ -150,6 +155,31 @@ describe('applyWorktreeEvent', () => {
 
     expect(await rowOf('wt-fresh')).toBeUndefined()
     expect(await listWorktreeAgentSessions('proj', 'wt-fresh')).toEqual([])
+  })
+
+  // The only event that erases a worktree WITH history. A stop keeps the row
+  // so the worktree can be restarted; this is what says there is nothing
+  // left to restart into, because the emitter has already removed the bytes.
+  it('erases a discarded worktree, links and all', async () => {
+    await stopped('wt-1')
+    await applyWorktreeEvent({
+      type: 'sessions-launched',
+      projectSlug: 'proj',
+      worktreeId: 'wt-1',
+      sessions: [{ tool: 'claude', agentSessionId: 'conv-gone' }],
+    })
+
+    await forgotten('wt-1')
+
+    expect(await rowOf('wt-1')).toBeUndefined()
+    expect(await listWorktreeAgentSessions('proj', 'wt-1')).toEqual([])
+  })
+
+  // A row already gone is the state this event wanted: a retried delete
+  // (the first one removed the row after failing to remove every byte) must
+  // finish rather than fail.
+  it('is a no-op for a worktree with no row', async () => {
+    await expect(forgotten('nonexistent')).resolves.toBeUndefined()
   })
 
   // A resume re-stamped a row that already carried the worktree's history,

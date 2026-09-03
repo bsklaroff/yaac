@@ -35,6 +35,7 @@ export {
   type WorktreeCreateOptions,
   type WorktreeCreateResult,
 } from './create'
+export { deleteWorktree, type DeletedWorktreeInfo } from './delete'
 export {
   getWorktreeBlockedHosts,
   getWorktreeChanges,

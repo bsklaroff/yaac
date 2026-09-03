@@ -8,7 +8,12 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { StoppedTranscript } from '#components/StoppedTranscript'
 import { restartWorktree } from '#lib/createWorktree'
-import { getStoppedWorktrees, markAllDeathsSeen, markDeathSeen } from '#lib/stoppedApi'
+import {
+  deleteStoppedWorktree,
+  getStoppedWorktrees,
+  markAllDeathsSeen,
+  markDeathSeen,
+} from '#lib/stoppedApi'
 import { useProvisionWorktree } from '#lib/useProvisionWorktree'
 import { useIsMobile } from '#lib/viewport'
 import { isUnseenDeath, useUiStore } from '#store'
@@ -39,8 +44,10 @@ const label = (d: StoppedWorktreeEntry): string => d.title || d.prompt || 'New w
  * sibling of the workspace, not nested in a row.
  *
  * The overlay is a search-filtered master/detail list ordered newest-deleted
- * first; picking a row shows its history metadata and a Restart action that
- * recreates the container and resumes the tool from where it left off.
+ * first; picking a row shows its history metadata and the two things left to
+ * do with a stopped worktree — Restart, which recreates the container and
+ * resumes the tool from where it left off, and Delete, which discards the
+ * checkout and is the only thing in the app that reclaims its disk.
  */
 export function StoppedWorktreesButton({
   projectSlug,
@@ -63,8 +70,14 @@ export function StoppedWorktreesButton({
 
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [restarting, setRestarting] = useState<string[]>([])
+  // Worktrees this client has acted on and the fetched list has yet to catch
+  // up with — one restarted (its row drops once the restart clears the
+  // recorded stop) or one deleted (its row is gone for good). Both are
+  // "hide it until the server agrees", which is the whole of what this holds.
+  const [hidden, setHidden] = useState<string[]>([])
   const [confirm, setConfirm] = useState<StoppedWorktreeEntry | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<StoppedWorktreeEntry | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // Fetch even while closed so the sidebar can hide the entry point when the
   // project has no deleted worktrees. Re-keys on the active set (activeSignature)
@@ -83,27 +96,26 @@ export function StoppedWorktreesButton({
     for (const e of optimisticStopped) if (fetched.has(e.worktreeId)) removeOptimisticStopped(e.worktreeId)
   }, [data, optimisticStopped, removeOptimisticStopped])
 
-  // A restart reuses the worktree id and clears its recorded deletion, so once
-  // the restart takes effect the worktree drops out of the fetched list. Prune
-  // it from `restarting` then — the filter below has done its job. Otherwise a
-  // later re-delete of the same id re-enters `data` but stays hidden by that
-  // filter until a browser reload resets this component-local state.
+  // Once the fetched list stops naming a hidden worktree, the filter below
+  // has done its job — prune it. Otherwise a later stop of the same id (a
+  // restarted worktree stopped again) re-enters `data` and stays invisible
+  // until a browser reload resets this component-local state.
   useEffect(() => {
     if (!data) return
     const fetched = new Set(data.map((d) => d.worktreeId))
-    setRestarting((r) => {
-      const next = r.filter((id) => fetched.has(id))
-      return next.length === r.length ? r : next
+    setHidden((h) => {
+      const next = h.filter((id) => fetched.has(id))
+      return next.length === h.length ? h : next
     })
   }, [data])
 
   // Merge optimistic just-deleted entries (this project) ahead of the fetched
-  // list, de-duped, minus any mid-restart.
+  // list, de-duped, minus anything this client has already acted on.
   const fetchedIds = new Set((data ?? []).map((d) => d.worktreeId))
   const merged = [
     ...optimisticStopped.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.worktreeId)),
     ...(data ?? []),
-  ].filter((d) => !restarting.includes(d.worktreeId))
+  ].filter((d) => !hidden.includes(d.worktreeId))
 
   // Unseen abnormal deaths across the whole list (search-independent) drive the
   // sidebar notification dot.
@@ -163,9 +175,26 @@ export function StoppedWorktreesButton({
     )
   }
 
+  // Discard the worktree for good. Hidden and the list refetched only on
+  // success — a failed delete leaves the dialog up and the row where it was,
+  // because the bytes it was meant to reclaim are still there.
+  const onConfirmDelete = (entry: StoppedWorktreeEntry): void => {
+    setDeleting(true)
+    void deleteStoppedWorktree(entry.worktreeId)
+      .then(() => {
+        setHidden((h) => [...h, entry.worktreeId])
+        removeOptimisticStopped(entry.worktreeId)
+        setConfirmDelete(null)
+        setSelectedId(null)
+        void queryClient.invalidateQueries({ queryKey: ['deleted', projectSlug] })
+      })
+      .catch((e: unknown) => console.error('delete worktree failed', e))
+      .finally(() => setDeleting(false))
+  }
+
   const onConfirmRestart = (entry: StoppedWorktreeEntry): void => {
     setConfirm(null)
-    setRestarting((r) => [...r, entry.worktreeId])
+    setHidden((h) => [...h, entry.worktreeId])
     removeOptimisticStopped(entry.worktreeId)
     // Close the overlay so useProvisionWorktree's auto-open shows progress in
     // the main pane.
@@ -337,16 +366,32 @@ export function StoppedWorktreesButton({
                         tool={selected.tool}
                         prompt={selected.prompt}
                       />
-                      <button
-                        type="button"
-                        onClick={() => setConfirm(selected)}
-                        className="mt-4 flex w-fit items-center gap-1.5 self-end rounded-md bg-surface-3 px-3 py-1.5
-                          text-xs font-medium text-text transition hover:bg-border-strong
-                          max-md:w-full max-md:justify-center max-md:py-3 max-md:text-sm"
-                      >
-                        <RestartIcon size={13} />
-                        Restart
-                      </button>
+                      {/* The two things left to do with a stopped worktree,
+                          with the destructive one kept visually quiet and to
+                          the left of the action people actually came for. */}
+                      <div className="mt-4 flex items-center justify-end gap-2 self-end
+                        max-md:w-full max-md:flex-col-reverse">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDelete(selected)}
+                          className="flex w-fit items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium
+                            text-[#d65858] transition hover:bg-[#c94a4a]/15
+                            max-md:w-full max-md:justify-center max-md:py-3 max-md:text-sm"
+                        >
+                          <DeleteIcon size={13} />
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirm(selected)}
+                          className="flex w-fit items-center gap-1.5 rounded-md bg-surface-3 px-3 py-1.5
+                            text-xs font-medium text-text transition hover:bg-border-strong
+                            max-md:w-full max-md:justify-center max-md:py-3 max-md:text-sm"
+                        >
+                          <RestartIcon size={13} />
+                          Restart
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>
@@ -355,6 +400,23 @@ export function StoppedWorktreesButton({
           )}
         </Dialog.Popup>
       </Dialog.Portal>
+
+      {/* The branch is called out because it is what makes this safe to say
+          yes to: the commits are in the project's clone, not in the checkout
+          this removes. What is genuinely lost is anything uncommitted. */}
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
+        busy={deleting}
+        title="Delete this worktree?"
+        description={confirmDelete
+          ? `Removes “${label(confirmDelete)}” — its checkout, any uncommitted changes in it,`
+            + ' and its history. Its branch and every commit on it stay in the project.'
+            + " This can't be undone."
+          : ''}
+        confirmLabel="Delete"
+        onConfirm={() => { if (confirmDelete) onConfirmDelete(confirmDelete) }}
+      />
 
       <ConfirmDialog
         open={!!confirm}

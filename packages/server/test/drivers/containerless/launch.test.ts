@@ -89,10 +89,12 @@ describe('launchWorkspace', () => {
     await launchWorkspace(spec())
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
-    // `sleep infinity` is what `probeAgentPaneState` reads as "started but
-    // no agent yet"; starting the agent here instead would let a
-    // fast-failing tool end the session before setup finished.
-    expect(newSession).toContain('sleep infinity')
+    // A `sleep` is what `probeAgentPaneState` reads as "started but no agent
+    // yet"; starting the agent here instead would let a fast-failing tool end
+    // the session before setup finished. Counting rather than `infinity`,
+    // which is a GNU extension the BSD `sleep` on a macOS host rejects — the
+    // placeholder would exit instantly and take the session with it.
+    expect(newSession).toContain('sleep 2147483647')
     expect(newSession).toContain('yaac')
     // The window carries the tool name, which is the `yaac:<tool>` target
     // every later respawn and probe addresses.

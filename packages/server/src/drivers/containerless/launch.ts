@@ -400,11 +400,21 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const statusRight = env.YAAC_STATUS_RIGHT ?? ''
 
   spec.onProgress?.('Starting the worktree session...')
-  // The session opens on a `sleep infinity` placeholder rather than the
-  // agent, exactly as the pod's init hook does: the agent is respawned in
-  // once setup finishes, and a fast-failing command here would end the tmux
+  // The session opens on a long-sleep placeholder rather than the agent,
+  // exactly as the pod's init hook does: the agent is respawned in once
+  // setup finishes, and a fast-failing command here would end the tmux
   // session before that. The placeholder is also what the stale reaper's
-  // pane probe recognizes as "started but not yet running an agent".
+  // pane probe recognizes as "started but not yet running an agent" — that
+  // probe reads `pane_current_command`, so what matters is that this stays
+  // a `sleep`, not what it is counting to.
+  //
+  // A COUNT rather than `infinity`, unlike the pod's, and that is the whole
+  // reason this differs: `sleep infinity` is a GNU coreutils extension, and
+  // the BSD `sleep` a macOS host has rejects it outright. The placeholder
+  // would exit instantly, tmux would close its only window, and the session
+  // — the worktree — would be gone before `awaitAgentTransport` ever asked
+  // for it. A pod runs its own image's coreutils and is unaffected; this
+  // runs whatever the host has.
   //
   // -x/-y are generous so the respawned agent inherits a window larger than
   // any real terminal; tmux shrinks it to the client on attach, and
@@ -413,7 +423,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'tmux', '-S', paths.tmuxSock, '-u',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
-    'sleep infinity',
+    // ~68 years, the largest a 32-bit `time_t` will take.
+    'sleep 2147483647',
   ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 })
 
   // Session UX options, one invocation — the same set the pod's init hook

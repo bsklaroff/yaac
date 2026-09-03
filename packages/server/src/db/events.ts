@@ -30,6 +30,7 @@ export type WorktreeEvent =
   | SessionsDiscovered
   | SessionsActive
   | WorktreeStopped
+  | WorktreeForgotten
 
 /**
  * Provisioning has begun for a worktree — emitted before anything is built,
@@ -205,6 +206,23 @@ export interface WorktreeStopped {
   projectSlug: string
   worktreeId: string
   cause?: WorktreeDeathCause
+}
+
+/**
+ * A worktree has been DISCARDED — the user is finished with it, and
+ * everything it had on disk is already gone.
+ *
+ * The one event that erases a worktree with history, which is why it is
+ * distinct from the stop above: a stop keeps the row precisely so the
+ * worktree can be restarted, and this says there is nothing left to restart
+ * into. Past-tense like the rest, and load-bearingly so — the emitter
+ * removes the bytes first and reports only once they are gone, because the
+ * row is the last name anything has for them (docs/worktree-storage.md).
+ */
+export interface WorktreeForgotten {
+  type: 'worktree-forgotten'
+  projectSlug: string
+  worktreeId: string
 }
 
 export { MAX_PROMPT_LENGTH } from '@yaac/shared/types'

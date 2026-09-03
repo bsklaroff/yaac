@@ -51,11 +51,19 @@ path is longer than that; they are keyed by the install's own root so two
 servers on one host never collide.
 
 The session's shape is identical to the one `worktree-bin/yaac-worktree-init`
-creates inside a pod, and has to be: the `sleep infinity` placeholder the
-stale reaper recognizes, the `yaac:<tool>` window naming the status watcher
-parses, and the tmux options the webapp's terminal rendering depends on are
-all read by driver-neutral machinery that cannot tell the two substrates
-apart.
+creates inside a pod, and has to be: the long-sleep placeholder the stale
+reaper recognizes, the `yaac:<tool>` window naming the status watcher parses,
+and the tmux options the webapp's terminal rendering depends on are all read
+by driver-neutral machinery that cannot tell the two substrates apart.
+
+The placeholder is the one line that cannot be copied verbatim. A pod's is
+`sleep infinity`, which is a GNU coreutils extension; here the command runs
+on whatever `sleep` the host has, and the BSD one on macOS rejects that
+spelling — the placeholder would exit at once, tmux would close its only
+window, and the session would be gone before anything asked for it. So this
+one counts (`sleep 2147483647`). What the reaper's probe reads is
+`pane_current_command`, so both spellings answer `sleep` and the
+driver-neutral half is none the wiser.
 
 ## Paths, and the vocabulary that carries them
 
