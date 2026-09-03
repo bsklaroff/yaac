@@ -5,7 +5,6 @@ import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 import { PROJECT_DOCKERFILE, USER_DOCKERFILE, projectBuildDir, userBuildDir } from '#lib/build-dirs'
 import { imageExists, runTrackedPodman } from '#drivers/k8s/container'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#lib/build-context'
-import { podUid } from '#drivers/k8s/substrate'
 import { serverLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -19,29 +18,23 @@ export async function fileHash(filePath: string): Promise<string> {
 }
 
 /**
- * Content hash for a root (FROM-scratch) worktree image layer: the
- * Dockerfile content plus the YAAC_UID build arg. Shared by the server's
- * layer resolution and the test global setup so both derive identical
- * tags.
+ * Content hash for a root (FROM-scratch) worktree image layer: everything
+ * that goes into building it. Shared by the server's layer resolution and
+ * the test global setup so both derive identical tags.
+ *
+ * Content ONLY — no uid. The images are uid-agnostic
+ * (docs/arbitrary-uid-images.md), so one tag serves every host and the same
+ * bytes can be built once and shipped.
  */
-export async function baseImageHash(dockerfilePath: string, uid: number): Promise<string> {
+export async function baseImageHash(dockerfilePath: string): Promise<string> {
   // The base build also COPYs the in-pod daemons — dockerfiles/streamd/ (the
   // stream daemon) and dockerfiles/acpd/ (the ACP agent supervisor) — so
   // their sources are part of the layer's content hash: editing either
   // retags the image just like a Dockerfile edit.
-  //
-  // `uid` is the number baked in as the image's `yaac` user (the YAAC_UID
-  // build arg), and it is a PARAMETER rather than this process's own
-  // `podUid()` because the two are not always the same: `yaac cluster
-  // install` builds for the uid the server it is about to deploy will run
-  // as. Reading `podUid()` here would tag an image by the builder's uid
-  // while baking the target's, so a host whose uid differs would find its
-  // tag "already in the registry" and reuse an image built for someone
-  // else's uid.
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
   const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
   return stringHash(
-    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:uid=${uid}`,
+    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}`,
   )
 }
 
@@ -197,29 +190,14 @@ export interface TrustedLayers {
  * derive their tags from here, so the tag the install pushes is by
  * construction the tag a worktree create looks up.
  */
-export async function resolveTrustedLayers(
-  prefix = 'yaac',
-  forUid?: number,
-): Promise<TrustedLayers> {
-  // The uid is a build input (YAAC_UID arg, see podUid) and is folded into
-  // the root layer's content hash, so a uid change invalidates the tag just
-  // like a Dockerfile edit.
-  //
-  // It defaults to this process's own, which is exactly right for the
-  // server: `podUid()` IS the uid the server creates hostPath dirs as, in a
-  // pod or on a host. `yaac cluster install` passes the SERVER's uid
-  // instead, because it is building for a server it is about to deploy
-  // rather than for itself.
-  const uid = forUid ?? podUid()
-
+export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLayers> {
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseHash = await baseImageHash(baseDockerfile, uid)
+  const baseHash = await baseImageHash(baseDockerfile)
   const base: ImageLayer = {
     tag: `${prefix}-base:${baseHash}`,
     name: 'base',
     dockerfile: baseDockerfile,
     context: DOCKERFILES_DIR,
-    buildArgs: { YAAC_UID: String(uid) },
     contentHash: baseHash,
   }
 
@@ -235,9 +213,8 @@ export async function resolveTrustedLayers(
     contentHash: toolsHash,
   }
 
-  // In-pod rootless podman + docker CLI + compose, for `nestedContainers`
-  // worktrees. The uid shapes its subuid ranges and socket path, but is
-  // already folded into the chain through the base hash.
+  // In-pod rootful podman + docker CLI + compose, for `nestedContainers`
+  // worktrees.
   const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
   const nestableHash = stringHash(`${toolsHash}:${await fileHash(nestableDockerfile)}`)
   const nestable: ImageLayer = {
@@ -245,7 +222,7 @@ export async function resolveTrustedLayers(
     name: 'nestable',
     dockerfile: nestableDockerfile,
     context: DOCKERFILES_DIR,
-    buildArgs: { BASE_IMAGE: tools.tag, YAAC_UID: String(uid) },
+    buildArgs: { BASE_IMAGE: tools.tag },
     contentHash: nestableHash,
   }
 
@@ -284,7 +261,6 @@ export async function resolveImageChain(
   }
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
-  const uid = podUid()
 
   // We're on the canonical base unless Dockerfile.yaac replaces it standalone.
   // Tools (the agent CLI layer) sit on top of the canonical base only, and
@@ -314,10 +290,9 @@ export async function resolveImageChain(
 
   // Resolve the base layer tag (may be tools/nestable, layered yaac, or
   // standalone yaac). A standalone Dockerfile.yaac is a root layer like
-  // Dockerfile.default: it owns its user setup, so it gets the YAAC_UID
-  // build arg (honoring it is up to the Dockerfile) and the uid folded
-  // into its hash. Layered variants inherit the uid through the parent's
-  // hash chain.
+  // Dockerfile.default — it owns its user setup, and owns the arbitrary-uid
+  // contract with it (docs/arbitrary-uid-images.md) — so it takes no build
+  // arg from us. Layered variants inherit the whole thing from the parent.
   const parentTag = nestableTag ?? toolsTag
   const parentHash = nestableHash ?? toolsHash
   // The context hash covers the Dockerfile itself plus every support file
@@ -326,7 +301,7 @@ export async function resolveImageChain(
   const baseHash = yaacIsLayered
     ? stringHash(`${parentHash!}:${projectContextHash!}`)
     : yaacDockerfile
-      ? stringHash(`${projectContextHash!}:uid=${uid}`)
+      ? stringHash(projectContextHash!)
       : parentHash!
   const baseTag = yaacDockerfile
     ? `${prefix}-base:${baseHash}`
@@ -338,9 +313,7 @@ export async function resolveImageChain(
       name: 'project',
       dockerfile: yaacDockerfile,
       context: projectBuild,
-      buildArgs: yaacIsLayered
-        ? { BASE_IMAGE: parentTag! }
-        : { YAAC_UID: String(uid) },
+      ...(yaacIsLayered ? { buildArgs: { BASE_IMAGE: parentTag! } } : {}),
       contentHash: baseHash,
     })
   }

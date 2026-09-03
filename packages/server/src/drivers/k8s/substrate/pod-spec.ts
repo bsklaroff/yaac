@@ -401,9 +401,14 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           // The runtime's default seccomp profile — podman applied this by
           // default, kubernetes leaves pods unconfined without it. (runsc
           // ignores it and installs its own host seccomp; harmless.) The
-          // rootful nested graphroot is a root-owned tmpfs, so no fsGroup.
+          // rootful nested graphroot is a root-owned tmpfs, so no fsGroup —
+          // which is why hostUidSecurityContext carries none.
           securityContext: {
             seccompProfile: { type: 'RuntimeDefault' },
+            // Stamped rather than left to the image's own USER: the image
+            // bakes a fixed uid, and what a worktree must run as is the host
+            // uid that owns its checkout.
+            ...hostUidSecurityContext(),
           },
           // Containment for in-container root (reachable via the image's
           // passwordless sudo, a feature — agents install packages
@@ -477,57 +482,46 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
 }
 
 /**
- * The uid worktree pods run as (`runAsUser`), and the uid baked into worktree
- * images as the `yaac` user (YAAC_UID build arg) so the two agree. Under
- * gVisor there is no userns and no idmap, so numeric uids pass through raw:
- * a hostPath file owned by host uid N appears in-container as uid N, so
- * every writer of a shared path — the image's `yaac` user, the session pod,
- * and whatever pre-creates the dirs — has to name the same number.
+ * securityContext for every yaac pod that runs as this machine's own user:
+ * the server, the proxy, worktree pods, the install's probe pods.
  *
- * That number is the INSTALL HOST's uid, and on macOS it cannot be
- * anything else. The data dir reaches the node over virtiofs, whose host
- * end performs every read and write as the user running the VM, so a
- * hostPath file is writable from a pod only if that user could write it —
- * the host uid is a ceiling, and pinning a container uid above it produces
- * a directory nothing can write (docs/server-in-cluster.md). It is also
- * why `proxyRunAsSecurityContext` has always run the proxy this way.
+ * Its two halves answer different questions.
  *
- * Inside the server pod this stays true without special-casing: the pod
- * runs as the uid its install stamped, so `process.getuid()` there IS the
- * install host's uid, and every path the server pre-creates for a worktree
- * — checkouts, cache and config mounts, `fs.mkdir`ed by `#domain/worktrees`
- * — lands owned by the one number the worktree image also bakes.
+ * **The uid and gid are the HOST's.** Under gVisor there is no userns and no
+ * idmap, so numeric uids pass through raw: a hostPath file owned by host uid
+ * N appears in-container as uid N. That number is the install host's and on
+ * macOS cannot be anything else — the data dir reaches the node over
+ * virtiofs, whose host end performs every read and write as the user running
+ * the VM, so the host uid is a ceiling no chown escapes in either direction
+ * (docs/server-in-cluster.md). Inside the server pod this needs no
+ * special-casing: the pod runs as the uid its install stamped, so
+ * `process.getuid()` there IS the install host's uid, and every path the
+ * server pre-creates for a worktree lands owned by it.
  *
- * Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
- * process runs as root (uid 0 is taken inside the image).
- */
-export function podUid(): number {
-  const uid = process.getuid?.() ?? 1000
-  return uid > 0 ? uid : 1000
-}
-
-/**
- * securityContext for a pod that has to read and write this machine's data
- * dir over a hostPath mount: the server and the proxy.
+ * **The supplementary group 0 is the IMAGE's.** yaac images bake a fixed
+ * `yaac` user (uid 1000, primary group 0) and leave everything it owns
+ * group-writable, which is what lets ONE image serve every host rather than
+ * one image per uid (docs/arbitrary-uid-images.md). Membership in group 0 is
+ * how a pod picks that grant up; without it a pod on a host whose uid is not
+ * 1000 can write nothing in its own home. Supplementary rather than
+ * `runAsGroup: 0` so that files the pod creates on a hostPath keep landing
+ * in the host user's own group, exactly as they did when the uid was baked.
  *
- * Both run as the host's own uid/gid for the reason in {@link podUid} — on
- * a strict-virtiofs host (libkrun, which is required) any other uid is
- * EACCES, and no chown escapes it in either direction. One helper because
- * two copies of a uid decision drift, and the failure when they do is a
- * crash-looping pod with a confusing permission error rather than anything
- * that names the mismatch.
+ * `fsGroup` is deliberately absent: it applies only to ownership-managed
+ * volumes (emptyDir), never to hostPath, and the one emptyDir a worktree pod
+ * has that matters is the nested engine's root-owned graphroot. The proxy
+ * Deployment adds `fsGroup: runAsGroup` at its call site, its HOME being an
+ * emptyDir the kubelet has to hand over; nothing else here has a volume
+ * `fsGroup` would touch.
  *
  * Throws rather than defaulting when getuid/getgid are unavailable: the
- * hostPath/uid model is POSIX-only, and emitting an image-default-uid
- * manifest would move the failure to a place that cannot explain it.
- *
- * `fsGroup` applies only to ownership-managed volumes (emptyDir), never to
- * the hostPath mounts, which keep the ownership the host gave them.
+ * hostPath/uid model is POSIX-only, and emitting a manifest with an invented
+ * uid would move the failure to a place that cannot explain it.
  */
 export function hostUidSecurityContext(): {
   runAsUser: number
   runAsGroup: number
-  fsGroup: number
+  supplementalGroups: number[]
 } {
   const uid = process.getuid?.()
   const gid = process.getgid?.()
@@ -537,5 +531,5 @@ export function hostUidSecurityContext(): {
       + 'the yaac server requires a POSIX host',
     )
   }
-  return { runAsUser: uid, runAsGroup: gid, fsGroup: gid }
+  return { runAsUser: uid, runAsGroup: gid, supplementalGroups: [0] }
 }

@@ -38,20 +38,34 @@ COPY acpd/ /opt/yaac/acpd/
 # Playwright's default `chromium.launch()` looks for. PLAYWRIGHT_BROWSERS_PATH
 # is exported so Playwright finds these prebuilt browsers at runtime instead
 # of re-downloading into ~/.cache/ms-playwright.
+# The tree is left group-0 writable so a project pinning a different Playwright
+# can install new browser revisions into it. That grant happens HERE rather
+# than in a later step because a `chgrp -R` in its own layer copies the whole
+# ~1GB tree up into that layer.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npx -y playwright-core@1.50.1 install chromium && \
     rm -rf /opt/playwright-browsers/ffmpeg-* /opt/playwright-browsers/.links && \
     mkdir -p /opt/google && \
-    ln -sfn /opt/playwright-browsers/chromium-*/chrome-linux /opt/google/chrome
+    ln -sfn /opt/playwright-browsers/chromium-*/chrome-linux /opt/google/chrome && \
+    chgrp -R 0 /opt/playwright-browsers && chmod -R g=u /opt/playwright-browsers
 
-# Session pods run in user namespaces (hostUsers: false) with identity-
-# idmapped hostPath mounts, so yaac's uid must equal the uid the node sees
-# on server-created host files (the server's uid). The server injects it at
-# build time; the uid is part of the image's content-hash tag.
-ARG YAAC_UID=1000
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${YAAC_UID} -s /bin/zsh yaac && \
+# The image is UID-AGNOSTIC (docs/arbitrary-uid-images.md). `yaac` is a fixed
+# uid 1000 whose PRIMARY GROUP IS 0, and every path it owns is group-writable
+# (`g=u`), so a pod running as ANY uid works as long as it carries a
+# supplementary group 0 — which every yaac pod does (hostUidSecurityContext).
+# The uid a pod runs as is still the install host's, because the data dir is a
+# hostPath and virtiofs makes that uid a ceiling; it is simply no longer baked
+# in, so one image serves every host.
+#
+# Two consequences for anything added below or in a derived layer: `RUN` steps
+# that run as yaac need `umask 002` so what they create stays group-writable,
+# and /etc/passwd is group-writable because yaac-worktree-init re-points the
+# `yaac` entry at the uid the pod actually runs as (getpwuid has no answer for
+# an arbitrary uid otherwise, and passwordless sudo matches on the NAME).
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -g 0 -s /bin/zsh yaac && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && \
-    chown -R yaac:yaac /opt/playwright-browsers
+    chmod -R g=u /home/yaac && \
+    chgrp 0 /etc/passwd && chmod g=u /etc/passwd
 # Replace the distro zshrc's compinit with a fast-path + background-refresh
 # variant. The distro's plain `compinit` re-validates the dump by counting
 # $fpath files, and inside a session pod that count comes out one off from
@@ -87,17 +101,22 @@ USER yaac
 # one fails that server's first write. The other two exist today only because
 # pnpm and claude's installer happen to write under them; naming them makes
 # the invariant the image's rather than those tools'.
-RUN mkdir -p /home/yaac/.yaac /home/yaac/.config /home/yaac/.local/share
+RUN umask 002 && mkdir -p /home/yaac/.yaac /home/yaac/.config /home/yaac/.local/share
 
-RUN npm config set prefix /home/yaac/.local
-RUN corepack install -g pnpm@11.1.2 && \
+# The global npm prefix, as ENV rather than a baked ~/.npmrc. npm chmods that
+# file every time it rewrites it (`npm config set`, `npm login`), and chmod
+# needs OWNERSHIP of the file — which no group grant can supply, so a pod
+# running as another uid could never run either command. As env there is no
+# file to fight over until the pod writes its own.
+ENV NPM_CONFIG_PREFIX=/home/yaac/.local
+RUN umask 002 && corepack install -g pnpm@11.1.2 && \
     pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
 # Playwright pinned to the same version as the chromium installed above
 # (playwright-core@1.50.1 → chromium build 1155), so `chromium.launch()`
 # resolves the prebuilt browser at PLAYWRIGHT_BROWSERS_PATH. Skip the bundled
 # browser download — the binaries already live there. Installs the `playwright`
 # CLI on PATH; scripts that import the module use its absolute path or `npx`.
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g playwright@1.50.1
+RUN umask 002 && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g playwright@1.50.1
 
 ENV LANG=en_US.UTF-8
 ENV TERM=xterm-256color
@@ -116,7 +135,7 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 # git invoked by tooling, not just interactive zsh.
 ENV GIT_PROGRESS_DELAY=10
 
-RUN cat <<'EOF' > ~/.zshrc
+RUN umask 002 && cat <<'EOF' > ~/.zshrc
 HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory
@@ -133,7 +152,7 @@ EOF
 # the dump baked into the image and the global compinit patched to -C
 # (see the /etc/zsh/zshrc sed above), every shell — including the first —
 # just sources the dump.
-RUN zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
+RUN umask 002 && zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
 
 WORKDIR /workspace
 # catatonit acts as PID 1, reaping zombies (orphaned conmon etc.) and

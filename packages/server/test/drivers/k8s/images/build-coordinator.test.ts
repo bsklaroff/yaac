@@ -618,7 +618,7 @@ describe('ensureImage', () => {
 
   it('ships a parentless layer without a pull, and its dockerfile even when ignored', async () => {
     const project = await podLayer(
-      { buildArgs: { YAAC_UID: '1000' } },
+      { buildArgs: { HTTP_PROXY: 'http://proxy:8080' } },
       { 'Dockerfile.yaac': 'FROM ubuntu\n', '.containerignore': 'Dockerfile.yaac\n' },
     )
     chain([project])
@@ -626,7 +626,7 @@ describe('ensureImage', () => {
 
     const scripts = remoteCommands().map((argv) => argv.join(' '))
     expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
-    expect(scripts.some((s) => s.includes('--build-arg YAAC_UID=1000'))).toBe(true)
+    expect(scripts.some((s) => s.includes('--build-arg HTTP_PROXY=http://proxy:8080'))).toBe(true)
     // No parent tag means nothing to push ahead of the build.
     expect(mockPush).not.toHaveBeenCalled()
     // The dockerfile always ships, ignore file or not.

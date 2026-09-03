@@ -115,7 +115,7 @@ describe('ensureImage', () => {
     const result = await ensureImage('myproject')
 
     expect(h.operations).toEqual([
-      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`)),
+      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
     ])
     expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })

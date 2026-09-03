@@ -194,10 +194,10 @@ docs/legacy-compat-shims.md.
 Under gVisor there is no user namespace, so a hostPath file is presented at
 its real node-side uid and every writer of a shared path has to name the
 same number. Here that is one number for the whole install: the server pod,
-every worktree pod, the proxy, and the `yaac` user baked into the worktree
-image chain all run as **the uid of the machine that ran `yaac cluster
-install`**. `hostUidSecurityContext` renders it into a manifest, `podUid()`
-answers it in code, and it reaches the images as their `YAAC_UID` build arg.
+every worktree pod, the proxy and the check's probe pods all run as **the
+uid of the machine that ran `yaac cluster install`**. `hostUidSecurityContext`
+is the one place that answers it, and it renders straight into a manifest —
+no image build arg, and nothing baked (see below).
 
 It is the host's uid rather than a pinned constant because on macOS nothing
 else can work. The data dir reaches the node over virtiofs, and the host end
@@ -219,23 +219,20 @@ last one is the proof that the check is not the guest's to make.
 
 The install is where the number is discovered because it is the only party
 that can: it runs on the machine that owns the data dir, while the pod it
-configures does not. That is also why `baseImageHash` takes the uid as a
-PARAMETER rather than reading `podUid()` — the number has to reach the image
-TAG and not just the build arg. A hash over the builder's uid while the arg
-carries another would let a host find its tag already in the registry and
-silently reuse an image whose `yaac` user is somebody else's number.
+configures does not. Inside the server pod it stays true without
+special-casing, since the pod runs as the uid its install stamped — so
+`process.getuid()` there IS the host's, and every path the server
+pre-creates for a worktree lands owned by the number that worktree's pod
+runs as.
+
+The images, by contrast, know nothing about it: they bake a fixed `yaac`
+user and work at any runtime uid, which is what lets one image set serve
+every host (docs/arbitrary-uid-images.md). The pods' supplementary group 0
+is the other half of that contract, and it comes from the same helper.
 
 None of this is new to the server: `proxyRunAsSecurityContext` has always
 run the proxy as the host's uid, for the same reason and against the same
-wall. The two now share one helper so the decision cannot drift between
-them.
-
-The cost is that the images are per-uid: a macOS host at 501 and a Linux
-host at 1000 build different images under different tags, so they cannot be
-shared or shipped prebuilt. Making the images uid-agnostic instead — a
-fixed uid in the Dockerfile with `HOME` group-owned by gid 0 and `g=u`
-permissions, so `runAsUser` may be anything at runtime — is the way out,
-and it is independent of this.
+wall. The two share one helper so the decision cannot drift between them.
 
 ## Lifecycle
 

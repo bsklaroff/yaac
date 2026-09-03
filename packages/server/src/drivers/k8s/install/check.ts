@@ -27,7 +27,7 @@ import {
   kubectlApply,
   runPodToCompletion,
   runtimeClassSpec,
-  podUid,
+  hostUidSecurityContext,
   untoleratedTaints,
   worktreeIdLabels,
 } from '#drivers/k8s/substrate'
@@ -803,6 +803,10 @@ async function runEndToEndProbe(): Promise<CheckResult> {
   const nonceFile = path.join(dataDir, '.cluster-check-nonce')
   const writeFile = path.join(dataDir, '.cluster-check-write')
   const ns = k8sNamespace()
+  // The identity a worktree pod runs as. The probe's whole point is that a
+  // hostPath write at THIS uid reaches the host, so it must be the same
+  // answer buildPodJobManifest stamps.
+  const identity = hostUidSecurityContext()
 
   try {
     await fs.mkdir(dataDir, { recursive: true })
@@ -824,15 +828,16 @@ async function runEndToEndProbe(): Promise<CheckResult> {
         // probe proves hostPath reads/writes work through the gofer at the
         // worktree uid.
         ...runtimeClassSpec(),
-        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+        // Run at the identity a worktree pod runs at, and prove a hostPath
+        // WRITE works there — worktree setup's first unprivileged write (the
+        // worktree gitdir pointer) fails exactly here when it does not.
+        securityContext: {
+          seccompProfile: { type: 'RuntimeDefault' },
+          ...identity,
+        },
         containers: [{
           name: 'probe',
           image: imageRef,
-          // Run at the uid worktree images bake into their yaac user, and
-          // prove a hostPath WRITE works at that uid — worktree setup's
-          // first unprivileged write (the worktree gitdir pointer) fails
-          // exactly here when the uids don't line up.
-          securityContext: { runAsUser: podUid() },
           command: [
             'sh', '-c',
             'cat /probe/.cluster-check-nonce && echo ok > /probe/.cluster-check-write',
@@ -864,7 +869,7 @@ async function runEndToEndProbe(): Promise<CheckResult> {
           + '`yaac cluster install` (re-applies the runsc installer '
           + 'DaemonSet).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
-          + `${podUid()} cannot write hostPath mounts — see the `
+          + `${identity.runAsUser} cannot write hostPath mounts — see the `
           + 'virtiofs ownership notes in docs/cluster-setup.md '
           + '("macOS: the podman machine").',
       }
@@ -885,17 +890,18 @@ async function runEndToEndProbe(): Promise<CheckResult> {
     if (written?.trim() !== 'ok') {
       return {
         name: 'probe', status: 'fail',
-        detail: `probe pod's hostPath write (uid ${podUid()}) did not reach the host`,
-        fix: 'Session pods write hostPath mounts as the yaac user, whose '
-          + 'uid is baked in at image build time to match the server\'s. '
-          + 'Rebuild session images (delete stale yaac-base/yaac-tools '
-          + 'tags) and check the virtiofs ownership notes in '
-          + 'docs/cluster-setup.md ("macOS: the podman machine").',
+        detail: `probe pod's hostPath write (uid ${identity.runAsUser}) `
+          + 'did not reach the host',
+        fix: 'Session pods write hostPath mounts as the uid that owns the '
+          + 'data dir; on a strict-virtiofs host that uid is a ceiling '
+          + 'nothing in the cluster can raise. See the virtiofs ownership '
+          + 'notes in docs/cluster-setup.md ("macOS: the podman machine").',
       }
     }
     return {
       name: 'probe', status: 'pass',
-      detail: `registry pull + hostPath mount + uid ${podUid()} write verified`,
+      detail: `registry pull + hostPath mount + uid ${identity.runAsUser} `
+        + 'write verified',
     }
   } catch (err) {
     return {
@@ -1071,12 +1077,14 @@ async function probeNode(
         runtimeClassName: RUNTIME_CLASS_GVISOR,
         automountServiceAccountToken: false,
         enableServiceLinks: false,
-        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+        securityContext: {
+          seccompProfile: { type: 'RuntimeDefault' },
+          ...hostUidSecurityContext(),
+        },
         containers: [{
           name: 'probe',
           image: ctx.imageRef,
           imagePullPolicy: 'Always',
-          securityContext: { runAsUser: podUid() },
           command: [
             'sh', '-c',
             'dmesg 2>/dev/null | grep -qi gvisor && echo GVISOR_SANDBOXED; '
@@ -1258,6 +1266,7 @@ async function runMultiNodeReadiness(
     }
 
     const sentryVerified = outcomes.filter((o) => o.sandboxed).length
+    const probeUid = hostUidSecurityContext().runAsUser
     const gate = (
       name: (typeof MULTI_NODE_GATES)[number],
       broken: string[],
@@ -1322,13 +1331,13 @@ async function runMultiNodeReadiness(
           ...outcomes
             .filter((o) => o.phase === 'Succeeded' && !(o.sawNonce && o.wroteMarker))
             .map((o) => `${o.node} (${o.sawNonce
-              ? `uid ${podUid()} write did not reach the host`
+              ? `uid ${probeUid} write did not reach the host`
               : 'stale or absent mount'})`),
         ],
         [...failed.filter((o) => o.blame !== 'volume').map((o) => o.node), ...unlabelledNames],
         VOLUME_NODES_FIX,
         (list) => `${sharedRoot()} is not the server's on: ${list}`,
-        `shared data dir visible and writable at uid ${podUid()} from all `
+        `shared data dir visible and writable at uid ${probeUid} from all `
           + `${eligible.length} session-eligible nodes`,
       ),
     ]

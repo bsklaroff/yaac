@@ -29,7 +29,6 @@ import {
   SERVER_NODE_PORT,
   SERVER_POD_PORT,
   hostUidSecurityContext,
-  podUid,
   SERVER_SA_NAME,
   dataDirHash,
   k8sNamespace,
@@ -79,26 +78,19 @@ function serverDockerfile(context = serverImageContext()): string {
 }
 
 /**
- * The server image's tag: the content hash of the bundle it contains, plus
- * the uid its `yaac` user is built with.
+ * The server image's tag: the content hash of the bundle it contains.
  *
  * Same contract as every other yaac-shipped image — an unchanged bundle
  * costs one registry HEAD, and a rebuilt one is a different image, which is
- * exactly the signal the Deployment rolls on.
- *
- * The uid is in the tag for the same reason it is in `baseImageHash`, and
- * it is a parameter for the same reason: an image built for one uid must
- * not answer a lookup for another. Hashing only the bundle would let a
- * host find a tag already in the registry whose `yaac` user is a number
- * that host's Deployment does not run as — a pod with no such user, whose
- * HOME belongs to someone else.
+ * exactly the signal the Deployment rolls on. Content only, no uid: the
+ * image is uid-agnostic (docs/arbitrary-uid-images.md), so the tag a host
+ * finds in the registry is always an image it can run.
  */
 export async function resolveServerImageTag(
   context = serverImageContext(),
   prefix = testEnv.imagePrefix ?? 'yaac',
-  uid = podUid(),
 ): Promise<string> {
-  return `${prefix}-server:${stringHash(`${await contextHash(context)}:uid=${String(uid)}`)}`
+  return `${prefix}-server:${stringHash(await contextHash(context))}`
 }
 
 /**
@@ -116,10 +108,7 @@ export async function ensureServerImage(
   context = serverImageContext(),
   prefix = testEnv.imagePrefix ?? 'yaac',
 ): Promise<string> {
-  // One read of the uid for both the tag and the build arg: the two
-  // diverging is precisely the bug this tag exists to prevent.
-  const uid = podUid()
-  const tag = await resolveServerImageTag(context, prefix, uid)
+  const tag = await resolveServerImageTag(context, prefix)
   if (await registryHasTag(tag)) return registryRef(tag)
   const dockerfile = serverDockerfile(context)
   try {
@@ -131,13 +120,7 @@ export async function ensureServerImage(
       + 'an npm install ships one already.',
     )
   }
-  // The uid the SERVER POD runs as, which is what the image's own user has
-  // to be. That uid is this machine's, because the install is what knows
-  // it and the pod cannot: virtiofs makes the host user's uid a ceiling on
-  // what any pod can write in the data dir (see `podUid`).
-  await ensureImageByTag(tag, dockerfile, context, {
-    YAAC_UID: String(uid),
-  })
+  await ensureImageByTag(tag, dockerfile, context)
   return pushImageToRegistry(tag)
 }
 
@@ -422,12 +405,12 @@ export function buildServerDeploymentManifest(
           automountServiceAccountToken: true,
           enableServiceLinks: false,
           priorityClassName: PRIORITY_CLASS_INFRA,
-          // The uid every path the server pre-creates for a worktree pod is
-          // owned by. Under gVisor the gofer presents that real ownership,
-          // so the worktree image's `yaac` user is built with the same
-          // number. Stamped from the installing host rather than pinned:
-          // the data dir is a hostPath this machine owns, and no pod can
-          // write it as anything else (see `podUid`).
+          // The identity every path the server pre-creates for a worktree
+          // pod is owned by, stamped from the installing host: the data dir
+          // is a hostPath this machine owns and no pod can write it as
+          // anything else. No `fsGroup`: the data dir is this pod's only
+          // volume and the kubelet never manages a hostPath's ownership,
+          // while HOME is the image's own rootfs, writable through group 0.
           securityContext: hostUidSecurityContext(),
           // A rolled server should not sit in the drain while every
           // watcher's connection times out; its shutdown path is bounded to
@@ -438,6 +421,15 @@ export function buildServerDeploymentManifest(
               name: 'server',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
+              // No setuid path to real root. The server needs none — its
+              // image has no sudo — and without this there is one: the pod
+              // runs on plain runc in group 0 with a group-writable
+              // /etc/passwd, which with ubuntu's setuid `su` and pam_unix's
+              // `nullok` is enough to make the `yaac` line uid 0 with an
+              // empty password and `su` over the data-dir hostPath. Worktree
+              // pods are the opposite case by design: in-pod root is a
+              // feature there and the gVisor sentry is the boundary.
+              securityContext: { allowPrivilegeEscalation: false },
               ports: [{ containerPort: SERVER_POD_PORT }],
               env: buildServerEnv(envOpts),
               readinessProbe: {

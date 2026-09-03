@@ -39,10 +39,10 @@ ENV EDITOR=nvim
 # prefixes; each exists solely to be bumped. Cache invalidation cascades, so
 # bumping one also re-runs every step *below* it: bump the topmost step you
 # want refreshed, and the rest come along.
-RUN npm install -g chrome-devtools-mcp@0.24.0
+RUN umask 002 && npm install -g chrome-devtools-mcp@0.24.0
 # Codex, deliberately unpinned. Bump the date to pull a newer release (this is
 # the topmost unpinned step, so bumping it refreshes pi and claude too).
-RUN CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
+RUN umask 002 && CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
 # opencode-ai pinned to 1.0.142: it is the last release whose TUI renders under
 # gVisor. Starting at 1.0.143 opencode's native @opentui/core renderer blocks on
 # a terminal-capability handshake (pixel-resolution query) that our headless
@@ -51,18 +51,25 @@ RUN CODEX_REFRESH=2026-09-02 npm install -g @openai/codex
 # (see packages/server/src/features/sessions/create.ts) so a launched pod can't
 # npm-upgrade itself back off this pin. Revisit when the upstream renderer is
 # fixed under gVisor.
-RUN npm install -g opencode-ai@1.0.142
+RUN umask 002 && npm install -g opencode-ai@1.0.142
 # pi, deliberately unpinned. Bump the date to pull a newer release.
-RUN PI_REFRESH=2026-09-02 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+RUN umask 002 && PI_REFRESH=2026-09-02 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 # Claude Code, deliberately unpinned. Bump the date to pull a newer release.
-RUN CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bash
+# The installer picks its own modes (~/.claude/sessions lands 0700), and the
+# agent rewrites that whole tree every session — so normalize what it wrote
+# to group-writable in this same step, where it costs no copy-up. `find`
+# rather than a path list so a changed installer layout is caught: a path
+# that stops existing fails the build instead of silently going unwritable.
+RUN umask 002 && CLAUDE_CODE_REFRESH=2026-09-02 curl -fsSL https://claude.ai/install.sh | bash && \
+    find /home/yaac/.claude* /home/yaac/.local/share/claude \
+      ! -perm -g+w -exec chmod g=u {} +
 # The ACP adapter for Claude — the agent side of yaac's `acp` mode. Speaks
 # JSON-RPC over stdio (Agent Client Protocol) instead of rendering a TUI, so
 # the server drives it directly and the webapp renders structured messages in
 # a chat pane rather than attaching a PTY. Launched under acpd (see
 # /opt/yaac/acpd in the base image), never on its own. Pinned like every other
 # agent CLI here so a session's behavior can't change under it mid-release.
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
+RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.65.0
 
 # Agent-session discovery hook. The script body lives once in
 # worktree-bin/yaac-agent-links, which the server stages per worktree and
@@ -133,7 +140,7 @@ USER yaac
 # - kv.json: marks the once-per-install OpenRouter "subpar providers /
 #   OpenCode Zen" dialog as already dismissed; every pod is a fresh install,
 #   so it would otherwise interrupt every openrouter session.
-RUN mkdir -p ~/.cache/opencode ~/.local/state/opencode && \
+RUN umask 002 && mkdir -p ~/.cache/opencode ~/.local/state/opencode && \
     printf 14 > ~/.cache/opencode/version && \
     printf '{"openrouter_warning":true}' > ~/.local/state/opencode/kv.json
-COPY --chown=yaac:yaac opencode-models.json /home/yaac/.cache/opencode/models.json
+COPY --chown=yaac:0 --chmod=0664 opencode-models.json /home/yaac/.cache/opencode/models.json

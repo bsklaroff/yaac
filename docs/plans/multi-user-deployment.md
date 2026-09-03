@@ -473,9 +473,9 @@ A sweep of the HTTP/WS surface and the pod/runtime layer turned up specific
 flaws. Two structural facts frame all of them:
 
 - **Every worktree pod runs as the same host uid, with passwordless sudo,
-  on shared hostPaths** (`podUid()` in `drivers/k8s/substrate/pod-spec.ts`
-  bakes the server's uid into the image; the Job sets no `runAsUser`; gVisor
-  has no userns/idmap, so hostPath uids pass through raw). There is
+  on shared hostPaths** (`hostUidSecurityContext()` in
+  `drivers/k8s/substrate/pod-spec.ts` stamps every pod with the host's uid;
+  gVisor has no userns/idmap, so hostPath uids pass through raw). There is
   therefore **no filesystem-level isolation between worktrees** — owner
   separation can only come from *which paths get mounted*, never from
   permissions on a shared mount. Every "owner-key this dir" item below means

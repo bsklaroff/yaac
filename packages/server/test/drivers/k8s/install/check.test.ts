@@ -44,7 +44,6 @@ import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#drivers/k8s/substrate/kubectl'
 import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { podUid } from '#drivers/k8s/substrate'
 import { buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL } from '#drivers/k8s/substrate'
 import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
@@ -454,7 +453,11 @@ describe('runClusterCheck', () => {
       spec: {
         hostUsers?: boolean
         runtimeClassName?: string
-        securityContext: { seccompProfile: { type: string } }
+        securityContext: {
+          seccompProfile: { type: string }
+          runAsUser?: number
+          supplementalGroups?: number[]
+        }
         containers: Array<{
           securityContext?: { runAsUser?: number }
           volumeMounts: Array<{ readOnly?: boolean }>
@@ -468,14 +471,16 @@ describe('runClusterCheck', () => {
     // tier with no user namespace (the sentry replaces it).
     expect(podManifest.spec.runtimeClassName).toBe('gvisor')
     expect(podManifest.spec.hostUsers).toBeUndefined()
+    // The probe writes through the mount as a worktree pod would, so it
+    // carries the same identity buildPodJobManifest stamps — and a
+    // read-write mount.
     expect(podManifest.spec.securityContext).toEqual({
       seccompProfile: { type: 'RuntimeDefault' },
+      runAsUser: process.getuid?.(),
+      runAsGroup: process.getgid?.(),
+      supplementalGroups: [0],
     })
-    // The probe writes through the mount at the session-image uid, so it
-    // must run at that uid with a read-write mount.
-    expect(podManifest.spec.containers[0].securityContext).toEqual({
-      runAsUser: podUid(),
-    })
+    expect(podManifest.spec.containers[0].securityContext).toBeUndefined()
     expect(podManifest.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined()
     // The nonce and write-marker files are cleaned up afterwards.
     await expect(
@@ -594,6 +599,7 @@ describe('runClusterCheck', () => {
         spec?: {
           nodeName?: string
           runtimeClassName?: string
+          securityContext?: { runAsUser?: number; supplementalGroups?: number[] }
           containers: Array<{
             imagePullPolicy?: string
             securityContext?: { runAsUser?: number }
@@ -609,7 +615,8 @@ describe('runClusterCheck', () => {
       // Always, so a layer already on the node cannot mask an unreachable
       // registry.
       expect(pod.spec?.containers[0].imagePullPolicy).toBe('Always')
-      expect(pod.spec?.containers[0].securityContext?.runAsUser).toBe(podUid())
+      expect(pod.spec?.securityContext?.runAsUser).toBe(process.getuid?.())
+      expect(pod.spec?.securityContext?.supplementalGroups).toEqual([0])
       expect(pod.spec?.volumes[0].hostPath?.path).toBe(getDataDir())
     }
 

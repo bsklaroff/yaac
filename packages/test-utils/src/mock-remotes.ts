@@ -5,7 +5,6 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { baseImageHash } from '@yaac/server/drivers/k8s/image-engine/image-builder'
-import { podUid } from '@yaac/server/drivers/k8s/substrate'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
@@ -75,9 +74,7 @@ export interface MockGit {
  */
 export async function resolveTestBaseImageRef(): Promise<string> {
   const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  // podUid(), matching test/global-setup.ts's `resolveTrustedLayers('yaac-test')`,
-  // which defaults to this process's uid — the two must derive the same tag.
-  const tag = `yaac-test-base:${await baseImageHash(dockerfile, podUid())}`
+  const tag = `yaac-test-base:${await baseImageHash(dockerfile)}`
   if (!await registryHasTag(tag)) {
     throw new Error(
       `${tag} is not in the local registry — did test/global-setup.ts run `
