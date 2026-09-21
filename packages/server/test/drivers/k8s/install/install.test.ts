@@ -476,6 +476,47 @@ describe('runClusterInstall', () => {
       f === 'kind' && a.join(' ').includes('create cluster --name yaac-alt'))).toBe(true)
   })
 
+  it("hands the server pod the host's IPv4 gateway on a dual-stack kind network", async () => {
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    // A dual-stack kind network has one subnet per family, so the gateway
+    // template emits two addresses: only the v4 one is an address a pod can
+    // dial a host-bound Tor at, and joining them is not an address at all.
+    const deps = makeDeps({
+      run: vi.fn((file: string, args: string[]) => (
+        file === 'podman' && args[0] === 'network' && args[1] === 'inspect'
+          ? Promise.resolve({ stdout: 'fd00:4:3:2::1 10.89.0.1 \n', stderr: '' })
+          : happyRun(file, args)
+      )) as RunMock,
+    })
+
+    await runClusterInstall({}, deps)
+
+    expect(deps.deployServer).toHaveBeenCalledWith(
+      expect.objectContaining({ torHostAddr: '10.89.0.1' }),
+    )
+    expect(logged(deps)).not.toContain('could not be determined')
+  })
+
+  it('notes a degraded Tor setup when the kind network has no IPv4 gateway', async () => {
+    vi.stubEnv('YAAC_USE_TOR', '1')
+    const deps = makeDeps({
+      run: vi.fn((file: string, args: string[]) => (
+        file === 'podman' && args[0] === 'network' && args[1] === 'inspect'
+          ? Promise.resolve({ stdout: 'fd00:4:3:2::1 \n', stderr: '' })
+          : happyRun(file, args)
+      )) as RunMock,
+    })
+
+    await runClusterInstall({}, deps)
+
+    // The install still finishes — the pod just keeps its configured SOCKS
+    // URL, which is a Tor that cannot be reached rather than a failed setup.
+    expect(deps.deployServer).toHaveBeenCalledWith(
+      expect.objectContaining({ torHostAddr: undefined }),
+    )
+    expect(logged(deps)).toContain('could not be determined')
+  })
+
   it('renders one worker per extra --nodes, each carrying the home extraMount', async () => {
     const deps = makeDeps({ run: freshRun() })
     await runClusterInstall({ nodes: 3 }, deps)

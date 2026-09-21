@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
+import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import { ensurePriorityClasses, execFileAsync, k8sNamespace } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
@@ -1099,17 +1100,20 @@ async function deployServer(deps: ClusterInstallDeps): Promise<void> {
 }
 
 /**
- * The host's address on the kind network — where a pod reaches a listener
- * bound on the host. `undefined` when it cannot be read, which is a
+ * The host's IPv4 address on the kind network — where a pod reaches a
+ * listener bound on the host. `undefined` when it cannot be read, which is a
  * degraded Tor setup rather than a failed install.
+ *
+ * A dual-stack kind network has one subnet per family, so the template emits
+ * every gateway separated by spaces and we take the IPv4 one — concatenating
+ * them would yield a single unparseable address.
  */
 async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string | undefined> {
   try {
     const { stdout } = await deps.run('podman', [
-      'network', 'inspect', 'kind', '--format', '{{range .Subnets}}{{.Gateway}}{{end}}',
+      'network', 'inspect', 'kind', '--format', '{{range .Subnets}}{{.Gateway}} {{end}}',
     ])
-    const addr = stdout.trim()
-    return addr === '' ? undefined : addr
+    return stdout.trim().split(/\s+/).find(isIPv4)
   } catch {
     return undefined
   }
