@@ -17,6 +17,7 @@ import {
 } from '#lib/icons'
 import {
   addGitCredential,
+  generateSshKey,
   cancelToolInstall,
   cancelToolLogin,
   clearToolAuth,
@@ -371,17 +372,19 @@ function CredentialsPane(): JSX.Element {
           ))}
         </div>
       </Field>
-      <Field label="Git credentials" hint="HTTPS tokens injected into worktree containers.">
+      <Field label="Git credentials" hint="HTTPS tokens the proxy injects, and SSH keys yaac generated — register the public key with the host.">
         <div className="space-y-1.5 text-xs">
           {auth?.gitCredentials.map((c) => (
-            <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
+            c.publicKey !== undefined
+              ? <SshKeyRow key={c.pattern} pattern={c.pattern} publicKey={c.publicKey} preview={c.preview} />
+              : <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
           ))}
           {auth && auth.gitCredentials.length === 0 && (
             <p className="text-text-faint">No git credentials configured.</p>
           )}
         </div>
       </Field>
-      <Field label="Add git credential" hint="HTTPS token for a host pattern, e.g. github.com/*.">
+      <Field label="Add git credential" hint="An HTTPS token for a host pattern (e.g. github.com/*), or a generated SSH key for one.">
         <AddGitCredential onAdded={refresh} />
       </Field>
     </section>
@@ -1105,9 +1108,39 @@ function GitIdentityField(): JSX.Element {
   )
 }
 
+/** One generated SSH key: the pattern and its public half, with a copy
+ *  button — the public key is the whole of what there is to show. */
+function SshKeyRow({ pattern, publicKey, preview }: {
+  pattern: string
+  publicKey: string
+  preview: string
+}): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(publicKey)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5">
+      <span className="shrink-0 font-mono text-text-dim">{`ssh · ${pattern}`}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-text-faint" title={preview}>{preview}</span>
+      <button
+        type="button"
+        onClick={copy}
+        className="shrink-0 rounded-md bg-surface-3 px-2 py-0.5 text-xs text-text transition hover:bg-border-strong"
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
+
 function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
+  const [kind, setKind] = useState<'https' | 'ssh'>('https')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [generated, setGenerated] = useState<{ pattern: string; publicKey: string; knownHostsEntry: string } | null>(null)
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
@@ -1118,11 +1151,17 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
     const rawToken = form.get('token')
     const pattern = (typeof rawPattern === 'string' ? rawPattern : '').trim()
     const token = (typeof rawToken === 'string' ? rawToken : '').trim()
-    if (!pattern || !token) return
+    if (!pattern || (kind === 'https' && !token)) return
     setBusy(true)
     setError(null)
     try {
-      await addGitCredential(pattern, token)
+      if (kind === 'https') {
+        await addGitCredential(pattern, token)
+        setGenerated(null)
+      } else {
+        const { publicKey, knownHostsEntry } = await generateSshKey(pattern)
+        setGenerated({ pattern, publicKey, knownHostsEntry })
+      }
       formElement.reset()
       onAdded()
     } catch (err) {
@@ -1138,28 +1177,46 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
           two side-by-side fields leave the token one about 70px, which is a
           box you can't read a pasted token in. */}
       <div className="flex gap-2 max-md:flex-col">
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value === 'ssh' ? 'ssh' : 'https')}
+          className="shrink-0 rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
+        >
+          <option value="https">HTTPS token</option>
+          <option value="ssh">SSH key</option>
+        </select>
         <input
           name="pattern"
           placeholder="github.com/*"
           className="w-40 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
             outline-none focus:border-border-strong max-md:w-full"
         />
-        <input
-          name="token"
-          type="password"
-          placeholder="token"
-          className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong"
-        />
+        {kind === 'https' && (
+          <input
+            name="token"
+            type="password"
+            placeholder="token"
+            className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
+              outline-none focus:border-border-strong"
+          />
+        )}
         <button
           type="submit"
           disabled={busy}
           className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
             hover:bg-border-strong disabled:opacity-50 max-md:py-2.5"
         >
-          {busy ? 'Adding…' : 'Add'}
+          {busy ? (kind === 'ssh' ? 'Generating…' : 'Adding…') : (kind === 'ssh' ? 'Generate' : 'Add')}
         </button>
       </div>
+      {generated && (
+        <div className="space-y-1 break-all font-mono text-xs text-text-dim">
+          <p>Public key for {generated.pattern} — register it with the host: {generated.publicKey}</p>
+          {/* The host key this generate trusted, on first use: shown so it can
+              be compared against what the host publishes. */}
+          <p>Host key trusted: {generated.knownHostsEntry}</p>
+        </div>
+      )}
       {error && <p className="text-xs text-red-400">{error}</p>}
     </form>
   )

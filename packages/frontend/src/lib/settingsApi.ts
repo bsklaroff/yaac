@@ -19,6 +19,12 @@ export async function addGitCredential(pattern: string, token: string): Promise<
   await api.auth.git.credentials.$post({ json: { kind: 'https', pattern, token } })
 }
 
+/** Generate (or replace) the SSH key for a pattern; the server fetches the
+ *  host key and answers with the public half to register with the host. */
+export async function generateSshKey(pattern: string): Promise<{ publicKey: string; knownHostsEntry: string }> {
+  return api.auth.git['ssh-keys'].$post({ json: { pattern } })
+}
+
 /** Save a pasted API key as the tool's credential (provider: opencode/pi only). */
 export async function setToolApiKey(
   tool: AgentTool,

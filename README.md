@@ -473,7 +473,8 @@ the contents into the project image.
 ## Secrets at rest
 
 Everything secret this server stores is encrypted in its database: a
-project's proxied secrets, and the SSH private keys git authenticates with.
+project's proxied secrets, and the SSH private keys git authenticates with
+(which yaac generates itself and never shows — see [docs/ssh-keys.md](docs/ssh-keys.md)).
 The cipher is [better-auth](https://better-auth.com)'s `symmetricEncrypt`:
 XChaCha20-Poly1305 with a random nonce per value, keyed by the SHA-256 of a
 secret string, and a versioned envelope so a key can be rotated without

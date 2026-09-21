@@ -188,7 +188,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/auth/:tool', request: '/auth/claude', body: {}, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/auth/claude/usage/refresh', body: {}, k8s: [200, 204, 400, 401, 404], containerless: [200, 204, 400, 401, 404] },
   { method: 'POST', path: '/auth/git/credentials', body: {}, k8s: 400, containerless: 400 },
-  { method: 'PUT', path: '/auth/git/credentials', body: {}, k8s: 400, containerless: 400 },
+  { method: 'POST', path: '/auth/git/ssh-keys', body: {}, k8s: 400, containerless: 400 },
   { method: 'DELETE', path: '/auth/git/credentials/:pattern', request: '/auth/git/credentials/nope', k8s: [200, 204, 404], containerless: [200, 204, 404] },
   { method: 'POST', path: '/auth/:tool/login/start', request: '/auth/claude/login/start', body: {}, k8s: [200, 400, 409, 503], containerless: [200, 400, 409, 503] },
   { method: 'GET', path: '/auth/login/:id', request: '/auth/login/nope', k8s: MISSING, containerless: MISSING },

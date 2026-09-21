@@ -16,10 +16,10 @@ import type * as gitModule from '#domain/git'
 import { addProject } from '#domain/projects'
 import { addEntry } from '#domain/projects'
 import { upsertGitSshKey } from '#db'
+import { generateSshKey } from '#lib/ssh-key'
 
 /** A key-shaped string. The store seals whatever it is handed; nothing here
  *  makes ssh parse it. */
-const SSH_KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n'
 import {
   projectDir,
   repoDir,
@@ -77,21 +77,27 @@ describe('addProject', () => {
   })
 
   it('accepts an SCP-style remote against an ssh credential', async () => {
-    // Seeded through the store rather than through addEntry, which probes the
-    // key with ssh-keygen — beside the point here.
+    const key = generateSshKey('yaac git.example.com/*')
     await upsertGitSshKey({
       pattern: 'git.example.com/*',
-      privateKey: SSH_KEY,
+      seed: key.seed,
+      publicKey: key.publicKey,
       knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
     })
 
     const { project } = await addProject('git@git.example.com:group/sub/Repo.git')
 
     expect(project.slug).toBe('repo')
+    // The clone is handed the public halves only: the agent signs.
     expect(mockClone).toHaveBeenCalledWith(
       'git@git.example.com:group/sub/Repo.git',
       repoDir('repo'),
-      { kind: 'ssh', privateKey: SSH_KEY, knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
+      {
+        kind: 'ssh',
+        pattern: 'git.example.com/*',
+        publicKey: key.publicKey,
+        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+      },
     )
   })
 

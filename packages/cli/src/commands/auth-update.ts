@@ -1,71 +1,14 @@
 import readline from 'node:readline/promises'
-import os from 'node:os'
-import path from 'node:path'
-import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import * as childProcess from 'node:child_process'
 import { getApiClient } from '@yaac/shared/server-api'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
 import { validatePattern, parsePattern } from '@yaac/shared/credentials'
-import { torSshOpts } from '@yaac/shared/git'
-import { expandTilde } from '@yaac/shared/paths'
 import {
   buildAuthPayload,
   promptForApiKey,
   runToolLogin,
 } from '@yaac/shared/tool-auth-interactive'
 import type { AgentTool } from '@yaac/shared/types'
-
-/**
- * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
- *
- * Why ssh: ssh-keyscan does not accept `-o ProxyCommand=…` (its `-O` flag
- * only takes `hashalg`), so it can't be routed through Tor. ssh does honor
- * `-o ProxyCommand=…`, and with StrictHostKeyChecking=accept-new +
- * UserKnownHostsFile=<tmp> it persists the negotiated host key to the temp
- * file during KEX, before BatchMode kills the auth step.
- *
- * Returns the single key type ssh actually negotiated — which is the entry
- * the subsequent git-over-ssh connection will use, so it's what we want.
- */
-async function fetchKnownHostsEntry(host: string): Promise<string> {
-  const tmp = path.join(
-    os.tmpdir(),
-    `yaac-knownhosts-${crypto.randomBytes(6).toString('hex')}`,
-  )
-  await fs.writeFile(tmp, '', { mode: 0o600 })
-  try {
-    const args = [
-      '-F', '/dev/null',
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', `UserKnownHostsFile=${tmp}`,
-      '-o', 'HashKnownHosts=no',
-      '-o', 'BatchMode=yes',
-      '-o', 'IdentitiesOnly=yes',
-      '-o', 'ConnectTimeout=10',
-      ...torSshOpts(),
-      `nobody@${host}`,
-      'true',
-    ]
-    let stderr = ''
-    await new Promise<void>((resolve) => {
-      const child = childProcess.spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
-      child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-      child.on('error', () => resolve())
-      child.on('close', () => resolve())
-    })
-    const written = await fs.readFile(tmp, 'utf8')
-    const lines = written.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
-    if (lines.length === 0) {
-      const tail = stderr.trim().split('\n').slice(-3).join(' | ')
-      throw new Error(`no host key recovered for ${host}${tail ? `: ${tail}` : ''}`)
-    }
-    return lines[0]
-  } finally {
-    await fs.rm(tmp, { force: true })
-  }
-}
 
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -105,7 +48,7 @@ async function runGitUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Credential type:')
   console.log('  a) HTTPS (personal access token)')
-  console.log('  b) SSH (private key reference)')
+  console.log('  b) SSH (a key yaac generates)')
   const kindAnswer = (await rl.question('Choice [a/b]: ')).trim().toLowerCase()
   rl.close()
 
@@ -150,7 +93,8 @@ async function runHttpsUpdate(): Promise<void> {
 
 async function runSshUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Add an SSH git credential.')
+  console.log('Generate an SSH key for a git host. The server keeps the private key encrypted')
+  console.log('and never shows it; you register the public key with the host.')
   console.log('Pattern examples: git.example.com/*, git.example.com/team/*, git.example.com/team/repo')
   const pattern = (await rl.question('Repo pattern: ')).trim()
   if (!pattern) {
@@ -163,75 +107,21 @@ async function runSshUpdate(): Promise<void> {
     console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
     process.exit(1)
   }
+  const host = parsePattern(pattern).host
 
-  // A path on THIS machine: the key's content is what travels, so the server
-  // never has to be able to open the file — which is what makes an SSH
-  // credential work against a server on another machine at all.
-  const keyPathAnswer = (await rl.question(
-    'Private key path on this machine (e.g. ~/.ssh/id_ed25519): ',
-  )).trim()
-  if (!keyPathAnswer) {
-    rl.close()
-    console.error('Private key path cannot be empty.')
-    process.exit(1)
-  }
-  let privateKey: string
-  try {
-    privateKey = await fs.readFile(expandTilde(keyPathAnswer), 'utf8')
-  } catch (err) {
-    rl.close()
-    console.error(`Could not read ${keyPathAnswer}: ${err instanceof Error ? err.message : String(err)}`)
-    process.exit(1)
-  }
-  if (privateKey.includes('PUBLIC KEY') || keyPathAnswer.endsWith('.pub')) {
-    rl.close()
-    console.error('That is the public half — yaac needs the private key (the file without ".pub").')
-    process.exit(1)
-  }
-  // Checked here as well as on the server so the complaint arrives next to
-  // the prompt that caused it, before anything is sent.
-  if (!await keyHasNoPassphrase(expandTilde(keyPathAnswer))) {
-    rl.close()
-    console.error(
-      'That key is passphrase-protected. yaac does not prompt for passphrases; '
-      + 'use an unencrypted key, or remove the passphrase with `ssh-keygen -p -f <key>`.',
-    )
-    process.exit(1)
-  }
-
-  let host: string
-  try {
-    host = parsePattern(pattern).host
-  } catch {
-    rl.close()
-    console.error('Could not derive host from pattern.')
-    process.exit(1)
-  }
-
-  console.log(`Known-hosts entry for ${host} — paste the line, or type "fetch" to retrieve it via ssh:`)
-  let knownHostsEntry = (await rl.question('Entry: ')).trim()
-  if (knownHostsEntry.toLowerCase() === 'fetch') {
-    try {
-      knownHostsEntry = await fetchKnownHostsEntry(host)
-      console.log(`Fetched: ${knownHostsEntry}`)
-    } catch (err) {
-      rl.close()
-      console.error(`Failed to fetch known_hosts entry: ${err instanceof Error ? err.message : String(err)}`)
-      process.exit(1)
-    }
-  }
+  console.log(`Known-hosts entry for ${host} — press Enter to let the server fetch it via ssh, or paste the line:`)
+  const knownHostsEntry = (await rl.question('Entry: ')).trim()
   rl.close()
 
-  if (!knownHostsEntry) {
-    console.error('Known-hosts entry cannot be empty.')
-    process.exit(1)
-  }
-
   const client = getApiClient()
-  await client.auth.git.credentials.$post({
-    json: { kind: 'ssh', pattern, privateKey, knownHostsEntry },
+  const generated = await client.auth.git['ssh-keys'].$post({
+    json: { pattern, ...(knownHostsEntry ? { knownHostsEntry } : {}) },
   })
-  console.log(`SSH credential saved for pattern "${pattern}".`)
+  console.log(`SSH key generated for pattern "${pattern}". If this pattern already had a key,`)
+  console.log('the previous public key no longer works.')
+  console.log(`Host key: ${generated.knownHostsEntry}`)
+  console.log(`Public key — add it to ${host} as a deploy key, or to your account:`)
+  console.log(generated.publicKey)
 }
 
 async function runToolUpdate(tool: AgentTool): Promise<void> {
@@ -277,23 +167,4 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   const client = getApiClient()
   await client.auth[':tool'].$put({ param: { tool }, json: payload })
   console.log(`${label} credentials saved.`)
-}
-
-/**
- * Whether the key at `keyPath` loads without a passphrase.
- *
- * `ssh-keygen -y -P ''` prints the public half of an unencrypted key and
- * exits nonzero for one that needs a passphrase. The server runs the same
- * check on the content it receives; this one exists so the answer arrives
- * while the user is still standing at the prompt.
- */
-async function keyHasNoPassphrase(keyPath: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const child = childProcess.spawn('ssh-keygen', ['-y', '-P', '', '-f', keyPath], {
-      stdio: 'ignore',
-    })
-    // ssh-keygen missing is not a verdict about the key — let the server say.
-    child.on('error', () => { resolve(true) })
-    child.on('close', (code) => { resolve(code === 0) })
-  })
 }

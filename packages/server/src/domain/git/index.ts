@@ -1,7 +1,8 @@
 // The public interface of git: the server's process boundary onto the
-// `simple-git` dependency. Two halves — `transport.ts` turns a resolved
-// credential into a runnable git invocation, `repo.ts` runs the operations
-// against a project's clone and the worktrees cut from it.
+// `simple-git` dependency. Three parts — `transport.ts` turns a resolved
+// credential into a runnable git invocation, `agent.ts` is the ssh-agent that
+// invocation signs through, `repo.ts` runs the operations against a
+// project's clone and the worktrees cut from it.
 //
 // Not yet the ONLY boundary, and worth saying so rather than implying
 // otherwise: `domain/worktrees/prewarm.ts` (one `revparse`) and
@@ -19,16 +20,15 @@
 // obliges a unit test in packages/server/test/domain/git/.
 
 export {
-  buildHostSideGitSshCommand,
+  fetchKnownHostsEntry,
   gitEnvForCredential,
-  sweepSshKeyScratch,
-  withSshKeyFile,
   injectTokenIntoUrl,
   isGitAuthError,
   torEnv,
   writeKnownHostsFile,
   type ResolvedGitCredential,
 } from './transport'
+export { startGitSshAgent, stopGitSshAgent } from './agent'
 export {
   addWorktree,
   cloneRepo,

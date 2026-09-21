@@ -219,31 +219,6 @@ since it imports nothing and is purely a message. The ref rewrite must go
 LAST of the three: dropping it while a pre-upgrade registration is still in
 some proxy's `/data` turns that worktree's injections off silently.
 
-## `importLegacySshKeys`
-
-`importLegacySshKeys` (`domain/projects/credentials.ts`), called from the same
-startup step, reads any `kind: 'ssh'` entry left in
-`.credentials/github.json`, loads the key at the path it names, seals it into
-a `git_ssh_keys` row, and rewrites the file without it.
-
-**What it reads:** those entries, and the key files they point at. Only a
-containerless install can have a working one — a cluster install refused ssh
-credentials outright, because the pod cannot open a path in your home — so
-this is a narrow case by construction.
-
-**What breaks silently if it is deleted too early:** nothing reads an ssh
-entry from that file any more, so an install that upgrades without this
-simply stops authenticating to its SSH remotes, with no error until the first
-fetch and nothing on screen tying it to the upgrade. Leaving the entry in
-place would be worse than removing it, since the file would go on looking
-authoritative.
-
-**How to tell it is safe to remove:** no `github.json` in use still carries a
-`kind: 'ssh'` entry. An entry is stripped only once its key is sealed, so a
-read that fails for a passing reason — a home not mounted yet, a permission
-hiccup — is retried on the next start rather than lost; a single successful
-start per install is what finishes it.
-
 ## The `YAAC_SERVER_GIT_*` identity seed
 
 `seedLegacyGitIdentity` (`main/server-run.ts`) writes `YAAC_SERVER_GIT_NAME`

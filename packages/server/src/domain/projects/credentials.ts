@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises'
-import * as childProcess from 'node:child_process'
 import {
   credentialsDir,
   githubCredentialsPath,
@@ -7,21 +6,15 @@ import {
 } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { parsePattern, validatePattern, matchPattern } from '@yaac/shared/credentials'
-import { expandTilde } from '@yaac/shared/paths'
-import {
-  deleteAllGitSshKeys,
-  deleteGitSshKey,
-  listGitSshKeys,
-  upsertGitSshKey,
-} from '#db'
+import { deleteGitSshKey, listGitSshKeys, upsertGitSshKey } from '#db'
 import { serverLog } from '#log'
-import { withSshKeyFile } from '#domain/git'
+import { fetchKnownHostsEntry } from '#domain/git'
 import type { ResolvedGitCredential } from '#domain/git'
+import { encodeOpenSshPrivateKey, generateSshKey } from '#lib/ssh-key'
 import type {
-  GitCredentialEntry,
+  GitCredentialSummary,
   GitCredentialsFile,
   HttpsGitCredentialEntry,
-  SshGitCredentialEntry,
 } from '@yaac/shared/types'
 
 async function ensureCredentialsDir(): Promise<void> {
@@ -49,12 +42,19 @@ function patternComplaint(pattern: string): string {
 /**
  * One entry of the credentials FILE, which holds https tokens only.
  *
- * An ssh entry in it is legacy state: {@link importLegacySshKeys} seals
- * those into rows at startup and strips them, and anything still here after
- * that had no readable key behind it (docs/legacy-compat-shims.md).
+ * An ssh entry in it is what an install from before keys were sealed rows
+ * wrote: a path into the user's home. It is named on the way past rather
+ * than silently dropped, because the file would otherwise go on looking
+ * authoritative while that project's SSH auth had stopped.
  */
 function normalizeEntry(raw: Record<string, unknown>): HttpsGitCredentialEntry | null {
   const kind = raw.kind ?? 'https'
+  if (kind === 'ssh') {
+    serverLog(`[credentials] ignoring the ssh entry for "${String(raw.pattern)}" in `
+      + '.credentials/github.json: keys are generated now — run `yaac auth update` '
+      + 'to make one, then remove the entry')
+    return null
+  }
   if (kind === 'https') {
     if (typeof raw.pattern !== 'string' || typeof raw.token !== 'string' || !raw.token) {
       return null
@@ -181,13 +181,14 @@ export async function resolveCredentialForUrl(
   }
   for (const key of await listGitSshKeys()) {
     if (!matchPattern(key.pattern, host, repoPath)) continue
-    // An unreadable key is skipped rather than returned empty: the caller
-    // would build an ssh command around nothing and fail at the remote,
-    // where the cause is invisible. The store has already said which row.
-    if (key.privateKey === undefined) continue
+    // An unreadable key is skipped rather than returned: the agent would
+    // refuse to sign with it and the fetch would fail at the remote, where
+    // the cause is invisible. The store has already said which row.
+    if (await key.openSeed() === undefined) continue
     return {
       kind: 'ssh',
-      privateKey: key.privateKey,
+      pattern: key.pattern,
+      publicKey: key.publicKey,
       knownHostsEntry: key.knownHostsEntry,
     }
   }
@@ -208,48 +209,14 @@ export async function loadKnownHostsEntryForHost(host: string): Promise<string |
 }
 
 /**
- * Reject encrypted private keys: ssh-keygen exits non-zero if the key needs a
- * passphrase. We use `-P ""` so the empty-passphrase test is non-interactive.
+ * Add or replace an https credential. Matches existing by exact pattern.
  */
-export async function assertKeyHasNoPassphrase(privateKey: string): Promise<void> {
-  await withSshKeyFile(privateKey, (keyPath) => new Promise<void>((resolve, reject) => {
-    const child = childProcess.spawn('ssh-keygen', ['-y', '-P', '', '-f', keyPath], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    })
-    let stderr = ''
-    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-      reject(new ServerError(
-        'VALIDATION',
-        'The SSH private key could not be loaded without a passphrase. '
-        + 'yaac does not prompt for passphrases; please re-encrypt the key without one '
-        + `(ssh-keygen -p -f <key>) or provide an unencrypted key. (${stderr.trim()})`,
-      ))
-    })
-  }))
-}
-
-/** What an OpenSSH private key file starts with, whatever its algorithm. */
-const PEM_HEADER = /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/
-
-/**
- * Add or replace a credential entry. Matches existing by exact pattern.
- */
-export async function addEntry(entry: GitCredentialEntry): Promise<void> {
+export async function addEntry(entry: HttpsGitCredentialEntry): Promise<void> {
   if (!validatePattern(entry.pattern)) {
     throw new ServerError(
       'VALIDATION',
       'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
     )
-  }
-  if (entry.kind === 'ssh') {
-    await addSshEntry(entry)
-    return
   }
   if (!entry.token) {
     throw new ServerError('VALIDATION', 'Token cannot be empty.')
@@ -264,44 +231,62 @@ export async function addEntry(entry: GitCredentialEntry): Promise<void> {
   await saveCredentials(creds)
 }
 
-/**
- * Everything that can be checked about an ssh entry without writing it.
- *
- * Separate from the write so a wholesale replace can validate the whole list
- * first: the passphrase probe spawns `ssh-keygen`, so a bad entry is only
- * discovered here, and discovering it after the delete would cost every key
- * that was working.
- */
-async function validateSshEntry(entry: SshGitCredentialEntry): Promise<void> {
-  // Checked, never rewritten: a key file is bytes OpenSSH parses, and the one
-  // thing worth normalizing (a missing trailing newline) is added where the
-  // file is written.
-  const privateKey = entry.privateKey
-  if (!privateKey.trim()) {
-    throw new ServerError('VALIDATION', 'The SSH private key cannot be empty.')
-  }
-  if (!PEM_HEADER.test(privateKey.trimStart())) {
-    throw new ServerError(
-      'VALIDATION',
-      'That does not look like an SSH private key — expected a file beginning '
-      + '"-----BEGIN OPENSSH PRIVATE KEY-----" (the key itself, not its path '
-      + 'and not the .pub half).',
-    )
-  }
-  if (!entry.knownHostsEntry) {
-    throw new ServerError('VALIDATION', 'knownHostsEntry cannot be empty.')
-  }
-  await assertKeyHasNoPassphrase(privateKey)
+/** What a generated key hands back: everything about it that is public. */
+export interface GeneratedSshCredential {
+  pattern: string
+  publicKey: string
+  knownHostsEntry: string
 }
 
-/** Validate a key and seal it into its row. */
-async function addSshEntry(entry: SshGitCredentialEntry): Promise<void> {
-  await validateSshEntry(entry)
-  await upsertGitSshKey({
-    pattern: entry.pattern,
-    privateKey: entry.privateKey,
-    knownHostsEntry: entry.knownHostsEntry,
-  })
+/**
+ * Generate the SSH key for a repo pattern and seal it (docs/ssh-keys.md).
+ *
+ * A pattern that already has a key gets a NEW one — the row is replaced,
+ * and the previous public key stops working the moment this returns. The
+ * host key is fetched here unless the caller pasted one, and echoed back
+ * either way so the user can compare a fingerprint: this is trust on first
+ * use, and the response is where the "first use" is shown.
+ */
+export async function generateSshCredential(params: {
+  pattern: string
+  knownHostsEntry?: string
+}): Promise<GeneratedSshCredential> {
+  const { pattern } = params
+  if (!validatePattern(pattern)) {
+    throw new ServerError(
+      'VALIDATION',
+      'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
+    )
+  }
+  const host = parsePattern(pattern).host
+  let knownHostsEntry = params.knownHostsEntry?.trim() ?? ''
+  if (!knownHostsEntry) {
+    try {
+      knownHostsEntry = await fetchKnownHostsEntry(host)
+    } catch (err) {
+      throw new ServerError(
+        'VALIDATION',
+        `Could not fetch the host key for ${host} (${err instanceof Error ? err.message : String(err)}); `
+        + 'paste a known_hosts line instead.',
+      )
+    }
+  }
+  const key = generateSshKey(`yaac ${pattern}`)
+  await upsertGitSshKey({ pattern, seed: key.seed, publicKey: key.publicKey, knownHostsEntry })
+  return { pattern, publicKey: key.publicKey, knownHostsEntry }
+}
+
+/**
+ * The private key for a pattern, in the form `ssh-add -` reads — for a
+ * workspace on a substrate with no proxy to sign for it, which loads it
+ * into an agent of its own. Opened here and handed on, never written.
+ */
+export async function sshKeyMaterial(pattern: string): Promise<string> {
+  const seed = await (await listGitSshKeys()).find((k) => k.pattern === pattern)?.openSeed()
+  if (!seed) {
+    throw new ServerError('VALIDATION', `The SSH key for "${pattern}" cannot be opened; generate a new one.`)
+  }
+  return encodeOpenSshPrivateKey(seed, `yaac ${pattern}`)
 }
 
 /**
@@ -326,84 +311,38 @@ export async function removeEntryChecked(pattern: string): Promise<void> {
 }
 
 /**
- * Replace the full credential list. Validates each entry.
- */
-export async function replaceEntries(entries: GitCredentialEntry[]): Promise<void> {
-  for (const entry of entries) {
-    if (!entry || (entry.kind !== 'https' && entry.kind !== 'ssh')) {
-      throw new ServerError('VALIDATION', 'Each credential entry needs a kind of "https" or "ssh".')
-    }
-    if (!validatePattern(entry.pattern)) {
-      throw new ServerError('VALIDATION', `Invalid pattern "${entry.pattern}".`)
-    }
-    if (entry.kind === 'https' && !entry.token) {
-      throw new ServerError('VALIDATION', `Empty token for pattern "${entry.pattern}".`)
-    }
-    if (entry.kind === 'ssh' && (!entry.privateKey || !entry.knownHostsEntry)) {
-      throw new ServerError(
-        'VALIDATION',
-        `SSH entry "${entry.pattern}" needs privateKey and knownHostsEntry.`,
-      )
-    }
-  }
-  const https = entries.filter((e): e is HttpsGitCredentialEntry => e.kind === 'https')
-  const ssh = entries.filter((e): e is SshGitCredentialEntry => e.kind === 'ssh')
-
-  // Every key is checked BEFORE anything is written. The shape checks above
-  // are cheap and say nothing about the key material; these spawn
-  // `ssh-keygen` and are where a pasted `.pub` or a passphrase-protected key
-  // is caught. Doing them after the delete would mean one bad entry in the
-  // list costs every previously-working key — a 400 the caller sees, and an
-  // agent nobody re-synced.
-  for (const entry of ssh) await validateSshEntry(entry)
-
-  // The two halves live in different stores, so a wholesale replace is two
-  // replaces: the file for https, the table for ssh. Each kind is emptied
-  // before its entries are written, which is what makes this a replace
-  // rather than a merge — an omitted ssh pattern is a removed key.
-  await saveCredentials({ tokens: https })
-  await deleteAllGitSshKeys()
-  for (const entry of ssh) {
-    await upsertGitSshKey({
-      pattern: entry.pattern,
-      privateKey: entry.privateKey,
-      knownHostsEntry: entry.knownHostsEntry,
-    })
-  }
-}
-
-/** One credential as the listing shows it: never the secret itself. */
-export interface CredentialSummary {
-  kind: 'https' | 'ssh'
-  pattern: string
-  preview: string
-}
-
-/**
  * List every credential with a masked preview.
  *
- * An ssh row has no preview worth printing: the key is sealed and the
- * pattern is already the row's name, so it says where the key lives
- * instead.
+ * An ssh row's preview is its public key: that is the half the user needs
+ * to see, and the only half there is to show. Each row is opened here — a
+ * user-initiated listing is the right place — so one the secret key no
+ * longer opens is marked as needing regeneration rather than listed like a
+ * good one.
  */
-export async function listEntries(): Promise<CredentialSummary[]> {
+export async function listEntries(): Promise<GitCredentialSummary[]> {
   const creds = await loadCredentials()
-  const https: CredentialSummary[] = creds.tokens.map((t) => ({
+  const https: GitCredentialSummary[] = creds.tokens.map((t) => ({
     kind: 'https' as const,
     pattern: t.pattern,
     preview: t.token.length > 4 ? '***' + t.token.slice(-4) : '****',
   }))
-  const ssh: CredentialSummary[] = (await listGitSshKeys()).map((k) => ({
-    kind: 'ssh' as const,
-    pattern: k.pattern,
-    preview: k.unreadable ? 'key unreadable — re-add it' : 'key stored on server (encrypted)',
-  }))
+  const ssh: GitCredentialSummary[] = []
+  for (const k of await listGitSshKeys()) {
+    const readable = await k.openSeed() !== undefined
+    ssh.push({
+      kind: 'ssh' as const,
+      pattern: k.pattern,
+      preview: readable ? k.publicKey : `${k.publicKey} (unreadable — generate a new key)`,
+      publicKey: k.publicKey,
+    })
+  }
   return [...https, ...ssh]
 }
 
 /**
  * Every ssh key, with the material the proxy's in-memory agent is loaded
- * from. Rows that will not open are left out — the agent cannot hold a key
+ * from — the one listing that opens every seed, because that is what it is
+ * for. Rows that will not open are left out: the agent cannot hold a key
  * the server cannot read, and the store has already logged which.
  */
 export async function listSshEntries(): Promise<Array<{
@@ -414,101 +353,16 @@ export async function listSshEntries(): Promise<Array<{
 }>> {
   const out: Array<{ pattern: string; host: string; privateKey: string; knownHostsEntry: string }> = []
   for (const key of await listGitSshKeys()) {
-    if (key.privateKey === undefined) continue
+    const seed = await key.openSeed()
+    if (seed === undefined) continue
     out.push({
       pattern: key.pattern,
       // Safe for the same reason as loadKnownHostsEntryForHost: every stored
       // pattern was validated on the way in.
       host: parsePattern(key.pattern).host,
-      privateKey: key.privateKey,
+      privateKey: encodeOpenSshPrivateKey(seed, `yaac ${key.pattern}`),
       knownHostsEntry: key.knownHostsEntry,
     })
   }
   return out
 }
-
-/**
- * Seal the ssh entries an older install left in the credentials file, once
- * (docs/legacy-compat-shims.md).
- *
- * Those entries name a path on this machine, which is why only a
- * containerless install can have a working one. The key is read while the
- * server can still read it and stored the way every key is stored now; the
- * entry is stripped either way, since nothing reads an ssh entry from this
- * file any more and leaving one would keep the file looking authoritative.
- */
-export async function importLegacySshKeys(): Promise<void> {
-  let raw: string
-  try {
-    raw = await fs.readFile(githubCredentialsPath(), 'utf8')
-  } catch {
-    return
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
-  const tokens = (parsed as Record<string, unknown>).tokens
-  if (!Array.isArray(tokens)) return
-  const isSsh = (t: unknown): t is Record<string, unknown> =>
-    typeof t === 'object' && t !== null && (t as Record<string, unknown>).kind === 'ssh'
-  if (!tokens.some(isSsh)) return
-
-  // An entry is stripped only once its key is SEALED. A read can fail for
-  // reasons that pass — a home not mounted yet at boot, a containerless dev
-  // worktree whose private `$HOME` sends `~` somewhere else, a permission
-  // hiccup — and stripping on one of those would turn a retryable failure
-  // into permanent loss of the pattern and its known_hosts line, with no
-  // next start to try again. `normalizeEntry` already ignores `kind: 'ssh'`,
-  // so an entry left behind costs nothing but a second attempt.
-  const imported = new Set<Record<string, unknown>>()
-  for (const entry of tokens.filter(isSsh)) {
-    const pattern = entry.pattern
-    const keyPath = entry.privateKeyPath
-    const knownHostsEntry = entry.knownHostsEntry
-    if (typeof pattern !== 'string' || typeof keyPath !== 'string'
-      || typeof knownHostsEntry !== 'string') {
-      continue
-    }
-    // Older files carry patterns with no host axis (`owner/repo`), which the
-    // writers have rejected for a while but the file may still hold. Importing
-    // one verbatim would make `parsePattern` throw on every SSH create and
-    // every key sync, so it is named and left where it is.
-    if (!validatePattern(pattern)) {
-      serverLog(
-        `[legacy] the ssh credential for "${pattern}" ${patternComplaint(pattern)}; `
-        + 'fix the pattern in .credentials/github.json, or re-add it with `yaac auth update`',
-      )
-      continue
-    }
-    try {
-      const privateKey = await fs.readFile(expandTilde(keyPath), 'utf8')
-      await upsertGitSshKey({ pattern, privateKey, knownHostsEntry })
-      imported.add(entry)
-      serverLog(`[legacy] stored the ssh key for "${pattern}" in the database`)
-    } catch (err) {
-      serverLog(
-        `[legacy] the ssh credential for "${pattern}" names a key at ${keyPath} that `
-        + `this server cannot read (${err instanceof Error ? err.message : String(err)}); `
-        + 'it stays in the credentials file — fix the path, or re-add it with '
-        + '`yaac auth update`',
-      )
-    }
-  }
-  if (imported.size === 0) return
-
-  // Rewrite without the ones that made it, keeping whatever else the file
-  // holds — including the ssh entries that did not.
-  const kept = tokens.filter((t) => !(isSsh(t) && imported.has(t)))
-  await ensureCredentialsDir()
-  await fs.writeFile(
-    githubCredentialsPath(),
-    JSON.stringify({ ...(parsed as Record<string, unknown>), tokens: kept }, null, 2) + '\n',
-    { mode: 0o600 },
-  )
-}
-
-

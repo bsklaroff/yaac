@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import simpleGit from 'simple-git'
@@ -168,8 +165,6 @@ async function writeProject(slug: string): Promise<void> {
   }
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
 }
-
-const execFileAsync = promisify(execFile)
 
 describe('write routes', () => {
   let tmpDir: string
@@ -1064,43 +1059,57 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('takes an ssh key as content, and keeps it out of the file', async () => {
-      // A path once, which only a server on the user's own machine could
-      // open. The key travels like an https token does and is stored sealed,
-      // so nothing under the credentials dir — the directory the proxy pod
-      // mounts — ever holds it.
-      const keyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-api-ssh-'))
-      const keyPath = path.join(keyDir, 'id_ed25519')
-      await execFileAsync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', '', '-f', keyPath])
-      const privateKey = await fs.readFile(keyPath, 'utf8')
-
+    it('refuses an ssh entry: keys are generated, never brought', async () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials.$post({
-        json: {
-          kind: 'ssh',
-          pattern: 'git.example.com/*',
-          privateKey,
-          knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-        },
+        // @ts-expect-error — the shape an older client would send
+        json: { kind: 'ssh', pattern: 'git.example.com/*', privateKey: 'x', knownHostsEntry: 'h' },
+      })
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('POST /auth/git/ssh-keys', () => {
+    it('generates a key, answers the public half, and leaves no private material behind', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth.git['ssh-keys'].$post({
+        json: { pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toEqual({
+        pattern: 'git.example.com/*',
+        publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac git\.example\.com\/\*$/) as string,
+        knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
       })
 
-      expect(res.status).toBe(204)
-      expect(await listEntries()).toEqual([
-        { kind: 'ssh', pattern: 'git.example.com/*', preview: 'key stored on server (encrypted)' },
-      ])
+      expect(await listEntries()).toEqual([{
+        kind: 'ssh',
+        pattern: 'git.example.com/*',
+        preview: body.publicKey,
+        publicKey: body.publicKey,
+      }])
+      // Nothing under the credentials dir — the directory the proxy pod
+      // mounts — holds anything about it.
       expect((await loadCredentials()).tokens).toEqual([])
-      await fs.rm(keyDir, { recursive: true, force: true })
+      const credDir = path.join(tmpDir, '.credentials')
+      for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
+        expect(await fs.readFile(path.join(credDir, name), 'utf8')).not.toContain('ssh-ed25519')
+      }
+
+      // A second generate for the pattern is a replacement.
+      const again = await client.auth.git['ssh-keys'].$post({
+        json: { pattern: 'git.example.com/*', knownHostsEntry: 'git.example.com ssh-ed25519 AAAA' },
+      })
+      const replaced = await again.json()
+      expect(replaced.publicKey).not.toBe(body.publicKey)
+      expect((await listEntries()).map((e) => e.publicKey)).toEqual([replaced.publicKey])
     })
 
-    it('refuses a key that is really a path, or the public half', async () => {
+    it('rejects an invalid pattern', async () => {
       const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials.$post({
-        json: {
-          kind: 'ssh',
-          pattern: 'git.example.com/*',
-          privateKey: '~/.ssh/id_ed25519',
-          knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
-        },
+      const res = await client.auth.git['ssh-keys'].$post({
+        json: { pattern: 'acme/*', knownHostsEntry: 'h ssh-ed25519 AAAA' },
       })
       expect(res.status).toBe(400)
     })
@@ -1123,29 +1132,6 @@ describe('write routes', () => {
         param: { pattern: 'unknown' },
       })
       expect(res.status).toBe(404)
-    })
-  })
-
-  describe('PUT /auth/git/credentials', () => {
-    it('replaces the entire credential list', async () => {
-      await addEntry({ kind: 'https', pattern: 'github.com/old/*', token: 'ghp_old' })
-      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.git.credentials.$put({
-        json: { credentials: [{ kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' }] },
-      })
-      expect(res.status).toBe(204)
-      expect((await loadCredentials()).tokens).toEqual([
-        { kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' },
-      ])
-    })
-
-    it('rejects non-array body', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/git/credentials', withAuth({
-        method: 'PUT',
-        body: JSON.stringify({ credentials: 'no' }),
-      }))
-      expect(res.status).toBe(400)
     })
   })
 

@@ -9,7 +9,7 @@ import {
   requestPlanUsageRefresh,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { addEntry, removeEntryChecked, replaceEntries, seedFakeAuth } from '#domain/projects'
+import { addEntry, generateSshCredential, removeEntryChecked, seedFakeAuth } from '#domain/projects'
 import { worktreeDriver } from '#drivers/driver'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
@@ -19,20 +19,6 @@ const httpsCredentialSchema = z.object({
   pattern: z.string(),
   token: z.string().min(1),
 })
-
-const sshCredentialSchema = z.object({
-  kind: z.literal('ssh'),
-  pattern: z.string(),
-  /** The key itself. A path once, which only a server on the user's own
-   *  machine could ever open (docs/legacy-compat-shims.md). */
-  privateKey: z.string().min(1),
-  knownHostsEntry: z.string().min(1),
-})
-
-const credentialSchema = z.discriminatedUnion('kind', [
-  httpsCredentialSchema,
-  sshCredentialSchema,
-])
 
 /** Reload the ssh-agent's identity set, swallowing a failure: the runtime
  *  reconciles it on its own schedule. */
@@ -76,27 +62,32 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
+  // An https token: read straight off disk by whatever uses it, so nothing
+  // to sync.
   .post(
     '/git/credentials',
-    zv('json', credentialSchema),
+    zv('json', httpsCredentialSchema),
     async (c) => {
-      // Credentials are files on disk, and re-syncing the ssh-agent rides
-      // along — a key the agent has not been told about is one no clone can
-      // use. Only for ssh: an https token is read straight off disk. The
-      // sync is loud but non-fatal; the runtime retries it.
-      const entry = c.req.valid('json')
-      await addEntry(entry)
-      if (entry.kind === 'ssh') {
-        try {
-          await worktreeDriver().syncSshIdentities()
-        } catch (err) {
-          console.warn(
-            '[auth] Saved SSH credential but failed to push to proxy ssh-agent: '
-            + (err instanceof Error ? err.message : String(err)),
-          )
-        }
-      }
+      await addEntry(c.req.valid('json'))
       return c.body(null, 204)
+    },
+  )
+  // Generate (or replace) the SSH key for a pattern; the answer is the only
+  // time the public key is handed out with the host key beside it. The
+  // agent re-sync rides along — a key the proxy's agent has not been told
+  // about is one no in-pod push can use.
+  .post(
+    '/git/ssh-keys',
+    zv('json', z.object({
+      pattern: z.string(),
+      /** Pasted rather than fetched — for a host the server cannot reach
+       *  unauthenticated. */
+      knownHostsEntry: z.string().min(1).optional(),
+    })),
+    async (c) => {
+      const generated = await generateSshCredential(c.req.valid('json'))
+      await syncSshKeysQuietly()
+      return c.json(generated)
     },
   )
   .delete('/git/credentials/:pattern', async (c) => {
@@ -106,17 +97,6 @@ export const authApp = new Hono()
     await syncSshKeysQuietly()
     return c.body(null, 204)
   })
-  .put(
-    '/git/credentials',
-    zv('json', z.object({
-      credentials: z.array(credentialSchema),
-    })),
-    async (c) => {
-      await replaceEntries(c.req.valid('json').credentials)
-      await syncSshKeysQuietly()
-      return c.body(null, 204)
-    },
-  )
   // Whether an auth server (the user's-machine login broker) is connected.
   .get('/agent', (c) => c.json({ connected: authAgentHub.connected() }))
   // Web-driven sign-in: relayed to the auth server on the user's machine

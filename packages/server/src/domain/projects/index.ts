@@ -46,15 +46,15 @@ export {
 } from './legacy-config-import'
 export {
   addEntry,
-  importLegacySshKeys,
+  generateSshCredential,
   listEntries,
   listSshEntries,
   loadKnownHostsEntryForHost,
   parseGitRemote,
   removeEntryChecked,
-  replaceEntries,
   resolveCredentialForUrl,
   saveCredentials,
+  sshKeyMaterial,
 } from './credentials'
 export { assertProjectExists, getProjectDetail, resolveProjectConfigWithSource } from './detail'
 export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'

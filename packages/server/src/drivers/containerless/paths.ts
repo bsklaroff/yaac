@@ -1,7 +1,6 @@
-import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
+import { PACKAGE_ROOT, installTmpDir } from '@yaac/shared/paths'
 import { acpLogDir, repoDir, worktreeDir, worktreeStateDir } from '@yaac/shared/project-paths'
 import type { WorkspacePaths } from '#drivers/contract'
 
@@ -64,23 +63,14 @@ function shortId(worktreeId: string): string {
 }
 
 /**
- * The directory holding every worktree's tmux socket, under the OS temp dir
- * rather than the data dir.
- *
- * Forced by the platform (see SUN_PATH_MAX): a data-dir path
- * (`~/.yaac/projects/<slug>/sessions/<uuid>/…`) is far over budget, and
- * `os.tmpdir()` is the shortest writable place on both platforms. It costs
- * nothing durable: a reboot clears it, and after a reboot every tmux server
- * it named is gone too, which is exactly what the recovery scan should
- * conclude. What IS durable — the marker that says this worktree exists —
- * lives under the data dir.
- *
- * Keyed by the install's own root so two servers on one host (a test run
- * beside a real one, two data dirs) never collide on a worktree id.
+ * The directory holding every worktree's tmux socket: the install-keyed
+ * temp dir (see SUN_PATH_MAX for why not the data dir). After a reboot
+ * every tmux server it named is gone too, which is exactly what the
+ * recovery scan should conclude; what IS durable — the marker that says
+ * this worktree exists — lives under the data dir.
  */
 export function tmuxSockDir(): string {
-  const key = createHash('sha256').update(serverLocalPath()).digest('hex').slice(0, 8)
-  return path.join(os.tmpdir(), `yaac-${key}`)
+  return installTmpDir()
 }
 
 /**

@@ -35,7 +35,7 @@ import {
   CONTAINER_SESSION_STARTS_LOG,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv } from '#domain/projects'
+import { loadKnownHostsEntryForHost, parseGitRemote, resolveCredentialForUrl, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -1519,7 +1519,7 @@ export async function createWorktree(
   if (!mediatedEgress) {
     gitCredential = credential.kind === 'https'
       ? { kind: 'https', host: parsedRemote.host, token: credential.token }
-      : { kind: 'ssh', privateKey: credential.privateKey }
+      : { kind: 'ssh', privateKey: await sshKeyMaterial(credential.pattern) }
   }
 
   const spec: WorkspaceSpec = {

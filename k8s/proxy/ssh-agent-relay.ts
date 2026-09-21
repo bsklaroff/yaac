@@ -31,22 +31,35 @@
  * sign for any other host.
  *
  * And it is an oracle for *only* that: the client→agent direction is parsed,
- * not spliced, and admits two message types — list identities, and sign.
- * Everything else (add, remove, lock, extension) is answered with the
- * agent's own SSH_AGENT_FAILURE and never reaches the agent, so one worktree
- * cannot lock or empty an agent every other worktree shares. The agent→client
- * direction stays a raw pipe: it carries only what the agent chose to answer.
+ * not spliced, and admits three messages — list identities, sign, and the
+ * one extension that makes the destination constraint enforceable,
+ * `session-bind@openssh.com`, by which an ssh client tells the agent which
+ * host it is talking to before it asks for a signature. An agent will not
+ * sign with a constrained key on a session that was never bound, so
+ * refusing the bind would leave every key here permanently unsignable from
+ * a worktree; forwarding it narrows the oracle rather than widening it.
+ * Everything else (add, remove, lock, any other extension) is answered with
+ * the agent's own SSH_AGENT_FAILURE and never reaches the agent, so one
+ * worktree cannot lock or empty an agent every other worktree shares. The
+ * agent→client direction stays a raw pipe: it carries only what the agent
+ * chose to answer.
  */
 
 import net from 'node:net'
 
 /**
  * Client→agent message types the relay admits (PROTOCOL.agent): ask which
- * identities exist, and ask for a signature. Those two are the whole of what
- * an ssh client needs from a forwarded agent.
+ * identities exist, ask for a signature, and — for one extension only —
+ * bind the session to its destination. That is the whole of what an ssh
+ * client needs from a forwarded agent holding constrained keys.
  */
 const SSH_AGENTC_REQUEST_IDENTITIES = 11
 const SSH_AGENTC_SIGN_REQUEST = 13
+const SSH_AGENTC_EXTENSION = 27
+/** The extension name an ssh client sends first on every connection to
+ *  the agent: `string "session-bind@openssh.com"`, then the host key, the
+ *  session id and the server's signature. Only this extension passes. */
+const SESSION_BIND = Buffer.from('session-bind@openssh.com')
 /** The refusal an agent itself returns for a request it won't serve. */
 const SSH_AGENT_FAILURE = 5
 const FAILURE_MESSAGE = Buffer.from([0, 0, 0, 1, SSH_AGENT_FAILURE])
@@ -142,13 +155,23 @@ export function createAgentRequestFilter(handlers: {
       const message = buf.subarray(0, 4 + length)
       buf = buf.subarray(4 + length)
       const type = message[4]
-      if (type === SSH_AGENTC_REQUEST_IDENTITIES || type === SSH_AGENTC_SIGN_REQUEST) {
+      if (type === SSH_AGENTC_REQUEST_IDENTITIES || type === SSH_AGENTC_SIGN_REQUEST
+        || (type === SSH_AGENTC_EXTENSION && isSessionBind(message))) {
         handlers.forward(message)
       } else {
         handlers.refuse(type)
       }
     }
   }
+}
+
+/** Whether a whole extension frame names `session-bind@openssh.com` — the
+ *  `string` right after the type byte. */
+function isSessionBind(message: Buffer): boolean {
+  if (message.length < 9) return false
+  const length = message.readUInt32BE(5)
+  if (length !== SESSION_BIND.length || message.length < 9 + length) return false
+  return message.subarray(9, 9 + length).equals(SESSION_BIND)
 }
 
 /**

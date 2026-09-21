@@ -175,12 +175,13 @@ export interface WorkspaceRegistration {
 /**
  * One SSH remote the egress path can act as.
  *
- * The key material itself, because there is no file to name: keys are sealed
- * rows now, and the only copies outside the database are the ones a runtime
- * puts somewhere a process can use them — the proxy's in-memory ssh-agent,
- * or a per-worktree agent under a driver with no proxy. Which is also why an
- * agent identity does not survive a proxy replacement: nothing on the
- * proxy's filesystem ever held it.
+ * The key material itself, because there is no file to name: a key is a
+ * sealed row the server generated (docs/ssh-keys.md), and the only copies
+ * outside the database are the ones a runtime puts somewhere a process can
+ * use them — the proxy's in-memory ssh-agent, or a per-worktree agent under
+ * a driver with no proxy. Which is also why an agent identity does not
+ * survive a proxy replacement: nothing on the proxy's filesystem ever held
+ * it.
  */
 export interface SshCredentialEntry {
   pattern: string
@@ -297,10 +298,11 @@ export interface WorkspaceSubstrate {
  * the real thing (docs/containerless-driver.md). Either way the driver is
  * handed the answer instead of reaching for it.
  *
- * The SSH variant carries the key material, because there is no path to
- * name: a key lives sealed in the database and reaches a process only where
- * one is about to use it. What the driver does with it is the driver's —
- * the containerless one loads it into a per-worktree ssh-agent, so the
+ * The SSH variant carries the key material (the OpenSSH private-key
+ * container `ssh-add -` reads), because there is no path to name: a key
+ * lives sealed in the database and reaches a process only where one is
+ * about to use it. What the driver does with it is the driver's — the
+ * containerless one loads it into a per-worktree ssh-agent, so the
  * workspace can sign with the key without ever holding a copy of it.
  */
 export type WorkspaceGitCredential =
