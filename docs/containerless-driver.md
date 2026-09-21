@@ -353,8 +353,8 @@ default file, so the helper needs no argument).
 
 An SSH key does not go into the home at all. The launch starts an
 **ssh-agent per worktree**, detached beside the tmux server, and pipes the
-key into `ssh-add -` — so the private half exists in two process memories
-and in neither filesystem. What lands in the home is the PUBLIC half, which
+key yaac generated (docs/ssh-keys.md) into `ssh-add -` — so the private
+half exists in two process memories and in neither filesystem. What lands in the home is the PUBLIC half, which
 `GIT_SSH_COMMAND` names with `-i` under `IdentitiesOnly` to pin ssh to that
 identity (naming none would let it offer every key the agent holds against a
 host that may lock the account out). The agent's pid goes in the workspace

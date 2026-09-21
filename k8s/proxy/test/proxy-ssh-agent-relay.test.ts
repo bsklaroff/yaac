@@ -45,6 +45,20 @@ function agentMessage(type: number, body: Buffer = Buffer.alloc(0)): Buffer {
   return out
 }
 
+/** A wire `string`: uint32 length, then the bytes. */
+function sshString(value: string | Buffer): Buffer {
+  const bytes = Buffer.from(value)
+  const out = Buffer.alloc(4 + bytes.length)
+  out.writeUInt32BE(bytes.length, 0)
+  bytes.copy(out, 4)
+  return out
+}
+
+/** An extension frame as ssh sends it: the name, then its payload. */
+function extension(name: string, payload = Buffer.from('hostkey+session+sig')): Buffer {
+  return agentMessage(EXTENSION, Buffer.concat([sshString(name), payload]))
+}
+
 interface FakeAgent {
   sock: string
   /** Every byte the agent was handed, in order. */
@@ -183,18 +197,24 @@ describe('createAgentRequestFilter', () => {
     return { forwarded, refused, failures }
   }
 
-  it('admits identity listing and signing, and nothing else', () => {
-    // The two an ssh client needs. Everything else — add, remove-all, lock,
-    // extension — would mutate an agent every worktree shares.
+  it('admits identity listing, signing and the session bind, and nothing else', () => {
+    // The three an ssh client needs against constrained keys: without the
+    // bind, an agent refuses to sign with a `-h <host>` key at all. Every
+    // other request — add, remove-all, lock, any other extension — would
+    // mutate an agent every worktree shares.
     const res = run([
       agentMessage(REQUEST_IDENTITIES),
+      extension('session-bind@openssh.com'),
       agentMessage(SIGN_REQUEST, Buffer.from('blob')),
       agentMessage(REMOVE_ALL_IDENTITIES),
       agentMessage(LOCK, Buffer.from('pw')),
+      extension('query'),
+      extension('session-bind@openssh.com.evil'),
+      // A bare name with no wire length, as an ad-hoc client might send it.
       agentMessage(EXTENSION, Buffer.from('session-bind@openssh.com')),
     ])
-    expect(res.forwarded).toEqual([REQUEST_IDENTITIES, SIGN_REQUEST])
-    expect(res.refused).toEqual([REMOVE_ALL_IDENTITIES, LOCK, EXTENSION])
+    expect(res.forwarded).toEqual([REQUEST_IDENTITIES, EXTENSION, SIGN_REQUEST])
+    expect(res.refused).toEqual([REMOVE_ALL_IDENTITIES, LOCK, EXTENSION, EXTENSION, EXTENSION])
     expect(res.failures).toEqual([])
   })
 

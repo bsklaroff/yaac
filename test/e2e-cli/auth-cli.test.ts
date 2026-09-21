@@ -81,11 +81,11 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
   }
 
   /**
-   * Drive `yaac auth update`'s interactive SSH branch to completion against
-   * a key on THIS machine. Its content is what travels, so the same flow
-   * works against a server that could not open the path.
+   * Drive `yaac auth update`'s interactive SSH branch to completion. Nothing
+   * on this machine is read: the server generates the key, and the host key
+   * is pasted because there is no sshd here to fetch one from.
    */
-  function addSshCredential(keyPath: string): ReturnType<typeof runYaac> {
+  function generateSshCredential(): ReturnType<typeof runYaac> {
     return runYaac(
       testEnv.env, 'auth', 'update',
       {
@@ -93,7 +93,6 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
           { when: /Choice \[1-5\]: /, send: '1\n' },
           { when: /Choice \[a\/b\]: /, send: 'b\n' },
           { when: /Repo pattern: /, send: 'git.example.com/*\n' },
-          { when: /Private key path/, send: `${keyPath}\n` },
           { when: /Entry: /, send: 'git.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTAAAA\n' },
         ],
       },
@@ -171,22 +170,16 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(stdout).not.toContain('sk-fake-codex-key')
     })
 
-    it('auth list says where an ssh key is, never anything about the key', async () => {
-      // The preview locates nothing: the key is content the server holds, so
-      // there is no path to print. The credential is added through the real
-      // flow below; this only checks what the listing is willing to print.
+    it('auth list shows an ssh key as its public half, and nothing else about it', async () => {
       await resetCreds()
-      const keyPath = path.join(testEnv.dataDir, 'list-key')
-      expect(spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', keyPath, '-C', 'yaac-test'])
-        .status).toBe(0)
-      await addSshCredential(keyPath)
+      const { stdout: generated } = await generateSshCredential()
+      const publicKey = /^(ssh-ed25519 \S+ yaac git\.example\.com\/\*)$/m.exec(generated)![1]
 
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('ssh')
       expect(stdout).toContain('git.example.com/*')
-      expect(stdout).toContain('encrypted')
-      expect(stdout).not.toContain(keyPath)
+      expect(stdout).toContain(publicKey)
       expect(stdout).not.toContain('PRIVATE KEY')
     })
   })
@@ -428,41 +421,23 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(stderr).toMatch(/<host>\/\*/)
     })
 
-    it('sends an SSH key\'s CONTENT, so a cluster install can take one', async () => {
-      // The CLI reads the key off THIS machine and posts the bytes, so the
-      // server never has to open a path — which a pod never could, since the
-      // only host directory it mounts is the data dir. The stored copy is a
-      // sealed row, so the credentials file the proxy pod mounts holds
-      // nothing about it.
+    it('generates an SSH key on the server and prints only its public half', async () => {
+      // No key is read off this machine, and none lands on the server's
+      // disk: the whole data dir is searched for one, not just the
+      // credentials file the proxy pod mounts.
       await resetCreds()
-      const keyPath = path.join(testEnv.dataDir, 'test-key')
-      expect(spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', keyPath, '-C', 'yaac-test'])
-        .status).toBe(0)
-
-      const { exitCode, stdout } = await addSshCredential(keyPath)
+      const { exitCode, stdout } = await generateSshCredential()
       expect(exitCode).toBe(0)
-      expect(stdout).toContain('SSH credential saved')
+      expect(stdout).toContain('SSH key generated for pattern "git.example.com/*"')
+      expect(stdout).toContain('Host key: git.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTAAAA')
+      expect(stdout).toMatch(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ yaac git\.example\.com\/\*$/m)
+      expect(stdout).not.toContain('PRIVATE KEY')
 
-      const credsPath = path.join(testEnv.dataDir, '.credentials', 'github.json')
-      const raw = await fs.readFile(credsPath, 'utf8').catch(() => '')
-      expect(raw).not.toContain('PRIVATE KEY')
-      expect(raw).not.toContain(keyPath)
+      const grep = spawnSync('grep', ['-rl', 'PRIVATE KEY', testEnv.dataDir])
+      expect(grep.stdout.toString()).toBe('')
 
       const { stdout: listed } = await runYaac(testEnv.env, 'auth', 'list')
       expect(listed).toContain('git.example.com/*')
-    })
-
-    it('refuses a passphrase-protected key before it leaves this machine', async () => {
-      // Checked locally as well as on the server, so the complaint lands
-      // next to the prompt that caused it.
-      await resetCreds()
-      const keyPath = path.join(testEnv.dataDir, 'locked-key')
-      expect(spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', 'hunter2', '-f', keyPath, '-C', 'yaac-test'])
-        .status).toBe(0)
-
-      const { stderr, exitCode } = await addSshCredential(keyPath)
-      expect(exitCode).toBe(1)
-      expect(stderr).toMatch(/passphrase/)
     })
 
     it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {

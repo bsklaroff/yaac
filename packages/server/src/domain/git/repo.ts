@@ -2,13 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { createKeyedMutex } from '#lib/keyed-mutex'
-import {
-  ensureKnownHostsFileForCredential,
-  gitEnvForCredential,
-  withSshKeyFile,
-  injectTokenIntoUrl,
-  torEnv,
-} from './transport'
+import { gitEnvForCredential, injectTokenIntoUrl, torEnv } from './transport'
 import type { ResolvedGitCredential } from './transport'
 
 /**
@@ -40,16 +34,9 @@ export async function cloneRepo(
     await simpleGit(destPath).remote(['set-url', 'origin', remoteUrl])
     return
   }
-  if (credential?.kind === 'ssh') {
-    const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
-    await withSshKeyFile(credential.privateKey, async (keyPath) => {
-      const env = gitEnvForCredential(credential, knownHostsPath, keyPath)
-      await gitWithCredentialEnv(undefined, env).clone(remoteUrl, destPath)
-    })
-    return
-  }
-  // No credential: unauthenticated clone (works for public HTTPS repos).
-  await gitWithCredentialEnv(undefined, torEnv()).clone(remoteUrl, destPath)
+  // SSH signs through the in-process agent; no credential is an
+  // unauthenticated clone (works for public HTTPS repos).
+  await gitWithCredentialEnv(undefined, await gitEnvForCredential(credential)).clone(remoteUrl, destPath)
 }
 
 /**
@@ -147,15 +134,7 @@ export async function fetchOrigin(
       await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
       return
     }
-    if (credential?.kind === 'ssh') {
-      const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
-      await withSshKeyFile(credential.privateKey, async (keyPath) => {
-        const env = gitEnvForCredential(credential, knownHostsPath, keyPath)
-        await gitWithCredentialEnv(repoPath, env).fetch('origin')
-      })
-      return
-    }
-    await gitWithCredentialEnv(repoPath, torEnv()).fetch('origin')
+    await gitWithCredentialEnv(repoPath, await gitEnvForCredential(credential)).fetch('origin')
   })
 }
 

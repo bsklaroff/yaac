@@ -1,20 +1,25 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  buildHostSideGitSshCommand,
+  fetchKnownHostsEntry,
+  gitEnvForCredential,
   injectTokenIntoUrl,
   isGitAuthError,
-  sweepSshKeyScratch,
   torEnv,
-  withSshKeyFile,
   writeKnownHostsFile,
 } from '#domain/git'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-const KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n'
+const PUBLIC_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/MVah8bw8Kp+X9jKkU6CqcHq+8itZO9NwG6kOC+rTD yaac git.example.com/*'
+const SSH_CREDENTIAL = {
+  kind: 'ssh' as const,
+  pattern: 'git.example.com/*',
+  publicKey: PUBLIC_KEY,
+  knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+}
 
 describe('injectTokenIntoUrl', () => {
   it('injectTokenIntoUrl embeds credentials in HTTPS URL', () => {
@@ -119,27 +124,58 @@ describe('torSshOpts', () => {
   })
 })
 
-describe('buildHostSideGitSshCommand', () => {
+describe('gitEnvForCredential', () => {
   const originalUseTor = process.env.YAAC_USE_TOR
+  let dataDir: string
+  beforeAll(async () => { dataDir = await createTempDataDir() })
+  afterAll(async () => { await cleanupTempDir(dataDir) })
   afterEach(() => {
     if (originalUseTor === undefined) delete process.env.YAAC_USE_TOR
     else process.env.YAAC_USE_TOR = originalUseTor
   })
 
-  it('produces a non-Tor ssh command with the given key path', () => {
+  it('names the agent, the public key and the host key — nothing private', async () => {
     delete process.env.YAAC_USE_TOR
-    const cmd = buildHostSideGitSshCommand('/home/u/.ssh/id_ed25519', '/tmp/known_hosts-abc')
-    expect(cmd).toContain('-i /home/u/.ssh/id_ed25519')
-    expect(cmd).toContain('UserKnownHostsFile=/tmp/known_hosts-abc')
+    const env = await gitEnvForCredential(SSH_CREDENTIAL)
+    const cmd = env!.GIT_SSH_COMMAND!
+    expect(cmd).toMatch(/^ssh -F \/dev\/null /)
+    expect(cmd).toContain(`-o IdentityAgent=${path.join(os.tmpdir(), 'yaac-')}`)
     expect(cmd).toContain('StrictHostKeyChecking=yes')
     expect(cmd).toContain('IdentitiesOnly=yes')
     expect(cmd).not.toContain('ProxyCommand')
+
+    // The two files it names hold the two PUBLIC halves, verbatim.
+    const pub = /-i (\S+\.pub)/.exec(cmd)![1]
+    expect(pub.startsWith(dataDir)).toBe(true)
+    expect(await fs.readFile(pub, 'utf8')).toBe(`${PUBLIC_KEY}\n`)
+    const kh = /UserKnownHostsFile=(\S+)/.exec(cmd)![1]
+    expect(await fs.readFile(kh, 'utf8')).toBe('git.example.com ssh-ed25519 AAAA\n')
+    // And the rest of the host env still reaches git.
+    expect(env!.PATH).toBe(process.env.PATH)
   })
 
-  it('adds ProxyCommand when YAAC_USE_TOR=1, single-quoted so git tokenization keeps it intact', () => {
+  it('adds ProxyCommand when YAAC_USE_TOR=1, single-quoted so git tokenization keeps it intact', async () => {
     process.env.YAAC_USE_TOR = '1'
-    const cmd = buildHostSideGitSshCommand('/k', '/kh')
-    expect(cmd).toContain("'ProxyCommand=nc -X 5 -x 127.0.0.1:9050 %h %p'")
+    const env = await gitEnvForCredential(SSH_CREDENTIAL)
+    expect(env!.GIT_SSH_COMMAND).toContain("'ProxyCommand=nc -X 5 -x 127.0.0.1:9050 %h %p'")
+    expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+  })
+
+  it('is the Tor env, or nothing, for https and for no credential', async () => {
+    delete process.env.YAAC_USE_TOR
+    expect(await gitEnvForCredential({ kind: 'https', token: 't' })).toBeUndefined()
+    expect(await gitEnvForCredential(null)).toBeUndefined()
+    process.env.YAAC_USE_TOR = '1'
+    expect((await gitEnvForCredential(null))!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+  })
+})
+
+describe('fetchKnownHostsEntry', () => {
+  it('reports a host it could get no key from, naming the host', async () => {
+    // `.invalid` never resolves, so this fails at DNS rather than waiting
+    // out a connect timeout. The success path needs an sshd to talk to.
+    await expect(fetchKnownHostsEntry('nonexistent.invalid'))
+      .rejects.toThrow(/no host key recovered for nonexistent\.invalid/)
   })
 })
 
@@ -211,71 +247,5 @@ describe('isGitAuthError', () => {
       'fatal: not a git repository',
     ]
     for (const msg of otherErrors) expect(isGitAuthError(msg), msg).toBe(false)
-  })
-})
-
-describe('withSshKeyFile', () => {
-  it('writes the key 0600 in a private dir, and removes it afterwards', async () => {
-    // `ssh` takes a key as a path, so a key the server holds sealed has to
-    // reach the filesystem to be used at all. What makes that acceptable is
-    // how briefly — which is the whole of this contract.
-    let seen: string | undefined
-    const result = await withSshKeyFile(KEY, async (keyPath) => {
-      seen = keyPath
-      expect(await fs.readFile(keyPath, 'utf8')).toBe(KEY)
-      expect((await fs.stat(keyPath)).mode & 0o777).toBe(0o600)
-      expect((await fs.stat(path.dirname(keyPath))).mode & 0o777).toBe(0o700)
-      return 'answer'
-    })
-
-    expect(result).toBe('answer')
-    await expect(fs.access(seen!)).rejects.toThrow()
-  })
-
-  it('removes the key even when the operation throws', async () => {
-    // The failure path is the one that matters: a fetch that dies mid-way
-    // must not leave a usable private key behind on the host.
-    let seen: string | undefined
-    await expect(withSshKeyFile(KEY, (keyPath) => {
-      seen = keyPath
-      return Promise.reject(new Error('remote hung up'))
-    })).rejects.toThrow('remote hung up')
-
-    await expect(fs.access(seen!)).rejects.toThrow()
-  })
-
-  it('sweeps a key a SIGKILLed server left behind', async () => {
-    // The `finally` cannot run if the process is killed mid-clone, so the
-    // files live under one server-local root a startup sweep owns — the only
-    // moment every one of them is certainly finished with. Under os.tmpdir()
-    // a survivor would sit there until the OS reaped it, which on a
-    // long-lived host is never.
-    const dir = await createTempDataDir()
-    try {
-      let root: string | undefined
-      await withSshKeyFile(KEY, (keyPath) => {
-        // The root the per-call dirs are made under — what a sweep owns.
-        root = path.dirname(path.dirname(keyPath))
-        return Promise.resolve()
-      })
-      // A whole per-call dir the way a killed process leaves one: its
-      // `finally` never ran, so the key is still in it.
-      const orphanDir = path.join(root!, 'key-orphaned')
-      await fs.mkdir(orphanDir, { recursive: true })
-      const orphan = path.join(orphanDir, 'id')
-      await fs.writeFile(orphan, KEY, { mode: 0o600 })
-
-      await sweepSshKeyScratch()
-
-      await expect(fs.access(orphan)).rejects.toThrow()
-    } finally {
-      await cleanupTempDir(dir)
-    }
-  })
-
-  it('adds the trailing newline OpenSSH insists on', async () => {
-    await withSshKeyFile('-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA', async (keyPath) => {
-      expect(await fs.readFile(keyPath, 'utf8')).toMatch(/\n$/)
-    })
   })
 })

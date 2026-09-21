@@ -1,5 +1,6 @@
 import path from 'node:path'
 import os from 'node:os'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -153,6 +154,21 @@ export function nodeLocalProjectPath(slug: string, ...rest: string[]): string {
 /** A SERVER-LOCAL path: `<serverLocalRoot>/<…rest>`. */
 export function serverLocalPath(...rest: string[]): string {
   return path.join(serverLocalRoot(), ...rest)
+}
+
+/**
+ * A short, install-keyed directory under the OS temp dir, for UNIX sockets.
+ *
+ * Forced by the platform: `sockaddr_un.sun_path` is about 104 bytes on
+ * macOS, and a data-dir path (`~/.yaac/projects/<slug>/…`) is far over
+ * budget, while `os.tmpdir()` is the shortest writable place on every
+ * platform. Keyed by the install's own root so two servers on one host (a
+ * test run beside a real one, two data dirs) never collide. It costs nothing
+ * durable: a reboot clears it, and every socket it named is gone by then.
+ */
+export function installTmpDir(): string {
+  const key = crypto.createHash('sha256').update(serverLocalRoot()).digest('hex').slice(0, 8)
+  return path.join(os.tmpdir(), `yaac-${key}`)
 }
 
 /**

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { clearAuth } from '#domain/auth'
 import { closeDb, listGitSshKeys, upsertGitSshKey } from '#db'
+import { generateSshKey } from '#lib/ssh-key'
 import { addEntry, loadCredentials } from '#domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
@@ -76,9 +77,11 @@ describe('clearAuth', () => {
     // Two stores, not one: https tokens live in the credentials file and ssh
     // keys in the database, and the half a clear must not leave behind is
     // the one that is actual key material.
+    const key = generateSshKey('yaac git.example.com/*')
     await upsertGitSshKey({
       pattern: 'git.example.com/*',
-      privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n',
+      seed: key.seed,
+      publicKey: key.publicKey,
       knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
     })
 

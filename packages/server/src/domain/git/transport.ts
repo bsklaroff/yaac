@@ -2,15 +2,17 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import * as childProcess from 'node:child_process'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 import { serverLocalPath } from '@yaac/shared/paths'
+import { gitSshAgentSock } from './agent'
 
 /**
  * How a resolved credential becomes a git invocation the host can run:
- * the token-bearing URL, the ssh command and its known_hosts file, and the
- * environment that carries either (Tor included, when the install routes
- * through it).
+ * the token-bearing URL, the ssh command and the two public files it names,
+ * and the environment that carries either (Tor included, when the install
+ * routes through it).
  *
  * Separate from `repo.ts` because it is the half with no repository in it —
  * every function here is about the transport, and the operations next door
@@ -23,10 +25,15 @@ import { serverLocalPath } from '@yaac/shared/paths'
  * this is what consumes it: the lookup in #domain/projects resolves a
  * configured entry down to this shape precisely so the git primitives never
  * have to know about project config.
+ *
+ * The ssh form carries NO private material. The server's git signs through
+ * the in-process agent (`agent.ts`), which opens the seed itself; what the
+ * invocation needs is the public half, to pin ssh to one identity, and the
+ * host key to verify the remote against.
  */
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
-  | { kind: 'ssh'; privateKey: string; knownHostsEntry: string }
+  | { kind: 'ssh'; pattern: string; publicKey: string; knownHostsEntry: string }
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)
@@ -68,46 +75,6 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
 }
 
 /**
- * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The server
- * has filesystem access to the key, so it uses `-i <keyPath>` directly.
- * The worktree container never sees this string — its own GIT_SSH_COMMAND is
- * built separately and uses the proxy's ssh-agent instead of `-i`.
- */
-export function buildHostSideGitSshCommand(keyPath: string, knownHostsPath: string): string {
-  return formatSshCommand([
-    'ssh', '-F', '/dev/null',
-    '-i', keyPath,
-    '-o', `UserKnownHostsFile=${knownHostsPath}`,
-    '-o', 'StrictHostKeyChecking=yes',
-    '-o', 'IdentitiesOnly=yes',
-    ...torSshOpts(),
-  ])
-}
-
-/** Where the short-lived key files go: server-local, so nothing else
- *  mounts it and a sweep can own the whole directory. */
-function sshKeyScratchDir(): string {
-  return serverLocalPath('run', 'ssh-keys')
-}
-
-async function sshKeyScratchRoot(): Promise<string> {
-  const dir = sshKeyScratchDir()
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 })
-  return dir
-}
-
-/**
- * Empty the key scratch root. Called once at startup, which is the only
- * moment every file under it is certainly finished with: a key survives
- * `withSshKeyFile` only when the process died before its `finally`, and a
- * server that is starting has no git operation in flight.
- */
-export async function sweepSshKeyScratch(): Promise<void> {
-  await fs.rm(sshKeyScratchDir(), { recursive: true, force: true })
-    .catch(() => { /* nothing there, or a permission hiccup — best effort */ })
-}
-
-/**
  * Write a known_hosts file atomically with mode 0600. Idempotent.
  */
 export async function writeKnownHostsFile(entries: string[], destPath: string): Promise<void> {
@@ -118,74 +85,99 @@ export async function writeKnownHostsFile(entries: string[], destPath: string): 
   await fs.rename(tmp, destPath)
 }
 
-/**
- * Run `fn` with the private key written to a file only this process can
- * read, and remove it afterwards — including when `fn` throws.
- *
- * `ssh` and `ssh-keygen` take a key as a PATH, so a key the server holds in
- * memory has to reach the filesystem to be used at all. What makes that
- * acceptable is how briefly: a 0600 file in a 0700 directory that exists for
- * one git invocation. The durable copy is the sealed row, and nothing else
- * on disk ever holds key material.
- *
- * The `finally` cannot run if the process is SIGKILLed mid-clone, so the
- * files go under one server-local root that {@link sweepSshKeyScratch}
- * empties at startup — the only moment at which every one of them is
- * certainly finished with. Under `os.tmpdir()` a survivor would sit there
- * until the OS reaped it, which on a long-lived host is never.
- */
-export async function withSshKeyFile<T>(
-  privateKey: string,
-  fn: (keyPath: string) => Promise<T>,
-): Promise<T> {
-  const dir = await fs.mkdtemp(path.join(await sshKeyScratchRoot(), 'key-'))
-  await fs.chmod(dir, 0o700)
-  const keyPath = path.join(dir, 'id')
-  // OpenSSH rejects a key file whose final line has no newline.
-  await fs.writeFile(keyPath, privateKey.endsWith('\n') ? privateKey : `${privateKey}\n`, {
-    mode: 0o600,
-  })
-  try {
-    return await fn(keyPath)
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => { /* best effort */ })
-  }
-}
-
-/**
- * Build the env object to pass to `simpleGit.env(...)` for a given
- * credential. For SSH, both the key and the known_hosts entry need a path on
- * disk for the GIT_SSH_COMMAND to point at; the caller writes them first
- * (`withSshKeyFile`, `ensureKnownHostsFileForCredential`) and passes them in.
- */
-export function gitEnvForCredential(
-  credential: ResolvedGitCredential | null,
-  knownHostsPath?: string,
-  keyPath?: string,
-): NodeJS.ProcessEnv | undefined {
-  // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess when Tor is off (torEnv spreads it when on)
-  const base = torEnv() ?? { ...process.env }
-  if (credential?.kind === 'ssh') {
-    if (!knownHostsPath) throw new Error('SSH credentials require a knownHostsPath')
-    if (!keyPath) throw new Error('SSH credentials require a key file path')
-    base.GIT_SSH_COMMAND = buildHostSideGitSshCommand(keyPath, knownHostsPath)
-    return base
-  }
-  // HTTPS or no credential: Tor env (if any) is enough; otherwise simple-git
-  // can use process.env directly.
-  return torEnv()
-}
-
-/** Internal to this folder: `repo.ts` needs the file on disk before it can
- *  hand git an ssh command that points at it. */
-export async function ensureKnownHostsFileForCredential(
-  credential: ResolvedGitCredential | null,
-): Promise<string | undefined> {
-  if (credential?.kind !== 'ssh') return undefined
-  // Per-credential known_hosts under the OS tmp dir, keyed by content hash.
-  // Stable so concurrent clones reuse the same file.
-  const hash = crypto.createHash('sha256').update(credential.knownHostsEntry).digest('hex').slice(0, 12)
-  const dest = path.join(os.tmpdir(), `yaac-known_hosts-${hash}`)
-  await writeKnownHostsFile([credential.knownHostsEntry], dest)
+/** A stable, content-keyed file under `dir` holding `content`, for the two
+ *  public files an ssh invocation names. Concurrent callers converge on
+ *  the same path. */
+async function contentKeyedFile(dir: string, suffix: string, content: string): Promise<string> {
+  const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 12)
+  const dest = path.join(dir, `${hash}${suffix}`)
+  await writeKnownHostsFile([content], dest)
   return dest
+}
+
+/**
+ * The environment for `simpleGit.env(...)` under a credential.
+ *
+ * For ssh, two PUBLIC files are written for the command to name: the host
+ * key (so an unknown host fails here rather than being trusted on first
+ * use) and the public key (so ssh offers exactly this identity under
+ * `IdentitiesOnly`, rather than every key the agent holds against a host
+ * that may lock the account out after a few failures). Signing happens in
+ * the in-process agent the `IdentityAgent` option names; nothing private is
+ * written.
+ */
+export async function gitEnvForCredential(
+  credential: ResolvedGitCredential | null,
+): Promise<NodeJS.ProcessEnv | undefined> {
+  if (credential?.kind !== 'ssh') return torEnv()
+  const knownHostsPath = await contentKeyedFile(
+    os.tmpdir(), '.known_hosts', credential.knownHostsEntry,
+  )
+  const publicKeyPath = await contentKeyedFile(
+    serverLocalPath('run', 'ssh-pub'), '.pub', credential.publicKey,
+  )
+  // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess (PATH/HOME/…)
+  const base = torEnv() ?? { ...process.env }
+  base.GIT_SSH_COMMAND = formatSshCommand([
+    'ssh', '-F', '/dev/null',
+    '-o', `IdentityAgent=${gitSshAgentSock()}`,
+    '-i', publicKeyPath,
+    '-o', `UserKnownHostsFile=${knownHostsPath}`,
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', 'IdentitiesOnly=yes',
+    ...torSshOpts(),
+  ])
+  return base
+}
+
+/**
+ * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
+ *
+ * Why ssh: ssh-keyscan does not accept `-o ProxyCommand=…` (its `-O` flag
+ * only takes `hashalg`), so it can't be routed through Tor. ssh does honor
+ * `-o ProxyCommand=…`, and with StrictHostKeyChecking=accept-new +
+ * UserKnownHostsFile=<tmp> it persists the negotiated host key to the temp
+ * file during KEX, before BatchMode kills the auth step.
+ *
+ * Returns the single key type ssh actually negotiated — which is the entry
+ * the subsequent git-over-ssh connection will use, so it's what we want.
+ * Trust on first use, by construction: the caller shows the user what came
+ * back.
+ */
+export async function fetchKnownHostsEntry(host: string): Promise<string> {
+  const tmp = path.join(
+    os.tmpdir(),
+    `yaac-knownhosts-${crypto.randomBytes(6).toString('hex')}`,
+  )
+  await fs.writeFile(tmp, '', { mode: 0o600 })
+  try {
+    const args = [
+      '-F', '/dev/null',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${tmp}`,
+      '-o', 'HashKnownHosts=no',
+      '-o', 'BatchMode=yes',
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'ConnectTimeout=10',
+      ...torSshOpts(),
+      `nobody@${host}`,
+      'true',
+    ]
+    let stderr = ''
+    await new Promise<void>((resolve) => {
+      const child = childProcess.spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
+    })
+    const written = await fs.readFile(tmp, 'utf8')
+    const lines = written.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+    if (lines.length === 0) {
+      const tail = stderr.trim().split('\n').slice(-3).join(' | ')
+      throw new Error(`no host key recovered for ${host}${tail ? `: ${tail}` : ''}`)
+    }
+    return lines[0]
+  } finally {
+    await fs.rm(tmp, { force: true })
+  }
 }

@@ -13,6 +13,7 @@ import {
 } from '@yaac/test-utils/setup'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
+import { encodeOpenSshPrivateKey, generateSshKey } from '@yaac/server/lib/ssh-key'
 
 const execFileAsync = promisify(execFile)
 
@@ -45,24 +46,26 @@ interface TestKey {
 }
 
 /**
- * Generate a passphrase-less client keypair plus a separate host keypair
- * whose public half becomes the known_hosts entry for `host` — what a
- * real `ssh-keyscan <host>` would return.
+ * A client key the way the server makes one — generated and encoded by
+ * yaac, so the proxy image's own `ssh-add` is what proves the encoder — plus
+ * a separate host keypair whose public half becomes the known_hosts entry
+ * for `host`, what a real `ssh-keyscan <host>` would return.
  */
 async function makeTestKey(dir: string, host: string, name: string): Promise<TestKey> {
-  const privateKeyPath = path.join(dir, name)
+  const key = generateSshKey(`yaac ${name}`)
+  const publicKeyPath = path.join(dir, `${name}.pub`)
   const hostKeyPath = path.join(dir, `${name}-hostkey`)
-  await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', privateKeyPath, '-N', '', '-q'])
+  await fs.writeFile(publicKeyPath, `${key.publicKey}\n`)
   await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', hostKeyPath, '-N', '', '-q'])
 
   // "256 SHA256:<hash> <comment> (ED25519)" → the agent lists column 2.
-  const { stdout: lint } = await execFileAsync('ssh-keygen', ['-lf', `${privateKeyPath}.pub`])
+  const { stdout: lint } = await execFileAsync('ssh-keygen', ['-lf', publicKeyPath])
   const fingerprint = lint.trim().split(/\s+/)[1]
 
   const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
   const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
   return {
-    privateKey: await fs.readFile(privateKeyPath, 'utf8'),
+    privateKey: encodeOpenSshPrivateKey(key.seed, `yaac ${name}`),
     fingerprint,
     knownHostsEntry: `${host} ${keyType} ${keyBlob}`,
   }

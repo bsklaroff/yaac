@@ -122,9 +122,9 @@ against a local or remote server:
   your machine** (via the auto-started auth server — the broker that owns
   the vendor login CLIs) and ships the captured bundle to the server. The
   webapp's sign-in cards drive the same flow; if no auth server is running
-  they say what to start. An SSH git credential works the same way: the CLI
-  reads the key off your machine and sends its content, and the server keeps
-  it encrypted (see the README's "Secrets at rest").
+  they say what to start. An SSH git credential is a key the SERVER
+  generates and keeps encrypted; you only ever see the public half, which
+  you register with the git host (docs/ssh-keys.md).
 - Project environment and secrets: edited in the webapp, stored with the
   project, secrets encrypted at rest. Under `k8s` a secret's value never
   enters a worktree — the egress proxy injects it in flight.
@@ -134,10 +134,9 @@ Semantics to keep in mind:
 - **Nothing you configure names a path on the server.** A project's
   environment variables and its proxied secrets are stored with the project
   and edited in the webapp (Settings → Project Config → Environment). An SSH
-  git credential carries the KEY, read off your machine by the CLI, not a
-  path the server would have to be able to open. Nothing mounts a host
-  directory into a worktree; `cacheVolumes` covers a directory that should
-  persist across them.
+  git credential is generated on the server, so there is no key on your
+  machine for it to name. Nothing mounts a host directory into a worktree;
+  `cacheVolumes` covers a directory that should persist across them.
 - **The git identity worktrees commit under is a server setting.** The CLI
   and the auth server seed it from your own machine's git config the first
   time either talks to the server, and Settings → General edits it.

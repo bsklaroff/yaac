@@ -11,7 +11,7 @@ import {
 } from '#domain/auth'
 import { createTokenStore, isCredentialOptional, loadTokens, saveTokens } from '#http'
 import { closeDb, getGitIdentity, listProjectRows, openDb, setGitIdentity } from '#db'
-import { sweepSshKeyScratch } from '#domain/git'
+import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorktreeContainer } from '#domain/worktrees'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
@@ -36,7 +36,6 @@ import { startReconciler } from '#main/reconciler'
 import { setWorktreeDriver } from '#drivers/driver'
 import {
   importLegacyProjectConfig,
-  importLegacySshKeys,
   legacySecretImportPending,
   listSshEntries,
   resolveProjectEnv,
@@ -569,17 +568,15 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
   // Bring an install upgraded from an older build up to date, once, while
   // nothing is serving yet: the env settings a project kept in its
-  // yaac-config.json, the ssh keys a credentials file named by path, and a
-  // git identity a k8s Deployment still states in its environment. All three
-  // are one-shot migrations of state whose old home no longer works for a
+  // yaac-config.json, and a git identity a k8s Deployment still states in
+  // its environment. Both are one-shot migrations of state whose old home no longer works for a
   // remote client (docs/legacy-compat-shims.md). None is fatal — an install
   // that fails one is missing a setting, not broken.
   await importLegacyState()
 
-  // Any short-lived ssh key file a previous server was SIGKILLed before it
-  // could remove. Startup is the only moment every one of them is certainly
-  // finished with (`withSshKeyFile`).
-  await sweepSshKeyScratch()
+  // The agent the server's own git signs through (docs/ssh-keys.md). After
+  // the DB, because every request reads the sealed rows.
+  await startGitSshAgent()
 
   // DB is open and migrated: the server can now serve real requests, not
   // just answer /health. Set synchronously here so the flag is true before
@@ -656,6 +653,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       new Promise<void>((resolve) => server.close(() => resolve())),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
+    await stopGitSshAgent().catch((err: unknown) => serverLog(`[server] ssh-agent stop failed: ${String(err)}`))
     // Checkpoint the DB so PGlite reopens clean across dev-watch restarts.
     // Bounded like server.close(): a wedged close must not block lock
     // removal (WAL replay bounds any damage).
@@ -747,7 +745,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 async function importLegacyState(): Promise<void> {
   for (const [what, run] of [
     ['project env settings', importLegacyProjectConfig],
-    ['ssh keys', importLegacySshKeys],
     ['git identity', seedLegacyGitIdentity],
   ] as const) {
     try {
