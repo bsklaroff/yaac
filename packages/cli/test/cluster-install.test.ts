@@ -29,8 +29,8 @@ describe('clusterInstall (CLI)', () => {
     mockRun.mockResolvedValue(true)
     // --nodes stays raw text: the command owns the bounds, and converting
     // here would make a bad value report `NaN` instead of what was typed.
-    await clusterInstall({ nodes: '3', adoptCni: true })
-    expect(mockRun).toHaveBeenCalledWith({ nodes: '3', adoptCni: true })
+    await clusterInstall({ nodes: '3', adoptCni: true, tailnet: true })
+    expect(mockRun).toHaveBeenCalledWith({ nodes: '3', adoptCni: true, tailnet: true })
     expect(process.exitCode).toBeUndefined()
     expect(errSpy).not.toHaveBeenCalled()
   })

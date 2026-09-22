@@ -8,7 +8,7 @@ import {
   kubectlApply,
   kubectlWithRetry,
 } from '@yaac/server/drivers/k8s/substrate'
-import { buildServerIngressNpManifest, clusterPodCidrs, ensureNamespace } from '@yaac/server/drivers/k8s/cluster'
+import { buildServerIngressNpManifest, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
 import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container'
 import {
   buildServerClusterRoleBindingManifest,
@@ -44,7 +44,7 @@ const execFileAsync = promisify(execFile)
  *    binds INSIDE the pod, which is nothing on this machine. A
  *    `kubectl port-forward` per file supplies one, and — being loopback —
  *    satisfies the server's DNS-rebind Host guard the way the published
- *    NodePort does in production. The returned lock reports the LOCAL port,
+ *    loopback origin does in production. The returned lock reports the LOCAL port,
  *    never the pod's.
  *  - **RBAC in this namespace.** Install binds the server's ClusterRole to
  *    a ServiceAccount in the install namespace; an e2e file's namespace is
@@ -103,7 +103,11 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
   await kubectlApply(buildServerClusterRoleBindingManifest())
-  await kubectlApply(buildServerIngressNpManifest(await clusterPodCidrs()))
+  // The node half of the wall only: it admits the kubelet's readiness
+  // probe, which is the one thing that has to reach this pod over the
+  // network. The file's own `kubectl port-forward` is a CRI-side dial that
+  // never traverses policy, and nothing fronts a test server.
+  await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
   await kubectlApply(testServerDeploymentManifest(imageRef, opts.env))
   try {
     await kubectlWithRetry([

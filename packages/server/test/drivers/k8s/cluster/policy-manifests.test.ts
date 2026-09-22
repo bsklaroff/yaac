@@ -9,6 +9,8 @@ vi.mock('#drivers/k8s/substrate/kubectl', () => ({
 import {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
+  buildServerFrontIngressNpManifest,
+  buildServerIngressNpManifest,
   buildWorktreeEgressNpManifest,
 } from '#drivers/k8s/cluster'
 import {
@@ -17,6 +19,9 @@ import {
   PROXY_APP_NAME,
   PROXY_INGRESS_NP_NAME,
   SERVER_APP_NAME,
+  SERVER_FRONT_INGRESS_NP_NAME,
+  SERVER_INGRESS_NP_NAME,
+  SERVER_POD_PORT,
   WORKTREE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
 import { LABEL_WORKTREE_ID } from '#drivers/k8s/substrate/pods'
@@ -27,13 +32,13 @@ interface Spec {
   egress?: unknown[]
 }
 
-// Four builders leave this folder. The image feature re-applies the
+// Five builders leave this folder. The image feature re-applies the
 // install-wide world-deny after a builder pod exits; two more are what
 // `cluster check`'s egress gate renders to decide what it should be able to
-// prove; and the server's own ingress is applied by `yaac cluster install`
-// and asserted there (server-deploy.test.ts), where the CIDRs it excludes
-// are resolved. Every other manifest here is internal and asserted where it
-// is applied — the session/proxy set through `ensureProxyResources`.
+// prove; and the server's ingress wall is two objects — a node half the
+// server itself re-renders at attach, and a fronting half only install
+// applies. Every other manifest here is internal and asserted where it is
+// applied — the session/proxy set through `ensureProxyResources`.
 //
 // What these cases pin is the ipBlock plumbing, because that is the half
 // that fails silently: a policy rendered from the wrong node addresses
@@ -107,5 +112,52 @@ describe('buildProxyIngressNpManifest', () => {
     expect(np.spec.policyTypes).toEqual(['Ingress'])
     expect(np.spec.ingress.flatMap((r) => (r.from ?? []).map((f) => f.ipBlock?.cidr)))
       .toContain('10.89.0.7/32')
+  })
+})
+
+interface IngressSpec {
+  podSelector: Record<string, unknown>
+  policyTypes: string[]
+  ingress: Array<{ from?: Array<Record<string, unknown>>; ports?: unknown[] }>
+}
+
+describe('buildServerIngressNpManifest', () => {
+  it('admits exactly the node addresses it is given, and nothing pod-shaped', () => {
+    // An explicit allow: what must never reach the server is a pod, so the
+    // rule names no podSelector in the install namespace and no pod CIDR.
+    // What it does name is every node address — the kubelet probe and, on
+    // kind, the forwarder's dial arrive sourced from one of them.
+    const np = buildServerIngressNpManifest(['10.89.0.2/32', '10.244.93.192/32']) as unknown as {
+      metadata: { name: string }
+      spec: IngressSpec
+    }
+    expect(np.metadata.name).toBe(SERVER_INGRESS_NP_NAME)
+    expect(np.spec.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
+    expect(np.spec.policyTypes).toEqual(['Ingress'])
+    expect(np.spec.ingress).toEqual([{
+      from: [{ ipBlock: { cidr: '10.89.0.2/32' } }, { ipBlock: { cidr: '10.244.93.192/32' } }],
+      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+    }])
+  })
+})
+
+describe('buildServerFrontIngressNpManifest', () => {
+  it('renders the fronting peers, and an empty ingress for none', () => {
+    const peer = {
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'tailscale' } },
+      podSelector: { matchLabels: { 'tailscale.com/parent-resource': SERVER_APP_NAME } },
+    }
+    const np = buildServerFrontIngressNpManifest([peer]) as unknown as {
+      metadata: { name: string }
+      spec: IngressSpec
+    }
+    expect(np.metadata.name).toBe(SERVER_FRONT_INGRESS_NP_NAME)
+    expect(np.spec.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
+    expect(np.spec.ingress).toEqual([{ from: [peer], ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }] }])
+
+    // No peers is a policy that admits nothing — applied anyway on kind so
+    // a fronting switched on re-install overwrites the old peer.
+    const none = buildServerFrontIngressNpManifest([]) as unknown as { spec: IngressSpec }
+    expect(none.spec.ingress).toEqual([])
   })
 })

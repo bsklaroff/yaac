@@ -12,6 +12,7 @@ import {
   RELAY_PORT,
   ROLE_BUILDER,
   SERVER_APP_NAME,
+  SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
   WORKTREE_EGRESS_NP_NAME,
@@ -202,34 +203,33 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 }
 
 /**
- * Server-pod INGRESS: the API, from everything that is not a pod.
+ * Server-pod INGRESS, node half: the API, from the node addresses.
  *
  * Load-bearing, not hardening. The in-cluster server binds `0.0.0.0` (a
  * pod's loopback has no reachable backend) and stays credential-optional on
- * a local install, so this policy is what separates an untrusted worktree
- * pod from an unauthenticated API. Together with the worktree egress
- * lockdown it is the whole wall, which is why `yaac cluster check` proves
- * it on every install rather than trusting that it was applied.
+ * a local install, so the two policies over its pod selector — this one
+ * and `buildServerFrontIngressNpManifest` — are what separate an untrusted
+ * worktree pod from an unauthenticated API. Together with the worktree
+ * egress lockdown they are the whole wall, which is why `yaac cluster
+ * check` proves it on every install rather than trusting that it was
+ * applied.
  *
- * The shape is `0.0.0.0/0 except <pod CIDRs>`, and it has to be: the
- * node-address form every other yaac policy uses would drop the very
- * traffic this admits. A request to the published NodePort is delivered by
- * kube-proxy's DNAT, but its masquerade to a node address happens in
- * POSTROUTING — AFTER the filter hook where policy is evaluated — so what
- * the policy sees is the original off-cluster source (on the local backend,
- * the host's own address on the node network), which is in no node CIDR.
+ * An explicit allow, not an exclusion: what must never reach the server
+ * is a pod, and the honest way to say so is to name nothing pod-shaped —
+ * no `podSelector` in the install namespace, no pod CIDR anywhere. Two
+ * flows arrive from the node addresses: the kubelet's readiness probe, and
+ * on kind the fronting forwarder's dial, which is host-originated on the
+ * control-plane node and so is sourced from that node's InternalIP (pod on
+ * the same node) or its Calico tunnel address (pod on a worker) — the same
+ * set `nodeIpBlocks()` renders for the proxy's ingress, and the same flow
+ * it already admits for netd's Envoy.
  *
- * Stating the exclusion instead of the admission is also the more honest
- * rule: what must never reach the server is a POD, and Calico enforces a
- * workload's source address, so a pod cannot present anything but its own.
- * Nothing in-cluster wants this port either — a worktree's own `yaac-mama`
- * calls go to the egress proxy's queue, which the server drains.
- *
- * Too narrow a `podCidrs` is the dangerous direction (a pod addressed from
- * a range nobody listed would be admitted), which is why the caller passes
- * `clusterPodCidrs()` — the union of every source, never a pick.
+ * Split from the fronting half because the two change under different
+ * hands: the node set changes as a pool's nodes are replaced, so the
+ * SERVER re-renders this policy at attach; what fronts the Service is an
+ * install decision the server never learns.
  */
-export function buildServerIngressNpManifest(podCidrs: string[]): Record<string, unknown> {
+export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(
     SERVER_INGRESS_NP_NAME,
     k8sNamespace(),
@@ -237,9 +237,33 @@ export function buildServerIngressNpManifest(podCidrs: string[]): Record<string,
       podSelector: { matchLabels: { app: SERVER_APP_NAME } },
       policyTypes: ['Ingress'],
       ingress: [{
-        from: [{ ipBlock: { cidr: '0.0.0.0/0', except: podCidrs } }],
+        from: ipBlocks(nodeCidrs),
         ports: [tcp(SERVER_POD_PORT)],
       }],
+    },
+    { app: SERVER_APP_NAME },
+  )
+}
+
+/**
+ * Server-pod INGRESS, fronting half: the API, from whatever fronts its
+ * Service — the tailnet operator's proxy pod, selected by namespace and
+ * label. Empty on kind, where the forwarder is host-networked and covered
+ * by the node half: an empty `ingress` list admits nothing, and it is
+ * applied anyway so a re-install that changes fronting overwrites the old
+ * peer rather than leaving it behind. NetworkPolicy unions allow rules
+ * across objects, so the two halves compose.
+ */
+export function buildServerFrontIngressNpManifest(
+  peers: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  return np(
+    SERVER_FRONT_INGRESS_NP_NAME,
+    k8sNamespace(),
+    {
+      podSelector: { matchLabels: { app: SERVER_APP_NAME } },
+      policyTypes: ['Ingress'],
+      ingress: peers.length === 0 ? [] : [{ from: peers, ports: [tcp(SERVER_POD_PORT)] }],
     },
     { app: SERVER_APP_NAME },
   )

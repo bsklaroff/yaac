@@ -41,6 +41,16 @@ Everything the earlier plans called "the keystone" has shipped on kind:
   already renders `hostPath | pvc+subPath | emptyDir`. Nothing selects
   `pvc` yet.
 - Multi-node kind (`--nodes N`) exists, with per-node readiness gates.
+- The server's fronting is a per-backend manifest set install renders
+  (docs/server-in-cluster.md "Reachability"): a ClusterIP plus a
+  hostNetwork forwarder behind the port mapping on kind, the Tailscale
+  operator's LoadBalancer Service under `--tailnet`. Install reads the
+  published origin off the Service, states `YAAC_ALLOWED_HOSTS` from it,
+  mints the token through the pod's lock and
+  registers it; `yaac server start|restart` derive the origin from the live
+  Service. The ingress wall is an explicit allow in two policies — node
+  addresses (re-rendered by the server at attach) plus the fronting's
+  peers — with no pod-CIDR snapshot left anywhere.
 - Nothing a user configures names a path on the server any more:
   `bindMounts` is gone, an SSH git credential is ingested as key content,
   project env and secrets live encrypted in the database, and a project's
@@ -56,9 +66,9 @@ Everything the earlier plans called "the keystone" has shipped on kind:
 
 What is NOT there: the tiers are still one directory, every mount is still
 a hostPath resolved through kind's `$HOME` extraMount, the built-in images
-bake the CLI machine's uid, the server is published only through a kind
-port mapping, and `--adopt-cni` therefore deploys no server. Those four
-gaps are the whole of this plan.
+bake the CLI machine's uid, and `--adopt-cni` deploys no server because
+nothing yet selects the tailnet fronting together with the storage and uid
+a foreign cluster needs. Those gaps are the whole of this plan.
 
 ## Decisions
 
@@ -143,23 +153,22 @@ gaps are the whole of this plan.
   outside this plan. Nothing in this plan builds an image inside the
   cluster beyond what the trust-split builder pods already do for project
   and user layers.
-- **The tailnet is the only way onto a cloud server.** kind keeps
-  NodePort + `extraPortMapping` → `127.0.0.1`. byo publishes the server
-  through the Tailscale Kubernetes operator — a Service with
-  `loadBalancerClass: tailscale` — which gives a tailnet-only hostname
-  with real TLS on the same trust boundary docs/remote-hosting.md already
-  draws, and nothing else: no public LoadBalancer, no Ingress, no
-  cert-manager, no DNS, and no option to add them. The operator is a
-  prerequisite the cluster owner installs (one helm command, documented);
-  `--byo` probes for it and refuses without it. Install waits for the
-  origin in the Service status, sets `YAAC_ALLOWED_HOSTS` +
-  `YAAC_TRUST_PROXY` so a credential is required, mints the durable token
-  and registers the origin in `server.json` — the same `registerServer`
-  every start performs. The server's ingress NetworkPolicy is rewritten
-  from "every address except the pod CIDRs" to an explicit allow: node
-  CIDRs (the NodePort path) plus the operator's proxy pod selector — which
-  also retires the pod-CIDR snapshot that goes stale as a cloud cluster's
-  IPAM grows.
+- **The tailnet is the only way onto a cloud server.** kind keeps the
+  `extraPortMapping` → `127.0.0.1`, fronted by a hostNetwork forwarder so
+  the ingress wall sees a node source on every host platform. byo publishes
+  the server through the Tailscale Kubernetes operator — the `--tailnet`
+  fronting, a Service with `loadBalancerClass: tailscale` — which gives a
+  tailnet-only hostname on the same trust boundary docs/remote-hosting.md
+  already draws, and nothing else: no public LoadBalancer, no public
+  Ingress, no cert-manager, no DNS, and no option to add them. The operator
+  is a prerequisite the cluster owner installs (one helm command, printed
+  by the refusal); `--byo` implies `--tailnet`. One decision is still open
+  for step 6: the L4 Service is WireGuard-encrypted but terminates no TLS,
+  so the origin is `http://` and the session cookie is not `Secure`. The
+  operator's `ingressClassName: tailscale` Ingress (still tailnet-only) does
+  terminate TLS; switching to it is a different fronting body behind the
+  same seam (`install/server-fronting.ts`), and the one to take if the
+  `Secure` cookie is required.
 - **Node tuning moves into the gVisor installer DaemonSet.** The sysctls
   and `DefaultTasksMax` are real-node concerns as much as kind-node ones;
   the installer already runs privileged with `nsenter` on every node and
@@ -253,18 +262,13 @@ exists.
 - Gate: `cluster check` green after a podman-machine restart with no
   install re-run for the sysctls (the DaemonSet reapplied them).
 
-### 4. Server publication and the ingress wall
+### 4. Server publication and the ingress wall — shipped
 
-- The Service's fronting is a per-backend manifest: NodePort + port
-  mapping on kind, `loadBalancerClass: tailscale` under `--byo`. Install
-  waits on the published origin from the Service status, sets the two
-  remote-hosting variables, mints the token and registers the origin.
-- The ingress NetworkPolicy becomes an explicit allow of node CIDRs plus
-  the fronting pod selector; the `egress` gate's worktree-must-not-reach-
-  the-server probe is unchanged and proves it on both backends.
-- Gate: on kind the wall probe passes with the rewritten policy; on a
-  tailnet-fronted kind cluster (the operator works on kind) `yaac remote
-  set` from a second device reaches the server.
+docs/server-in-cluster.md "Reachability" is the current-state reference.
+`--tailnet` selects the tailnet fronting on any cluster today; step 6 makes
+`--byo` imply it. The tailnet gate (a second device reaching a
+`--tailnet` kind install through `yaac remote set`) runs with the operator
+installed on the test rig.
 
 ### 5. Credentials off the shared tier
 
@@ -284,9 +288,11 @@ exists.
   adoption does today: the node-OS/containerd probe (config include path,
   restart mechanism — k3s embeds containerd), the StorageClass probe
   (`--rwx-storage-class`, `--rwo-storage-class`, refused when absent or
-  when the RWX class is not NFS-family), the Tailscale operator probe, the
-  architecture probe, the `runAsUser` decision, the claims and the Retain
-  patch, the server with its tailnet fronting, and the registration.
+  when the RWX class is not NFS-family), the architecture probe, the
+  `runAsUser` decision, the claims and the Retain patch, and the server
+  with the tailnet fronting `--tailnet` already selects (its operator probe
+  included) — folding `--tailnet` in as implied, and deleting the flag if a
+  tailnet-fronted kind install has no users of its own by then.
   Every new argument gets its e2e-cli coverage.
 - **The architecture probe refuses a mismatch, loudly.** The built-in
   images are built on the deploying machine for its own architecture and

@@ -5,9 +5,12 @@
  * single-replica Deployment inside it (docs/server-in-cluster.md), which is
  * what lets server and worktree pods eventually share one claim instead of
  * one host filesystem. Everything that puts it there lives here: its image,
- * its RBAC, its Deployment and Service, the ingress policy that is the only
- * thing between an untrusted worktree pod and an unauthenticated API, and
- * the `server.json` that points every client at the published origin.
+ * its RBAC, its Deployment, the ingress policies that are the only thing
+ * between an untrusted worktree pod and an unauthenticated API, and the
+ * `server.json` that points every client at the published origin. What
+ * fronts its Service — how the origin is reached from outside the cluster
+ * — is the one per-backend piece, and it is handed in as a
+ * `ServerFronting` (server-fronting.ts) rather than decided here.
  *
  * Install-only, like the rest of this folder. The server never applies its
  * own Deployment — a workload that rolls itself is a workload that can roll
@@ -26,7 +29,6 @@ import {
   PRIORITY_CLASS_INFRA,
   RELAY_PORT,
   SERVER_APP_NAME,
-  SERVER_NODE_PORT,
   SERVER_POD_PORT,
   hostUidSecurityContext,
   SERVER_SA_NAME,
@@ -37,7 +39,12 @@ import {
   kubectlWithRetry,
   proxyServiceHost,
 } from '#drivers/k8s/substrate'
-import { buildServerIngressNpManifest, clusterPodCidrs } from '#drivers/k8s/cluster'
+import {
+  buildServerFrontIngressNpManifest,
+  buildServerIngressNpManifest,
+  nodeIpBlocks,
+} from '#drivers/k8s/cluster'
+import { frontingOfService, type RemoteHosting, type ServerFronting } from './server-fronting'
 import {
   contextHash,
   ensureImageByTag,
@@ -53,9 +60,14 @@ import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { getDataDir } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
-import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
-import { registerServer } from '@yaac/shared/server-config'
-import { resolveServerPort } from '@yaac/shared/server-port'
+import {
+  SERVER_LOCK_FILENAME,
+  isLockLive,
+  isSameHostLock,
+  parseServerLock,
+  type ServerLock,
+} from '@yaac/shared/server-lock-file'
+import { mintLocalClientToken, registerServer } from '@yaac/shared/server-config'
 import { env, testEnv } from '@yaac/shared/env'
 
 /**
@@ -122,17 +134,6 @@ export async function ensureServerImage(
   }
   await ensureImageByTag(tag, dockerfile, context)
   return pushImageToRegistry(tag)
-}
-
-/**
- * The loopback origin the server is published at: the host end of the kind
- * `extraPortMapping` that fronts its NodePort. Fixed when the cluster is
- * CREATED, which is why a pre-install-era cluster cannot be converged into
- * publishing one — see `waitForPublishedServer`, which is where that turns
- * into a message.
- */
-export function serverPublishedOrigin(): string {
-  return `http://127.0.0.1:${resolveServerPort()}`
 }
 
 /** Every pod of the server carries the install identity, like the proxy's. */
@@ -267,6 +268,13 @@ export interface ServerEnvOptions {
    * one — where install has already warned.
    */
   torHostAddr?: string
+  /**
+   * What the fronting says the Deployment must state for the origin it
+   * published — the tailnet name it admits, and whether a TLS-terminating
+   * proxy stands in front. Unioned with what the install shell already
+   * carries, never replacing it.
+   */
+  remoteHosting?: RemoteHosting
 }
 
 /**
@@ -289,6 +297,7 @@ export interface ServerEnvOptions {
  * log rather than absorbed silently.
  */
 export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
+  const hosting = effectiveRemoteHosting(opts.remoteHosting)
   const vars: Array<{ name: string; value: string }> = [
     { name: 'YAAC_IN_CLUSTER', value: '1' },
     // A pod's loopback has no reachable backend; the ingress NetworkPolicy
@@ -302,8 +311,8 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
     ['YAAC_IMAGE_PREFIX', testEnv.imagePrefix],
-    ['YAAC_ALLOWED_HOSTS', env.allowedHosts.length > 0 ? env.allowedHosts.join(',') : undefined],
-    ['YAAC_TRUST_PROXY', env.trustProxy ? '1' : undefined],
+    ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.length > 0 ? hosting.allowedHosts.join(',') : undefined],
+    ['YAAC_TRUST_PROXY', hosting.trustProxy ? '1' : undefined],
     ['YAAC_REQUIRE_AUTH', env.requireAuth ? '1' : undefined],
     // The address the snapshot claims a worktree's forwarded ports answer
     // at. The server binds nothing either way, so this is a display value —
@@ -335,6 +344,20 @@ export function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: strin
     if (value !== undefined && value !== '') vars.push({ name, value })
   }
   return vars
+}
+
+/**
+ * The remote-hosting posture the Deployment ends up with: the fronting's
+ * answer unioned with the install shell's. The shell half stays because it
+ * is how a kind install is fronted by a host-side `tailscale serve`
+ * (docs/remote-hosting.md); the fronting half is how an install that
+ * publishes its own tailnet name admits it.
+ */
+function effectiveRemoteHosting(fromFronting: RemoteHosting = { allowedHosts: [], trustProxy: false }): RemoteHosting {
+  return {
+    allowedHosts: [...new Set([...fromFronting.allowedHosts, ...env.allowedHosts])],
+    trustProxy: fromFronting.trustProxy || env.trustProxy,
+  }
 }
 
 /**
@@ -473,60 +496,50 @@ export function buildServerDeploymentManifest(
 }
 
 /**
- * The Service, published to the host as a fixed loopback origin.
+ * Apply the server workload, its fronting, and wait for both to roll.
  *
- * NodePort with a pinned port, fronted by a kind `extraPortMapping` written
- * at cluster-create time: the browser, the CLI and the desktop app then all
- * dial one stable `127.0.0.1:<port>` with no tunnel process for anyone to
- * keep alive. `externalTrafficPolicy` stays the default (`Cluster`), which
- * is what SNATs NodePort traffic to a node address — the source the ingress
- * policy admits.
- */
-export function buildServerServiceManifest(): Record<string, unknown> {
-  return {
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: {
-      name: SERVER_APP_NAME,
-      namespace: k8sNamespace(),
-      labels: { app: SERVER_APP_NAME },
-    },
-    spec: {
-      type: 'NodePort',
-      selector: { app: SERVER_APP_NAME },
-      ports: [{
-        name: 'api',
-        port: SERVER_POD_PORT,
-        targetPort: SERVER_POD_PORT,
-        nodePort: SERVER_NODE_PORT,
-      }],
-    },
-  }
-}
-
-/**
- * Apply the server workload and wait for it to roll.
+ * Order matters three times: the SA and its ClusterRole exist before the
+ * pod that mounts the token; both halves of the ingress wall are applied
+ * before the Service publishes the port — a window in which the API is reachable from
+ * pods is a window in which a worktree could use it; and the Service is
+ * applied before the Deployment, because the origin the fronting publishes
+ * (read off the Service on a tailnet) is an input to the Deployment's
+ * environment. On an existing kind install the Service apply is also what
+ * releases the old NodePort on the node before the forwarder binds it.
  *
- * Order matters twice: the SA and its ClusterRole exist before the pod that
- * mounts the token, and the ingress policy is applied before the Service
- * publishes the port — a window in which the API is reachable from pods is
- * a window in which a worktree could use it.
+ * Returns the published origin.
  */
 export async function ensureServerDeployment(
   imageRef: string,
+  fronting: ServerFronting,
   envOpts: ServerEnvOptions = {},
-): Promise<void> {
+): Promise<string> {
   await kubectlApply(buildServerServiceAccountManifest())
   await kubectlApply(buildServerClusterRoleManifest())
   await kubectlApply(buildServerClusterRoleBindingManifest())
-  await kubectlApply(buildServerIngressNpManifest(await clusterPodCidrs()))
-  await kubectlApply(buildServerDeploymentManifest(imageRef, envOpts))
-  await kubectlApply(buildServerServiceManifest())
+  await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
+  await kubectlApply(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
+  await kubectlApply(fronting.serviceManifest())
+  const origin = await fronting.resolveOrigin()
+  await kubectlApply(buildServerDeploymentManifest(imageRef, {
+    ...envOpts,
+    remoteHosting: fronting.remoteHosting(origin),
+  }))
+  const extras = fronting.extraManifests()
+  for (const manifest of extras) await kubectlApply(manifest)
+  for (const manifest of extras) {
+    if (manifest.kind !== 'Deployment') continue
+    const name = (manifest.metadata as { name: string }).name
+    await kubectlWithRetry([
+      'rollout', 'status', `deployment/${name}`, '-n', k8sNamespace(), '--timeout=120s',
+    ], { timeout: 130_000, maxAttempts: 2 })
+  }
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
     '-n', k8sNamespace(),
     '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
+  return origin
 }
 
 /** Scale the Deployment to `replicas` and wait for the change to settle. */
@@ -551,8 +564,9 @@ export async function serverDeploymentExists(): Promise<boolean> {
  * because install is where the environment that decides it is read.
  * Deliberately not an import: `#api/http` sits above the driver.
  */
-function isLoopbackOnlyInstall(): boolean {
-  return env.allowedHosts.length === 0 && !env.trustProxy && !env.requireAuth
+function isLoopbackOnlyInstall(remoteHosting: RemoteHosting): boolean {
+  const hosting = effectiveRemoteHosting(remoteHosting)
+  return hosting.allowedHosts.length === 0 && !hosting.trustProxy && !env.requireAuth
 }
 
 /**
@@ -567,15 +581,40 @@ function isLoopbackOnlyInstall(): boolean {
  * Deployment instead of a process (docs/server-in-cluster.md).
  */
 export async function writeServerRemote(
+  origin: string,
+  credentialRequired: boolean,
   log: (message: string) => void = () => { /* quiet by default */ },
 ): Promise<void> {
-  await registerServer(serverPublishedOrigin(), 'k8s', {
+  await registerServer(origin, 'k8s', {
     log,
     // An empty token is right on the loopback install, where nothing
     // checks it. On a credential-REQUIRING one it is a lockout, and the
     // note printed before this promised it would not happen.
-    credentialRequired: !isLoopbackOnlyInstall(),
+    credentialRequired,
+    mint: (o) => mintLocalClientToken(o, readPodLock),
   })
+}
+
+/**
+ * The lock the POD holds, read by asking the pod.
+ *
+ * The mint authenticates with the lock's per-boot secret, and the lock is
+ * the server's file: on kind the host could still open it through the
+ * hostPath, on a cloud cluster the data dir is not on this machine at all.
+ * One path for both, so a fronting that puts the server out of the host's
+ * reach needs no second mint. The path is the pod's own server-local root,
+ * from the environment the Deployment states.
+ */
+async function readPodLock(): Promise<ServerLock | null> {
+  try {
+    const { stdout } = await kubectlWithRetry([
+      'exec', '-n', k8sNamespace(), `deployment/${SERVER_APP_NAME}`, '--',
+      'sh', '-c', `cat "\${YAAC_SERVER_LOCAL_ROOT:-$YAAC_DATA_DIR}/${SERVER_LOCK_FILENAME}"`,
+    ], { timeout: 30_000, maxAttempts: 3 })
+    return parseServerLock(stdout)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -587,7 +626,7 @@ export async function writeServerRemote(
  * Returns the origin it published, which is what install prints.
  */
 export async function deployServerWorkload(
-  opts: ServerEnvOptions & { log: (message: string) => void },
+  opts: ServerEnvOptions & { fronting: ServerFronting; log: (message: string) => void },
 ): Promise<string> {
   await refuseIfHostServerRunning()
   opts.log('Building the server image (from the bundle)...')
@@ -596,28 +635,29 @@ export async function deployServerWorkload(
   // Pass the options straight through rather than re-listing the fields:
   // every `ServerEnvOptions` member is optional, so a hand-copied list lets
   // the next field added go missing from the Deployment with no compile error.
-  await ensureServerDeployment(imageRef, opts)
-  await waitForPublishedServer()
-  if (!isLoopbackOnlyInstall()) {
+  const origin = await ensureServerDeployment(imageRef, opts.fronting, opts)
+  await waitForPublishedServer(origin, opts.fronting.unreachableDiagnosis(origin))
+  const credentialRequired = !isLoopbackOnlyInstall(opts.fronting.remoteHosting(origin))
+  if (credentialRequired) {
     // Worth saying out loud, because it is the one setting here that can
     // arrive by accident: these are read from the environment `yaac cluster
     // install` runs in, and a shell that already has them (a machine
     // hosting another yaac remotely) hands them to a brand-new install that
     // did not ask for them.
     opts.log(
-      'note: this server will REQUIRE a credential — YAAC_ALLOWED_HOSTS / '
-      + 'YAAC_TRUST_PROXY is set in this environment and the Deployment '
-      + 'carries it. server.json below gets a durable token so the CLI on '
-      + 'this machine keeps working — and this install says so plainly if '
-      + 'that mint fails. Unset them and re-install if it was not intended '
-      + '(docs/remote-hosting.md).',
+      'note: this server will REQUIRE a credential — it is published beyond '
+      + 'this machine\'s loopback, or YAAC_ALLOWED_HOSTS / YAAC_TRUST_PROXY is '
+      + 'set in this environment and the Deployment carries it. server.json '
+      + 'below gets a durable token so the CLI on this machine keeps working '
+      + '— and this install says so plainly if that mint fails. Unset them '
+      + 'and re-install if it was not intended (docs/remote-hosting.md).',
     )
   }
   // Also records that this data dir IS a k8s install, so a later `yaac
   // server start` from an ordinary shell finds the Deployment instead of
   // spawning a second server beside it.
-  await writeServerRemote(opts.log)
-  return serverPublishedOrigin()
+  await writeServerRemote(origin, credentialRequired, opts.log)
+  return origin
 }
 
 /**
@@ -634,7 +674,7 @@ export async function deployServerWorkload(
  *    judges by `pidExists` in its own pid namespace, finds the host pid
  *    absent, calls the lock stale, unlinks it and opens PGlite underneath
  *    a server that is still running.
- *  - `waitForPublishedServer` probes `127.0.0.1:<port>`, and on a cluster
+ *  - `waitForPublishedServer` probes the loopback origin, and on a cluster
  *    predating the port mapping that is answered by the OLD HOST SERVER.
  *    Install then reports success and mints a token against it, writing a
  *    `server.json` that points every client at the process it was meant to
@@ -667,19 +707,20 @@ async function refuseIfHostServerRunning(): Promise<void> {
 const PUBLISH_PROBE_TIMEOUT_MS = 60_000
 
 /**
- * Wait for the ROLLED server to answer on the host, and turn "it never
- * does" into the one diagnosis that explains it.
+ * Wait for the ROLLED server to answer at its published origin, and turn
+ * "it never does" into the fronting's own diagnosis of why.
  *
- * A Deployment that is Available while `127.0.0.1:<port>` refuses is not a
- * server problem — it is a cluster created before the port mapping existed,
- * so the NodePort has no host end and nothing published it. That cannot be
- * converged in place (kind writes port mappings at create time only), so
- * the message says the only thing that fixes it.
+ * A Deployment that is Available while the origin refuses is not a server
+ * problem: on kind it is a cluster created before the port mapping existed
+ * (which cannot be converged, only recreated), on a tailnet it is this
+ * machine not being able to reach the name the operator published. The
+ * fronting knows which, so it supplies the text.
  */
-export async function waitForPublishedServer(
+async function waitForPublishedServer(
+  origin: string,
+  diagnosis: string,
   timeoutMs = PUBLISH_PROBE_TIMEOUT_MS,
 ): Promise<void> {
-  const origin = serverPublishedOrigin()
   const deadline = Date.now() + timeoutMs
   let last = 'no attempt made'
   while (Date.now() < deadline) {
@@ -697,28 +738,45 @@ export async function waitForPublishedServer(
   }
   throw new Error(
     `the server Deployment rolled out, but ${origin} does not answer (${last}).\n`
-    + '    This is what a cluster created before the server was published looks '
-    + 'like: the NodePort has no host end, and kind writes port mappings only '
-    + 'when a cluster is created.\n'
-    + '    Recreate it: `yaac cluster delete`, then `yaac cluster install`. '
-    + 'Running worktrees are lost (as any cluster delete loses them); nothing '
-    + 'under the data dir is touched.',
+    + `    ${diagnosis}`,
   )
 }
 
 /**
- * `yaac server start` against an install whose server is a Deployment:
- * scale it back to one and wait. The counterpart to `stopClusterServer`,
- * and NOT a substitute for `yaac cluster install` — it starts the server
- * that is already deployed, it does not deploy one.
+ * The fronting this install's live Service records, which is what the
+ * start and restart verbs wait on. Read fresh each time: nothing on disk
+ * says which fronting was installed, and the Service is the one object
+ * that does.
  */
-export async function startClusterServer(): Promise<void> {
+async function installedFronting(): Promise<ServerFronting> {
+  const svc = await kubectlGetJson<Record<string, unknown>>([
+    'get', 'service', SERVER_APP_NAME, '-n', k8sNamespace(),
+  ])
+  return frontingOfService(svc)
+}
+
+/** Wait for the installed fronting's origin to answer, and return it. */
+async function waitForInstalledServer(): Promise<string> {
+  const fronting = await installedFronting()
+  const origin = await fronting.resolveOrigin()
+  await waitForPublishedServer(origin, fronting.unreachableDiagnosis(origin))
+  return origin
+}
+
+/**
+ * `yaac server start` against an install whose server is a Deployment:
+ * scale it back to one and wait, returning the origin it answers at. The
+ * counterpart to `stopClusterServer`, and NOT a substitute for `yaac
+ * cluster install` — it starts the server that is already deployed, it
+ * does not deploy one.
+ */
+export async function startClusterServer(): Promise<string> {
   await scaleServerDeployment(1)
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
-  await waitForPublishedServer()
+  return waitForInstalledServer()
 }
 
 /**
@@ -744,10 +802,11 @@ export async function stopClusterServer(): Promise<void> {
 }
 
 /**
- * `yaac server restart`: roll the pod. `Recreate` means the old pod is gone
- * before the new one is scheduled, so the lease never has two holders.
+ * `yaac server restart`: roll the pod and return the origin it answers at.
+ * `Recreate` means the old pod is gone before the new one is scheduled, so
+ * the lease never has two holders.
  */
-export async function restartClusterServer(): Promise<void> {
+export async function restartClusterServer(): Promise<string> {
   await kubectlWithRetry([
     'rollout', 'restart', `deployment/${SERVER_APP_NAME}`, '-n', k8sNamespace(),
   ], { timeout: 60_000 })
@@ -755,5 +814,5 @@ export async function restartClusterServer(): Promise<void> {
     'rollout', 'status', `deployment/${SERVER_APP_NAME}`,
     '-n', k8sNamespace(), '--timeout=300s',
   ], { timeout: 310_000, maxAttempts: 2 })
-  await waitForPublishedServer()
+  return waitForInstalledServer()
 }

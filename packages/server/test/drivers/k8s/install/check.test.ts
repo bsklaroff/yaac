@@ -1118,6 +1118,30 @@ describe('runClusterCheck', () => {
     expect(egress?.detail).toContain('forgery lock is open')
   })
 
+  it('fails the egress check when a session pod can reach the yaac server', async () => {
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'yaac-server') {
+        return { stdout: '10.96.7.8', stderr: '' }
+      }
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
+        // Blocked from the apiserver, but the server's API answered a pod.
+        return { stdout: 'NP_BLOCKED\nNP_SERVER_OPEN\n', stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    stage({ run })
+    const { ok, results } = await runClusterCheck()
+    expect(ok).toBe(false)
+    const egress = byName(results, 'egress')
+    expect(egress).toMatchObject({ status: 'fail' })
+    expect(egress?.detail).toContain('reached the yaac server')
+    // The fix names both halves of the wall, since either can be the one
+    // that went missing.
+    expect(egress?.fix).toContain('yaac-server-ingress')
+    expect(egress?.fix).toContain('yaac-server-ingress-front')
+  })
+
   it('passes datapath when calico-node and netd are both rolled out', async () => {
     stage()
     const { results } = await runClusterCheck()

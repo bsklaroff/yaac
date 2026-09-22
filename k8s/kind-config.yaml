@@ -27,7 +27,11 @@
 # Anything added to the node entry is therefore copied to every worker too,
 # so it must be a per-node property. A HOST-scoped one — extraPortMappings
 # above all — would have N nodes claiming one host port; put such settings
-# in the cluster-scoped section, or teach the renderer to strip them.
+# in the cluster-scoped section, or teach the renderer to strip them. The
+# renderer adds one such mapping to the control-plane entry alone: the
+# server's published loopback port, delivered to the node port the
+# hostNetwork forwarder `yaac cluster install` deploys there binds
+# (docs/server-in-cluster.md "Reachability").
 #
 # kind keeps the control-plane's `node-role.kubernetes.io/control-plane`
 # NoSchedule taint once a cluster has workers (it only clears it on

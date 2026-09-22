@@ -42,6 +42,13 @@ existing one it is a no-op with a note.
 cluster and installs no CNI, adopting the Calico that cluster already runs
 (see "Adopting a CNI yaac did not install").
 
+`--tailnet` publishes the server on the machine's Tailscale tailnet through
+the Tailscale Kubernetes operator instead of at `127.0.0.1` — the same
+fronting a bring-your-own cluster gets, usable on kind. The operator is a
+prerequisite (`helm upgrade --install tailscale-operator …`, printed by the
+refusal when it is missing), and the server then requires a credential
+(docs/server-in-cluster.md "Reachability", docs/remote-hosting.md).
+
 ## Images are built here, and only here
 
 Every image yaac itself ships — the base/tools/nestable worktree chain, the
@@ -354,24 +361,19 @@ the Calico install; everything else it applies is what the other modes apply
 idempotent and re-runnable. It refuses `--nodes`: there are no nodes for it
 to render, since the adopted cluster brings its own.
 
-**It does not deploy the server**, and says so. The in-cluster server is
-reached through a kind `extraPortMapping` written at cluster-create time
-(docs/server-in-cluster.md), which a cluster yaac did not create does not
-have — so the Deployment would come up and its published origin would never
-answer. What that would leave behind is worse than the failure: a NodePort
-Service publishing a credential-optional API on every address the nodes have,
-walled only by an ingress policy whose pod-CIDR exclusion was snapshotted at
-install time and goes stale as the cluster's IPAM grows.
-
-That leaves adoption with **no server it can run**. A server outside the
-cluster is the containerless driver by construction
-(docs/server-in-cluster.md), so `yaac server start` against an adopted
-install gives tmux worktrees on this host rather than pods on the cluster
-just installed into — which the install now says out loud rather than
-leaving it to be noticed. What `--adopt-cni` gets you today is the
-in-cluster layers and nothing that drives them; the mode that closes the
-gap is the bring-your-own-cluster install (docs/plans/cloud-k8s.md),
-where the server's fronting and TLS are designed.
+**It does not deploy the server**, and says so. On kind the server is
+fronted by a forwarder behind a kind `extraPortMapping` written at
+cluster-create time (docs/server-in-cluster.md), which a cluster yaac did
+not create does not have; the fronting an adopted cluster needs is the
+tailnet one, and the install mode that selects it together with the rest
+of what a foreign cluster needs (storage classes, the node uid, the
+architecture) is the bring-your-own-cluster install
+(docs/plans/cloud-k8s.md). Until then adoption has **no server it can run**:
+a server outside the cluster is the containerless driver by construction,
+so `yaac server start` against an adopted install gives tmux worktrees on
+this host rather than pods on the cluster just installed into — which the
+install says out loud rather than leaving it to be noticed. `--tailnet`
+with `--adopt-cni` verifies the operator and changes nothing else.
 
 There is no datapath change here — the netd redirect (docs/worktree-egress.md)
 works unmodified on any CNI whose pod egress traverses host netfilter and

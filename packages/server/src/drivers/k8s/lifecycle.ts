@@ -1,13 +1,16 @@
 import {
   ClusterCache,
   ensurePriorityClasses,
+  kubectlApply,
   setActiveClusterCache,
   type DeltaSource,
 } from '#drivers/k8s/substrate'
 import {
+  buildServerIngressNpManifest,
   ensureMainRegistry,
   ensureNamespace,
   gcOrphanProjectRegistries,
+  nodeIpBlocks,
   sweepLegacyVclusterState,
 } from '#drivers/k8s/cluster'
 import {
@@ -132,6 +135,14 @@ async function attachNow(sinks: DriverSinks): Promise<void> {
     // The registry stands itself up only when it isn't already answering,
     // so a healthy install pays one HTTP ping here.
     await ensureMainRegistry()
+    // The node half of this server's own ingress wall, re-rendered from
+    // the live node list (docs/server-in-cluster.md). Install applies it
+    // too, but the node set is the one input that changes under a running
+    // install: a pod rescheduled onto a node added since must admit that
+    // node's kubelet itself, or it never goes Ready. The fronting half is
+    // install's alone — the server never learns what fronts its Service,
+    // and it never rolls its own Deployment for the same reason.
+    await kubectlApply(buildServerIngressNpManifest(await nodeIpBlocks()))
   })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
   // The substrate is usable and nothing is watching yet — the caller's

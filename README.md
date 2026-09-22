@@ -176,6 +176,12 @@ yaac server restart
 yaac cluster install
 ```
 
+Under `k8s` there is also `yaac cluster install --tailnet`, which fronts the
+server pod through the Tailscale Kubernetes operator instead of a
+`tailscale serve` on the host and sets `YAAC_ALLOWED_HOSTS` on the
+Deployment itself — plain http over the tailnet's WireGuard, so use `serve`
+when the cookie must be `Secure` (see [docs/remote-hosting.md](docs/remote-hosting.md)).
+
 Under `containerless`, put both vars in the server's permanent environment
 (a systemd unit or shell profile) before restarting — a detached restart
 won't inherit an interactive `export`. Under `k8s` the *Deployment* carries
@@ -265,6 +271,9 @@ yaac cluster <command>
                     Safe to re-run; never destructive
     --nodes <n>     Nodes to create (default 1; ignored if a cluster exists)
     --adopt-cni     Install into a cluster whose CNI yaac did not install
+    --tailnet       Publish the server on your Tailscale tailnet through the
+                    Tailscale Kubernetes operator (must be installed) instead
+                    of at 127.0.0.1; the server then requires a credential
   delete [-y]       Delete the kind cluster (registry included), keeping
                     on-disk worktrees and their checkouts (-y skips confirmation)
 

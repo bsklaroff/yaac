@@ -132,19 +132,48 @@ export const PROXY_SA_NAME = 'yaac-proxy'
  */
 export const SERVER_APP_NAME = 'yaac-server'
 export const SERVER_SA_NAME = 'yaac-server'
-/** NetworkPolicy admitting the server pod's API only from node addresses. */
+/**
+ * NetworkPolicy admitting the server pod's API from the node addresses —
+ * the kubelet's readiness probe and, on kind, the fronting forwarder's
+ * dial. Re-rendered by the server at attach as well as by install, since
+ * the node set is the one input that changes under a running install.
+ */
 export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
+/**
+ * NetworkPolicy admitting the server pod's API from whatever fronts its
+ * Service — the tailnet operator's proxy pod, or nothing at all on kind,
+ * where the forwarder is host-networked and covered by the node addresses.
+ * Install-only: the server knows nothing about frontings.
+ */
+export const SERVER_FRONT_INGRESS_NP_NAME = 'yaac-server-ingress-front'
 /** Port the server listens on inside its pod (container + Service port). */
 export const SERVER_POD_PORT = 8787
 /**
- * NodePort the server Service publishes, and the node end of the kind
- * `extraPortMapping` that makes it a fixed host loopback origin. Fixed
- * rather than allocator-assigned because the mapping is written into the
- * cluster's config at CREATE time — the two halves have to agree before
- * either exists, and coexisting installs are separate clusters, so only
- * the HOST port has to vary between them.
+ * Deployment/ConfigMap name and pod selector label of the kind fronting: a
+ * hostNetwork Envoy on the control-plane node that forwards the port the
+ * kind `extraPortMapping` targets into the server's ClusterIP Service.
  */
-export const SERVER_NODE_PORT = 30787
+export const SERVER_FRONT_APP_NAME = 'yaac-server-front'
+/**
+ * Node port the kind `extraPortMapping` targets, bound by the fronting
+ * forwarder. Fixed rather than allocator-assigned because the mapping is
+ * written into the cluster's config at CREATE time — the two halves have
+ * to agree before either exists, and coexisting installs are separate
+ * clusters, so only the HOST port has to vary between them. The value is
+ * the one every existing cluster's mapping already carries, which is what
+ * lets a re-install converge such a cluster instead of recreating it.
+ */
+export const SERVER_FRONT_PORT = 30787
+
+/**
+ * Where the Tailscale Kubernetes operator lives and how it labels the proxy
+ * pod it runs per exposed Service — what the tailnet fronting's ingress
+ * peer selects on. The namespace is the operator chart's default and the
+ * one the documented helm command installs into.
+ */
+export const TAILSCALE_OPERATOR_NAMESPACE = 'tailscale'
+export const TAILSCALE_PARENT_RESOURCE_LABEL = 'tailscale.com/parent-resource'
+export const TAILSCALE_PARENT_NAMESPACE_LABEL = 'tailscale.com/parent-resource-ns'
 
 /**
  * `host:port` of the proxy's Service, in-cluster DNS.

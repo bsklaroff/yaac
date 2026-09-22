@@ -38,6 +38,7 @@ export { sweepLegacyVclusterState } from './legacy-vcluster-sweep'
 export {
   buildEgressWorldDenyNpManifest,
   buildProxyIngressNpManifest,
+  buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorktreeEgressNpManifest,
 } from './policy-manifests'
