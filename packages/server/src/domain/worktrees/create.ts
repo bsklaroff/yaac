@@ -114,6 +114,9 @@ import { AGENT_INSTALL } from '@yaac/shared/tool-install'
  *  `CLAUDE_CONFIG_DIR` names it — which also puts claude's global config at
  *  `<here>/.claude.json` rather than beside the home dir. */
 const CLAUDE_CONTAINER_HOME = '/home/yaac/.claude'
+/** The project's per-worktree-shared package cache: pnpm's store, and the
+ *  backing dirs of the ephemeral-modules mounts. */
+const CACHED_PACKAGES_CONTAINER_DIR = '/home/yaac/.cached-packages'
 /** In-pod codex home; the host-side `codexDir` is mounted here. */
 const CODEX_CONTAINER_HOME = '/home/yaac/.codex'
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
@@ -1411,6 +1414,20 @@ export async function createWorktree(
   env.push(`PI_CODING_AGENT_DIR=${PI_CONTAINER_HOME}/agent`)
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
+  // pnpm's content-addressed store, one per project rather than one per
+  // worktree: `.cached-packages` is mounted into every worktree, and
+  // `node_modules` on the same filesystem hardlinks into it, so a worktree's
+  // dependencies cost their directory entries and nothing more. The image
+  // says the same thing as pnpm config; on a host there is no image, and a
+  // private HOME left to pnpm's default would hold a full store per worktree
+  // — a copy of every dependency that the checkout's hardlinked
+  // `node_modules` keeps alive after the HOME is torn down at stop. Under
+  // both names, because a host runs whatever pnpm is on its PATH: 11 reads
+  // `pnpm_config_` and ignores `npm_config_` for this key, and every 10.x
+  // does the reverse (probed 9.15 through 11.1). The image pins 11, where
+  // the env agrees with the rc and wins by the same value.
+  env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+  env.push(`npm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
 
   // Port forwarding: ask the runtime which host port each of the config's
   // ports is offered at, BEFORE the launch, because the answer is stamped
@@ -1476,7 +1493,7 @@ export async function createWorktree(
     // filesystem, and its link/stat traffic hates a network one.
     {
       source: { kind: 'hostPath', path: cachedPackages },
-      mountPath: '/home/yaac/.cached-packages',
+      mountPath: CACHED_PACKAGES_CONTAINER_DIR,
     },
     // Pod-local: the tmux server socket. A UNIX socket only rendezvouses
     // within the kernel that bound it, and every consumer (attach, the

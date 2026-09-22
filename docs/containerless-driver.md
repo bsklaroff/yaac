@@ -167,8 +167,19 @@ a pod mounts those onto other storage and git never sees them, but a symlink
 is not a mount, so git reports it untracked (an agent running `git add -A`
 would commit an absolute host path) and the ephemeral-modules guard trips on
 the driver's own link. Nothing is lost that this substrate needs, since the
-checkout is already on the host's own disk; what is lost is the per-worktree
-module cache, which was a pod-storage optimization.
+checkout is already on the host's own disk. What keeps those paths ephemeral
+all the same is the stop: the teardown removes them from the checkout, as it
+removes the backing dir a pod had mounted there, and a restart's init
+commands rebuild them. That rebuild is a relink rather than a download,
+because pnpm's store is the project's shared `.cached-packages/pnpm-store` on
+both substrates — the image sets it as pnpm config, and the create hands a
+host workspace the same path as `pnpm_config_store_dir`, translated like any
+other mounted path. Left to its default, pnpm would put a store inside the
+private HOME: a full copy of every dependency per worktree, which the
+checkout's hardlinked `node_modules` would keep alive after the HOME is torn
+down. Nothing sweeps a checkout stopped before this was in place: the copy
+its `node_modules` had become stays until that directory is removed by hand,
+and the next restart reinstalls.
 
 The other thing symlinks cannot do that mounts can is nest. A pod mounts the
 project's claude dir at `/home/yaac/.claude` and then a builtin skill at

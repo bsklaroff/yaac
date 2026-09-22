@@ -166,10 +166,21 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
   // `$1 != me` excludes the shell by pid regardless, so a later edit that
   // reintroduces the literal cannot bring the bug back. `pkill -f` is not
   // used for the same reason: it would match this command line too.
+  //
+  // After the kill, the script-side twin of `confirmGone`: `kill-server`
+  // returns once the SIGHUPs are sent, not once the panes have died, and
+  // every removal after this line — the caller's included, which walk the
+  // checkout — is one those panes could still be writing under. Bounded
+  // the same way, and a workspace that outlives the bound is removed from
+  // under anyway, as the in-process path's `false` verdict also ends up
+  // allowing once the sweeps resume it.
+  const sock = shellQuote(paths.tmuxSock)
   return 'ps -eo pid=,args= 2>/dev/null '
     + `| grep '[s]sh-agent' | grep -F ${shellQuote(paths.sshAgentSock)} `
     + '| awk -v me=$$ \'$1 != me {print $1}\' | xargs -r kill 2>/dev/null || true; '
-    + `tmux -S ${shellQuote(paths.tmuxSock)} kill-server 2>/dev/null || true; `
+    + `tmux -S ${sock} kill-server 2>/dev/null || true; `
+    + `i=0; while [ "$i" -lt ${String(CONFIRM_TIMEOUT_MS / 200)} ] `
+    + `&& tmux -S ${sock} has-session -t yaac 2>/dev/null; do sleep 0.2; i=$((i+1)); done; `
     + `rm -f ${shellQuote(paths.tmuxSock)} 2>/dev/null || true; `
     + `rm -f ${shellQuote(paths.sshAgentSock)} 2>/dev/null || true; `
     + `rm -rf ${shellQuote(paths.acpSockDir)} 2>/dev/null || true; `
