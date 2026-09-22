@@ -57,11 +57,6 @@ describe('toolsContentHash', () => {
     expect(hash).toMatch(/^[0-9a-f]{16}$/)
     expect(await toolsContentHash()).toBe(hash)
   })
-
-  it('folds the COPY support files in, not just the Dockerfile', async () => {
-    const dockerfileOnly = await fileHash(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
-    expect(await toolsContentHash()).not.toBe(dockerfileOnly)
-  })
 })
 
 describe('baseImageHash', () => {

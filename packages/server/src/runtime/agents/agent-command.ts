@@ -112,52 +112,96 @@ function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
 }
 
 /**
- * opencode's approval posture is config, not flags. `OPENCODE_PERMISSION`
- * takes the same JSON as the config file's `permission` block and is read per
- * process, which is what makes it per-worktree — the `opencode.json` session
- * create writes is shared by every worktree in the project.
+ * opencode's posture is config, not flags. `OPENCODE_CONFIG_CONTENT` is a
+ * config document read per process and merged over the `opencode.json` in
+ * the shared config dir (its own keys win), which is what makes the posture
+ * per-worktree — that file is shared by every worktree in the project, and
+ * the model picked in one worktree's TUI is persisted there for the rest.
  *
- * **Every posture is stated in full, and only in keys opencode actually
- * has.** Its permission config is a plain zod object over exactly `edit`,
- * `bash`, `webfetch`, `doom_loop` and `external_directory` — no top-level
- * wildcard — and a plain zod object *strips* what it does not know. An
- * unrecognized key is therefore not a partial posture but an empty one, which
- * `mergeAgentPermissions` then fills with `edit: allow`, `webfetch: allow`,
- * `bash: {"*": "allow"}`. A posture spelled wrong here does not fail: it runs
- * unrestrained, silently, on a containerless worktree's real filesystem.
+ * Rules are stated in opencode's ordered `permissions` array, over a base
+ * policy every agent starts from — `* allow`, then `ask` for
+ * `external_directory` and `.env` reads — that global rules append to and a
+ * built-in agent's own rules append after (`plan` adds its `edit deny`).
+ * Last match wins, so a posture names only what it changes.
  *
- * That is also why `bypass` states allow-everything rather than passing no
- * config at all. Inheriting opencode's near-permissive defaults happens to
- * land in the right place today, but `doom_loop` and `external_directory`
- * already default to `ask`, and a future default that tightens would quietly
- * stop meaning bypass with nothing to signal it.
+ * **Getting a rule wrong fails open, silently.** An action opencode does not
+ * know matches nothing, so a misspelled `ask` leaves the base policy's
+ * `* allow` in force — on a containerless worktree's real filesystem. That is
+ * also why `bypass` states `* allow` rather than passing no config: the base
+ * policy already asks for out-of-tree access and `.env` reads, and a future
+ * default that tightens would quietly stop meaning bypass.
  */
-const OPENCODE_PERMISSION_RULES: Partial<Record<PermissionMode, Record<string, string>>> = {
-  bypass: {
-    edit: 'allow', bash: 'allow', webfetch: 'allow',
-    doom_loop: 'allow', external_directory: 'allow',
-  },
-  // The two left at opencode's own `ask` default are the point of the mode:
-  // edits inside the worktree land unprompted, stepping outside it does not.
-  'accept-edits': { edit: 'allow', bash: 'ask', webfetch: 'allow' },
-  manual: {
-    edit: 'ask', bash: 'ask', webfetch: 'ask',
-    doom_loop: 'ask', external_directory: 'ask',
-  },
+interface OpencodeRule { action: string; resource: string; effect: 'allow' | 'ask' }
+
+interface OpencodeConfig {
+  default_agent?: string
+  permissions?: OpencodeRule[]
 }
 
 /**
- * The value for `OPENCODE_PERMISSION`, escaped for the launch command.
+ * The permission actions opencode knows, read off the pinned binary: the
+ * tools one real turn of `@opencode/cli@2.0.12` offers, plus the wildcard and
+ * `external_directory` (a boundary rather than a tool). A rule naming any
+ * other action is accepted with no diagnostic at any log level and matches
+ * nothing, so `agent-command.test.ts` checks every action the table below
+ * names against this list — a rename then fails a test instead of a posture.
+ * Re-read it whenever the pin in dockerfiles/Dockerfile.tools moves.
+ */
+export const OPENCODE_ACTIONS: readonly string[] = [
+  '*', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill', 'subagent',
+  'webfetch', 'websearch', 'write', 'execute', 'external_directory',
+]
+
+const rule = (action: string, effect: OpencodeRule['effect']): OpencodeRule =>
+  ({ action, resource: '*', effect })
+
+/**
+ * Ask before anything that acts, reads excepted. Wildcard first so it covers
+ * what the base policy allows and this file need not enumerate — websearch,
+ * subagents, skills, Code Mode, every MCP tool a project's own config adds;
+ * then the reads back to allow, with the base policy's `.env` asks restated
+ * because that wildcard `read allow` would otherwise be the last match.
+ */
+const OPENCODE_ASK_TO_ACT: OpencodeRule[] = [
+  rule('*', 'ask'),
+  ...['read', 'glob', 'grep', 'question'].map((action) => rule(action, 'allow')),
+  { action: 'read', resource: '*.env', effect: 'ask' },
+  { action: 'read', resource: '*.env.*', effect: 'ask' },
+]
+
+// The base policy's own asks stay; running commands is added to them, which
+// is the whole distinction from bypass.
+const OPENCODE_ACCEPT_EDITS: OpencodeConfig = { permissions: [rule('shell', 'ask')] }
+
+const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
+  bypass: { permissions: [rule('*', 'allow')] },
+  // Never reached — `postureFor` lands `auto` on `accept-edits` first — but a
+  // total table cannot fall open through a hole.
+  auto: OPENCODE_ACCEPT_EDITS,
+  'accept-edits': OPENCODE_ACCEPT_EDITS,
+  // One of opencode's own agents for the edit side — its `edit: deny` outside
+  // its plan files appends after these and stays — but that is ALL its rules
+  // say: nothing about `shell`, which the base policy allows, so on its own
+  // it runs commands unprompted. The ask-to-act rules are what make plan
+  // read-only, as it is for claude and codex.
+  plan: { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
+  manual: { permissions: OPENCODE_ASK_TO_ACT },
+}
+
+/**
+ * The `OPENCODE_CONFIG_CONTENT` assignment for the launch command: the
+ * posture, plus the model when one was asked for (`provider/model`; omitted,
+ * opencode uses the model persisted in the shared config, or its own
+ * default).
  *
  * Double-quoted with escaped inner quotes rather than single-quoted: the whole
  * command is embedded in `respawn-window '<cmd>'`, so a single quote would end
  * it early, and bare `{...}` would hit zsh brace expansion. Serialized rather
  * than hand-written so the escaping cannot drift from the shape.
  */
-function opencodePermissionArg(mode: PermissionMode): string | undefined {
-  const rules = OPENCODE_PERMISSION_RULES[mode]
-  if (rules === undefined) return undefined
-  return `OPENCODE_PERMISSION="${JSON.stringify(rules).replace(/"/g, '\\"')}"`
+function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
+  const config = { ...OPENCODE_POSTURE[mode], ...(model === undefined ? {} : { model }) }
+  return `OPENCODE_CONFIG_CONTENT="${JSON.stringify(config).replace(/"/g, '\\"')}"`
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
@@ -240,31 +284,18 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     return `${pi} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2)`
   }
   if (tool === 'opencode') {
-    // --port + --hostname enable opencode's built-in HTTP server on
-    // container loopback. yaac reads /session and /session/status from
-    // there (via `kubectl exec curl`) for status + first-message lookup.
-    // --continue resumes the one session stored in the per-yaac-worktree
-    // data dir (isolated per container — no cwd-collision concern).
-    // --model takes `provider/model`; omitted, opencode uses the model
-    // persisted in its shared config (or its own default).
-    //
-    // The posture arrives two different ways because opencode expresses it
-    // two different ways. `plan` is one of its own built-in agents, and its
-    // rules are stronger than anything worth restating here — `edit: deny`
-    // plus a curated read-only bash allowlist — so `--agent plan` selects it
-    // rather than hand-writing an approximation. Every other posture is
-    // permission rules, which `OPENCODE_PERMISSION` carries per process.
-    //
-    // Deliberately no posture *flag*: opencode's TUI takes only model,
-    // continue, session, prompt, agent, port and hostname, and its parser is
-    // non-strict — an invented flag is dropped without a word, leaving the
-    // posture as whatever the defaults say.
+    // --standalone runs the TUI over a private server of its own — a child
+    // on stdio — rather than the background service opencode would otherwise
+    // spawn and leave running. The server is what reads the config, so a
+    // child inheriting this process's env is what makes the posture and
+    // model per-worktree, and nothing outlives the window to carry a stale
+    // one into the next launch. --continue resumes the one session in the
+    // per-worktree data dir. The TUI takes no model or agent flag — both
+    // ride in the config (`opencodeConfigArg`) — and refuses an unknown one
+    // outright (usage, exit: a dead window), so none is invented here.
     return [
-      opencodePermissionArg(mode) ?? '',
-      'opencode',
-      mode === 'plan' ? '--agent plan' : '',
-      '--port 4096 --hostname 127.0.0.1',
-      model ? `--model ${model}` : '',
+      opencodeConfigArg(mode, model),
+      'opencode --standalone',
       resume ? '--continue' : '',
     ].filter(Boolean).join(' ')
   }

@@ -63,7 +63,6 @@ import {
   buildWindowsExec,
   buildWorktreeLinkExec,
   ensureClaudeHooks,
-  ensureOpencodeConfigJson,
   validateInitWindows,
   verifyAgentWindowAlive,
   type InitWindow,
@@ -1181,10 +1180,6 @@ export async function createWorktree(
     // into the mounted codex dir — and so codex discovery is a k8s-only
     // feature, there being no image to carry it under containerless.
 
-    // opencode: grant the websearch permission in the shared opencode.json so
-    // the Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA below).
-    await ensureOpencodeConfigJson(opencodeConfig)
-
     // Pre-create cacheVolumes host dirs so they're server-owned rather than
     // root-owned via DirectoryOrCreate — the in-container yaac user carries
     // the server's uid, so server-owned means yaac-writable.
@@ -1369,22 +1364,12 @@ export async function createWorktree(
     env.push(`GH_TOKEN=${mediatedEgress ? PLACEHOLDER_GH_TOKEN : credential.token}`)
   }
 
-  // Enable opencode's Exa-backed websearch tool. opencode only registers
-  // the tool when this env var is truthy; the matching `permission.websearch`
-  // entry is written into the shared opencode.json below. The MCP endpoint
-  // `mcp.exa.ai` is on the default proxy allowlist. Set unconditionally
-  // (only opencode reads it) so a spare retooled to opencode gets it.
-  env.push('OPENCODE_ENABLE_EXA=true')
-
-  // Pin opencode to the baked-in version by stopping its startup self-upgrade.
-  // opencode npm-upgrades itself to the latest release on launch; every
-  // release after 1.0.142 renders a blank agent pane under gVisor — its native
-  // @opentui/core renderer blocks on a terminal-capability handshake that our
-  // headless worktree tmux never answers, so no frame is ever drawn. The image
-  // pins opencode-ai@1.0.142 (dockerfiles/Dockerfile.tools); without this the
-  // pod would silently upgrade back to a broken renderer (and hit the egress
-  // proxy doing it). Set unconditionally (only opencode reads it) so a spare
-  // retooled to opencode gets it.
+  // Pin opencode to the baked-in version by stopping its startup update
+  // check. The image pins a release (dockerfiles/Dockerfile.tools) because
+  // the launch command is written against its flags and config; without
+  // this a pod would upgrade itself off that pin on launch (and hit the
+  // egress proxy doing it). Set unconditionally (only opencode reads it) so
+  // a spare retooled to opencode gets it.
   env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
 
   // Point pi at its worktree-log dir inside its `.pi` home so its JSONL

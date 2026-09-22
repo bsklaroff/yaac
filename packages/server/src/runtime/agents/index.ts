@@ -79,7 +79,6 @@ export {
   transcriptStamp,
 } from './transcripts'
 export { ensureClaudeHooks } from './claude'
-export { ensureOpencodeConfigJson } from './opencode'
 export {
   buildUpstreamExec,
   buildWindowsExec,

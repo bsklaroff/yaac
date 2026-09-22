@@ -120,7 +120,9 @@ It has no home override at all: `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG` and
 `OPENCODE_CONFIG_CONTENT` are additional config *inputs* — the first is
 pushed onto the list of directories it loads from, so a host value injects
 the server user's opencode config, and any provider keys in it, no matter
-what else is set. Its actual homes come from `XDG_CONFIG_HOME` and
+what else is set (the per-worktree `OPENCODE_CONFIG_CONTENT` yaac's own launch
+command carries is assigned on that command line, after the clearing). Its
+actual homes come from `XDG_CONFIG_HOME` and
 `XDG_DATA_HOME`, which cleared resolve to the staged links.
 
 That translation lands on the mount's **source**, not on the workspace's own
