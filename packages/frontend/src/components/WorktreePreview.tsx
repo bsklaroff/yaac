@@ -4,6 +4,7 @@ import { Menu } from '@base-ui/react/menu'
 import { isElectron } from '#lib/platform'
 import { windowApi } from '#components/WindowControls'
 import { previewUrl, normalizePreviewNav } from '#lib/preview'
+import { portLinkHref } from '#components/ForwardedPortLinks'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
@@ -64,12 +65,9 @@ export function WorktreePreview({
   onSwitchPort: (containerPort: number) => void
 }): JSX.Element {
   const shownPort = currentPort ?? ports[0]?.containerPort
-  const hostPort = ports.find((p) => p.containerPort === shownPort)?.hostPort
-  // Forwarded ports bind the interface the app was served from, so the
-  // preview follows the page host — localhost locally, the tailnet name
-  // when attached to a remote server.
-  const hostname = window.location.hostname
-  const url = hostPort !== undefined ? previewUrl(hostname, hostPort) : null
+  const mapping = ports.find((p) => p.containerPort === shownPort)
+  const hostPort = mapping?.hostPort
+  const url = hostPort !== undefined ? previewUrl(hostPort) : null
   const electron = isElectron()
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -149,25 +147,25 @@ export function WorktreePreview({
   const copyUrl = (): void => { void navigator.clipboard?.writeText(address || url || '') }
   const openExternal = (): void => { if (url) windowApi()?.openExternal(address || url) }
   const submitAddress = (): void => {
-    const dest = normalizePreviewNav(editing ?? '', hostname, hostPort)
+    const dest = normalizePreviewNav(editing ?? '', hostPort)
     if (dest) void wvRef.current?.loadURL?.(dest)
     setEditing(null)
   }
 
-  // Browser build (no webview): a plain link to the forwarded port.
+  // Browser build (no webview): the same link the header's port chips offer.
   if (!electron) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
         <PreviewIcon size={22} className="text-text-faint" />
         <p className="text-xs text-text-dim">The embedded preview is available in the desktop app.</p>
-        {url && (
+        {mapping && (
           <a
-            href={url}
+            href={portLinkHref(window.location.hostname, mapping)}
             target="_blank"
             rel="noreferrer"
             className="rounded bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-dim transition hover:text-text"
           >
-            Open {hostname}:{hostPort}
+            Open {window.location.hostname}:{mapping.hostPort}
           </a>
         )}
       </div>

@@ -17,10 +17,12 @@ export function portLinkLabel(p: PortMapping): string {
 
 /**
  * One link chip per forwarded port; clicking opens the port on the host
- * the webapp itself was loaded from — `localhost` when served locally,
- * the tailnet name when served remotely (the forwarders bind that same
- * interface via YAAC_FORWARD_BIND, so the link is correct wherever you
- * loaded the app). This is the webapp's replacement for the tmux
+ * the webapp itself was loaded from. The server binds no forwarded port
+ * (docs/port-forward-tunnel.md): a client does, so the link is true when
+ * a forwarder holds that interface — `yaac forward --bind` on the server
+ * host, or a loopback forwarder on the machine showing the page. The
+ * desktop app's own preview pane goes to loopback directly (`#lib/preview`).
+ * This is the webapp's replacement for the tmux
  * status-right port readout — webapp panes attach through view worktrees
  * with `status off`, so the server-pushed snapshot is the only place the
  * mapping can surface.

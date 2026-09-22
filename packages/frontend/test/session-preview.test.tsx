@@ -27,7 +27,7 @@ describe('WorktreePreview (browser build)', () => {
     setElectron(false)
     render(<WorktreePreview worktreeId="s1" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     const link = screen.getByRole('link', { name: /localhost:15173/ })
-    expect(link.getAttribute('href')).toBe('http://localhost:15173/')
+    expect(link.getAttribute('href')).toBe('http://localhost:15173')
   })
 })
 
@@ -40,9 +40,9 @@ describe('WorktreePreview (Electron)', () => {
     const wv = container.querySelector('webview')
     expect(wv).not.toBeNull()
     expect(wv?.getAttribute('partition')).toBe('persist:preview-abc')
-    expect(wv?.getAttribute('src')).toBe('http://localhost:15173/')
+    expect(wv?.getAttribute('src')).toBe('http://127.0.0.1:15173/')
     const input = screen.getByLabelText<HTMLInputElement>('Preview address')
-    expect(input.value).toBe('http://localhost:15173/')
+    expect(input.value).toBe('http://127.0.0.1:15173/')
   })
 
   it('shows a waiting state until the port is forwarded', () => {
@@ -59,7 +59,7 @@ describe('WorktreePreview (Electron)', () => {
     }
     render(<WorktreePreview worktreeId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
-    expect(openExternal).toHaveBeenCalledWith('http://localhost:15173/')
+    expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:15173/')
   })
 
   it('offers a port dropdown when several ports are forwarded', () => {
@@ -101,7 +101,7 @@ describe('WorktreePreview (Electron)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
     fireEvent.click(await screen.findByText('Home'))
-    expect(loadURL).toHaveBeenCalledWith('http://localhost:15173/')
+    expect(loadURL).toHaveBeenCalledWith('http://127.0.0.1:15173/')
   })
 
   it('constrains the webview to a device width, with a clearable pill', async () => {
