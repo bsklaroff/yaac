@@ -5,6 +5,8 @@ import {
   type ForwardSpec,
   type TunnelTarget,
 } from '#port-tunnel'
+import { isLoopbackOrigin } from '#server-api'
+import type { DriverKind } from '#types'
 
 /**
  * A live set of port forwards, reconciled against a desired list.
@@ -20,6 +22,30 @@ import {
  * that gains a port must not cost the others their open connections, so an
  * unchanged spec is never restarted.
  */
+
+/**
+ * Whether a client reaching the server at `baseUrl` should bind what that
+ * server offers.
+ *
+ * Under `k8s`, always: the server is a pod and binds nothing anywhere, so
+ * a forward is dialable only while some client holds its listener. Under
+ * `containerless` the workspace's own processes bind the host ports, so
+ * what the server offers is the identity mapping over listeners that
+ * ALREADY exist on its machine. A client on that same machine must not
+ * bind them: every bind loses to the dev server holding the port, or —
+ * worse — wins against one that has not booted yet and takes the port
+ * out from under it. From any other machine those ports are exactly as
+ * unreachable as a pod's, and the tunnel is the same answer.
+ *
+ * The origin is the one "is this the server's machine?" question a client
+ * has (`isLoopbackOrigin`): a host server and an in-cluster one are both
+ * registered at a loopback origin, and a remote one never is. The blind
+ * spot is an `ssh -L` tunnel to a remote containerless server, which
+ * passes as local and stays unforwarded.
+ */
+export function serverNeedsForwarder(driver: DriverKind, baseUrl: string): boolean {
+  return driver !== 'containerless' || !isLoopbackOrigin(baseUrl)
+}
 
 /** A forward's identity: which workspace's port, offered where. Two specs
  *  differing in any of these are different forwards. */

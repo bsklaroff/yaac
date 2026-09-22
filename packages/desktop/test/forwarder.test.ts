@@ -83,21 +83,31 @@ describe('snapshotForwards', () => {
       worktree('a', [[3000, 3000], [5432, 15432]]),
       worktree('b', [[3000, 3001]]),
       worktree('c', []),
-    ]))).toEqual([
+    ]), LOCAL.baseUrl)).toEqual([
       { session: 'a', containerPort: 3000, hostPort: 3000 },
       { session: 'a', containerPort: 5432, hostPort: 15432 },
       { session: 'b', containerPort: 3000, hostPort: 3001 },
     ])
   })
 
-  it('offers nothing under containerless, where the workspace binds its own', () => {
+  it('offers nothing against a containerless server on this machine', () => {
     // Not an empty listing — a listing this client must not act on. Those
     // ports are already bound on this machine by the dev servers
     // themselves, so binding them is a retry loop that can never settle
     // (docs/port-forward-tunnel.md).
     expect(snapshotForwards(snapshot([
       worktree('a', [[3000, 3000]]),
-    ], 'containerless'))).toEqual([])
+    ], 'containerless'), LOCAL.baseUrl)).toEqual([])
+  })
+
+  it('binds a remote containerless server\'s mappings, which is what makes the preview pane true', () => {
+    // From here the server host's loopback is as unreachable as a pod's;
+    // the identity mapping is bound on this machine and tunnelled back.
+    expect(snapshotForwards(snapshot([
+      worktree('a', [[3000, 3000]]),
+    ], 'containerless'), OTHER.baseUrl)).toEqual([
+      { session: 'a', containerPort: 3000, hostPort: 3000 },
+    ])
   })
 })
 
@@ -140,6 +150,15 @@ describe('startForwarder', () => {
 
     expect(set.targets).toEqual([LOCAL.baseUrl, OTHER.baseUrl])
     expect(set.closes).toBe(1)
+  })
+
+  it('decides what to bind from the origin it resolved, not the page', async () => {
+    resolveTarget.mockResolvedValue(OTHER)
+    const f = startForwarder({ resolveTarget, createSet: set.create as never })
+    f.apply(snapshot([worktree('a', [[3000, 3000]])], 'containerless'))
+    await settle()
+    expect(set.reconciled).toEqual([[{ session: 'a', containerPort: 3000, hostPort: 3000 }]])
+    f.stop()
   })
 
   it('reuses the set while the server is unchanged', async () => {

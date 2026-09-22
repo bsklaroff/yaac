@@ -515,7 +515,7 @@ program
   .argument('[worktree-id]', 'Worktree ID, ID prefix, or name — omit to forward every running worktree')
   .option('-p, --port <container[:host]>', 'Forward this port instead of what the server offers (repeatable)', collect, [])
   .option('-b, --bind <address>', 'Address to bind (default 127.0.0.1)')
-  .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod — so this holds the listener and tunnels each connection to it.\nRuns until interrupted.')
+  .addHelpText('after', '\nThe server cannot bind ports on your machine — under the k8s driver it runs\nas a pod, and under containerless they are bound on the server\'s own machine —\nso this holds the listener and tunnels each connection to it. Against a\ncontainerless server on this machine there is nothing to tunnel and it refuses;\nan explicit --bind is taken as "I know what I am binding" and proceeds.\nRuns until interrupted.')
   .action(async (worktreeId: string | undefined, options: ForwardOptions) => {
     await forward(worktreeId, options)
   })

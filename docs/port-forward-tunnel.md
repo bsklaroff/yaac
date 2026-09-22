@@ -10,7 +10,9 @@ of this document, and the answer is: **not the server**.
   it. That is the worst failure shape available, so the server does not
   bind at all.
 - Under `containerless` the workspace's own processes bind host ports, so
-  the port is already reachable and there is nothing to forward.
+  on the server's machine the port is already reachable and there is
+  nothing to forward. From another machine there is, and the same tunnel
+  carries it (see the end of this document).
 
 Neither substrate leaves the server holding a listener. What it holds
 instead is the **mapping** — which container port is offered at which host
@@ -92,13 +94,31 @@ Nothing is forwarded when neither is running. That is the honest state —
 the mapping exists, the listener does not — and it is visible: the link is
 there and refuses to connect, rather than answering something else.
 
-And neither forwards against a **containerless** server, by construction.
-There the mapping is the identity over ports a workspace's own processes
-have ALREADY bound on this machine, so a forwarder has nothing to add and
-nowhere to put a listener: every bind loses to the dev server holding the
-port, and against a remote containerless server the binds succeed only for
-each tunnelled connection to die, since that driver's `dialPort` is a
-refusal. Left to discover this per connection it is a retry loop that can
-never settle, so both clients stop first — `yaac forward` refuses with the
-reason, and the desktop's `snapshotForwards` offers nothing when the
-snapshot's `driver` says containerless.
+Against a **containerless** server the answer depends on where the client
+is. There the mapping is the identity over ports a workspace's own
+processes have ALREADY bound on the server's machine, so a forwarder on
+that machine has nothing to add and nowhere to put a listener: every bind
+loses to the dev server holding the port — or, worse, wins against one that
+has not booted yet and takes the port out from under it. Left to discover
+this per poll it is a retry loop that can never settle, so both clients
+stop first (`serverNeedsForwarder` in `@yaac/shared`): `yaac forward`
+refuses with the reason, and the desktop's `snapshotForwards` offers
+nothing. From any OTHER machine those ports are exactly as unreachable as a
+pod's, and the tunnel is the same answer — the client binds the identity
+mapping locally and the driver's `dialPort` connects to the port on the
+server host's loopback, so the desktop preview pane's `127.0.0.1:<port>`
+is true against a remote containerless server too. Only a listener the
+sweep has surfaced can be dialled, at the address it is bound to: the
+sweep walks the worktree's own process tree, so the set is an allowlist of
+that tree's listeners with the sensitive-port denylist on top, and the
+pod driver dials anything because a pod is a sandbox, while this host is
+the user's machine.
+
+The one "is this the server's machine?" question a client has is the
+origin it resolved (`isLoopbackOrigin`), which is why an `ssh -L` tunnel
+to a remote containerless server passes as local and stays unforwarded.
+An explicit `yaac forward --bind <addr>` is exempt from the refusal and
+taken as "I know what I am binding", loopback included. The case it
+exists for is the remote-hosting recipe (docs/remote-hosting.md): on the
+server host, publishing the ports on another interface relays each
+connection to loopback, which is not the address the dev server holds.

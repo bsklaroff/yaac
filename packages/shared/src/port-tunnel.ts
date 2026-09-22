@@ -8,11 +8,12 @@ import { WebSocket } from 'ws'
  * The listener lives here rather than in the server because the server has
  * nowhere to put it. Under `k8s` it is a pod, so a port it bound would be
  * on the pod's loopback; under `containerless` the workspace binds the
- * port itself and there is nothing to forward. What the server does hold
- * is the mapping (`forwardedPorts` on the worktree list) and the near end
- * of each connection (`/forward/attach`) — so a client that binds what the
- * mapping says makes the webapp's `127.0.0.1:<port>` links true for as
- * long as it runs.
+ * port itself, on the server's machine, which is not the user's when the
+ * server is remote. What the server does hold is the mapping
+ * (`forwardedPorts` on the worktree list) and the near end of each
+ * connection (`/forward/attach`) — so a client that binds what the mapping
+ * says makes the webapp's `127.0.0.1:<port>` links true for as long as it
+ * runs.
  *
  * WS + `net` only, which is what lets this sit in `@yaac/shared`: the
  * desktop app is a resident forwarder and `@yaac/shared` is the only

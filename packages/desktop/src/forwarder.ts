@@ -1,4 +1,4 @@
-import { createForwardSet, type ForwardSet } from '@yaac/shared/port-tunnel-set'
+import { createForwardSet, serverNeedsForwarder, type ForwardSet } from '@yaac/shared/port-tunnel-set'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot } from '@yaac/shared/types'
@@ -23,17 +23,15 @@ import type { ServerSnapshot } from '@yaac/shared/types'
 /**
  * Every forward the snapshot says is on offer, across every worktree.
  *
- * Empty under `containerless`, where forwarding is not a thing a client
- * can do or needs to: a workspace's own processes bind the host ports, so
- * `forwardedPorts` there is the identity mapping over ports something is
- * ALREADY listening on. Binding them is either impossible (the dev server
- * holds the port, on this machine) or useless (against a remote one, where
- * every tunnelled connection dies because that driver's `dialPort` is a
- * refusal). Either way it is a retry loop that can never settle, so the
- * snapshot's own `driver` is what stops it before it starts.
+ * Empty against a containerless server on this machine, where the
+ * workspace's own processes already hold the ports and binding them would
+ * be a retry loop that can never settle — or a port taken from a dev
+ * server that has not booted yet (`serverNeedsForwarder`). Against a
+ * remote containerless server the same mappings are bound here exactly as
+ * a pod's are, which is what makes the preview pane's loopback URL true.
  */
-export function snapshotForwards(snapshot: ServerSnapshot): ForwardSpec[] {
-  if (snapshot.driver === 'containerless') return []
+export function snapshotForwards(snapshot: ServerSnapshot, baseUrl: string): ForwardSpec[] {
+  if (!serverNeedsForwarder(snapshot.driver, baseUrl)) return []
   const specs: ForwardSpec[] = []
   for (const w of snapshot.worktrees) {
     for (const { containerPort, hostPort } of w.forwardedPorts) {
@@ -72,11 +70,12 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
   let running: Promise<void> = Promise.resolve()
   let pending: ServerSnapshot | null = null
 
-  const rebuild = async (): Promise<void> => {
+  /** Answers the origin the set now targets. */
+  const rebuild = async (): Promise<string> => {
     const target = await deps.resolveTarget()
     // A switched server is a different set of forwards, so the old ones go
     // rather than being reconciled onto the new target.
-    if (set && targetUrl === target.baseUrl) return
+    if (set && targetUrl === target.baseUrl) return target.baseUrl
     set?.close()
     targetUrl = target.baseUrl
     set = createSet(
@@ -87,13 +86,14 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
         onConnectionError: (message) => say(`forwarded connection failed: ${message}`),
       },
     )
+    return target.baseUrl
   }
 
   const step = async (snapshot: ServerSnapshot): Promise<void> => {
     try {
-      await rebuild()
+      const baseUrl = await rebuild()
       if (stopped) return
-      await set?.reconcile(snapshotForwards(snapshot))
+      await set?.reconcile(snapshotForwards(snapshot, baseUrl))
     } catch (err) {
       say(`forwarding paused: ${err instanceof Error ? err.message : String(err)}`)
     }

@@ -16,7 +16,7 @@ import {
 } from './lifecycle'
 import { assertHostCanLaunch } from './check'
 import { containerlessWorkspacePaths } from './paths'
-import { forgetPorts, workspacePorts } from './ports'
+import { dialWorkspacePort, forgetPorts, workspacePorts } from './ports'
 import {
   claimWorkspaceTool,
   countForProject,
@@ -110,8 +110,8 @@ export function createContainerlessDriver(): WorktreeDriver {
     syncProxySecrets: () => Promise.resolve(),
 
     // A workspace binds host ports itself, so what it is listening on is
-    // already reachable and the mapping is the identity. Nothing is left to
-    // forward, which is why nothing is ever unforwarded.
+    // already reachable on this machine and the mapping is the identity.
+    // Nothing is left to forward, which is why nothing is ever unforwarded.
     forwardedPorts: (workspaceId) => Promise.resolve(workspacePorts(workspaceId)),
     unforwardedPorts: () => Promise.resolve([]),
     forwardPort: () => unsupported('forwarding a port'),
@@ -123,10 +123,10 @@ export function createContainerlessDriver(): WorktreeDriver {
     // very port the workspace is about to want.
     declareForwards: (_workspaceId, forwards) =>
       forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
-    // Nothing to tunnel to: the port is on this machine already, and a
-    // client wanting it dials it directly. A forwarder pointed here would
-    // relay a host port to itself.
-    dialPort: () => unsupported('tunnelling to a port'),
+    // The near end of a forward whose listener is on ANOTHER machine: a
+    // client on this one dials the port directly, and the two clients know
+    // not to bind against a server they share a loopback with.
+    dialPort: (workspaceId, port) => dialWorkspacePort(workspaceId, port),
 
     // No images: the whole build feed degrades to "nothing to show"
     // rather than to an error.

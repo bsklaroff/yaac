@@ -85,7 +85,11 @@ A client device can hold the listeners instead, and get `localhost:19500`
 of its own: `yaac forward` on a laptop pointed at the remote (`yaac remote
 set`) tunnels over the same authenticated WebSocket, so nothing but the
 server's HTTPS port has to be reachable. That is also what the desktop app
-does automatically once it is attached to the remote.
+does automatically once it is attached to the remote, and it is what its
+preview pane loads. Both work against either placement: under
+`containerless` the ports are bound on the server's machine by the
+worktree's own processes, which from a laptop is exactly as far away as a
+pod (docs/port-forward-tunnel.md).
 
 ## Client setup
 
