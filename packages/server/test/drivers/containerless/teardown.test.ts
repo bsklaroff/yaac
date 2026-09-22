@@ -203,6 +203,21 @@ describe('detachedTeardownCommand', () => {
     expect(cmd).toMatch(/tmux -S '[^']*'/)
   })
 
+  // `kill-server` returns once the SIGHUPs are sent, not once the panes are
+  // dead; the caller appends removals of what those panes could still be
+  // writing under (the checkout's node_modules, the state roots), so the
+  // script waits for the server to be gone first — bounded, like confirmGone.
+  it('waits for the tmux server to be gone between the kill and the removals', () => {
+    const cmd = detachedTeardownCommand(TARGET)
+    const kill = cmd.indexOf('kill-server')
+    const wait = cmd.indexOf('has-session')
+    const firstRm = cmd.indexOf('rm -')
+    expect(kill).toBeGreaterThanOrEqual(0)
+    expect(wait).toBeGreaterThan(kill)
+    expect(firstRm).toBeGreaterThan(wait)
+    expect(cmd).toMatch(/while \[ "\$i" -lt \d+ \]/)
+  })
+
   it('composes commands that tolerate having already run', () => {
     const cmd = detachedTeardownCommand(TARGET)
     // The whole script is re-issued when a teardown has to be resumed, and

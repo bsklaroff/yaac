@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { worktreeDriver } from '#drivers/driver'
+import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { inFlightWorktreeIds } from './provisioning'
 import {
   applyWorktreeEvent,
@@ -40,6 +41,62 @@ import { serverLog } from '#log'
  */
 export function worktreeModulesDir(projectSlug: string, worktreeId: string): string {
   return path.join(cachedPackagesDir(projectSlug), 'modules', worktreeId)
+}
+
+/**
+ * Detached teardowns this server spawned and has not yet seen exit, by
+ * worktree id — what a restart waits on before relaunching into the same
+ * checkout. A detached script cannot gate its removals the way
+ * `cleanupWorktree` does, and under containerless the runtime forgets the
+ * workspace before the script even starts: from the moment a stop returns,
+ * a restart resolves to the stopped row, skips the in-process wait, and
+ * would relaunch while the script is still taking the tmux server down and
+ * walking the checkout's `node_modules`, with the state roots queued behind.
+ * In-memory: a script outlives a server restart, but the stale reaper's
+ * resumption of it does too.
+ */
+const detachedTeardowns = new Map<string, Promise<void>>()
+
+/** Resolves once no detached teardown this server spawned is still running
+ *  for the worktree — at once when there is none. */
+function detachedTeardownSettled(worktreeId: string): Promise<void> {
+  return detachedTeardowns.get(worktreeId) ?? Promise.resolve()
+}
+
+/**
+ * The ephemeral-modules paths as they exist IN the checkout — where a
+ * host-run workspace keeps them, since that substrate realizes no mount into
+ * the checkout (docs/containerless-driver.md). Removing them at stop is
+ * what "ephemeral" means on both substrates: under a pod the contents sat
+ * behind a mount whose backing dir `worktreeModulesDir` covers, and the
+ * target here is an empty placeholder the restart's `prepareEphemeralMounts`
+ * recreates. The restart's init commands rebuild them either way, from the
+ * project's shared pnpm store.
+ *
+ * A path that is a symlink, or that reaches its parent through one leading
+ * out of the checkout, is left alone — the same refusal the mkdir at create
+ * makes, and for the same reason: the checkout is full of agent-authored
+ * content by now, and an `rm -rf` through a committed `foo -> /anywhere`
+ * would be a host-side delete.
+ */
+async function checkoutEphemeralPaths(projectSlug: string, worktreeId: string): Promise<string[]> {
+  let root: string
+  try {
+    root = await fs.realpath(worktreeDir(projectSlug, worktreeId))
+  } catch {
+    return []
+  }
+  const config = await resolveProjectConfig(projectSlug).catch(() => null)
+  const paths: string[] = []
+  for (const rel of resolveEphemeralModulesPaths(config)) {
+    const target = path.join(root, rel)
+    const parent = await fs.realpath(path.dirname(target)).catch(() => null)
+    if (parent === null || (parent !== root && !parent.startsWith(root + path.sep))) continue
+    const stat = await fs.lstat(target).catch(() => null)
+    if (stat === null || stat.isSymbolicLink()) continue
+    paths.push(target)
+  }
+  return paths
 }
 
 /**
@@ -169,9 +226,10 @@ export async function cleanupWorktree(params: {
   // Every removal below is gated on the verdict, for the same reason the
   // CHECKOUT removal callers chain off it is: these are mount sources — the
   // ephemeral-modules dir backing `/workspace/node_modules`, and the
-  // per-worktree dirs holding the staged skills and worktree bin. A
-  // workspace the runtime could not confirm gone may still be running on
-  // them.
+  // per-worktree dirs holding the staged skills and worktree bin — or, for
+  // the ephemeral paths a host-run workspace keeps in the checkout itself,
+  // its working directory. A workspace the runtime could not confirm gone
+  // may still be running on them.
   //
   // `false` covers two cases and the worse one is not the obvious one. A
   // delete that timed out leaves a workspace in its grace period, and
@@ -193,6 +251,13 @@ export async function cleanupWorktree(params: {
       recursive: true,
       force: true,
     })
+    // Best-effort, like the script's `|| true`: under a pod this is the
+    // mount target, and a node still unwinding the mount answers EBUSY.
+    for (const p of await checkoutEphemeralPaths(projectSlug, worktreeId)) {
+      await fs.rm(p, { recursive: true, force: true }).catch((err: unknown) => {
+        serverLog(`[server] remove ${p} at stop: ${String(err)}`)
+      })
+    }
     for (const dir of worktreeStateRoots(projectSlug, worktreeId)) {
       await fs.rm(dir, { recursive: true, force: true })
     }
@@ -225,73 +290,91 @@ export async function cleanupWorktreeDetached(params: {
 }): Promise<void> {
   const { jobName, projectSlug, worktreeId, cause, preserveDeletedRecord } = params
 
-  // Audit every teardown: the actual work below runs as a detached,
-  // stdio-ignored child, so without this line a worktree reaped by the
-  // reconciler vanishes with no trace in the server log.
-  serverLog(
-    `[server] session teardown: session=${worktreeId} job=${jobName} project=${projectSlug}`
-    + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
-  )
+  // Registered before the first await, so a restart arriving at any point
+  // from here on waits for the script this will spawn; settled when that
+  // script exits, or here if the spawn is never reached.
+  let settle: () => void = () => undefined
+  const settled = new Promise<void>((resolve) => { settle = resolve })
+  detachedTeardowns.set(worktreeId, settled)
+  void settled.then(() => {
+    if (detachedTeardowns.get(worktreeId) === settled) detachedTeardowns.delete(worktreeId)
+  })
+  try {
+    // Audit every teardown: the actual work below runs as a detached,
+    // stdio-ignored child, so without this line a worktree reaped by the
+    // reconciler vanishes with no trace in the server log.
+    serverLog(
+      `[server] session teardown: session=${worktreeId} job=${jobName} project=${projectSlug}`
+      + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
+    )
 
-  // Mark terminating BEFORE evicting the status below (see cleanupWorktree).
-  markWorktreeTerminating(worktreeId)
+    // Mark terminating BEFORE evicting the status below (see cleanupWorktree).
+    markWorktreeTerminating(worktreeId)
 
-  // Report the stop (and death cause, when a reaper supplied one) so the
-  // deleted-worktree view can order by recency and say why the worktree went
-  // away (best-effort; falls back to transcript mtime if unrecorded). Skipped
-  // when resuming a teardown yaac already recorded, so the existing cause
-  // survives (see `preserveDeletedRecord`).
-  if (!preserveDeletedRecord) {
-    await applyWorktreeEvent({
-      type: 'worktree-stopped', projectSlug, worktreeId, cause,
-    })
+    // Report the stop (and death cause, when a reaper supplied one) so the
+    // deleted-worktree view can order by recency and say why the worktree went
+    // away (best-effort; falls back to transcript mtime if unrecorded). Skipped
+    // when resuming a teardown yaac already recorded, so the existing cause
+    // survives (see `preserveDeletedRecord`).
+    if (!preserveDeletedRecord) {
+      await applyWorktreeEvent({
+        type: 'worktree-stopped', projectSlug, worktreeId, cause,
+      })
+    }
+
+    forgetLiveness(projectSlug, worktreeId)
+    evictWorktreeStatus(projectSlug, worktreeId)
+
+    const runtime = worktreeDriver()
+    const target = teardownTarget(params)
+
+    // The half of a teardown that must happen in-process: host port forwards
+    // and the egress registration are this server's own state as much as the
+    // runtime's, and a detached shell could do neither.
+    await runtime.deregisterWorkspace(worktreeId)
+
+    const ephemeralModulesRms = [
+      worktreeModulesDir(projectSlug, worktreeId),
+      ...await checkoutEphemeralPaths(projectSlug, worktreeId),
+    ].map((dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`)
+
+    const worktreeDirRms = worktreeStateRoots(projectSlug, worktreeId).map(
+      (dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`,
+    )
+
+    // The runtime's own teardown, then the dirs the worktree owns — which is
+    // this layer's half, and the reason the script is composed here rather
+    // than handed over whole. Every line on both sides tolerates having
+    // already run, so a resumed teardown re-issues the lot.
+    const script = [
+      runtime.detachedTeardownCommand(target),
+      ...ephemeralModulesRms,
+      ...worktreeDirRms,
+    ].join('; ')
+
+    const spawnDetachedTeardown = (): void => {
+      const child = spawn('sh', ['-c', script], {
+        detached: true,
+        stdio: 'ignore',
+      })
+      child.once('exit', settle)
+      child.once('error', settle)
+      child.unref()
+    }
+
+    // Salvage first: it reaches INTO the workspace, which the script above
+    // destroys. Server-orchestrated rather than part of that script, and
+    // bounded by its own timeouts so a wedged salvage can't strand the
+    // teardown. If the server dies in this window the runtime survives and
+    // the stale reaper resumes the (idempotent) teardown — the same recovery
+    // as a lost detached script. Failures never block.
+    void runtime.salvageImages(target)
+      .catch(() => undefined)
+      .then(() => { spawnDetachedTeardown() })
+  } catch (err) {
+    settle()
+    throw err
   }
-
-  forgetLiveness(projectSlug, worktreeId)
-  evictWorktreeStatus(projectSlug, worktreeId)
-
-  const runtime = worktreeDriver()
-  const target = teardownTarget(params)
-
-  // The half of a teardown that must happen in-process: host port forwards
-  // and the egress registration are this server's own state as much as the
-  // runtime's, and a detached shell could do neither.
-  await runtime.deregisterWorkspace(worktreeId)
-
-  const modulesDir = worktreeModulesDir(projectSlug, worktreeId)
-  const ephemeralModulesRm = `rm -rf ${shellQuote(modulesDir)} 2>/dev/null || true`
-
-  const worktreeDirRms = worktreeStateRoots(projectSlug, worktreeId).map(
-    (dir) => `rm -rf ${shellQuote(dir)} 2>/dev/null || true`,
-  )
-
-  // The runtime's own teardown, then the dirs the worktree owns — which is
-  // this layer's half, and the reason the script is composed here rather
-  // than handed over whole. Every line on both sides tolerates having
-  // already run, so a resumed teardown re-issues the lot.
-  const script = [
-    runtime.detachedTeardownCommand(target),
-    ephemeralModulesRm,
-    ...worktreeDirRms,
-  ].join('; ')
-
-  const spawnDetachedTeardown = (): void => {
-    const child = spawn('sh', ['-c', script], {
-      detached: true,
-      stdio: 'ignore',
-    })
-    child.unref()
-  }
-
-  // Salvage first: it reaches INTO the workspace, which the script above
-  // destroys. Server-orchestrated rather than part of that script, and
-  // bounded by its own timeouts so a wedged salvage can't strand the
-  // teardown. If the server dies in this window the runtime survives and
-  // the stale reaper resumes the (idempotent) teardown — the same recovery
-  // as a lost detached script. Failures never block.
-  void runtime.salvageImages(target)
-    .catch(() => undefined)
-    .then(() => { spawnDetachedTeardown() })
 }
 
 /**
@@ -513,6 +596,11 @@ export async function teardownForRestart(params: {
   workspaceId: string
 }): Promise<void> {
   const { jobName, projectSlug, workspaceId } = params
+  // A stopped workspace whose detached teardown is still running is the
+  // case `jobName: null` hides: the runtime already answers "not found",
+  // and the script it left is still removing what the relaunch is about to
+  // stage (see `detachedTeardowns`).
+  await detachedTeardownSettled(workspaceId)
   if (jobName) {
     await cleanupWorktree({ jobName, projectSlug, worktreeId: workspaceId })
   }

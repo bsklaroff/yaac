@@ -180,10 +180,12 @@ describe('launchWorkspace', () => {
     // would silently redirect a real host path they passed in.
     const piSrc = path.join(dataDir, 'projects', 'demo', 'pi')
     const claudeSrc = path.join(dataDir, 'projects', 'demo', 'claude')
+    const cachedSrc = path.join(dataDir, 'projects', 'demo', '.cached-packages')
     await fsp.mkdir(path.join(piSrc, 'agent', 'sessions'), { recursive: true })
     const mounts: WorkspaceMount[] = [
       { source: { kind: 'hostPath', path: piSrc }, mountPath: '/home/yaac/.pi' },
       { source: { kind: 'hostPath', path: claudeSrc }, mountPath: '/home/yaac/.claude' },
+      { source: { kind: 'hostPath', path: cachedSrc }, mountPath: '/home/yaac/.cached-packages' },
     ]
     await launchWorkspace(spec({
       mounts,
@@ -191,6 +193,8 @@ describe('launchWorkspace', () => {
         'PI_CODING_AGENT_DIR=/home/yaac/.pi/agent',
         'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.pi/agent/sessions',
         'CLAUDE_CONFIG_DIR=/home/yaac/.claude',
+        'pnpm_config_store_dir=/home/yaac/.cached-packages/pnpm-store',
+        'npm_config_store_dir=/home/yaac/.cached-packages/pnpm-store',
         'MY_OWN_PATH=/home/yaac/notes',
       ],
     }))
@@ -208,6 +212,10 @@ describe('launchWorkspace', () => {
     const home = path.join(dataDir, 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     expect(env.env.CLAUDE_CONFIG_DIR).toBe(claudeSrc)
     expect(env.env.CLAUDE_CONFIG_DIR).not.toContain(home)
+    // pnpm's store is the project's, shared by every worktree — and on the
+    // same filesystem as the checkouts, so node_modules hardlinks into it.
+    expect(env.env.pnpm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
+    expect(env.env.npm_config_store_dir).toBe(path.join(cachedSrc, 'pnpm-store'))
     expect(env.env.MY_OWN_PATH).toBe('/home/yaac/notes')
   })
 

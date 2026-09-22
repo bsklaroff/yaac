@@ -8,16 +8,21 @@ vi.mock('#db', async (importOriginal) => ({
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
 import type ChildProcessModule from 'node:child_process'
 
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
+/** The last detached child the mediator spawned: a test ends its script by
+ *  emitting `exit` on it, the way the real child would. */
+let lastChild: EventEmitter | undefined
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
   return {
     ...actual,
     spawn: (cmd: string, args: string[], opts: unknown) => {
       spawnMock(cmd, args, opts)
-      return { unref: () => { /* detached stub */ } }
+      lastChild = Object.assign(new EventEmitter(), { unref: () => { /* detached stub */ } })
+      return lastChild
     },
   }
 })
@@ -32,6 +37,7 @@ import {
   cleanupWorktreeDetached,
   deleteWorktreeState,
   gcOrphanEphemeralModuleDirs,
+  teardownForRestart,
   worktreeModulesDir,
 } from '#domain/worktrees/cleanup'
 
@@ -39,7 +45,7 @@ import { isWorktreeTerminating, _clearTerminatingForTests } from '#runtime/statu
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
 import { _resetWorktreeStatusStoreForTests } from '#runtime/status/status-store'
 import { serverLog } from '#log'
-import { setDataDir, worktreeStateRoots } from '@yaac/shared/project-paths'
+import { projectConfigDir, setDataDir, worktreeDir, worktreeStateRoots } from '@yaac/shared/project-paths'
 import type { WorktreeEvent } from '#db'
 import { applyWorktreeEvent } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/worktrees/provisioning'
@@ -198,6 +204,12 @@ describe('cleanupWorktree', () => {
     try {
       const modules = worktreeModulesDir('p', 's-dirs')
       await fs.mkdir(modules, { recursive: true })
+      // A host-run workspace keeps its ephemeral paths in the checkout
+      // itself; those go with the backing dir, and the rest of the checkout
+      // stays for a restart.
+      const checkout = worktreeDir('p', 's-dirs')
+      await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
+      await fs.mkdir(path.join(checkout, 'src'), { recursive: true })
       let existedDuringDestroy: boolean | undefined
       installRuntime({
         destroy: async () => {
@@ -210,6 +222,37 @@ describe('cleanupWorktree', () => {
 
       expect(existedDuringDestroy).toBe(true)
       await expect(fs.access(modules)).rejects.toThrow()
+      await expect(fs.access(path.join(checkout, 'node_modules'))).rejects.toThrow()
+      await expect(fs.access(path.join(checkout, 'src'))).resolves.toBeUndefined()
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  // The checkout is full of agent-authored content by the time it stops, so
+  // an ephemeral path is removed only where it is a real directory of the
+  // checkout: a committed `node_modules -> /anywhere` would otherwise be an
+  // rm of host state, and a parent symlink out of the checkout the same.
+  it('leaves an ephemeral path that is, or is reached through, a symlink out of the checkout', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-cleanup-link-'))
+    setDataDir(dataDir)
+    try {
+      const outside = path.join(dataDir, 'outside')
+      await fs.mkdir(path.join(outside, 'node_modules', 'kept'), { recursive: true })
+      const checkout = worktreeDir('p', 's-link')
+      await fs.mkdir(checkout, { recursive: true })
+      await fs.symlink(path.join(outside, 'node_modules'), path.join(checkout, 'node_modules'))
+      await fs.symlink(outside, path.join(checkout, 'web'))
+      await fs.mkdir(projectConfigDir('p'), { recursive: true })
+      await fs.writeFile(path.join(projectConfigDir('p'), 'yaac-config.json'), JSON.stringify({
+        ephemeralModulesPaths: ['node_modules', 'web/node_modules'],
+      }))
+      installRuntime({ destroy: () => Promise.resolve(true) })
+
+      await cleanupWorktree({ jobName: 'yaac-p-s-link', projectSlug: 'p', worktreeId: 's-link' })
+
+      await expect(fs.access(path.join(outside, 'node_modules', 'kept'))).resolves.toBeUndefined()
+      expect((await fs.lstat(path.join(checkout, 'node_modules'))).isSymbolicLink()).toBe(true)
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true })
     }
@@ -227,7 +270,9 @@ describe('cleanupWorktree', () => {
     try {
       const modules = worktreeModulesDir('p', 's-kept')
       const stateRoots = worktreeStateRoots('p', 's-kept')
+      const checkoutModules = path.join(worktreeDir('p', 's-kept'), 'node_modules')
       await fs.mkdir(modules, { recursive: true })
+      await fs.mkdir(checkoutModules, { recursive: true })
       for (const dir of stateRoots) await fs.mkdir(dir, { recursive: true })
       installRuntime({ destroy: () => Promise.resolve(false) })
 
@@ -236,6 +281,7 @@ describe('cleanupWorktree', () => {
       })).resolves.toBe(false)
 
       await expect(fs.access(modules)).resolves.toBeUndefined()
+      await expect(fs.access(checkoutModules)).resolves.toBeUndefined()
       for (const dir of stateRoots) {
         await expect(fs.access(dir)).resolves.toBeUndefined()
       }
@@ -308,6 +354,8 @@ describe('cleanupWorktreeDetached', () => {
   // this layer removes the dirs it owns, and the runtime's half goes first
   // because those dirs are what the workspace has mounted.
   it('composes the runtime teardown ahead of the dirs this layer owns', async () => {
+    const checkoutModules = path.join(worktreeDir('p', 's-script'), 'node_modules')
+    await fs.mkdir(checkoutModules, { recursive: true })
     await cleanupWorktreeDetached({
       jobName: 'yaac-p-s-script', projectSlug: 'p', worktreeId: 's-script',
     })
@@ -316,6 +364,7 @@ describe('cleanupWorktreeDetached', () => {
     const script = spawnedScript()!
     expect(script.startsWith(TEARDOWN_SENTINEL)).toBe(true)
     expect(script).toContain(`rm -rf '${worktreeModulesDir('p', 's-script')}'`)
+    expect(script).toContain(`rm -rf '${checkoutModules}'`)
     expect(script.indexOf(TEARDOWN_SENTINEL)).toBeLessThan(script.indexOf('rm -rf'))
   })
 
@@ -417,6 +466,54 @@ describe('cleanupWorktreeDetached', () => {
     // The teardown itself still runs (the runtime's command is idempotent,
     // so re-issuing it is exactly how a lost teardown is resumed).
     await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
+  })
+})
+
+describe('teardownForRestart', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-restart-teardown-'))
+    setDataDir(dataDir)
+    spawnMock.mockClear()
+    clearWorktreeEvents()
+    _clearTerminatingForTests()
+    installRuntime()
+  })
+
+  afterEach(async () => {
+    _clearTerminatingForTests()
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  // A stop returns while its detached script is still running, and under
+  // containerless the runtime has already forgotten the workspace by then —
+  // so a restart within seconds resolves to the stopped row (`jobName:
+  // null`) and would relaunch into a checkout the script is still walking.
+  // The wait is what stands between the two.
+  it('waits for the worktree\'s detached teardown to exit before a relaunch', async () => {
+    await cleanupWorktreeDetached({
+      jobName: 'yaac-p-s-race', projectSlug: 'p', worktreeId: 's-race',
+    })
+    await vi.waitFor(() => { expect(spawnMock).toHaveBeenCalled() })
+
+    let settled = false
+    const restart = teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-race' })
+      .then(() => { settled = true })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(settled).toBe(false)
+
+    lastChild!.emit('exit', 0)
+    await restart
+    expect(settled).toBe(true)
+    // And the mark the stop left is gone, so the fresh worktree is not
+    // rendered as stopping.
+    expect(isWorktreeTerminating('s-race')).toBe(false)
+  })
+
+  it('returns at once for a worktree with no teardown in flight', async () => {
+    await teardownForRestart({ jobName: null, projectSlug: 'p', workspaceId: 's-idle' })
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 })
 

@@ -690,6 +690,20 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
     // only for as long as the link is what resolves them.
     expect(env.PI_CODING_AGENT_SESSION_DIR)
       .toBe(path.join(projectDir, 'pi', 'agent', 'sessions'))
+    // pnpm installs into the project's one store, beside the checkouts on
+    // the same filesystem — never a store of the private HOME's own, which
+    // would be a full copy of every dependency per worktree. Asked of pnpm
+    // itself, with the pane's environment: the variable being set proves
+    // nothing if it is not the name this host's pnpm reads, and that
+    // failure is silent everywhere but the disk.
+    const store = path.join(projectDir, '.cached-packages', 'pnpm-store')
+    for (const key of ['pnpm_config_store_dir', 'npm_config_store_dir']) {
+      expect(env[key], key).toBe(store)
+    }
+    const { stdout: storePath } = await execFileAsync('pnpm', ['store', 'path'], {
+      env, cwd: path.join(projectDir, 'worktrees', worktreeId),
+    })
+    expect(storePath.trim().split('\n').pop()?.startsWith(store), storePath).toBe(true)
 
     // Naming the config dir moves claude's global config with it: it reads
     // `<$CLAUDE_CONFIG_DIR>/.claude.json` and never probes the home-relative
@@ -953,6 +967,11 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
 
   // Destroys its subject — keep last.
   it('stops the worktree by taking its tmux server down', async () => {
+    // What an init command's `pnpm install` leaves in the checkout: on this
+    // substrate the ephemeral paths live there, and the stop below is what
+    // makes them ephemeral (asserted once the checkout is confirmed kept).
+    const checkout = path.join(testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId)
+    await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     const { exitCode } = await runYaac(serverEnv, 'worktree', 'stop', worktreeId)
     expect(exitCode).toBe(0)
     // The tmux server is the unit: when it is gone the worktree is gone,
@@ -973,6 +992,14 @@ describe.skipIf(!CAN_RUN)('containerless worktrees (real CLI + real server, no c
       testEnv.dataDir, 'projects', SLUG, 'worktrees', worktreeId,
     )
     await expect(fs.stat(dir)).resolves.toBeDefined()
+    // Minus its ephemeral paths — a stopped worktree's node_modules is
+    // otherwise a full copy of every dependency, kept for as long as the
+    // checkout is, once the private HOME's store it hardlinked into is gone.
+    // Polled: the teardown that removes it is detached.
+    await vi.waitFor(
+      async () => { await expect(fs.stat(path.join(dir, 'node_modules'))).rejects.toThrow() },
+      { timeout: 20_000, interval: 250 },
+    )
 
     // A detached teardown cannot reach this driver's registry, and a
     // workspace it never forgot is handed to the stale reaper on every
