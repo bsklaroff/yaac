@@ -361,10 +361,7 @@ export function StoppedWorktreesButton({
         onOpenChange={(next) => { if (!next) setConfirm(null) }}
         destructive={false}
         title="Restart this worktree?"
-        description={confirm
-          ? (confirm.deathReason ? `This worktree died: ${describeWorktreeDeathReason(confirm.deathReason)}. ` : '')
-            + `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
-          : ''}
+        description={confirm ? label(confirm) : ''}
         confirmLabel="Restart"
         onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}
       />

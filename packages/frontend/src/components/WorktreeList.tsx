@@ -1175,8 +1175,7 @@ function DeletedWorktreeRow({ entry }: { entry: StoppedWorktreeEntry }): JSX.Ele
         onOpenChange={setConfirmRestart}
         destructive={false}
         title="Restart this worktree?"
-        description={(entry.deathReason ? `This worktree died: ${describeWorktreeDeathReason(entry.deathReason)}. ` : '')
-          + `Recreates the container and resumes ${TOOL_LABEL[entry.tool]} from where it left off.`}
+        description={entry.title || entry.prompt || 'New worktree'}
         confirmLabel="Restart"
         onConfirm={onConfirmRestart}
       />
